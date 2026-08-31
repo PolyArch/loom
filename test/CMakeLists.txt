@@ -281,6 +281,7 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-cgra-transport-storage-runtime-test
   loom-simulator-cgra-transport-runtime-test
   loom-simulator-cgra-transport-virtual-channel-test
+  loom-simulator-cgra-closed-wait-certificate-test
   loom-simulator-dfg-actor-transition-probe-test
   loom-simulator-dynamic-work-test
   loom-simulator-dfg-evaluation-test

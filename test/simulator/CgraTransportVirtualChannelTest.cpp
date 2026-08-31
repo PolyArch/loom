@@ -191,7 +191,7 @@ void unofferedEntryCannotDequeue() {
 /// ranks by the canonical unsigned tag value order.
 void planTagInterningFollowsCanonicalOrder() {
   const auto tag = [](std::uint64_t value) {
-    return CgraPhysicalTagPlan{llvm::APInt(4, value)};
+    return CgraPhysicalTagPlan{llvm::APInt(4, value), std::nullopt};
   };
   const std::vector<CgraPhysicalTagPlan> tags = {tag(5), tag(2), tag(5),
                                                  tag(9), tag(2)};

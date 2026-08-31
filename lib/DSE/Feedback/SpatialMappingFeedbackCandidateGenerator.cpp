@@ -11,6 +11,7 @@
 #include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
@@ -234,9 +235,18 @@ classifyEvidence(const ArtifactRootReference &reference,
           *request, mapping.cgraCase.canonicalDataflow, mapping.cgraCase.fabric,
           mapping.reference, workload, runtimeInput))
     return std::move(error);
+  if (evidence->outcomeKind() !=
+      ::loom::evaluation::EvidenceOutcomeKind::Completed)
+    return MatchedEvidence{matchedMapping, false};
+  auto terminal =
+      ::loom::evaluation::models::classifyCompletedCgraSimulationEvidence(
+          *evidence, mapping.cgraCase.resolution, store, blobs);
+  if (!terminal)
+    return terminal.takeError();
   return MatchedEvidence{
-      matchedMapping, evidence->outcomeKind() ==
-                          ::loom::evaluation::EvidenceOutcomeKind::Completed};
+      matchedMapping,
+      *terminal == ::loom::evaluation::models::
+                       CgraSimulationEvidenceTerminal::Retired};
 }
 
 llvm::Expected<MatchedEvidence>

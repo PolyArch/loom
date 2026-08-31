@@ -1,10 +1,12 @@
-#include "Simulator/CGRASimulator.h"
+#include "Simulator/CgraClosedWaitCertificate.h"
 
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <cstdlib>
+#include <array>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -18,6 +20,24 @@ using loom::sim::CgraClosedWaitSetDiagnostic;
 void require(bool condition, llvm::StringRef message) {
   if (!condition)
     fail(message);
+}
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+loom::ArtifactIdentity identity(std::uint8_t value) {
+  loom::ArtifactIdentity::Storage bytes{};
+  bytes.fill(value);
+  return take(loom::ArtifactIdentity::fromBytes(bytes));
+}
+
+loom::ArtifactRootReference root(llvm::StringRef schema,
+                                 loom::SchemaVersion version,
+                                 std::uint8_t value) {
+  return {schema.str(), version, identity(value)};
 }
 
 using Diagnostic = CgraClosedWaitSetDiagnostic;
@@ -106,11 +126,84 @@ void openChainsAndProofFailuresAreRejected() {
           "a proof failure passed the closure check");
 }
 
+void durableCertificateRoundTripsAsOneMinimalOwner() {
+  Diagnostic diagnostic;
+  diagnostic.ownerReferences = loom::sim::CgraExecutionOwnerReferences{
+      root("dataflow.canonical", {1, 0}, 1),
+      root("loom.fabric", {7, 1}, 2),
+      root("loom.mapping", {4, 0}, 3),
+      root("loom.mapping", {4, 0}, 4)};
+  Diagnostic::Transfer transfer;
+  transfer.bindingOrdinal = 11;
+  transfer.occurrenceOrdinal = 2;
+  transfer.physicalTagOrdinal = 0;
+  transfer.physicalTagValue = llvm::APInt(4, 3);
+  transfer.producer = dataflow::ActorTokenResultRef{
+      dataflow::ActorRef{diagnostic.ownerReferences->dataflow.artifact,
+                         dataflow::ActorId(5)},
+      0};
+  transfer.physicalTagOwner = loom::sim::CgraRoutePhysicalTagOwner{
+      *transfer.producer, 3};
+  transfer.blockingStorageOrdinal = 7;
+  diagnostic.transfers.push_back(std::move(transfer));
+
+  Diagnostic::WaitEdge order =
+      edge(actor(5, 2), taggedStorage(7, 3),
+           Diagnostic::WaitEdgeKind::StorageOrder);
+  order.bindingOrdinal = 11;
+  order.occurrenceOrdinal = 2;
+  order.storageOrdinal = 7;
+  order.headBindingOrdinal = 11;
+  order.headOccurrenceOrdinal = 2;
+  Diagnostic::WaitEdge consume =
+      edge(taggedStorage(7, 3), actor(5, 2),
+           Diagnostic::WaitEdgeKind::StorageConsumer);
+  consume.bindingOrdinal = 11;
+  consume.occurrenceOrdinal = 2;
+  consume.storageOrdinal = 7;
+  consume.headBindingOrdinal = 11;
+  consume.headOccurrenceOrdinal = 2;
+  diagnostic.waitCertificate = {std::move(consume), std::move(order)};
+
+  auto certificate =
+      take(loom::sim::buildCgraClosedWaitCertificate(diagnostic));
+  const auto bytes = take(loom::sim::encodeCgraClosedWaitCertificate(
+      certificate));
+  auto adopted = take(loom::sim::decodeCgraClosedWaitCertificate(bytes));
+  const auto reencoded =
+      take(loom::sim::encodeCgraClosedWaitCertificate(adopted));
+  require(bytes == reencoded,
+          "durable certificate changed across strict adoption");
+  require(adopted.transfers.size() == 1 &&
+              adopted.transfers.front().bindingOrdinal == 11 &&
+              adopted.transfers.front().physicalTagValue == llvm::APInt(4, 3) &&
+              adopted.transfers.front().physicalTagOwner &&
+              std::get<loom::sim::CgraRoutePhysicalTagOwner>(
+                  *adopted.transfers.front().physicalTagOwner)
+                      .segmentOrdinal == 3,
+          "durable transfer lost an encoded semantic field");
+  require(take(loom::sim::digestCgraClosedWaitCertificate(certificate)) ==
+              take(loom::sim::digestCgraClosedWaitCertificate(adopted)),
+          "certificate digest changed across strict adoption");
+
+  adopted.transfers.emplace_back(
+      12, 0, llvm::APInt(1, 0), false,
+      dataflow::ActorTokenResultRef{
+          dataflow::ActorRef{diagnostic.ownerReferences->dataflow.artifact,
+                             dataflow::ActorId(6)},
+          0});
+  llvm::Error extra = loom::sim::verifyCgraClosedWaitCertificate(adopted);
+  require(static_cast<bool>(extra),
+          "certificate admitted a transfer no edge references");
+  llvm::consumeError(std::move(extra));
+}
+
 } // namespace
 
 int main() {
   closedForkJoinIsAccepted();
   queueClassesDistinguishTagValues();
   openChainsAndProofFailuresAreRejected();
+  durableCertificateRoundTripsAsOneMinimalOwner();
   return EXIT_SUCCESS;
 }

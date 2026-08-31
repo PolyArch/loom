@@ -11,6 +11,13 @@
 
 namespace fabric {
 
+/// Returns the unique width-independent APInt representation of an unsigned
+/// Physical Tag value. The Fabric owner, not APInt storage, supplies any port
+/// width needed for encoding or hardware comparison.
+inline llvm::APInt canonicalPhysicalTagValue(const llvm::APInt &value) {
+  return value.zextOrTrunc(std::max(1u, value.getActiveBits()));
+}
+
 /// Compares two unsigned Physical Tag values irrespective of their APInt
 /// storage widths; storage width is not semantic. Values whose storage fits
 /// one machine word compare without widening.

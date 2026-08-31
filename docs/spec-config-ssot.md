@@ -134,7 +134,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.1`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.2`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -269,6 +269,14 @@ then proof-debt witness count, capacity shortfall, and exact route-anchor
 count, all before ordinary QoR. Re-finalization produces new ResolvedConfig and
 PnR component identities; an 11.1 consumer never treats 11.0 objective bytes
 as the current policy.
+
+Version 11.2 compatibly extends the Mapping violation catalog with
+`RuntimeCounterexampleViolation`. The new source is a hard Spatial violation
+derived from `loom.mapping_constraints 1.2`; System projects it as zero. The
+builtin temporary-violation policy excludes it, while closure and total
+ordering place it before ordinary QoR. Re-finalization produces new
+ResolvedConfig, component-view, and PnR identities; earlier references are not
+silently adopted as 11.2.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

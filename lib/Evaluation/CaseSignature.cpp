@@ -18,14 +18,14 @@ namespace {
 
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema30{3, 0};
+constexpr SchemaVersion evaluationSchema31{3, 1};
 
 bool isSupportedEvaluationSchema(SchemaVersion version) {
-  return version == evaluationSchema30;
+  return version == evaluationSchema31;
 }
 
 bool schemaContainsCaseKind(SchemaVersion version, EvaluationCaseKind) {
-  return version == evaluationSchema30;
+  return version == evaluationSchema31;
 }
 
 struct CaseSignatureRegistryEntry {
@@ -114,7 +114,7 @@ validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor) {
 
 } // namespace
 
-SchemaVersion evaluationSchemaVersion() { return evaluationSchema30; }
+SchemaVersion evaluationSchemaVersion() { return evaluationSchema31; }
 
 const CaseSubjectRoleDescriptor *
 EvaluationCaseSignatureDescriptor::findSubjectRole(

@@ -59,12 +59,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.15.4",
+              "loom.spatial_pnr.config.15.5",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.8.3",
+              "loom.system_pnr.config.8.4",
           "System PnR view has the wrong schema descriptor");
   require(system.systemBindingPartitions().empty(),
           "base System PnR view invented a partition intent");
@@ -162,8 +162,8 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 6,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings[0].weightedLevels = {8, 0, 4, 5, 7, 2, 1, 3};
-  catalogs.totalOrderings[1].weightedLevels = {8, 0, 4, 5, 9, 2, 1, 3};
+  catalogs.totalOrderings[0].weightedLevels = {9, 0, 4, 5, 7, 2, 1, 3};
+  catalogs.totalOrderings[1].weightedLevels = {9, 0, 4, 5, 8, 2, 1, 3};
   unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 10;
   unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 11;
 
@@ -233,21 +233,28 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 3 && registry.schemaMinor == 2,
+              registry.schemaMajor == 3 && registry.schemaMinor == 3,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
-  require(violations.size() == 6 &&
-              violations.front().kind ==
-                  loom::ResolvedPnrViolationKind::UnroutedObligation &&
-              violations.back().kind ==
-                  loom::ResolvedPnrViolationKind::ProgressProofDebt,
-          "Mapping violation registry does not own the closed catalog");
+  require(
+      violations.size() == 7 &&
+          violations.front().kind ==
+              loom::ResolvedPnrViolationKind::UnroutedObligation &&
+          violations.back().kind ==
+              loom::ResolvedPnrViolationKind::RuntimeCounterexampleViolation,
+      "Mapping violation registry does not own the closed catalog");
   require(
       violations[1].kind == loom::ResolvedPnrViolationKind::CapacityOveruse &&
           violations[2].kind == loom::ResolvedPnrViolationKind::TagUnassigned &&
           violations[3].kind == loom::ResolvedPnrViolationKind::TagConflict,
       "Mapping violation registry changed the canonical catalog order");
+  const auto builtin = loom::resolvedBuiltinSpatialPnrPolicy(
+      loom::ResolvedProfilePreset::BalancedExplore);
+  require(!llvm::is_contained(
+              builtin.temporaryViolations.admitted,
+              loom::ResolvedPnrViolationKind::RuntimeCounterexampleViolation),
+          "runtime counterexamples became temporary search violations");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
   require(measures.size() == 10 &&
@@ -285,11 +292,10 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
               catalogs.weightedLevels[5].terms.front().dimension ==
                   anchorDimension &&
               catalogs.totalOrderings.size() == 2 &&
-              llvm::equal(
-                  llvm::ArrayRef<std::uint32_t>(
-                      catalogs.totalOrderings[0].weightedLevels)
-                      .take_front(4),
-                  std::array<std::uint32_t, 4>{7, 0, 4, 5}) &&
+              llvm::equal(llvm::ArrayRef<std::uint32_t>(
+                              catalogs.totalOrderings[0].weightedLevels)
+                              .take_front(4),
+                          std::array<std::uint32_t, 4>{8, 0, 4, 5}) &&
               catalogs.totalOrderings[0].weightedLevels.back() == 3 &&
               catalogs.totalOrderings[1].weightedLevels.back() == 3,
           "activity debt and operand pressure rank levels are not explicit");
@@ -297,7 +303,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
   require(loom::ResolvedConfig::artifactSchema.version.major == 11 &&
-              loom::ResolvedConfig::artifactSchema.version.minor == 1,
+              loom::ResolvedConfig::artifactSchema.version.minor == 2,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
       loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());

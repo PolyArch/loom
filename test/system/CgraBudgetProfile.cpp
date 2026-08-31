@@ -9,6 +9,7 @@
 #include "DSE/SpatialRuntimeFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Fabric/IR/FabricEnums.h"
@@ -450,7 +451,8 @@ std::uint64_t referenceCycles(
 bool completed(
     const loom::evaluation::models::CgraSimulationEvaluation &evaluation) {
   return std::holds_alternative<loom::evaluation::CompletedEvidence>(
-      evaluation.evidence.outcome());
+             evaluation.evidence.outcome()) &&
+         !evaluation.closedWait;
 }
 
 std::uint64_t peakResidentBytes() {
@@ -821,15 +823,21 @@ int main(int argc, char **argv) {
         take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
             dataflowView, techMapping.view(), hardware.module.view(),
             artifacts));
+    auto verifiedWait = take(
+        loom::evaluation::models::importVerifiedCgraClosedWaitEvidence(
+            *preRepairEvidence, artifacts, blobs));
     auto feedback = take(loom::dse::deriveSpatialTransportRuntimeFeedback(
         hardware.spatialMapping.reference(), parentConstraints.reference(),
-        {*preRepairEvidence, prepared.request}, *warmup.closedWait, artifacts,
-        *parentSystemMapping));
+        verifiedWait, artifacts, *parentSystemMapping));
     require(
         feedback.disposition ==
-                loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact &&
-            !feedback.alternatives.empty(),
-        "closed wait did not yield an exact transport repair");
+                loom::dse::SpatialTransportRuntimeFeedbackDisposition::
+                    ProofNotEstablished &&
+            feedback.reason ==
+                loom::dse::SpatialTransportRuntimeFeedbackReason::
+                    CausalCoreNotEstablished &&
+            feedback.alternatives.empty() && !feedback.constraintSet,
+        "partial transport projection escaped its fail-closed boundary");
     bool replayed = false;
     for (const auto &alternative : feedback.alternatives) {
       auto repaired = take(loom::eda::test::rerouteMappedSpatialMappingFixture(

@@ -7,8 +7,10 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
+#include "Evaluation/StandardFindings.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -16,7 +18,9 @@
 #include "Mapping/IR/MappingSchema.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
+#include "Simulator/CgraClosedWaitCertificate.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationExecution.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -486,6 +490,186 @@ void loom::test::exerciseCgraAdmission(
       cgraEvidence.outputBindings().front().artifacts.front();
   auto importedCgra = take(sim::importSimulationExecution(
       cgraExecutionReference, preparedCgra.resolution, store, blobs));
+  const auto *cgraCompleted =
+      std::get_if<evaluation::CompletedEvidence>(&cgraEvidence.outcome());
+  if (!cgraCompleted)
+    fail("retired CGRA Evidence has no completed payload");
+  const auto presentClosedWait = [] {
+    return evaluation::FindingResult{
+        evaluation::PresentFinding{{evaluation::FindingOccurrence::get(
+            sim::TerminalWitnessRef{evaluation::ModelOutputSlotRef(0), 0})}}};
+  };
+
+  const ArtifactRootReference retiredEvidenceReference =
+      take(evaluation::publishEvaluationEvidence(cgraEvidence, store));
+  if (!rejected(evaluation::models::importVerifiedCgraClosedWaitEvidence(
+          retiredEvidenceReference, store, blobs)))
+    fail("retired CGRA Evidence was imported as a closed wait");
+
+  auto nonCompleted = take(evaluation::EvaluationEvidence::get(
+      preparedCgra.request, {{evaluation::ModelOutputSlotRef(0), {}}},
+      evaluation::ExecutionFailedEvidence{
+          evaluation::OutcomeReason::AdapterFailure},
+      preparedCgra.resolution, store, blobs));
+  const ArtifactRootReference nonCompletedReference =
+      take(evaluation::publishEvaluationEvidence(nonCompleted, store));
+  if (!rejected(evaluation::models::importVerifiedCgraClosedWaitEvidence(
+          nonCompletedReference, store, blobs)))
+    fail("non-Completed Evidence was imported as a closed wait");
+
+  if (!rejected(evaluation::EvaluationEvidence::get(
+          preparedCgra.request,
+          {{evaluation::ModelOutputSlotRef(0), {cgraExecutionReference}}},
+          evaluation::CompletedEvidence{cgraCompleted->metricResults, {}},
+          preparedCgra.resolution, store, blobs)))
+    fail("Completed CGRA Evidence omitted its mandatory finding result");
+  if (!rejected(evaluation::EvaluationEvidence::get(
+          preparedCgra.request,
+          {{evaluation::ModelOutputSlotRef(0), {cgraExecutionReference}}},
+          evaluation::CompletedEvidence{
+              cgraCompleted->metricResults,
+              {evaluation::FindingResult{evaluation::AbsentFinding{}},
+               evaluation::FindingResult{evaluation::AbsentFinding{}}}},
+          preparedCgra.resolution, store, blobs)))
+    fail("Completed CGRA Evidence repeated its finding result");
+  auto duplicatePresent = presentClosedWait();
+  auto &duplicateOccurrences =
+      std::get<evaluation::PresentFinding>(duplicatePresent.result).occurrences;
+  duplicateOccurrences.push_back(evaluation::FindingOccurrence::get(
+      sim::TerminalWitnessRef{evaluation::ModelOutputSlotRef(0), 0}));
+  if (!rejected(evaluation::EvaluationEvidence::get(
+          preparedCgra.request,
+          {{evaluation::ModelOutputSlotRef(0), {cgraExecutionReference}}},
+          evaluation::CompletedEvidence{cgraCompleted->metricResults,
+                                        {std::move(duplicatePresent)}},
+          preparedCgra.resolution, store, blobs)))
+    fail("terminal CGRA finding accepted non-unique Present occurrences");
+
+  // A structurally closed witness with the right Request owners is still not
+  // runtime provenance. Forge one beside the real retired execution and prove
+  // that the Evidence-only carrier rejects it by deterministic replay.
+  if (spatial.view().routeTrees().empty())
+    fail("CGRA provenance fixture has no logical route");
+  sim::CgraClosedWaitSetDiagnostic forgedWait;
+  forgedWait.ownerReferences = take(prepared.ownerReferences());
+  sim::CgraClosedWaitSetDiagnostic::Transfer forgedTransfer;
+  forgedTransfer.bindingOrdinal = 0;
+  forgedTransfer.occurrenceOrdinal = 0;
+  forgedTransfer.producer = spatial.view().routeTrees().front().logicalNet;
+  forgedTransfer.blockingStorageOrdinal = 0;
+  forgedWait.transfers.push_back(std::move(forgedTransfer));
+  using Wait = sim::CgraClosedWaitSetDiagnostic;
+  const Wait::WaitOwnerKey actor{Wait::WaitActorFiringKey{0, 0}};
+  const Wait::WaitOwnerKey storage{Wait::WaitStorageQueueKey{
+      Wait::WaitStorageDomain::TraversalStorage, 0,
+      Wait::WaitQueueClass::global()}};
+  Wait::WaitEdge actorWait;
+  actorWait.from = actor;
+  actorWait.to = storage;
+  actorWait.kind = Wait::WaitEdgeKind::ActorOutputBackpressure;
+  actorWait.bindingOrdinal = 0;
+  actorWait.occurrenceOrdinal = 0;
+  actorWait.storageOrdinal = 0;
+  Wait::WaitEdge storageWait = actorWait;
+  storageWait.from = storage;
+  storageWait.to = actor;
+  storageWait.kind = Wait::WaitEdgeKind::StorageConsumer;
+  forgedWait.waitCertificate = {std::move(actorWait), std::move(storageWait)};
+  auto forgedCertificate =
+      take(sim::buildCgraClosedWaitCertificate(forgedWait));
+  const auto encodedCertificate =
+      take(sim::encodeCgraClosedWaitCertificate(forgedCertificate));
+  std::vector<std::uint8_t> tamperedCertificateBytes = encodedCertificate;
+  tamperedCertificateBytes.push_back(0);
+  if (!rejected(sim::decodeCgraClosedWaitCertificate(
+          tamperedCertificateBytes)))
+    fail("closed-wait codec accepted tampered trailing certificate bytes");
+  auto alteredCertificate = forgedCertificate;
+  ++alteredCertificate.edges.front().storageCapacity;
+  const auto originalDigest =
+      take(sim::digestCgraClosedWaitCertificate(forgedCertificate));
+  const auto alteredDigest =
+      take(sim::digestCgraClosedWaitCertificate(alteredCertificate));
+  if (originalDigest == alteredDigest)
+    fail("closed-wait digest omitted a tampered certificate field");
+
+  sim::SpatialSimulationExecution wrongFindingKind{
+      importedCgra.request(),
+      sim::HaltedExecution{
+          evaluation::standard_findings::FunctionalMismatch,
+          evaluation::OwnerValue::get(std::uint64_t{0})},
+      importedCgra.spatialFunctionalObservations(),
+      importedCgra.spatialProgressObservations(),
+      {}};
+  if (!rejected(sim::finalizeSimulationExecution(
+          wrongFindingKind, preparedCgra.resolution, store, blobs)))
+    fail("Halted CGRA execution accepted a foreign finding kind");
+  sim::SpatialSimulationExecution wrongWitnessOwner{
+      importedCgra.request(),
+      sim::HaltedExecution{evaluation::models::CgraClosedWait,
+                           evaluation::OwnerValue::get(std::uint64_t{0})},
+      importedCgra.spatialFunctionalObservations(),
+      importedCgra.spatialProgressObservations(),
+      {}};
+  if (!rejected(sim::finalizeSimulationExecution(
+          wrongWitnessOwner, preparedCgra.resolution, store, blobs)))
+    fail("Halted CGRA execution accepted a foreign witness owner type");
+
+  sim::SpatialSimulationExecution forgedExecution{
+      importedCgra.request(),
+      sim::HaltedExecution{
+          evaluation::models::CgraClosedWait,
+          evaluation::OwnerValue::get(std::move(forgedCertificate))},
+      importedCgra.spatialFunctionalObservations(),
+      importedCgra.spatialProgressObservations(),
+      {}};
+  auto finalizedForged = take(sim::finalizeSimulationExecution(
+      forgedExecution, preparedCgra.resolution, store, blobs));
+  const ArtifactRootReference forgedExecutionReference =
+      take(sim::publishSimulationExecution(finalizedForged, store));
+  auto forgedEvidence = take(evaluation::EvaluationEvidence::get(
+      preparedCgra.request,
+      {{evaluation::ModelOutputSlotRef(0), {forgedExecutionReference}}},
+      evaluation::CompletedEvidence{cgraCompleted->metricResults,
+                                    {presentClosedWait()}},
+      preparedCgra.resolution, store, blobs));
+  const ArtifactRootReference forgedEvidenceReference =
+      take(evaluation::publishEvaluationEvidence(forgedEvidence, store));
+  auto forgedImport =
+      evaluation::models::importVerifiedCgraClosedWaitEvidence(
+          forgedEvidenceReference, store, blobs);
+  if (forgedImport)
+    fail("deterministic replay accepted a forged closed-wait certificate");
+  const std::string forgedMessage = llvm::toString(forgedImport.takeError());
+  if (!llvm::StringRef(forgedMessage)
+           .contains("differs from deterministic replay"))
+    fail("forged closed-wait Evidence failed for the wrong reason: " +
+         forgedMessage);
+
+  if (!rejected(evaluation::EvaluationEvidence::get(
+          preparedCgra.request,
+          {{evaluation::ModelOutputSlotRef(0),
+            {dfgEvidence.outputBindings().front().artifacts.front()}}},
+          evaluation::CompletedEvidence{cgraCompleted->metricResults,
+                                        {presentClosedWait()}},
+          preparedCgra.resolution, store, blobs)))
+    fail("CGRA Evidence accepted a foreign execution output");
+
+  const ArtifactRootReference foreignRuntimeReference =
+      take(sim::publishSimulationRuntimeInput(foreignRuntime, store));
+  auto foreignPreparedCgra =
+      take(evaluation::models::prepareCgraSimulationEvaluation(
+          dataflowReference, fabricReference, spatialMappingReference,
+          workloadReference, foreignRuntimeReference, defaultResolvedConfig(),
+          store, blobs));
+  if (!rejected(evaluation::EvaluationEvidence::get(
+          foreignPreparedCgra.request,
+          {{evaluation::ModelOutputSlotRef(0), {forgedExecutionReference}}},
+          evaluation::CompletedEvidence{cgraCompleted->metricResults,
+                                        {presentClosedWait()}},
+          foreignPreparedCgra.resolution, store, blobs)))
+    fail("CGRA Evidence accepted an execution from a foreign Request");
+
   sim::SpatialFunctionalObservations changed =
       importedCgra.spatialFunctionalObservations();
   auto *changedValue =

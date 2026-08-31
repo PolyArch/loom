@@ -1380,6 +1380,19 @@ projectRetiredFunctionalObservations(
     const ResolvedLaunchContext &context,
     const dataflow::CanonicalDataflowProgramView &program);
 
+/// Projects the exact functional state at a proven Halted terminal. Published
+/// values and stream prefixes are retained, missing values remain explicitly
+/// unpublished, streams remain open, and memory observations quote the current
+/// simulator state through the same workload-owned observation contract as a
+/// retired execution.
+llvm::Expected<SpatialFunctionalObservations>
+projectHaltedFunctionalObservations(
+    dataflow::GraphOp graph, SimulatorState &state,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context,
+    const dataflow::CanonicalDataflowProgramView &program);
+
 llvm::Expected<CanonicalValueSequence>
 canonicalValueSequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
                                  mlir::Operation *scope);

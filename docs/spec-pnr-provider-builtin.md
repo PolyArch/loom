@@ -11,15 +11,15 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.4
-  loom.spatial_pnr.freeze.2.23
-  loom.mapping.pnr.objective 3.2
+  loom.spatial_pnr.config.15.5
+  loom.spatial_pnr.freeze.2.24
+  loom.mapping.pnr.objective 3.3
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.8.3
+  loom.system_pnr.config.8.4
   loom.system_pnr_search_domain.4.0
-  loom.mapping.pnr.objective 3.2
+  loom.mapping.pnr.objective 3.3
   exact selected SpatialMapping references
 ```
 
@@ -50,12 +50,16 @@ finalization, and publication. The latter returns retained candidates with
 `SemanticLimitReached`; it is a bounded usable prefix, not an exhaustive
 search claim.
 
-Objective registry 3.2 separates proven closed waits from proof debt.
+Objective registry 3.3 separates proven closed waits, proof debt, and exact
+runtime counterexamples.
 `HardProgressViolation` is nonzero only for `ProvenClosedWaitSet`;
 `ProgressProofDebt` is nonzero only for `ProofNotEstablished`.
-`ProgressCapacityShortfall` and `ProgressRouteAnchorCount` refine that ordering
-without becoming legality owners. Spatial and System config descriptors 15.4
-and 8.3 select these dimensions before ordinary QoR. Final Spatial
+`RuntimeCounterexampleViolation` is nonzero only when every literal of a
+persisted runtime no-good still holds. It is a hard violation and is never in
+the temporary-violation policy. `ProgressCapacityShortfall` and
+`ProgressRouteAnchorCount` refine the progress ordering without becoming
+legality owners. Spatial and System config descriptors 15.5 and 8.4 select
+these dimensions before ordinary QoR. Final Spatial
 publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.
@@ -71,7 +75,7 @@ profile, and all finite owner domains before candidate allocation. It derives
 canonical compute and memory choices, attachment alternatives, RegFIFO
 alternatives, residual nets, routing topology, resource contracts, packed-row
 fragments, tags, progress dependencies, objective inputs, and reverse indexes.
-Freeze descriptor `loom.spatial_pnr.freeze.2.23` covers those observable
+Freeze descriptor `loom.spatial_pnr.freeze.2.24` covers those observable
 domains. Internal storage layout is not replay state.
 
 System freeze validates exact `D/F/R/H/C/K`, imports and independently verifies

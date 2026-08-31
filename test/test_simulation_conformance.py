@@ -188,7 +188,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     ),
                     "resolved_config": {
                         "schema": "loom.config.resolved",
-                        "schema_version": "11.1",
+                        "schema_version": "11.2",
                         "artifact": f"{300:064x}",
                     },
                     "fabric": reference(301, "loom.fabric", "7.1"),
@@ -355,7 +355,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "initial_spatial_mapping"
                         ],
                         "constraint_set": reference(
-                            903, "loom.mapping_constraints", "1.1"
+                            903, "loom.mapping_constraints", "1.2"
                         ),
                         "spatial_pnr": repair_pnr,
                         "child_spatial_mapping": repair_child,

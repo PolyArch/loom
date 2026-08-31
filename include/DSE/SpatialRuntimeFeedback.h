@@ -7,6 +7,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Simulator/CGRASimulator.h"
+#include "Simulator/CgraClosedWaitCertificate.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -21,8 +22,8 @@ namespace loom {
 class ArtifactStore;
 }
 
-namespace loom::evaluation {
-class EvaluationRequest;
+namespace loom::evaluation::models {
+class VerifiedCgraClosedWaitEvidence;
 }
 
 namespace loom::dse {
@@ -230,6 +231,11 @@ enum class SpatialTransportRuntimeFeedbackReason : std::uint8_t {
   /// The certificate projected cleanly but named no exact Mapping choice, so
   /// there is no non-empty clause to publish.
   EmptyLiteralSet,
+  /// Traversal and attachment projection is diagnostic-only until every
+  /// Mapping decision needed to preserve the closed wait, including Physical
+  /// Tag queue class and durable certificate provenance, is independently
+  /// verifiable. No persistent clause is published from a partial causal core.
+  CausalCoreNotEstablished,
 };
 
 /// Mechanical projection of one canonical `NetUsesTraversal` literal for
@@ -246,47 +252,6 @@ struct SpatialTransportRepairAlternative final {
            lhs.forbiddenTraversal == rhs.forbiddenTraversal;
   }
 };
-
-/// The typed digest of one unified runtime wait certificate. The certificate is
-/// dynamic evidence rather than an artifact, so it never carries an
-/// ArtifactIdentity; this distinct value type keeps a certificate digest from
-/// being compared against, or mistaken for, any other digest in the stack.
-/// Only `computeSpatialWaitCertificateDigest` can mint one.
-class SpatialWaitCertificateDigest final {
-public:
-  static constexpr llvm::StringLiteral domain =
-      "loom.spatial_wait_certificate.1";
-
-  const ComponentViewDigest &digest() const { return digest_; }
-
-  friend bool operator==(const SpatialWaitCertificateDigest &lhs,
-                         const SpatialWaitCertificateDigest &rhs) {
-    return lhs.digest_ == rhs.digest_;
-  }
-  friend bool operator!=(const SpatialWaitCertificateDigest &lhs,
-                         const SpatialWaitCertificateDigest &rhs) {
-    return !(lhs == rhs);
-  }
-
-private:
-  explicit SpatialWaitCertificateDigest(ComponentViewDigest digest)
-      : digest_(std::move(digest)) {}
-
-  friend llvm::Expected<SpatialWaitCertificateDigest>
-  computeSpatialWaitCertificateDigest(
-      const sim::CgraClosedWaitSetDiagnostic &closedWait);
-
-  ComponentViewDigest digest_;
-};
-
-/// Derives the canonical digest of the complete typed certificate. Certificate
-/// edges are canonically ordered first, so discovery order cannot affect it.
-llvm::Expected<SpatialWaitCertificateDigest>
-computeSpatialWaitCertificateDigest(
-    const sim::CgraClosedWaitSetDiagnostic &closedWait);
-
-std::string
-formatSpatialWaitCertificateDigest(const SpatialWaitCertificateDigest &digest);
 
 /// One mechanical projection of an exact closed wait certificate into the
 /// canonical Spatial no-good clause. Every field is derived; the runtime
@@ -305,6 +270,8 @@ struct SpatialTransportRuntimeFeedback final {
   std::optional<ArtifactRootReference> parentConstraints;
   /// The exact runtime Evaluation Evidence the certificate came from.
   std::optional<ArtifactRootReference> runtimeEvidence;
+  /// The exact Evidence output that owns the durable Halted witness.
+  std::optional<ArtifactRootReference> runtimeExecution;
   /// The canonical union of `parentConstraints` with the projected clause.
   /// Engaged exactly when the disposition is Exact.
   std::optional<ArtifactRootReference> constraintSet;
@@ -315,7 +282,7 @@ struct SpatialTransportRuntimeFeedback final {
   std::optional<sim::CgraExecutionOwnerReferences> owners;
   /// Deterministic digest of the complete typed certificate. Discovery order
   /// does not affect it, so reprojecting one certificate reproduces it exactly.
-  std::optional<SpatialWaitCertificateDigest> certificateDigest;
+  std::optional<sim::CgraClosedWaitCertificateDigest> certificateDigest;
   /// The exact evaluation Request the runtime evidence was produced from,
   /// proven to bind this exact SpatialMapping under the CGRA simulation model.
   std::optional<ArtifactRootReference> evaluationRequest;
@@ -342,6 +309,7 @@ struct SpatialTransportRuntimeFeedback final {
            lhs.parentSpatialMapping == rhs.parentSpatialMapping &&
            lhs.parentConstraints == rhs.parentConstraints &&
            lhs.runtimeEvidence == rhs.runtimeEvidence &&
+           lhs.runtimeExecution == rhs.runtimeExecution &&
            lhs.evaluationRequest == rhs.evaluationRequest &&
            lhs.constraintSet == rhs.constraintSet &&
            lhs.disposition == rhs.disposition && lhs.reason == rhs.reason &&
@@ -361,29 +329,25 @@ llvm::StringRef spatialTransportRuntimeFeedbackDispositionSpelling(
 llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
     SpatialTransportRuntimeFeedbackReason reason);
 
-/// The exact runtime evidence one certificate was observed under. The Request
-/// root is not carried separately: it is mechanically
-/// `evaluationRequestReference(requestView)`, so a second copy would be a
-/// duplicate authority the projection would have to reconcile.
-struct SpatialTransportRuntimeEvidence final {
-  ArtifactRootReference evidence;
-  const ::loom::evaluation::EvaluationRequest &requestView;
-};
-
-/// Projects one exact closed wait certificate into a canonical Spatial no-good
-/// and publishes it by union with `parentConstraints`.
+/// Attempts to promote one verified durable closed wait into a canonical
+/// Spatial no-good over `parentConstraints`.
 ///
-/// The projection is all-or-nothing. Any essential certificate edge that cannot
-/// be joined back to the exact parent RouteTree yields typed
-/// ProofNotEstablished and publishes nothing; there is no first-traversal
-/// fallback and no partial clause. The no-good is bound by the constraint
-/// root's exact Dataflow/TechMapping/Fabric tuple and never by a SystemMapping.
+/// Promotion is all-or-nothing. Evidence binding, deterministic replay, every
+/// essential certificate-edge join, and a complete independently verifiable
+/// causal literal core are all required before `constraintSet` may engage.
+/// Otherwise the result is typed ProofNotEstablished and publishes nothing;
+/// partial literals and repair alternatives are withheld so no caller can
+/// execute them as a learned constraint. The promoted no-good is bound by the
+/// constraint root's exact Dataflow/TechMapping/Fabric tuple and never by a
+/// SystemMapping. The current implementation deliberately returns
+/// CausalCoreNotEstablished after deriving diagnostic anchors because the
+/// complete Mapping-decision core is not yet proven.
 llvm::Expected<SpatialTransportRuntimeFeedback>
 deriveSpatialTransportRuntimeFeedback(
     const ArtifactRootReference &parentSpatialMapping,
     const ArtifactRootReference &parentConstraints,
-    const SpatialTransportRuntimeEvidence &runtimeEvidence,
-    const sim::CgraClosedWaitSetDiagnostic &closedWait,
+    const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
+        &runtimeEvidence,
     const ArtifactStore &artifacts,
     std::optional<ArtifactRootReference> parentSystemMapping = std::nullopt);
 

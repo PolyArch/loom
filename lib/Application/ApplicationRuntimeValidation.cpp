@@ -5,6 +5,7 @@
 #include "Common/MappingDebugLog.h"
 #include "Common/ArtifactText.h"
 #include "Common/InvocationDiagnosticLog.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
@@ -480,6 +481,15 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       return cgraEvidenceReference.takeError();
     validation.evidence.push_back(*cgraEvidenceReference);
     if (cgraEvaluation->closedWait) {
+      std::optional<evaluation::models::VerifiedCgraClosedWaitEvidence>
+          verifiedClosedWait;
+      auto importedClosedWait =
+          evaluation::models::importVerifiedCgraClosedWaitEvidence(
+              *cgraEvidenceReference, artifacts, blobs);
+      if (importedClosedWait)
+        verifiedClosedWait.emplace(std::move(*importedClosedWait));
+      else
+        llvm::consumeError(importedClosedWait.takeError());
       auto operandFeedback = dse::deriveSpatialOperandQueueRuntimeFeedback(
           imported->mapping.reference(), *cgraEvaluation->closedWait,
           artifacts);
@@ -529,11 +539,10 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
               priority(validation.spatialFifoFeedback->disposition))
         validation.spatialFifoFeedback = std::move(*feedback);
       dse::SpatialTransportRuntimeFeedback transportFeedback;
-      if (resolved.spatialConstraints) {
+      if (resolved.spatialConstraints && verifiedClosedWait) {
         auto derived = dse::deriveSpatialTransportRuntimeFeedback(
             resolved.spatialMapping, *resolved.spatialConstraints,
-            {*cgraEvidenceReference, preparedCgra->request},
-            *cgraEvaluation->closedWait, artifacts,
+            *verifiedClosedWait, artifacts,
             imported->mapping.reference());
         if (!derived)
           return derived.takeError();
@@ -547,22 +556,18 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         transportFeedback.owners = cgraEvaluation->closedWait->ownerReferences;
         transportFeedback.certificateEdgeCount =
             cgraEvaluation->closedWait->waitCertificate.size();
-        const bool hasClosedCertificate =
-            !cgraEvaluation->closedWait->waitProofFailure &&
-            !cgraEvaluation->closedWait->waitCertificate.empty() &&
-            sim::verifyClosedWaitCertificateClosure(
-                *cgraEvaluation->closedWait);
-        transportFeedback.reason =
-            hasClosedCertificate ? dse::SpatialTransportRuntimeFeedbackReason::
-                                       UnboundConstraintLineage
-                                 : dse::SpatialTransportRuntimeFeedbackReason::
-                                       UnprovenWaitCertificate;
-        if (hasClosedCertificate) {
-          auto digest = dse::computeSpatialWaitCertificateDigest(
-              *cgraEvaluation->closedWait);
-          if (!digest)
-            return digest.takeError();
-          transportFeedback.certificateDigest = *digest;
+        if (verifiedClosedWait) {
+          transportFeedback.runtimeExecution =
+              verifiedClosedWait->execution();
+          transportFeedback.certificateDigest =
+              verifiedClosedWait->certificateDigest();
+          transportFeedback.reason =
+              dse::SpatialTransportRuntimeFeedbackReason::
+                  UnboundConstraintLineage;
+        } else {
+          transportFeedback.reason =
+              dse::SpatialTransportRuntimeFeedbackReason::
+                  UnboundRuntimeEvidence;
         }
       }
       dse::emitSpatialTransportRuntimeFeedback(transportFeedback);
@@ -584,11 +589,27 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
               transportPriority(
                   validation.spatialTransportFeedback->disposition))
         validation.spatialTransportFeedback = std::move(transportFeedback);
+      if (verifiedClosedWait) {
+        validation.disposition =
+            ApplicationMappingRuntimeDisposition::ExecutionFailed;
+        return validation;
+      }
     }
     if (cgraEvidence.outcomeKind() !=
         evaluation::EvidenceOutcomeKind::Completed) {
       emitRuntimeEvidenceFailure("cgra_simulation", cgraEvidence);
       validation.disposition = runtimeDisposition(cgraEvidence.outcomeKind());
+      return validation;
+    }
+    auto cgraTerminal =
+        evaluation::models::classifyCompletedCgraSimulationEvidence(
+            cgraEvidence, preparedCgra->resolution, artifacts, blobs);
+    if (!cgraTerminal)
+      return cgraTerminal.takeError();
+    if (*cgraTerminal ==
+        evaluation::models::CgraSimulationEvidenceTerminal::ClosedWait) {
+      validation.disposition =
+          ApplicationMappingRuntimeDisposition::ExecutionFailed;
       return validation;
     }
     auto cgraExecution = requireExecutionOutput(cgraEvidence);

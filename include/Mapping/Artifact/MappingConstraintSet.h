@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/IR/MappingOps.h"
@@ -22,14 +23,15 @@
 
 namespace loom::mapping {
 
-/// One family, two roots. 1.1 adds an optional Spatial-only clause kind, which
-/// is a non-breaking semantic extension: no existing carrier changed meaning or
-/// wire encoding. Artifact identity nevertheless hashes the version, so 1.0 and
-/// 1.1 references are deliberately not interchangeable. The superseded
-/// descriptor and its explicit migration owners live in
-/// `Mapping/Artifact/MappingConstraintSetMigration.h`.
+/// One family, two roots. 1.1 adds an optional Spatial-only clause kind and 1.2
+/// appends the route-segment Physical Tag literal required for tag-local wait
+/// causality. Both are non-breaking semantic extensions: no existing carrier
+/// changed meaning or wire encoding. Artifact identity nevertheless hashes the
+/// version, so references from different minor versions are deliberately not
+/// interchangeable. Superseded descriptors and explicit migration owners live
+/// in `Mapping/Artifact/MappingConstraintSetMigration.h`.
 inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchema{
-    "loom.mapping_constraints", SchemaVersion{1, 1}};
+    "loom.mapping_constraints", SchemaVersion{1, 2}};
 
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSpatialConstraintAssembly(::mapping::ConstraintsSpatialOp root);
@@ -153,12 +155,29 @@ struct SpatialTransferAttachmentEqualsLiteral final {
   }
 };
 
+/// One exact Mapping-owned route Physical Tag segment value. Segment ordinals
+/// are canonical within the RouteTree of `producer`; execution-plan tag ranks
+/// and virtual-channel cache keys are never semantic identities.
+struct SpatialNetTagEqualsLiteral final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  std::uint64_t segmentOrdinal = 0;
+  llvm::APInt value = llvm::APInt(1, 0);
+
+  friend bool operator==(const SpatialNetTagEqualsLiteral &lhs,
+                         const SpatialNetTagEqualsLiteral &rhs) {
+    return lhs.producer == rhs.producer &&
+           lhs.segmentOrdinal == rhs.segmentOrdinal &&
+           ::fabric::comparePhysicalTagValues(lhs.value, rhs.value) == 0;
+  }
+};
+
 /// The closed Spatial no-good literal catalog. Only kinds a current production
 /// admission consumer can independently verify against a sealed Mapping appear
 /// here; no kind is pre-added for a future consumer.
 using SpatialNoGoodLiteral =
     std::variant<SpatialNetUsesTraversalLiteral,
-                 SpatialTransferAttachmentEqualsLiteral>;
+                 SpatialTransferAttachmentEqualsLiteral,
+                 SpatialNetTagEqualsLiteral>;
 
 /// One disjunctive runtime-counterexample clause: the listed exact Mapping
 /// choices may not all hold at once, so at least one literal must change. The

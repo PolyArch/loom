@@ -20,7 +20,7 @@
 namespace loom::dse {
 namespace {
 
-constexpr char schemaDescriptor[] = "loom.dse.config.1.2";
+constexpr char schemaDescriptor[] = "loom.dse.config.1.3";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),

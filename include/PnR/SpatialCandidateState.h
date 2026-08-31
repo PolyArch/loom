@@ -100,6 +100,12 @@ struct SpatialCandidateRouteProjection final {
   std::uint64_t progressProofDebtWitnessCount = 0;
   std::uint64_t progressCapacityShortfall = 0;
   std::uint64_t progressRouteAnchorCount = 0;
+  /// Count of runtime-counterexample no-good clauses whose every literal holds
+  /// under these provisional RouteTrees and the current attachment and
+  /// local-disposition decisions. A clause only forbids the conjunction, so a
+  /// nonzero count is the violation the objective must see before a move is
+  /// accepted, not merely after it is committed.
+  std::uint64_t runtimeCounterexampleViolation = 0;
   std::uint64_t totalSelectedTraversalClaim = 0;
   std::uint64_t routeReleaseLatencyCycles = 0;
   std::uint64_t routeMinimumInitiationIntervalCycles = 1;
@@ -167,6 +173,17 @@ private:
     PnrIndex logicalNet = getInvalidPnrIndex();
     std::uint64_t oldCount = 0;
     SpatialProgressNetCapacityProjection oldCapacityProjection;
+  };
+
+  struct RuntimeCounterexampleLiteralDelta final {
+    PnrIndex literal = getInvalidPnrIndex();
+    std::uint8_t oldHolds = 0;
+  };
+
+  struct RuntimeCounterexampleClauseDelta final {
+    PnrIndex clause = getInvalidPnrIndex();
+    PnrIndex oldTrueCount = 0;
+    std::uint8_t oldViolated = 0;
   };
 
   void beginTransaction();
@@ -255,6 +272,11 @@ private:
   std::vector<PnrIndex> progressDirtyNets_;
   std::vector<std::uint64_t> progressDependencyJournalMarks_;
   std::vector<ProgressDependencyDelta> progressDependencyDeltas_;
+  std::vector<PnrIndex> runtimeCounterexampleAffectedClauses_;
+  std::vector<RuntimeCounterexampleLiteralDelta>
+      runtimeCounterexampleLiteralDeltas_;
+  std::vector<RuntimeCounterexampleClauseDelta>
+      runtimeCounterexampleClauseDeltas_;
 
   std::unique_ptr<detail::SpatialRouteConstraintScratch>
       routeConstraintScratch_;
@@ -351,12 +373,21 @@ public:
   std::uint64_t progressRouteAnchorCount() const {
     return progressState_.capacityObligationRouteAnchorCount();
   }
+  std::uint64_t runtimeCounterexampleViolation() const {
+    return runtimeCounterexampleViolation_;
+  }
+  bool runtimeCounterexampleClauseViolated(PnrIndex clause) const {
+    assert(clause < runtimeCounterexampleClauseViolated_.size());
+    return runtimeCounterexampleClauseViolated_[clause] != 0;
+  }
+  std::optional<PnrIndex> firstRuntimeCounterexampleViolation() const;
   bool hasTransportClosureViolation() const {
     return hardProgressViolation() != 0 ||
            progressProofDebtWitnessCount() != 0 ||
-           unroutedObligationCount() != 0 ||
-           routeCapacityOveruse() != 0 || tagResidentCapacityOveruse() != 0 ||
-           tagUnassignedCount() != 0 || tagConflictCount() != 0;
+           runtimeCounterexampleViolation() != 0 ||
+           unroutedObligationCount() != 0 || routeCapacityOveruse() != 0 ||
+           tagResidentCapacityOveruse() != 0 || tagUnassignedCount() != 0 ||
+           tagConflictCount() != 0;
   }
   const SpatialProgressState &progress() const { return progressState_; }
   llvm::Expected<std::vector<SpatialFiniteBufferConflictWitness>>
@@ -578,6 +609,35 @@ private:
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
       SpatialTagAssignmentSummary *tagSummary,
       HandshakeProjectionScratch &handshakeProjectionScratch) const;
+  /// Counts no-good clauses whose every literal holds under `routeTrees` and
+  /// the current attachment and local-disposition decisions. This is the single
+  /// owner of no-good truth: `projectVerifiedRoutes` calls it with provisional
+  /// trees and `close` calls it with the committed ones, so the prospective and
+  /// negotiated projections cannot disagree.
+  ///
+  /// Literal truth matches sealed Mapping admission. A net on a register-FIFO
+  /// local disposition publishes no RouteTree, so both its traversal and its
+  /// RouteTree attachment literals are false. Source and sink local traversals
+  /// come from the selected attachment options rather than from internal arcs,
+  /// and an attachment literal may hold while its route is still unrouted.
+  llvm::Expected<std::uint64_t> countRuntimeCounterexampleViolations(
+      llvm::ArrayRef<const RouteTreeState *> routeTrees,
+      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>>
+          tagValues) const;
+  llvm::Expected<bool> runtimeCounterexampleLiteralHolds(
+      const FrozenNoGoodResolvedLiteral &literal,
+      llvm::ArrayRef<const RouteTreeState *> routeTrees,
+      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>>
+          tagValues) const;
+  llvm::Error rebuildRuntimeCounterexampleState(
+      llvm::ArrayRef<const RouteTreeState *> routeTrees);
+  llvm::Error refreshRuntimeCounterexampleState(
+      llvm::ArrayRef<PnrIndex> affectedNets,
+      llvm::ArrayRef<const RouteTreeState *> routeTrees,
+      SpatialCandidateScratch &scratch);
+  void
+  rollbackRuntimeCounterexampleState(SpatialCandidateScratch &scratch,
+                                     std::uint64_t initialViolation) noexcept;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentTagAssignments() const;
   llvm::Expected<SpatialTagAssignmentDelta> summarizeCurrentTagAssignmentDelta(
@@ -631,6 +691,10 @@ private:
   std::uint64_t worstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t totalRouteNegativeSlackQuanta_ = 0;
   SpatialRecurrenceTimingProjection recurrenceTiming_;
+  std::vector<std::uint8_t> runtimeCounterexampleLiteralHolds_;
+  std::vector<PnrIndex> runtimeCounterexampleClauseTrueCounts_;
+  std::vector<std::uint8_t> runtimeCounterexampleClauseViolated_;
+  std::uint64_t runtimeCounterexampleViolation_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialActionDomainScratch;
@@ -759,11 +823,13 @@ private:
   bool routeDeltasCollected_ = false;
   bool tagDeltasCollected_ = false;
   bool routeViolationApplied_ = false;
+  bool runtimeCounterexampleStateStaged_ = false;
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialAtomicCapacityOveruse_ = 0;
   std::uint64_t initialStaticSchedulePressure_ = 0;
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
+  std::uint64_t initialRuntimeCounterexampleViolation_ = 0;
   bool recurrenceTimingSelected_ = false;
   SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
   friend class SpatialCandidateState;

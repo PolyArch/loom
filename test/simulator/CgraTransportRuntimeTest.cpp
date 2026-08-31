@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace {
@@ -498,7 +499,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   plan.transport.traversals[1].storageKind =
       CgraTraversalStorageKind::RegisterFifoRead;
   plan.transport.traversals[1].storageOrdinal = 0;
-  plan.transport.physicalTags.push_back({llvm::APInt(2, 1)});
+  plan.transport.physicalTags.push_back({llvm::APInt(2, 1), std::nullopt});
   plan.transport.traversalStorages.push_back({});
   CgraTraversalStoragePlan &storage = plan.transport.traversalStorages.front();
   storage.kind = CgraTraversalStorageKind::RegisterFifoWrite;

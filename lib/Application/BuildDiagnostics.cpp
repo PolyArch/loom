@@ -254,13 +254,15 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
                     provenance.spatialTransportFeedback->parentConstraints);
     addOptionalRoot(feedback, "runtime_evidence",
                     provenance.spatialTransportFeedback->runtimeEvidence);
+    addOptionalRoot(feedback, "runtime_execution",
+                    provenance.spatialTransportFeedback->runtimeExecution);
     addOptionalRoot(feedback, "evaluation_request",
                     provenance.spatialTransportFeedback->evaluationRequest);
     addOptionalRoot(feedback, "constraint_set",
                     provenance.spatialTransportFeedback->constraintSet);
     feedback["certificate_digest"] =
         provenance.spatialTransportFeedback->certificateDigest
-            ? llvm::json::Value(dse::formatSpatialWaitCertificateDigest(
+            ? llvm::json::Value(sim::formatCgraClosedWaitCertificateDigest(
                   *provenance.spatialTransportFeedback->certificateDigest))
             : llvm::json::Value(nullptr);
     feedback["certificate_edge_count"] =

@@ -65,18 +65,13 @@ int compareUnsigned(const llvm::APInt &lhs, const llvm::APInt &rhs) {
   return ::fabric::comparePhysicalTagValues(lhs, rhs);
 }
 
-llvm::APInt canonicalUnsigned(const llvm::APInt &value) {
-  const unsigned width = std::max(1u, value.getActiveBits());
-  return value.zextOrTrunc(width);
-}
-
 bool unsignedLess(const llvm::APInt &lhs, const llvm::APInt &rhs) {
   return compareUnsigned(lhs, rhs) < 0;
 }
 
 void normalizeValues(std::vector<llvm::APInt> &values) {
   for (llvm::APInt &value : values)
-    value = canonicalUnsigned(value);
+    value = ::fabric::canonicalPhysicalTagValue(value);
   llvm::sort(values, unsignedLess);
   values.erase(std::unique(values.begin(), values.end(),
                            [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
@@ -116,7 +111,7 @@ llvm::Expected<llvm::APInt> nextUnsigned(const llvm::APInt &value) {
   llvm::APInt next =
       value.isAllOnes() ? value.zext(value.getBitWidth() + 1) : value;
   ++next;
-  return canonicalUnsigned(next);
+  return ::fabric::canonicalPhysicalTagValue(next);
 }
 
 bool isFree(llvm::ArrayRef<PnrIndex> domains, const llvm::APInt &value,
@@ -147,7 +142,7 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
   const auto considerRange = [&](llvm::APInt candidate,
                                  const llvm::APInt *upper)
       -> llvm::Expected<std::optional<llvm::APInt>> {
-    candidate = canonicalUnsigned(candidate);
+    candidate = ::fabric::canonicalPhysicalTagValue(candidate);
     while ((!upper || compareUnsigned(candidate, *upper) < 0) &&
            ::fabric::isRepresentablePhysicalTagValue(tagWidthBits, candidate)) {
       if (containsValue(forbidden, candidate)) {

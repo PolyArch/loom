@@ -350,7 +350,11 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     if (!tag || tag->value.getBitWidth() == 0)
       return invalid("CGRA Physical Tag ResourceUse has no typed value");
     const std::uint64_t tagOrdinal = result.physicalTags.size();
-    result.physicalTags.push_back({tag->value});
+    result.physicalTags.push_back(
+        {tag->value,
+         CgraRoutePhysicalTagOwner{
+             spatial.routeTrees()[segment.routeTreeOrdinal].logicalNet,
+             segment.segmentOrdinal}});
     for (std::uint64_t node : segment.nodeOrdinals) {
       if (node >= routeNodeTags[segment.routeTreeOrdinal].size() ||
           routeNodeTags[segment.routeTreeOrdinal][node] !=
@@ -374,7 +378,10 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     if (!sinkKey)
       return sinkKey.takeError();
     const std::uint64_t tagOrdinal = result.physicalTags.size();
-    result.physicalTags.push_back({transfer.tag});
+    result.physicalTags.push_back(
+        {transfer.tag,
+         CgraRegisterFifoPhysicalTagOwner{transfer.logicalNet,
+                                          transfer.sink}});
     if (!selectedLocalTransfers
              .try_emplace(EdgeKey{std::move(*producerKey), std::move(*sinkKey)},
                           SelectedLocalTransfer{&transfer, tagOrdinal})

@@ -828,7 +828,7 @@ def _validate_cgra_profiles(
         assert isinstance(resolved_config, Mapping)
         if (
             resolved_config["schema"] != "loom.config.resolved"
-            or resolved_config["schema_version"] != "11.1"
+            or resolved_config["schema_version"] != "11.2"
         ):
             raise ValueError("CGRA profile uses a foreign ResolvedConfig schema")
         resolved_config_identities.add(str(resolved_config["artifact"]))

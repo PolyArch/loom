@@ -3,6 +3,7 @@ add_library(LoomStructuredFabricAnalyticModel
   CalibratedFpa.cpp
   CanonicalDataflowFabricAnalytic.cpp
   CanonicalDataflowFunctional.cpp
+  CgraClosedWaitFinding.cpp
   CgraSimulation.cpp
   DeterministicGbdt.cpp
   DfgSimulation.cpp

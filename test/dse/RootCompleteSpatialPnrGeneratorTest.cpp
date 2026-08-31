@@ -1632,7 +1632,8 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   auto impersonatingRequest = take(loom::evaluation::EvaluationRequest::get(
       std::move(impersonatingSubjects), simulationInputs.workload,
       simulationInputs.runtimeInput, preparedCgra.request.baseConditions(),
-      preparedCgra.request.metricRequests(), {},
+      preparedCgra.request.metricRequests(),
+      preparedCgra.request.findingRequests(),
       std::move(impersonatingBinding), 0, preparedCgra.resolution, store,
       blobs));
   take(loom::evaluation::publishEvaluationRequest(impersonatingRequest, store));

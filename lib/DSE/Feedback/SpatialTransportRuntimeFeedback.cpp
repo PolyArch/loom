@@ -2,13 +2,10 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
-#include "Common/ComponentViewDigest.h"
 #include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
-#include "Evaluation/Evidence.h"
-#include "Evaluation/Models/CgraSimulation.h"
-#include "Evaluation/Request.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -51,75 +48,6 @@ void appendBytes(std::string &output, llvm::ArrayRef<std::uint8_t> bytes) {
   appendFramed(output,
                llvm::StringRef(reinterpret_cast<const char *>(bytes.data()),
                                bytes.size()));
-}
-
-/// Minimal-width big-endian encoding of one exact tag value. The queue class of
-/// a per-tag virtual channel is named by its exact bits, so the digest quotes
-/// those bits rather than any plan-local ordinal.
-void appendTag(std::string &output, const llvm::APInt &value) {
-  const unsigned byteCount = std::max(1u, (value.getActiveBits() + 7) / 8);
-  const llvm::APInt extended = value.zextOrTrunc(byteCount * 8);
-  std::string bits;
-  bits.reserve(byteCount);
-  for (unsigned byte = 0; byte < byteCount; ++byte)
-    bits.push_back(static_cast<char>(
-        extended.extractBitsAsZExtValue(8, 8 * (byteCount - 1 - byte))));
-  appendFramed(output, bits);
-}
-
-void appendOptionalTag(std::string &output,
-                       const std::optional<llvm::APInt> &value) {
-  appendU32Be(output, value ? 1 : 0);
-  if (value)
-    appendTag(output, *value);
-}
-
-void appendQueueClass(std::string &output,
-                      const Diagnostic::WaitQueueClass &queueClass) {
-  appendU32Be(output, queueClass.tagLocal ? 1 : 0);
-  appendTag(output, queueClass.tagValue);
-}
-
-void appendOwner(std::string &output, const Diagnostic::WaitOwnerKey &owner) {
-  appendU32Be(output, static_cast<std::uint32_t>(owner.owner.index()));
-  if (const auto *firing =
-          std::get_if<Diagnostic::WaitActorFiringKey>(&owner.owner)) {
-    appendU64Be(output, firing->semanticActorOrdinal);
-    appendU64Be(output, firing->occurrenceOrdinal);
-    return;
-  }
-  const auto &storage = std::get<Diagnostic::WaitStorageQueueKey>(owner.owner);
-  appendU32Be(output, static_cast<std::uint32_t>(storage.domain));
-  appendU64Be(output, storage.ordinal);
-  appendQueueClass(output, storage.queueClass);
-}
-
-/// The complete typed content of one certificate edge, in a fixed field order.
-std::string edgeKey(const Diagnostic::WaitEdge &edge) {
-  std::string key;
-  appendOwner(key, edge.from);
-  appendOwner(key, edge.to);
-  appendU32Be(key, static_cast<std::uint32_t>(edge.kind));
-  appendU32Be(key, edge.waitingInputOrdinal);
-  appendU64Be(key, edge.waitingChannelOrdinal);
-  appendU64Be(key, edge.bindingOrdinal);
-  appendU64Be(key, edge.occurrenceOrdinal);
-  appendU64Be(key, edge.storageOrdinal);
-  appendU32Be(key, edge.fifoOccurrence ? 1 : 0);
-  if (edge.fifoOccurrence)
-    appendBytes(key,
-                ::loom::fabric::canonicalFabricBytes(*edge.fifoOccurrence));
-  appendU32Be(key, edge.storageCapacity);
-  appendU32Be(key, edge.storageOccupancy);
-  appendU32Be(key, edge.awaitedClassPosition);
-  appendOptionalTag(key, edge.awaitedTagValue);
-  appendOptionalTag(key, edge.headTagValue);
-  appendU64Be(key, edge.headBindingOrdinal);
-  appendU64Be(key, edge.headOccurrenceOrdinal);
-  appendU64Be(key, edge.headDestinationActorOrdinal);
-  appendU32Be(key, edge.headDestinationInputOrdinal);
-  appendU64Be(key, edge.headDestinationChannelOrdinal);
-  return key;
 }
 
 using StorageDomain = Diagnostic::WaitStorageDomain;
@@ -195,6 +123,26 @@ literalKey(const ArtifactIdentity &dataflow,
       appendBytes(key, *encoded);
     }
     appendBytes(key, ::loom::fabric::canonicalFabricBytes(uses->traversal));
+    return key;
+  }
+  if (const auto *tag =
+          std::get_if<mapping::SpatialNetTagEqualsLiteral>(&literal)) {
+    appendU32Be(key, 2);
+    auto producer = producerKey(dataflow, tag->producer);
+    if (!producer)
+      return producer.takeError();
+    appendFramed(key, *producer);
+    appendU64Be(key, tag->segmentOrdinal);
+    const llvm::APInt canonical =
+        ::fabric::canonicalPhysicalTagValue(tag->value);
+    const unsigned byteCount = (canonical.getBitWidth() + 7) / 8;
+    const llvm::APInt extended = canonical.zextOrTrunc(byteCount * 8);
+    std::string bytes;
+    bytes.reserve(byteCount);
+    for (unsigned byte = 0; byte < byteCount; ++byte)
+      bytes.push_back(static_cast<char>(extended.extractBitsAsZExtValue(
+          8, 8 * (byteCount - 1 - byte))));
+    appendFramed(key, bytes);
     return key;
   }
   const auto &attachment =
@@ -314,124 +262,61 @@ llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
     return "unbound_constraint_lineage";
   case SpatialTransportRuntimeFeedbackReason::EmptyLiteralSet:
     return "empty_literal_set";
+  case SpatialTransportRuntimeFeedbackReason::CausalCoreNotEstablished:
+    return "causal_core_not_established";
   }
   llvm_unreachable("unknown Spatial transport runtime feedback reason");
-}
-
-llvm::Expected<SpatialWaitCertificateDigest>
-computeSpatialWaitCertificateDigest(
-    const sim::CgraClosedWaitSetDiagnostic &closedWait) {
-  std::vector<std::string> keys;
-  keys.reserve(closedWait.waitCertificate.size());
-  for (const auto &edge : closedWait.waitCertificate)
-    keys.push_back(edgeKey(edge));
-  // Canonical edge order is the sorted order of the complete typed edge
-  // content, so the digest cannot depend on the order the runtime emitted the
-  // edges in. Duplicate edges are kept: an edge multiset is part of the fact.
-  llvm::sort(keys);
-
-  std::string canonical;
-  appendU64Be(canonical, static_cast<std::uint64_t>(keys.size()));
-  for (const std::string &key : keys)
-    appendFramed(canonical, key);
-
-  const llvm::StringRef domain = SpatialWaitCertificateDigest::domain;
-  auto digest = computeComponentViewDigest(
-      llvm::ArrayRef<std::uint8_t>(
-          reinterpret_cast<const std::uint8_t *>(domain.data()), domain.size()),
-      llvm::ArrayRef<std::uint8_t>(
-          reinterpret_cast<const std::uint8_t *>(canonical.data()),
-          canonical.size()));
-  if (!digest)
-    return digest.takeError();
-  return SpatialWaitCertificateDigest(*digest);
-}
-
-std::string
-formatSpatialWaitCertificateDigest(const SpatialWaitCertificateDigest &digest) {
-  return formatComponentViewDigestHex(digest.digest());
 }
 
 llvm::Expected<SpatialTransportRuntimeFeedback>
 deriveSpatialTransportRuntimeFeedback(
     const ArtifactRootReference &parentSpatialMapping,
     const ArtifactRootReference &parentConstraints,
-    const SpatialTransportRuntimeEvidence &runtimeEvidence,
-    const sim::CgraClosedWaitSetDiagnostic &closedWait,
+    const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
+        &runtimeEvidence,
     const ArtifactStore &artifacts,
     std::optional<ArtifactRootReference> parentSystemMapping) {
+  const sim::CgraClosedWaitCertificate &certificate =
+      runtimeEvidence.certificate();
+  Diagnostic closedWait;
+  closedWait.ownerReferences = certificate.owners;
+  closedWait.transfers.reserve(certificate.transfers.size());
+  for (const sim::CgraClosedWaitTransfer &persistent : certificate.transfers) {
+    Diagnostic::Transfer transfer;
+    transfer.bindingOrdinal = persistent.bindingOrdinal;
+    transfer.occurrenceOrdinal = persistent.occurrenceOrdinal;
+    transfer.physicalTagValue = persistent.physicalTagValue;
+    transfer.producer = persistent.producer;
+    transfer.physicalTagOwner = persistent.physicalTagOwner;
+    transfer.blockingStorageOrdinal = persistent.blockingStorageOrdinal;
+    transfer.blockingDownstreamStorageOrdinal =
+        persistent.blockingDownstreamStorageOrdinal;
+    transfer.blockingTraversals = persistent.blockingTraversals;
+    transfer.blockingDownstreamTraversals =
+        persistent.blockingDownstreamTraversals;
+    closedWait.transfers.push_back(std::move(transfer));
+  }
+  closedWait.waitCertificate = certificate.edges;
+
   SpatialTransportRuntimeFeedback result;
   result.parentSpatialMapping = parentSpatialMapping;
   result.parentMapping = std::move(parentSystemMapping);
   result.parentConstraints = parentConstraints;
-  result.runtimeEvidence = runtimeEvidence.evidence;
-  result.owners = closedWait.ownerReferences;
+  result.runtimeEvidence = runtimeEvidence.evidence();
+  result.runtimeExecution = runtimeEvidence.execution();
+  result.evaluationRequest = runtimeEvidence.request();
+  result.owners = certificate.owners;
+  result.certificateDigest = runtimeEvidence.certificateDigest();
   result.certificateEdgeCount = closedWait.waitCertificate.size();
-  if (!result.owners)
-    return result;
-  const sim::CgraExecutionOwnerReferences &owners = *result.owners;
-
-  // Only an exact, closed, proven certificate is projectable. There is
-  // no fallback to actorWaitCycle, transferWaitCycle, or a first blocked FIFO.
-  if (closedWait.waitProofFailure || closedWait.waitCertificate.empty() ||
-      !sim::verifyClosedWaitCertificateClosure(closedWait)) {
+  // The carrier was strictly imported through Evidence and its Halted output;
+  // this independent check keeps feedback from becoming a second certificate
+  // verifier or accepting a partially adopted owner value.
+  if (llvm::Error error = sim::verifyCgraClosedWaitCertificate(certificate)) {
+    llvm::consumeError(std::move(error));
     result.reason =
         SpatialTransportRuntimeFeedbackReason::UnprovenWaitCertificate;
     return result;
   }
-
-  // The evidence reference is validated through its own schema and store owner.
-  // This proves the object exists, is an evaluation.evidence root, and that its
-  // identity matches its bytes; it also yields the exact Request it came from.
-  auto evidenceProjection =
-      ::loom::evaluation::importEvaluationEvidenceDependencyProjection(
-          runtimeEvidence.evidence, artifacts);
-  if (!evidenceProjection) {
-    llvm::consumeError(evidenceProjection.takeError());
-    result.reason =
-        SpatialTransportRuntimeFeedbackReason::UnboundRuntimeEvidence;
-    return result;
-  }
-  // The typed Request view is the only owner that proves which Mapping this
-  // certificate was observed under, and under which model. Every check below is
-  // a mechanical equality over already-imported owners, so this projection
-  // needs no case resolution and no blob store.
-  //
-  // Role membership is not enough: each role must be a singleton naming exactly
-  // the certificate owner it corresponds to. A generic dependency list can name
-  // roots for unrelated roles, so it is never consulted here.
-  const ::loom::evaluation::EvaluationRequest &request =
-      runtimeEvidence.requestView;
-  const ArtifactRootReference requestRoot =
-      ::loom::evaluation::evaluationRequestReference(request);
-  if (evidenceProjection->request != requestRoot) {
-    result.reason =
-        SpatialTransportRuntimeFeedbackReason::UnboundRuntimeEvidence;
-    return result;
-  }
-  if (request.modelBinding().descriptorRef() !=
-      ::loom::evaluation::models::cgraSimulationModelDescriptorRef()) {
-    result.reason =
-        SpatialTransportRuntimeFeedbackReason::UnboundRuntimeEvidence;
-    return result;
-  }
-  const auto exactRole = [&](::loom::evaluation::CaseSubjectRoleRef role,
-                             const ArtifactRootReference &expected) {
-    const auto subjects = request.subjectBindings().subjects(role);
-    return subjects.size() == 1 && subjects.front() == expected;
-  };
-  if (!exactRole(::loom::evaluation::models::cgraSimulationProgramRole(),
-                 owners.dataflow) ||
-      !exactRole(::loom::evaluation::models::cgraSimulationHardwareRole(),
-                 owners.fabric) ||
-      !exactRole(::loom::evaluation::models::cgraSimulationSpatialMappingRole(),
-                 owners.spatialMapping) ||
-      owners.spatialMapping != parentSpatialMapping) {
-    result.reason =
-        SpatialTransportRuntimeFeedbackReason::UnboundRuntimeEvidence;
-    return result;
-  }
-  result.evaluationRequest = requestRoot;
 
   auto dataflow =
       ::dataflow::importCanonicalDataflow(result.owners->dataflow, artifacts);
@@ -491,12 +376,6 @@ deriveSpatialTransportRuntimeFeedback(
         SpatialTransportRuntimeFeedbackReason::ParentConstraintRejection;
     return result;
   }
-
-  // The digest covers the complete typed certificate.
-  auto digest = computeSpatialWaitCertificateDigest(closedWait);
-  if (!digest)
-    return digest.takeError();
-  result.certificateDigest = *digest;
 
   const auto findTransfer =
       [&](std::uint64_t binding,
@@ -567,8 +446,8 @@ deriveSpatialTransportRuntimeFeedback(
   const auto projectSide = [&](const Diagnostic::WaitEdge &edge,
                                const Diagnostic::Transfer &transfer,
                                std::optional<std::uint64_t> destinationActor,
-                               std::uint32_t destinationInput, bool requireSink,
-                               bool emitAttachment) -> llvm::Expected<bool> {
+                               std::uint32_t destinationInput,
+                               bool requireSink) -> llvm::Expected<bool> {
     if (!transfer.producer)
       return false;
     if (llvm::Error error = dataflowView->validate(*transfer.producer)) {
@@ -609,6 +488,55 @@ deriveSpatialTransportRuntimeFeedback(
     if (consumer && !branchSink)
       return false;
 
+    if (llvm::Error error =
+            remember(mapping::SpatialTransferAttachmentEqualsLiteral{
+                mapping::SpatialConstraintTransferTerminal{*transfer.producer,
+                                                           std::nullopt},
+                route->rootEndpoint}))
+      return std::move(error);
+    if (branchSink)
+      if (llvm::Error error =
+              remember(mapping::SpatialTransferAttachmentEqualsLiteral{
+                  mapping::SpatialConstraintTransferTerminal{*transfer.producer,
+                                                             consumer},
+                  route->nodes[branchSink->nodeOrdinal].endpoint}))
+        return std::move(error);
+
+    if (transfer.physicalTagOwner) {
+      const auto *tagOwner = std::get_if<sim::CgraRoutePhysicalTagOwner>(
+          &*transfer.physicalTagOwner);
+      if (!tagOwner || tagOwner->producer != *transfer.producer)
+        return false;
+      const std::uint64_t routeOrdinal =
+          static_cast<std::uint64_t>(route -
+                                     spatial->view().routeTrees().begin());
+      const mapping::SpatialPhysicalTagSegmentView *segment = nullptr;
+      for (const mapping::SpatialPhysicalTagSegmentView &candidate :
+           spatial->view().physicalTagSegments()) {
+        if (candidate.routeTreeOrdinal != routeOrdinal ||
+            candidate.segmentOrdinal != tagOwner->segmentOrdinal)
+          continue;
+        if (segment)
+          return false;
+        segment = &candidate;
+      }
+      if (!segment ||
+          segment->resourceUseOrdinal >= spatial->view().resourceUses().size())
+        return false;
+      const auto &assignments = spatial->view()
+                                    .resourceUses()[segment->resourceUseOrdinal]
+                                    .sharingAssignments;
+      if (assignments.size() != 1)
+        return false;
+      const auto *tag =
+          std::get_if<::fabric::PhysicalTagPatternValue>(&assignments.front());
+      if (!tag || tag->value != transfer.physicalTagValue)
+        return false;
+      if (llvm::Error error = remember(mapping::SpatialNetTagEqualsLiteral{
+              *transfer.producer, tagOwner->segmentOrdinal, tag->value}))
+        return std::move(error);
+    }
+
     std::vector<::loom::fabric::FabricPhysicalTraversalRef> branch;
     if (branchSink) {
       auto walked = mapping::spatialRouteBranchTraversals(*route, *branchSink);
@@ -623,7 +551,7 @@ deriveSpatialTransportRuntimeFeedback(
     if (!targets)
       return false;
 
-    bool projected = false;
+    bool projectedTraversal = false;
     for (const auto &traversal : *targets) {
       if (llvm::Error error =
               ::loom::fabric::validateFabricRef(fabric->view(), traversal)) {
@@ -637,36 +565,9 @@ deriveSpatialTransportRuntimeFeedback(
       if (llvm::Error error = remember(mapping::SpatialNetUsesTraversalLiteral{
               *transfer.producer, consumer, traversal}))
         return std::move(error);
-      if (route->localTraversal && *route->localTraversal == traversal)
-        if (llvm::Error error =
-                remember(mapping::SpatialTransferAttachmentEqualsLiteral{
-                    mapping::SpatialConstraintTransferTerminal{
-                        *transfer.producer, std::nullopt},
-                    route->rootEndpoint}))
-          return std::move(error);
-      if (branchSink && branchSink->localTraversal &&
-          *branchSink->localTraversal == traversal)
-        if (llvm::Error error =
-                remember(mapping::SpatialTransferAttachmentEqualsLiteral{
-                    mapping::SpatialConstraintTransferTerminal{
-                        *transfer.producer, consumer},
-                    route->nodes[branchSink->nodeOrdinal].endpoint}))
-          return std::move(error);
-      projected = true;
+      projectedTraversal = true;
     }
-
-    if (emitAttachment) {
-      if (!branchSink)
-        return false;
-      if (llvm::Error error =
-              remember(mapping::SpatialTransferAttachmentEqualsLiteral{
-                  mapping::SpatialConstraintTransferTerminal{*transfer.producer,
-                                                             consumer},
-                  route->nodes[branchSink->nodeOrdinal].endpoint}))
-        return std::move(error);
-      projected = true;
-    }
-    return projected;
+    return projectedTraversal;
   };
 
   // Every essential edge must project completely.
@@ -729,8 +630,7 @@ deriveSpatialTransportRuntimeFeedback(
     }
 
     auto awaitedOutcome = projectSide(edge, *awaited, ownActor, ownInput,
-                                      /*requireSink=*/terminal,
-                                      /*emitAttachment=*/terminal);
+                                      /*requireSink=*/terminal);
     if (!awaitedOutcome)
       return awaitedOutcome.takeError();
     if (!*awaitedOutcome)
@@ -752,7 +652,7 @@ deriveSpatialTransportRuntimeFeedback(
               : std::optional<std::uint64_t>(edge.headDestinationActorOrdinal);
       auto headOutcome =
           projectSide(edge, *head, headActor, edge.headDestinationInputOrdinal,
-                      /*requireSink=*/false, /*emitAttachment=*/false);
+                      /*requireSink=*/false);
       if (!headOutcome)
         return headOutcome.takeError();
       if (!*headOutcome)
@@ -784,13 +684,16 @@ deriveSpatialTransportRuntimeFeedback(
       result.alternatives.push_back(
           SpatialTransportRepairAlternative{uses->producer, uses->traversal});
 
-  auto published = mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
-      parentConstraints, result.literals, artifacts);
-  if (!published)
-    return published.takeError();
-  result.constraintSet = published->reference();
-  result.disposition = SpatialTransportRuntimeFeedbackDisposition::Exact;
-  result.reason = SpatialTransportRuntimeFeedbackReason::ExactClosedStorageWait;
+  // The certificate now projects route traversals, exact terminal attachments,
+  // and Mapping-owned route-segment tag values. That is still not a proof that
+  // every remaining compute context, memory placement/operation selection,
+  // local disposition, configured-hardware choice, and handshake selection is
+  // mechanically entailed or irrelevant to this dynamic SCC. Publishing the
+  // partial core would over-prune legal Mappings.
+  result.literals.clear();
+  result.alternatives.clear();
+  result.reason =
+      SpatialTransportRuntimeFeedbackReason::CausalCoreNotEstablished;
   return result;
 }
 
@@ -811,6 +714,7 @@ void emitSpatialTransportRuntimeFeedback(
             reference(feedback.parentSpatialMapping);
         fields["parent_constraints"] = reference(feedback.parentConstraints);
         fields["runtime_evidence"] = reference(feedback.runtimeEvidence);
+        fields["runtime_execution"] = reference(feedback.runtimeExecution);
         fields["evaluation_request"] = reference(feedback.evaluationRequest);
         fields["constraint_set"] = reference(feedback.constraintSet);
         fields["disposition"] =
@@ -820,7 +724,7 @@ void emitSpatialTransportRuntimeFeedback(
             spatialTransportRuntimeFeedbackReasonSpelling(feedback.reason);
         fields["certificate_digest"] =
             feedback.certificateDigest
-                ? llvm::json::Value(formatSpatialWaitCertificateDigest(
+                ? llvm::json::Value(sim::formatCgraClosedWaitCertificateDigest(
                       *feedback.certificateDigest))
                 : llvm::json::Value(nullptr);
         if (feedback.owners) {

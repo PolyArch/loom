@@ -297,6 +297,12 @@ public:
         detail::buildFrozenSpatialTransferIndex(dataflow, techMapping);
     if (!transfers)
       return transfers.takeError();
+    // No-good literals name logical nets, sinks, traversals, and endpoints, so
+    // they can only be resolved once both the transfer and routing domains
+    // exist. An unresolvable literal is a freeze failure, not a dropped clause.
+    if (llvm::Error error = detail::resolveFrozenConstraintNoGoods(
+            *constraints, *transfers, *staticContext.routingTopology))
+      return std::move(error);
     const auto &resources = staticContext.resources;
     const auto &routing = timingContext.routing;
     auto localTransfers = detail::buildFrozenSpatialLocalTransferIndex(

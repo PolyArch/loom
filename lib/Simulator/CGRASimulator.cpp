@@ -1116,11 +1116,18 @@ deriveActorWaitCycle(
 /// builder's internal state.
 bool verifyClosedWaitCertificateClosure(
     const CgraClosedWaitSetDiagnostic &closedWait) {
+  if (closedWait.waitProofFailure)
+    return false;
+  return verifyClosedWaitCertificateClosure(closedWait.waitCertificate);
+}
+
+bool verifyClosedWaitCertificateClosure(
+    llvm::ArrayRef<CgraClosedWaitSetDiagnostic::WaitEdge> edges) {
   using OwnerKey = CgraClosedWaitSetDiagnostic::WaitOwnerKey;
-  if (closedWait.waitProofFailure || closedWait.waitCertificate.empty())
+  if (edges.empty())
     return false;
   std::vector<OwnerKey> nodes;
-  for (const auto &edge : closedWait.waitCertificate) {
+  for (const auto &edge : edges) {
     nodes.push_back(edge.from);
     nodes.push_back(edge.to);
   }
@@ -1131,7 +1138,7 @@ bool verifyClosedWaitCertificateClosure(
     indexOf[nodes[index]] = index;
   std::vector<std::vector<std::uint32_t>> outgoing(nodes.size());
   std::vector<std::uint32_t> indegree(nodes.size(), 0);
-  for (const auto &edge : closedWait.waitCertificate) {
+  for (const auto &edge : edges) {
     outgoing[indexOf[edge.from]].push_back(indexOf[edge.to]);
     ++indegree[indexOf[edge.to]];
   }
@@ -1431,7 +1438,8 @@ struct CgraExecutionSession::Impl final {
            std::move(operandQueueWaits),
            transfer.producer,
            transfer.blockingTraversals,
-           transfer.blockingDownstreamTraversals});
+           transfer.blockingDownstreamTraversals,
+           transfer.physicalTagOwner});
     }
     const std::size_t actorCount = graphExecution->execution.actorPlans.size();
     ActorTransitionProbeTable probes =
@@ -1730,6 +1738,36 @@ CgraExecutionSession::takeRetiredSimulation() {
       impl_->counters};
 }
 
+llvm::Expected<HaltedCgraSimulation>
+CgraExecutionSession::takeHaltedSimulation() {
+  if (!impl_)
+    return invalid("CGRA execution session is empty");
+  if (impl_->resultTaken)
+    return invalid("CGRA execution result was already taken");
+  if (impl_->lifecycle != SpatialExecutionSessionState::Halted ||
+      !impl_->closedWait)
+    return llvm::createStringError(
+        std::errc::state_not_recoverable,
+        "CGRA execution session has no proven Halted result");
+
+  auto observations = detail::projectHaltedFunctionalObservations(
+      impl_->context.graphOp, impl_->dynamicState, *impl_->workload,
+      *impl_->runtimeInput, impl_->context, impl_->prepared->dataflowView);
+  if (!observations)
+    return observations.takeError();
+  auto launch = launchCoordinate();
+  if (!launch)
+    return launch.takeError();
+  const SpatialEventCoordinate terminal =
+      impl_->lastCoordinate ? *impl_->lastCoordinate : *launch;
+  impl_->resultTaken = true;
+  return HaltedCgraSimulation{
+      std::move(*observations),
+      SpatialProgressObservations{std::move(*launch), impl_->graphRetirement,
+                                  terminal},
+      impl_->counters};
+}
+
 llvm::Expected<PreparedCgraWorkloadExecution> prepareCgraWorkloadExecution(
     const PreparedCgraExecution &prepared,
     const CanonicalSimulationWorkload &workload,
@@ -1880,6 +1918,11 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     if (!retired)
       return retired.takeError();
     result.retired = std::move(*retired);
+  } else if (state == SpatialExecutionSessionState::Halted) {
+    auto halted = session->takeHaltedSimulation();
+    if (!halted)
+      return halted.takeError();
+    result.halted = std::move(*halted);
   }
   return result;
 }

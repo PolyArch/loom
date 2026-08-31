@@ -255,7 +255,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v12",
+    "loom.mapping.root_complete_system_pnr.generator.v13",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -271,7 +271,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v11",
+    "loom.mapping.application_system_pnr.generator.v12",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{

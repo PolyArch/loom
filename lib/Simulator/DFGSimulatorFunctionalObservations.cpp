@@ -294,13 +294,12 @@ canonicalValueSequenceFromTokens(llvm::ArrayRef<Token> tokens, mlir::Type type,
   return sequenceFromTokens(tokens, type, *shape, scope);
 }
 
-llvm::Expected<SpatialFunctionalObservations>
-projectRetiredFunctionalObservations(
+llvm::Expected<SpatialFunctionalObservations> projectFunctionalObservations(
     dataflow::GraphOp graph, SimulatorState &state,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     const ResolvedLaunchContext &context,
-    const dataflow::CanonicalDataflowProgramView &program) {
+    const dataflow::CanonicalDataflowProgramView &program, bool retired) {
   const SpatialSimulationWorkload &model = *workload.spatial();
   const SpatialSimulationRuntimeInput &input = *runtimeInput.spatial();
   auto graphReturn = mlir::cast<dataflow::GraphReturnOp>(
@@ -312,10 +311,19 @@ projectRetiredFunctionalObservations(
   for (std::uint64_t ordinal : model.observableContract.valueResults) {
     mlir::Value value = graphReturn.getValues()[ordinal];
     auto found = state.observedOutputs.find(value);
-    if (found == state.observedOutputs.end() || found->second.size() != 1)
+    if (found == state.observedOutputs.end()) {
+      if (!retired) {
+        observations.valueResults.emplace_back(NotPublishedValueResult{});
+        continue;
+      }
       return llvm::createStringError(
           std::errc::invalid_argument,
           "retired DFG value result is not published exactly once");
+    }
+    if (found->second.size() != 1)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "DFG value result is published more than once");
     llvm::Expected<CanonicalValueSequence> sequence = sequenceFromTokens(
         found->second, value.getType(), context.valueResultShapes[ordinal],
         graph.getOperation());
@@ -339,7 +347,8 @@ projectRetiredFunctionalObservations(
     if (!sequence)
       return sequence.takeError();
     observations.streamOutputs.push_back(CanonicalStreamSequence{
-        std::move(*sequence), StreamTermination::ClosedAfterLast});
+        std::move(*sequence), retired ? StreamTermination::ClosedAfterLast
+                                      : StreamTermination::OpenAfterLast});
   }
 
   observations.memories.reserve(model.observableContract.memories.size());
@@ -352,6 +361,28 @@ projectRetiredFunctionalObservations(
     observations.memories.push_back(std::move(*payload));
   }
   return observations;
+}
+
+llvm::Expected<SpatialFunctionalObservations>
+projectRetiredFunctionalObservations(
+    dataflow::GraphOp graph, SimulatorState &state,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context,
+    const dataflow::CanonicalDataflowProgramView &program) {
+  return projectFunctionalObservations(graph, state, workload, runtimeInput,
+                                       context, program, true);
+}
+
+llvm::Expected<SpatialFunctionalObservations>
+projectHaltedFunctionalObservations(
+    dataflow::GraphOp graph, SimulatorState &state,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context,
+    const dataflow::CanonicalDataflowProgramView &program) {
+  return projectFunctionalObservations(graph, state, workload, runtimeInput,
+                                       context, program, false);
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

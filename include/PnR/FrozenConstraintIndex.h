@@ -19,12 +19,24 @@ namespace loom::pnr {
 
 class FrozenConstraintIndex;
 class SystemFrozenConstraintIndex;
+class FrozenSpatialTransferIndex;
+class FrozenEndpointRoutingTopology;
 
 namespace detail {
 llvm::Expected<FrozenConstraintIndex> buildFrozenConstraintIndex(
     const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
 llvm::Expected<SystemFrozenConstraintIndex> buildFrozenConstraintIndex(
     const ::loom::mapping::SystemMappingConstraintSetView &constraints);
+/// Resolves every no-good literal against the frozen transfer and routing
+/// indexes. A literal that names a producer, sink, traversal, or endpoint the
+/// frozen domain does not own is a freeze failure, never a silently dropped
+/// literal: dropping one would weaken the clause into a different no-good.
+/// The clause already binds the exact Dataflow owner, so endpoint references
+/// compare directly against the frozen domain.
+llvm::Error
+resolveFrozenConstraintNoGoods(FrozenConstraintIndex &constraints,
+                               const FrozenSpatialTransferIndex &transfers,
+                               const FrozenEndpointRoutingTopology &routing);
 } // namespace detail
 
 enum class SpatialPnrFreezeFailureKind : std::uint32_t {
@@ -125,6 +137,34 @@ struct FrozenConstraintNoGood final {
   std::vector<::loom::mapping::SpatialNoGoodLiteral> literals;
 };
 
+/// One no-good literal resolved against the frozen search domain, so evaluating
+/// a clause is an exact integer test with no reference decoding. `sink` is a
+/// net-local sink ordinal and is engaged for branch-scoped traversal literals
+/// and sink attachment literals.
+struct FrozenNoGoodResolvedLiteral final {
+  enum class Kind : std::uint8_t {
+    NetUsesTraversal,
+    TransferAttachmentEquals,
+    NetTagEquals,
+  };
+
+  Kind kind = Kind::NetUsesTraversal;
+  PnrIndex logicalNet = 0;
+  std::optional<PnrIndex> sink;
+  /// Traversal ordinal for NetUsesTraversal, endpoint ordinal for
+  /// TransferAttachmentEquals.
+  PnrIndex target = 0;
+  /// Exact expected tag bits for NetTagEquals; absent for the other kinds.
+  std::optional<llvm::APInt> tagValue;
+};
+
+/// One no-good clause resolved against the frozen search domain. Offsets index
+/// the index-owned resolved-literal array.
+struct FrozenNoGoodResolvedClause final {
+  PnrIndex literalOffset = 0;
+  PnrIndex literalCount = 0;
+};
+
 class FrozenConstraintIndex final {
 public:
   static constexpr std::size_t projectionCount =
@@ -135,6 +175,26 @@ public:
   /// No-goods are cross-projection, so they are held by the index rather than
   /// by any one projection shard.
   llvm::ArrayRef<FrozenConstraintNoGood> noGoods() const { return noGoods_; }
+  /// The same no-goods resolved against the frozen search domain. Empty until
+  /// resolveFrozenConstraintNoGoods runs, which requires the frozen routing
+  /// and transfer indexes that are built after the constraint index itself.
+  llvm::ArrayRef<FrozenNoGoodResolvedClause> resolvedNoGoods() const {
+    return resolvedNoGoods_;
+  }
+  llvm::ArrayRef<FrozenNoGoodResolvedLiteral> resolvedNoGoodLiterals() const {
+    return resolvedNoGoodLiterals_;
+  }
+  /// Canonical clause ordinals affected by one logical net. This CSR index is
+  /// derived from resolved literals and is never an artifact identity owner.
+  llvm::ArrayRef<PnrIndex>
+  resolvedNoGoodClausesForNet(PnrIndex logicalNet) const {
+    assert(!resolvedNoGoodNetClauseOffsets_.empty() &&
+           logicalNet < resolvedNoGoodNetClauseOffsets_.size() - 1);
+    const PnrIndex begin = resolvedNoGoodNetClauseOffsets_[logicalNet];
+    const PnrIndex end = resolvedNoGoodNetClauseOffsets_[logicalNet + 1];
+    return llvm::ArrayRef<PnrIndex>(resolvedNoGoodNetClauses_)
+        .slice(begin, end - begin);
+  }
   bool empty() const;
 
 private:
@@ -142,10 +202,19 @@ private:
 
   std::vector<FrozenConstraintShard> shards_;
   std::vector<FrozenConstraintNoGood> noGoods_;
+  std::vector<FrozenNoGoodResolvedClause> resolvedNoGoods_;
+  std::vector<FrozenNoGoodResolvedLiteral> resolvedNoGoodLiterals_;
+  std::vector<PnrIndex> resolvedNoGoodNetClauseOffsets_;
+  std::vector<PnrIndex> resolvedNoGoodNetClauses_;
 
   template <typename Traits> friend class FrozenConstraintIndexBuilder;
-  friend llvm::Expected<FrozenConstraintIndex> detail::buildFrozenConstraintIndex(
+  friend llvm::Expected<FrozenConstraintIndex>
+  detail::buildFrozenConstraintIndex(
       const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+  friend llvm::Error detail::resolveFrozenConstraintNoGoods(
+      FrozenConstraintIndex &constraints,
+      const FrozenSpatialTransferIndex &transfers,
+      const FrozenEndpointRoutingTopology &routing);
 };
 
 class SystemFrozenConstraintShard final {

@@ -395,7 +395,8 @@ loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
   if (addBoundaryBuffer)
     outputs.front() =
         take(spatial.addFifo(outputs.front(),
-                             loom::adg::FifoSpec{payloadType, 2, true}))
+                             loom::adg::FifoSpec{payloadType, 2, true,
+                                                 std::nullopt}))
             .value();
   requireSuccess(spatial.close(outputs));
   auto finalized = take(std::move(design).finalize());

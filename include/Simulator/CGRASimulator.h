@@ -7,6 +7,7 @@
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CgraExternalMemoryProvider.h"
+#include "Simulator/CgraPhysicalTagOwner.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialExecutionSession.h"
 #include "Simulator/SpatialTrace.h"
@@ -243,6 +244,7 @@ struct CgraClosedWaitSetDiagnostic final {
     std::vector<::loom::fabric::FabricPhysicalTraversalRef> blockingTraversals;
     std::vector<::loom::fabric::FabricPhysicalTraversalRef>
         blockingDownstreamTraversals;
+    std::optional<CgraPhysicalTagMappingOwner> physicalTagOwner;
   };
   enum class TransferWaitKind : std::uint8_t {
     ActorPublication,
@@ -467,10 +469,17 @@ struct RetiredCgraSimulation final {
   CgraSimulationCounters counters;
 };
 
+struct HaltedCgraSimulation final {
+  SpatialFunctionalObservations observations;
+  SpatialProgressObservations progress;
+  CgraSimulationCounters counters;
+};
+
 struct CgraSimulationOutcome final {
   SpatialExecutionSessionState state = SpatialExecutionSessionState::Failed;
   CgraSimulationCounters counters;
   std::optional<RetiredCgraSimulation> retired;
+  std::optional<HaltedCgraSimulation> halted;
   std::optional<CgraClosedWaitSetDiagnostic> closedWaitSet;
 };
 
@@ -480,6 +489,11 @@ struct CgraSimulationOutcome final {
 /// certificate is absent or a proof failure was reported.
 bool verifyClosedWaitCertificateClosure(
     const CgraClosedWaitSetDiagnostic &closedWait);
+
+/// The shared closure predicate over the certificate's semantic edge slice.
+/// Diagnostic and durable certificate owners both delegate to this function.
+bool verifyClosedWaitCertificateClosure(
+    llvm::ArrayRef<CgraClosedWaitSetDiagnostic::WaitEdge> edges);
 
 /// Removable invocation-local admission projection for repeated execution of
 /// one exact workload/runtime-input pair. The projection shares ownership of
@@ -538,6 +552,7 @@ public:
           std::nullopt);
 
   llvm::Expected<RetiredCgraSimulation> takeRetiredSimulation();
+  llvm::Expected<HaltedCgraSimulation> takeHaltedSimulation();
 
 private:
   struct Impl;

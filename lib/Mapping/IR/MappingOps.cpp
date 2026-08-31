@@ -1472,7 +1472,8 @@ LogicalResult mapping::ConstraintRuntimeCounterexampleNoGoodOp::verify() {
     return emitOpError("requires at least one no-good literal");
   for (Attribute literal : getLiterals())
     if (!isa<mapping::NetUsesTraversalAttr,
-             mapping::TransferAttachmentEqualsAttr>(literal))
+             mapping::TransferAttachmentEqualsAttr,
+             mapping::NetTagEqualsAttr>(literal))
       return emitOpError("literals contains a value that is not a closed "
                          "Spatial no-good literal: ")
              << literal;

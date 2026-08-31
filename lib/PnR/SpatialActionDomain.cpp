@@ -844,6 +844,17 @@ llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
       return invalid("progress witness count overflows u64");
     ++progressWitnessCount;
   }
+  const auto noGoodClauses = preparedProblem_->constraints().resolvedNoGoods();
+  for (PnrIndex clause = 0; clause < noGoodClauses.size(); ++clause) {
+    if (!candidate.runtimeCounterexampleClauseViolated(clause))
+      continue;
+    if (llvm::Error error = appendWitness(
+            ResolvedPnrViolationKind::RuntimeCounterexampleViolation, clause))
+      return error;
+    if (progressWitnessCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("transport witness count overflows u64");
+    ++progressWitnessCount;
+  }
   if (progressWitnessCount >
       std::numeric_limits<std::uint64_t>::max() - externalNetCount)
     return invalid("transport movable decision count overflows u64");

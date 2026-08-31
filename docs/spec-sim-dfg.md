@@ -47,7 +47,7 @@ fixture-oriented developer CLI. A typed workload returns memory state only
 through the byte-addressed Spatial functional-observation contract; simulator
 execution must not derive or validate a second element-level terminal state.
 
-The Evaluation registry 3.0 descriptor is `dfg_simulator` under the exact
+The Evaluation registry 3.1 descriptor is `dfg_simulator` under the exact
 `canonical_dataflow_simulation` case signature. Its sole ordered subject is the
 Canonical Dataflow Program; both Spatial workload and runtime input are
 required. Its zero-field resolved config view contains no attempt limit. The

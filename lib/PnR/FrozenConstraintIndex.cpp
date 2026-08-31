@@ -1,5 +1,8 @@
 #include "PnR/FrozenConstraintIndex.h"
 
+#include "PnR/EndpointRoutingTopology.h"
+#include "PnR/SpatialPnrProblem.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -52,6 +55,18 @@ constexpr PnrCapacityContext relationOffsetContext{frozenArtifact, "relations",
 constexpr PnrCapacityContext relationCountContext{
     frozenArtifact, "relation_members", "relation_members",
     PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext noGoodClauseContext{
+    frozenArtifact, "runtime_counterexample_no_goods", "clauses",
+    PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext noGoodLiteralOffsetContext{
+    frozenArtifact, "runtime_counterexample_no_goods", "literals",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext noGoodLiteralCountContext{
+    frozenArtifact, "runtime_counterexample_no_goods", "literals",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext noGoodNetClauseOffsetContext{
+    frozenArtifact, "runtime_counterexample_no_goods", "net_clauses",
+    PnrCapacityMeasure::Offset};
 
 llvm::Error spatialInvalid(const llvm::Twine &message) {
   return llvm::make_error<SpatialPnrFreezeFailure>(
@@ -464,4 +479,141 @@ loom::pnr::detail::buildFrozenConstraintIndex(
     const SystemMappingConstraintSetView &constraints) {
   return FrozenConstraintIndexBuilder<SystemConstraintIndexTraits>::build(
       constraints);
+}
+
+llvm::Error loom::pnr::detail::resolveFrozenConstraintNoGoods(
+    FrozenConstraintIndex &constraints,
+    const FrozenSpatialTransferIndex &transfers,
+    const FrozenEndpointRoutingTopology &routing) {
+  constraints.resolvedNoGoods_.clear();
+  constraints.resolvedNoGoodLiterals_.clear();
+  constraints.resolvedNoGoodNetClauseOffsets_.clear();
+  constraints.resolvedNoGoodNetClauses_.clear();
+
+  const auto nets = transfers.logicalNets();
+  const auto sinks = transfers.logicalNetSinks();
+  std::vector<std::vector<PnrIndex>> clausesByNet(nets.size());
+
+  const auto findNet =
+      [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer)
+      -> std::optional<PnrIndex> {
+    const auto found =
+        llvm::find_if(nets, [&](const FrozenSpatialLogicalNet &net) {
+          return net.producer == producer;
+        });
+    if (found == nets.end())
+      return std::nullopt;
+    return static_cast<PnrIndex>(found - nets.begin());
+  };
+
+  for (const FrozenConstraintNoGood &noGood : constraints.noGoods_) {
+    auto clauseOrdinal =
+        checkedIndex(noGoodClauseContext, constraints.resolvedNoGoods_.size());
+    if (!clauseOrdinal)
+      return clauseOrdinal.takeError();
+    FrozenNoGoodResolvedClause clause;
+    auto literalOffset = checkedIndex(
+        noGoodLiteralOffsetContext, constraints.resolvedNoGoodLiterals_.size());
+    if (!literalOffset)
+      return literalOffset.takeError();
+    clause.literalOffset = *literalOffset;
+    std::vector<PnrIndex> clauseNets;
+
+    for (const SpatialNoGoodLiteral &literal : noGood.literals) {
+      FrozenNoGoodResolvedLiteral resolved;
+
+      const ::dataflow::CanonicalGraphProducerEndpointRef *producer = nullptr;
+      const std::optional<::dataflow::CanonicalGraphConsumerEndpointRef>
+          *consumer = nullptr;
+      if (const auto *uses =
+              std::get_if<SpatialNetUsesTraversalLiteral>(&literal)) {
+        resolved.kind = FrozenNoGoodResolvedLiteral::Kind::NetUsesTraversal;
+        producer = &uses->producer;
+        consumer = &uses->consumer;
+        auto traversal = routing.traversalOrdinal(uses->traversal);
+        if (!traversal)
+          return SpatialConstraintIndexTraits::invalid(
+              "no-good literal names a physical traversal the frozen routing "
+              "topology does not own");
+        resolved.target = *traversal;
+      } else if (const auto *attachment =
+                     std::get_if<SpatialTransferAttachmentEqualsLiteral>(
+                         &literal)) {
+        resolved.kind =
+            FrozenNoGoodResolvedLiteral::Kind::TransferAttachmentEquals;
+        producer = &attachment->terminal.producer;
+        consumer = &attachment->terminal.consumer;
+        auto endpoint = routing.endpointOrdinal(attachment->endpoint);
+        if (!endpoint)
+          return SpatialConstraintIndexTraits::invalid(
+              "no-good literal names a transport endpoint the frozen routing "
+              "topology does not own");
+        resolved.target = *endpoint;
+      } else if (const auto *tag =
+                     std::get_if<SpatialNetTagEqualsLiteral>(&literal)) {
+        resolved.kind = FrozenNoGoodResolvedLiteral::Kind::NetTagEquals;
+        producer = &tag->producer;
+        if (tag->segmentOrdinal > std::numeric_limits<PnrIndex>::max())
+          return SpatialConstraintIndexTraits::invalid(
+              "no-good Physical Tag segment exceeds the frozen index domain");
+        resolved.target = static_cast<PnrIndex>(tag->segmentOrdinal);
+        resolved.tagValue = tag->value;
+      } else {
+        return SpatialConstraintIndexTraits::invalid(
+            "no-good clause contains an unknown literal kind");
+      }
+
+      auto net = findNet(*producer);
+      if (!net)
+        return SpatialConstraintIndexTraits::invalid(
+            "no-good literal names a logical net the frozen transfer index "
+            "does not own");
+      resolved.logicalNet = *net;
+      clauseNets.push_back(*net);
+
+      if (consumer && *consumer) {
+        const FrozenSpatialLogicalNet &owner = nets[*net];
+        const auto netSinks = sinks.slice(owner.sinkOffset, owner.sinkCount);
+        const auto found = llvm::find(netSinks, **consumer);
+        if (found == netSinks.end())
+          return SpatialConstraintIndexTraits::invalid(
+              "no-good literal names a sink that is not a sink of its own "
+              "logical net");
+        resolved.sink = static_cast<PnrIndex>(found - netSinks.begin());
+      }
+
+      constraints.resolvedNoGoodLiterals_.push_back(resolved);
+    }
+
+    auto literalCount = checkedIndex(
+        noGoodLiteralCountContext,
+        constraints.resolvedNoGoodLiterals_.size() - clause.literalOffset);
+    if (!literalCount)
+      return literalCount.takeError();
+    clause.literalCount = *literalCount;
+    constraints.resolvedNoGoods_.push_back(clause);
+    llvm::sort(clauseNets);
+    clauseNets.erase(std::unique(clauseNets.begin(), clauseNets.end()),
+                     clauseNets.end());
+    for (PnrIndex logicalNet : clauseNets)
+      clausesByNet[logicalNet].push_back(*clauseOrdinal);
+  }
+
+  constraints.resolvedNoGoodNetClauseOffsets_.reserve(nets.size() + 1);
+  for (const auto &clauses : clausesByNet) {
+    auto offset = checkedIndex(noGoodNetClauseOffsetContext,
+                               constraints.resolvedNoGoodNetClauses_.size());
+    if (!offset)
+      return offset.takeError();
+    constraints.resolvedNoGoodNetClauseOffsets_.push_back(*offset);
+    constraints.resolvedNoGoodNetClauses_.insert(
+        constraints.resolvedNoGoodNetClauses_.end(), clauses.begin(),
+        clauses.end());
+  }
+  auto end = checkedIndex(noGoodNetClauseOffsetContext,
+                          constraints.resolvedNoGoodNetClauses_.size());
+  if (!end)
+    return end.takeError();
+  constraints.resolvedNoGoodNetClauseOffsets_.push_back(*end);
+  return llvm::Error::success();
 }

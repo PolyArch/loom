@@ -189,6 +189,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           state_->totalRouteNegativeSlackQuanta_),
+      initialRuntimeCounterexampleViolation_(
+          state_->runtimeCounterexampleViolation_),
       recurrenceTimingSelected_(
           state_->problem().objectiveProgram().selectsMeasure(
               MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles)),
@@ -206,6 +208,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       routeDeltasCollected_(other.routeDeltasCollected_),
       tagDeltasCollected_(other.tagDeltasCollected_),
       routeViolationApplied_(other.routeViolationApplied_),
+      runtimeCounterexampleStateStaged_(
+          other.runtimeCounterexampleStateStaged_),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
       initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_),
       initialStaticSchedulePressure_(other.initialStaticSchedulePressure_),
@@ -213,6 +217,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           other.initialTotalRouteNegativeSlackQuanta_),
+      initialRuntimeCounterexampleViolation_(
+          other.initialRuntimeCounterexampleViolation_),
       recurrenceTimingSelected_(other.recurrenceTimingSelected_),
       initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)) {
   other.scratch_ = nullptr;
@@ -1379,8 +1385,13 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
   tagDeltasCollected_ = true;
   for (PnrIndex logicalNet :
        state_->tagAssignments_.synchronizedNets(scratch_->tagScratch_))
-    markProgressNetDirty(logicalNet);
+    markNet(logicalNet);
   rebuildRouteViews();
+  rebuildTagValueViews();
+  if (llvm::Error error = state_->refreshRuntimeCounterexampleState(
+          scratch_->affectedNets_, scratch_->routeViews_, *scratch_))
+    return std::move(error);
+  runtimeCounterexampleStateStaged_ = true;
   if (llvm::Error error = synchronizeProgressProjection())
     return std::move(error);
   if (scratch_->switchHandshakeBaselineCaptured_) {
@@ -1706,6 +1717,11 @@ llvm::Error SpatialMoveTransaction::commit() {
 void SpatialMoveTransaction::rollback() noexcept {
   if (!scratch_)
     return;
+  if (runtimeCounterexampleStateStaged_) {
+    state_->rollbackRuntimeCounterexampleState(
+        *scratch_, initialRuntimeCounterexampleViolation_);
+    runtimeCounterexampleStateStaged_ = false;
+  }
   if (tagDeltasCollected_)
     state_->tagAssignments_.rollback(scratch_->tagScratch_);
   rollbackAppliedRouteResources();

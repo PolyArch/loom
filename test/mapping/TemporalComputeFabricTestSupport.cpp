@@ -88,7 +88,8 @@ buildTemporalComputeFabric(const loom::ArtifactStore &store,
                                {{0, 1}, {0, 1}}, 2,
                                ::fabric::TemporalSwitchFixedPriority{{0, 1}})));
       auto feedback =
-          take(spatial.addFifo(switched[0], FifoSpec{tagged128, 2, true}));
+          take(spatial.addFifo(
+              switched[0], FifoSpec{tagged128, 2, true, std::nullopt}));
       requireSuccess(
           spatial.resolveBackedge(std::move(backedge), feedback.value()));
       peInputs.front() = switched[1];

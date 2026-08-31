@@ -7,6 +7,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -205,7 +206,18 @@ const ScopeFormRef kWholeCaseScopeForms[] = {kWholeExactCaseScope};
 const MetricCapability kMetricCapabilities[] = {{
     MetricKind::CycleCount,
     kWholeCaseScopeForms,
-    observationFormMask(ObservationForm::Point),
+    observationFormMask(ObservationForm::Point) |
+        observationFormMask(ObservationForm::Censored),
+}};
+const FindingCapability kFindingCapabilities[] = {{
+    CgraClosedWait,
+    kWholeCaseScopeForms,
+    findingResultFormMask(FindingResultForm::Absent) |
+        findingResultFormMask(FindingResultForm::Present),
+}};
+const FindingQuery kMandatoryTerminalFindings[] = {{
+    CgraClosedWait,
+    EvaluationScope{kWholeExactCaseScope, {}},
 }};
 const ModelOutputSlotDescriptor kOutputSlots[] = {{
     kExecutionOutputSlot,
@@ -258,11 +270,11 @@ const ResolvedModelConfigViewContract kConfigView{
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "cgra_simulator",
-    "loom.cgra_simulator.exact_mapping.v1",
+    "loom.cgra_simulator.exact_mapping.v2",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
-    {},
+    kFindingCapabilities,
     {},
     kOutputSlots,
     kConfigView,
@@ -270,8 +282,100 @@ const EvaluationModelDescriptor kModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {},
+    kMandatoryTerminalFindings,
     ProviderForm::InProcess};
+
+llvm::Expected<std::vector<MetricResult>>
+cycleMetricResults(const EvaluationRequest &request,
+                   std::uint64_t cycleCount, bool subjectRetired) {
+  if (cycleCount >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "cgra_simulation_model_invalid: cycle count exceeds i64");
+  std::vector<MetricResult> metrics;
+  metrics.reserve(request.metricRequests().size());
+  for (const MetricRequest &metric : request.metricRequests()) {
+    if (metric.query().metric != MetricKind::CycleCount)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "cgra_simulation_model_invalid: unsupported metric request");
+    MetricObservationValue observation =
+        subjectRetired
+            ? MetricObservationValue(PointObservation{IntegerValue(
+                  static_cast<std::int64_t>(cycleCount))})
+            : MetricObservationValue(CensoredObservation{
+                  MetricValue(IntegerValue(
+                      static_cast<std::int64_t>(cycleCount))),
+                  std::nullopt, CensoredReason::SubjectDidNotComplete});
+    metrics.push_back(MetricResult{UncertaintyKind::ExactWithinModel,
+                                   std::move(observation), {}});
+  }
+  return metrics;
+}
+
+llvm::Expected<std::vector<FindingResult>>
+terminalFindingResults(const EvaluationRequest &request, bool closedWait) {
+  std::vector<FindingResult> findings;
+  findings.reserve(request.findingRequests().size());
+  for (const FindingRequest &finding : request.findingRequests()) {
+    if (finding.query().kind != CgraClosedWait)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "cgra_simulation_model_invalid: unsupported finding request");
+    if (closedWait)
+      findings.push_back(FindingResult{PresentFinding{{FindingOccurrence::get(
+          sim::TerminalWitnessRef{kExecutionOutputSlot, 0})}}});
+    else
+      findings.push_back(FindingResult{AbsentFinding{}});
+  }
+  return findings;
+}
+
+llvm::Expected<EvaluationModelResult> publishCompletedExecution(
+    const EvaluationRequest &request,
+    const CaseArtifactResolution &resolution,
+    sim::SpatialSimulationExecution execution, std::uint64_t cycleCount,
+    bool closedWait, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore,
+    const sim::PreparedSpatialExecutionContext *executionContext,
+    const std::optional<AttemptIntervalStart> &projectionBegin,
+    CgraSimulationAttemptProfile *attemptProfile) {
+  auto finalized =
+      executionContext
+          ? sim::finalizeSimulationExecution(execution, *executionContext)
+          : sim::finalizeSimulationExecution(execution, resolution,
+                                             artifactStore, blobStore);
+  if (!finalized)
+    return finalized.takeError();
+  if (attemptProfile) {
+    finishAttemptInterval(projectionBegin,
+                          attemptProfile->observationProjectionWallNanoseconds,
+                          attemptProfile->observationProjectionCpuNanoseconds);
+    attemptProfile->activeWallNanoseconds +=
+        attemptProfile->observationProjectionWallNanoseconds;
+    attemptProfile->processCpuNanoseconds = sumCpuNanoseconds(
+        attemptProfile->processCpuNanoseconds,
+        attemptProfile->observationProjectionCpuNanoseconds);
+  }
+  const auto publicationBegin = beginAttemptInterval(attemptProfile != nullptr);
+  auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
+  if (!reference)
+    return reference.takeError();
+  if (attemptProfile)
+    finishAttemptInterval(publicationBegin,
+                          attemptProfile->artifactPublicationWallNanoseconds,
+                          attemptProfile->artifactPublicationCpuNanoseconds);
+  auto metrics = cycleMetricResults(request, cycleCount, !closedWait);
+  if (!metrics)
+    return metrics.takeError();
+  auto findings = terminalFindingResults(request, closedWait);
+  if (!findings)
+    return findings.takeError();
+  return EvaluationModelResult{
+      {{kExecutionOutputSlot, {std::move(*reference)}}},
+      CompletedEvidence{std::move(*metrics), std::move(*findings)}};
+}
 
 llvm::Expected<EvaluationModelResult> classifyExecutionFailure(
     llvm::Error error,
@@ -796,9 +900,35 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
           }
           return llvm::json::Value(std::move(fields));
         });
-    return EvaluationModelResult{
-        {{kExecutionOutputSlot, {}}},
-        ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
+    if (!outcome->closedWaitSet || !outcome->halted)
+      return EvaluationModelResult{
+          {{kExecutionOutputSlot, {}}},
+          ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
+    auto certificate =
+        sim::buildCgraClosedWaitCertificate(*outcome->closedWaitSet);
+    if (!certificate) {
+      llvm::consumeError(certificate.takeError());
+      return EvaluationModelResult{
+          {{kExecutionOutputSlot, {}}},
+          ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
+    }
+    const auto &terminal = outcome->halted->progress.terminalObserved;
+    if (terminal.referenceCycle.denominator() != 1)
+      return EvaluationModelResult{
+          {{kExecutionOutputSlot, {}}},
+          ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
+    const std::uint64_t cycleCount = terminal.referenceCycle.numerator();
+    sim::SpatialSimulationExecution halted{
+        evaluationRequestReference(request),
+        sim::HaltedExecution{CgraClosedWait,
+                             OwnerValue::get(std::move(*certificate))},
+        std::move(outcome->halted->observations),
+        std::move(outcome->halted->progress),
+        {}};
+    return publishCompletedExecution(
+        request, resolution, std::move(halted), cycleCount, true,
+        artifactStore, blobStore, executionContext, projectionBegin,
+        attemptProfile);
   }
   const auto &progress = outcome->retired->progress;
   const auto &retirement = progress.graphRetirementVisible;
@@ -1013,47 +1143,9 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
       std::move(outcome->retired->observations),
       std::move(outcome->retired->progress),
       {}};
-  auto finalized =
-      executionContext
-          ? sim::finalizeSimulationExecution(model, *executionContext)
-          : sim::finalizeSimulationExecution(model, resolution, artifactStore,
-                                             blobStore);
-  if (!finalized)
-    return finalized.takeError();
-  if (attemptProfile) {
-    finishAttemptInterval(projectionBegin,
-                          attemptProfile->observationProjectionWallNanoseconds,
-                          attemptProfile->observationProjectionCpuNanoseconds);
-    attemptProfile->activeWallNanoseconds +=
-        attemptProfile->observationProjectionWallNanoseconds;
-    attemptProfile->processCpuNanoseconds =
-        sumCpuNanoseconds(attemptProfile->processCpuNanoseconds,
-                          attemptProfile->observationProjectionCpuNanoseconds);
-  }
-  const auto publicationBegin = beginAttemptInterval(attemptProfile != nullptr);
-  auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
-  if (!reference)
-    return reference.takeError();
-  if (attemptProfile) {
-    finishAttemptInterval(publicationBegin,
-                          attemptProfile->artifactPublicationWallNanoseconds,
-                          attemptProfile->artifactPublicationCpuNanoseconds);
-  }
-  std::vector<MetricResult> metrics;
-  metrics.reserve(request.metricRequests().size());
-  for (const MetricRequest &metric : request.metricRequests()) {
-    if (metric.query().metric != MetricKind::CycleCount)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "cgra_simulation_model_invalid: unsupported metric request");
-    metrics.push_back(MetricResult{
-        UncertaintyKind::ExactWithinModel,
-        PointObservation{IntegerValue(static_cast<std::int64_t>(cycleCount))},
-        {}});
-  }
-  return EvaluationModelResult{
-      {{kExecutionOutputSlot, {std::move(*reference)}}},
-      CompletedEvidence{std::move(metrics), {}}};
+  return publishCompletedExecution(
+      request, resolution, std::move(model), cycleCount, false, artifactStore,
+      blobStore, executionContext, projectionBegin, attemptProfile);
 }
 
 llvm::Expected<EvaluationModelResult>
@@ -1087,6 +1179,8 @@ const EvaluationModelProvider kProvider{
 } // namespace
 
 llvm::Error registerCgraSimulationModel() {
+  if (llvm::Error error = registerCgraClosedWaitFinding())
+    return error;
   if (llvm::Error error = registerEvaluationCaseSignature(kCaseSignature))
     return error;
   if (llvm::Error error = registerEvaluationModelDescriptor(kModelDescriptor))
@@ -1198,9 +1292,15 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                          {}, *evaluationCase, *resolution, artifactStore);
   if (!cycleCount)
     return cycleCount.takeError();
-  auto request = EvaluationRequest::get(*evaluationCase, {*cycleCount}, {},
-                                        std::move(*modelBinding), 0,
-                                        *resolution, artifactStore, blobStore);
+  auto closedWait = FindingRequest::get(
+      FindingQuery{CgraClosedWait,
+                   EvaluationScope{kWholeExactCaseScope, {}}},
+      {}, *evaluationCase, *resolution, artifactStore);
+  if (!closedWait)
+    return closedWait.takeError();
+  auto request = EvaluationRequest::get(
+      *evaluationCase, {*cycleCount}, {*closedWait}, std::move(*modelBinding),
+      0, *resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);

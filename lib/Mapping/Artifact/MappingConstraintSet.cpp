@@ -589,6 +589,24 @@ decodeNoGoodLiteral(Attribute attribute,
         std::move(*producer), std::move(consumer), std::move(*traversal)});
   }
 
+  if (auto literal = dyn_cast<::mapping::NetTagEqualsAttr>(attribute)) {
+    auto producer =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            literal.getProducer(), dataflow.identity());
+    if (!producer)
+      return contextual(producer.takeError(),
+                        "no-good tag producer reference is malformed");
+    if (llvm::Error error =
+            validateResidualProducer(*producer, dataflow, techMapping))
+      return std::move(error);
+    const llvm::APInt value = ::fabric::canonicalPhysicalTagValue(
+        literal.getValue().getValue());
+    if (value.getBitWidth() == 0)
+      return invalid("no-good Physical Tag value has zero width");
+    return SpatialNoGoodLiteral(SpatialNetTagEqualsLiteral{
+        std::move(*producer), literal.getSegmentOrdinal(), value});
+  }
+
   auto literal = cast<::mapping::TransferAttachmentEqualsAttr>(attribute);
   auto terminalAttr = literal.getTerminal();
   auto producer = decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -678,6 +696,18 @@ encodeNoGoodLiteral(MLIRContext *context, const SpatialNoGoodLiteral &literal,
         ::mapping::FabricPhysicalTraversalRefAttr::get(
             context, denseBytes(context, ::loom::fabric::canonicalFabricBytes(
                                              uses->traversal)))));
+  }
+
+  if (const auto *tag = std::get_if<SpatialNetTagEqualsLiteral>(&literal)) {
+    auto producer = producerAttr(tag->producer);
+    if (!producer)
+      return producer.takeError();
+    const llvm::APInt value =
+        ::fabric::canonicalPhysicalTagValue(tag->value);
+    return Attribute(::mapping::NetTagEqualsAttr::get(
+        context, *producer, tag->segmentOrdinal,
+        IntegerAttr::get(IntegerType::get(context, value.getBitWidth()),
+                         value)));
   }
 
   const auto &attachment =
@@ -1005,7 +1035,7 @@ finalizeSpatialRuntimeCounterexampleConstraintSet(
     llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store) {
   if (literals.empty())
     return invalid("a runtime-counterexample no-good clause must be non-empty");
-  // Importing the parent proves it is a 1.1 payload over one exact D/T/F
+  // Importing the parent proves it is a 1.2 payload over one exact D/T/F
   // closure before anything is added to it.
   auto imported = importSpatialMappingConstraintSet(parent, store);
   if (!imported)

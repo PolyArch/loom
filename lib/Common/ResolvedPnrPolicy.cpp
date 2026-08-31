@@ -55,11 +55,16 @@ constexpr BuiltinLimits limitsFor(ResolvedProfilePreset preset) {
 }
 
 ResolvedPnrTemporaryViolationPolicy allTemporaryViolations() {
-  return {{
-#define LOOM_MAPPING_VIOLATION(Name, Ordinal, DisplayName, ConfigSpelling)     \
-  ResolvedPnrViolationKind::Name,
-#include "Common/MappingObjectiveKinds.def"
-  }};
+  // Runtime counterexamples are learned hard clauses. Admitting them as a
+  // temporary violation would permit search to republish the exact rejected
+  // Mapping, so the builtin policy names the repairable construction debt
+  // explicitly instead of inheriting every future violation kind.
+  return {{ResolvedPnrViolationKind::UnroutedObligation,
+           ResolvedPnrViolationKind::CapacityOveruse,
+           ResolvedPnrViolationKind::TagUnassigned,
+           ResolvedPnrViolationKind::TagConflict,
+           ResolvedPnrViolationKind::HardProgressViolation,
+           ResolvedPnrViolationKind::ProgressProofDebt}};
 }
 
 llvm::Error invalid(const char *detail) {
@@ -322,12 +327,12 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
       std::move(progressDebt),   std::move(traversal),
       std::move(schedule),       std::move(operandPairing),
       std::move(progressCapacity), std::move(progressAnchors),
-      std::move(spatialTiming),  std::move(closure),
-      std::move(timing),         std::move(spatialEnergy),
+      std::move(spatialTiming),  std::move(timing),
+      std::move(closure),        std::move(spatialEnergy),
       std::move(energy)};
   catalogs.totalOrderings = {
-      {{7, 0, 4, 5, 6, 2, 1, 3}},
-      {{7, 0, 4, 5, 8, 2, 1, 3}}};
+      {{8, 0, 4, 5, 6, 2, 1, 3}},
+      {{8, 0, 4, 5, 7, 2, 1, 3}}};
   return catalogs;
 }
 

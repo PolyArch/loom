@@ -27,7 +27,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 3, 2};
+    "loom.mapping.pnr.objective", 3, 3};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -167,6 +167,7 @@ bool loom::pnr::spatialMappingViolationAvailable(
   case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::HardProgressViolation:
   case ResolvedPnrViolationKind::ProgressProofDebt:
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
     return true;
   }
   llvm_unreachable("unknown Mapping violation kind");
@@ -221,6 +222,8 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     llvm_unreachable("unknown Spatial progress basis kind");
   case ResolvedPnrViolationKind::ProgressProofDebt:
     return candidate.progressProofDebtWitnessCount();
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+    return candidate.runtimeCounterexampleViolation();
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -251,6 +254,8 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialMappingViolationValue(
     return projection.hardProgressViolation;
   case ResolvedPnrViolationKind::ProgressProofDebt:
     return projection.progressProofDebtWitnessCount;
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+    return projection.runtimeCounterexampleViolation;
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -306,6 +311,7 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
   case ResolvedPnrViolationKind::UnroutedObligation:
   case ResolvedPnrViolationKind::TagUnassigned:
   case ResolvedPnrViolationKind::TagConflict:
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
     return 0;
   case ResolvedPnrViolationKind::CapacityOveruse:
     return candidate.capacityOveruse();
@@ -541,6 +547,7 @@ MappingObjectiveProgram::evaluateSystemProjection(
     case ResolvedPnrViolationKind::UnroutedObligation:
     case ResolvedPnrViolationKind::TagUnassigned:
     case ResolvedPnrViolationKind::TagConflict:
+    case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
       violations[ordinal] = 0;
       break;
     case ResolvedPnrViolationKind::CapacityOveruse:

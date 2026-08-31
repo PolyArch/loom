@@ -635,13 +635,22 @@ std::string transferAttachmentEquals(std::uint64_t actor,
          ">, endpoint = " + transportEndpointRef(endpoint) + ">";
 }
 
+std::string netTagEquals(std::uint64_t actor, std::uint64_t segment,
+                         std::uint64_t value, unsigned width = 4) {
+  return "#mapping.net_tag_equals<producer = " +
+         actorResultProducerRef(actor, 0) +
+         ", segment_ordinal = " + std::to_string(segment) +
+         ", value = " + std::to_string(value) + " : i" +
+         std::to_string(width) + ">";
+}
+
 std::string noGoodModule(const std::string &clauses) {
   return "module {\n  mapping.constraints.spatial dataflow(" +
          identityAttr(17) + ") tech_mapping(" + identityAttr(25) + ") fabric(" +
          identityAttr(34) + ") {\n" + clauses + "  }\n}";
 }
 
-/// Semantic joints of the 1.1 runtime-counterexample no-good clause that hold
+/// Semantic joints of the 1.2 runtime-counterexample no-good clause that hold
 /// at the canonical-bytes layer: literal and clause order, deduplication,
 /// idempotent republication, canonical union, and the closed literal catalog.
 void testSpatialRuntimeCounterexampleNoGood() {
@@ -668,6 +677,7 @@ void testSpatialRuntimeCounterexampleNoGood() {
   const std::string first = netUsesTraversal(7, 3);
   const std::string second = netUsesTraversal(9, 4);
   const std::string attachment = transferAttachmentEquals(7, 5);
+  const std::string tag = netTagEquals(7, 0, 3);
   const auto clause = [](const std::string &literals) {
     return "    mapping.constraint.runtime_counterexample_no_good literals([" +
            literals + "])\n";
@@ -699,6 +709,21 @@ void testSpatialRuntimeCounterexampleNoGood() {
     fail("no-good clause discovery order changed canonical bytes");
   if (unionForward.bytes().equals(ordered.bytes()))
     fail("an additional distinct no-good did not change canonical bytes");
+
+  const auto tagUnionForward = canonicalize(
+      noGoodModule(clause(first + ", " + tag) + clause(attachment)));
+  const auto tagUnionReverse = canonicalize(
+      noGoodModule(clause(attachment) + clause(tag + ", " + first)));
+  if (!tagUnionForward.bytes().equals(tagUnionReverse.bytes()))
+    fail("Physical Tag no-good discovery order changed canonical bytes");
+  if (!canonicalize(noGoodModule(clause(tag))).bytes().equals(
+          canonicalize(
+              noGoodModule(clause(netTagEquals(7, 0, 3, 8))))
+              .bytes()))
+    fail("Physical Tag APInt storage width changed canonical bytes");
+  if (canonicalize(noGoodModule(clause(tag))).bytes().equals(
+          canonicalize(noGoodModule(clause(netTagEquals(7, 0, 4)))).bytes()))
+    fail("distinct Physical Tag literals produced the same canonical bytes");
 
   // A different literal is a different clause: the witness is workload- and
   // mapping-specific, never a claim about the Fabric.

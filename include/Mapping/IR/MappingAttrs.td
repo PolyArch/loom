@@ -527,6 +527,20 @@ def Mapping_TransferAttachmentEqualsAttr
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
+def Mapping_NetTagEqualsAttr
+    : Mapping_Attr<"NetTagEquals", "net_tag_equals"> {
+  let summary = "one exact Spatial choice: a route segment's Physical Tag";
+  let description = [{
+    Names the exact Mapping choice "Physical Tag segment `segment_ordinal` of
+    `producer` carries `value`". The segment ordinal is route-local and is
+    resolved from the sealed Mapping's canonical Physical Tag segment table;
+    no execution-plan dense tag ordinal participates in the identity.
+  }];
+  let parameters = (ins "::mapping::GraphProducerEndpointRefAttr":$producer,
+      "uint64_t":$segment_ordinal, "::mlir::IntegerAttr":$value);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def Mapping_ConstraintFuContextAttr
     : Mapping_Attr<"ConstraintFuContext", "constraint_fu_context"> {
   let summary = "correlated FU occurrence and instruction context carrier";

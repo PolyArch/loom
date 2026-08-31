@@ -344,6 +344,8 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
           expectedProjection.progressCapacityShortfall ||
       restoredProjection->progressRouteAnchorCount !=
           expectedProjection.progressRouteAnchorCount ||
+      restoredProjection->runtimeCounterexampleViolation !=
+          expectedProjection.runtimeCounterexampleViolation ||
       restoredProjection->totalSelectedTraversalClaim !=
           expectedProjection.totalSelectedTraversalClaim ||
       restoredProjection->routeReleaseLatencyCycles !=
@@ -1758,6 +1760,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               projection->progressCapacityShortfall;
           fields["progress_route_anchors"] =
               projection->progressRouteAnchorCount;
+          fields["runtime_counterexample_violations"] =
+              projection->runtimeCounterexampleViolation;
           fields["selected_traversal_claim"] =
               projection->totalSelectedTraversalClaim;
           fields["temporary_admitted"] = temporaryAdmitted;

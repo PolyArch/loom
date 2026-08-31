@@ -919,6 +919,9 @@ finalizeSpatialMappingCandidate(
     return hardProgress.takeError();
   if (*hardProgress != 0)
     return invalid("candidate has a hard progress violation");
+  if (candidate.runtimeCounterexampleViolation() != 0)
+    return invalid(
+        "candidate repeats a recorded runtime counterexample clause");
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);

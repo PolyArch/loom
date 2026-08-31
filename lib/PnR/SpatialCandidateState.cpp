@@ -261,6 +261,10 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       problem.memory().serviceUseGroups().size();
   const std::size_t memoryExposureCount = problem.memory().exposures().size();
   const std::size_t traversalCount = problem.routing().traversals().size();
+  const std::size_t noGoodClauseCount =
+      problem.constraints().resolvedNoGoods().size();
+  const std::size_t noGoodLiteralCount =
+      problem.constraints().resolvedNoGoodLiterals().size();
   const std::size_t tagDomainCount =
       problem.routing().tagContinuity().matchDomains().size();
   const std::size_t bindingRelationCount =
@@ -336,6 +340,12 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   progressDependencyJournalMarks_.assign(netCount, 0);
   progressDependencyDeltas_.clear();
   progressDependencyDeltas_.reserve(netCount);
+  runtimeCounterexampleAffectedClauses_.clear();
+  runtimeCounterexampleAffectedClauses_.reserve(noGoodClauseCount);
+  runtimeCounterexampleLiteralDeltas_.clear();
+  runtimeCounterexampleLiteralDeltas_.reserve(noGoodLiteralCount);
+  runtimeCounterexampleClauseDeltas_.clear();
+  runtimeCounterexampleClauseDeltas_.reserve(noGoodClauseCount);
 
   decisionEpoch_ = 0;
   affectedEpoch_ = 0;
@@ -407,7 +417,10 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(progressDirtyNetMarks_) +
       retainedBytes(progressDirtyNets_) +
       retainedBytes(progressDependencyJournalMarks_) +
-      retainedBytes(progressDependencyDeltas_);
+      retainedBytes(progressDependencyDeltas_) +
+      retainedBytes(runtimeCounterexampleAffectedClauses_) +
+      retainedBytes(runtimeCounterexampleLiteralDeltas_) +
+      retainedBytes(runtimeCounterexampleClauseDeltas_);
   for (const auto &fragments : newSwitchHandshakeDomainFragments_)
     bytes += retainedBytes(fragments);
   return bytes;
@@ -466,6 +479,9 @@ void SpatialCandidateScratch::resetTransaction() {
   progressDirtyNets_.clear();
   progressTraversalDeltas_.clear();
   progressDependencyDeltas_.clear();
+  runtimeCounterexampleAffectedClauses_.clear();
+  runtimeCounterexampleLiteralDeltas_.clear();
+  runtimeCounterexampleClauseDeltas_.clear();
   decisionDeltas_.clear();
   affectedComputes_.clear();
   affectedMemories_.clear();
@@ -704,6 +720,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!progressState)
     return progressState.takeError();
   candidate->progressState_ = std::move(*progressState);
+  if (llvm::Error error =
+          candidate->rebuildRuntimeCounterexampleState(routePointers))
+    return std::move(error);
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -1127,6 +1146,137 @@ SpatialCandidateState::routeTree(PnrIndex logicalNet) const {
   return *routeTrees_[logicalNet];
 }
 
+llvm::Error SpatialCandidateState::rebuildRuntimeCounterexampleState(
+    llvm::ArrayRef<const RouteTreeState *> routes) {
+  const auto clauses = problem_->constraints().resolvedNoGoods();
+  const auto literals = problem_->constraints().resolvedNoGoodLiterals();
+  const auto tagValues = tagValueViews(tagAssignments_, routes.size());
+  runtimeCounterexampleLiteralHolds_.assign(literals.size(), 0);
+  runtimeCounterexampleClauseTrueCounts_.assign(clauses.size(), 0);
+  runtimeCounterexampleClauseViolated_.assign(clauses.size(), 0);
+  runtimeCounterexampleViolation_ = 0;
+  for (PnrIndex clauseOrdinal = 0; clauseOrdinal < clauses.size();
+       ++clauseOrdinal) {
+    const FrozenNoGoodResolvedClause &clause = clauses[clauseOrdinal];
+    if (clause.literalOffset > literals.size() ||
+        clause.literalCount > literals.size() - clause.literalOffset)
+      return candidateError(
+          "runtime-counterexample clause literal range is invalid");
+    PnrIndex trueCount = 0;
+    for (PnrIndex local = 0; local < clause.literalCount; ++local) {
+      const PnrIndex literalOrdinal = clause.literalOffset + local;
+      auto holds = runtimeCounterexampleLiteralHolds(
+          literals[literalOrdinal], routes, tagValues);
+      if (!holds)
+        return holds.takeError();
+      runtimeCounterexampleLiteralHolds_[literalOrdinal] = *holds;
+      trueCount += *holds ? 1 : 0;
+    }
+    runtimeCounterexampleClauseTrueCounts_[clauseOrdinal] = trueCount;
+    const bool violated = trueCount == clause.literalCount;
+    runtimeCounterexampleClauseViolated_[clauseOrdinal] = violated;
+    runtimeCounterexampleViolation_ += violated ? 1 : 0;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialCandidateState::refreshRuntimeCounterexampleState(
+    llvm::ArrayRef<PnrIndex> affectedNets,
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    SpatialCandidateScratch &scratch) {
+  if (!scratch.runtimeCounterexampleClauseDeltas_.empty() ||
+      !scratch.runtimeCounterexampleLiteralDeltas_.empty())
+    return candidateError(
+        "runtime-counterexample state was staged more than once");
+  const auto clauses = problem_->constraints().resolvedNoGoods();
+  const auto literals = problem_->constraints().resolvedNoGoodLiterals();
+  scratch.runtimeCounterexampleAffectedClauses_.clear();
+  for (PnrIndex logicalNet : affectedNets) {
+    if (logicalNet >= problem_->transfers().logicalNets().size())
+      return candidateError(
+          "runtime-counterexample affected net is out of range");
+    llvm::append_range(
+        scratch.runtimeCounterexampleAffectedClauses_,
+        problem_->constraints().resolvedNoGoodClausesForNet(logicalNet));
+  }
+  llvm::sort(scratch.runtimeCounterexampleAffectedClauses_);
+  scratch.runtimeCounterexampleAffectedClauses_.erase(
+      std::unique(scratch.runtimeCounterexampleAffectedClauses_.begin(),
+                  scratch.runtimeCounterexampleAffectedClauses_.end()),
+      scratch.runtimeCounterexampleAffectedClauses_.end());
+  const std::uint64_t initialViolation = runtimeCounterexampleViolation_;
+  for (PnrIndex clauseOrdinal : scratch.runtimeCounterexampleAffectedClauses_) {
+    if (clauseOrdinal >= clauses.size()) {
+      rollbackRuntimeCounterexampleState(scratch, initialViolation);
+      return candidateError(
+          "runtime-counterexample affected clause is out of range");
+    }
+    const FrozenNoGoodResolvedClause &clause = clauses[clauseOrdinal];
+    if (clause.literalOffset > literals.size() ||
+        clause.literalCount > literals.size() - clause.literalOffset) {
+      rollbackRuntimeCounterexampleState(scratch, initialViolation);
+      return candidateError(
+          "runtime-counterexample clause literal range is invalid");
+    }
+    scratch.runtimeCounterexampleClauseDeltas_.push_back(
+        {clauseOrdinal, runtimeCounterexampleClauseTrueCounts_[clauseOrdinal],
+         runtimeCounterexampleClauseViolated_[clauseOrdinal]});
+    PnrIndex trueCount = 0;
+    for (PnrIndex local = 0; local < clause.literalCount; ++local) {
+      const PnrIndex literalOrdinal = clause.literalOffset + local;
+      scratch.runtimeCounterexampleLiteralDeltas_.push_back(
+          {literalOrdinal, runtimeCounterexampleLiteralHolds_[literalOrdinal]});
+      auto holds = runtimeCounterexampleLiteralHolds(
+          literals[literalOrdinal], routes, scratch.tagValueViews_);
+      if (!holds) {
+        llvm::Error error = holds.takeError();
+        rollbackRuntimeCounterexampleState(scratch, initialViolation);
+        return error;
+      }
+      runtimeCounterexampleLiteralHolds_[literalOrdinal] = *holds;
+      trueCount += *holds ? 1 : 0;
+    }
+    const bool oldViolated =
+        runtimeCounterexampleClauseViolated_[clauseOrdinal] != 0;
+    const bool violated = trueCount == clause.literalCount;
+    runtimeCounterexampleClauseTrueCounts_[clauseOrdinal] = trueCount;
+    runtimeCounterexampleClauseViolated_[clauseOrdinal] = violated;
+    if (!oldViolated && violated) {
+      if (runtimeCounterexampleViolation_ ==
+          std::numeric_limits<std::uint64_t>::max()) {
+        rollbackRuntimeCounterexampleState(scratch, initialViolation);
+        return candidateError(
+            "runtime-counterexample violation count overflows u64");
+      }
+      ++runtimeCounterexampleViolation_;
+    } else if (oldViolated && !violated) {
+      if (runtimeCounterexampleViolation_ == 0) {
+        rollbackRuntimeCounterexampleState(scratch, initialViolation);
+        return candidateError(
+            "runtime-counterexample violation count underflows");
+      }
+      --runtimeCounterexampleViolation_;
+    }
+  }
+  return llvm::Error::success();
+}
+
+void SpatialCandidateState::rollbackRuntimeCounterexampleState(
+    SpatialCandidateScratch &scratch, std::uint64_t initialViolation) noexcept {
+  for (const auto &delta :
+       llvm::reverse(scratch.runtimeCounterexampleLiteralDeltas_))
+    runtimeCounterexampleLiteralHolds_[delta.literal] = delta.oldHolds;
+  for (const auto &delta :
+       llvm::reverse(scratch.runtimeCounterexampleClauseDeltas_)) {
+    runtimeCounterexampleClauseTrueCounts_[delta.clause] = delta.oldTrueCount;
+    runtimeCounterexampleClauseViolated_[delta.clause] = delta.oldViolated;
+  }
+  runtimeCounterexampleViolation_ = initialViolation;
+  scratch.runtimeCounterexampleLiteralDeltas_.clear();
+  scratch.runtimeCounterexampleClauseDeltas_.clear();
+  scratch.runtimeCounterexampleAffectedClauses_.clear();
+}
+
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialCandidateState::projectVerifiedRoutes(
     llvm::ArrayRef<const RouteTreeState *> routes,
@@ -1212,6 +1362,11 @@ SpatialCandidateState::projectVerifiedRoutes(
         "cyclic Dataflow basis requires a typed progress breaker");
   }
 
+  auto noGoodViolation =
+      countRuntimeCounterexampleViolations(routes, *tagValues);
+  if (!noGoodViolation)
+    return noGoodViolation.takeError();
+
   return SpatialCandidateRouteProjection{
       unrouted,
       routeResources->totalCapacityOveruseRaw(),
@@ -1222,6 +1377,7 @@ SpatialCandidateState::projectVerifiedRoutes(
       progressState_.capacityProofDebtWitnessCount(),
       progressState_.capacityShortfall(),
       progressState_.capacityObligationRouteAnchorCount(),
+      *noGoodViolation,
       routeResources->totalSelectedTraversalClaim(),
       routeResources->routeReleaseLatencyCycles(),
       routeResources->routeMinimumInitiationIntervalCycles(),
@@ -1493,8 +1649,39 @@ llvm::Error SpatialCandidateState::verifyCachedState() const {
           problem_->memory().exposures().size() ||
       registerFifoTransfers_.size() !=
           problem_->transfers().logicalNets().size() ||
-      routeTrees_.size() != problem_->transfers().logicalNets().size())
+      routeTrees_.size() != problem_->transfers().logicalNets().size() ||
+      runtimeCounterexampleLiteralHolds_.size() !=
+          problem_->constraints().resolvedNoGoodLiterals().size() ||
+      runtimeCounterexampleClauseTrueCounts_.size() !=
+          problem_->constraints().resolvedNoGoods().size() ||
+      runtimeCounterexampleClauseViolated_.size() !=
+          problem_->constraints().resolvedNoGoods().size())
     return candidateError("candidate shape does not match its frozen problem");
+  std::uint64_t cachedCounterexampleViolations = 0;
+  const auto noGoodClauses = problem_->constraints().resolvedNoGoods();
+  for (PnrIndex clauseOrdinal = 0; clauseOrdinal < noGoodClauses.size();
+       ++clauseOrdinal) {
+    const FrozenNoGoodResolvedClause &clause = noGoodClauses[clauseOrdinal];
+    if (clause.literalOffset > runtimeCounterexampleLiteralHolds_.size() ||
+        clause.literalCount >
+            runtimeCounterexampleLiteralHolds_.size() - clause.literalOffset)
+      return candidateError(
+          "cached runtime-counterexample clause range is invalid");
+    PnrIndex trueCount = 0;
+    for (std::uint8_t holds :
+         llvm::ArrayRef(runtimeCounterexampleLiteralHolds_)
+             .slice(clause.literalOffset, clause.literalCount))
+      trueCount += holds != 0 ? 1 : 0;
+    const bool violated = trueCount == clause.literalCount;
+    if (runtimeCounterexampleClauseTrueCounts_[clauseOrdinal] != trueCount ||
+        (runtimeCounterexampleClauseViolated_[clauseOrdinal] != 0) != violated)
+      return candidateError(
+          "runtime-counterexample clause cache is internally inconsistent");
+    cachedCounterexampleViolations += violated ? 1 : 0;
+  }
+  if (cachedCounterexampleViolations != runtimeCounterexampleViolation_)
+    return candidateError(
+        "runtime-counterexample violation total is internally inconsistent");
   for (const RouteTreeStateHandle &route : routeTrees_) {
     if (!route || &route->routingGraph() != &problem_->routing())
       return candidateError("RouteTree is bound to a foreign routing graph");
@@ -1613,6 +1800,35 @@ llvm::Error SpatialCandidateState::verify() const {
   routes.reserve(routeTrees_.size());
   for (const RouteTreeStateHandle &route : routeTrees_)
     routes.push_back(route.get());
+  const auto noGoodClauses = problem_->constraints().resolvedNoGoods();
+  const auto noGoodLiterals = problem_->constraints().resolvedNoGoodLiterals();
+  const auto noGoodTagValues = tagValueViews(tagAssignments_, routes.size());
+  std::uint64_t coldCounterexampleViolations = 0;
+  for (PnrIndex clauseOrdinal = 0; clauseOrdinal < noGoodClauses.size();
+       ++clauseOrdinal) {
+    const FrozenNoGoodResolvedClause &clause = noGoodClauses[clauseOrdinal];
+    PnrIndex trueCount = 0;
+    for (PnrIndex local = 0; local < clause.literalCount; ++local) {
+      const PnrIndex literalOrdinal = clause.literalOffset + local;
+      auto holds = runtimeCounterexampleLiteralHolds(
+          noGoodLiterals[literalOrdinal], routes, noGoodTagValues);
+      if (!holds)
+        return holds.takeError();
+      if (runtimeCounterexampleLiteralHolds_[literalOrdinal] != *holds)
+        return candidateError(
+            "runtime-counterexample literal cache diverges from cold state");
+      trueCount += *holds ? 1 : 0;
+    }
+    const bool violated = trueCount == clause.literalCount;
+    if (runtimeCounterexampleClauseTrueCounts_[clauseOrdinal] != trueCount ||
+        (runtimeCounterexampleClauseViolated_[clauseOrdinal] != 0) != violated)
+      return candidateError(
+          "runtime-counterexample clause cache diverges from cold state");
+    coldCounterexampleViolations += violated ? 1 : 0;
+  }
+  if (coldCounterexampleViolations != runtimeCounterexampleViolation_)
+    return candidateError(
+        "runtime-counterexample violation cache diverges from cold state");
   std::vector<std::uint64_t> expectedNetWorstArrivals;
   std::vector<std::uint64_t> expectedNetNegativeSlacks;
   auto physicalTiming = detail::projectSpatialPhysicalTiming(

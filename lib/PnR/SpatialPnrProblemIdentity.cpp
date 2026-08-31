@@ -14,14 +14,14 @@ using namespace loom::pnr;
 
 namespace {
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.23\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.24\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-// Bumped with loom.mapping_constraints 1.1: freeze now indexes cross-projection
-// runtime-counterexample no-goods, so a 2.22 frozen model is not reusable.
-constexpr std::uint32_t cacheSchemaMinor = 23;
+// Runtime-counterexample clauses now participate in candidate hard-violation
+// state, so frozen models from the indexing-only contract are not reusable.
+constexpr std::uint32_t cacheSchemaMinor = 24;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.23";
+    "loom.spatial_pnr.freeze.2.24";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =

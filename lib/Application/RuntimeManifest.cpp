@@ -13,6 +13,7 @@
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Request.h"
@@ -1499,6 +1500,22 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       return reject(
           ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
           "strict runtime Evidence differs from its dependency projection");
+    if (kind == RuntimeEvidenceKind::Cgra) {
+      auto terminal =
+          evaluation::models::classifyCompletedCgraSimulationEvidence(
+              *strict, *resolution, artifacts, blobs);
+      if (!terminal)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "cannot classify CGRA runtime terminal: " +
+                llvm::toString(terminal.takeError()));
+      if (*terminal !=
+          evaluation::models::CgraSimulationEvidenceTerminal::Retired)
+        return reject(
+            ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
+            "completed Application runtime contains a closed-wait CGRA "
+            "execution");
+    }
     auto execution = strictExecutionOutput(*strict);
     if (!execution)
       return execution.takeError();

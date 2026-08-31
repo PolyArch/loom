@@ -38,6 +38,7 @@
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
@@ -612,7 +613,7 @@ enum class SwitchResidencyExpectation : std::uint8_t {
   ExceedsCapacity,
 };
 
-/// Artifact-level semantic joints of the loom.mapping_constraints 1.1
+/// Artifact-level semantic joints of the loom.mapping_constraints 1.2
 /// runtime-counterexample no-good, exercised against a real sealed
 /// SpatialMapping and its own real RouteTree rather than synthetic text.
 void exerciseSpatialRuntimeCounterexampleNoGood(
@@ -622,6 +623,8 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
     const loom::fabric::FabricArtifactView &foreignFabric,
     const loom::mapping::FinalizedSpatialMappingConstraintSet &parent,
     const loom::mapping::FinalizedSpatialMapping &mapping,
+    const loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+    const loom::pnr::ResolvedPnrConfigView &pnrConfig,
     const loom::ArtifactStore &store) {
   // Quote exact choices the sealed Mapping really made. A RouteTree can select
   // a traversal at its source attachment, on a routed node, or at a sink
@@ -666,6 +669,30 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
   const loom::mapping::SpatialNoGoodLiteral usesTraversal =
       loom::mapping::SpatialNetUsesTraversalLiteral{
           selectedRoute->logicalNet, std::nullopt, *selectedTraversal};
+  std::optional<loom::mapping::SpatialNoGoodLiteral> selectedTag;
+  for (const loom::mapping::SpatialPhysicalTagSegmentView &segment :
+       mapping.view().physicalTagSegments()) {
+    if (segment.routeTreeOrdinal >= mapping.view().routeTrees().size() ||
+        segment.resourceUseOrdinal >= mapping.view().resourceUses().size())
+      fail("sealed Spatial Mapping has a malformed Physical Tag segment");
+    const auto &assignments =
+        mapping.view().resourceUses()[segment.resourceUseOrdinal]
+            .sharingAssignments;
+    if (assignments.size() != 1)
+      continue;
+    const auto *tag =
+        std::get_if<fabric::PhysicalTagPatternValue>(&assignments.front());
+    if (!tag)
+      continue;
+    selectedTag = loom::mapping::SpatialNoGoodLiteral{
+        loom::mapping::SpatialNetTagEqualsLiteral{
+            mapping.view().routeTrees()[segment.routeTreeOrdinal].logicalNet,
+            segment.segmentOrdinal, tag->value}};
+    break;
+  }
+  const loom::mapping::SpatialNoGoodLiteral migrationTagLiteral =
+      loom::mapping::SpatialNetTagEqualsLiteral{
+          selectedRoute->logicalNet, 0, llvm::APInt(4, 3)};
 
   const auto publish =
       [&](llvm::ArrayRef<loom::mapping::SpatialNoGoodLiteral> literals) {
@@ -691,6 +718,165 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
   if (!rejectsMapping(bothHold))
     fail("a no-good whose literals all hold did not reject its own parent "
          "Spatial Mapping");
+  if (selectedTag && !rejectsMapping(publish({*selectedTag})))
+    fail("an exact Physical Tag segment literal did not reject its parent");
+
+  {
+    auto unconstrainedProblem = take(loom::pnr::freezeSpatialPnrProblem(
+        dataflow, techMapping, fabric, physicalTiming, pnrConfig,
+        parent.view()));
+    auto unconstrainedCandidate =
+        take(loom::pnr::createCanonicalSpatialCandidate(unconstrainedProblem));
+    loom::pnr::SpatialActionDomainScratch actionDomain;
+    requireSuccess(actionDomain.prepare(*unconstrainedProblem));
+    requireSuccess(actionDomain.rebuild(*unconstrainedCandidate));
+
+    std::optional<loom::mapping::SpatialConstraintTransferTerminal> terminal;
+    std::optional<loom::pnr::SpatialResourceAllocationAction> alternate;
+    const auto logicalNets = unconstrainedProblem->transfers().logicalNets();
+    const auto sinkBindings =
+        unconstrainedProblem->transfers().logicalNetSinkBindings();
+    const auto sinks = unconstrainedProblem->transfers().logicalNetSinks();
+    const auto choices = actionDomain.view().resourceChoices;
+    const auto findAlternate =
+        [&](loom::pnr::FrozenSpatialTerminalBinding binding,
+            loom::pnr::PnrIndex selectedEndpoint)
+        -> std::optional<loom::pnr::SpatialResourceAllocationAction> {
+      for (const auto &choice : choices) {
+        if (binding.kind ==
+            loom::pnr::FrozenSpatialTerminalBindingKind::PortDemand) {
+          const auto *port =
+              std::get_if<loom::pnr::SpatialPortAttachmentAction>(&choice);
+          if (!port || port->demand != binding.index)
+            continue;
+          if (unconstrainedProblem->ports()
+                  .attachmentOptions()[port->attachmentOption]
+                  .endpoint != selectedEndpoint)
+            return choice;
+          continue;
+        }
+        const auto *boundary =
+            std::get_if<loom::pnr::SpatialGraphBoundaryAttachmentAction>(
+                &choice);
+        if (!boundary || boundary->boundary != binding.index)
+          continue;
+        if (unconstrainedProblem->ports()
+                .attachmentOptions()[boundary->attachmentOption]
+                .endpoint != selectedEndpoint)
+          return choice;
+      }
+      return std::nullopt;
+    };
+
+    for (loom::pnr::PnrIndex logicalNet = 0;
+         logicalNet < logicalNets.size() && !alternate; ++logicalNet) {
+      const auto source = unconstrainedProblem->transfers()
+                              .logicalNetSourceBindings()[logicalNet];
+      alternate = findAlternate(
+          source, unconstrainedCandidate->logicalNetSourceEndpoint(logicalNet));
+      if (alternate) {
+        terminal = loom::mapping::SpatialConstraintTransferTerminal{
+            logicalNets[logicalNet].producer, std::nullopt};
+        break;
+      }
+      for (loom::pnr::PnrIndex sink = 0;
+           sink < logicalNets[logicalNet].sinkCount && !alternate; ++sink) {
+        const auto binding =
+            sinkBindings[logicalNets[logicalNet].sinkOffset + sink];
+        alternate = findAlternate(
+            binding,
+            unconstrainedCandidate->logicalNetSinkEndpoint(logicalNet, sink));
+        if (alternate)
+          terminal = loom::mapping::SpatialConstraintTransferTerminal{
+              logicalNets[logicalNet].producer,
+              sinks[logicalNets[logicalNet].sinkOffset + sink]};
+      }
+    }
+    if (!terminal || !alternate)
+      fail(
+          "Spatial candidate fixture has no terminal with a distinct endpoint");
+
+    loom::pnr::PnrIndex selectedEndpoint = 0;
+    loom::pnr::PnrIndex logicalNet = 0;
+    for (; logicalNet < logicalNets.size(); ++logicalNet) {
+      if (!(logicalNets[logicalNet].producer == terminal->producer))
+        continue;
+      if (!terminal->consumer) {
+        selectedEndpoint =
+            unconstrainedCandidate->logicalNetSourceEndpoint(logicalNet);
+        break;
+      }
+      const auto netSinks = sinks.slice(logicalNets[logicalNet].sinkOffset,
+                                        logicalNets[logicalNet].sinkCount);
+      const auto found = llvm::find(netSinks, *terminal->consumer);
+      if (found == netSinks.end())
+        continue;
+      selectedEndpoint = unconstrainedCandidate->logicalNetSinkEndpoint(
+          logicalNet,
+          static_cast<loom::pnr::PnrIndex>(found - netSinks.begin()));
+      break;
+    }
+    if (logicalNet == logicalNets.size())
+      fail("runtime-counterexample terminal lost its logical-net owner");
+    const auto endpointReference = unconstrainedProblem->routing()
+                                       .routingEndpoints()[selectedEndpoint]
+                                       .reference;
+    const loom::mapping::SpatialNoGoodLiteral attachmentOnly =
+        loom::mapping::SpatialTransferAttachmentEqualsLiteral{
+            *terminal, endpointReference};
+    const auto attachmentConstraint = publish({attachmentOnly});
+    auto constrainedProblem = take(loom::pnr::freezeSpatialPnrProblem(
+        dataflow, techMapping, fabric, physicalTiming, pnrConfig,
+        attachmentConstraint.view()));
+    auto constrainedCandidate =
+        take(loom::pnr::createCanonicalSpatialCandidate(constrainedProblem));
+    if (constrainedCandidate->runtimeCounterexampleViolation() != 1 ||
+        constrainedCandidate->firstRuntimeCounterexampleViolation() != 0)
+      fail("canonical candidate did not expose its exact no-good violation");
+
+    loom::pnr::SpatialCandidateScratch scratch;
+    requireSuccess(scratch.prepare(*constrainedProblem));
+    auto move = take(constrainedCandidate->beginMove(scratch));
+    if (const auto *port =
+            std::get_if<loom::pnr::SpatialPortAttachmentAction>(&*alternate))
+      requireSuccess(
+          move.setPortAttachment(port->demand, port->attachmentOption));
+    else {
+      const auto &boundary =
+          std::get<loom::pnr::SpatialGraphBoundaryAttachmentAction>(*alternate);
+      requireSuccess(move.setGraphBoundaryAttachment(
+          boundary.boundary, boundary.attachmentOption));
+    }
+    const bool closed = take(move.close());
+    if (!closed || constrainedCandidate->runtimeCounterexampleViolation() != 0)
+      fail("changing one exact attachment did not satisfy the no-good");
+    move.rollback();
+    if (constrainedCandidate->runtimeCounterexampleViolation() != 1)
+      fail("runtime-counterexample rollback did not restore the violation");
+    requireSuccess(constrainedCandidate->verify());
+
+  }
+
+  // The ordinary Spatial provider must enforce the same clause while it
+  // searches, then independently admit every published Mapping. This reaches
+  // prospective route projection, committed incremental state, rollback, cold
+  // verification, and the publication gate without a test-only state hook.
+  const loom::pnr::SpatialPnrGenerationInputs noGoodInputs{
+      dataflow,  techMapping,     fabric, physicalTiming,
+      pnrConfig, bothHold.view(), store};
+  const auto noGoodSearch = loom::pnr::generateSpatialMappings(noGoodInputs);
+  const auto *noGoodMappings =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&noGoodSearch);
+  if (!noGoodMappings || noGoodMappings->candidates.empty())
+    fail("Spatial PnR did not find a candidate satisfying an exact runtime "
+         "counterexample clause");
+  for (const loom::ArtifactRootReference &candidate :
+       noGoodMappings->candidates) {
+    const auto repaired =
+        take(loom::mapping::importSpatialMapping(candidate, store));
+    requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+        dataflow, techMapping, fabric, bothHold.view(), repaired.view()));
+  }
 
   // Changing one literal satisfies the clause. A traversal the route does not
   // select is independently verifiable as not-holding, so the same Mapping is
@@ -721,6 +907,16 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
   const auto unrelated = publish({*changedLiteral});
   requireSuccess(loom::mapping::admitSpatialMappingConstraints(
       dataflow, techMapping, fabric, unrelated.view(), mapping.view()));
+
+  if (selectedTag) {
+    auto changedTag = std::get<loom::mapping::SpatialNetTagEqualsLiteral>(
+        *selectedTag);
+    changedTag.value.flipBit(0);
+    const auto differentTag = publish(
+        {loom::mapping::SpatialNoGoodLiteral{std::move(changedTag)}});
+    requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+        dataflow, techMapping, fabric, differentTag.view(), mapping.view()));
+  }
 
   // A sink-qualified traversal is evaluated only on that sink's exact branch,
   // including the source- and sink-local traversal positions. A sink-qualified
@@ -843,21 +1039,47 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
       take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
                      parent.canonicalBytes()))};
   if (legacyParent.artifact == parent.reference().artifact)
-    fail("the 1.0 and 1.1 identities of identical bytes collided");
+    fail("the 1.0 and 1.2 identities of identical bytes collided");
 
   llvm::Error strict =
       loom::mapping::importSpatialMappingConstraintSet(legacyParent, store)
           .takeError();
   if (!strict)
-    fail("the strict 1.1 Spatial importer accepted a 1.0 reference");
+    fail("the strict 1.2 Spatial importer accepted a 1.0 reference");
   llvm::consumeError(std::move(strict));
 
-  const auto migrated =
+  const auto migratedV1_1 =
       take(loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(legacyParent,
                                                                  store));
-  if (!(migrated == parent.reference()))
-    fail("Spatial 1.0-to-1.1 migration did not reproduce the native 1.1 cold "
+  const loom::ArtifactRootReference nativeV1_1{
+      loom::mapping::mappingConstraintSetSchemaV1_1.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_1.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_1,
+                     parent.canonicalBytes()))};
+  if (!(migratedV1_1 == nativeV1_1))
+    fail("Spatial 1.0-to-1.1 migration did not reproduce the native 1.1 "
          "identity");
+  const auto migratedV1_2 = take(
+      loom::mapping::migrateSpatialConstraintRootV1_1ToV1_2(migratedV1_1,
+                                                             store));
+  if (!(migratedV1_2 == parent.reference()))
+    fail("Spatial 1.1-to-1.2 migration did not reproduce the native 1.2 "
+         "identity");
+  if (!(take(loom::mapping::migrateSpatialConstraintRootV1_0ToV1_2(
+            legacyParent, store)) == parent.reference()))
+    fail("Spatial 1.0-to-1.2 migration chain changed the cold identity");
+
+  const loom::ArtifactRootReference legacyNoGoodV1_1{
+      loom::mapping::mappingConstraintSetSchemaV1_1.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_1.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_1,
+                     bothHold.canonicalBytes()))};
+  if (!(take(loom::mapping::migrateSpatialConstraintRootV1_1ToV1_2(
+            legacyNoGoodV1_1, store)) == bothHold.reference()))
+    fail("Spatial 1.1 no-good migration changed the native 1.2 identity");
+  auto legacyNoGoodBytes = take(store.get(legacyNoGoodV1_1));
+  if (!legacyNoGoodBytes.bytes().equals(bothHold.canonicalBytes().bytes()))
+    fail("Spatial 1.1 no-good fixture changed its canonical payload bytes");
 
   // A 1.0 reference to bytes that already carry the 1.1-only clause kind is
   // mislabelled, not due an upgrade.
@@ -872,6 +1094,20 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
   if (!mislabelledError)
     fail("Spatial migration accepted a 1.0 payload holding a 1.1-only clause");
   llvm::consumeError(std::move(mislabelledError));
+
+  const auto tagOnly = publish({migrationTagLiteral});
+  const loom::ArtifactRootReference mislabelledV1_1{
+      loom::mapping::mappingConstraintSetSchemaV1_1.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_1.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_1,
+                     tagOnly.canonicalBytes()))};
+  auto tagMigration =
+      loom::mapping::migrateSpatialConstraintRootV1_1ToV1_2(
+          mislabelledV1_1, store);
+  if (tagMigration)
+    fail("Spatial migration accepted a 1.1 payload holding a 1.2-only tag "
+         "literal");
+  llvm::consumeError(tagMigration.takeError());
 
   // Migration accepts only what the strict 1.0 importer could have accepted.
   // Perturbing the stored payload so it is no longer canonical under its own
@@ -1080,7 +1316,7 @@ void completeCandidateRoundTrip(
 
     exerciseSpatialRuntimeCounterexampleNoGood(
         dataflow, tech.view(), fabric.view(), foreignFabric.view(), constraints,
-        generatedView, store);
+        generatedView, physicalTiming, generatorConfig, store);
 
     generatorResolved.dse.systemPnr.search.routing.negotiation =
         loom::ResolvedDualSubgradientPolicy{
@@ -1842,6 +2078,100 @@ void completeCandidateRoundTrip(
     if (observedAssignments != expectedAssignments)
       fail("SpatialMapping did not persist every continuity origin exactly "
            "once");
+
+    if (imported.view().physicalTagSegments().empty())
+      fail("tagged SpatialMapping has no canonical tag segment");
+    const auto &segment = imported.view().physicalTagSegments().front();
+    if (segment.routeTreeOrdinal >= imported.view().routeTrees().size() ||
+        segment.resourceUseOrdinal >= imported.view().resourceUses().size())
+      fail("tagged SpatialMapping has a malformed tag segment owner");
+    const auto &tagAssignments =
+        imported.view().resourceUses()[segment.resourceUseOrdinal]
+            .sharingAssignments;
+    const auto *selectedValue =
+        tagAssignments.size() == 1
+            ? std::get_if<fabric::PhysicalTagPatternValue>(
+                  &tagAssignments.front())
+            : nullptr;
+    if (!selectedValue)
+      fail("tagged SpatialMapping segment has no typed tag value");
+    const loom::mapping::SpatialNoGoodLiteral exactTag =
+        loom::mapping::SpatialNetTagEqualsLiteral{
+            imported.view().routeTrees()[segment.routeTreeOrdinal].logicalNet,
+            segment.segmentOrdinal, selectedValue->value};
+    const auto exactTagConstraint = take(
+        loom::mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
+            constraints.reference(), {exactTag}, store));
+    if (!rejected(loom::mapping::admitSpatialMappingConstraints(
+            dataflow, tech.view(), fabric.view(), exactTagConstraint.view(),
+            imported.view())))
+      fail("sealed tag literal did not reject its exact SpatialMapping");
+    auto differentTag =
+        std::get<loom::mapping::SpatialNetTagEqualsLiteral>(exactTag);
+    differentTag.value.flipBit(0);
+    const auto differentTagConstraint = take(
+        loom::mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
+            constraints.reference(),
+            {loom::mapping::SpatialNoGoodLiteral{std::move(differentTag)}},
+            store));
+    requireSuccess(loom::mapping::admitSpatialMappingConstraints(
+        dataflow, tech.view(), fabric.view(), differentTagConstraint.view(),
+        imported.view()));
+
+    auto tagConstrainedProblem = take(loom::pnr::freezeSpatialPnrProblem(
+        dataflow, tech.view(), fabric.view(), pnrConfig,
+        exactTagConstraint.view()));
+    auto tagConstrainedSnapshot = take(candidate->snapshotFullyRouted());
+    tagConstrainedSnapshot.problem = tagConstrainedProblem;
+    auto tagConstrainedCandidate = take(
+        loom::pnr::SpatialCandidateState::materializeFullyRouted(
+            tagConstrainedSnapshot));
+    if (tagConstrainedCandidate->runtimeCounterexampleViolation() != 1)
+      fail("warm candidate reconstruction lost an exact Physical Tag "
+           "no-good violation");
+    auto tagConstrainedClone =
+        take(tagConstrainedCandidate->cloneFullyRouted());
+    if (tagConstrainedClone->runtimeCounterexampleViolation() != 1)
+      fail("candidate cloning lost an exact Physical Tag no-good violation");
+
+    const auto &tagLiteral =
+        std::get<loom::mapping::SpatialNetTagEqualsLiteral>(exactTag);
+    const auto tagNet = llvm::find_if(
+        tagConstrainedProblem->transfers().logicalNets(),
+        [&](const loom::pnr::FrozenSpatialLogicalNet &logicalNet) {
+          return logicalNet.producer == tagLiteral.producer;
+        });
+    if (tagNet == tagConstrainedProblem->transfers().logicalNets().end())
+      fail("Physical Tag no-good producer is absent from the frozen problem");
+    const auto tagNetOrdinal = static_cast<loom::pnr::PnrIndex>(
+        tagNet - tagConstrainedProblem->transfers().logicalNets().begin());
+    loom::pnr::SpatialCandidateScratch tagNoGoodScratch;
+    requireSuccess(tagNoGoodScratch.prepare(*tagConstrainedProblem));
+    auto tagNoGoodMove =
+        take(tagConstrainedCandidate->beginMove(tagNoGoodScratch));
+    requireSuccess(tagNoGoodMove.ripUpWholeRoute(tagNetOrdinal));
+    const auto tagNoGoodProjection =
+        take(tagNoGoodMove.projectCurrentRoutes());
+    if (tagNoGoodProjection.runtimeCounterexampleViolation != 0)
+      fail("provisional route-local tag removal retained its exact no-good");
+    if (!take(tagNoGoodMove.close()))
+      fail("route-local tag no-good move closed a handshake cycle");
+    if (tagConstrainedCandidate->runtimeCounterexampleViolation() != 0)
+      fail("closed route-local tag removal retained its exact no-good");
+    tagNoGoodMove.rollback();
+    if (tagConstrainedCandidate->runtimeCounterexampleViolation() != 1)
+      fail("Physical Tag no-good rollback did not restore its violation");
+    requireSuccess(tagConstrainedCandidate->verify());
+
+    loom::pnr::SpatialCandidateScratch tagNoGoodCommitScratch;
+    requireSuccess(tagNoGoodCommitScratch.prepare(*tagConstrainedProblem));
+    auto tagNoGoodCommit =
+        take(tagConstrainedClone->beginMove(tagNoGoodCommitScratch));
+    requireSuccess(tagNoGoodCommit.ripUpWholeRoute(tagNetOrdinal));
+    requireSuccess(tagNoGoodCommit.commit());
+    if (tagConstrainedClone->runtimeCounterexampleViolation() != 0)
+      fail("committed route-local tag removal retained its no-good");
+    requireSuccess(tagConstrainedClone->verify());
 
     auto missingTag = parseSpatial(context, finalized.canonicalBytes());
     if (!missingTag)

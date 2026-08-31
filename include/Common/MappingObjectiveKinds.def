@@ -24,6 +24,9 @@ LOOM_MAPPING_VIOLATION(HardProgressViolation, 4, "HardProgressViolation",
                        "hard_progress_violation")
 LOOM_MAPPING_VIOLATION(ProgressProofDebt, 5, "ProgressProofDebt",
                        "progress_proof_debt")
+LOOM_MAPPING_VIOLATION(RuntimeCounterexampleViolation, 6,
+                       "RuntimeCounterexampleViolation",
+                       "runtime_counterexample_violation")
 
 LOOM_MAPPING_MEASURE(TotalSelectedTraversalClaim, 0,
                      "TotalSelectedTraversalClaim")

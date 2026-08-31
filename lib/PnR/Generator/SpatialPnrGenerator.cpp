@@ -694,6 +694,8 @@ public:
     fields["progress_capacity_shortfall"] =
         candidate.progressCapacityShortfall();
     fields["progress_route_anchors"] = candidate.progressRouteAnchorCount();
+    fields["runtime_counterexample_violations"] =
+        candidate.runtimeCounterexampleViolation();
     fields["shared_finite_buffer_conflicts"] =
         candidate.progress().sharedFiniteBufferConflictCount();
     fields["route_dependency_violations"] =

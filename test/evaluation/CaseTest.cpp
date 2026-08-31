@@ -1069,7 +1069,7 @@ void requestCanonicalRoundTripAndStoreImport() {
   require(
       __func__,
       llvm::StringRef(canonical).contains(
-          "\"descriptor_ref\":{\"schema_major\":3,\"schema_minor\":0,") &&
+          "\"descriptor_ref\":{\"schema_major\":3,\"schema_minor\":1,") &&
           llvm::StringRef(canonical).contains(
               "\"resolved_model_config\":{\"canonical_view_bytes\":\"\"") &&
           llvm::StringRef(canonical).contains("\"component_view_digest\":\"") &&
@@ -1114,7 +1114,7 @@ void requestCanonicalRoundTripAndStoreImport() {
 
   std::string legacyDescriptorVersion = canonical;
   const std::string legacyDescriptorTag =
-      "\"schema_major\":3,\"schema_minor\":0";
+      "\"schema_major\":3,\"schema_minor\":1";
   const std::size_t descriptorPosition =
       legacyDescriptorVersion.find(legacyDescriptorTag);
   require(__func__, descriptorPosition != std::string::npos,
@@ -1432,7 +1432,7 @@ void modelDescriptorOwnerContractsAreClosed() {
 } // namespace
 
 void currentRegistryReferencesAreRequired() {
-  // Registry 3.0 rejects obsolete case and model descriptor references
+  // Registry 3.1 rejects obsolete case and model descriptor references
   // outright; there is no reinterpretation path.
   auto legacyCase =
       EvaluationCaseSignatureRef::get(SchemaVersion{1, 0}, testCaseKind);
@@ -1444,8 +1444,8 @@ void currentRegistryReferencesAreRequired() {
   if (legacyModel)
     fail(__func__, "a 1.0 model descriptor reference was reinterpreted");
   llvm::consumeError(legacyModel.takeError());
-  if (evaluationSchemaVersion() != SchemaVersion{3, 0})
-    fail(__func__, "the Evaluation registry did not move to schema 3.0");
+  if (evaluationSchemaVersion() != SchemaVersion{3, 1})
+    fail(__func__, "the Evaluation registry did not move to schema 3.1");
   // The Request and Evidence artifact root records stay at their own 1.0.
   if (EvaluationRequest::artifactSchema.version != SchemaVersion{1, 0} ||
       EvaluationEvidence::artifactSchema.version != SchemaVersion{1, 0})

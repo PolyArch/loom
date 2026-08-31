@@ -491,7 +491,7 @@ def Mapping_SystemRouteSinkOp
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.1 Spatial root";
+  let summary = "complete loom.mapping_constraints 1.2 Spatial root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$tech_mapping,
       Mapping_ArtifactIdentityAttr:$fabric);
@@ -503,7 +503,7 @@ def Mapping_ConstraintsSpatialOp
 def Mapping_ConstraintsSystemOp
     : Mapping_Op<"constraints.system", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.1 System root";
+  let summary = "complete loom.mapping_constraints 1.2 System root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric,
       ArrayAttr:$root_thread_launches,

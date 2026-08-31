@@ -576,7 +576,7 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   const std::size_t temporalPayloadInput = directNetworkInputCount;
   auto temporalInputFifo = take(
       test, spatial.addFifo(take(test, spatial.input(temporalPayloadInput)),
-                            adg::FifoSpec{payload, 2, true}));
+                            adg::FifoSpec{payload, 2, true, std::nullopt}));
   auto temporalInputFork =
       take(test, spatial.addSwitch({temporalInputFifo.value()},
                                    adg::SwitchSpec::spatial(constantPorts,
@@ -634,7 +634,8 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     if (ordinal == 0) {
       auto temporalOutputFifo =
           take(test, spatial.addFifo(temporalToSpatial[0],
-                                     adg::FifoSpec{payload, 2, false}));
+                                     adg::FifoSpec{payload, 2, false,
+                                                   std::nullopt}));
       temporalPayloadOutputs.push_back(temporalOutputFifo.value());
     } else {
       temporalPayloadOutputs.push_back(temporalToSpatial[0]);
@@ -668,7 +669,9 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     routedMemoryOutputs.reserve(memoryOutputs.values().size());
     for (const adg::SpatialValue output : memoryOutputs.values()) {
       auto fifo =
-          take(test, spatial.addFifo(output, adg::FifoSpec{payload, 2, true}));
+          take(test, spatial.addFifo(
+                         output,
+                         adg::FifoSpec{payload, 2, true, std::nullopt}));
       routedMemoryOutputs.push_back(fifo.value());
     }
     requireSuccess(test, firstMemoryAttachment.connectOutputs(

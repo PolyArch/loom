@@ -312,9 +312,22 @@ The execution terminal is exactly `Retired`, `Halted {finding,witness}`, or
 CGRA-sim fills the exact `SpatialProgressObservations` anchors in the derived
 reference domain. `Retired` includes visible graph retirement; a halt or
 retained stop may occur before or after it, including a halt during
-post-retirement self-reset. Cycle count is derived from accepted Spatial Launch
-through visible graph retirement without `delta`, rather than stored in the
-execution.
+post-retirement self-reset. A retired CycleCount point is derived from accepted
+Spatial Launch through visible graph retirement without `delta`. A Halted
+execution instead reports the exact integral terminal cycle as the lower bound
+of a `SubjectDidNotComplete` censored CycleCount; it never presents that bound
+as a retirement point.
+
+For `cgra_closed_wait`, the `Halted` witness is the canonical
+`loom.cgra_closed_wait_certificate 1.0` owner value. It contains the exact
+Dataflow/Fabric/TechMapping/SpatialMapping closure, the dynamic transfers named
+by its edges, and one closed SCC of typed wait owners. The corresponding
+Completed Evidence contains one `TerminalWitnessRef` to that exact execution
+output. A caller cannot pass a second diagnostic or certificate beside the
+Evidence. Strict import follows the reference, adopts and validates the typed
+witness, and recomputes its domain-separated digest. Invocation-local JSON and
+the larger `CgraClosedWaitSetDiagnostic` remain derived diagnostics and cannot
+be substituted for the durable witness.
 
 ## Trace And Observations
 

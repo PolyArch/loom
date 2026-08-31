@@ -284,19 +284,25 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Evaluation registry schema 3.0 owns every case, model, MetricKind,
+Evaluation registry schema 3.1 owns every case, model, MetricKind,
 FindingKind, condition-kind, capability-enum, scope-form, and related registry
 ordinal. It registers these exact case signatures used by the pre-Mapping,
 DFG-simulation, FPA, and system-simulation flows described here:
 
-Registry 3.0 is the exact current catalog. Its case and model descriptors bind
+Registry 3.1 is the exact current catalog. Its case and model descriptors bind
 the current Fabric, ConfigurationABI, occurrence-scoped HardwareImplementation,
-Deployment, and runtime contracts. Exact 2.0 and 2.1 references are unsupported;
-they are never cloned onto the current catalog or reinterpreted as 3.0. The
+Deployment, and runtime contracts. It appends the `cgra_closed_wait` Finding
+and makes that Finding a mandatory terminal query of `cgra_simulator`; no 3.0
+descriptor changes meaning in place. Exact 2.0, 2.1, and 3.0 references are
+unsupported by an ordinary 3.1 importer and are never reinterpreted as 3.1. A
+3.0 CGRA Request must be reconstructed from its authoring case, exact inputs,
+and ResolvedConfig under the 3.1 descriptor, and its Evidence must be rerun;
+an old Evidence root cannot be relabeled because it did not request or report
+the mandatory terminal Finding. The
 `evaluation.request.1.0` and
 `evaluation.evidence.1.0` root record shapes remain unchanged because they
 already carry exact versioned descriptor and Artifact references; newly
-constructed roots use registry-3.0 refs.
+constructed roots use registry-3.1 refs.
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -325,7 +331,7 @@ The matching initial model descriptors are:
 | 6 | `fpa_model_parameter_calibration` | 4 | deterministic Analytic calibration-error quantiles over one exact FPA parameter bundle and one exact ground-truth Evidence set |
 | 7 | `structured_fabric_calibrated_fpa` | 0 | deterministic Analytic point estimates for limiting clock frequency, total area, dynamic power, and leakage power using one exact FPA parameter bundle |
 | 8 | `canonical_dataflow_fabric_calibrated_fpa` | 1 | the same calibrated FPA predictions for one Canonical Dataflow/Fabric pair |
-| 9 | `cgra_simulator` | 7 | deterministic Simulation of the exact mapped Spatial workload, with one `SimulationExecution` output and exact whole-case CycleCount |
+| 9 | `cgra_simulator` | 7 | deterministic Simulation of the exact mapped Spatial workload, with one `SimulationExecution` output, exact whole-case CycleCount, and the mandatory whole-case `cgra_closed_wait` terminal finding |
 | 10 | `simulation_execution_comparison` | 8 | deterministic comparison of compatible execution observations for the whole-case `functional_mismatch` finding |
 | 11 | `canonical_dataflow_source_functional` | 9 | deterministic Simulation comparison of one Canonical Dataflow candidate and its selected Structured parent against the workload-owned source, producing only the whole-case `functional_mismatch` finding |
 | 12 | `cadence_voltus_static_rail` | 5 | deterministic ToolMeasurement point observation of whole-case `MaximumVoltageDrop` using the shared static rail-analysis contract |
@@ -783,7 +789,7 @@ FindingRequest {
 
 `MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
 owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
-those wire roots carry registry-3.0 references and do not own their ordinals.
+those wire roots carry registry-3.1 references and do not own their ordinals.
 The two request sets are independent. Their total cardinality must be nonzero
 unless the selected model descriptor declares at least one output slot whose
 `Completed` cardinality is `ExactlyOne` or `OneOrMore`. In that one case the
@@ -845,7 +851,7 @@ ProviderForm =
   | ExternalPrepareImport  // tag 1
 ```
 
-Evaluation registry schema 3.0 owns the following capability enums and retains
+Evaluation registry schema 3.1 owns the following capability enums and retains
 their stable zero-based `uint32` wire tags:
 
 ```text
@@ -1888,8 +1894,8 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v23`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v16`. It consumes the
+`loom.mapping.root_complete_spatial_pnr.generator.v24`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v17`. It consumes the
 finite TechMapping output and the same exact Fabric Artifact. Each `T` already
 binds one unique Canonical Dataflow identity, so the descriptor strictly
 recovers `D` from `T` instead of accepting a second `D` slot. It mechanically
@@ -1937,7 +1943,7 @@ traversals completed. An empty TechMapping input frontier is ordinary
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, implementation semantic identity
-`loom.mapping.root_complete_system_pnr.generator.v12`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v13`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`, `physical_timing_profile: FiniteSet`, and
 `migration_seed: ZeroOrOne`. Its sole output slot is
@@ -1973,7 +1979,7 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v11`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v12`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `physical_timing_profile: FiniteSet`, `system_constraints: ExactlyOne`, and
 `migration_seed: ZeroOrOne`. The constraint root must bind exactly that
@@ -2195,6 +2201,11 @@ ResolvedDseConfigView {
   resolved_plan_nodes
 }
 ```
+
+Its exact descriptor is `loom.dse.config.1.3`. Version 1.3 admits the
+`RuntimeCounterexampleViolation` objective source introduced by Mapping
+objective registry 3.3. Earlier component-view bytes are not current replay
+inputs and must be re-projected from their owning ResolvedConfig.
 
 Authoring-level allowed models resolve only to `model_authorizations`.
 Authoring-level required Evidence resolves only to

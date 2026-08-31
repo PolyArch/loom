@@ -1,5 +1,6 @@
 add_mlir_library(LoomSimulator
   CGRAAdmission.cpp
+  CgraClosedWaitCertificate.cpp
   CGRASimulator.cpp
   CgraComputeRuntime.cpp
   CgraGraphActivationRuntime.cpp

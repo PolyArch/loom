@@ -89,6 +89,7 @@ struct CgraPendingTransferDiagnostic final {
   /// The exact Physical Tag this token carries on its route, when tagged.
   std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
   llvm::APInt physicalTagValue = llvm::APInt(1, 0);
+  std::optional<CgraPhysicalTagMappingOwner> physicalTagOwner;
   bool blocked = false;
   bool arrivalScheduled = false;
   bool publicationReady = false;

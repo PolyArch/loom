@@ -1,6 +1,7 @@
 #include "Evaluation/ProductionRegistry.h"
 
 #include "Evaluation/Metric.h"
+#include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/PredictionCalibration.h"
 #include "Evaluation/Models/SystemRuntimeParameterContract.h"
@@ -50,8 +51,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value) {
 
 void registryMajorMatchesCurrentArtifactContracts() {
   const llvm::StringRef test = __func__;
-  require(test, evaluationSchemaVersion() == SchemaVersion{3, 0},
-          "current Evaluation registry is not 3.0");
+  require(test, evaluationSchemaVersion() == SchemaVersion{3, 1},
+          "current Evaluation registry is not 3.1");
 
   const auto canonicalDataflowFabricCase = builtinEvaluationCaseSignatureRef(
       BuiltinEvaluationCase::CanonicalDataflowWithFabric);
@@ -60,25 +61,25 @@ void registryMajorMatchesCurrentArtifactContracts() {
                 BuiltinEvaluationModel::CanonicalDataflowFabricLowConfidence));
   const auto currentCase =
       take(test, EvaluationCaseSignatureRef::get(
-                     {3, 0}, canonicalDataflowFabricCase.caseKind()));
+                     {3, 1}, canonicalDataflowFabricCase.caseKind()));
   require(test, currentCase.descriptor() &&
                     currentCase.descriptor()->registryVersion ==
-                        SchemaVersion{3, 0},
-          "production case kind 1 is not registered in registry 3.0");
+                        SchemaVersion{3, 1},
+          "production case kind 1 is not registered in registry 3.1");
 
   const auto currentModel =
       take(test, EvaluationModelDescriptorRef::get(
-                     {3, 0}, canonicalDataflowFabricModel.modelKind()));
+                     {3, 1}, canonicalDataflowFabricModel.modelKind()));
   require(test,
           currentModel.descriptor() &&
               currentModel.descriptor()->registryVersion ==
-                  SchemaVersion{3, 0} &&
+                  SchemaVersion{3, 1} &&
               currentModel.descriptor()->caseSignature.schemaVersion() ==
-                  SchemaVersion{3, 0},
-          "production model kind 3 is not registered in registry 3.0");
+                  SchemaVersion{3, 1},
+          "production model kind 3 is not registered in registry 3.1");
 
   for (SchemaVersion obsolete :
-       {SchemaVersion{2, 0}, SchemaVersion{2, 1}}) {
+       {SchemaVersion{2, 0}, SchemaVersion{2, 1}, SchemaVersion{3, 0}}) {
     expectError(test, EvaluationCaseSignatureRef::get(
                           obsolete, canonicalDataflowFabricCase.caseKind()));
     expectError(test, EvaluationModelDescriptorRef::get(
@@ -189,6 +190,25 @@ void appendedMetricsAndModelSlotsMatchTheCatalog() {
                      BuiltinEvaluationModel::FpaModelParameterCalibration));
   require(test, fpaCalibration.descriptor()->inputSlots.empty(),
           "FPA calibration duplicated its candidate subject as a model input");
+
+  const auto cgra = take(
+      test, builtinEvaluationModelDescriptorRef(
+                BuiltinEvaluationModel::CgraSimulator));
+  const EvaluationModelDescriptor *cgraDescriptor = cgra.descriptor();
+  const FindingDescriptor *closedWait =
+      findFindingDescriptor(models::CgraClosedWait);
+  require(
+      test,
+      closedWait && closedWait->terminalWitnessCodec &&
+          closedWait->terminalWitnessCodec->witnessSchema.identity ==
+              "loom.cgra_closed_wait_certificate" &&
+          cgraDescriptor->findingCapabilities.size() == 1 &&
+          cgraDescriptor->findingCapabilities.front().kind ==
+              models::CgraClosedWait &&
+          cgraDescriptor->mandatoryTerminalFindings.size() == 1 &&
+          cgraDescriptor->mandatoryTerminalFindings.front().kind ==
+              models::CgraClosedWait,
+      "CGRA closed wait is not one registered mandatory terminal finding");
 
   const std::array gem5ExecutionModels = {
       BuiltinEvaluationModel::Gem5SystemDfg,

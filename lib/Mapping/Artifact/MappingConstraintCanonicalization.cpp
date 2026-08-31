@@ -1,5 +1,6 @@
 #include "MappingConstraintCanonicalization.h"
 
+#include "Fabric/IR/PhysicalTag.h"
 #include "Mapping/IR/MappingAttrs.h"
 
 #include "mlir/IR/Builders.h"
@@ -37,6 +38,7 @@ enum class ClauseKind : std::uint32_t {
 /// values are fixed once published.
 constexpr std::uint32_t kNetUsesTraversalLiteralKind = 0;
 constexpr std::uint32_t kTransferAttachmentEqualsLiteralKind = 1;
+constexpr std::uint32_t kNetTagEqualsLiteralKind = 2;
 
 void appendU32Be(std::string &output, std::uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte)
@@ -280,6 +282,7 @@ projectionState(std::map<std::uint32_t, ProjectionClauses> &states,
 std::vector<CanonicalClause>
 canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
                     ConstraintDomainIntersection intersectDomains) {
+  MLIRContext *context = body.getParentOp()->getContext();
   std::map<std::uint32_t, ProjectionClauses> states;
   // No-good clauses are disjunctive and cross-projection, so they take no part
   // in the per-projection equality folding or domain intersection below. They
@@ -292,6 +295,14 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
                 operation)) {
       std::vector<std::string> keys;
       for (Attribute literal : noGood.getLiterals()) {
+        if (auto tag = dyn_cast<::mapping::NetTagEqualsAttr>(literal)) {
+          const llvm::APInt value = ::fabric::canonicalPhysicalTagValue(
+              tag.getValue().getValue());
+          literal = ::mapping::NetTagEqualsAttr::get(
+              context, tag.getProducer(), tag.getSegmentOrdinal(),
+              IntegerAttr::get(IntegerType::get(context, value.getBitWidth()),
+                               value));
+        }
         std::string key = constraintAttributeKey(literal);
         noGoodLiterals.try_emplace(key, literal);
         keys.push_back(std::move(key));
@@ -341,7 +352,6 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
   }
 
   std::vector<CanonicalClause> result;
-  MLIRContext *context = body.getParentOp()->getContext();
   for (auto &[ordinal, state] : states) {
     (void)ordinal;
     std::map<std::string, std::vector<std::string>> classes;
@@ -530,6 +540,15 @@ std::string constraintAttributeKey(Attribute attribute) {
     appendU32Be(result, kTransferAttachmentEqualsLiteralKind);
     appendFramed(result, constraintAttributeKey(literal.getTerminal()));
     appendFramed(result, constraintAttributeKey(literal.getEndpoint()));
+    return result;
+  }
+  if (auto literal = dyn_cast<::mapping::NetTagEqualsAttr>(attribute)) {
+    std::string result;
+    appendU32Be(result, kNetTagEqualsLiteralKind);
+    appendFramed(result, constraintAttributeKey(literal.getProducer()));
+    appendU64Be(result, literal.getSegmentOrdinal());
+    appendFramed(result, integerKey(::fabric::canonicalPhysicalTagValue(
+                             literal.getValue().getValue())));
     return result;
   }
   if (auto region =

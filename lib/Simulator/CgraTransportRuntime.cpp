@@ -1721,9 +1721,12 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         if (tagOrdinal == invalidCgraTransportOrdinal)
           continue;
         diagnostic.physicalTagOrdinal = tagOrdinal;
-        if (tagOrdinal < plan_->transport.physicalTags.size())
+        if (tagOrdinal < plan_->transport.physicalTags.size()) {
           diagnostic.physicalTagValue =
               plan_->transport.physicalTags[tagOrdinal].value;
+          diagnostic.physicalTagOwner =
+              plan_->transport.physicalTags[tagOrdinal].mappingOwner;
+        }
         break;
       }
       for (std::uint64_t node = binding.traversalNodeOffset;

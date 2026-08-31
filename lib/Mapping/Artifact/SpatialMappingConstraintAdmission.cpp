@@ -580,6 +580,42 @@ public:
       return llvm::is_contained(branch->second.values, traversal);
     }
 
+    if (const auto *tag =
+            std::get_if<SpatialNetTagEqualsLiteral>(&literal)) {
+      std::optional<std::uint64_t> routeOrdinal;
+      for (const auto indexed : llvm::enumerate(mapping_.routeTrees())) {
+        if (indexed.value().logicalNet != tag->producer)
+          continue;
+        if (routeOrdinal)
+          return invalid("sealed Mapping repeats a no-good tag producer");
+        routeOrdinal = indexed.index();
+      }
+      if (!routeOrdinal)
+        return false;
+      const SpatialPhysicalTagSegmentView *selected = nullptr;
+      for (const SpatialPhysicalTagSegmentView &segment :
+           mapping_.physicalTagSegments()) {
+        if (segment.routeTreeOrdinal != *routeOrdinal ||
+            segment.segmentOrdinal != tag->segmentOrdinal)
+          continue;
+        if (selected)
+          return invalid("sealed Mapping repeats a Physical Tag segment");
+        selected = &segment;
+      }
+      if (!selected ||
+          selected->resourceUseOrdinal >= mapping_.resourceUses().size())
+        return false;
+      const auto &assignments =
+          mapping_.resourceUses()[selected->resourceUseOrdinal]
+              .sharingAssignments;
+      if (assignments.size() != 1)
+        return invalid("sealed Mapping Physical Tag has the wrong shape");
+      const auto *value =
+          std::get_if<::fabric::PhysicalTagPatternValue>(&assignments.front());
+      return value &&
+             ::fabric::comparePhysicalTagValues(value->value, tag->value) == 0;
+    }
+
     const auto &attachment =
         std::get<SpatialTransferAttachmentEqualsLiteral>(literal);
     auto key = dataflowKey(dataflow_.identity(), attachment.terminal.producer);
@@ -860,6 +896,8 @@ llvm::Error reject(Projection projection, std::uint64_t clause,
 Projection literalProjection(const SpatialNoGoodLiteral &literal) {
   if (std::holds_alternative<SpatialNetUsesTraversalLiteral>(literal))
     return Projection::NetSelectedPhysicalTraversals;
+  if (std::holds_alternative<SpatialNetTagEqualsLiteral>(literal))
+    return Projection::NetAssignedTagValues;
   return Projection::SpatialTransferAttachment;
 }
 

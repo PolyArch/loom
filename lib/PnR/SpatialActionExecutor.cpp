@@ -642,8 +642,7 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
     }
     if (hardProgressWitness_.competingLogicalNets.empty() ||
         hardProgressWitness_.routeAnchors.empty())
-      return executorError(
-          "capacity-shortfall witness has no route closure");
+      return executorError("capacity-shortfall witness has no route closure");
     return llvm::Error::success();
   }
   case ResolvedPnrViolationKind::ProgressProofDebt: {
@@ -657,8 +656,25 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
     }
     if (hardProgressWitness_.competingLogicalNets.empty() ||
         hardProgressWitness_.routeAnchors.empty())
+      return executorError("capacity proof-debt witness has no route closure");
+    return llvm::Error::success();
+  }
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation: {
+    const PnrIndex clauseOrdinal = action.witnessOrdinal;
+    const auto clauses = problem.constraints().resolvedNoGoods();
+    const auto literals = problem.constraints().resolvedNoGoodLiterals();
+    if (clauseOrdinal >= clauses.size() ||
+        !candidate_->runtimeCounterexampleClauseViolated(clauseOrdinal))
+      return executorError("runtime-counterexample witness is no longer live");
+    const FrozenNoGoodResolvedClause &clause = clauses[clauseOrdinal];
+    if (clause.literalOffset > literals.size() ||
+        clause.literalCount > literals.size() - clause.literalOffset)
       return executorError(
-          "capacity proof-debt witness has no route closure");
+          "runtime-counterexample witness literal range is invalid");
+    for (const FrozenNoGoodResolvedLiteral &literal :
+         literals.slice(clause.literalOffset, clause.literalCount))
+      if (llvm::Error error = markNet(literal.logicalNet))
+        return error;
     return llvm::Error::success();
   }
   }
@@ -1843,6 +1859,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
        candidate.tagUnassignedCount() !=
            negotiatedProjection->tagUnassignedCount ||
        candidate.tagConflictCount() != negotiatedProjection->tagConflictCount ||
+       candidate.runtimeCounterexampleViolation() !=
+           negotiatedProjection->runtimeCounterexampleViolation ||
        candidate.totalSelectedTraversalClaim() !=
            negotiatedProjection->totalSelectedTraversalClaim ||
        candidate.routeReleaseLatencyCycles() !=

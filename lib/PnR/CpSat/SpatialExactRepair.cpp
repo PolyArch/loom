@@ -226,15 +226,17 @@ transportWitnessIsLive(const SpatialCandidateState &candidate,
       return invocationError("tag-conflict witness is out of range");
     return candidate.tagDomainConflictCount(witness.ordinal) != 0;
   case ResolvedPnrViolationKind::HardProgressViolation:
-    if (witness.ordinal >=
-        problem.progressIndex().finiteBufferOwners().size())
+    if (witness.ordinal >= problem.progressIndex().finiteBufferOwners().size())
       return invocationError("capacity-shortfall witness is out of range");
     return candidate.progress().capacityShortfallOwner(witness.ordinal);
   case ResolvedPnrViolationKind::ProgressProofDebt:
-    if (witness.ordinal >=
-        problem.progressIndex().finiteBufferOwners().size())
+    if (witness.ordinal >= problem.progressIndex().finiteBufferOwners().size())
       return invocationError("capacity proof-debt witness is out of range");
     return candidate.progress().capacityProofDebtOwner(witness.ordinal);
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+    if (witness.ordinal >= problem.constraints().resolvedNoGoods().size())
+      return invocationError("runtime-counterexample witness is out of range");
+    return candidate.runtimeCounterexampleClauseViolated(witness.ordinal);
   }
   llvm_unreachable("unknown Spatial transport witness kind");
 }
@@ -282,13 +284,17 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     return invocationError("CpSat_3_0 is not selected by SearchPolicy");
   if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
     return invocationError("solver-call limit exceeds SearchPolicy");
+  if (candidate.runtimeCounterexampleViolation() != 0)
+    return result(
+        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
+        "runtime-counterexample repair requires an exact literal-breaking "
+        "disjunction");
   if (candidate.progressProofDebtWitnessCount() != 0 &&
       candidate.hardProgressViolation() == 0 &&
       candidate.unroutedObligationCount() == 0 &&
       candidate.routeCapacityOveruse() == 0 &&
       candidate.tagResidentCapacityOveruse() == 0 &&
-      candidate.tagUnassignedCount() == 0 &&
-      candidate.tagConflictCount() == 0)
+      candidate.tagUnassignedCount() == 0 && candidate.tagConflictCount() == 0)
     return result(
         SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
         "capacity proof-debt repair requires an owner-local disjunctive "

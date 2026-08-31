@@ -7,6 +7,7 @@
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Simulator/CgraPhysicalTagOwner.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
@@ -81,6 +82,7 @@ struct CgraTraversalStoragePlan final {
 
 struct CgraPhysicalTagPlan final {
   llvm::APInt value = llvm::APInt(1, 0);
+  std::optional<CgraPhysicalTagMappingOwner> mappingOwner;
 };
 
 /// Interns the plan's Physical Tag values into virtual-channel ranks: equal
