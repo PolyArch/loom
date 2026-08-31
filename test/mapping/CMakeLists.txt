@@ -88,6 +88,8 @@ add_executable(loom-spatial-mapping-artifact-test
   SpatialCandidateSelectionTestSupport.cpp
   SpatialMemoryActionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
+  SpatialMemoryMappingArtifactTestSupport.cpp
+  SpatialRuntimeCounterexampleTestSupport.cpp
   TemporalMappingFabricTestSupport.cpp
   TemporalComputeFabricTestSupport.cpp
   TemporalPeTagDomainTestSupport.cpp

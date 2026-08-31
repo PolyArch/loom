@@ -1,4 +1,5 @@
 #include "DSE/JointDesignExploration.h"
+#include "JointDesignExplorationFixture.h"
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
@@ -10,7 +11,6 @@
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
-#include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
@@ -23,7 +23,6 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
-#include "Frontend/IR/LoomOps.h"
 #include "JointHardwareReopenExecution.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -31,12 +30,7 @@
 #include "PnR/System/SystemMappingMigration.h"
 #include "Simulator/SimulationArtifacts.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/DLTI/DLTI.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -45,10 +39,8 @@
 
 #include <cstdlib>
 #include <limits>
-#include <set>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -66,199 +58,7 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-class TemporaryDirectory final {
-public:
-  TemporaryDirectory() {
-    if (std::error_code error =
-            llvm::sys::fs::createUniqueDirectory("loom-joint-design", path_))
-      fail("cannot create test directory: " + error.message());
-  }
-  ~TemporaryDirectory() { llvm::sys::fs::remove_directories(path_); }
-  llvm::StringRef path() const { return path_; }
-
-private:
-  llvm::SmallString<128> path_;
-};
-
-mlir::MLIRContext makeContext() {
-  mlir::DialectRegistry registry;
-  registry
-      .insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-              mlir::DLTIDialect, mlir::func::FuncDialect, loom::LoomDialect>();
-  return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
-}
-
-dataflow::CanonicalDataflowArtifact buildDataflow(mlir::MLIRContext &context,
-                                                  std::int32_t constant) {
-  const std::string source = R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @sync(%start: none, %value: i32) -> i32
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %result:2 = dataflow.sync %start, %value
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%result#1 : i32) streams() memories()
-        complete(%result#0 : none)
-  }
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %value: i32) ctrl (%ctrl: none) iv (%i: index) {
-    %result, %done = dataflow.graph.launch @sync deps(%ctrl)
-        values(%value) stream_inputs() memories() stream_outputs()
-        : (none, i32) -> (i32, none)
-    dataflow.thread.yield %done : none
-  }
-  func.func private @host() {
-    %value = arith.constant )mlir" +
-                             std::to_string(constant) + R"mlir( : i32
-    %extent = arith.constant 4 : index
-    %thread = dataflow.thread.launch @worker(%value) grid(%extent)
-        : (i32) -> !dataflow.thread_token
-    return
-  }
-}
-
-)mlir";
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
-  if (!module)
-    fail("cannot parse Dataflow fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
-loom::ArtifactRootReference
-publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
-                           const loom::ArtifactStore &store) {
-  auto view = take(artifact.view());
-  if (view.rootThreadLaunches().size() != 1 ||
-      view.staticGraphLaunches().size() != 1)
-    fail("application fixture does not have one rooted graph launch");
-  dataflow::RootedGraphLaunchRef launch{view.rootThreadLaunches().front().ref,
-                                        view.staticGraphLaunches().front().ref};
-  loom::sim::SpatialSimulationWorkload draft{launch};
-  auto logicalDomain =
-      take(view.projectRootThreadLogicalDomain(launch.rootThreadLaunch));
-  draft.denseCoordinates.assign(logicalDomain.coordinateRank, 0);
-  auto shapes =
-      take(loom::sim::projectSpatialSimulationBoundaryShapes(view, launch));
-  draft.valueInputPlan.assign(shapes.valueInputs.size(),
-                              loom::sim::RuntimeValueInput{});
-  auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
-  return take(loom::sim::publishSimulationWorkload(workload, store));
-}
-
-loom::ArtifactRootReference
-publishApplicationRuntimeInput(const loom::ArtifactRootReference &workload,
-                               std::int32_t value,
-                               const loom::ArtifactStore &store) {
-  auto imported =
-      take(loom::sim::importSpatialSimulationWorkload(workload, store));
-  auto view = take(imported.dataflow.view());
-  const auto *spatial = imported.workload.spatial();
-  if (!spatial)
-    fail("application fixture workload is not Spatial");
-  loom::sim::SpatialSimulationRuntimeInputDraft draft{
-      imported.workload.identity()};
-  for (auto [ordinal, source] : llvm::enumerate(spatial->valueInputPlan))
-    if (std::holds_alternative<loom::sim::RuntimeValueInput>(source))
-      draft.runtimeValues.push_back(
-          {static_cast<std::uint64_t>(ordinal),
-           {1, {loom::sim::SemanticLane::defined(llvm::APInt(32, value))}}});
-  auto runtime = take(loom::sim::finalizeSimulationRuntimeInput(
-      draft, imported.workload, view));
-  return take(loom::sim::publishSimulationRuntimeInput(runtime, store));
-}
-
-loom::evaluation::models::FpaFeatureView
-projectFpaFeatures(const loom::ArtifactRootReference &dataflow,
-                   const loom::ArtifactRootReference &system,
-                   const loom::ResolvedConfig &config,
-                   const loom::ArtifactStore &artifacts,
-                   const loom::BlobStore &blobs) {
-  auto prepared =
-      take(loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
-          dataflow, system, config, artifacts, blobs));
-  const loom::evaluation::EvaluationModelDescriptor *descriptor =
-      prepared.request.modelBinding().descriptorRef().descriptor();
-  if (!descriptor)
-    fail("FPA feature fixture lost its model descriptor");
-  auto evaluationCase = take(loom::evaluation::EvaluationCase::get(
-      descriptor->caseSignature, prepared.request.subjectBindings(),
-      prepared.request.workload(), prepared.request.runtimeInput(),
-      prepared.request.baseConditions(), prepared.resolution, artifacts,
-      blobs));
-  auto projected = take(loom::evaluation::projectModelFeatures(
-      loom::evaluation::models::fpaModelParameterContractRef(), evaluationCase,
-      prepared.resolution, artifacts, blobs));
-  const auto *features =
-      projected.getIf<loom::evaluation::models::FpaFeatureView>();
-  if (!features)
-    fail("FPA contract returned a foreign feature view");
-  return *features;
-}
-
-std::string key(llvm::ArrayRef<std::uint8_t> bytes) {
-  return std::string(reinterpret_cast<const char *>(bytes.data()),
-                     bytes.size());
-}
-
-std::vector<loom::fabric::FabricModuleEntityCorrespondence>
-identityModuleEntityCorrespondence(
-    const loom::fabric::FabricArtifactView &module) {
-  std::vector<loom::fabric::FabricModuleEntityCorrespondence> result;
-  const auto append = [&](auto occurrences,
-                          loom::fabric::FabricEntityKind kind) {
-    for (std::uint64_t ordinal = 0; ordinal != occurrences.size(); ++ordinal) {
-      const auto occurrence = occurrences[ordinal];
-      result.push_back(
-          {{kind, occurrence.id(), ordinal}, {kind, occurrence.id(), ordinal}});
-    }
-  };
-  append(module.peOccurrences(),
-         loom::fabric::FabricEntityKind::FabricPeOccurrence);
-  append(module.fuOccurrences(),
-         loom::fabric::FabricEntityKind::FabricFuOccurrence);
-  append(module.memoryOccurrences(),
-         loom::fabric::FabricEntityKind::FabricMemoryOccurrence);
-  append(module.switchOccurrences(),
-         loom::fabric::FabricEntityKind::FabricSwitchOccurrence);
-  append(module.fifoOccurrences(),
-         loom::fabric::FabricEntityKind::FabricFifoOccurrence);
-  append(module.boundaryOccurrences(),
-         loom::fabric::FabricEntityKind::FabricBoundaryOccurrence);
-  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
-    return std::tie(lhs.source.kind, lhs.source.occurrenceOrdinal) <
-           std::tie(rhs.source.kind, rhs.source.occurrenceOrdinal);
-  });
-  return result;
-}
-
-bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
-                     llvm::ArrayRef<loom::ArtifactRootReference> mappings,
-                     const loom::ArtifactStore &store) {
-  auto systemArtifact =
-      take(loom::fabric::importEntireFabricRoot(systemReference, store));
-  auto system = take(loom::fabric::requireSystemRoot(systemArtifact.view()));
-  std::set<std::string> used;
-  for (const loom::ArtifactRootReference &reference : mappings) {
-    auto mapping = take(loom::mapping::importSystemMapping(reference, store));
-    loom::ArtifactRootReference dataflowReference{
-        dataflow::canonicalDataflowSchema.identity.str(),
-        dataflow::canonicalDataflowSchema.version,
-        mapping.view().dataflowIdentity()};
-    auto dataflowArtifact =
-        take(dataflow::importCanonicalDataflow(dataflowReference, store));
-    auto dataflowView = take(dataflowArtifact.view());
-    auto projection = take(loom::mapping::projectSystemExecutionContexts(
-        dataflowView, mapping.view().executionBindings()));
-    for (const auto &domain : projection.instructionDomains)
-      used.insert(
-          key(loom::fabric::canonicalFabricBytes(domain.context.accCore)));
-  }
-  return llvm::all_of(
-      system.artifact().accCoreOccurrences(),
-      [&](loom::fabric::AccCoreOccurrenceRef core) {
-        return used.count(key(loom::fabric::canonicalFabricBytes(core))) != 0;
-      });
-}
+namespace joint_fixture = loom::dse::joint_test;
 
 /// Selects which hardware mutation families the matrix executes. Each family
 /// owns one independent cold plus preserve-first child PnR, so a selector lets
@@ -352,23 +152,23 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   // loom-system-run entry points install; nested production sessions defer to
   // it through ReuseEnclosing.
   loom::fabric::FabricArtifactImportSession fabricImportSession;
-  TemporaryDirectory temporary;
+  joint_fixture::TemporaryDirectory temporary;
   llvm::SmallString<128> blobPath(temporary.path());
   llvm::sys::path::append(blobPath, "blobs");
   if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
     fail("cannot create BlobStore directory: " + error.message());
   loom::ArtifactStore store(temporary.path());
   loom::BlobStore blobs(blobPath);
-  mlir::MLIRContext context = makeContext();
+  mlir::MLIRContext context = joint_fixture::makeContext();
 
-  auto first = buildDataflow(context, 7);
-  auto second = buildDataflow(context, 11);
+  auto first = joint_fixture::buildDataflow(context, 7);
+  auto second = joint_fixture::buildDataflow(context, 11);
   take(dataflow::publishCanonicalDataflow(first, store));
   take(dataflow::publishCanonicalDataflow(second, store));
   const loom::ArtifactRootReference firstWorkload =
-      publishApplicationWorkload(first, store);
+      joint_fixture::publishApplicationWorkload(first, store);
   const loom::ArtifactRootReference secondWorkload =
-      publishApplicationWorkload(second, store);
+      joint_fixture::publishApplicationWorkload(second, store);
   auto small = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto alternate = take(loom::adg::buildBuiltinTarget(
@@ -578,10 +378,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         {{{secondWorkload}}, {alternateSystem}}, alternateTimingRoots,
         promotionPolicy, config, store));
 
-    const auto firstFeatures =
-        projectFpaFeatures(firstPlan.frontier.softwareFrontier.front().dataflow,
-                           system, config, store, blobs);
-    const auto alternateFeatures = projectFpaFeatures(
+    const auto firstFeatures = joint_fixture::projectFpaFeatures(
+        firstPlan.frontier.softwareFrontier.front().dataflow, system, config,
+        store, blobs);
+    const auto alternateFeatures = joint_fixture::projectFpaFeatures(
         alternatePlan.frontier.softwareFrontier.front().dataflow,
         alternateSystem, config, store, blobs);
     const loom::evaluation::models::FpaMetricPredictionView firstObservation{
@@ -1625,7 +1425,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   const loom::ArtifactRootReference transportWorkload =
       plan.frontier.pairs.front().software.workloads.front();
   const loom::ArtifactRootReference transportRuntimeInput =
-      publishApplicationRuntimeInput(transportWorkload, 7, store);
+      joint_fixture::publishApplicationRuntimeInput(transportWorkload, 7,
+                                                    store);
   auto preparedTransport =
       take(loom::evaluation::models::prepareCgraSimulationEvaluation(
           plan.frontier.pairs.front().software.dataflow, targetModules.front(),
@@ -1857,7 +1658,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       loom::dse::HardwareMappingImpactKind::Reopen;
   localSpatialImpact.spatial.placementRoots.push_back(moduleRoot);
   localSpatialImpact.moduleEntities =
-      identityModuleEntityCorrespondence(targetModule.view());
+      joint_fixture::identityModuleEntityCorrespondence(targetModule.view());
   const auto localRepairFrontier = take(loom::dse::rebaseJointMappingFrontier(
       plan, parentExecution, system, identityModuleCorrespondence,
       localSpatialImpact, store));
@@ -1890,7 +1691,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   unusedImpact.spatial.placementRoots.push_back(
       take(loom::fabric::FabricModulePhysicalOwnerRef::create(*unusedFifo)));
   unusedImpact.moduleEntities =
-      identityModuleEntityCorrespondence(targetModule.view());
+      joint_fixture::identityModuleEntityCorrespondence(targetModule.view());
   const auto unusedFrontier = take(loom::dse::rebaseJointMappingFrontier(
       plan, parentExecution, system, identityModuleCorrespondence, unusedImpact,
       store));
@@ -2103,7 +1904,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   auto selected = take(loom::dse::selectJointDesignSystems(
       systems, memberPromotions, {}, loom::dse::AllPassingSelection{}, nullptr,
       store));
-  const bool covered = everyCoreIsUsed(system, mappings, store);
+  const bool covered = joint_fixture::everyCoreIsUsed(system, mappings, store);
   bool sawMissingAlternate = false;
   bool sawUnusedPrimary = false;
   std::vector<loom::dse::JointSystemGateOutcome> *outcomes = nullptr;
