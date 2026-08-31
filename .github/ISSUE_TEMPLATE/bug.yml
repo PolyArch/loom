@@ -1,0 +1,95 @@
+name: Bug report
+description: Report reproducible incorrect Loom behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe only information approved for the public Loom repository. Do not copy private Project roadmaps, comments, dates, blocker graphs, or unpublished evidence.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Public summary
+      description: State the incorrect behavior and why it matters.
+      placeholder: Loom produces or accepts an incorrect result when...
+    validations:
+      required: true
+
+  - type: input
+    id: component
+    attributes:
+      label: Affected component or workflow
+      description: Name the narrowest compiler, hardware, Mapping, simulation, runtime, Evaluation, build, or agent-infrastructure area.
+      placeholder: Spatial Mapping artifact import
+    validations:
+      required: true
+
+  - type: input
+    id: specification
+    attributes:
+      label: Normative WHAT owner
+      description: Link the current spec path and stable heading. State "Unknown" only when locating the owner is part of the bug.
+      placeholder: docs/spec-...md, heading ...
+    validations:
+      required: true
+
+  - type: input
+    id: rationale
+    attributes:
+      label: Rationale WHY owner
+      description: Link the corresponding rationale path and stable heading, when one exists.
+      placeholder: docs/rationales/...md, heading ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the typed failure or exact terminal state. Do not report a timeout as infeasibility.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the behavior required by the current specification or explain the suspected specification defect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest realistic input and production command that reproduces the bug.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and artifact identity
+      description: Give public logs, exact artifact roots or digests, independent oracle results, and negative controls where available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and tool identity
+      description: Include the Loom revision, semantic configuration, and relevant compiler, simulator, EDA, or operating-system identity.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Public disclosure check
+      options:
+        - label: I removed private Project planning, unpublished research material, credentials, private paths, and restricted artifacts from this report.
+          required: true

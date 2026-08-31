@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Context Recovery"
+  short_description: "Recover interrupted Loom work from live evidence"
+  default_prompt: "Use $loom-context-recovery to recover the current Loom task from this session or handoff."
