@@ -447,7 +447,7 @@ void regularAndIrregularSpatialCoresFinalize() {
                                 BoundarySpec::s2t(bits32, bits4, tagged32x4)));
   SpatialValue regularQueued =
       take(test, regular.addFifo(regularBoundary.front(),
-                                 FifoSpec{tagged32x4, 2, true}))
+                                 FifoSpec{tagged32x4, 2, true, std::nullopt}))
           .value();
   if (llvm::Error error = regular.close({regularQueued}))
     fail(test, llvm::toString(std::move(error)));
@@ -461,7 +461,9 @@ void regularAndIrregularSpatialCoresFinalize() {
   SpatialValue irregularTag0 = take(test, irregular.input(2));
   SpatialValue irregularTag1 = take(test, irregular.input(3));
   SpatialValue narrowed =
-      take(test, irregular.addFifo(irregularData, FifoSpec{bits32, 3, false}))
+      take(test, irregular.addFifo(
+                         irregularData,
+                         FifoSpec{bits32, 3, false, std::nullopt}))
           .value();
   auto switched =
       take(test, irregular.addSwitch({narrowed, alternateData},
@@ -514,7 +516,9 @@ void foreignHandlesAndIncompleteRootsFailClosed() {
   auto second =
       take(test, design.createSpatialCore("second", {bits32}, {bits32}));
   SpatialValue foreign = take(test, first.input(0));
-  expectError(test, second.addFifo(foreign, FifoSpec{bits32, 1, false}),
+  expectError(test,
+              second.addFifo(
+                  foreign, FifoSpec{bits32, 1, false, std::nullopt}),
               "foreign SpatialValue");
 
   if (llvm::Error error = first.close({foreign}))
@@ -536,7 +540,9 @@ void spatialCoreTemplatesInstantiateAndElaborate() {
       take(test, design.createSpatialCore("pipeline", {bits16}, {bits16}));
   SpatialValue pipelineInput = take(test, pipeline.input(0));
   SpatialValue pipelineOutput =
-      take(test, pipeline.addFifo(pipelineInput, FifoSpec{bits16, 2, true}))
+      take(test, pipeline.addFifo(
+                         pipelineInput,
+                         FifoSpec{bits16, 2, true, std::nullopt}))
           .value();
   if (llvm::Error error = pipeline.close({pipelineOutput}))
     fail(test, llvm::toString(std::move(error)));

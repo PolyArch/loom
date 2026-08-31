@@ -606,7 +606,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*bits128, scale.interconnectFifoDepth, false});
+          output, FifoSpec{*bits128, scale.interconnectFifoDepth, false,
+                           std::nullopt});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -734,7 +735,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         return outputs.takeError();
       auto fifo = spatial->addFifo(
           outputs->values().front(),
-          FifoSpec{*bits128, scale.interconnectFifoDepth, false});
+          FifoSpec{*bits128, scale.interconnectFifoDepth, false,
+                   std::nullopt});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());

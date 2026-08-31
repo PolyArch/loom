@@ -14,6 +14,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
 #include <vector>
 
 namespace loom::adg::test {
@@ -91,7 +92,8 @@ void spatialBackedgesEnableCyclicTopology() {
                         SwitchSpec::spatial({bits32, bits32}, {bits32, bits32},
                                             {{0, 1}, {0, 1}})));
   SpatialValue buffered =
-      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true}))
+      take(test, spatial.addFifo(
+                         routed[0], FifoSpec{bits32, 2, true, std::nullopt}))
           .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), buffered))
@@ -416,7 +418,8 @@ void heterogeneousSystemFinalizes() {
                                                 {bits32}, {bits32}));
   SpatialValue firstBuffered =
       take(test, firstSpatial.addFifo(take(test, firstSpatial.input(0)),
-                                      FifoSpec{bits32, 2, true}))
+                                      FifoSpec{bits32, 2, true,
+                                               std::nullopt}))
           .value();
   if (llvm::Error error = firstSpatial.close({firstBuffered}))
     fail(test, llvm::toString(std::move(error)));
@@ -425,7 +428,8 @@ void heterogeneousSystemFinalizes() {
                                                 {bits32}, {bits32}));
   SpatialValue secondBuffered =
       take(test, secondSpatial.addFifo(take(test, secondSpatial.input(0)),
-                                       FifoSpec{bits32, 3, false}))
+                                       FifoSpec{bits32, 3, false,
+                                                std::nullopt}))
           .value();
   if (llvm::Error error = secondSpatial.close({secondBuffered}))
     fail(test, llvm::toString(std::move(error)));

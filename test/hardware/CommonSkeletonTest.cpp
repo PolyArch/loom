@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -324,7 +325,8 @@ FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
   if (llvm::Error error = pe.close())
     fail(test, llvm::toString(std::move(error)));
   auto fifo = take(test, spatial.addFifo(take(test, pe.output(0)),
-                                         FifoSpec{bits8, 2, true}));
+                                         FifoSpec{bits8, 2, true,
+                                                  std::nullopt}));
   auto boundary = take(
       test, spatial.addBoundary({fifo.value(), take(test, spatial.input(2))},
                                 BoundarySpec::s2t(bits8, bits2, tagged8x2)));

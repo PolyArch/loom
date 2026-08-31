@@ -166,7 +166,8 @@ SemanticFixture makeSemanticFixture(llvm::StringRef test,
   auto spatial = take(
       test, design.createSpatialCore("quartus-static", {bit}, {bit}));
   auto fifo = take(test, spatial.addFifo(take(test, spatial.input(0)),
-                                        adg::FifoSpec{bit, 1, false}));
+                                        adg::FifoSpec{bit, 1, false,
+                                                      std::nullopt}));
   if (llvm::Error error = spatial.close({fifo.value()}))
     fail(test, llvm::toString(std::move(error)));
   auto finalized = take(test, std::move(design).finalize());

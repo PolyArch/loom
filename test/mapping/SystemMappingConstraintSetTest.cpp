@@ -232,7 +232,8 @@ buildUnattachedSpatialModule(const loom::ArtifactStore &store) {
   const auto bits128 = take(loom::adg::PortType::bits(128));
   expansion.outputs.front() =
       take(expansion.spatialCore.addFifo(expansion.outputs.front(),
-                                         loom::adg::FifoSpec{bits128, 2, true}))
+                                         loom::adg::FifoSpec{
+                                             bits128, 2, true, std::nullopt}))
           .value();
   if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
     fail(llvm::toString(std::move(error)));

@@ -390,7 +390,7 @@ void builderDomainAuthoringRequiresTotalAssignment() {
   auto core = take(test, design.createSpatialCore("domain", {bits32}, {bits32}));
   const FifoResult queued =
       take(test, core.addFifo(take(test, core.input(0)),
-                              FifoSpec{bits32, 2, false}));
+                              FifoSpec{bits32, 2, false, std::nullopt}));
   const ModuleDomainSlotHandle clock =
       take(test, core.declareDomainSlot(FabricClockResetKind::Clock));
   const ModuleDomainSlotHandle reset =
@@ -434,7 +434,7 @@ void moduleInstanceDomainSlotBindingsAreExplicit() {
       take(test, design.createSpatialCore("pipeline", {bits16}, {bits16}));
   const FifoResult stage =
       take(test, pipeline.addFifo(take(test, pipeline.input(0)),
-                                  FifoSpec{bits16, 2, true}));
+                                  FifoSpec{bits16, 2, true, std::nullopt}));
   const ModuleDomainSlotHandle childClock =
       take(test, pipeline.declareDomainSlot(FabricClockResetKind::Clock));
   const ModuleDomainSlotHandle childReset =
@@ -662,7 +662,7 @@ void defaultChildRequiresExplicitInstanceBindings() {
               "must be closed");
   const FifoResult stage =
       take(test, pipeline.addFifo(take(test, pipeline.input(0)),
-                                  FifoSpec{bits16, 2, true}));
+                                  FifoSpec{bits16, 2, true, std::nullopt}));
   if (llvm::Error error = pipeline.close({stage.value()}))
     fail(test, llvm::toString(std::move(error)));
   const std::vector<ModuleDomainSlotHandle> childClocks =

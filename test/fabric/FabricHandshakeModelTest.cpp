@@ -25,6 +25,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -618,7 +619,9 @@ void bufferedPhysicalCycleIsAcceptedBeforeSelection() {
   auto spatial = take(test, design.createSpatialCore("ready-cycle", {}, {}));
   auto backedge = take(test, spatial.createBackedge(bits32));
   auto buffered =
-      take(test, spatial.addFifo(backedge.value(), FifoSpec{bits32, 2, false}))
+      take(test, spatial.addFifo(
+                         backedge.value(),
+                         FifoSpec{bits32, 2, false, std::nullopt}))
           .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), buffered))
@@ -646,7 +649,9 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                                                        {bits32, bits32},
                                                        {{0, 1}, {0, 1}})));
   SpatialValue feedback =
-      take(test, spatial.addFifo(routed[0], FifoSpec{bits32, 2, true})).value();
+      take(test, spatial.addFifo(
+                         routed[0], FifoSpec{bits32, 2, true, std::nullopt}))
+          .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), feedback))
     fail(test, llvm::toString(std::move(error)));
