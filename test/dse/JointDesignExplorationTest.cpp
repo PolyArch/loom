@@ -9,13 +9,13 @@
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
-#include "JointHardwareReopenExecution.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -23,6 +23,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/IR/LoomOps.h"
+#include "JointHardwareReopenExecution.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
@@ -42,6 +43,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <string>
 #include <system_error>
@@ -140,6 +142,28 @@ publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
                               loom::sim::RuntimeValueInput{});
   auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
   return take(loom::sim::publishSimulationWorkload(workload, store));
+}
+
+loom::ArtifactRootReference
+publishApplicationRuntimeInput(const loom::ArtifactRootReference &workload,
+                               std::int32_t value,
+                               const loom::ArtifactStore &store) {
+  auto imported =
+      take(loom::sim::importSpatialSimulationWorkload(workload, store));
+  auto view = take(imported.dataflow.view());
+  const auto *spatial = imported.workload.spatial();
+  if (!spatial)
+    fail("application fixture workload is not Spatial");
+  loom::sim::SpatialSimulationRuntimeInputDraft draft{
+      imported.workload.identity()};
+  for (auto [ordinal, source] : llvm::enumerate(spatial->valueInputPlan))
+    if (std::holds_alternative<loom::sim::RuntimeValueInput>(source))
+      draft.runtimeValues.push_back(
+          {static_cast<std::uint64_t>(ordinal),
+           {1, {loom::sim::SemanticLane::defined(llvm::APInt(32, value))}}});
+  auto runtime = take(loom::sim::finalizeSimulationRuntimeInput(
+      draft, imported.workload, view));
+  return take(loom::sim::publishSimulationRuntimeInput(runtime, store));
 }
 
 loom::evaluation::models::FpaFeatureView
@@ -1602,38 +1626,104 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       take(loom::mapping::importTechMapping(operandTech, store));
   std::optional<dataflow::CanonicalGraphProducerEndpointRef> transportProducer;
   std::optional<loom::fabric::FabricPhysicalTraversalRef> transportTraversal;
-  std::optional<std::uint64_t> transportActorOrdinal;
+  std::optional<loom::fabric::FabricPhysicalTraversalRef>
+      transportTerminalTraversal;
+  std::optional<std::uint64_t> transportConsumerActorOrdinal;
+  std::optional<std::uint32_t> transportConsumerInputOrdinal;
   for (const auto &route : transportSpatial.view().routeTrees()) {
-    const auto *producer =
-        std::get_if<dataflow::ActorTokenResultRef>(&route.logicalNet);
-    if (!producer)
-      continue;
-    const auto node = llvm::find_if(route.nodes, [](const auto &candidate) {
-      return candidate.incomingTraversal.has_value();
-    });
-    if (node == route.nodes.end())
-      continue;
-    auto actor = take(transportDataflowView.resolve(producer->actor));
-    std::uint64_t graphLocalOrdinal = 0;
-    bool foundActor = false;
-    for (const auto &candidate : transportDataflowView.actors()) {
-      if (candidate.graph != actor.graph)
+    for (const auto &sink : route.sinks) {
+      const auto *operand =
+          std::get_if<dataflow::ActorTokenOperandRef>(&sink.sink);
+      if (!operand)
         continue;
-      if (candidate.ref == producer->actor) {
-        foundActor = true;
+      auto branch =
+          take(loom::mapping::spatialRouteBranchTraversals(route, sink));
+      const auto internal = llvm::find_if(branch, [&](const auto &traversal) {
+        return llvm::any_of(route.nodes, [&](const auto &node) {
+          return node.incomingTraversal && *node.incomingTraversal == traversal;
+        });
+      });
+      if (internal == branch.end() ||
+          (!route.localTraversal && !sink.localTraversal))
+        continue;
+      auto actor = take(transportDataflowView.resolve(operand->actor));
+      std::uint64_t graphLocalOrdinal = 0;
+      bool foundActor = false;
+      for (const auto &candidate : transportDataflowView.actors()) {
+        if (candidate.graph != actor.graph)
+          continue;
+        if (candidate.ref == operand->actor) {
+          foundActor = true;
+          break;
+        }
+        ++graphLocalOrdinal;
+      }
+      if (!foundActor)
+        fail("transport feedback consumer has no graph-local actor ordinal");
+      transportProducer = route.logicalNet;
+      transportTraversal = *internal;
+      transportTerminalTraversal =
+          route.localTraversal ? *route.localTraversal : *sink.localTraversal;
+      transportConsumerActorOrdinal = graphLocalOrdinal;
+      transportConsumerInputOrdinal =
+          static_cast<std::uint32_t>(operand->ordinal);
+      break;
+    }
+    if (transportProducer)
+      break;
+  }
+  std::optional<dataflow::CanonicalGraphProducerEndpointRef>
+      transportHeadProducer;
+  std::optional<loom::fabric::FabricPhysicalTraversalRef>
+      transportHeadTraversal;
+  std::optional<std::uint32_t> transportHeadConsumerInputOrdinal;
+  if (transportConsumerActorOrdinal)
+    for (const auto &route : transportSpatial.view().routeTrees()) {
+      if (transportProducer && route.logicalNet == *transportProducer)
+        continue;
+      for (const auto &sink : route.sinks) {
+        const auto *operand =
+            std::get_if<dataflow::ActorTokenOperandRef>(&sink.sink);
+        if (!operand)
+          continue;
+        auto actor = take(transportDataflowView.resolve(operand->actor));
+        std::uint64_t graphLocalOrdinal = 0;
+        bool foundActor = false;
+        for (const auto &candidate : transportDataflowView.actors()) {
+          if (candidate.graph != actor.graph)
+            continue;
+          if (candidate.ref == operand->actor) {
+            foundActor = true;
+            break;
+          }
+          ++graphLocalOrdinal;
+        }
+        if (!foundActor || graphLocalOrdinal != *transportConsumerActorOrdinal)
+          continue;
+        auto branch =
+            take(loom::mapping::spatialRouteBranchTraversals(route, sink));
+        const auto internal = llvm::find_if(branch, [&](const auto &traversal) {
+          return llvm::any_of(route.nodes, [&](const auto &node) {
+            return node.incomingTraversal &&
+                   *node.incomingTraversal == traversal;
+          });
+        });
+        if (internal == branch.end())
+          continue;
+        transportHeadProducer = route.logicalNet;
+        transportHeadTraversal = *internal;
+        transportHeadConsumerInputOrdinal =
+            static_cast<std::uint32_t>(operand->ordinal);
         break;
       }
-      ++graphLocalOrdinal;
+      if (transportHeadProducer)
+        break;
     }
-    if (!foundActor)
-      fail("transport feedback producer has no graph-local actor ordinal");
-    transportProducer = route.logicalNet;
-    transportTraversal = *node->incomingTraversal;
-    transportActorOrdinal = graphLocalOrdinal;
-    break;
-  }
-  if (!transportProducer || !transportTraversal || !transportActorOrdinal)
-    fail("transport feedback fixture has no routed actor result");
+  if (!transportProducer || !transportTraversal ||
+      !transportTerminalTraversal || !transportConsumerActorOrdinal ||
+      !transportConsumerInputOrdinal || !transportHeadProducer ||
+      !transportHeadTraversal || !transportHeadConsumerInputOrdinal)
+    fail("transport feedback fixture has no two routed inputs of one actor");
   loom::sim::CgraClosedWaitSetDiagnostic exactTransportWait;
   exactTransportWait.ownerReferences = loom::sim::CgraExecutionOwnerReferences{
       plan.frontier.pairs.front().software.dataflow, targetModules.front(),
@@ -1641,26 +1731,180 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   loom::sim::CgraClosedWaitSetDiagnostic::Transfer transportTransfer;
   transportTransfer.bindingOrdinal = 0;
   transportTransfer.occurrenceOrdinal = 0;
-  transportTransfer.producerActorOrdinal = *transportActorOrdinal;
   transportTransfer.blocked = true;
-  transportTransfer.blockingActorOrdinal = *transportActorOrdinal;
+  transportTransfer.blockingStorageOrdinal = 0;
+  transportTransfer.blockingActorOrdinal = *transportConsumerActorOrdinal;
   transportTransfer.producer = *transportProducer;
   transportTransfer.blockingTraversals.push_back(*transportTraversal);
   exactTransportWait.transfers.push_back(std::move(transportTransfer));
-  exactTransportWait.actorWaitCycle.push_back(
-      {*transportActorOrdinal, *transportActorOrdinal,
-       loom::sim::CgraClosedWaitSetDiagnostic::ActorWaitKind::
-           OutputBackpressure});
+  loom::sim::CgraClosedWaitSetDiagnostic::Transfer headTransfer;
+  headTransfer.bindingOrdinal = 1;
+  headTransfer.occurrenceOrdinal = 0;
+  headTransfer.blocked = false;
+  headTransfer.blockingStorageOrdinal = 0;
+  headTransfer.blockingActorOrdinal = *transportConsumerActorOrdinal;
+  headTransfer.producer = *transportHeadProducer;
+  headTransfer.blockingTraversals.push_back(*transportHeadTraversal);
+  exactTransportWait.transfers.push_back(std::move(headTransfer));
+  using ClosedWait = loom::sim::CgraClosedWaitSetDiagnostic;
+  const ClosedWait::WaitOwnerKey consumerOwner{
+      ClosedWait::WaitActorFiringKey{*transportConsumerActorOrdinal, 0}};
+  const ClosedWait::WaitOwnerKey storageOwner{ClosedWait::WaitStorageQueueKey{
+      ClosedWait::WaitStorageDomain::TraversalStorage, 0,
+      ClosedWait::WaitQueueClass::global()}};
+  ClosedWait::WaitEdge transportOrderWait;
+  transportOrderWait.from = consumerOwner;
+  transportOrderWait.to = storageOwner;
+  transportOrderWait.kind = ClosedWait::WaitEdgeKind::StorageOrder;
+  transportOrderWait.waitingInputOrdinal = *transportConsumerInputOrdinal;
+  transportOrderWait.bindingOrdinal = 0;
+  transportOrderWait.occurrenceOrdinal = 0;
+  transportOrderWait.storageOrdinal = 0;
+  transportOrderWait.awaitedClassPosition = 0;
+  transportOrderWait.headBindingOrdinal = 1;
+  transportOrderWait.headOccurrenceOrdinal = 0;
+  transportOrderWait.headDestinationActorOrdinal =
+      *transportConsumerActorOrdinal;
+  transportOrderWait.headDestinationInputOrdinal =
+      *transportHeadConsumerInputOrdinal;
+  ClosedWait::WaitEdge transportConsumerWait = transportOrderWait;
+  transportConsumerWait.from = storageOwner;
+  transportConsumerWait.to = consumerOwner;
+  transportConsumerWait.kind = ClosedWait::WaitEdgeKind::StorageConsumer;
+  transportConsumerWait.waitingInputOrdinal =
+      std::numeric_limits<std::uint32_t>::max();
+  transportConsumerWait.bindingOrdinal = 1;
+  exactTransportWait.waitCertificate = {transportOrderWait,
+                                        transportConsumerWait};
+  if (!loom::sim::verifyClosedWaitCertificateClosure(exactTransportWait))
+    fail("transport feedback fixture did not form one closed SCC");
+
+  const loom::ArtifactRootReference transportWorkload =
+      plan.frontier.pairs.front().software.workloads.front();
+  const loom::ArtifactRootReference transportRuntimeInput =
+      publishApplicationRuntimeInput(transportWorkload, 7, store);
+  auto preparedTransport =
+      take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+          plan.frontier.pairs.front().software.dataflow, targetModules.front(),
+          *feedbackSpatialMapping, transportWorkload, transportRuntimeInput,
+          plan.resolvedConfig, store, blobs));
+  auto transportEvidence =
+      take(loom::evaluation::models::evaluateCgraSimulation(
+          preparedTransport, {100000, std::nullopt}, store, blobs));
+  const loom::ArtifactRootReference transportEvidenceReference = take(
+      loom::evaluation::publishEvaluationEvidence(transportEvidence, store));
+  auto parentTransportConstraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          transportDataflowView, transportTech.view(), targetModule.view(),
+          store));
+  const auto projectedParentTransportConstraints =
+      take(loom::dse::projectJointSpatialMappingConstraintSet(
+          parentExecution, *feedbackSpatialMapping, store));
+  if (!projectedParentTransportConstraints ||
+      *projectedParentTransportConstraints !=
+          parentTransportConstraints.reference())
+    fail("root-complete SpatialMapping lost its empty constraint lineage");
   const auto transportFeedback =
       take(loom::dse::deriveSpatialTransportRuntimeFeedback(
-          mappings.front(), exactTransportWait, store));
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, preparedTransport.request},
+          exactTransportWait, store, mappings.front()));
+  const auto repeatedTransportFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, preparedTransport.request},
+          exactTransportWait, store, mappings.front()));
+  auto reorderedTransportWait = exactTransportWait;
+  std::reverse(reorderedTransportWait.waitCertificate.begin(),
+               reorderedTransportWait.waitCertificate.end());
+  const auto reorderedTransportFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, preparedTransport.request},
+          reorderedTransportWait, store, mappings.front()));
   if (transportFeedback.disposition !=
           loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact ||
-      transportFeedback.alternatives.size() != 1 ||
-      transportFeedback.alternatives.front().producer != *transportProducer ||
-      transportFeedback.alternatives.front().forbiddenTraversal !=
-          *transportTraversal)
-    fail("exact storage wait did not produce one canonical reroute");
+      !(transportFeedback == repeatedTransportFeedback) ||
+      !(transportFeedback == reorderedTransportFeedback) ||
+      transportFeedback.alternatives.size() != 2 ||
+      !llvm::any_of(transportFeedback.alternatives,
+                    [&](const auto &value) {
+                      return value.producer == *transportProducer &&
+                             value.forbiddenTraversal == *transportTraversal;
+                    }) ||
+      !llvm::any_of(transportFeedback.alternatives, [&](const auto &value) {
+        return value.producer == *transportHeadProducer &&
+               value.forbiddenTraversal == *transportHeadTraversal;
+      }))
+    fail("exact storage wait did not preserve awaited and head anchors");
+
+  auto terminalLocalTransportWait = exactTransportWait;
+  terminalLocalTransportWait.transfers.front().blockingTraversals = {
+      *transportTerminalTraversal};
+  const auto terminalLocalTransportFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, preparedTransport.request},
+          terminalLocalTransportWait, store, mappings.front()));
+  if (terminalLocalTransportFeedback.disposition !=
+          loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact ||
+      !llvm::any_of(terminalLocalTransportFeedback.literals, [&](const auto
+                                                                     &literal) {
+        const auto *attachment =
+            std::get_if<loom::mapping::SpatialTransferAttachmentEqualsLiteral>(
+                &literal);
+        return attachment &&
+               attachment->terminal.producer == *transportProducer;
+      }))
+    fail("terminal-local wait lost its exact attachment literal");
+
+  auto mismatchedStorageWait = exactTransportWait;
+  mismatchedStorageWait.waitCertificate.front().storageOrdinal = 1;
+  const auto mismatchedStorageFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, preparedTransport.request},
+          mismatchedStorageWait, store, mappings.front()));
+  if (mismatchedStorageFeedback.disposition !=
+          loom::dse::SpatialTransportRuntimeFeedbackDisposition::
+              ProofNotEstablished ||
+      mismatchedStorageFeedback.reason !=
+          loom::dse::SpatialTransportRuntimeFeedbackReason::
+              UnjoinedCertificateEdge ||
+      mismatchedStorageFeedback.constraintSet ||
+      !mismatchedStorageFeedback.literals.empty())
+    fail("storage mismatch published a partial runtime no-good");
+
+  const loom::ArtifactRootReference foreignRuntimeInput =
+      publishApplicationRuntimeInput(transportWorkload, 8, store);
+  auto foreignPreparedTransport =
+      take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+          plan.frontier.pairs.front().software.dataflow, targetModules.front(),
+          *feedbackSpatialMapping, transportWorkload, foreignRuntimeInput,
+          plan.resolvedConfig, store, blobs));
+  const auto unboundEvidenceFeedback =
+      take(loom::dse::deriveSpatialTransportRuntimeFeedback(
+          *feedbackSpatialMapping, parentTransportConstraints.reference(),
+          {transportEvidenceReference, foreignPreparedTransport.request},
+          exactTransportWait, store, mappings.front()));
+  if (unboundEvidenceFeedback.disposition !=
+          loom::dse::SpatialTransportRuntimeFeedbackDisposition::
+              ProofNotEstablished ||
+      unboundEvidenceFeedback.reason !=
+          loom::dse::SpatialTransportRuntimeFeedbackReason::
+              UnboundRuntimeEvidence ||
+      unboundEvidenceFeedback.constraintSet ||
+      !unboundEvidenceFeedback.literals.empty())
+    fail("foreign Evaluation Request published a runtime no-good");
+  auto accumulatedTransportConstraints =
+      take(loom::mapping::importSpatialMappingConstraintSet(
+          *transportFeedback.constraintSet, store));
+  llvm::Error repeatedParent = loom::mapping::admitSpatialMappingConstraints(
+      transportDataflowView, transportTech.view(), targetModule.view(),
+      accumulatedTransportConstraints.view(), transportSpatial.view());
+  if (!repeatedParent)
+    fail("runtime no-good admitted the exact parent SpatialMapping");
+  llvm::consumeError(std::move(repeatedParent));
   std::vector<loom::fabric::FabricPhysicalTraversalRef> transportDomain;
   for (const auto &traversal : targetModule.view().admittedTraversals())
     if (traversal != *transportTraversal)
@@ -1723,6 +1967,18 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         }))
       fail("first-verified transport repair did not publish its selected "
            "Mapping");
+    auto childSystemMapping = take(loom::mapping::importSystemMapping(
+        *transportExecution.summary.selectedMapping, store));
+    const auto childSpatialMappings =
+        childSystemMapping.view().executionBindings().spatialMappingImports();
+    if (childSpatialMappings.size() != 1)
+      fail("transport repair did not retain one child SpatialMapping");
+    const auto childConstraintLineage =
+        take(loom::dse::projectJointSpatialMappingConstraintSet(
+            transportExecution, childSpatialMappings.front(), store));
+    if (!childConstraintLineage ||
+        *childConstraintLineage != transportRepair.constraintSets.front())
+      fail("explicit Spatial repair lost its constraint lineage");
   }
 
   loom::sim::CgraClosedWaitSetDiagnostic exactFifoWait;

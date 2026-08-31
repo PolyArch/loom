@@ -248,6 +248,37 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
                        provenance.spatialTransportFeedback->reason)}};
     addOptionalRoot(feedback, "parent_mapping",
                     provenance.spatialTransportFeedback->parentMapping);
+    addOptionalRoot(feedback, "parent_spatial_mapping",
+                    provenance.spatialTransportFeedback->parentSpatialMapping);
+    addOptionalRoot(feedback, "parent_constraints",
+                    provenance.spatialTransportFeedback->parentConstraints);
+    addOptionalRoot(feedback, "runtime_evidence",
+                    provenance.spatialTransportFeedback->runtimeEvidence);
+    addOptionalRoot(feedback, "evaluation_request",
+                    provenance.spatialTransportFeedback->evaluationRequest);
+    addOptionalRoot(feedback, "constraint_set",
+                    provenance.spatialTransportFeedback->constraintSet);
+    feedback["certificate_digest"] =
+        provenance.spatialTransportFeedback->certificateDigest
+            ? llvm::json::Value(dse::formatSpatialWaitCertificateDigest(
+                  *provenance.spatialTransportFeedback->certificateDigest))
+            : llvm::json::Value(nullptr);
+    feedback["certificate_edge_count"] =
+        provenance.spatialTransportFeedback->certificateEdgeCount;
+    feedback["projected_edge_count"] =
+        provenance.spatialTransportFeedback->projectedEdgeCount;
+    feedback["literal_count"] =
+        provenance.spatialTransportFeedback->literals.size();
+    if (provenance.spatialTransportFeedback->owners) {
+      feedback["owner_dataflow"] =
+          encodeRoot(provenance.spatialTransportFeedback->owners->dataflow);
+      feedback["owner_tech_mapping"] =
+          encodeRoot(provenance.spatialTransportFeedback->owners->techMapping);
+      feedback["owner_fabric"] =
+          encodeRoot(provenance.spatialTransportFeedback->owners->fabric);
+      feedback["owner_spatial_mapping"] = encodeRoot(
+          provenance.spatialTransportFeedback->owners->spatialMapping);
+    }
     result["spatial_transport_feedback"] = std::move(feedback);
   } else {
     result["spatial_transport_feedback"] = nullptr;

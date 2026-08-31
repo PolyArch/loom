@@ -360,6 +360,18 @@ private:
   friend class JointDesignExecutionManifestBinder;
 };
 
+/// Recovers the exact Spatial MappingConstraintSet that admitted one generated
+/// SpatialMapping. Root-complete generation mechanically yields the canonical
+/// empty set; explicit repair generation quotes its resolved constraint input.
+/// An immutable seed with no retained constraint lineage, or an artifact
+/// reproduced under more than one constraint root in the same execution,
+/// returns `nullopt` rather than inventing a current owner.
+llvm::Expected<std::optional<ArtifactRootReference>>
+projectJointSpatialMappingConstraintSet(
+    const JointDesignExecution &execution,
+    const ArtifactRootReference &spatialMapping,
+    const ArtifactStore &artifactStore);
+
 struct IncompleteJointDesignQuality final {
   JointDesignQualityIncompleteReason reason =
       JointDesignQualityIncompleteReason::ProofNotEstablished;

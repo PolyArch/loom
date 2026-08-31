@@ -2,7 +2,9 @@
 #define LOOM_DSE_SPATIALRUNTIMEFEEDBACK_H
 
 #include "Common/Artifact.h"
+#include "Common/ComponentViewDigest.h"
 #include "Fabric/IR/FabricEnums.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Simulator/CGRASimulator.h"
 
@@ -11,11 +13,16 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace loom {
 class ArtifactStore;
+}
+
+namespace loom::evaluation {
+class EvaluationRequest;
 }
 
 namespace loom::dse {
@@ -204,13 +211,31 @@ enum class SpatialTransportRuntimeFeedbackReason : std::uint8_t {
   ExactClosedStorageWait,
   MissingOwnerReferences,
   OwnerMismatch,
-  MissingWaitCycle,
-  MissingOutputBackpressure,
-  ProjectionMismatch,
-  NoAlternativeTraversal,
-  CandidateCapacityOverflow,
+  /// The supplied parent SpatialMapping was not admitted by the exact current
+  /// constraint root, so it cannot own a new accumulated counterexample.
+  ParentConstraintRejection,
+  /// The runtime reported a proof failure, an empty certificate, or a
+  /// certificate that is not one closed strongly connected component. There is
+  /// nothing to project, and no weaker witness is substituted for it.
+  UnprovenWaitCertificate,
+  /// One essential certificate edge could not be joined all the way back to the
+  /// parent RouteTree. Projection is all-or-nothing, so no clause is published.
+  UnjoinedCertificateEdge,
+  /// The supplied runtime evidence reference is not a well-formed evaluation
+  /// evidence object, or it cannot be bound to the exact parent Mapping.
+  UnboundRuntimeEvidence,
+  /// The selected SpatialMapping has no exact current constraint-set lineage,
+  /// so a persistent accumulated clause cannot be derived safely.
+  UnboundConstraintLineage,
+  /// The certificate projected cleanly but named no exact Mapping choice, so
+  /// there is no non-empty clause to publish.
+  EmptyLiteralSet,
 };
 
+/// Mechanical projection of one canonical `NetUsesTraversal` literal for
+/// callers that still consume the older shape. It is never an independent
+/// semantic owner: every value is derived from `literals`, and the actor-cycle
+/// derivation that used to produce it is gone.
 struct SpatialTransportRepairAlternative final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   ::loom::fabric::FabricPhysicalTraversalRef forbiddenTraversal;
@@ -222,14 +247,83 @@ struct SpatialTransportRepairAlternative final {
   }
 };
 
+/// The typed digest of one unified runtime wait certificate. The certificate is
+/// dynamic evidence rather than an artifact, so it never carries an
+/// ArtifactIdentity; this distinct value type keeps a certificate digest from
+/// being compared against, or mistaken for, any other digest in the stack.
+/// Only `computeSpatialWaitCertificateDigest` can mint one.
+class SpatialWaitCertificateDigest final {
+public:
+  static constexpr llvm::StringLiteral domain =
+      "loom.spatial_wait_certificate.1";
+
+  const ComponentViewDigest &digest() const { return digest_; }
+
+  friend bool operator==(const SpatialWaitCertificateDigest &lhs,
+                         const SpatialWaitCertificateDigest &rhs) {
+    return lhs.digest_ == rhs.digest_;
+  }
+  friend bool operator!=(const SpatialWaitCertificateDigest &lhs,
+                         const SpatialWaitCertificateDigest &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  explicit SpatialWaitCertificateDigest(ComponentViewDigest digest)
+      : digest_(std::move(digest)) {}
+
+  friend llvm::Expected<SpatialWaitCertificateDigest>
+  computeSpatialWaitCertificateDigest(
+      const sim::CgraClosedWaitSetDiagnostic &closedWait);
+
+  ComponentViewDigest digest_;
+};
+
+/// Derives the canonical digest of the complete typed certificate. Certificate
+/// edges are canonically ordered first, so discovery order cannot affect it.
+llvm::Expected<SpatialWaitCertificateDigest>
+computeSpatialWaitCertificateDigest(
+    const sim::CgraClosedWaitSetDiagnostic &closedWait);
+
+std::string
+formatSpatialWaitCertificateDigest(const SpatialWaitCertificateDigest &digest);
+
+/// One mechanical projection of an exact closed wait certificate into the
+/// canonical Spatial no-good clause. Every field is derived; the runtime
+/// remains the only owner of the dynamic facts, and the published constraint
+/// set remains the only persistent artifact.
 struct SpatialTransportRuntimeFeedback final {
+  /// Separate lineage only, and unchanged in meaning: the parent SystemMapping
+  /// an existing SystemMapping-scoped controller selected. No projected literal
+  /// and no published clause depends on it, and it may be absent.
   std::optional<ArtifactRootReference> parentMapping;
+  /// The exact parent SpatialMapping the certificate was observed on. The
+  /// persistent no-good is owned by this and the constraint root's exact
+  /// Dataflow/TechMapping/Fabric tuple alone.
+  std::optional<ArtifactRootReference> parentSpatialMapping;
+  /// The exact constraint set that parent was admitted under.
+  std::optional<ArtifactRootReference> parentConstraints;
+  /// The exact runtime Evaluation Evidence the certificate came from.
+  std::optional<ArtifactRootReference> runtimeEvidence;
+  /// The canonical union of `parentConstraints` with the projected clause.
+  /// Engaged exactly when the disposition is Exact.
+  std::optional<ArtifactRootReference> constraintSet;
   SpatialTransportRuntimeFeedbackDisposition disposition =
       SpatialTransportRuntimeFeedbackDisposition::ProofNotEstablished;
   SpatialTransportRuntimeFeedbackReason reason =
       SpatialTransportRuntimeFeedbackReason::MissingOwnerReferences;
   std::optional<sim::CgraExecutionOwnerReferences> owners;
+  /// Deterministic digest of the complete typed certificate. Discovery order
+  /// does not affect it, so reprojecting one certificate reproduces it exactly.
+  std::optional<SpatialWaitCertificateDigest> certificateDigest;
+  /// The exact evaluation Request the runtime evidence was produced from,
+  /// proven to bind this exact SpatialMapping under the CGRA simulation model.
+  std::optional<ArtifactRootReference> evaluationRequest;
+  /// The exact projected literals, in canonical order.
+  std::vector<mapping::SpatialNoGoodLiteral> literals;
   std::vector<SpatialTransportRepairAlternative> alternatives;
+  std::uint64_t certificateEdgeCount = 0;
+  std::uint64_t projectedEdgeCount = 0;
   std::uint64_t outputBackpressureEdgeCount = 0;
   std::uint64_t exactBlockedTransferCount = 0;
 
@@ -245,11 +339,19 @@ struct SpatialTransportRuntimeFeedback final {
               left->spatialMapping == right->spatialMapping);
     };
     return lhs.parentMapping == rhs.parentMapping &&
+           lhs.parentSpatialMapping == rhs.parentSpatialMapping &&
+           lhs.parentConstraints == rhs.parentConstraints &&
+           lhs.runtimeEvidence == rhs.runtimeEvidence &&
+           lhs.evaluationRequest == rhs.evaluationRequest &&
+           lhs.constraintSet == rhs.constraintSet &&
            lhs.disposition == rhs.disposition && lhs.reason == rhs.reason &&
            sameOwners(lhs.owners, rhs.owners) &&
+           lhs.certificateDigest == rhs.certificateDigest &&
+           lhs.literals == rhs.literals &&
            lhs.alternatives == rhs.alternatives &&
-           lhs.outputBackpressureEdgeCount ==
-               rhs.outputBackpressureEdgeCount &&
+           lhs.certificateEdgeCount == rhs.certificateEdgeCount &&
+           lhs.projectedEdgeCount == rhs.projectedEdgeCount &&
+           lhs.outputBackpressureEdgeCount == rhs.outputBackpressureEdgeCount &&
            lhs.exactBlockedTransferCount == rhs.exactBlockedTransferCount;
   }
 };
@@ -259,11 +361,31 @@ llvm::StringRef spatialTransportRuntimeFeedbackDispositionSpelling(
 llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
     SpatialTransportRuntimeFeedbackReason reason);
 
+/// The exact runtime evidence one certificate was observed under. The Request
+/// root is not carried separately: it is mechanically
+/// `evaluationRequestReference(requestView)`, so a second copy would be a
+/// duplicate authority the projection would have to reconcile.
+struct SpatialTransportRuntimeEvidence final {
+  ArtifactRootReference evidence;
+  const ::loom::evaluation::EvaluationRequest &requestView;
+};
+
+/// Projects one exact closed wait certificate into a canonical Spatial no-good
+/// and publishes it by union with `parentConstraints`.
+///
+/// The projection is all-or-nothing. Any essential certificate edge that cannot
+/// be joined back to the exact parent RouteTree yields typed
+/// ProofNotEstablished and publishes nothing; there is no first-traversal
+/// fallback and no partial clause. The no-good is bound by the constraint
+/// root's exact Dataflow/TechMapping/Fabric tuple and never by a SystemMapping.
 llvm::Expected<SpatialTransportRuntimeFeedback>
 deriveSpatialTransportRuntimeFeedback(
-    const ArtifactRootReference &parentMapping,
+    const ArtifactRootReference &parentSpatialMapping,
+    const ArtifactRootReference &parentConstraints,
+    const SpatialTransportRuntimeEvidence &runtimeEvidence,
     const sim::CgraClosedWaitSetDiagnostic &closedWait,
-    const ArtifactStore &artifacts);
+    const ArtifactStore &artifacts,
+    std::optional<ArtifactRootReference> parentSystemMapping = std::nullopt);
 
 void emitSpatialTransportRuntimeFeedback(
     const SpatialTransportRuntimeFeedback &feedback);

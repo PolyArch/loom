@@ -1334,15 +1334,31 @@ only an exact closed wait with a complete causal cone may reject a candidate or
 request a bounded local repair. Unknown rates, dynamic aliases, and incomplete
 queue witnesses remain `ProofNotEstablished` or `Unsupported`.
 
-Selected transport storage is a separate feedback boundary. If a closed actor
-wait crosses multiple route-storage owners and no one FIFO or operand queue is
-the complete witness, runtime must name the canonical producer and selected
-physical traversals. Spatial feedback independently joins those references to
-the finalized RouteTree. A bounded retry may exclude one exact contested
-traversal through `NetSelectedPhysicalTraversals`; it may not infer a storage
-resize or bypass queue/FIFO ownership. Without a verified mutable checkpoint,
-the retry is a constrained cold Mapping invocation rather than an incremental
-repair claim.
+Selected transport storage is a separate feedback boundary. Runtime supplies
+only the unified closed-sink wait-certificate SCC; actor-cycle summaries and a
+first blocked FIFO are not fallback witnesses. Before projection, the Evidence
+Request must bind the exact Dataflow, Fabric, and SpatialMapping as singleton
+CGRA case roles, and the parent Mapping must retain the exact current Spatial
+constraint-set lineage.
+
+Spatial feedback joins every traversal-storage edge by binding occurrence and
+storage ordinal to the dynamic transfer row and then to the finalized
+RouteTree. A `StorageOrder` edge joins the awaited transfer and its independently
+named queue head; waiting actor/input fields qualify the awaited branch while
+head destination fields qualify only the head branch. Downstream edges consume
+only the downstream traversal projection. Operand-queue storage is not silently
+recast as transport storage. Source-local and sink-local traversals remain real
+selected traversals and yield their exact attachment literals when the edge
+proves that terminal.
+
+Any missing Evidence, constraint lineage, occurrence, storage equality,
+producer, sink, traversal, or attachment leaves projection
+`ProofNotEstablished` and publishes no partial clause. A successful projection
+domain-separates a canonical digest of the complete typed certificate and
+publishes the literal set by canonical union with the current constraint set.
+The diagnostic JSON and legacy single-traversal retry view derive from those
+literals; neither is a second semantic owner. This boundary does not infer a
+storage resize or mark the Fabric intrinsically infeasible.
 
 When route cost, capacity, and functional objective are equal, the Spatial
 router prefers distinct compatible ingresses for input roles in one potential

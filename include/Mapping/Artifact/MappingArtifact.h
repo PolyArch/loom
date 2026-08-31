@@ -625,6 +625,16 @@ bool spatialRouteTreeSelectsTraversal(
     const SpatialRouteTreeView &route,
     const ::loom::fabric::FabricPhysicalTraversalRef &traversal);
 
+/// The exact selected traversals on the branch from the route root to one
+/// sink: the source-local traversal, every incoming traversal on the path from
+/// the root to the sink's node, and the sink-local traversal. This is the
+/// branch-scoped refinement of `spatialRouteTreeSelectsTraversal` and the sole
+/// owner of that walk; a malformed or cyclic node chain is a typed error rather
+/// than a truncated branch.
+llvm::Expected<std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+spatialRouteBranchTraversals(const SpatialRouteTreeView &route,
+                             const SpatialRouteSinkView &sink);
+
 /// Whether one exact selected route disposition uses the physical FIFO
 /// occurrence. Hardware-impact projection and runtime-feedback admission share
 /// this query; Module membership alone never implies Mapping dependence.

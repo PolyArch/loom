@@ -1719,6 +1719,43 @@ bool spatialRouteTreeSelectsTraversal(
   });
 }
 
+llvm::Expected<std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+spatialRouteBranchTraversals(const SpatialRouteTreeView &route,
+                             const SpatialRouteSinkView &sink) {
+  if (sink.nodeOrdinal >= route.nodes.size())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "spatial_mapping_invalid: RouteTree sink "
+                                   "has an out-of-range node");
+  // The parent chain is walked from the sink upward, so the collected arcs are
+  // reversed before assembly to honour the documented root-to-sink order.
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> arcs;
+  std::set<std::uint64_t> visited;
+  for (std::optional<std::uint64_t> cursor = sink.nodeOrdinal; cursor;) {
+    if (*cursor >= route.nodes.size())
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "spatial_mapping_invalid: RouteTree "
+                                     "branch leaves the node inventory");
+    if (!visited.insert(*cursor).second)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "spatial_mapping_invalid: RouteTree branch is cyclic");
+    const SpatialRouteNodeView &node = route.nodes[*cursor];
+    if (node.incomingTraversal)
+      arcs.push_back(*node.incomingTraversal);
+    cursor = node.parentOrdinal;
+  }
+  std::reverse(arcs.begin(), arcs.end());
+
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> branch;
+  branch.reserve(arcs.size() + 2);
+  if (route.localTraversal)
+    branch.push_back(*route.localTraversal);
+  branch.insert(branch.end(), arcs.begin(), arcs.end());
+  if (sink.localTraversal)
+    branch.push_back(*sink.localTraversal);
+  return branch;
+}
+
 bool spatialMappingUsesFifoOccurrence(
     const SpatialMappingView &mapping,
     ::loom::fabric::FabricFifoOccurrenceRef fifo) {

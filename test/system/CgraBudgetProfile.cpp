@@ -814,8 +814,17 @@ int main(int argc, char **argv) {
         "cgra-budget-profile", dataflow, system,
         {hardware.spatialMapping.reference()}, artifacts);
     parentSystemMapping = systemMapping.reference();
+    auto dataflowView = take(dataflow.view());
+    auto techMapping =
+        take(loom::mapping::importTechMapping(hardware.techMapping, artifacts));
+    auto parentConstraints =
+        take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+            dataflowView, techMapping.view(), hardware.module.view(),
+            artifacts));
     auto feedback = take(loom::dse::deriveSpatialTransportRuntimeFeedback(
-        *parentSystemMapping, *warmup.closedWait, artifacts));
+        hardware.spatialMapping.reference(), parentConstraints.reference(),
+        {*preRepairEvidence, prepared.request}, *warmup.closedWait, artifacts,
+        *parentSystemMapping));
     require(
         feedback.disposition ==
                 loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact &&

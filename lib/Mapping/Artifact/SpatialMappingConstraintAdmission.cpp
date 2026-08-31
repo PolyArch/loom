@@ -711,22 +711,12 @@ private:
         auto sinkKey = dataflowKey(dataflow_.identity(), sink.sink);
         if (!sinkKey)
           return sinkKey.takeError();
+        auto branchTraversals = spatialRouteBranchTraversals(route, sink);
+        if (!branchTraversals)
+          return branchTraversals.takeError();
         ExactSet branch;
-        if (route.localTraversal)
-          branch.values.push_back(fabricKey(*route.localTraversal));
-        std::set<std::uint64_t> visited;
-        for (std::optional<std::uint64_t> cursor = sink.nodeOrdinal; cursor;) {
-          if (*cursor >= route.nodes.size())
-            return invalid("RouteTree branch leaves the node inventory");
-          if (!visited.insert(*cursor).second)
-            return invalid("RouteTree branch is cyclic");
-          const SpatialRouteNodeView &node = route.nodes[*cursor];
-          if (node.incomingTraversal)
-            branch.values.push_back(fabricKey(*node.incomingTraversal));
-          cursor = node.parentOrdinal;
-        }
-        if (sink.localTraversal)
-          branch.values.push_back(fabricKey(*sink.localTraversal));
+        for (const auto &traversal : *branchTraversals)
+          branch.values.push_back(fabricKey(traversal));
         normalizeExact(branch);
         if (!projection.sinkBranchTraversals
                  .try_emplace(*sinkKey, std::move(branch))

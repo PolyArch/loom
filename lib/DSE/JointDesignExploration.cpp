@@ -16,6 +16,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
@@ -33,6 +34,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -291,6 +293,136 @@ llvm::Expected<std::vector<ArtifactRootReference>>
 projectJointDesignTargetModules(const ArtifactRootReference &system,
                                 const ArtifactStore &artifactStore) {
   return projectTargetModules(system, artifactStore);
+}
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+projectJointSpatialMappingConstraintSet(
+    const JointDesignExecution &execution,
+    const ArtifactRootReference &spatialMapping,
+    const ArtifactStore &artifactStore) {
+  auto importedSpatial =
+      mapping::importSpatialMapping(spatialMapping, artifactStore);
+  if (!importedSpatial)
+    return importedSpatial.takeError();
+  const ArtifactRootReference dataflowReference{
+      dataflow::canonicalDataflowSchema.identity.str(),
+      dataflow::canonicalDataflowSchema.version,
+      importedSpatial->view().dataflowIdentity()};
+  const ArtifactRootReference techReference{
+      mapping::mappingArtifactSchema.identity.str(),
+      mapping::mappingArtifactSchema.version,
+      importedSpatial->view().techMappingIdentity()};
+  const ArtifactRootReference fabricReference{
+      fabric::fabricArtifactSchema.identity.str(),
+      fabric::fabricArtifactSchema.version,
+      importedSpatial->view().fabricIdentity()};
+  auto dataflow =
+      dataflow::importCanonicalDataflow(dataflowReference, artifactStore);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto dataflowView = dataflow->view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  auto tech = mapping::importTechMapping(techReference, artifactStore);
+  if (!tech)
+    return tech.takeError();
+  auto fabric = fabric::importEntireFabricRoot(fabricReference, artifactStore);
+  if (!fabric)
+    return fabric.takeError();
+
+  const CompletedDsePlanExecution &available = std::visit(
+      [](const auto &outcome) -> const CompletedDsePlanExecution & {
+        using Outcome = std::decay_t<decltype(outcome)>;
+        if constexpr (std::is_same_v<Outcome, CompletedDsePlanExecution>)
+          return outcome;
+        else
+          return outcome.availableExecution();
+      },
+      execution.planExecution);
+
+  std::optional<ArtifactRootReference> projected;
+  bool ambiguous = false;
+  const auto remember =
+      [&](const ArtifactRootReference &constraints) -> llvm::Error {
+    auto imported =
+        mapping::importSpatialMappingConstraintSet(constraints, artifactStore);
+    if (!imported)
+      return imported.takeError();
+    if (imported->view().dataflowIdentity() !=
+            importedSpatial->view().dataflowIdentity() ||
+        imported->view().techMappingIdentity() !=
+            importedSpatial->view().techMappingIdentity() ||
+        imported->view().fabricIdentity() !=
+            importedSpatial->view().fabricIdentity())
+      return invalid("SpatialMapping constraint lineage has foreign owners");
+    if (ambiguous)
+      return llvm::Error::success();
+    if (projected && *projected != constraints) {
+      projected.reset();
+      ambiguous = true;
+      return llvm::Error::success();
+    }
+    projected = constraints;
+    return llvm::Error::success();
+  };
+
+  for (const GenerateInvocationRecord &invocation :
+       available.generateInvocations()) {
+    bool produced = false;
+    for (const CandidateGeneratorOutputBinding &binding :
+         invocation.outputBindings)
+      produced |= llvm::is_contained(binding.artifacts, spatialMapping);
+    if (!produced)
+      continue;
+
+    const CandidateGeneratorDescriptorRef descriptor =
+        invocation.generatorBinding.descriptorRef();
+    if (descriptor ==
+        rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference()) {
+      auto empty = mapping::finalizeEmptySpatialMappingConstraintSet(
+          *dataflowView, tech->view(), fabric->view(), artifactStore);
+      if (!empty)
+        return empty.takeError();
+      if (llvm::Error error = remember(empty->reference()))
+        return std::move(error);
+      continue;
+    }
+
+    if (descriptor != spatialPnrCandidateGeneratorDescriptor().reference())
+      continue;
+    std::optional<ArtifactRootReference> explicitConstraints;
+    for (const CandidateGeneratorInputBinding &binding :
+         invocation.inputBindings)
+      for (const ArtifactRootReference &input : binding.artifacts) {
+        if (input.schemaIdentity !=
+                mapping::mappingConstraintSetSchema.identity ||
+            input.schemaVersion != mapping::mappingConstraintSetSchema.version)
+          continue;
+        if (explicitConstraints && *explicitConstraints != input)
+          return invalid(
+              "Spatial repair invocation has multiple constraint inputs");
+        explicitConstraints = input;
+      }
+    if (!explicitConstraints)
+      return invalid("Spatial repair invocation has no exact constraint input");
+    if (llvm::Error error = remember(*explicitConstraints))
+      return std::move(error);
+  }
+  if (ambiguous)
+    return std::optional<ArtifactRootReference>();
+  if (projected) {
+    auto constraints =
+        mapping::importSpatialMappingConstraintSet(*projected, artifactStore);
+    if (!constraints)
+      return constraints.takeError();
+    if (llvm::Error error = mapping::admitSpatialMappingConstraints(
+            *dataflowView, tech->view(), fabric->view(), constraints->view(),
+            importedSpatial->view()))
+      return invalid("SpatialMapping was not admitted by its current "
+                     "constraint lineage: " +
+                     llvm::toString(std::move(error)));
+  }
+  return projected;
 }
 
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(

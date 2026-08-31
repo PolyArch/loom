@@ -52,6 +52,7 @@ struct ResolvedApplicationReplay final {
   ApplicationSpatialRuntimePoint point;
   ArtifactRootReference module;
   ArtifactRootReference spatialMapping;
+  std::optional<ArtifactRootReference> spatialConstraints;
 };
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -354,12 +355,17 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         fabric::fabricArtifactSchema.identity.str(),
         fabric::fabricArtifactSchema.version,
         spatialMapping->view().fabricIdentity()};
+    auto spatialConstraints = dse::projectJointSpatialMappingConstraintSet(
+        execution, selected->spatialMapping, artifacts);
+    if (!spatialConstraints)
+      return spatialConstraints.takeError();
     resolvedReplays.push_back(
         {&replay,
          {workload->launchRef.rootThreadLaunch, workload->launchRef,
           workload->denseCoordinates, selected->context},
          module,
-         selected->spatialMapping});
+         selected->spatialMapping,
+         std::move(*spatialConstraints)});
   }
 
   for (const ResolvedApplicationReplay &replay : resolvedReplays)
@@ -468,6 +474,11 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     if (!cgraEvaluation)
       return cgraEvaluation.takeError();
     evaluation::EvaluationEvidence &cgraEvidence = cgraEvaluation->evidence;
+    auto cgraEvidenceReference =
+        evaluation::publishEvaluationEvidence(cgraEvidence, artifacts);
+    if (!cgraEvidenceReference)
+      return cgraEvidenceReference.takeError();
+    validation.evidence.push_back(*cgraEvidenceReference);
     if (cgraEvaluation->closedWait) {
       auto operandFeedback = dse::deriveSpatialOperandQueueRuntimeFeedback(
           imported->mapping.reference(), *cgraEvaluation->closedWait,
@@ -517,12 +528,44 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
           priority(feedback->disposition) >
               priority(validation.spatialFifoFeedback->disposition))
         validation.spatialFifoFeedback = std::move(*feedback);
-      auto transportFeedback = dse::deriveSpatialTransportRuntimeFeedback(
-          imported->mapping.reference(), *cgraEvaluation->closedWait,
-          artifacts);
-      if (!transportFeedback)
-        return transportFeedback.takeError();
-      dse::emitSpatialTransportRuntimeFeedback(*transportFeedback);
+      dse::SpatialTransportRuntimeFeedback transportFeedback;
+      if (resolved.spatialConstraints) {
+        auto derived = dse::deriveSpatialTransportRuntimeFeedback(
+            resolved.spatialMapping, *resolved.spatialConstraints,
+            {*cgraEvidenceReference, preparedCgra->request},
+            *cgraEvaluation->closedWait, artifacts,
+            imported->mapping.reference());
+        if (!derived)
+          return derived.takeError();
+        transportFeedback = std::move(*derived);
+      } else {
+        transportFeedback.parentMapping = imported->mapping.reference();
+        transportFeedback.parentSpatialMapping = resolved.spatialMapping;
+        transportFeedback.runtimeEvidence = *cgraEvidenceReference;
+        transportFeedback.evaluationRequest =
+            evaluation::evaluationRequestReference(preparedCgra->request);
+        transportFeedback.owners = cgraEvaluation->closedWait->ownerReferences;
+        transportFeedback.certificateEdgeCount =
+            cgraEvaluation->closedWait->waitCertificate.size();
+        const bool hasClosedCertificate =
+            !cgraEvaluation->closedWait->waitProofFailure &&
+            !cgraEvaluation->closedWait->waitCertificate.empty() &&
+            sim::verifyClosedWaitCertificateClosure(
+                *cgraEvaluation->closedWait);
+        transportFeedback.reason =
+            hasClosedCertificate ? dse::SpatialTransportRuntimeFeedbackReason::
+                                       UnboundConstraintLineage
+                                 : dse::SpatialTransportRuntimeFeedbackReason::
+                                       UnprovenWaitCertificate;
+        if (hasClosedCertificate) {
+          auto digest = dse::computeSpatialWaitCertificateDigest(
+              *cgraEvaluation->closedWait);
+          if (!digest)
+            return digest.takeError();
+          transportFeedback.certificateDigest = *digest;
+        }
+      }
+      dse::emitSpatialTransportRuntimeFeedback(transportFeedback);
       const auto transportPriority =
           [](dse::SpatialTransportRuntimeFeedbackDisposition value) {
             switch (value) {
@@ -537,16 +580,11 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
             llvm_unreachable("unknown Spatial transport feedback disposition");
           };
       if (!validation.spatialTransportFeedback ||
-          transportPriority(transportFeedback->disposition) >
+          transportPriority(transportFeedback.disposition) >
               transportPriority(
                   validation.spatialTransportFeedback->disposition))
-        validation.spatialTransportFeedback = std::move(*transportFeedback);
+        validation.spatialTransportFeedback = std::move(transportFeedback);
     }
-    auto cgraEvidenceReference =
-        evaluation::publishEvaluationEvidence(cgraEvidence, artifacts);
-    if (!cgraEvidenceReference)
-      return cgraEvidenceReference.takeError();
-    validation.evidence.push_back(*cgraEvidenceReference);
     if (cgraEvidence.outcomeKind() !=
         evaluation::EvidenceOutcomeKind::Completed) {
       emitRuntimeEvidenceFailure("cgra_simulation", cgraEvidence);
