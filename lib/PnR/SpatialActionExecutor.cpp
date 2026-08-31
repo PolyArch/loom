@@ -164,6 +164,42 @@ llvm::Error classifyRelationFailure(llvm::Error failure) {
       });
 }
 
+llvm::Expected<std::optional<SpatialTraversalRouteCut>>
+resolveRuntimeLiteralBreaker(
+    const SpatialCandidateState &candidate,
+    SpatialActionExecutionContext context,
+    std::optional<SpatialRuntimeLiteralBreaker> breaker) {
+  if (!breaker)
+    return std::optional<SpatialTraversalRouteCut>();
+  if (context != SpatialActionExecutionContext::ExactRepair)
+    return executorError(
+        "runtime-counterexample breaker is only valid for ExactRepair");
+  const auto clauses = candidate.problem().constraints().resolvedNoGoods();
+  const auto literals =
+      candidate.problem().constraints().resolvedNoGoodLiterals();
+  if (breaker->clauseOrdinal >= clauses.size())
+    return executorError(
+        "runtime-counterexample breaker clause is out of range");
+  if (!candidate.runtimeCounterexampleClauseViolated(breaker->clauseOrdinal))
+    return executorError(
+        "runtime-counterexample breaker clause is not currently violated");
+  const FrozenNoGoodResolvedClause &clause = clauses[breaker->clauseOrdinal];
+  if (clause.literalOffset > literals.size() ||
+      clause.literalCount > literals.size() - clause.literalOffset)
+    return executorError(
+        "runtime-counterexample breaker clause range is malformed");
+  if (breaker->clauseLocalLiteralOrdinal >= clause.literalCount)
+    return executorError(
+        "runtime-counterexample breaker literal is out of range");
+  const FrozenNoGoodResolvedLiteral &literal =
+      literals[clause.literalOffset + breaker->clauseLocalLiteralOrdinal];
+  if (literal.kind != FrozenNoGoodResolvedLiteral::Kind::NetUsesTraversal)
+    return executorError(
+        "runtime-counterexample route breaker is not NetUsesTraversal");
+  return std::optional<SpatialTraversalRouteCut>(SpatialTraversalRouteCut{
+      literal.logicalNet, literal.sink, literal.target});
+}
+
 } // namespace
 
 SpatialActionExecutorScratch::SpatialActionExecutorScratch() = default;
@@ -672,9 +708,13 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
       return executorError(
           "runtime-counterexample witness literal range is invalid");
     for (const FrozenNoGoodResolvedLiteral &literal :
-         literals.slice(clause.literalOffset, clause.literalCount))
+         literals.slice(clause.literalOffset, clause.literalCount)) {
+      if (literal.kind == FrozenNoGoodResolvedLiteral::Kind::
+                              SpatialMappingIdentityEquals)
+        continue;
       if (llvm::Error error = markNet(literal.logicalNet))
         return error;
+    }
     return llvm::Error::success();
   }
   }
@@ -833,7 +873,9 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                   globalRouting_ = true;
                   affectedNets_.clear();
                   return llvm::Error::success();
-                }
+                } else
+                  return move.setPhysicalTagValue(
+                      choice.logicalNet, choice.segmentOrdinal, choice.value);
               },
               category);
         } else {
@@ -1665,6 +1707,91 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
   return llvm::Error::success();
 }
 
+llvm::Error SpatialActionExecutorScratch::realizeExplicitLocalDispositions(
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate) {
+  if (globalRouting_)
+    for (PnrIndex logicalNet : affectedNets_)
+      if (explicitNetDispositionMarks_[logicalNet] == dependencyEpoch_)
+        return executorError(
+            "global routing cannot carry an explicit local disposition");
+
+  std::vector<PnrIndex> localNets;
+  std::vector<PnrIndex> externalNets;
+  localNets.reserve(affectedNets_.size());
+  externalNets.reserve(affectedNets_.size());
+  for (PnrIndex logicalNet : affectedNets_) {
+    if (explicitNetDispositionMarks_[logicalNet] != dependencyEpoch_) {
+      externalNets.push_back(logicalNet);
+      continue;
+    }
+    const SpatialWholeNetDispositionKind disposition =
+        explicitNetDispositions_[logicalNet];
+    if (disposition == SpatialWholeNetDispositionKind::Preferred)
+      return executorError(
+          "explicit exact-repair disposition cannot be Preferred");
+    if (disposition == SpatialWholeNetDispositionKind::External) {
+      if (candidate.usesRegisterFifo(logicalNet))
+        if (llvm::Error error =
+                move.setRegisterFifoTransfer(logicalNet, std::nullopt))
+          return error;
+      externalNets.push_back(logicalNet);
+      continue;
+    }
+    localNets.push_back(logicalNet);
+  }
+  if (localNets.empty())
+    return llvm::Error::success();
+  if (llvm::Error error = router_.beginConstraintSweep(localNets))
+    return error;
+  const auto &routing = candidate.problem().routing();
+  for (PnrIndex logicalNet : localNets) {
+    const PnrIndex selected = explicitRegisterFifoTransfers_[logicalNet];
+    if (selected == getInvalidPnrIndex() ||
+        selected >= candidate.problem().localTransfers().options().size())
+      return executorError("explicit register-FIFO option is out of range");
+    if (llvm::Error error = routeCosts_->selectLogicalNet(logicalNet))
+      return error;
+    if (candidate.registerFifoTransfer(logicalNet) != selected)
+      if (llvm::Error error =
+              move.setRegisterFifoTransfer(logicalNet, selected))
+        return error;
+    if (!candidate.routeTree(logicalNet).isUnrouted())
+      if (llvm::Error error = move.ripUpWholeRoute(logicalNet))
+        return error;
+
+    for (PnrIndex word : localTransferClaimWords_)
+      localTransferClaimBits_[word] = 0;
+    localTransferClaimWords_.clear();
+    const auto &option =
+        candidate.problem().localTransfers().options()[selected];
+    const std::array<PnrIndex, 2> traversals = {option.writeTraversal,
+                                                option.readTraversal};
+    for (PnrIndex traversal : traversals) {
+      if (traversal >= routing.traversals().size())
+        return executorError("register-FIFO traversal is out of range");
+      const auto &record = routing.traversals()[traversal];
+      for (PnrIndex claim : routing.traversalClaimKeys().slice(
+               record.routeClaimOffset, record.routeClaimCount)) {
+        if (claim >= routing.routeClaims().size())
+          return executorError("register-FIFO route claim is out of range");
+        const PnrIndex word = claim / 64;
+        if (localTransferClaimBits_[word] == 0)
+          localTransferClaimWords_.push_back(word);
+        localTransferClaimBits_[word] |= std::uint64_t{1} << (claim % 64);
+      }
+    }
+    if (llvm::Error error = routeCosts_->updateSelectedLogicalNetClaims(
+            localTransferClaimBits_))
+      return error;
+    if (llvm::Error error = routeCosts_->acceptSelectedLogicalNet())
+      return error;
+    if (llvm::Error error = router_.finishConstraintNet(logicalNet))
+      return error;
+  }
+  affectedNets_ = std::move(externalNets);
+  return llvm::Error::success();
+}
+
 llvm::Error
 SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
                                                   llvm::Error failure,
@@ -1773,13 +1900,18 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     SpatialCandidateState &candidate,
     llvm::ArrayRef<SpatialMappingAction> actions,
     SpatialActionExecutionContext context,
-    std::uint64_t exactRegionalLogicalNetLimit) {
+    std::uint64_t exactRegionalLogicalNetLimit,
+    std::optional<SpatialRuntimeLiteralBreaker> runtimeBreaker) {
   if (activeProbe_)
     return executorError("another Action probe is active");
   if (candidate_ != &candidate || !routeCosts_ || !currentObjective_)
     return executorError("executor was not prepared for this candidate");
   if (llvm::Error error = validateCanonicalSpatialActionBatch(actions))
     return std::move(error);
+  auto routeCut =
+      resolveRuntimeLiteralBreaker(candidate, context, runtimeBreaker);
+  if (!routeCut)
+    return routeCut.takeError();
   beginDependencyClosure();
 
   auto moveOrError = candidate.beginMove(candidateScratch_);
@@ -1798,13 +1930,28 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     return restoreAfterFailure(move, std::move(error), false);
   if (llvm::Error error = reconcileBindingRelations(move, candidate))
     return restoreAfterFailure(move, std::move(error), false);
+  llvm::sort(affectedNets_);
+  affectedNets_.erase(
+      std::unique(affectedNets_.begin(), affectedNets_.end()),
+      affectedNets_.end());
+  if (context != SpatialActionExecutionContext::Search)
+    if (llvm::Error error = realizeExplicitLocalDispositions(move, candidate))
+      return restoreAfterFailure(move, std::move(error), false);
 
   const bool negotiatedRouting =
       globalRouting_ || (context != SpatialActionExecutionContext::Search &&
                          !affectedNets_.empty());
+  if (*routeCut &&
+      (!negotiatedRouting ||
+       (!globalRouting_ &&
+        !llvm::is_contained(affectedNets_, (*routeCut)->logicalNet))))
+    return restoreAfterFailure(
+        move,
+        executorError(
+            "runtime-counterexample route breaker is outside its probe region"),
+        false);
   if (negotiatedRouting) {
     const auto &routing = candidate.problem().config().policy().search.routing;
-    llvm::sort(affectedNets_);
     const SpatialRoutingClosureRequirement closureRequirement = [&] {
       switch (context) {
       case SpatialActionExecutionContext::Search:
@@ -1822,7 +1969,7 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
          routing.noProgressIterationLimit, routing.noProgressTrendWindow},
         globalRouting_ ? llvm::ArrayRef<PnrIndex>{}
                        : llvm::ArrayRef<PnrIndex>(affectedNets_),
-        {}, closureRequirement, exactRegionalLogicalNetLimit);
+        {}, closureRequirement, exactRegionalLogicalNetLimit, *routeCut);
     if (!closure)
       return restoreAfterFailure(
           move, classifyTransitionFailure(closure.takeError(), context), true);
@@ -1849,41 +1996,89 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
             SpatialActionTransitionFailureKind::IntrinsicInvalid,
             "Spatial Action selected a combinational handshake cycle"),
         negotiatedRouting);
-  if (negotiatedProjection &&
-      (candidate.unroutedObligationCount() !=
-           negotiatedProjection->unroutedObligationCount ||
-       candidate.routeCapacityOveruse() !=
-           negotiatedProjection->routeCapacityOveruse ||
-       candidate.tagResidentCapacityOveruse() !=
-           negotiatedProjection->tagResidentCapacityOveruse ||
-       candidate.tagUnassignedCount() !=
-           negotiatedProjection->tagUnassignedCount ||
-       candidate.tagConflictCount() != negotiatedProjection->tagConflictCount ||
-       candidate.runtimeCounterexampleViolation() !=
-           negotiatedProjection->runtimeCounterexampleViolation ||
-       candidate.totalSelectedTraversalClaim() !=
-           negotiatedProjection->totalSelectedTraversalClaim ||
-       candidate.routeReleaseLatencyCycles() !=
-           negotiatedProjection->routeReleaseLatencyCycles ||
-       candidate.routeMinimumInitiationIntervalCycles() !=
-           negotiatedProjection->routeMinimumInitiationIntervalCycles ||
-       candidate.transportBitCycleDemand() !=
-           negotiatedProjection->transportBitCycleDemand ||
-       candidate.worstRouteArrivalDelayQuanta() !=
-           negotiatedProjection->worstRouteArrivalDelayQuanta ||
-       candidate.totalRouteNegativeSlackQuanta() !=
-           negotiatedProjection->totalRouteNegativeSlackQuanta))
-    return restoreAfterFailure(
-        move,
-        executorError(
-            "closed route-derived state disagrees with its RouteTrees"),
-        true);
+  if (*routeCut) {
+    auto holds = router_.internalRouteCutHolds(candidate, **routeCut);
+    if (!holds)
+      return restoreAfterFailure(move, holds.takeError(), negotiatedRouting);
+    if (*holds)
+      return restoreAfterFailure(
+          move,
+          executorError(
+              "runtime-counterexample route breaker remained selected"),
+          negotiatedRouting);
+  }
+  if (negotiatedProjection) {
+    const auto requireEqual = [&](llvm::StringRef field, std::uint64_t closed,
+                                  std::uint64_t projected) -> llvm::Error {
+      if (closed == projected)
+        return llvm::Error::success();
+      return executorError("closed route-derived " + field + " is " +
+                           llvm::Twine(closed) + ", but its provisional "
+                           "RouteTrees project " + llvm::Twine(projected));
+    };
+    const std::array<std::tuple<llvm::StringRef, std::uint64_t, std::uint64_t>,
+                     12>
+        routeFacts{{
+            {"unrouted obligation count", candidate.unroutedObligationCount(),
+             negotiatedProjection->unroutedObligationCount},
+            {"route capacity overuse", candidate.routeCapacityOveruse(),
+             negotiatedProjection->routeCapacityOveruse},
+            {"tag resident capacity overuse",
+             candidate.tagResidentCapacityOveruse(),
+             negotiatedProjection->tagResidentCapacityOveruse},
+            {"tag unassigned count", candidate.tagUnassignedCount(),
+             negotiatedProjection->tagUnassignedCount},
+            {"tag conflict count", candidate.tagConflictCount(),
+             negotiatedProjection->tagConflictCount},
+            {"runtime counterexample violation",
+             candidate.runtimeCounterexampleViolation(),
+             negotiatedProjection->runtimeCounterexampleViolation},
+            {"selected traversal claim",
+             candidate.totalSelectedTraversalClaim(),
+             negotiatedProjection->totalSelectedTraversalClaim},
+            {"route release latency", candidate.routeReleaseLatencyCycles(),
+             negotiatedProjection->routeReleaseLatencyCycles},
+            {"route initiation interval",
+             candidate.routeMinimumInitiationIntervalCycles(),
+             negotiatedProjection->routeMinimumInitiationIntervalCycles},
+            {"transport bit-cycle demand",
+             candidate.transportBitCycleDemand(),
+             negotiatedProjection->transportBitCycleDemand},
+            {"worst route arrival delay",
+             candidate.worstRouteArrivalDelayQuanta(),
+             negotiatedProjection->worstRouteArrivalDelayQuanta},
+            {"total route negative slack",
+             candidate.totalRouteNegativeSlackQuanta(),
+             negotiatedProjection->totalRouteNegativeSlackQuanta},
+        }};
+    for (const auto &[field, closed, projected] : routeFacts)
+      if (llvm::Error error = requireEqual(field, closed, projected))
+        return restoreAfterFailure(move, std::move(error), true);
+  }
   const bool semanticChange = move.hasSemanticChange();
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
   routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
                                move.touchedRouteLogicalNets().end());
-  const bool routeTagsSynchronized = move.hasRouteTreeChange();
+  const bool routeTagsSynchronized =
+      move.hasRouteTreeChange() || move.hasPhysicalTagValueChange();
+  std::optional<SpatialTagAssignmentDelta> tagDelta;
+  if (routeTagsSynchronized) {
+    auto projected = move.summarizeCurrentTagAssignmentDelta();
+    if (!projected)
+      return restoreAfterFailure(move, projected.takeError(),
+                                 negotiatedRouting);
+    tagDelta = std::move(*projected);
+    routeTagLogicalNets_ = tagDelta->logicalNets;
+    routeTagDomains_ = tagDelta->domains;
+    routeCostLogicalNets_.insert(routeCostLogicalNets_.end(),
+                                 routeTagLogicalNets_.begin(),
+                                 routeTagLogicalNets_.end());
+    llvm::sort(routeCostLogicalNets_);
+    routeCostLogicalNets_.erase(
+        std::unique(routeCostLogicalNets_.begin(), routeCostLogicalNets_.end()),
+        routeCostLogicalNets_.end());
+  }
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error), negotiatedRouting);
@@ -1897,11 +2092,6 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     if (llvm::Error error = routeCosts_->commitTagProjectionDelta())
       return restoreAfterFailure(move, std::move(error), false);
   } else if (routeTagsSynchronized) {
-    auto tagDelta = move.summarizeCurrentTagAssignmentDelta();
-    if (!tagDelta)
-      return restoreAfterFailure(move, tagDelta.takeError(), negotiatedRouting);
-    routeTagLogicalNets_ = tagDelta->logicalNets;
-    routeTagDomains_ = tagDelta->domains;
     if (llvm::Error error = routeCosts_->synchronizeTagProjection(
             *tagDelta, routeCostLogicalNets_))
       return restoreAfterFailure(move, std::move(error), negotiatedRouting);

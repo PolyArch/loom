@@ -135,21 +135,30 @@ public:
       llvm::ArrayRef<RouteCost> evaluationPriorities,
       SpatialRoutingClosureRequirement closureRequirement =
           SpatialRoutingClosureRequirement::Final,
-      std::uint64_t exactRegionalLogicalNetLimit = 0);
+      std::uint64_t exactRegionalLogicalNetLimit = 0,
+      std::optional<SpatialTraversalRouteCut> routeCut = std::nullopt);
 
-  llvm::Expected<RouteCost>
-  routeWholeNetInMove(SpatialMoveTransaction &move,
-                      const SpatialCandidateState &candidate,
-                      SpatialRouteCostState &costs, PnrIndex logicalNet,
-                      std::uint64_t endpointExpansionLimit);
+  llvm::Expected<bool>
+  internalRouteCutHolds(const SpatialCandidateState &candidate,
+                        const SpatialTraversalRouteCut &cut) const {
+    return netRouter_.internalRouteCutHolds(candidate, cut);
+  }
+
+  llvm::Expected<RouteCost> routeWholeNetInMove(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet,
+      std::uint64_t endpointExpansionLimit,
+      std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
   llvm::Expected<RouteCost> routeSingleSinkInMove(
       SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, PnrIndex logicalNet,
-      PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit);
+      PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit,
+      std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
   llvm::Expected<RouteCost> routeRootedSubtreeInMove(
       SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
-      std::uint64_t endpointExpansionLimit);
+      std::uint64_t endpointExpansionLimit,
+      std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
 
   llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error finishConstraintNet(PnrIndex logicalNet);

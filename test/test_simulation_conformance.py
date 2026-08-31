@@ -355,7 +355,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "initial_spatial_mapping"
                         ],
                         "constraint_set": reference(
-                            903, "loom.mapping_constraints", "1.2"
+                            903, "loom.mapping_constraints", "1.3"
                         ),
                         "spatial_pnr": repair_pnr,
                         "child_spatial_mapping": repair_child,

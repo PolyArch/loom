@@ -107,6 +107,14 @@ struct SpatialTagAssignmentDelta final {
   std::vector<std::optional<llvm::APInt>> netTagValues;
 };
 
+/// One transaction-local exact value selection. The segment ordinal is local
+/// to the named logical net's canonical continuity projection.
+struct SpatialTagValueUpdate final {
+  PnrIndex logicalNet = getInvalidPnrIndex();
+  PnrIndex segmentOrdinal = getInvalidPnrIndex();
+  llvm::APInt value;
+};
+
 /// Reusable transaction storage for route-local Physical Tag updates. The
 /// storage is prepared once per Frozen model and retains prior net buffers so
 /// repeated route moves can reuse capacity.
@@ -182,6 +190,7 @@ private:
       llvm::ArrayRef<RouteTreeStateHandle> routes,
       llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,
       llvm::ArrayRef<PnrIndex> touchedRoutes,
+      llvm::ArrayRef<SpatialTagValueUpdate> valueUpdates,
       SpatialTagAssignmentScratch &scratch);
   void commit(SpatialTagAssignmentScratch &scratch) noexcept;
   void rollback(SpatialTagAssignmentScratch &scratch) noexcept;

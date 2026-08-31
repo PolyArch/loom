@@ -158,7 +158,7 @@ semantic contract. Key boundaries are:
   derives one merged LLVM module without selecting Fabric or Mapping;
 * TechMapping consumes exact Dataflow and Fabric;
 * Spatial PnR consumes exact `D/T/F/C/K` under the Spatial
-  `loom.mapping_constraints 1.2` root;
+  `loom.mapping_constraints 1.3` root;
 * System PnR consumes exact `D/F/R/H/C/K` under the System root; the finalized SystemMapping
   persists only its exact `D/F`, root launches, derived spatial imports, and
   selected Mapping records;
@@ -195,6 +195,18 @@ semantic contract. Key boundaries are:
 
 An identity mismatch is an invalid input, not an Evaluation finding and not a
 reason to repair or reinterpret the consumer artifact.
+
+Runtime counterexample projection is invocation-local and owns no durable
+legality fact. Promotion into `loom.mapping_constraints 1.3` is a separate
+operation that accepts only replay-verified Evidence, a complete
+certificate-derived anchor set, and an independently verified invariant under
+the exact Evaluation Request. The promoted clause traces the exact parent
+SpatialMapping, Request, Evidence, SimulationExecution, and certificate
+digest. Its exact-parent Mapping literal conservatively blocks the complete
+replayed assignment; it is not a claim that the recorded anchors form a
+minimal SCC core. Once promoted, the MappingConstraintSet is the sole
+persistent legality owner. Explicitly authored clauses omit this runtime
+lineage.
 
 ## Invocation Lineage
 

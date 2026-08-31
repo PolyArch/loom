@@ -6,8 +6,11 @@
 #include "DSE/JointMappingMigration.h"
 #include "DSE/PreMappingFrontier.h"
 #include "DSE/SpatialRuntimeFeedback.h"
+#include "DSE/SpatialTransportCegar.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "PnR/SpatialProgressState.h"
+#include "PnR/SpatialExactRepair.h"
+#include "PnR/SpatialMappingWarmSeed.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -64,7 +67,11 @@ struct JointSpatialOperandBufferHardwareRepair final {
 
 struct JointSpatialTransportMappingRepair final {
   SpatialTransportRuntimeFeedback feedback;
+  std::optional<SpatialTransportCegarResult> cegar;
+  std::optional<pnr::SpatialMappingWarmSeedAccounting> warmSeedAccounting;
+  std::optional<pnr::SpatialExactRepairResult> exactRepair;
   std::vector<ArtifactRootReference> constraintSets;
+  std::vector<ArtifactRootReference> repairedSpatialMappings;
   std::vector<ArtifactRootReference> childSystems;
   std::vector<JointDesignExecution> executions;
   std::vector<JointMappingReuseDisposition> reuseDispositions;
@@ -74,6 +81,8 @@ struct JointSpatialTransportMappingRepair final {
   std::uint64_t candidatesConsumed = 0;
   std::uint64_t candidatesRejected = 0;
   std::uint64_t candidatesCancelled = 0;
+  bool preparedSeedHandoff = false;
+  std::uint64_t coldFallbackCount = 0;
 };
 
 struct JointHardwareReopenRequest final {

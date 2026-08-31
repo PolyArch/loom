@@ -37,6 +37,8 @@ add_mlir_library(LoomPnR
   SpatialGlobalRoutingClosure.cpp
   SpatialLocalTransferIndex.cpp
   SpatialMappingMaterializer.cpp
+  SpatialMappingSelectionProjection.cpp
+  SpatialMappingWarmSeed.cpp
   SpatialMoveTransaction.cpp
   SpatialNetRouter.cpp
   SpatialOperandPairingPressure.cpp

@@ -24,6 +24,11 @@ inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchemaV1_0{
 inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchemaV1_1{
     "loom.mapping_constraints", SchemaVersion{1, 1}};
 
+/// The descriptor that added route-local Physical Tag literals but predates
+/// the exact SpatialMapping identity literal.
+inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchemaV1_2{
+    "loom.mapping_constraints", SchemaVersion{1, 2}};
+
 /// Re-finalizes one exact loom.mapping_constraints 1.0 Spatial root under the
 /// intermediate 1.1 descriptor and returns the new ArtifactRootReference. The
 /// runtime-counterexample no-good clause is an optional semantic extension: a
@@ -40,8 +45,8 @@ migrateSpatialConstraintRootV1_0ToV1_1(const ArtifactRootReference &reference,
                                        const ArtifactStore &store);
 
 /// The System twin of `migrateSpatialConstraintRootV1_0ToV1_1`. The System
-/// root's clause catalog is unchanged between 1.0 and 1.1 — the no-good kind
-/// is Spatial-only — so a System migration only re-finalizes the identical
+/// root's clause catalog is unchanged between 1.0 and 1.1 -- the no-good kind
+/// is Spatial-only -- so a System migration only re-finalizes the identical
 /// clause sequence under the 1.1 descriptor for a new identity.
 llvm::Expected<ArtifactRootReference>
 migrateSystemConstraintRootV1_0ToV1_1(const ArtifactRootReference &reference,
@@ -60,6 +65,18 @@ llvm::Expected<ArtifactRootReference>
 migrateSystemConstraintRootV1_1ToV1_2(const ArtifactRootReference &reference,
                                       const ArtifactStore &store);
 
+/// Re-finalizes one exact 1.2 Spatial root under 1.3. A 1.2 payload may carry
+/// traversal, attachment, and tag literals, but no exact-Mapping literal.
+llvm::Expected<ArtifactRootReference>
+migrateSpatialConstraintRootV1_2ToV1_3(const ArtifactRootReference &reference,
+                                       const ArtifactStore &store);
+
+/// System clauses did not change in 1.3; this still produces a distinct 1.3
+/// identity by explicit re-finalization.
+llvm::Expected<ArtifactRootReference>
+migrateSystemConstraintRootV1_2ToV1_3(const ArtifactRootReference &reference,
+                                      const ArtifactStore &store);
+
 /// Explicit convenience chains for callers whose authoring source is still
 /// 1.0. Each intermediate identity is materialized and verified; no ordinary
 /// importer silently skips a schema owner.
@@ -68,6 +85,13 @@ migrateSpatialConstraintRootV1_0ToV1_2(const ArtifactRootReference &reference,
                                        const ArtifactStore &store);
 llvm::Expected<ArtifactRootReference>
 migrateSystemConstraintRootV1_0ToV1_2(const ArtifactRootReference &reference,
+                                      const ArtifactStore &store);
+
+llvm::Expected<ArtifactRootReference>
+migrateSpatialConstraintRootV1_0ToV1_3(const ArtifactRootReference &reference,
+                                       const ArtifactStore &store);
+llvm::Expected<ArtifactRootReference>
+migrateSystemConstraintRootV1_0ToV1_3(const ArtifactRootReference &reference,
                                       const ArtifactStore &store);
 
 } // namespace loom::mapping

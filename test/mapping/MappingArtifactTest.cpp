@@ -1,6 +1,7 @@
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefs.h"
-#include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/IR/MappingOps.h"
@@ -15,6 +16,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -35,6 +37,31 @@ std::string rawByteArray(std::size_t count, std::uint8_t value) {
   }
   result += "]";
   return result;
+}
+
+std::string rawByteArray(llvm::ArrayRef<std::uint8_t> bytes) {
+  std::string result = "[";
+  for (auto [index, value] : llvm::enumerate(bytes)) {
+    if (index != 0)
+      result += ", ";
+    result += std::to_string(value);
+  }
+  result += "]";
+  return result;
+}
+
+std::string spatialMappingIdentityEquals(std::uint8_t identityByte) {
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> bytes;
+  bytes.fill(identityByte);
+  auto identity = loom::ArtifactIdentity::fromBytes(bytes);
+  if (!identity)
+    fail(llvm::toString(identity.takeError()));
+  const loom::ArtifactRootReference reference{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version, std::move(*identity)};
+  return "#mapping.spatial_mapping_identity_equals<spatial_mapping = "
+         "#mapping.artifact_root_reference<" +
+         rawByteArray(loom::encodeArtifactRootReference(reference)) + ">>";
 }
 
 std::string identityAttr(std::uint8_t value) {
@@ -650,7 +677,7 @@ std::string noGoodModule(const std::string &clauses) {
          identityAttr(34) + ") {\n" + clauses + "  }\n}";
 }
 
-/// Semantic joints of the 1.2 runtime-counterexample no-good clause that hold
+/// Semantic joints of the 1.3 runtime-counterexample no-good clause that hold
 /// at the canonical-bytes layer: literal and clause order, deduplication,
 /// idempotent republication, canonical union, and the closed literal catalog.
 void testSpatialRuntimeCounterexampleNoGood() {
@@ -678,6 +705,8 @@ void testSpatialRuntimeCounterexampleNoGood() {
   const std::string second = netUsesTraversal(9, 4);
   const std::string attachment = transferAttachmentEquals(7, 5);
   const std::string tag = netTagEquals(7, 0, 3);
+  const std::string mappingIdentity = spatialMappingIdentityEquals(61);
+  const std::string otherMappingIdentity = spatialMappingIdentityEquals(62);
   const auto clause = [](const std::string &literals) {
     return "    mapping.constraint.runtime_counterexample_no_good literals([" +
            literals + "])\n";
@@ -716,27 +745,47 @@ void testSpatialRuntimeCounterexampleNoGood() {
       noGoodModule(clause(attachment) + clause(tag + ", " + first)));
   if (!tagUnionForward.bytes().equals(tagUnionReverse.bytes()))
     fail("Physical Tag no-good discovery order changed canonical bytes");
-  if (!canonicalize(noGoodModule(clause(tag))).bytes().equals(
-          canonicalize(
-              noGoodModule(clause(netTagEquals(7, 0, 3, 8))))
-              .bytes()))
+  if (!canonicalize(noGoodModule(clause(tag)))
+           .bytes()
+           .equals(canonicalize(noGoodModule(clause(netTagEquals(7, 0, 3, 8))))
+                       .bytes()))
     fail("Physical Tag APInt storage width changed canonical bytes");
-  if (canonicalize(noGoodModule(clause(tag))).bytes().equals(
-          canonicalize(noGoodModule(clause(netTagEquals(7, 0, 4)))).bytes()))
+  if (canonicalize(noGoodModule(clause(tag)))
+          .bytes()
+          .equals(canonicalize(noGoodModule(clause(netTagEquals(7, 0, 4))))
+                      .bytes()))
     fail("distinct Physical Tag literals produced the same canonical bytes");
+
+  const auto mappingOrdered =
+      canonicalize(noGoodModule(clause(first + ", " + mappingIdentity)));
+  const auto mappingReversed =
+      canonicalize(noGoodModule(clause(mappingIdentity + ", " + first)));
+  const auto mappingDuplicated = canonicalize(noGoodModule(
+      clause(mappingIdentity + ", " + first + ", " + mappingIdentity)));
+  if (!mappingOrdered.bytes().equals(mappingReversed.bytes()))
+    fail("SpatialMapping identity literal order changed canonical bytes");
+  if (!mappingOrdered.bytes().equals(mappingDuplicated.bytes()))
+    fail("a duplicate SpatialMapping identity literal changed canonical bytes");
+  if (canonicalize(noGoodModule(clause(mappingIdentity)))
+          .bytes()
+          .equals(
+              canonicalize(noGoodModule(clause(otherMappingIdentity))).bytes()))
+    fail("different parent Mapping identities produced the same canonical "
+         "constraint bytes");
 
   // A different literal is a different clause: the witness is workload- and
   // mapping-specific, never a claim about the Fabric.
-  if (canonicalize(noGoodModule(clause(first))).bytes().equals(
-          canonicalize(noGoodModule(clause(second))).bytes()))
+  if (canonicalize(noGoodModule(clause(first)))
+          .bytes()
+          .equals(canonicalize(noGoodModule(clause(second))).bytes()))
     fail("distinct no-good literals produced the same canonical bytes");
 
   // No-goods sort after every conjunctive clause kind, so adding one never
   // reorders the 1.0 clause sequence that precedes it.
-  const std::string mixed =
-      "    mapping.constraint.domain_restriction "
-      "projection(memory_bound_services) subject(" +
-      logicalMemoryRootRef(1) + ") admissible_domain([])\n" + clause(first);
+  const std::string mixed = "    mapping.constraint.domain_restriction "
+                            "projection(memory_bound_services) subject(" +
+                            logicalMemoryRootRef(1) +
+                            ") admissible_domain([])\n" + clause(first);
   const auto mixedBytes = canonicalize(noGoodModule(mixed));
   const std::string mixedText(mixedBytes.bytes().begin(),
                               mixedBytes.bytes().end());

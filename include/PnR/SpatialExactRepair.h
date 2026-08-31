@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALEXACTREPAIR_H
 #define LOOM_PNR_SPATIALEXACTREPAIR_H
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialActionExecutor.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 
@@ -14,10 +15,17 @@
 
 namespace loom::pnr {
 
+namespace detail {
+struct SpatialRuntimeCounterexampleBreaker;
+}
+
 enum class SpatialExactRepairResultKind : std::uint8_t {
   Repaired,
   RegionInfeasibleUnderFixedBoundary,
   UnknownBudgetExhausted,
+  TimedOut,
+  RoutingIncomplete,
+  ProofNotEstablished,
   RegionTooLarge,
   UnsupportedEncoding,
   InternalError,
@@ -31,6 +39,9 @@ struct SpatialExactRepairResult final {
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
   std::string detail;
+  /// Deterministic canonical solve work, including exact memo hits. Actual
+  /// solver invocations remain in `solverCalls`.
+  std::uint64_t logicalSolverCalls = 0;
 };
 
 /// Returns the exact reason that the selected repair provider cannot encode
@@ -54,7 +65,12 @@ public:
   repair(SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
          std::uint64_t solverCallLimit,
          DeterministicPnrRandomStream &exactRepairStream,
-         SpatialPnrWorkLedgerView workLedger = {});
+         SpatialPnrWorkLedgerView workLedger = {},
+         /// Engaged only by a runtime CEGAR owner. It selects one exact live
+         /// frozen clause instead of allowing an unrelated static witness to
+         /// take precedence.
+         std::optional<PnrIndex> runtimeCounterexampleClause = std::nullopt,
+         ExecutionControlView executionControl = {});
 
   std::size_t retainedStorageBytes() const;
 
@@ -66,13 +82,16 @@ private:
   repairTransportClosure(SpatialCandidateState &candidate,
                          std::uint64_t restartOrdinal,
                          std::uint64_t solverCallLimit,
-                         DeterministicPnrRandomStream &exactRepairStream);
+                         DeterministicPnrRandomStream &exactRepairStream,
+                         std::optional<PnrIndex> runtimeCounterexampleClause);
 
   llvm::Expected<SpatialExactRepairResult> repairTransportClosureRegion(
       SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
       std::uint64_t solverCallLimit, std::int32_t solverSeed,
       llvm::ArrayRef<SpatialFixedTerminalCutCertificate> certificates,
-      bool &requiresRegionExpansion);
+      bool &requiresRegionExpansion,
+      const detail::SpatialRuntimeCounterexampleBreaker *runtimeBreaker =
+          nullptr);
 
   SpatialActionExecutorScratch actionExecutor_;
   std::vector<std::uint8_t> decisionIncluded_;
@@ -93,6 +112,7 @@ private:
   std::vector<std::int64_t> elementValues_;
   std::vector<SpatialMappingAction> actions_;
   SpatialPnrWorkLedgerView workLedger_;
+  ExecutionControlView executionControl_;
   std::uint64_t accountedRegionDecisionCount_ = 0;
   std::uint64_t pendingRegionDecisionCount_ = 0;
   std::vector<std::uint8_t> accountedRegionDecisions_;

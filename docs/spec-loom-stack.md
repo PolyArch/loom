@@ -415,11 +415,20 @@ The closed Spatial PnR contract has exact `D/T/F/C/K` inputs: Canonical
 Dataflow Program, TechMapping, Fabric, the mechanically derived Resolved PnR
 config view, and one MappingConstraintSet. System PnR has the corresponding
 six-input `D/F/R/H/C/K` contract. `docs/spec-pnr.md` owns the fixed
-`loom.mapping_constraints 1.2` family and its Spatial and System roots.
+`loom.mapping_constraints 1.3` family and its Spatial and System roots.
 Placement, routing, and resource
 allocation are coupled through one Action and MoveTransaction model.
 Persistent Mapping MLIR is the wire-schema SSOT; C++ hot structures are
 removable projections optimized for search.
+
+Runtime counterexample feedback remains invocation-local unless a separate
+fail-closed promotion verifies replay-bound Evidence, complete certificate
+anchors, and the exact Request-scoped invariant. A promoted Spatial clause
+records durable parent-Mapping, Request, Evidence, execution, and certificate
+lineage and uses an exact parent SpatialMapping identity literal as a
+conservative full-assignment blocker, not as a minimal SCC core. The promoted
+MappingConstraintSet is the sole persistent legality owner. Explicitly
+authored clauses carry no runtime lineage.
 
 Mapping owns structural legality and domain-independent PnR costs. Evaluation
 owns accelerator- and workload-aware observations. Central resolved policy is

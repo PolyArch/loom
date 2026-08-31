@@ -185,6 +185,22 @@ void durableCertificateRoundTripsAsOneMinimalOwner() {
   require(take(loom::sim::digestCgraClosedWaitCertificate(certificate)) ==
               take(loom::sim::digestCgraClosedWaitCertificate(adopted)),
           "certificate digest changed across strict adoption");
+  auto changedMappingOwner = certificate;
+  changedMappingOwner.owners.spatialMapping =
+      root("loom.mapping", {6, 0}, 99);
+  require(take(loom::sim::digestCgraClosedWaitCertificate(certificate)) !=
+              take(loom::sim::digestCgraClosedWaitCertificate(
+                  changedMappingOwner)),
+          "full certificate digest omitted its SpatialMapping owner");
+  require(take(loom::sim::digestCgraClosedWaitStructure(certificate)) ==
+              take(loom::sim::digestCgraClosedWaitStructure(
+                  changedMappingOwner)),
+          "structural wait digest retained the child Mapping identity");
+  auto changedStructure = certificate;
+  ++changedStructure.edges.front().waitingChannelOrdinal;
+  require(take(loom::sim::digestCgraClosedWaitStructure(certificate)) !=
+              take(loom::sim::digestCgraClosedWaitStructure(changedStructure)),
+          "structural wait digest omitted a dynamic edge field");
 
   adopted.transfers.emplace_back(
       12, 0, llvm::APInt(1, 0), false,

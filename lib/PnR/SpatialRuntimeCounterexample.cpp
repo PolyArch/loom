@@ -1,4 +1,5 @@
 #include "PnR/SpatialCandidateState.h"
+#include "PnR/SpatialMappingSelectionProjection.h"
 
 #include "SpatialCandidateStateInternal.h"
 
@@ -33,6 +34,14 @@ llvm::Expected<bool> SpatialCandidateState::runtimeCounterexampleLiteralHolds(
     llvm::ArrayRef<const RouteTreeState *> routes,
     llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>>
         tagValues) const {
+  if (literal.kind ==
+      FrozenNoGoodResolvedLiteral::Kind::SpatialMappingIdentityEquals) {
+    if (!literal.importedMapping)
+      return candidateError(
+          "runtime-counterexample SpatialMapping cache is absent");
+    return spatialMappingSelectionEqualsCandidate(
+        literal.importedMapping->view(), *this, routes, tagValues);
+  }
   const auto logicalNets = problem_->transfers().logicalNets();
   if (routes.size() != logicalNets.size() ||
       tagValues.size() != logicalNets.size() ||

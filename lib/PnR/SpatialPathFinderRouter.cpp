@@ -1224,7 +1224,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     llvm::ArrayRef<PnrIndex> logicalNets,
     llvm::ArrayRef<RouteCost> evaluationPriorities,
     SpatialRoutingClosureRequirement closureRequirement,
-    std::uint64_t exactRegionalLogicalNetLimit) {
+    std::uint64_t exactRegionalLogicalNetLimit,
+    std::optional<SpatialTraversalRouteCut> routeCut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
@@ -1247,6 +1248,17 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     return pathFinderError("evaluation-priority vector has the wrong width");
   if (costs.selectedLogicalNet())
     return pathFinderError("route costs already have a selected logical net");
+  if (routeCut) {
+    const auto nets = candidate.problem().transfers().logicalNets();
+    if (routeCut->logicalNet >= nets.size())
+      return pathFinderError("route cut logical net is out of range");
+    if (routeCut->traversal >=
+        candidate.problem().routing().traversals().size())
+      return pathFinderError("route cut traversal is out of range");
+    if (routeCut->sinkObligation &&
+        *routeCut->sinkObligation >= nets[routeCut->logicalNet].sinkCount)
+      return pathFinderError("route cut sink is out of range");
+  }
 
   const bool regionalRouting = !logicalNets.empty();
   routingRegionNets_.clear();
@@ -1288,6 +1300,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     if (!expanded)
       return expanded.takeError();
   }
+  if (routeCut && regionalRouting &&
+      !routingRegionNetMarks_[routeCut->logicalNet])
+    return pathFinderError("route cut is outside the routing region");
   const auto activeLogicalNets = [&]() -> llvm::ArrayRef<PnrIndex> {
     return regionalRouting ? llvm::ArrayRef<PnrIndex>(routingRegionNets_)
                            : llvm::ArrayRef<PnrIndex>{};
@@ -1308,13 +1323,20 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           candidate, *initialProjection);
   if (!initialObjective)
     return initialObjective.takeError();
+  bool initialRouteCutHolds = false;
+  if (routeCut) {
+    auto holds = netRouter_.internalRouteCutHolds(candidate, *routeCut);
+    if (!holds)
+      return holds.takeError();
+    initialRouteCutHolds = *holds;
+  }
   if (initialProjection->routeTerminalsCompatible &&
       initialProjection->selectedHandshakeAcyclic &&
       initialRegion->unroutedObligationCount == 0 &&
       initialRegion->routeCapacityOveruse == 0 &&
       initialRegion->tagResidentCapacityOveruse == 0 &&
       initialRegion->tagUnassignedCount == 0 &&
-      initialRegion->tagConflictCount == 0)
+      initialRegion->tagConflictCount == 0 && !initialRouteCutHolds)
     return SpatialPathFinderClosureResult{0, true};
 
   std::optional<dse::ObjectiveVector> bestRankObjective;
@@ -1408,6 +1430,17 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           netRouter_.planNegotiatedRoute(candidate, costs, entry.logicalNet);
       if (!routePlan)
         return completeIterationFailure(routePlan.takeError());
+      const std::optional<SpatialTraversalRouteCut> entryCut =
+          routeCut && routeCut->logicalNet == entry.logicalNet ? routeCut
+                                                               : std::nullopt;
+      if (entryCut) {
+        auto holds = netRouter_.internalRouteCutHolds(candidate, *entryCut);
+        if (!holds)
+          return completeIterationFailure(holds.takeError());
+        if (*holds)
+          *routePlan = detail::SpatialNegotiatedRoutePlan{
+              detail::SpatialNegotiatedRouteScope::WholeNet, {}};
+      }
       const FrozenSpatialLogicalNet &logicalNet =
           candidate.problem().transfers().logicalNets()[entry.logicalNet];
       if (routePlan->scope == detail::SpatialNegotiatedRouteScope::Preserve) {
@@ -1446,14 +1479,13 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         ++selectedSinkRoutes;
       else
         ++wholeNetRoutes;
-      auto route =
-          selectedSinks
-              ? netRouter_.routeSinkSet(
-                    move, candidate, costs, entry.logicalNet,
-                    routePlan->sinkObligations, limits.endpointExpansionLimit)
-              : netRouter_.routeWholeNet(move, candidate, costs,
-                                         entry.logicalNet,
-                                         limits.endpointExpansionLimit);
+      auto route = selectedSinks ? netRouter_.routeSinkSet(
+                                       move, candidate, costs, entry.logicalNet,
+                                       routePlan->sinkObligations,
+                                       limits.endpointExpansionLimit, entryCut)
+                                 : netRouter_.routeWholeNet(
+                                       move, candidate, costs, entry.logicalNet,
+                                       limits.endpointExpansionLimit, entryCut);
       if (!route) {
         llvm::Error routeFailure = route.takeError();
         bool emittedTypedFailure = false;
@@ -1778,11 +1810,21 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["a_star_expansions"] =
               netRouter_.endpointExpansionCount() - initialEndpointExpansions;
         });
+    bool routeCutClosed = true;
+    if (routeCut) {
+      auto holds = netRouter_.internalRouteCutHolds(candidate, *routeCut);
+      if (!holds)
+        return completeIterationFailure(holds.takeError());
+      routeCutClosed = !*holds;
+    }
     const bool routingClosed =
         projection->routeTerminalsCompatible &&
         projection->selectedHandshakeAcyclic &&
         region->unroutedObligationCount == 0 && !hasCapacityOveruse &&
-        (!regionalRouting || selectedRankImprovedFromInitial);
+        routeCutClosed &&
+        (!regionalRouting || selectedRankImprovedFromInitial || routeCut ||
+         (closureRequirement == SpatialRoutingClosureRequirement::ExactRegional &&
+          mappingViolationsZero));
     if (routingClosed) {
       emitStatistics(loom::mapping_debug::ClosureStatus::Closed);
       if (llvm::Error error = consumeIteration())
@@ -1935,38 +1977,43 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
 llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeWholeNetInMove(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
     return pathFinderError("route costs are bound to another candidate");
   return netRouter_.routeWholeNet(move, candidate, costs, logicalNet,
-                                  endpointExpansionLimit);
+                                  endpointExpansionLimit, cut);
 }
 
 llvm::Expected<RouteCost> SpatialPathFinderRouterScratch::routeSingleSinkInMove(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex sinkObligation,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
     return pathFinderError("route costs are bound to another candidate");
   return netRouter_.routeSingleSink(move, candidate, costs, logicalNet,
-                                    sinkObligation, endpointExpansionLimit);
+                                    sinkObligation, endpointExpansionLimit,
+                                    cut);
 }
 
 llvm::Expected<RouteCost>
 SpatialPathFinderRouterScratch::routeRootedSubtreeInMove(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
     return pathFinderError("route costs are bound to another candidate");
   return netRouter_.routeRootedSubtree(move, candidate, costs, logicalNet,
-                                       rootEndpoint, endpointExpansionLimit);
+                                       rootEndpoint, endpointExpansionLimit,
+                                       cut);
 }
 
 llvm::Error SpatialPathFinderRouterScratch::beginConstraintSweep(

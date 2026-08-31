@@ -489,6 +489,31 @@ template <typename Transfer> TransferKey transferKey(const Transfer &transfer) {
   return {transfer.bindingOrdinal, transfer.occurrenceOrdinal};
 }
 
+llvm::Expected<std::vector<std::uint8_t>>
+encodeCertificateWire(const CgraClosedWaitCertificate &certificate,
+                      bool includeSpatialMappingOwner) {
+  if (llvm::Error error = verifyCgraClosedWaitCertificate(certificate))
+    return std::move(error);
+  WireWriter writer;
+  writeRoot(writer, certificate.owners.dataflow);
+  writeRoot(writer, certificate.owners.fabric);
+  writeRoot(writer, certificate.owners.techMapping);
+  if (includeSpatialMappingOwner)
+    writeRoot(writer, certificate.owners.spatialMapping);
+  writer.u64(certificate.transfers.size());
+  for (const CgraClosedWaitTransfer &transfer : certificate.transfers) {
+    auto encoded =
+        encodeTransfer(transfer, certificate.owners.dataflow.artifact);
+    if (!encoded)
+      return encoded.takeError();
+    writeFramed(writer, *encoded);
+  }
+  writer.u64(certificate.edges.size());
+  for (const Diagnostic::WaitEdge &edge : certificate.edges)
+    writeFramed(writer, encodeEdge(edge));
+  return writer.take();
+}
+
 } // namespace
 
 llvm::Error loom::sim::verifyCgraClosedWaitCertificate(
@@ -595,25 +620,8 @@ loom::sim::buildCgraClosedWaitCertificate(
 llvm::Expected<std::vector<std::uint8_t>>
 loom::sim::encodeCgraClosedWaitCertificate(
     const CgraClosedWaitCertificate &certificate) {
-  if (llvm::Error error = verifyCgraClosedWaitCertificate(certificate))
-    return std::move(error);
-  WireWriter writer;
-  writeRoot(writer, certificate.owners.dataflow);
-  writeRoot(writer, certificate.owners.fabric);
-  writeRoot(writer, certificate.owners.techMapping);
-  writeRoot(writer, certificate.owners.spatialMapping);
-  writer.u64(certificate.transfers.size());
-  for (const CgraClosedWaitTransfer &transfer : certificate.transfers) {
-    auto encoded =
-        encodeTransfer(transfer, certificate.owners.dataflow.artifact);
-    if (!encoded)
-      return encoded.takeError();
-    writeFramed(writer, *encoded);
-  }
-  writer.u64(certificate.edges.size());
-  for (const Diagnostic::WaitEdge &edge : certificate.edges)
-    writeFramed(writer, encodeEdge(edge));
-  return writer.take();
+  return encodeCertificateWire(certificate,
+                               /*includeSpatialMappingOwner=*/true);
 }
 
 llvm::Expected<CgraClosedWaitCertificate>
@@ -691,5 +699,27 @@ loom::sim::digestCgraClosedWaitCertificate(
 
 std::string loom::sim::formatCgraClosedWaitCertificateDigest(
     const CgraClosedWaitCertificateDigest &digest) {
+  return formatComponentViewDigestHex(digest.value());
+}
+
+llvm::Expected<CgraClosedWaitStructureDigest>
+loom::sim::digestCgraClosedWaitStructure(
+    const CgraClosedWaitCertificate &certificate) {
+  auto bytes = encodeCertificateWire(certificate,
+                                     /*includeSpatialMappingOwner=*/false);
+  if (!bytes)
+    return bytes.takeError();
+  const llvm::StringRef domain = cgraClosedWaitStructureDigestDomain;
+  auto digest = computeComponentViewDigest(
+      llvm::ArrayRef<std::uint8_t>(
+          reinterpret_cast<const std::uint8_t *>(domain.data()), domain.size()),
+      *bytes);
+  if (!digest)
+    return digest.takeError();
+  return CgraClosedWaitStructureDigest(std::move(*digest));
+}
+
+std::string loom::sim::formatCgraClosedWaitStructureDigest(
+    const CgraClosedWaitStructureDigest &digest) {
   return formatComponentViewDigestHex(digest.value());
 }

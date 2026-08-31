@@ -9,6 +9,7 @@ add_library(LoomDSEFeedback
   SpatialOperandQueueRuntimeFeedback.cpp
   SpatialTransportRuntimeFeedback.cpp
   SpatialTransportRuntimeRepair.cpp
+  SpatialTransportCegar.cpp
   SpatialMappingFeedbackCandidateGenerator.cpp
   TechMappingHardwareFeedback.cpp
 )
@@ -26,6 +27,7 @@ target_link_libraries(LoomDSEFeedback PUBLIC
   LoomMappingArtifact
   LoomTechMapping
   LoomPnR
+  LoomPnRCpSat
   MLIRDataflowTransforms
   LLVMSupport
 )

@@ -491,7 +491,7 @@ def Mapping_SystemRouteSinkOp
 def Mapping_ConstraintsSpatialOp
     : Mapping_Op<"constraints.spatial", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.2 Spatial root";
+  let summary = "complete loom.mapping_constraints 1.3 Spatial root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$tech_mapping,
       Mapping_ArtifactIdentityAttr:$fabric);
@@ -503,7 +503,7 @@ def Mapping_ConstraintsSpatialOp
 def Mapping_ConstraintsSystemOp
     : Mapping_Op<"constraints.system", [IsolatedFromAbove, SingleBlock,
                                          NoTerminator]> {
-  let summary = "complete loom.mapping_constraints 1.2 System root";
+  let summary = "complete loom.mapping_constraints 1.3 System root";
   let arguments = (ins Mapping_ArtifactIdentityAttr:$dataflow,
       Mapping_ArtifactIdentityAttr:$fabric,
       ArrayAttr:$root_thread_launches,
@@ -566,7 +566,8 @@ def Mapping_ConstraintRuntimeCounterexampleNoGoodOp
     infeasible: a different Mapping over the same Fabric satisfies it as soon
     as one literal changes.
   }];
-  let arguments = (ins ArrayAttr:$literals);
+  let arguments = (ins ArrayAttr:$literals,
+      OptionalAttr<Mapping_RuntimeCounterexampleLineageAttr>:$lineage);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }

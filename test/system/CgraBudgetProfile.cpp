@@ -7,6 +7,7 @@
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialRuntimeFeedback.h"
+#include "DSE/SpatialTransportCegar.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraClosedWait.h"
@@ -49,6 +50,9 @@ constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
 constexpr auto kSpatialPnrQualificationLimit =
     loom::timeout::duration(loom::timeout::Tier::Fast);
+constexpr auto kTransportRepairQualificationLimit =
+    loom::timeout::duration(loom::timeout::Tier::Long);
+constexpr std::uint64_t kTransportRepairMaximumIterations = 8;
 /// A healthy Matmul warmup retires in well under one second, so screening the
 /// published Spatial frontier costs a small fraction of one qualification
 /// deadline while a non-retiring candidate still reaches its closed-wait
@@ -636,10 +640,9 @@ int main(int argc, char **argv) {
   }
   llvm::json::Object pnrResult =
       spatialPnrResultJson(spatialPnrConfig, *pnrInvocation.spatialPnrResult);
-  const auto *completedPnr =
-      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-          &pnrInvocation.spatialPnrResult->outcome);
-  if (!completedPnr || completedPnr->outputBindings.front().artifacts.empty()) {
+  const std::vector<loom::ArtifactRootReference> &publishedSpatialMappings =
+      candidateArtifacts(*pnrInvocation.spatialPnrResult);
+  if (publishedSpatialMappings.empty()) {
     llvm::json::Object report{
         {"schema", "loom.cgra_budget_profile_outcome.2"},
         {"workload", argv[3]},
@@ -659,8 +662,6 @@ int main(int argc, char **argv) {
   // published order is canonical artifact identity, not quality. Screen the
   // whole frontier against the one dynamic oracle that the static Mapping
   // model does not decide, and retain the first candidate that retires.
-  const std::vector<loom::ArtifactRootReference> &publishedSpatialMappings =
-      completedPnr->outputBindings.front().artifacts;
   llvm::json::Array candidateScreening;
   std::optional<loom::eda::test::MappedSpatialMappingFixture> selectedHardware;
   std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
@@ -831,66 +832,90 @@ int main(int argc, char **argv) {
         verifiedWait, artifacts, *parentSystemMapping));
     require(
         feedback.disposition ==
-                loom::dse::SpatialTransportRuntimeFeedbackDisposition::
-                    ProofNotEstablished &&
+                loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact &&
             feedback.reason ==
                 loom::dse::SpatialTransportRuntimeFeedbackReason::
-                    CausalCoreNotEstablished &&
-            feedback.alternatives.empty() && !feedback.constraintSet,
-        "partial transport projection escaped its fail-closed boundary");
-    bool replayed = false;
-    for (const auto &alternative : feedback.alternatives) {
-      auto repaired = take(loom::eda::test::rerouteMappedSpatialMappingFixture(
-          "cgra-budget-profile", dataflow, hardware, alternative,
-          spatialPnrConfig, spatialPnrExecution, artifacts, blobs));
-      const loom::ArtifactRootReference repairParent =
-          hardware.spatialMapping.reference();
-      llvm::json::Object repairPnr =
-          spatialPnrResultJson(spatialPnrConfig, repaired.pnrResult);
-      if (!repaired.spatialMapping) {
-        transportRepairAttempts.push_back(llvm::json::Object{
-            {"parent_spatial_mapping", referenceJson(repairParent)},
-            {"constraint_set", referenceJson(repaired.constraintSet)},
-            {"spatial_pnr", std::move(repairPnr)},
-            {"child_spatial_mapping", llvm::json::Value(nullptr)},
-            {"accepted_for_simulation", false}});
-        continue;
-      }
-      auto candidateSpatial = std::move(*repaired.spatialMapping);
-      const loom::ArtifactRootReference candidateReference =
-          candidateSpatial.reference();
-      auto candidatePrepared =
-          take(loom::evaluation::models::prepareCgraSimulationEvaluation(
-              source.dataflow, hardware.module.reference(),
-              candidateSpatial.reference(), source.workload,
-              source.runtimeInput, resolvedConfig, artifacts, blobs));
-      const auto candidateDeadline =
-          std::chrono::steady_clock::now() + kQualificationLimit;
-      auto candidateWarmup = take(
-          loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-              candidatePrepared,
-              {loom::runtime::gem5MaximumSpatialWork, candidateDeadline},
-              artifacts, blobs));
-      if (!completed(candidateWarmup)) {
-        transportRepairAttempts.push_back(llvm::json::Object{
-            {"parent_spatial_mapping", referenceJson(repairParent)},
-            {"constraint_set", referenceJson(repaired.constraintSet)},
-            {"spatial_pnr", std::move(repairPnr)},
-            {"child_spatial_mapping", referenceJson(candidateReference)},
-            {"accepted_for_simulation", false}});
-        continue;
-      }
+                    ExactClosedStorageWait &&
+            feedback.constraintSet && !feedback.literals.empty(),
+        "verified transport wait did not promote one exact no-good");
+    auto physicalTiming =
+        take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+            hardware.module.view()));
+    const auto cegarDeadline =
+        std::chrono::steady_clock::now() +
+        kTransportRepairQualificationLimit;
+    auto cegar = take(loom::dse::executeSpatialTransportCegar(
+        hardware.spatialMapping.reference(), parentConstraints.reference(),
+        verifiedWait, resolvedConfig, physicalTiming,
+        {kTransportRepairMaximumIterations,
+         kTransportRepairMaximumIterations,
+         spatialPnrConfig.policy().search.exactRepair.maxSolverCalls,
+         loom::runtime::gem5MaximumSpatialWork,
+         cegarDeadline},
+        artifacts, blobs));
+    llvm::errs() << "CGRA CEGAR termination: "
+                 << loom::dse::spatialTransportCegarTerminationSpelling(
+                        cegar.termination)
+                 << " iterations=" << cegar.iterations.size() << '\n';
+    for (const auto &iteration : cegar.iterations)
+      llvm::errs() << "CGRA CEGAR iteration: repair_kind="
+                   << static_cast<std::uint64_t>(iteration.repair.kind)
+                   << " logical_solver_calls="
+                   << iteration.repair.logicalSolverCalls
+                   << " endpoint_expansions="
+                   << iteration.repair.endpointExpansions
+                   << " negotiation_iterations="
+                   << iteration.repair.negotiationIterations
+                   << " actions=" << iteration.repair.actionCount
+                   << " retired=" << iteration.retired
+                   << " promotion_wall_ns="
+                   << iteration.work.promotion.activeWallTimeNanoseconds
+                   << " freeze_wall_ns="
+                   << iteration.work.problemFreeze.activeWallTimeNanoseconds
+                   << " warm_seed_wall_ns="
+                   << iteration.work.warmSeed.activeWallTimeNanoseconds
+                   << " exact_repair_wall_ns="
+                   << iteration.work.exactRepair.activeWallTimeNanoseconds
+                   << " finalization_wall_ns="
+                   << iteration.work.childFinalization.activeWallTimeNanoseconds
+                   << " runtime_wall_ns="
+                   << iteration.work.runtimeEvaluation.activeWallTimeNanoseconds
+                   << " evidence_verification_wall_ns="
+                   << iteration.work.evidenceVerification
+                          .activeWallTimeNanoseconds
+                   << '\n';
+    for (const auto &iteration : cegar.iterations)
       transportRepairAttempts.push_back(llvm::json::Object{
-          {"parent_spatial_mapping", referenceJson(repairParent)},
-          {"constraint_set", referenceJson(repaired.constraintSet)},
-          {"spatial_pnr", std::move(repairPnr)},
-          {"child_spatial_mapping", referenceJson(candidateReference)},
-          {"accepted_for_simulation", true}});
-      hardware.spatialMapping = std::move(candidateSpatial);
-      prepared = std::move(candidatePrepared);
-      warmup = std::move(candidateWarmup);
-      replayed = true;
-      break;
+          {"parent_spatial_mapping", referenceJson(iteration.parentMapping)},
+          {"runtime_evidence", referenceJson(iteration.runtimeEvidence)},
+          {"constraint_set",
+           referenceJson(iteration.accumulatedConstraints)},
+          {"child_spatial_mapping",
+           iteration.childMapping
+               ? llvm::json::Value(referenceJson(*iteration.childMapping))
+               : llvm::json::Value(nullptr)},
+          {"repair_kind",
+           static_cast<std::uint64_t>(iteration.repair.kind)},
+          {"solver_calls", iteration.repair.solverCalls},
+          {"logical_solver_calls", iteration.repair.logicalSolverCalls},
+          {"action_count", iteration.repair.actionCount},
+          {"retired", iteration.retired}});
+    const bool replayed =
+        cegar.termination ==
+            loom::dse::SpatialTransportCegarTermination::Retired &&
+        cegar.finalMapping.has_value();
+    if (replayed) {
+      hardware.spatialMapping = take(loom::mapping::importSpatialMapping(
+          *cegar.finalMapping, artifacts));
+      prepared = prepare();
+      warmup = take(
+          loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
+              prepared,
+              {loom::runtime::gem5MaximumSpatialWork,
+               std::chrono::steady_clock::now() + kQualificationLimit},
+              artifacts, blobs));
+      require(completed(warmup),
+              "CEGAR-retired child did not replay as a retired Mapping");
     }
     ledger.record("transport_repair");
     if (!replayed) {

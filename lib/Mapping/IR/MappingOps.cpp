@@ -1,6 +1,7 @@
 #include "Mapping/IR/MappingOps.h"
 #include "Mapping/IR/MappingSchema.h"
 
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -1463,7 +1464,7 @@ void mapping::ConstraintRuntimeCounterexampleNoGoodOp::print(
 }
 
 LogicalResult mapping::ConstraintRuntimeCounterexampleNoGoodOp::verify() {
-  if (failed(rejectUnknownAttributes(*this, {"literals"})))
+  if (failed(rejectUnknownAttributes(*this, {"literals", "lineage"})))
     return failure();
   // An empty clause would assert that no Mapping whatsoever is admissible,
   // which is exactly the intrinsic-infeasibility claim this kind must never
@@ -1473,10 +1474,32 @@ LogicalResult mapping::ConstraintRuntimeCounterexampleNoGoodOp::verify() {
   for (Attribute literal : getLiterals())
     if (!isa<mapping::NetUsesTraversalAttr,
              mapping::TransferAttachmentEqualsAttr,
-             mapping::NetTagEqualsAttr>(literal))
+             mapping::NetTagEqualsAttr,
+             mapping::SpatialMappingIdentityEqualsAttr>(literal))
       return emitOpError("literals contains a value that is not a closed "
                          "Spatial no-good literal: ")
              << literal;
+  if (auto lineage = getLineage()) {
+    if (lineage->getCertificateDigest().size() !=
+        loom::ComponentViewDigest::Storage{}.size())
+      return emitOpError("runtime lineage certificate digest has the wrong "
+                         "width");
+    unsigned parentLiteralCount = 0;
+    for (Attribute literal : getLiterals()) {
+      auto mapping =
+          dyn_cast<mapping::SpatialMappingIdentityEqualsAttr>(literal);
+      if (!mapping)
+        continue;
+      ++parentLiteralCount;
+      if (mapping.getSpatialMapping().getRecord() !=
+          lineage->getParentMapping().getRecord())
+        return emitOpError("runtime lineage parent differs from its exact "
+                           "SpatialMapping literal");
+    }
+    if (parentLiteralCount != 1)
+      return emitOpError("runtime lineage requires one exact parent "
+                         "SpatialMapping literal");
+  }
   return success();
 }
 

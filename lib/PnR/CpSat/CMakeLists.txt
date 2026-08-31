@@ -5,6 +5,7 @@ add_mlir_library(LoomPnRCpSat
   SpatialExactRepairModel.cpp
   SpatialFixedTerminalCutConstraint.cpp
   SpatialLocalDispositionModel.cpp
+  SpatialRuntimeCounterexampleRepairModel.cpp
 
   LINK_LIBS PUBLIC
   LoomPnR

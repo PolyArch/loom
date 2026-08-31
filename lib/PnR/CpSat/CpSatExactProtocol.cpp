@@ -256,6 +256,7 @@ CpSatCanonicalResult unknown(std::uint64_t calls) {
   return {CpSatCanonicalResultKind::UnknownBudgetExhausted,
           {},
           std::nullopt,
+          calls,
           calls};
 }
 
@@ -310,7 +311,7 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   const std::array<std::uint8_t, 32> memoKey =
       canonicalSolveKey(model, variables, objectiveVariable, randomSeed);
   if (const CpSatCanonicalResult *memo = canonicalSolveMemo.find(memoKey);
-      memo && memo->solverCalls <= maxSolverCalls) {
+      memo && memo->logicalSolverCalls <= maxSolverCalls) {
     // The recorded completion fits the caller's call budget, so this budget
     // provably reaches the same result; a smaller budget must still run and
     // observe its own typed exhaustion.
@@ -336,7 +337,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   switch (classifyCpSatProofStatus(initial->status())) {
   case CpSatProofStatus::Infeasible: {
     const CpSatCanonicalResult result{
-        CpSatCanonicalResultKind::Infeasible, {}, std::nullopt, state.calls};
+        CpSatCanonicalResultKind::Infeasible, {}, std::nullopt, state.calls,
+        state.calls};
     canonicalSolveMemo.retain(memoKey, result);
     return result;
   }
@@ -418,7 +420,7 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   {
     const CpSatCanonicalResult result{
         CpSatCanonicalResultKind::Assignment, std::move(assignment),
-        objectiveValue, state.calls};
+        objectiveValue, state.calls, state.calls};
     canonicalSolveMemo.retain(memoKey, result);
     return result;
   }

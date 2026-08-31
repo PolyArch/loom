@@ -1013,6 +1013,91 @@ llvm::Error verifyRelations(const TagStateStorage &storage) {
   return llvm::Error::success();
 }
 
+llvm::Error synchronizeIndependentColoringCache(
+    TagStateStorage &storage,
+    llvm::ArrayRef<SpatialTagValueUpdate> valueUpdates) {
+  if (storage.constraints->hasRelations() || valueUpdates.empty())
+    return llvm::Error::success();
+
+  std::vector<PnrIndex> changedComponents;
+  changedComponents.reserve(valueUpdates.size());
+  for (const SpatialTagValueUpdate &update : valueUpdates) {
+    const TagNetState &net = storage.nets[update.logicalNet];
+    const SpatialTagContinuitySegment &segment =
+        net.continuity.segments()[update.segmentOrdinal];
+    const ::loom::pnr::detail::SpatialTagColoringVertexIdentity identity{
+        update.logicalNet, static_cast<std::uint64_t>(segment.originKind),
+        segment.origin};
+    bool found = false;
+    for (PnrIndex component = 0;
+         component < storage.coloringCache.components.size(); ++component) {
+      auto &cache = storage.coloringCache.components[component];
+      const auto vertex = llvm::find(cache.identities, identity);
+      if (vertex == cache.identities.end())
+        continue;
+      const std::size_t local =
+          static_cast<std::size_t>(vertex - cache.identities.begin());
+      if (cache.values.size() != cache.identities.size() ||
+          local >= cache.values.size())
+        return invalid("Physical Tag coloring cache has inconsistent values");
+      cache.values[local] = ::fabric::canonicalPhysicalTagValue(update.value);
+      changedComponents.push_back(component);
+      found = true;
+      break;
+    }
+    if (!found)
+      return invalid(
+          "route-local Physical Tag segment is absent from its coloring cache");
+  }
+
+  llvm::sort(changedComponents);
+  changedComponents.erase(
+      std::unique(changedComponents.begin(), changedComponents.end()),
+      changedComponents.end());
+  for (PnrIndex component : changedComponents) {
+    auto &cache = storage.coloringCache.components[component];
+    if (cache.conflictOffsets.size() != cache.values.size() + 1 ||
+        cache.conflictOffsets.empty() || cache.conflictOffsets.front() != 0 ||
+        cache.conflictOffsets.back() != cache.conflicts.size())
+      return invalid(
+          "Physical Tag coloring cache has inconsistent conflict offsets");
+    cache.unassignedCount = 0;
+    cache.conflictCount = 0;
+    for (PnrIndex vertex = 0; vertex < cache.values.size(); ++vertex) {
+      if (!cache.values[vertex]) {
+        ++cache.unassignedCount;
+        continue;
+      }
+      for (PnrIndex incidence = cache.conflictOffsets[vertex];
+           incidence < cache.conflictOffsets[vertex + 1]; ++incidence) {
+        const PnrIndex peer = cache.conflicts[incidence];
+        if (peer <= vertex || peer >= cache.values.size() ||
+            !cache.values[peer])
+          continue;
+        if (compareUnsigned(*cache.values[vertex], *cache.values[peer]) == 0)
+          ++cache.conflictCount;
+      }
+    }
+  }
+
+  std::uint64_t cachedUnassigned = 0;
+  std::uint64_t cachedConflicts = 0;
+  for (const auto &component : storage.coloringCache.components) {
+    if (component.unassignedCount >
+            std::numeric_limits<std::uint64_t>::max() - cachedUnassigned ||
+        component.conflictCount >
+            std::numeric_limits<std::uint64_t>::max() - cachedConflicts)
+      return invalid("Physical Tag coloring cache summary exceeds u64");
+    cachedUnassigned += component.unassignedCount;
+    cachedConflicts += component.conflictCount;
+  }
+  if (cachedUnassigned != storage.unassignedCount ||
+      cachedConflicts != storage.conflictCount)
+    return invalid(
+        "exact Physical Tag values disagree with the coloring cache summary");
+  return llvm::Error::success();
+}
+
 llvm::Expected<SpatialTagContinuityProjection>
 deriveVerifiedSpatialTagContinuity(const RouteTreeState &route) {
   SpatialTagContinuityProjection result;
@@ -1406,6 +1491,7 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
     llvm::ArrayRef<RouteTreeStateHandle> routes,
     llvm::ArrayRef<std::optional<RouteTreeTransaction>> routeTransactions,
     llvm::ArrayRef<PnrIndex> touchedRoutes,
+    llvm::ArrayRef<SpatialTagValueUpdate> valueUpdates,
     SpatialTagAssignmentScratch &scratch) {
   auto &transaction = *scratch.storage_;
   if (transaction.active)
@@ -1423,15 +1509,29 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
   transaction.routedNets.erase(
       std::unique(transaction.routedNets.begin(), transaction.routedNets.end()),
       transaction.routedNets.end());
-  if (transaction.routedNets.empty())
+  if (transaction.routedNets.empty() && valueUpdates.empty())
     return llvm::Error::success();
   for (PnrIndex logicalNet : transaction.routedNets)
     if (logicalNet >= routes.size() || !routes[logicalNet] ||
         &routes[logicalNet]->routingGraph() != &storage_->problem->routing() ||
         !routeTransactions[logicalNet])
       return invalid("touched route does not belong to the frozen problem");
+  for (std::size_t index = 0; index < valueUpdates.size(); ++index) {
+    const SpatialTagValueUpdate &update = valueUpdates[index];
+    if (update.logicalNet >= routes.size())
+      return invalid("exact Physical Tag logical net is out of range");
+    if (index != 0) {
+      const SpatialTagValueUpdate &previous = valueUpdates[index - 1];
+      if (std::tie(update.logicalNet, update.segmentOrdinal) <=
+          std::tie(previous.logicalNet, previous.segmentOrdinal))
+        return invalid(
+            "exact Physical Tag updates are not canonical and unique");
+    }
+  }
 
   if (!storage_->hasTaggedTransport) {
+    if (!valueUpdates.empty())
+      return invalid("untagged Fabric cannot select a Physical Tag value");
     transaction.touchedRoutes = transaction.routedNets;
     for (PnrIndex logicalNet : transaction.touchedRoutes)
       if (!storage_->nets[logicalNet].continuity.segments().empty() ||
@@ -1513,14 +1613,15 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
     }
     continuity.push_back(&storage_->nets[logicalNet].continuity);
   }
-  if (llvm::Error error =
-          ::loom::pnr::detail::stageSpatialTagInterferenceUpdate(
-              *storage_->problem, projectedRoutes, continuity,
-              transaction.routedNets, storage_->interference,
-              transaction.interferenceScratch)) {
-    rollback(scratch);
-    return error;
-  }
+  if (!transaction.routedNets.empty())
+    if (llvm::Error error =
+            ::loom::pnr::detail::stageSpatialTagInterferenceUpdate(
+                *storage_->problem, projectedRoutes, continuity,
+                transaction.routedNets, storage_->interference,
+                transaction.interferenceScratch)) {
+      rollback(scratch);
+      return error;
+    }
   const auto journalValueOnly = [&](PnrIndex logicalNet) {
     removeNet(*storage_, logicalNet, storage_->nets[logicalNet]);
     std::swap(storage_->nets[logicalNet].values,
@@ -1636,6 +1737,85 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
         return error;
       }
   }
+
+  llvm::sort(transaction.valueOnlyNets);
+  const auto logicalNets = storage_->problem->transfers().logicalNets();
+  const FrozenConstraintShard &tagConstraints =
+      storage_->problem->constraints().shard(
+          ::mapping::SpatialConstraintProjection::NetAssignedTagValues);
+  for (std::size_t begin = 0; begin < valueUpdates.size();) {
+    const PnrIndex logicalNet = valueUpdates[begin].logicalNet;
+    std::size_t end = begin + 1;
+    while (end < valueUpdates.size() &&
+           valueUpdates[end].logicalNet == logicalNet)
+      ++end;
+    TagNetState &net = storage_->nets[logicalNet];
+    for (std::size_t index = begin; index < end; ++index) {
+      const SpatialTagValueUpdate &update = valueUpdates[index];
+      if (update.segmentOrdinal >= net.continuity.segments().size() ||
+          update.segmentOrdinal >= net.values.size()) {
+        rollback(scratch);
+        return invalid("exact Physical Tag segment ordinal is out of range");
+      }
+      const auto &descriptor = net.continuity.segments()[update.segmentOrdinal];
+      if (!::fabric::isRepresentablePhysicalTagValue(descriptor.tagWidthBits,
+                                                     update.value)) {
+        rollback(scratch);
+        return invalid(
+            "exact Physical Tag value is outside its encoding width");
+      }
+      const auto restriction = tagConstraints.restrictedDomain(
+          SpatialConstraintSubject{logicalNets[logicalNet].producer});
+      if (!valueAllowed(update.value, restriction)) {
+        rollback(scratch);
+        return invalid("exact Physical Tag value is outside its domain");
+      }
+    }
+
+    const bool routed =
+        std::binary_search(transaction.routedNets.begin(),
+                           transaction.routedNets.end(), logicalNet);
+    bool valueOnly =
+        std::binary_search(transaction.valueOnlyNets.begin(),
+                           transaction.valueOnlyNets.end(), logicalNet);
+    if (!routed && !valueOnly) {
+      journalValueOnly(logicalNet);
+      llvm::sort(transaction.valueOnlyNets);
+      valueOnly = true;
+    }
+
+    std::vector<std::optional<llvm::APInt>> replacement =
+        net.values.empty() && valueOnly ? transaction.stagedValues[logicalNet]
+                                        : net.values;
+    const std::vector<std::optional<llvm::APInt>> installed = net.values;
+    if (!installed.empty())
+      removeNet(*storage_, logicalNet, net);
+    for (std::size_t index = begin; index < end; ++index)
+      replacement[valueUpdates[index].segmentOrdinal] =
+          ::fabric::canonicalPhysicalTagValue(valueUpdates[index].value);
+    if (llvm::Error error =
+            installNetValues(*storage_, logicalNet, replacement)) {
+      net.values.clear();
+      if (!installed.empty())
+        llvm::cantFail(installNetValues(*storage_, logicalNet, installed));
+      rollback(scratch);
+      return error;
+    }
+    if (!llvm::is_contained(transaction.rebuiltNets, logicalNet)) {
+      transaction.rebuiltNets.push_back(logicalNet);
+    }
+    begin = end;
+  }
+  if (!storage_->constraints->hasRelations() && !valueUpdates.empty() &&
+      !transaction.coloringCacheActive) {
+    transaction.stagedColoringCache = storage_->coloringCache;
+    transaction.coloringCacheActive = true;
+  }
+  if (llvm::Error error =
+          synchronizeIndependentColoringCache(*storage_, valueUpdates)) {
+    rollback(scratch);
+    return error;
+  }
   if (llvm::Error error = verifyRelations(*storage_)) {
     rollback(scratch);
     return error;
@@ -1720,6 +1900,7 @@ void SpatialTagAssignmentState::rollback(
       llvm::cantFail(addSegmentState(*storage_, logicalNet, segment,
                                      ::segmentDomains(restored, segment),
                                      restored.values[segment]));
+    transaction.stagedValues[logicalNet].clear();
   }
   for (PnrIndex logicalNet : transaction.touchedRoutes)
     storage_->classBuilt[storage_->constraints->classOfNet(logicalNet)] = 1;

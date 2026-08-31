@@ -102,6 +102,20 @@ llvm::Error rejectPhysicalTagLiterals(Operation *root) {
   return result;
 }
 
+llvm::Error rejectSpatialMappingIdentityLiterals(Operation *root) {
+  llvm::Error result = llvm::Error::success();
+  root->walk([&](::mapping::ConstraintRuntimeCounterexampleNoGoodOp clause) {
+    if (llvm::any_of(clause.getLiterals(), [](Attribute literal) {
+          return isa<::mapping::SpatialMappingIdentityEqualsAttr>(literal);
+        }))
+      result = llvm::joinErrors(
+          std::move(result),
+          invalid("a loom.mapping_constraints 1.2 payload holds a 1.3-only "
+                  "SpatialMapping identity no-good literal"));
+  });
+  return result;
+}
+
 llvm::Expected<ArtifactRootReference>
 publishUnderSchema(const CanonicalSemanticBytes &canonical,
                    const ArtifactSchemaDescriptor &schema,
@@ -220,10 +234,8 @@ migrateSpatialConstraintRootV1_1ToV1_2(const ArtifactRootReference &reference,
           [&] { return writeCanonicalSpatialConstraintAssembly(*root); },
           *canonical))
     return error;
-  auto finalized = finalizeSpatialMappingConstraintSet(*root, store);
-  if (!finalized)
-    return finalized.takeError();
-  return finalized->reference();
+  return publishUnderSchema(*canonical, mappingConstraintSetSchemaV1_2,
+                            store);
 }
 
 llvm::Expected<ArtifactRootReference>
@@ -231,6 +243,54 @@ migrateSystemConstraintRootV1_1ToV1_2(const ArtifactRootReference &reference,
                                       const ArtifactStore &store) {
   auto canonical =
       readLegacyPayload(reference, mappingConstraintSetSchemaV1_1, store);
+  if (!canonical)
+    return canonical.takeError();
+  auto parsed = parseLegacyRoot(*canonical);
+  if (!parsed)
+    return parsed.takeError();
+  auto root =
+      singleRoot<::mapping::ConstraintsSystemOp>(*parsed->module, "System");
+  if (!root)
+    return root.takeError();
+  if (llvm::Error error = requireStoredPayloadIsCanonical(
+          [&] { return writeCanonicalSystemConstraintAssembly(*root); },
+          *canonical))
+    return error;
+  return publishUnderSchema(*canonical, mappingConstraintSetSchemaV1_2,
+                            store);
+}
+
+llvm::Expected<ArtifactRootReference>
+migrateSpatialConstraintRootV1_2ToV1_3(const ArtifactRootReference &reference,
+                                       const ArtifactStore &store) {
+  auto canonical =
+      readLegacyPayload(reference, mappingConstraintSetSchemaV1_2, store);
+  if (!canonical)
+    return canonical.takeError();
+  auto parsed = parseLegacyRoot(*canonical);
+  if (!parsed)
+    return parsed.takeError();
+  auto root = singleRoot<::mapping::ConstraintsSpatialOp>(*parsed->module,
+                                                          "Spatial");
+  if (!root)
+    return root.takeError();
+  if (llvm::Error error = rejectSpatialMappingIdentityLiterals(*root))
+    return error;
+  if (llvm::Error error = requireStoredPayloadIsCanonical(
+          [&] { return writeCanonicalSpatialConstraintAssembly(*root); },
+          *canonical))
+    return error;
+  auto finalized = finalizeSpatialMappingConstraintSet(*root, store);
+  if (!finalized)
+    return finalized.takeError();
+  return finalized->reference();
+}
+
+llvm::Expected<ArtifactRootReference>
+migrateSystemConstraintRootV1_2ToV1_3(const ArtifactRootReference &reference,
+                                      const ArtifactStore &store) {
+  auto canonical =
+      readLegacyPayload(reference, mappingConstraintSetSchemaV1_2, store);
   if (!canonical)
     return canonical.takeError();
   auto parsed = parseLegacyRoot(*canonical);
@@ -266,6 +326,24 @@ migrateSystemConstraintRootV1_0ToV1_2(const ArtifactRootReference &reference,
   if (!intermediate)
     return intermediate.takeError();
   return migrateSystemConstraintRootV1_1ToV1_2(*intermediate, store);
+}
+
+llvm::Expected<ArtifactRootReference>
+migrateSpatialConstraintRootV1_0ToV1_3(const ArtifactRootReference &reference,
+                                       const ArtifactStore &store) {
+  auto intermediate = migrateSpatialConstraintRootV1_0ToV1_2(reference, store);
+  if (!intermediate)
+    return intermediate.takeError();
+  return migrateSpatialConstraintRootV1_2ToV1_3(*intermediate, store);
+}
+
+llvm::Expected<ArtifactRootReference>
+migrateSystemConstraintRootV1_0ToV1_3(const ArtifactRootReference &reference,
+                                      const ArtifactStore &store) {
+  auto intermediate = migrateSystemConstraintRootV1_0ToV1_2(reference, store);
+  if (!intermediate)
+    return intermediate.takeError();
+  return migrateSystemConstraintRootV1_2ToV1_3(*intermediate, store);
 }
 
 } // namespace loom::mapping

@@ -576,7 +576,8 @@ int main() {
       mlir::IntegerAttr::get(mlir::IntegerType::get(&rawContext, 1), 0));
   ::mapping::ConstraintRuntimeCounterexampleNoGoodOp::create(
       systemNoGoodBuilder, systemNoGoodBuilder.getUnknownLoc(),
-      systemNoGoodBuilder.getArrayAttr({tagLiteral}));
+      systemNoGoodBuilder.getArrayAttr({tagLiteral}),
+      ::mapping::RuntimeCounterexampleLineageAttr{});
   requireFailure(
       loom::mapping::finalizeSystemMappingConstraintSet(
           systemNoGoodRoot, dataflowView, system, store),
@@ -1018,13 +1019,13 @@ int main() {
       take(store.put(loom::mapping::mappingConstraintSetSchemaV1_0,
                      first.canonicalBytes()))};
   require(legacySystem.artifact != first.reference().artifact,
-          "the 1.0 and 1.2 identities of identical System bytes collided");
+          "the 1.0 and 1.3 identities of identical System bytes collided");
   requireFailure(
       loom::mapping::importSystemMappingConstraintSet(legacySystem, store),
-      "the strict 1.2 System importer accepted a 1.0 reference");
-  const auto migratedSystemV1_1 = take(
-      loom::mapping::migrateSystemConstraintRootV1_0ToV1_1(legacySystem,
-                                                           store));
+      "the strict 1.3 System importer accepted a 1.0 reference");
+  const auto migratedSystemV1_1 =
+      take(loom::mapping::migrateSystemConstraintRootV1_0ToV1_1(legacySystem,
+                                                                store));
   const loom::ArtifactRootReference nativeSystemV1_1{
       loom::mapping::mappingConstraintSetSchemaV1_1.identity.str(),
       loom::mapping::mappingConstraintSetSchemaV1_1.version,
@@ -1032,17 +1033,29 @@ int main() {
                      first.canonicalBytes()))};
   require(migratedSystemV1_1 == nativeSystemV1_1,
           "System 1.0-to-1.1 migration changed the native 1.1 identity");
-  require(take(loom::mapping::migrateSystemConstraintRootV1_1ToV1_2(
-              migratedSystemV1_1, store)) == first.reference(),
+  const auto migratedSystemV1_2 =
+      take(loom::mapping::migrateSystemConstraintRootV1_1ToV1_2(
+          migratedSystemV1_1, store));
+  const loom::ArtifactRootReference nativeSystemV1_2{
+      loom::mapping::mappingConstraintSetSchemaV1_2.identity.str(),
+      loom::mapping::mappingConstraintSetSchemaV1_2.version,
+      take(store.put(loom::mapping::mappingConstraintSetSchemaV1_2,
+                     first.canonicalBytes()))};
+  require(migratedSystemV1_2 == nativeSystemV1_2,
           "System 1.1-to-1.2 migration changed the native 1.2 identity");
   require(take(loom::mapping::migrateSystemConstraintRootV1_0ToV1_2(
-              legacySystem, store)) == first.reference(),
+              legacySystem, store)) == nativeSystemV1_2,
           "System 1.0-to-1.2 migration chain changed the cold identity");
+  require(take(loom::mapping::migrateSystemConstraintRootV1_2ToV1_3(
+              nativeSystemV1_2, store)) == first.reference(),
+          "System 1.2-to-1.3 migration changed the native 1.3 identity");
+  require(take(loom::mapping::migrateSystemConstraintRootV1_0ToV1_3(
+              legacySystem, store)) == first.reference(),
+          "System 1.0-to-1.3 migration chain changed the cold identity");
   // The Spatial owner must not accept a System root, and vice versa.
-  requireFailure(
-      loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(legacySystem,
-                                                            store),
-      "the Spatial migration owner accepted a System 1.0 root");
+  requireFailure(loom::mapping::migrateSpatialConstraintRootV1_0ToV1_1(
+                     legacySystem, store),
+                 "the Spatial migration owner accepted a System 1.0 root");
 
   llvm::outs() << "System MappingConstraintSet anchors passed\n";
   return EXIT_SUCCESS;

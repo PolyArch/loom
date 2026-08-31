@@ -40,6 +40,14 @@ enum class SpatialActionExecutionContext : std::uint8_t {
   FinalClosure,
 };
 
+/// Exact-repair selection of one literal from the frozen canonical no-good.
+/// The pair is a lookup key only: it never duplicates the literal's Mapping
+/// or Fabric identity and is invalid outside an ExactRepair probe.
+struct SpatialRuntimeLiteralBreaker final {
+  PnrIndex clauseOrdinal = 0;
+  PnrIndex clauseLocalLiteralOrdinal = 0;
+};
+
 /// A well-formed Action that cannot produce a candidate transition. Search
 /// consumes the proposal slot and continues; malformed Actions and owner
 /// invariant failures use their original errors and terminate the invocation.
@@ -126,7 +134,9 @@ public:
              llvm::ArrayRef<SpatialMappingAction> actions,
              SpatialActionExecutionContext context =
                  SpatialActionExecutionContext::Search,
-             std::uint64_t exactRegionalLogicalNetLimit = 0);
+             std::uint64_t exactRegionalLogicalNetLimit = 0,
+             std::optional<SpatialRuntimeLiteralBreaker> runtimeBreaker =
+                 std::nullopt);
 
   const dse::ObjectiveVector &currentObjective() const;
   /// Coldly reconstructs the bound candidate's route-cost projection.
@@ -222,6 +232,8 @@ private:
                                    SpatialCandidateState &candidate);
   llvm::Error routeAffectedNets(SpatialMoveTransaction &move,
                                 SpatialCandidateState &candidate);
+  llvm::Error realizeExplicitLocalDispositions(
+      SpatialMoveTransaction &move, SpatialCandidateState &candidate);
   llvm::Error reconcileBindingRelations(SpatialMoveTransaction &move,
                                         SpatialCandidateState &candidate);
   void markChangedBindingRoot(PnrIndex decision);

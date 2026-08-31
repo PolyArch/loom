@@ -4,6 +4,7 @@
 #include "PnR/DeterministicSearchProtocol.h"
 #include "PnR/PnrIndex.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
@@ -58,10 +59,20 @@ struct SpatialWitnessRegionRoutingAction final {
 
 struct SpatialGlobalRoutingAction final {};
 
+/// Ephemeral exact selection of one route-local Physical Tag value. Segment
+/// ordinals name the candidate's canonical tag-continuity projection; they are
+/// not execution-plan tag ordinals or runtime cache keys.
+struct SpatialPhysicalTagAction final {
+  PnrIndex logicalNet;
+  PnrIndex segmentOrdinal;
+  llvm::APInt value;
+};
+
 using SpatialTransportRoutingAction =
     std::variant<SpatialWholeNetRoutingAction, SpatialSingleSinkRoutingAction,
                  SpatialRootedSubtreeRoutingAction,
-                 SpatialWitnessRegionRoutingAction, SpatialGlobalRoutingAction>;
+                 SpatialWitnessRegionRoutingAction, SpatialGlobalRoutingAction,
+                 SpatialPhysicalTagAction>;
 
 struct SpatialPortAttachmentAction final {
   PnrIndex demand;
@@ -107,14 +118,31 @@ using SpatialMappingAction =
 /// search-cache key, not an Artifact identity or serialization.
 struct SpatialActionKey final {
   std::array<std::uint64_t, 6> fields{};
+  std::optional<llvm::APInt> physicalTagValue;
+
+  SpatialActionKey() = default;
+  SpatialActionKey(std::array<std::uint64_t, 6> fields,
+                   std::optional<llvm::APInt> physicalTagValue = std::nullopt)
+      : fields(fields), physicalTagValue(std::move(physicalTagValue)) {}
 
   friend bool operator==(const SpatialActionKey &lhs,
                          const SpatialActionKey &rhs) {
-    return lhs.fields == rhs.fields;
+    return lhs.fields == rhs.fields &&
+           lhs.physicalTagValue == rhs.physicalTagValue;
   }
   friend bool operator<(const SpatialActionKey &lhs,
                         const SpatialActionKey &rhs) {
-    return lhs.fields < rhs.fields;
+    if (lhs.fields != rhs.fields)
+      return lhs.fields < rhs.fields;
+    if (lhs.physicalTagValue.has_value() != rhs.physicalTagValue.has_value())
+      return !lhs.physicalTagValue;
+    if (!lhs.physicalTagValue)
+      return false;
+    if (lhs.physicalTagValue->getBitWidth() !=
+        rhs.physicalTagValue->getBitWidth())
+      return lhs.physicalTagValue->getBitWidth() <
+             rhs.physicalTagValue->getBitWidth();
+    return lhs.physicalTagValue->ult(*rhs.physicalTagValue);
   }
 };
 
@@ -125,8 +153,10 @@ class SpatialCandidateState;
 /// True when the action re-selects exactly the candidate's current decision.
 /// Such an action is a proven semantic no-op: every decision application
 /// returns before marking a net when the selection is unchanged, so nothing it
-/// touches can differ from the current candidate. Routing actions are never an
-/// identity because their result comes from the router, not the action.
+/// touches can differ from the current candidate. Router-selected actions are
+/// never identities because their result comes from the router; an exact
+/// Physical Tag action is an identity when that route-local segment already
+/// carries the selected value.
 bool isIdentitySpatialAction(const SpatialCandidateState &candidate,
                              const SpatialMappingAction &action);
 

@@ -16,6 +16,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -47,6 +48,21 @@ bool rejected(llvm::Error error) {
     return false;
   llvm::consumeError(std::move(error));
   return true;
+}
+
+ArtifactRootReference syntheticRootReference(llvm::StringRef schemaIdentity,
+                                             SchemaVersion schemaVersion,
+                                             std::uint8_t identityByte) {
+  std::array<std::uint8_t, ArtifactIdentity::byteSize> bytes;
+  bytes.fill(identityByte);
+  return ArtifactRootReference{schemaIdentity.str(), schemaVersion,
+                               take(ArtifactIdentity::fromBytes(bytes))};
+}
+
+ComponentViewDigest syntheticDigest(std::uint8_t digestByte) {
+  std::array<std::uint8_t, ComponentViewDigest::byteSize> bytes;
+  bytes.fill(digestByte);
+  return take(ComponentViewDigest::fromBytes(bytes));
 }
 
 } // namespace
@@ -153,6 +169,79 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
          "Spatial Mapping");
   if (selectedTag && !rejectsMapping(publish({*selectedTag})))
     fail("an exact Physical Tag segment literal did not reject its parent");
+
+  const mapping::SpatialNoGoodLiteral parentIdentity =
+      mapping::SpatialMappingIdentityEqualsLiteral{mapping.reference(),
+                                                   nullptr};
+  const auto exactParent = publish({parentIdentity});
+  if (!rejectsMapping(exactParent))
+    fail("an exact SpatialMapping identity literal did not reject its parent");
+  if (!(publish({parentIdentity, usesTraversal, parentIdentity}).reference() ==
+        publish({usesTraversal, parentIdentity}).reference()))
+    fail("SpatialMapping identity literal ordering or duplication changed "
+         "constraint identity");
+
+  const mapping::SpatialRuntimeCounterexampleNoGoodView::Lineage lineage{
+      mapping.reference(),
+      syntheticRootReference("loom.evaluation_evidence", {3, 1}, 41),
+      syntheticRootReference("loom.evaluation_request", {4, 0}, 42),
+      syntheticRootReference("loom.simulation_execution", {2, 0}, 43),
+      syntheticDigest(44)};
+  const auto learned =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {parentIdentity, usesTraversal}, lineage,
+          store));
+  const auto learnedNoGood =
+      llvm::find_if(learned.view().clauses(), [](const auto &clause) {
+        const auto *noGood =
+            std::get_if<mapping::SpatialRuntimeCounterexampleNoGoodView>(
+                &clause);
+        return noGood && noGood->lineage.has_value();
+      });
+  if (learnedNoGood == learned.view().clauses().end() ||
+      !(*std::get<mapping::SpatialRuntimeCounterexampleNoGoodView>(
+             *learnedNoGood)
+             .lineage == lineage))
+    fail("runtime-counterexample lineage did not survive strict import");
+
+  auto tamperedDigest = lineage;
+  tamperedDigest.certificateDigest = syntheticDigest(45);
+  const auto digestChanged =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {parentIdentity, usesTraversal}, tamperedDigest,
+          store));
+  if (digestChanged.reference() == learned.reference())
+    fail("tampering a runtime certificate digest did not change constraint "
+         "identity");
+  auto tamperedEvidence = lineage;
+  tamperedEvidence.runtimeEvidence =
+      syntheticRootReference("loom.evaluation_evidence", {3, 1}, 46);
+  const auto evidenceChanged =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {parentIdentity, usesTraversal},
+          tamperedEvidence, store));
+  if (evidenceChanged.reference() == learned.reference())
+    fail("tampering a runtime evidence reference did not change constraint "
+         "identity");
+
+  auto foreignParentLineage = lineage;
+  foreignParentLineage.parentMapping =
+      syntheticRootReference(mapping::mappingArtifactSchema.identity,
+                             mapping::mappingArtifactSchema.version, 47);
+  auto mismatchedLineage =
+      mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {parentIdentity, usesTraversal},
+          foreignParentLineage, store);
+  if (mismatchedLineage)
+    fail("runtime lineage accepted a parent that differs from its exact "
+         "SpatialMapping literal");
+  llvm::consumeError(mismatchedLineage.takeError());
+  auto missingParentLiteral =
+      mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {usesTraversal}, lineage, store);
+  if (missingParentLiteral)
+    fail("runtime lineage verified without one exact parent Mapping literal");
+  llvm::consumeError(missingParentLiteral.takeError());
 
   {
     auto unconstrainedProblem = take(
@@ -302,6 +391,10 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
     const auto repaired = take(mapping::importSpatialMapping(candidate, store));
     requireSuccess(mapping::admitSpatialMappingConstraints(
         dataflow, techMapping, fabric, bothHold.view(), repaired.view()));
+    if (candidate == mapping.reference())
+      fail("no-good search republished the rejected parent Mapping");
+    requireSuccess(mapping::admitSpatialMappingConstraints(
+        dataflow, techMapping, fabric, exactParent.view(), repaired.view()));
   }
 
   // Changing one literal satisfies the clause. A traversal the route does not
@@ -464,13 +557,13 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
       take(store.put(mapping::mappingConstraintSetSchemaV1_0,
                      parent.canonicalBytes()))};
   if (legacyParent.artifact == parent.reference().artifact)
-    fail("the 1.0 and 1.2 identities of identical bytes collided");
+    fail("the 1.0 and 1.3 identities of identical bytes collided");
 
   llvm::Error strict =
       mapping::importSpatialMappingConstraintSet(legacyParent, store)
           .takeError();
   if (!strict)
-    fail("the strict 1.2 Spatial importer accepted a 1.0 reference");
+    fail("the strict 1.3 Spatial importer accepted a 1.0 reference");
   llvm::consumeError(std::move(strict));
 
   const auto migratedV1_1 = take(
@@ -485,21 +578,40 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
          "identity");
   const auto migratedV1_2 = take(
       mapping::migrateSpatialConstraintRootV1_1ToV1_2(migratedV1_1, store));
-  if (!(migratedV1_2 == parent.reference()))
+  const ArtifactRootReference nativeV1_2{
+      mapping::mappingConstraintSetSchemaV1_2.identity.str(),
+      mapping::mappingConstraintSetSchemaV1_2.version,
+      take(store.put(mapping::mappingConstraintSetSchemaV1_2,
+                     parent.canonicalBytes()))};
+  if (!(migratedV1_2 == nativeV1_2))
     fail("Spatial 1.1-to-1.2 migration did not reproduce the native 1.2 "
          "identity");
   if (!(take(mapping::migrateSpatialConstraintRootV1_0ToV1_2(
-            legacyParent, store)) == parent.reference()))
+            legacyParent, store)) == nativeV1_2))
     fail("Spatial 1.0-to-1.2 migration chain changed the cold identity");
+  if (!(take(mapping::migrateSpatialConstraintRootV1_2ToV1_3(
+            nativeV1_2, store)) == parent.reference()))
+    fail("Spatial 1.2-to-1.3 migration changed the native 1.3 identity");
+  if (!(take(mapping::migrateSpatialConstraintRootV1_0ToV1_3(
+            legacyParent, store)) == parent.reference()))
+    fail("Spatial 1.0-to-1.3 migration chain changed the cold identity");
 
   const ArtifactRootReference legacyNoGoodV1_1{
       mapping::mappingConstraintSetSchemaV1_1.identity.str(),
       mapping::mappingConstraintSetSchemaV1_1.version,
       take(store.put(mapping::mappingConstraintSetSchemaV1_1,
                      bothHold.canonicalBytes()))};
+  const ArtifactRootReference nativeNoGoodV1_2{
+      mapping::mappingConstraintSetSchemaV1_2.identity.str(),
+      mapping::mappingConstraintSetSchemaV1_2.version,
+      take(store.put(mapping::mappingConstraintSetSchemaV1_2,
+                     bothHold.canonicalBytes()))};
   if (!(take(mapping::migrateSpatialConstraintRootV1_1ToV1_2(
-            legacyNoGoodV1_1, store)) == bothHold.reference()))
+            legacyNoGoodV1_1, store)) == nativeNoGoodV1_2))
     fail("Spatial 1.1 no-good migration changed the native 1.2 identity");
+  if (!(take(mapping::migrateSpatialConstraintRootV1_2ToV1_3(
+            nativeNoGoodV1_2, store)) == bothHold.reference()))
+    fail("Spatial 1.2 no-good migration changed the native 1.3 identity");
   auto legacyNoGoodBytes = take(store.get(legacyNoGoodV1_1));
   if (!legacyNoGoodBytes.bytes().equals(bothHold.canonicalBytes().bytes()))
     fail("Spatial 1.1 no-good fixture changed its canonical payload bytes");
@@ -530,6 +642,18 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
     fail("Spatial migration accepted a 1.1 payload holding a 1.2-only tag "
          "literal");
   llvm::consumeError(tagMigration.takeError());
+
+  const ArtifactRootReference mislabelledV1_2{
+      mapping::mappingConstraintSetSchemaV1_2.identity.str(),
+      mapping::mappingConstraintSetSchemaV1_2.version,
+      take(store.put(mapping::mappingConstraintSetSchemaV1_2,
+                     exactParent.canonicalBytes()))};
+  auto identityMigration =
+      mapping::migrateSpatialConstraintRootV1_2ToV1_3(mislabelledV1_2, store);
+  if (identityMigration)
+    fail("Spatial migration accepted a 1.2 payload holding a 1.3-only exact "
+         "Mapping literal");
+  llvm::consumeError(identityMigration.takeError());
 
   // Migration accepts only what the strict 1.0 importer could have accepted.
   // Perturbing the stored payload so it is no longer canonical under its own
@@ -586,9 +710,12 @@ void exerciseSpatialPhysicalTagRuntimeCounterexampleNoGood(
       mapping::SpatialNetTagEqualsLiteral{
           mapping.view().routeTrees()[segment.routeTreeOrdinal].logicalNet,
           segment.segmentOrdinal, selectedValue->value};
+  const mapping::SpatialNoGoodLiteral exactMapping =
+      mapping::SpatialMappingIdentityEqualsLiteral{mapping.reference(),
+                                                   nullptr};
   const auto exactTagConstraint =
       take(mapping::finalizeSpatialRuntimeCounterexampleConstraintSet(
-          parent.reference(), {exactTag}, store));
+          parent.reference(), {exactTag, exactMapping}, store));
   if (!rejected(mapping::admitSpatialMappingConstraints(
           dataflow, techMapping, fabric, exactTagConstraint.view(),
           mapping.view())))

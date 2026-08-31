@@ -85,6 +85,11 @@ struct SpatialFullyRoutedSnapshot final {
   std::vector<SinkPath> sinkPaths;
   /// Concatenated source-to-sink forward arc paths.
   std::vector<PnrIndex> arcPaths;
+  /// CSR offsets into `routeTagValues`, keyed by logical-net ordinal. Values
+  /// retain the exact route-local continuity-segment order and APInt encoding;
+  /// register-FIFO nets have an empty slice.
+  std::vector<std::size_t> routeTagValueOffsets;
+  std::vector<std::optional<llvm::APInt>> routeTagValues;
 };
 
 /// Cold reconstruction of every route-derived Mapping fact for the current
@@ -622,13 +627,13 @@ private:
   /// and an attachment literal may hold while its route is still unrouted.
   llvm::Expected<std::uint64_t> countRuntimeCounterexampleViolations(
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
-      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>>
-          tagValues) const;
+      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues)
+      const;
   llvm::Expected<bool> runtimeCounterexampleLiteralHolds(
       const FrozenNoGoodResolvedLiteral &literal,
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
-      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>>
-          tagValues) const;
+      llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues)
+      const;
   llvm::Error rebuildRuntimeCounterexampleState(
       llvm::ArrayRef<const RouteTreeState *> routeTrees);
   llvm::Error refreshRuntimeCounterexampleState(
@@ -724,6 +729,8 @@ public:
                                          PnrIndex exposureOption);
   llvm::Error setRegisterFifoTransfer(PnrIndex logicalNet,
                                       std::optional<PnrIndex> option);
+  llvm::Error setPhysicalTagValue(PnrIndex logicalNet, PnrIndex segmentOrdinal,
+                                  const llvm::APInt &value);
 
   llvm::Error bindRouteSource(PnrIndex logicalNet, PnrIndex endpoint);
   llvm::Error bindRouteSink(PnrIndex logicalNet, PnrIndex sinkObligation,
@@ -750,6 +757,7 @@ public:
   llvm::Expected<SpatialTagAssignmentDelta>
   summarizeCurrentTagAssignmentDelta() const;
   bool hasRouteTreeChange() const;
+  bool hasPhysicalTagValueChange() const;
   bool hasSemanticChange() const;
   llvm::Error commit();
   void rollback() noexcept;
@@ -824,6 +832,7 @@ private:
   bool tagDeltasCollected_ = false;
   bool routeViolationApplied_ = false;
   bool runtimeCounterexampleStateStaged_ = false;
+  std::vector<SpatialTagValueUpdate> physicalTagValueUpdates_;
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialAtomicCapacityOveruse_ = 0;
   std::uint64_t initialStaticSchedulePressure_ = 0;

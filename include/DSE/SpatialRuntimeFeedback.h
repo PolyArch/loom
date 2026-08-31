@@ -338,10 +338,10 @@ llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
 /// Otherwise the result is typed ProofNotEstablished and publishes nothing;
 /// partial literals and repair alternatives are withheld so no caller can
 /// execute them as a learned constraint. The promoted no-good is bound by the
-/// constraint root's exact Dataflow/TechMapping/Fabric tuple and never by a
-/// SystemMapping. The current implementation deliberately returns
-/// CausalCoreNotEstablished after deriving diagnostic anchors because the
-/// complete Mapping-decision core is not yet proven.
+/// exact replay Request and its Dataflow/TechMapping/Fabric tuple, never by a
+/// SystemMapping. A conservative exact-parent Mapping literal closes the
+/// persistent selection core; certificate-derived route, attachment, and tag
+/// literals remain independently verified SCC-local repair anchors.
 llvm::Expected<SpatialTransportRuntimeFeedback>
 deriveSpatialTransportRuntimeFeedback(
     const ArtifactRootReference &parentSpatialMapping,

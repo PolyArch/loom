@@ -18,12 +18,29 @@ namespace {
 
 struct ActionKey final {
   std::array<std::uint64_t, 5> fields{};
+  std::optional<llvm::APInt> physicalTagValue;
+
+  ActionKey() = default;
+  ActionKey(std::array<std::uint64_t, 5> fields,
+            std::optional<llvm::APInt> physicalTagValue = std::nullopt)
+      : fields(fields), physicalTagValue(std::move(physicalTagValue)) {}
 
   friend bool operator==(const ActionKey &left, const ActionKey &right) {
-    return left.fields == right.fields;
+    return left.fields == right.fields &&
+           left.physicalTagValue == right.physicalTagValue;
   }
   friend bool operator<(const ActionKey &left, const ActionKey &right) {
-    return left.fields < right.fields;
+    if (left.fields != right.fields)
+      return left.fields < right.fields;
+    if (left.physicalTagValue.has_value() != right.physicalTagValue.has_value())
+      return !left.physicalTagValue;
+    if (!left.physicalTagValue)
+      return false;
+    if (left.physicalTagValue->getBitWidth() !=
+        right.physicalTagValue->getBitWidth())
+      return left.physicalTagValue->getBitWidth() <
+             right.physicalTagValue->getBitWidth();
+    return left.physicalTagValue->ult(*right.physicalTagValue);
   }
 };
 
@@ -74,6 +91,8 @@ ActionKey anchorKey(const SpatialTransportRoutingAction &action) {
         else if constexpr (std::is_same_v<T, SpatialWitnessRegionRoutingAction>)
           return ActionKey{{1, static_cast<std::uint32_t>(value.witnessKind),
                             value.witnessOrdinal}};
+        else if constexpr (std::is_same_v<T, SpatialPhysicalTagAction>)
+          return ActionKey{{3, value.logicalNet, value.segmentOrdinal}};
         else
           return ActionKey{{2}};
       },
@@ -91,6 +110,9 @@ ActionKey choiceKey(const SpatialTransportRoutingAction &action) {
           return ActionKey{{1, value.sinkObligation}};
         else if constexpr (std::is_same_v<T, SpatialRootedSubtreeRoutingAction>)
           return ActionKey{{2, value.rootEndpoint}};
+        else if constexpr (std::is_same_v<T, SpatialPhysicalTagAction>)
+          return ActionKey{{3},
+                           ::fabric::canonicalPhysicalTagValue(value.value)};
         else
           return ActionKey{};
       },
@@ -324,8 +346,13 @@ loom::pnr::spatialActionKey(const SpatialMappingAction &action) {
                                        SpatialWitnessRegionRoutingAction>)
                   return {{1, 3, static_cast<std::uint64_t>(choice.witnessKind),
                            choice.witnessOrdinal, 0, 0}};
-                else
+                else if constexpr (std::is_same_v<Choice,
+                                                  SpatialGlobalRoutingAction>)
                   return {{1, 4, 0, 0, 0, 0}};
+                else
+                  return {
+                      {1, 5, choice.logicalNet, choice.segmentOrdinal, 0, 0},
+                      ::fabric::canonicalPhysicalTagValue(choice.value)};
               },
               category);
         } else {
@@ -421,6 +448,17 @@ bool loom::pnr::isIdentitySpatialAction(const SpatialCandidateState &candidate,
     const auto &memory = std::get<SpatialMemoryBindingAction>(*realization);
     return candidate.memoryBinding(memory.realization).placement ==
            memory.placement;
+  }
+  if (const auto *transport =
+          std::get_if<SpatialTransportRoutingAction>(&action)) {
+    if (const auto *tag = std::get_if<SpatialPhysicalTagAction>(transport)) {
+      const auto values = candidate.tagValues(tag->logicalNet);
+      return tag->segmentOrdinal < values.size() &&
+             values[tag->segmentOrdinal] &&
+             ::fabric::comparePhysicalTagValues(*values[tag->segmentOrdinal],
+                                                tag->value) == 0;
+    }
+    return false;
   }
   if (const auto *resource =
           std::get_if<SpatialResourceAllocationAction>(&action)) {

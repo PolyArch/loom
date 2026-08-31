@@ -9,6 +9,7 @@
 #include "SpatialLocalDispositionModel.h"
 #include "SpatialProgressIndex.h"
 #include "SpatialRouteConstraintModel.h"
+#include "SpatialRuntimeCounterexampleRepairModel.h"
 
 #include "ortools/sat/cp_model.h"
 
@@ -17,6 +18,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -44,14 +46,16 @@ SpatialExactRepairResult
 result(SpatialExactRepairResultKind kind, std::uint64_t regionDecisions,
        std::uint64_t solverCalls = 0, std::uint64_t actionCount = 0,
        std::string detail = {}, std::uint64_t endpointExpansions = 0,
-       std::uint64_t negotiationIterations = 0) {
+       std::uint64_t negotiationIterations = 0,
+       std::uint64_t logicalSolverCalls = 0) {
   return {kind,
           regionDecisions,
           solverCalls,
           actionCount,
           endpointExpansions,
           negotiationIterations,
-          std::move(detail)};
+          std::move(detail),
+          logicalSolverCalls};
 }
 
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
@@ -170,13 +174,18 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   if (const auto owner = candidate.progress().firstCapacityProofDebtOwner())
     return TransportWitness{ResolvedPnrViolationKind::ProgressProofDebt,
                             *owner};
+  if (const auto clause = candidate.firstRuntimeCounterexampleViolation())
+    return TransportWitness{
+        ResolvedPnrViolationKind::RuntimeCounterexampleViolation, *clause};
 
   if (candidate.unroutedObligationCount() != 0 ||
       candidate.routeCapacityOveruse() != 0 ||
       candidate.tagResidentCapacityOveruse() != 0 ||
-      candidate.tagUnassignedCount() != 0 || candidate.tagConflictCount() != 0 ||
+      candidate.tagUnassignedCount() != 0 ||
+      candidate.tagConflictCount() != 0 ||
       candidate.hardProgressViolation() != 0 ||
-      candidate.progressProofDebtWitnessCount() != 0)
+      candidate.progressProofDebtWitnessCount() != 0 ||
+      candidate.runtimeCounterexampleViolation() != 0)
     return invocationError(
         "transport violation aggregates have no canonical witness");
   return std::optional<TransportWitness>();
@@ -270,8 +279,11 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
     std::uint64_t solverCallLimit,
     DeterministicPnrRandomStream &exactRepairStream,
-    SpatialPnrWorkLedgerView workLedger) {
+    SpatialPnrWorkLedgerView workLedger,
+    std::optional<PnrIndex> runtimeCounterexampleClause,
+    ExecutionControlView executionControl) {
   workLedger_ = workLedger;
+  executionControl_ = executionControl;
   accountedRegionDecisionCount_ = 0;
   pendingRegionDecisionCount_ = 0;
   const FrozenSpatialPnrProblem &problem = candidate.problem();
@@ -284,11 +296,25 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     return invocationError("CpSat_3_0 is not selected by SearchPolicy");
   if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
     return invocationError("solver-call limit exceeds SearchPolicy");
-  if (candidate.runtimeCounterexampleViolation() != 0)
-    return result(
-        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
-        "runtime-counterexample repair requires an exact literal-breaking "
-        "disjunction");
+  if (executionControl_.stopRequested())
+    return result(SpatialExactRepairResultKind::TimedOut, 0, 0, 0,
+                  "exact repair started after its execution deadline");
+  if (runtimeCounterexampleClause) {
+    if (*runtimeCounterexampleClause >=
+            problem.constraints().resolvedNoGoods().size() ||
+        !candidate.runtimeCounterexampleClauseViolated(
+            *runtimeCounterexampleClause))
+      return result(SpatialExactRepairResultKind::ProofNotEstablished, 0, 0, 0,
+                    "requested runtime-counterexample clause is not live");
+    if (candidate.atomicCapacityOveruse() != 0)
+      return result(
+          SpatialExactRepairResultKind::ProofNotEstablished, 0, 0, 0,
+          "runtime-counterexample repair parent has an unrelated atomic "
+          "capacity violation");
+    return repairTransportClosure(candidate, restartOrdinal, solverCallLimit,
+                                  exactRepairStream,
+                                  runtimeCounterexampleClause);
+  }
   if (candidate.progressProofDebtWitnessCount() != 0 &&
       candidate.hardProgressViolation() == 0 &&
       candidate.unroutedObligationCount() == 0 &&
@@ -304,8 +330,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
       candidate.unroutedObligationCount() == 0 &&
       candidate.routeCapacityOveruse() == 0 &&
       candidate.tagResidentCapacityOveruse() == 0 &&
-      candidate.tagUnassignedCount() == 0 &&
-      candidate.tagConflictCount() == 0)
+      candidate.tagUnassignedCount() == 0 && candidate.tagConflictCount() == 0)
     return result(
         SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
         "capacity shortfall repair requires an owner-local disjunctive "
@@ -313,7 +338,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   if (candidate.atomicCapacityOveruse() == 0 &&
       candidate.hasTransportClosureViolation())
     return repairTransportClosure(candidate, restartOrdinal, solverCallLimit,
-                                  exactRepairStream);
+                                  exactRepairStream, std::nullopt);
   if (candidate.atomicCapacityOveruse() == 0)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
                   "candidate has no supported exact-repair witness");
@@ -637,12 +662,13 @@ llvm::Expected<SpatialExactRepairResult>
 SpatialExactRepairScratch::repairTransportClosure(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
     std::uint64_t solverCallLimit,
-    DeterministicPnrRandomStream &exactRepairStream) {
+    DeterministicPnrRandomStream &exactRepairStream,
+    std::optional<PnrIndex> runtimeCounterexampleClause) {
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
-  std::vector<SpatialFixedTerminalCutCertificate> certificates;
   std::uint64_t maximumRegionDecisionCount = 0;
   std::uint64_t totalSolverCalls = 0;
+  std::uint64_t totalLogicalSolverCalls = 0;
   std::uint64_t totalEndpointExpansions = 0;
   std::uint64_t totalNegotiationIterations = 0;
 
@@ -653,46 +679,173 @@ SpatialExactRepairScratch::repairTransportClosure(
     return true;
   };
 
-  while (totalSolverCalls < solverCallLimit) {
-    bool requiresRegionExpansion = false;
-    auto attempt = repairTransportClosureRegion(
-        candidate, restartOrdinal, solverCallLimit - totalSolverCalls,
-        solverSeed, certificates, requiresRegionExpansion);
-    if (!attempt)
-      return attempt.takeError();
-    maximumRegionDecisionCount =
-        std::max(maximumRegionDecisionCount, attempt->regionDecisions);
-    if (!accumulate(attempt->solverCalls, totalSolverCalls) ||
-        !accumulate(attempt->endpointExpansions, totalEndpointExpansions) ||
-        !accumulate(attempt->negotiationIterations, totalNegotiationIterations))
-      return result(SpatialExactRepairResultKind::InternalError,
-                    maximumRegionDecisionCount, totalSolverCalls,
-                    attempt->actionCount,
-                    "expanded route repair work accounting overflows",
-                    totalEndpointExpansions, totalNegotiationIterations);
+  llvm::Expected<std::optional<TransportWitness>> primaryWitness =
+      runtimeCounterexampleClause
+          ? llvm::Expected<std::optional<TransportWitness>>(
+                TransportWitness{
+                    ResolvedPnrViolationKind::RuntimeCounterexampleViolation,
+                    *runtimeCounterexampleClause})
+          : firstTransportWitness(candidate);
+  if (!primaryWitness)
+    return primaryWitness.takeError();
+  if (!*primaryWitness)
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "transport repair could not locate its primary witness");
 
-    if (!requiresRegionExpansion) {
+  std::vector<detail::SpatialRuntimeCounterexampleBreaker> runtimeBreakers;
+  if ((*primaryWitness)->kind ==
+      ResolvedPnrViolationKind::RuntimeCounterexampleViolation) {
+    auto derived = detail::enumerateSpatialRuntimeCounterexampleBreakers(
+        candidate, (*primaryWitness)->ordinal);
+    if (!derived)
+      return derived.takeError();
+    runtimeBreakers = std::move(*derived);
+    if (runtimeBreakers.empty())
+      return result(SpatialExactRepairResultKind::ProofNotEstablished, 0, 0, 0,
+                    "runtime-counterexample clause has no finite breaker");
+  }
+
+  const std::size_t branchCount =
+      runtimeBreakers.empty() ? 1 : runtimeBreakers.size();
+  std::uint64_t lastActionCount = 0;
+  bool sawIncompleteBreakerRouting = false;
+  bool sawBudgetLimitedBreaker = false;
+  for (std::size_t branch = 0; branch < branchCount; ++branch) {
+    if (executionControl_.stopRequested())
+      return result(SpatialExactRepairResultKind::TimedOut,
+                    maximumRegionDecisionCount, totalSolverCalls,
+                    lastActionCount,
+                    "runtime-counterexample repair reached its deadline "
+                    "between finite breaker branches",
+                    totalEndpointExpansions, totalNegotiationIterations,
+                    totalLogicalSolverCalls);
+    const detail::SpatialRuntimeCounterexampleBreaker *runtimeBreaker =
+        runtimeBreakers.empty() ? nullptr : &runtimeBreakers[branch];
+    std::vector<SpatialFixedTerminalCutCertificate> certificates;
+    const std::uint64_t branchStartLogicalSolverCalls =
+        totalLogicalSolverCalls;
+    const std::uint64_t remainingBranches = branchCount - branch;
+    const std::uint64_t remainingGlobalCalls =
+        solverCallLimit - totalLogicalSolverCalls;
+    const std::uint64_t branchSolverCallLimit = runtimeBreaker
+                                                    ? std::max<std::uint64_t>(
+                                                          1,
+                                                          remainingGlobalCalls /
+                                                              remainingBranches)
+                                                    : remainingGlobalCalls;
+    while (totalLogicalSolverCalls - branchStartLogicalSolverCalls <
+           branchSolverCallLimit) {
+      if (executionControl_.stopRequested())
+        return result(SpatialExactRepairResultKind::TimedOut,
+                      maximumRegionDecisionCount, totalSolverCalls,
+                      lastActionCount,
+                      "runtime-counterexample repair reached its deadline "
+                      "between exact assignments",
+                      totalEndpointExpansions, totalNegotiationIterations,
+                      totalLogicalSolverCalls);
+      bool requiresRegionExpansion = false;
+      auto attempt = repairTransportClosureRegion(
+          candidate, restartOrdinal,
+          branchSolverCallLimit -
+              (totalLogicalSolverCalls - branchStartLogicalSolverCalls),
+          solverSeed, certificates, requiresRegionExpansion, runtimeBreaker);
+      if (!attempt)
+        return attempt.takeError();
+      lastActionCount = attempt->actionCount;
+      maximumRegionDecisionCount =
+          std::max(maximumRegionDecisionCount, attempt->regionDecisions);
+      if (!accumulate(attempt->solverCalls, totalSolverCalls) ||
+          !accumulate(attempt->logicalSolverCalls,
+                      totalLogicalSolverCalls) ||
+          !accumulate(attempt->endpointExpansions, totalEndpointExpansions) ||
+          !accumulate(attempt->negotiationIterations,
+                      totalNegotiationIterations))
+        return result(SpatialExactRepairResultKind::InternalError,
+                      maximumRegionDecisionCount, totalSolverCalls,
+                      attempt->actionCount,
+                      "expanded route repair work accounting overflows",
+                      totalEndpointExpansions, totalNegotiationIterations,
+                      totalLogicalSolverCalls);
+
+      if (requiresRegionExpansion) {
+        if (learnedCutCertificates_.size() <= certificates.size())
+          return result(
+              SpatialExactRepairResultKind::InternalError,
+              maximumRegionDecisionCount, totalSolverCalls,
+              attempt->actionCount,
+              "fixed-terminal cut cannot expand its bounded repair region",
+              totalEndpointExpansions, totalNegotiationIterations,
+              totalLogicalSolverCalls);
+        certificates = learnedCutCertificates_;
+        continue;
+      }
+
+      if (runtimeBreaker &&
+          attempt->kind == SpatialExactRepairResultKind::
+                               RegionInfeasibleUnderFixedBoundary)
+        break;
+      if (runtimeBreaker &&
+          attempt->kind == SpatialExactRepairResultKind::RoutingIncomplete) {
+        sawIncompleteBreakerRouting = true;
+        break;
+      }
+      if (runtimeBreaker &&
+          attempt->kind ==
+              SpatialExactRepairResultKind::UnknownBudgetExhausted) {
+        sawBudgetLimitedBreaker = true;
+        break;
+      }
       attempt->regionDecisions = maximumRegionDecisionCount;
       attempt->solverCalls = totalSolverCalls;
+      attempt->logicalSolverCalls = totalLogicalSolverCalls;
       attempt->endpointExpansions = totalEndpointExpansions;
       attempt->negotiationIterations = totalNegotiationIterations;
       return std::move(*attempt);
     }
 
-    if (learnedCutCertificates_.size() <= certificates.size())
+    if (totalLogicalSolverCalls >= solverCallLimit)
       return result(
-          SpatialExactRepairResultKind::InternalError,
-          maximumRegionDecisionCount, totalSolverCalls, attempt->actionCount,
-          "fixed-terminal cut cannot expand its bounded repair region",
-          totalEndpointExpansions, totalNegotiationIterations);
-    certificates = learnedCutCertificates_;
+          SpatialExactRepairResultKind::UnknownBudgetExhausted,
+          maximumRegionDecisionCount, totalSolverCalls, lastActionCount,
+          "runtime-counterexample repair exhausted its shared solver-call "
+          "budget before every finite breaker branch was decided",
+          totalEndpointExpansions, totalNegotiationIterations,
+          totalLogicalSolverCalls);
   }
+
+  if (!runtimeBreakers.empty())
+    if (sawBudgetLimitedBreaker)
+      return result(
+          SpatialExactRepairResultKind::UnknownBudgetExhausted,
+          maximumRegionDecisionCount, totalSolverCalls, lastActionCount,
+          "no finite runtime-counterexample breaker repaired the candidate, "
+          "and at least one branch exhausted its fair solver-call share",
+          totalEndpointExpansions, totalNegotiationIterations,
+          totalLogicalSolverCalls);
+  if (!runtimeBreakers.empty())
+    if (sawIncompleteBreakerRouting)
+      return result(
+          SpatialExactRepairResultKind::RoutingIncomplete,
+          maximumRegionDecisionCount, totalSolverCalls, lastActionCount,
+          "no finite runtime-counterexample breaker repaired the candidate, "
+          "and at least one branch had incomplete negotiated routing",
+          totalEndpointExpansions, totalNegotiationIterations,
+          totalLogicalSolverCalls);
+  if (!runtimeBreakers.empty())
+    return result(
+        SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
+        maximumRegionDecisionCount, totalSolverCalls, lastActionCount,
+        "every finite runtime-counterexample breaker is infeasible under the "
+        "fixed region boundary",
+        totalEndpointExpansions, totalNegotiationIterations,
+        totalLogicalSolverCalls);
 
   return result(SpatialExactRepairResultKind::UnknownBudgetExhausted,
                 maximumRegionDecisionCount, totalSolverCalls, 0,
                 "route exact repair exhausted its solver-call budget before "
                 "closing a certificate-expanded region",
-                totalEndpointExpansions, totalNegotiationIterations);
+                totalEndpointExpansions, totalNegotiationIterations,
+                totalLogicalSolverCalls);
 }
 
 llvm::Expected<SpatialExactRepairResult>
@@ -700,7 +853,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
     std::uint64_t solverCallLimit, std::int32_t solverSeed,
     llvm::ArrayRef<SpatialFixedTerminalCutCertificate> certificates,
-    bool &requiresRegionExpansion) {
+    bool &requiresRegionExpansion,
+    const detail::SpatialRuntimeCounterexampleBreaker *runtimeBreaker) {
   requiresRegionExpansion = false;
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const ResolvedPnrExactRepairPolicy &policy =
@@ -714,7 +868,13 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
 
   const PnrIndex capacityCount =
       static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
-  auto primaryWitness = firstTransportWitness(candidate);
+  llvm::Expected<std::optional<TransportWitness>> primaryWitness =
+      runtimeBreaker
+          ? llvm::Expected<std::optional<TransportWitness>>(
+                TransportWitness{
+                    ResolvedPnrViolationKind::RuntimeCounterexampleViolation,
+                    runtimeBreaker->clauseOrdinal})
+          : firstTransportWitness(candidate);
   if (!primaryWitness)
     return primaryWitness.takeError();
   if (!*primaryWitness) {
@@ -727,6 +887,17 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   }
   const ResolvedPnrViolationKind primaryWitnessKind = (*primaryWitness)->kind;
   const PnrIndex primaryWitnessOrdinal = (*primaryWitness)->ordinal;
+  if (primaryWitnessKind ==
+          ResolvedPnrViolationKind::RuntimeCounterexampleViolation &&
+      (!runtimeBreaker ||
+       runtimeBreaker->clauseOrdinal != primaryWitnessOrdinal))
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "runtime-counterexample repair has no exact breaker branch");
+  if (primaryWitnessKind !=
+          ResolvedPnrViolationKind::RuntimeCounterexampleViolation &&
+      runtimeBreaker)
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "non-runtime repair received a counterexample breaker");
 
   decisionIncluded_.assign(bindings.decisionCount(), 0);
   relationIncluded_.assign(relationModel.relations().size(), 0);
@@ -959,6 +1130,40 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
         SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
         "capacity proof-debt repair requires an owner-local disjunctive "
         "route no-good");
+  }
+  case ResolvedPnrViolationKind::RuntimeCounterexampleViolation: {
+    const auto clauses = problem.constraints().resolvedNoGoods();
+    const auto literals = problem.constraints().resolvedNoGoodLiterals();
+    if (primaryWitnessOrdinal >= clauses.size() ||
+        !candidate.runtimeCounterexampleClauseViolated(primaryWitnessOrdinal))
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    "runtime-counterexample witness is no longer live");
+    const FrozenNoGoodResolvedClause &clause = clauses[primaryWitnessOrdinal];
+    if (clause.literalOffset > literals.size() ||
+        clause.literalCount > literals.size() - clause.literalOffset)
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    "runtime-counterexample literal range is malformed");
+    bool hasLocalAnchor = false;
+    for (const FrozenNoGoodResolvedLiteral &literal :
+         literals.slice(clause.literalOffset, clause.literalCount)) {
+      if (literal.kind == FrozenNoGoodResolvedLiteral::Kind::
+                              SpatialMappingIdentityEquals)
+        continue;
+      hasLocalAnchor = true;
+      if (llvm::Error error = addWitnessNet(literal.logicalNet))
+        return std::move(error);
+    }
+    if (!hasLocalAnchor) {
+      for (PnrIndex logicalNet = 0;
+           logicalNet < transfers.logicalNets().size(); ++logicalNet)
+        if (llvm::Error error = addWitnessNet(logicalNet))
+          return std::move(error);
+      for (PnrIndex decision = 0; decision < bindings.decisionCount();
+           ++decision)
+        if (llvm::Error error = addDecision(decision))
+          return std::move(error);
+    }
+    break;
   }
   }
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
@@ -1225,6 +1430,19 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                                       localDispositions->variables().end());
 
   std::vector<int> mutationParentLocals(decisions_.size(), -1);
+
+  if (runtimeBreaker) {
+    if (runtimeBreaker->kind !=
+        detail::SpatialRuntimeCounterexampleBreakerKind::MappingIdentity)
+      if (llvm::Error error =
+              detail::addSpatialRuntimeCounterexampleBreakerConstraint(
+                  model, candidate, bindings, variables, decisionVariables_,
+                  *localDispositions, *runtimeBreaker))
+        return result(SpatialExactRepairResultKind::InternalError,
+                      canonicalRegionDecisionCount, 0, 0,
+                      llvm::toString(std::move(error)));
+  }
+
   for (auto [local, decision] : llvm::enumerate(decisions_)) {
     if (decision < portOffset || decision >= boundaryOffset)
       continue;
@@ -1233,8 +1451,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       return result(SpatialExactRepairResultKind::InternalError,
                     canonicalRegionDecisionCount, 0, 0,
                     llvm::toString(owner.takeError()));
-    if (*owner >= decisionVariables_.size() ||
-        decisionVariables_[*owner] < 0)
+    if (*owner >= decisionVariables_.size() || decisionVariables_[*owner] < 0)
       return result(SpatialExactRepairResultKind::InternalError,
                     canonicalRegionDecisionCount, 0, 0,
                     "route repair omitted a PortDemand owner decision");
@@ -1246,6 +1463,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       localDispositions->variables(), localDispositions->currentValues());
   if (!mutationCount)
     return mutationCount.takeError();
+  if (runtimeBreaker &&
+      runtimeBreaker->kind ==
+          detail::SpatialRuntimeCounterexampleBreakerKind::MappingIdentity)
+    model.AddGreaterOrEqual(*mutationCount, 1);
 
   bool currentAssignmentSatisfiesCertificates = true;
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates) {
@@ -1281,12 +1502,17 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                   canonicalRegionDecisionCount, 0, 0,
                   llvm::toString(std::move(error)));
   std::uint64_t solverCalls = 0;
+  std::uint64_t logicalSolverCalls = 0;
   std::uint64_t assignmentOrdinal = 0;
   std::uint64_t lastActionCount = 0;
   std::uint64_t maximumObservedRegionDecisionCount =
       canonicalRegionDecisionCount;
   bool sawUnknownAssignment = false;
-  bool proveCurrentAssignment = currentAssignmentSatisfiesCertificates;
+  bool sawRoutingIncomplete = false;
+  bool proveCurrentAssignment =
+      currentAssignmentSatisfiesCertificates &&
+      primaryWitnessKind !=
+          ResolvedPnrViolationKind::RuntimeCounterexampleViolation;
   std::vector<std::int64_t> currentAssignment;
   currentAssignment.reserve(canonicalVariables.size());
   for (PnrIndex decision : decisions_) {
@@ -1307,11 +1533,39 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return result(kind, maximumObservedRegionDecisionCount, solverCalls,
                   lastActionCount, std::move(detail),
                   actionExecutor_.endpointExpansionCount(),
-                  actionExecutor_.negotiationIterationCount());
+                  actionExecutor_.negotiationIterationCount(),
+                  logicalSolverCalls);
   };
 
   const dse::ObjectiveVector initialObjective =
       actionExecutor_.currentObjective();
+  const std::uint64_t initialProofDebt =
+      candidate.progressProofDebtWitnessCount();
+  const auto hardTransportClosed = [&]() {
+    return candidate.unroutedObligationCount() == 0 &&
+           candidate.routeCapacityOveruse() == 0 &&
+           candidate.tagResidentCapacityOveruse() == 0 &&
+           candidate.tagUnassignedCount() == 0 &&
+           candidate.tagConflictCount() == 0 &&
+           candidate.hardProgressViolation() == 0 &&
+           candidate.runtimeCounterexampleViolation() == 0 &&
+           candidate.progressProofDebtWitnessCount() <= initialProofDebt;
+  };
+  std::optional<SpatialRuntimeLiteralBreaker> routeBreaker;
+  if (runtimeBreaker &&
+      runtimeBreaker->kind ==
+          detail::SpatialRuntimeCounterexampleBreakerKind::NetTraversal) {
+    auto required = detail::spatialRuntimeTraversalRequiresRouteCut(
+        candidate, *runtimeBreaker);
+    if (!required)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    canonicalRegionDecisionCount, 0, 0,
+                    llvm::toString(required.takeError()));
+    if (*required)
+      routeBreaker = SpatialRuntimeLiteralBreaker{
+          runtimeBreaker->clauseOrdinal,
+          runtimeBreaker->clauseLocalLiteralOrdinal};
+  }
 
   // A legal route closure may be worse than the current objective. Keep the
   // best such assignment outside the mutable CP-SAT model so search can look
@@ -1321,8 +1575,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   std::vector<std::int64_t> bestLegalFallbackAssignment;
   std::optional<dse::ObjectiveVector> bestLegalFallbackObjective;
 
-  const auto commitBestLegalFallback = [&](std::string detail)
-      -> llvm::Expected<SpatialExactRepairResult> {
+  const auto commitBestLegalFallback =
+      [&](std::string detail) -> llvm::Expected<SpatialExactRepairResult> {
     if (!bestLegalFallbackObjective || bestLegalFallbackActions.empty() ||
         bestLegalFallbackAssignment.size() != canonicalVariables.size())
       return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -1331,7 +1585,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     actions_ = bestLegalFallbackActions;
     auto fallbackProbe = actionExecutor_.probeBatch(
         candidate, actions_, SpatialActionExecutionContext::ExactRepair,
-        policy.maxRegionDecisions - decisions_.size());
+        policy.maxRegionDecisions - decisions_.size(), routeBreaker);
     if (!fallbackProbe) {
       std::string failureDetail;
       std::optional<SpatialActionTransitionFailureKind> transitionFailure;
@@ -1384,8 +1638,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(std::move(error)));
     }
-    if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
-        *witnessLive) {
+    if (!assignmentRealized || fallbackProbe->isSemanticNoop() ||
+        candidate.atomicCapacityOveruse() != 0 ||
+        !hardTransportClosed() || *witnessLive) {
       if (llvm::Error error = fallbackProbe->discard())
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
@@ -1400,6 +1655,14 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     if (llvm::Error error = candidate.verify())
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(std::move(error)));
+    auto committedWitness = transportWitnessIsLive(candidate, **primaryWitness);
+    if (!committedWitness)
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            llvm::toString(committedWitness.takeError()));
+    if (*committedWitness)
+      return executedResult(
+          SpatialExactRepairResultKind::InternalError,
+          "committed route-repair fallback restored its primary witness");
     loom::mapping_debug::emit(
         loom::mapping_debug::Level::Decision,
         loom::mapping_debug::Stage::SpatialPnr,
@@ -1419,20 +1682,27 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                           std::move(detail));
   };
 
-  while (solverCalls < solverCallLimit) {
+  while (logicalSolverCalls < solverCallLimit) {
+    if (executionControl_.stopRequested())
+      return executedResult(
+          SpatialExactRepairResultKind::TimedOut,
+          "route exact repair reached its deadline between assignments");
     auto solved =
         proveCurrentAssignment
             ? detail::solveFixedCpSatAssignment(
                   model.Build(), canonicalVariables, currentAssignment,
-                  mutationCount->index(), solverCallLimit - solverCalls,
+                  mutationCount->index(),
+                  solverCallLimit - logicalSolverCalls,
                   solverSeed, workLedger_)
             : detail::solveCanonicalCpSat(
                   model.Build(), canonicalVariables, mutationCount->index(),
-                  solverCallLimit - solverCalls, solverSeed, workLedger_);
+                  solverCallLimit - logicalSolverCalls, solverSeed,
+                  workLedger_);
     if (!solved)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(solved.takeError()));
     solverCalls += solved->solverCalls;
+    logicalSolverCalls += solved->logicalSolverCalls;
     if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible) {
       if (proveCurrentAssignment)
         return executedResult(
@@ -1447,6 +1717,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
             SpatialExactRepairResultKind::UnknownBudgetExhausted,
             "bounded route-repair assignments were exhausted after at "
             "least one route probe reached its work limit");
+      if (sawRoutingIncomplete)
+        return executedResult(
+            SpatialExactRepairResultKind::RoutingIncomplete,
+            "bounded route-repair assignments were exhausted after at least "
+            "one negotiated route remained incomplete");
       return executedResult(
           SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
           "bounded route-repair assignments were exhausted without an "
@@ -1511,8 +1786,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           solved->assignment[decisions_.size() + local];
       if (selectedDisposition == localDispositions->currentValues()[local])
         continue;
-      auto localOption = localDispositions->selectedOption(
-          local, selectedDisposition);
+      auto localOption =
+          localDispositions->selectedOption(local, selectedDisposition);
       if (!localOption)
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(localOption.takeError()));
@@ -1523,9 +1798,53 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                            : SpatialWholeNetDispositionKind::External,
               *localOption ? **localOption : getInvalidPnrIndex()}});
     }
-    actions_.push_back(SpatialTransportRoutingAction{
-        SpatialWitnessRegionRoutingAction{primaryWitnessKind,
-                                          primaryWitnessOrdinal}});
+    if (!runtimeBreaker)
+      actions_.push_back(
+          SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
+              primaryWitnessKind, primaryWitnessOrdinal}});
+    else if (runtimeBreaker->kind ==
+                 detail::SpatialRuntimeCounterexampleBreakerKind::
+                     NetTraversal &&
+             routeBreaker) {
+      auto literal = detail::resolveSpatialRuntimeCounterexampleBreaker(
+          problem, *runtimeBreaker);
+      if (!literal)
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(literal.takeError()));
+      if ((*literal)->sink) {
+        const FrozenSpatialLogicalNet &net =
+            problem.transfers().logicalNets()[(*literal)->logicalNet];
+        if (*(*literal)->sink >= net.sinkCount)
+          return executedResult(
+              SpatialExactRepairResultKind::InternalError,
+              "traversal breaker sink is outside its logical net");
+        actions_.push_back(SpatialTransportRoutingAction{
+            SpatialSingleSinkRoutingAction{(*literal)->logicalNet,
+                                           net.sinkOffset +
+                                               *(*literal)->sink}});
+      } else {
+        actions_.push_back(SpatialTransportRoutingAction{
+            SpatialWholeNetRoutingAction{
+                (*literal)->logicalNet,
+                SpatialWholeNetDispositionKind::External}});
+      }
+    }
+    if (runtimeBreaker &&
+        runtimeBreaker->kind ==
+            detail::SpatialRuntimeCounterexampleBreakerKind::NetTag) {
+      auto literal = detail::resolveSpatialRuntimeCounterexampleBreaker(
+          problem, *runtimeBreaker);
+      if (!literal)
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(literal.takeError()));
+      if (!runtimeBreaker->physicalTagValue)
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              "tag breaker has no exact replacement value");
+      actions_.push_back(
+          SpatialTransportRoutingAction{SpatialPhysicalTagAction{
+              (*literal)->logicalNet, (*literal)->target,
+              *runtimeBreaker->physicalTagValue}});
+    }
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (decision < portOffset)
@@ -1619,15 +1938,26 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
             }
             selectedDecisions.push_back(std::move(selectedDecision));
           }
+          llvm::json::Array selectedDispositions;
+          for (PnrIndex local = 0; local < affectedNets_.size(); ++local) {
+            const std::int64_t selected =
+                solved->assignment[decisions_.size() + local];
+            selectedDispositions.push_back(llvm::json::Object{
+                {"logical_net", affectedNets_[local]},
+                {"choice", selected},
+                {"current", localDispositions->currentValues()[local]},
+                {"external", localDispositions->externalValue(local)}});
+          }
           fields["search_scope"] = "route_exact_repair";
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
           fields["decisions"] = std::move(selectedDecisions);
+          fields["local_dispositions"] = std::move(selectedDispositions);
         });
 
     auto probe = actionExecutor_.probeBatch(
         candidate, actions_, SpatialActionExecutionContext::ExactRepair,
-        policy.maxRegionDecisions - decisions_.size());
+        policy.maxRegionDecisions - decisions_.size(), routeBreaker);
     const std::uint64_t regionalLogicalNetCount =
         actionExecutor_.regionalLogicalNetCount();
     for (PnrIndex logicalNet : actionExecutor_.regionalLogicalNets()) {
@@ -1671,6 +2001,15 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
             }
             if (failure.kind() != SpatialPathFinderClosureFailure::Kind::
                                       FixedTerminalCapacityCut) {
+              if (failure.kind() ==
+                      SpatialPathFinderClosureFailure::Kind::NonClosure ||
+                  failure.kind() ==
+                      SpatialPathFinderClosureFailure::Kind::NoProgress ||
+                  failure.kind() == SpatialPathFinderClosureFailure::Kind::
+                                        SelectedCombinationalHandshakeCycle) {
+                sawRoutingIncomplete = true;
+                return llvm::Error::success();
+              }
               std::string message;
               llvm::raw_string_ostream stream(message);
               failure.log(stream);
@@ -1716,6 +2055,26 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           break;
         }
       }
+      if (assignmentRealized)
+        for (PnrIndex local = 0; local < affectedNets_.size(); ++local) {
+          auto selected = localDispositions->selectedOption(
+              local, solved->assignment[decisions_.size() + local]);
+          if (!selected) {
+            if (llvm::Error error = probe->discard())
+              return executedResult(SpatialExactRepairResultKind::InternalError,
+                                    llvm::toString(std::move(error)));
+            return executedResult(SpatialExactRepairResultKind::InternalError,
+                                  llvm::toString(selected.takeError()));
+          }
+          const PnrIndex actual =
+              candidate.registerFifoTransfer(affectedNets_[local]);
+          const PnrIndex expected =
+              *selected ? **selected : getInvalidPnrIndex();
+          if (actual != expected) {
+            assignmentRealized = false;
+            break;
+          }
+        }
       auto primaryWitnessLive =
           transportWitnessIsLive(candidate, **primaryWitness);
       if (!primaryWitnessLive) {
@@ -1736,9 +2095,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                               llvm::toString(std::move(error)));
       }
       const bool selectedRankImproved = *selectedRank < 0;
-      const bool assignmentLegal =
-          assignmentRealized && candidate.atomicCapacityOveruse() == 0 &&
-          !*primaryWitnessLive;
+      const bool assignmentLegal = assignmentRealized &&
+                                   !probe->isSemanticNoop() &&
+                                   candidate.atomicCapacityOveruse() == 0 &&
+                                   hardTransportClosed() &&
+                                   !*primaryWitnessLive;
       if (!assignmentLegal) {
         rejectAssignment = true;
         loom::mapping_debug::emit(
@@ -1751,8 +2112,12 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
               fields["restart"] = restartOrdinal;
               fields["assignment"] = assignmentOrdinal;
               fields["assignment_realized"] = assignmentRealized;
+              fields["semantic_change"] = !probe->isSemanticNoop();
               fields["atomic_capacity_overuse"] =
                   candidate.atomicCapacityOveruse();
+              fields["hard_transport_closed"] = hardTransportClosed();
+              fields["progress_proof_debt"] =
+                  candidate.progressProofDebtWitnessCount();
               fields["primary_witness_eliminated"] = !*primaryWitnessLive;
               fields["selected_rank_improved"] = selectedRankImproved;
               llvm::json::Array initialCodes;
@@ -1776,6 +2141,15 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
         if (llvm::Error error = candidate.verify())
           return executedResult(SpatialExactRepairResultKind::InternalError,
                                 llvm::toString(std::move(error)));
+        auto committedWitness =
+            transportWitnessIsLive(candidate, **primaryWitness);
+        if (!committedWitness)
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(committedWitness.takeError()));
+        if (*committedWitness)
+          return executedResult(
+              SpatialExactRepairResultKind::InternalError,
+              "committed route repair restored its primary witness");
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Decision,
             loom::mapping_debug::Stage::SpatialPnr,
@@ -1789,7 +2163,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                   static_cast<std::uint32_t>(primaryWitnessKind);
               fields["witness_ordinal"] = primaryWitnessOrdinal;
               fields["solver_calls"] = solverCalls;
-        });
+            });
         return executedResult(SpatialExactRepairResultKind::Repaired);
       } else {
         // Keep QoR-worse legal closures as a deterministic fallback while the
@@ -1803,17 +2177,17 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           if (!comparison) {
             llvm::Error error = comparison.takeError();
             if (llvm::Error discardError = probe->discard())
-              error = llvm::joinErrors(std::move(error),
-                                       std::move(discardError));
+              error =
+                  llvm::joinErrors(std::move(error), std::move(discardError));
             return executedResult(SpatialExactRepairResultKind::InternalError,
                                   llvm::toString(std::move(error)));
           }
           replaceFallback = *comparison < 0;
           if (*comparison == 0 &&
-              std::lexicographical_compare(
-                  solved->assignment.begin(), solved->assignment.end(),
-                  bestLegalFallbackAssignment.begin(),
-                  bestLegalFallbackAssignment.end()))
+              std::lexicographical_compare(solved->assignment.begin(),
+                                           solved->assignment.end(),
+                                           bestLegalFallbackAssignment.begin(),
+                                           bestLegalFallbackAssignment.end()))
             replaceFallback = true;
         }
         if (replaceFallback) {

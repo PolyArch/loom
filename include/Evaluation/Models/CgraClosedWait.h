@@ -36,6 +36,8 @@ public:
   const ArtifactRootReference &evidence() const { return evidence_; }
   const ArtifactRootReference &request() const { return request_; }
   const ArtifactRootReference &execution() const { return execution_; }
+  const ArtifactRootReference &workload() const { return workload_; }
+  const ArtifactRootReference &runtimeInput() const { return runtimeInput_; }
   const sim::CgraClosedWaitCertificate &certificate() const {
     return certificate_;
   }
@@ -47,15 +49,20 @@ private:
   VerifiedCgraClosedWaitEvidence(
       ArtifactRootReference evidence, ArtifactRootReference request,
       ArtifactRootReference execution,
+      ArtifactRootReference workload, ArtifactRootReference runtimeInput,
       sim::CgraClosedWaitCertificate certificate,
       sim::CgraClosedWaitCertificateDigest certificateDigest)
       : evidence_(std::move(evidence)), request_(std::move(request)),
-        execution_(std::move(execution)), certificate_(std::move(certificate)),
+        execution_(std::move(execution)), workload_(std::move(workload)),
+        runtimeInput_(std::move(runtimeInput)),
+        certificate_(std::move(certificate)),
         certificateDigest_(std::move(certificateDigest)) {}
 
   ArtifactRootReference evidence_;
   ArtifactRootReference request_;
   ArtifactRootReference execution_;
+  ArtifactRootReference workload_;
+  ArtifactRootReference runtimeInput_;
   sim::CgraClosedWaitCertificate certificate_;
   sim::CgraClosedWaitCertificateDigest certificateDigest_;
 

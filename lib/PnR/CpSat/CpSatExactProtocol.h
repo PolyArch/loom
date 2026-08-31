@@ -43,7 +43,12 @@ struct CpSatCanonicalResult final {
   CpSatCanonicalResultKind kind;
   std::vector<std::int64_t> assignment;
   std::optional<std::int64_t> objectiveValue;
+  /// Actual solver invocations paid by this call. Exact memo hits report zero.
   std::uint64_t solverCalls;
+  /// Deterministic solver work of the canonical result, including work a memo
+  /// hit avoided. Search control and branch budgets consume this value so
+  /// cache history cannot change the explored assignment prefix.
+  std::uint64_t logicalSolverCalls;
 };
 
 /// Solves one exact CP-SAT model and extracts the lexicographically first

@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -146,6 +147,7 @@ struct FrozenNoGoodResolvedLiteral final {
     NetUsesTraversal,
     TransferAttachmentEquals,
     NetTagEquals,
+    SpatialMappingIdentityEquals,
   };
 
   Kind kind = Kind::NetUsesTraversal;
@@ -156,6 +158,9 @@ struct FrozenNoGoodResolvedLiteral final {
   PnrIndex target = 0;
   /// Exact expected tag bits for NetTagEquals; absent for the other kinds.
   std::optional<llvm::APInt> tagValue;
+  /// Strict-imported removable cache for SpatialMappingIdentityEquals.
+  std::shared_ptr<const ::loom::mapping::FinalizedSpatialMapping>
+      importedMapping;
 };
 
 /// One no-good clause resolved against the frozen search domain. Offsets index
@@ -195,6 +200,9 @@ public:
     return llvm::ArrayRef<PnrIndex>(resolvedNoGoodNetClauses_)
         .slice(begin, end - begin);
   }
+  llvm::ArrayRef<PnrIndex> resolvedMappingWideNoGoodClauses() const {
+    return resolvedMappingWideNoGoodClauses_;
+  }
   bool empty() const;
 
 private:
@@ -206,6 +214,7 @@ private:
   std::vector<FrozenNoGoodResolvedLiteral> resolvedNoGoodLiterals_;
   std::vector<PnrIndex> resolvedNoGoodNetClauseOffsets_;
   std::vector<PnrIndex> resolvedNoGoodNetClauses_;
+  std::vector<PnrIndex> resolvedMappingWideNoGoodClauses_;
 
   template <typename Traits> friend class FrozenConstraintIndexBuilder;
   friend llvm::Expected<FrozenConstraintIndex>

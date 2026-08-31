@@ -210,6 +210,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       routeViolationApplied_(other.routeViolationApplied_),
       runtimeCounterexampleStateStaged_(
           other.runtimeCounterexampleStateStaged_),
+      physicalTagValueUpdates_(std::move(other.physicalTagValueUpdates_)),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
       initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_),
       initialStaticSchedulePressure_(other.initialStaticSchedulePressure_),
@@ -1141,6 +1142,46 @@ SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
   return &*scratch_->routeTransactions_[logicalNet];
 }
 
+llvm::Error SpatialMoveTransaction::setPhysicalTagValue(
+    PnrIndex logicalNet, PnrIndex segmentOrdinal, const llvm::APInt &value) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (logicalNet >= state_->routeTrees_.size())
+    return candidateError("Physical Tag logical net is out of range");
+  const auto segments = state_->tagSegments(logicalNet);
+  const auto values = state_->tagValues(logicalNet);
+  if (segmentOrdinal >= segments.size() || segmentOrdinal >= values.size())
+    return candidateError("Physical Tag segment ordinal is out of range");
+  if (!::fabric::isRepresentablePhysicalTagValue(
+          segments[segmentOrdinal].tagWidthBits, value))
+    return candidateError("Physical Tag value is outside its encoding width");
+  const llvm::APInt canonicalValue = ::fabric::canonicalPhysicalTagValue(value);
+
+  const auto key = std::tie(logicalNet, segmentOrdinal);
+  const auto update = llvm::lower_bound(
+      physicalTagValueUpdates_, key,
+      [](const SpatialTagValueUpdate &candidate, const auto &target) {
+        return std::tie(candidate.logicalNet, candidate.segmentOrdinal) <
+               target;
+      });
+  if (update != physicalTagValueUpdates_.end() &&
+      std::tie(update->logicalNet, update->segmentOrdinal) == key)
+    return candidateError(
+        "one move selects one Physical Tag segment more than once");
+  if (!scratch_->routeTransactions_[logicalNet] && values[segmentOrdinal] &&
+      ::fabric::comparePhysicalTagValues(*values[segmentOrdinal],
+                                         canonicalValue) == 0)
+    return llvm::Error::success();
+
+  if (llvm::Error error = captureSwitchHandshakeBaseline())
+    return error;
+  markNet(logicalNet);
+  physicalTagValueUpdates_.insert(
+      update,
+      SpatialTagValueUpdate{logicalNet, segmentOrdinal, canonicalValue});
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
   if (scratch_->switchHandshakeBaselineCaptured_ ||
       !detail::hasSpatialTemporalSwitchHandshakeDomain(state_->problem()))
@@ -1380,7 +1421,8 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
   }
   if (llvm::Error error = state_->tagAssignments_.stageRouteUpdates(
           state_->routeTrees_, scratch_->routeTransactions_,
-          scratch_->touchedRoutes_, scratch_->tagScratch_))
+          scratch_->touchedRoutes_, physicalTagValueUpdates_,
+          scratch_->tagScratch_))
     return std::move(error);
   tagDeltasCollected_ = true;
   for (PnrIndex logicalNet :
@@ -1620,6 +1662,8 @@ bool SpatialMoveTransaction::hasPreparedRouteTreeChange() const {
 }
 
 bool SpatialMoveTransaction::hasPreparedSemanticChange() const {
+  if (!physicalTagValueUpdates_.empty())
+    return true;
   for (const SpatialCandidateScratch::DecisionDelta &delta :
        scratch_->decisionDeltas_) {
     switch (delta.kind) {
@@ -1673,6 +1717,12 @@ bool SpatialMoveTransaction::hasPreparedSemanticChange() const {
 bool SpatialMoveTransaction::hasSemanticChange() const {
   assert(scratch_ && closed_ && "move semantic comparison requires close");
   return hasPreparedSemanticChange();
+}
+
+bool SpatialMoveTransaction::hasPhysicalTagValueChange() const {
+  assert(scratch_ && closed_ &&
+         "Physical Tag comparison requires a closed move");
+  return !physicalTagValueUpdates_.empty();
 }
 
 llvm::Error SpatialMoveTransaction::commit() {

@@ -3,6 +3,7 @@
 #include "CgraAdmissionTestSupport.h"
 #include "SpatialCandidateSelectionTestSupport.h"
 #include "SpatialMemoryMappingArtifactTestSupport.h"
+#include "SpatialRuntimeCounterexampleExactRepairTestSupport.h"
 #include "SpatialRuntimeCounterexampleTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 #include "TemporalMappingFabricTestSupport.h"
@@ -652,8 +653,12 @@ void completeCandidateRoundTrip(
       fail("Spatial PnR generator checked provider support before exact input "
            "coupling");
   }
-  const auto pnrConfig = take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      loom::test::buildSpatialPnrTestResolvedConfig()));
+  loom::ResolvedConfig pnrResolved =
+      loom::test::buildSpatialPnrTestResolvedConfig();
+  pnrResolved.dse.spatialPnr.search.exactRepair = {
+      loom::ResolvedPnrExactRepairKind::CpSat, 256, 1024};
+  const auto pnrConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(pnrResolved));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
   if (problem->routing().tagContinuity().traversalPointOrdinals().size() !=
@@ -1201,6 +1206,15 @@ void completeCandidateRoundTrip(
       imported.view().routeTrees().empty() ||
       imported.view().resourceUses().empty())
     fail("strict SpatialMapping round trip lost selected closure");
+  if (!temporal &&
+      contractKind == ComputeContractKind::OneCycleElastic) {
+    const auto physicalTiming =
+        take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+            fabric.view()));
+    loom::test::exerciseSpatialRuntimeCounterexampleExactRepair(
+        dataflow, tech.view(), fabric.view(), constraints, imported,
+        physicalTiming, pnrConfig, store);
+  }
   bool observedCompleteResultTuple = false;
   bool sawComputeTransition = false;
   bool allComputeIntrinsic = true;
@@ -1394,6 +1408,9 @@ void completeCandidateRoundTrip(
     loom::test::exerciseSpatialPhysicalTagRuntimeCounterexampleNoGood(
         dataflow, tech.view(), fabric.view(), constraints, imported, pnrConfig,
         *candidate, store);
+    loom::test::exerciseSpatialTaggedRuntimeCounterexampleExactRepair(
+        dataflow, tech.view(), fabric.view(), constraints, imported, pnrConfig,
+        store);
     auto missingTag = parseSpatial(context, finalized.canonicalBytes());
     if (!missingTag)
       fail("cannot reparse Physical Tag ResourceUse fixture");
@@ -1503,6 +1520,7 @@ int main() {
                              ComputeContractKind::OneCycleElastic, true);
   completeCandidateRoundTrip(true, true);
   completeCandidateRoundTrip(true, true, true);
+  loom::test::exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair();
   loom::test::completeMemorySpatialMappingRoundTrip(false);
   loom::test::completeMemorySpatialMappingRoundTrip(true);
   loom::test::completeMemorySpatialMappingRoundTrip(false, true);

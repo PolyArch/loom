@@ -1,6 +1,7 @@
 #include "MappingConstraintCanonicalization.h"
 
 #include "Fabric/IR/PhysicalTag.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingAttrs.h"
 
 #include "mlir/IR/Builders.h"
@@ -36,9 +37,16 @@ enum class ClauseKind : std::uint32_t {
 
 /// Closed no-good literal kind ordinals. These lead every literal key, so the
 /// values are fixed once published.
-constexpr std::uint32_t kNetUsesTraversalLiteralKind = 0;
-constexpr std::uint32_t kTransferAttachmentEqualsLiteralKind = 1;
-constexpr std::uint32_t kNetTagEqualsLiteralKind = 2;
+constexpr std::uint32_t kNetUsesTraversalLiteralKind =
+    static_cast<std::uint32_t>(SpatialNoGoodLiteralKind::NetUsesTraversal);
+constexpr std::uint32_t kTransferAttachmentEqualsLiteralKind =
+    static_cast<std::uint32_t>(
+        SpatialNoGoodLiteralKind::TransferAttachmentEquals);
+constexpr std::uint32_t kNetTagEqualsLiteralKind =
+    static_cast<std::uint32_t>(SpatialNoGoodLiteralKind::NetTagEquals);
+constexpr std::uint32_t kSpatialMappingIdentityEqualsLiteralKind =
+    static_cast<std::uint32_t>(
+        SpatialNoGoodLiteralKind::SpatialMappingIdentityEquals);
 
 void appendU32Be(std::string &output, std::uint32_t value) {
   for (unsigned byte = 0; byte < 4; ++byte)
@@ -79,6 +87,7 @@ DenseI8ArrayAttr canonicalRecord(Attribute attribute) {
       .Case<::mapping::ActorRefAttr, ::mapping::LogicalMemoryRootRefAttr,
             ::mapping::GraphProducerEndpointRefAttr,
             ::mapping::GraphConsumerEndpointRefAttr,
+            ::mapping::ArtifactRootReferenceAttr,
             ::mapping::RootThreadLaunchRefAttr,
             ::mapping::RootedGraphLaunchRefAttr,
             ::mapping::SystemServiceObligationKeyAttr,
@@ -287,8 +296,9 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
   // No-good clauses are disjunctive and cross-projection, so they take no part
   // in the per-projection equality folding or domain intersection below. They
   // are canonicalized only within themselves and against each other.
-  std::set<std::vector<std::string>> noGoodKeys;
+  std::set<std::pair<std::string, std::vector<std::string>>> noGoodKeys;
   std::map<std::string, Attribute> noGoodLiterals;
+  std::map<std::string, Attribute> noGoodLineages;
   for (Operation &operation : body) {
     if (auto noGood =
             dyn_cast<::mapping::ConstraintRuntimeCounterexampleNoGoodOp>(
@@ -309,8 +319,13 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
       }
       llvm::sort(keys);
       keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+      std::string lineageKey;
+      if (auto lineage = noGood.getLineage()) {
+        lineageKey = constraintAttributeKey(*lineage);
+        noGoodLineages.try_emplace(lineageKey, *lineage);
+      }
       if (!keys.empty())
-        noGoodKeys.insert(std::move(keys));
+        noGoodKeys.emplace(std::move(lineageKey), std::move(keys));
       continue;
     }
     if (auto equal = dyn_cast<::mapping::ConstraintEqualOp>(operation)) {
@@ -426,12 +441,14 @@ canonicalizeClauses(Block &body, ConstraintDomainTransform normalizeDomain,
     }
   }
 
-  for (const std::vector<std::string> &literals : noGoodKeys) {
+  for (const auto &[lineage, literals] : noGoodKeys) {
     SmallVector<Attribute> values;
     for (const std::string &literal : literals)
       values.push_back(noGoodLiterals.at(literal));
     result.push_back({ClauseKind::RuntimeCounterexampleNoGood, Attribute(),
-                      Attribute(), ArrayAttr::get(context, values)});
+                      lineage.empty() ? Attribute()
+                                      : noGoodLineages.at(lineage),
+                      ArrayAttr::get(context, values)});
   }
 
   llvm::sort(result,
@@ -463,6 +480,8 @@ Operation *createClause(OpBuilder &builder, Location location,
   OperationState state(location, operationName);
   if (clause.kind == ClauseKind::RuntimeCounterexampleNoGood) {
     state.addAttribute("literals", clause.values);
+    if (clause.subject)
+      state.addAttribute("lineage", clause.subject);
     return builder.create(state);
   }
   state.addAttribute("projection", clause.projection);
@@ -478,6 +497,11 @@ Operation *createClause(OpBuilder &builder, Location location,
 } // namespace
 
 std::string constraintAttributeKey(Attribute attribute) {
+  if (auto record = dyn_cast<DenseI8ArrayAttr>(attribute)) {
+    std::vector<std::uint8_t> bytes = unsignedBytes(record);
+    return std::string(reinterpret_cast<const char *>(bytes.data()),
+                       bytes.size());
+  }
   if (DenseI8ArrayAttr record = canonicalRecord(attribute)) {
     std::vector<std::uint8_t> bytes = unsignedBytes(record);
     return std::string(reinterpret_cast<const char *>(bytes.data()),
@@ -549,6 +573,29 @@ std::string constraintAttributeKey(Attribute attribute) {
     appendU64Be(result, literal.getSegmentOrdinal());
     appendFramed(result, integerKey(::fabric::canonicalPhysicalTagValue(
                              literal.getValue().getValue())));
+    return result;
+  }
+  if (auto literal =
+          dyn_cast<::mapping::SpatialMappingIdentityEqualsAttr>(attribute)) {
+    std::string result;
+    appendU32Be(result, kSpatialMappingIdentityEqualsLiteralKind);
+    appendFramed(result,
+                 constraintAttributeKey(literal.getSpatialMapping()));
+    return result;
+  }
+  if (auto lineage =
+          dyn_cast<::mapping::RuntimeCounterexampleLineageAttr>(attribute)) {
+    std::string result;
+    appendFramed(result,
+                 constraintAttributeKey(lineage.getParentMapping()));
+    appendFramed(result,
+                 constraintAttributeKey(lineage.getRuntimeEvidence()));
+    appendFramed(result,
+                 constraintAttributeKey(lineage.getEvaluationRequest()));
+    appendFramed(result,
+                 constraintAttributeKey(lineage.getRuntimeExecution()));
+    appendFramed(result,
+                 constraintAttributeKey(lineage.getCertificateDigest()));
     return result;
   }
   if (auto region =

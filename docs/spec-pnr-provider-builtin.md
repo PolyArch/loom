@@ -64,6 +64,18 @@ publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.
 
+`loom.mapping_constraints 1.3` is the provider's only persistent owner for a
+promoted runtime-counterexample legality rule. The feedback object itself is
+invocation-local. Promotion requires replay-verified Evidence, complete
+certificate-derived anchors, and an independently verified invariant under
+the exact Evaluation Request. A promoted clause records durable parent
+SpatialMapping, Request, Evidence, execution, and certificate lineage and
+contains an exact-parent Mapping identity literal. That literal is a
+conservative complete-assignment blocker, not a minimal closed-SCC core. An
+explicitly authored clause has no runtime lineage. Frozen indexes and
+CandidateState cache literal truth but cannot become an alternative legality
+or provenance owner.
+
 Config projection and adoption fail closed for every unsupported combination.
 There is no compatibility fallback, ignored field, focused-closure field,
 route-guidance field, or Evaluation binding in the current PnR config bytes.
@@ -328,15 +340,16 @@ mixed-radix extraction fixes optimum values in typed decision-key order and
 splits blocks before any signed-integer safety limit.
 
 Transport repair first tests the current exact assignment. Failed route probes
-add a no-good over the complete observed placement, attachment, and local versus
-external disposition tuple. A fixed-terminal certificate excludes only
-assignments for which its separating capacity proof remains valid. Certificate
-growth is monotonic inside one invocation and cannot become persistent Mapping
-state. A successful probe that realizes its assignment, removes the primary
-witness, and preserves atomic capacity is legal even when its selected
-objective rank does not improve. Objective preference cannot turn that legal
-assignment into a hard no-good; the cold closure and verifier remain the
-legality gates.
+add an invocation-local search no-good over the complete observed placement,
+attachment, and local versus external disposition tuple. This temporary
+exclusion is not a promoted runtime-counterexample clause. A fixed-terminal
+certificate excludes only assignments for which its separating capacity proof
+remains valid. Certificate growth is monotonic inside one invocation and
+cannot become persistent Mapping state. A successful probe that realizes its
+assignment, removes the primary witness, and preserves atomic capacity is legal
+even when its selected objective rank does not improve. Objective preference
+cannot turn that legal assignment into a hard no-good; the cold closure and
+verifier remain the legality gates.
 
 ### Final Spatial Closure
 

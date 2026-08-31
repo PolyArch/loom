@@ -272,11 +272,21 @@ as the current policy.
 
 Version 11.2 compatibly extends the Mapping violation catalog with
 `RuntimeCounterexampleViolation`. The new source is a hard Spatial violation
-derived from `loom.mapping_constraints 1.2`; System projects it as zero. The
+derived from `loom.mapping_constraints 1.3`; System projects it as zero. The
 builtin temporary-violation policy excludes it, while closure and total
 ordering place it before ordinary QoR. Re-finalization produces new
 ResolvedConfig, component-view, and PnR identities; earlier references are not
 silently adopted as 11.2.
+
+ResolvedConfig does not promote runtime feedback or duplicate its provenance.
+Feedback remains invocation-local until the Mapping owner verifies replayed
+Evidence, complete certificate anchors, and the exact Request-scoped
+invariant. A promoted 1.3 clause carries durable parent-Mapping, Request,
+Evidence, execution, and certificate lineage and an exact parent
+SpatialMapping identity literal. That literal is a conservative complete
+assignment blocker rather than a minimal SCC core. The resulting
+MappingConstraintSet is the only persistent legality input; explicitly
+authored clauses carry no runtime lineage.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

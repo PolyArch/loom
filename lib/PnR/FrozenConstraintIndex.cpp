@@ -489,6 +489,7 @@ llvm::Error loom::pnr::detail::resolveFrozenConstraintNoGoods(
   constraints.resolvedNoGoodLiterals_.clear();
   constraints.resolvedNoGoodNetClauseOffsets_.clear();
   constraints.resolvedNoGoodNetClauses_.clear();
+  constraints.resolvedMappingWideNoGoodClauses_.clear();
 
   const auto nets = transfers.logicalNets();
   const auto sinks = transfers.logicalNetSinks();
@@ -518,9 +519,26 @@ llvm::Error loom::pnr::detail::resolveFrozenConstraintNoGoods(
       return literalOffset.takeError();
     clause.literalOffset = *literalOffset;
     std::vector<PnrIndex> clauseNets;
+    bool mappingWide = false;
 
     for (const SpatialNoGoodLiteral &literal : noGood.literals) {
       FrozenNoGoodResolvedLiteral resolved;
+
+      if (const auto *mapping =
+              std::get_if<SpatialMappingIdentityEqualsLiteral>(&literal)) {
+        if (!mapping->importedMapping ||
+            mapping->importedMapping->view().identity() !=
+                mapping->mapping.artifact)
+          return SpatialConstraintIndexTraits::invalid(
+              "no-good SpatialMapping cache is absent or stale");
+        resolved.kind = FrozenNoGoodResolvedLiteral::Kind::
+            SpatialMappingIdentityEquals;
+        resolved.logicalNet = getInvalidPnrIndex();
+        resolved.importedMapping = mapping->importedMapping;
+        constraints.resolvedNoGoodLiterals_.push_back(std::move(resolved));
+        mappingWide = true;
+        continue;
+      }
 
       const ::dataflow::CanonicalGraphProducerEndpointRef *producer = nullptr;
       const std::optional<::dataflow::CanonicalGraphConsumerEndpointRef>
@@ -597,6 +615,8 @@ llvm::Error loom::pnr::detail::resolveFrozenConstraintNoGoods(
                      clauseNets.end());
     for (PnrIndex logicalNet : clauseNets)
       clausesByNet[logicalNet].push_back(*clauseOrdinal);
+    if (mappingWide)
+      constraints.resolvedMappingWideNoGoodClauses_.push_back(*clauseOrdinal);
   }
 
   constraints.resolvedNoGoodNetClauseOffsets_.reserve(nets.size() + 1);

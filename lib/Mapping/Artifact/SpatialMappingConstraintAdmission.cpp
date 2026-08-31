@@ -30,9 +30,29 @@ using namespace loom::mapping;
 char SpatialMappingConstraintRejection::ID;
 
 void SpatialMappingConstraintRejection::log(llvm::raw_ostream &stream) const {
-  stream << "spatial_mapping_rejected_by_constraint_set: projection "
-         << ::mapping::stringifySpatialConstraintProjection(projection_)
-         << " clause " << clauseOrdinal_ << ": " << message_;
+  stream << "spatial_mapping_rejected_by_constraint_set: ";
+  if (const auto *projection =
+          std::get_if<::mapping::SpatialConstraintProjection>(&owner_)) {
+    stream << "projection "
+           << ::mapping::stringifySpatialConstraintProjection(*projection);
+  } else {
+    stream << "no-good literal ";
+    switch (std::get<SpatialNoGoodLiteralKind>(owner_)) {
+    case SpatialNoGoodLiteralKind::NetUsesTraversal:
+      stream << "net_uses_traversal";
+      break;
+    case SpatialNoGoodLiteralKind::TransferAttachmentEquals:
+      stream << "transfer_attachment_equals";
+      break;
+    case SpatialNoGoodLiteralKind::NetTagEquals:
+      stream << "net_tag_equals";
+      break;
+    case SpatialNoGoodLiteralKind::SpatialMappingIdentityEquals:
+      stream << "spatial_mapping_identity_equals";
+      break;
+    }
+  }
+  stream << " clause " << clauseOrdinal_ << ": " << message_;
 }
 
 std::error_code SpatialMappingConstraintRejection::convertToErrorCode() const {
@@ -616,6 +636,10 @@ public:
              ::fabric::comparePhysicalTagValues(value->value, tag->value) == 0;
     }
 
+    if (const auto *mapping =
+            std::get_if<SpatialMappingIdentityEqualsLiteral>(&literal))
+      return mapping_.identity() == mapping->mapping.artifact;
+
     const auto &attachment =
         std::get<SpatialTransferAttachmentEqualsLiteral>(literal);
     auto key = dataflowKey(dataflow_.identity(), attachment.terminal.producer);
@@ -885,23 +909,47 @@ private:
   std::map<std::uint64_t, MemoryRootProjection> memoryRoots_;
 };
 
-llvm::Error reject(Projection projection, std::uint64_t clause,
+llvm::Error reject(SpatialMappingConstraintRejection::Owner owner,
+                   std::uint64_t clause,
                    const llvm::Twine &message) {
-  return llvm::make_error<SpatialMappingConstraintRejection>(projection, clause,
-                                                             message.str());
+  return std::visit(
+      [&](auto typed) -> llvm::Error {
+        return llvm::make_error<SpatialMappingConstraintRejection>(
+            typed, clause, message.str());
+      },
+      owner);
 }
 
-/// The projection each no-good literal kind is stated over. A rejection quotes
-/// it so the diagnostic names a real projection rather than inventing one.
-Projection literalProjection(const SpatialNoGoodLiteral &literal) {
+SpatialNoGoodLiteralKind literalKind(const SpatialNoGoodLiteral &literal) {
   if (std::holds_alternative<SpatialNetUsesTraversalLiteral>(literal))
-    return Projection::NetSelectedPhysicalTraversals;
+    return SpatialNoGoodLiteralKind::NetUsesTraversal;
+  if (std::holds_alternative<SpatialTransferAttachmentEqualsLiteral>(literal))
+    return SpatialNoGoodLiteralKind::TransferAttachmentEquals;
   if (std::holds_alternative<SpatialNetTagEqualsLiteral>(literal))
-    return Projection::NetAssignedTagValues;
-  return Projection::SpatialTransferAttachment;
+    return SpatialNoGoodLiteralKind::NetTagEquals;
+  return SpatialNoGoodLiteralKind::SpatialMappingIdentityEquals;
 }
 
 } // namespace
+
+llvm::Expected<bool> loom::mapping::spatialMappingHoldsNoGoodLiteral(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialMappingView &spatialMapping,
+    const SpatialNoGoodLiteral &literal) {
+  if (techMapping.dataflowIdentity() != dataflow.identity() ||
+      techMapping.fabricIdentity() != fabric.identity() ||
+      spatialMapping.dataflowIdentity() != dataflow.identity() ||
+      spatialMapping.techMappingIdentity() != techMapping.identity() ||
+      spatialMapping.fabricIdentity() != fabric.identity())
+    return invalid("D/T/F/S exact owner tuple does not match");
+  auto index =
+      ProjectionIndex::build(dataflow, techMapping, fabric, spatialMapping);
+  if (!index)
+    return index.takeError();
+  return index->holds(literal);
+}
 
 llvm::Error loom::mapping::admitSpatialMappingConstraints(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -992,7 +1040,7 @@ llvm::Error loom::mapping::admitSpatialMappingConstraints(
     }
     if (allHold)
       return reject(
-          literalProjection(noGood.literals.front()), ordinal,
+          literalKind(noGood.literals.front()), ordinal,
           "every literal of a runtime-counterexample no-good still holds, so "
           "this Mapping repeats the recorded counterexample");
   }

@@ -1014,7 +1014,8 @@ SpatialRestartResult runSpatialRestartImpl(
       reporter.restartClock();
       auto repaired =
           repair.repair(*seed->candidate, attempt, remainingSolverCalls,
-                        exactRepairStream, workLedger);
+                        exactRepairStream, workLedger, std::nullopt,
+                        executionControl);
       reporter.phase(reporter.exactRepairNanoseconds);
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
@@ -1038,6 +1039,8 @@ SpatialRestartResult runSpatialRestartImpl(
         finalClosureRequired = true;
         continue;
       case SpatialExactRepairResultKind::UnknownBudgetExhausted:
+      case SpatialExactRepairResultKind::TimedOut:
+      case SpatialExactRepairResultKind::RoutingIncomplete:
       case SpatialExactRepairResultKind::RegionTooLarge:
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),
@@ -1046,6 +1049,7 @@ SpatialRestartResult runSpatialRestartImpl(
                 InternalSpatialPnrGenerationReason::ExactRepair,
                 std::move(repaired->detail)};
       case SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary:
+      case SpatialExactRepairResultKind::ProofNotEstablished:
       case SpatialExactRepairResultKind::UnsupportedEncoding:
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),

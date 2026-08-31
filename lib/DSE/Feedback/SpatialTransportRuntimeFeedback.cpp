@@ -1,5 +1,6 @@
 #include "DSE/SpatialRuntimeFeedback.h"
 
+#include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
@@ -145,6 +146,13 @@ literalKey(const ArtifactIdentity &dataflow,
     appendFramed(key, bytes);
     return key;
   }
+  if (const auto *mapping =
+          std::get_if<mapping::SpatialMappingIdentityEqualsLiteral>(
+              &literal)) {
+    appendU32Be(key, 3);
+    appendBytes(key, encodeArtifactRootReference(mapping->mapping));
+    return key;
+  }
   const auto &attachment =
       std::get<mapping::SpatialTransferAttachmentEqualsLiteral>(literal);
   appendU32Be(key, 1);
@@ -224,6 +232,46 @@ resolveConsumer(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ++graphLocalOrdinal;
   }
   return {ConsumerResolution::Unresolved, std::nullopt};
+}
+
+/// Establishes the conservative complete causal core used for promotion.
+///
+/// The replay-verified Evidence fixes the exact Request, including workload,
+/// runtime input, model, and parent SpatialMapping. The exact-Mapping literal
+/// therefore entails every persistent Mapping selection that can affect that
+/// deterministic replay. Certificate-derived literals remain independently
+/// checked SCC-local repair anchors; none is trusted merely because it was
+/// projected by this translation unit.
+llvm::Expected<bool> verifyCompleteCausalCore(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const mapping::SpatialMappingView &spatialMapping,
+    const evaluation::models::VerifiedCgraClosedWaitEvidence &runtimeEvidence,
+    llvm::ArrayRef<mapping::SpatialNoGoodLiteral> literals) {
+  if (runtimeEvidence.certificate().owners.spatialMapping.artifact !=
+          spatialMapping.identity() ||
+      literals.size() < 2)
+    return false;
+
+  std::uint64_t exactMappingLiteralCount = 0;
+  for (const mapping::SpatialNoGoodLiteral &literal : literals) {
+    if (const auto *mapping =
+            std::get_if<mapping::SpatialMappingIdentityEqualsLiteral>(
+                &literal)) {
+      ++exactMappingLiteralCount;
+      if (mapping->mapping !=
+          runtimeEvidence.certificate().owners.spatialMapping)
+        return false;
+    }
+    auto held = mapping::spatialMappingHoldsNoGoodLiteral(
+        dataflow, techMapping, fabric, spatialMapping, literal);
+    if (!held)
+      return held.takeError();
+    if (!*held)
+      return false;
+  }
+  return exactMappingLiteralCount == 1;
 }
 
 } // namespace
@@ -671,9 +719,31 @@ deriveSpatialTransportRuntimeFeedback(
     return result;
   }
 
+  // Complete the core with the exact sealed parent Mapping. Under the exact
+  // replay-verified Request this one literal mechanically fixes every
+  // persistent Mapping choice, including choices that do not have an
+  // SCC-local breaker representation. The certificate-derived literals above
+  // stay in the same clause as the finite local repair anchors.
+  if (llvm::Error error =
+          remember(mapping::SpatialMappingIdentityEqualsLiteral{
+              parentSpatialMapping, nullptr}))
+    return std::move(error);
+
   for (auto &[key, literal] : literals) {
     (void)key;
     result.literals.push_back(literal);
+  }
+
+  auto causalCore = verifyCompleteCausalCore(
+      *dataflowView, tech->view(), fabric->view(), spatial->view(),
+      runtimeEvidence, result.literals);
+  if (!causalCore)
+    return causalCore.takeError();
+  if (!*causalCore) {
+    result.literals.clear();
+    result.reason =
+        SpatialTransportRuntimeFeedbackReason::CausalCoreNotEstablished;
+    return result;
   }
 
   // The older alternative shape is a mechanical projection of the
@@ -684,16 +754,20 @@ deriveSpatialTransportRuntimeFeedback(
       result.alternatives.push_back(
           SpatialTransportRepairAlternative{uses->producer, uses->traversal});
 
-  // The certificate now projects route traversals, exact terminal attachments,
-  // and Mapping-owned route-segment tag values. That is still not a proof that
-  // every remaining compute context, memory placement/operation selection,
-  // local disposition, configured-hardware choice, and handshake selection is
-  // mechanically entailed or irrelevant to this dynamic SCC. Publishing the
-  // partial core would over-prune legal Mappings.
-  result.literals.clear();
-  result.alternatives.clear();
-  result.reason =
-      SpatialTransportRuntimeFeedbackReason::CausalCoreNotEstablished;
+  const mapping::SpatialRuntimeCounterexampleNoGoodView::Lineage lineage{
+      parentSpatialMapping,
+      runtimeEvidence.evidence(),
+      runtimeEvidence.request(),
+      runtimeEvidence.execution(),
+      runtimeEvidence.certificateDigest().value()};
+  auto promoted =
+      mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parentConstraints, result.literals, lineage, artifacts);
+  if (!promoted)
+    return promoted.takeError();
+  result.constraintSet = promoted->reference();
+  result.disposition = SpatialTransportRuntimeFeedbackDisposition::Exact;
+  result.reason = SpatialTransportRuntimeFeedbackReason::ExactClosedStorageWait;
   return result;
 }
 

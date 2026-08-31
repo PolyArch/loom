@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -23,15 +25,17 @@
 
 namespace loom::mapping {
 
-/// One family, two roots. 1.1 adds an optional Spatial-only clause kind and 1.2
+/// One family, two roots. 1.1 adds an optional Spatial-only clause kind, 1.2
 /// appends the route-segment Physical Tag literal required for tag-local wait
-/// causality. Both are non-breaking semantic extensions: no existing carrier
-/// changed meaning or wire encoding. Artifact identity nevertheless hashes the
-/// version, so references from different minor versions are deliberately not
-/// interchangeable. Superseded descriptors and explicit migration owners live
-/// in `Mapping/Artifact/MappingConstraintSetMigration.h`.
+/// causality, and 1.3 appends an exact parent SpatialMapping identity literal
+/// for conservative complete-assignment counterexamples. These are compatible
+/// semantic extensions: no existing carrier changed meaning or wire encoding.
+/// Artifact identity nevertheless hashes the version, so references from
+/// different minor versions are deliberately not interchangeable. Superseded
+/// descriptors and explicit migration owners live in
+/// `Mapping/Artifact/MappingConstraintSetMigration.h`.
 inline constexpr ArtifactSchemaDescriptor mappingConstraintSetSchema{
-    "loom.mapping_constraints", SchemaVersion{1, 2}};
+    "loom.mapping_constraints", SchemaVersion{1, 3}};
 
 llvm::Expected<CanonicalSemanticBytes>
 writeCanonicalSpatialConstraintAssembly(::mapping::ConstraintsSpatialOp root);
@@ -171,19 +175,61 @@ struct SpatialNetTagEqualsLiteral final {
   }
 };
 
+/// One exact sealed SpatialMapping selection. This is the conservative full
+/// assignment literal for a replay-verified runtime counterexample: equality
+/// to the referenced Mapping mechanically entails every persistent compute,
+/// memory, route, local-disposition, ResourceUse, configured-hardware, and
+/// handshake selection. Candidate-side expansion is a removable cache; the
+/// referenced Mapping remains the sole semantic owner.
+struct SpatialMappingIdentityEqualsLiteral final {
+  ArtifactRootReference mapping;
+  /// Removable strict-import cache of `mapping`. It never participates in
+  /// equality or canonical encoding and is rebuilt from ArtifactStore bytes.
+  std::shared_ptr<const FinalizedSpatialMapping> importedMapping;
+
+  friend bool operator==(const SpatialMappingIdentityEqualsLiteral &lhs,
+                         const SpatialMappingIdentityEqualsLiteral &rhs) {
+    return lhs.mapping == rhs.mapping;
+  }
+};
+
+enum class SpatialNoGoodLiteralKind : std::uint32_t {
+  NetUsesTraversal = 0,
+  TransferAttachmentEquals = 1,
+  NetTagEquals = 2,
+  SpatialMappingIdentityEquals = 3,
+};
+
 /// The closed Spatial no-good literal catalog. Only kinds a current production
 /// admission consumer can independently verify against a sealed Mapping appear
 /// here; no kind is pre-added for a future consumer.
 using SpatialNoGoodLiteral =
     std::variant<SpatialNetUsesTraversalLiteral,
                  SpatialTransferAttachmentEqualsLiteral,
-                 SpatialNetTagEqualsLiteral>;
+                 SpatialNetTagEqualsLiteral,
+                 SpatialMappingIdentityEqualsLiteral>;
 
 /// One disjunctive runtime-counterexample clause: the listed exact Mapping
 /// choices may not all hold at once, so at least one literal must change. The
 /// literal sequence is canonically sorted and duplicate-free, and never empty.
 struct SpatialRuntimeCounterexampleNoGoodView final {
   std::vector<SpatialNoGoodLiteral> literals;
+  struct Lineage final {
+    ArtifactRootReference parentMapping;
+    ArtifactRootReference runtimeEvidence;
+    ArtifactRootReference evaluationRequest;
+    ArtifactRootReference runtimeExecution;
+    ComponentViewDigest certificateDigest;
+
+    friend bool operator==(const Lineage &lhs, const Lineage &rhs) {
+      return lhs.parentMapping == rhs.parentMapping &&
+             lhs.runtimeEvidence == rhs.runtimeEvidence &&
+             lhs.evaluationRequest == rhs.evaluationRequest &&
+             lhs.runtimeExecution == rhs.runtimeExecution &&
+             lhs.certificateDigest == rhs.certificateDigest;
+    }
+  };
+  std::optional<Lineage> lineage;
 };
 
 using SpatialConstraintClauseView =
@@ -196,7 +242,8 @@ public:
   import(const ArtifactIdentity &identity, ::mapping::ConstraintsSpatialOp root,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          const TechMappingView &techMapping,
-         const ::loom::fabric::FabricArtifactView &fabric);
+         const ::loom::fabric::FabricArtifactView &fabric,
+         const ArtifactStore &store);
 
   const ArtifactIdentity &identity() const { return identity_; }
   const ArtifactIdentity &dataflowIdentity() const { return dataflowIdentity_; }
@@ -268,21 +315,27 @@ class SpatialMappingConstraintRejection final
 public:
   static char ID;
 
+  using Owner = std::variant<::mapping::SpatialConstraintProjection,
+                             SpatialNoGoodLiteralKind>;
+
   SpatialMappingConstraintRejection(
       ::mapping::SpatialConstraintProjection projection,
       std::uint64_t clauseOrdinal, std::string message)
-      : projection_(projection), clauseOrdinal_(clauseOrdinal),
+      : owner_(projection), clauseOrdinal_(clauseOrdinal),
+        message_(std::move(message)) {}
+  SpatialMappingConstraintRejection(SpatialNoGoodLiteralKind literalKind,
+                                    std::uint64_t clauseOrdinal,
+                                    std::string message)
+      : owner_(literalKind), clauseOrdinal_(clauseOrdinal),
         message_(std::move(message)) {}
 
-  ::mapping::SpatialConstraintProjection projection() const {
-    return projection_;
-  }
+  const Owner &owner() const { return owner_; }
   std::uint64_t clauseOrdinal() const { return clauseOrdinal_; }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
 private:
-  ::mapping::SpatialConstraintProjection projection_;
+  Owner owner_;
   std::uint64_t clauseOrdinal_ = 0;
   std::string message_;
 };
@@ -332,9 +385,32 @@ finalizeSpatialRuntimeCounterexampleConstraintSet(
     const ArtifactRootReference &parent,
     llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store);
 
+/// Canonicalizes a replay-promoted runtime clause with its required durable
+/// lineage. This is a codec/finalization boundary, not a proof constructor:
+/// the DSE promotion owner must first consume VerifiedCgraClosedWaitEvidence
+/// and establish the complete causal core. Explicitly authored no-goods use
+/// `finalizeSpatialRuntimeCounterexampleConstraintSet` and carry no lineage.
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals,
+    const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
+    const ArtifactStore &store);
+
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 importSpatialMappingConstraintSet(const ArtifactRootReference &reference,
                                   const ArtifactStore &store);
+
+/// Independently evaluates one closed no-good literal against a sealed,
+/// base-valid SpatialMapping. This is the shared truth owner for causal-core
+/// promotion and constraint admission; it never consults CandidateState,
+/// solver state, or the constraint set that supplied the literal.
+llvm::Expected<bool> spatialMappingHoldsNoGoodLiteral(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialMappingView &spatialMapping,
+    const SpatialNoGoodLiteral &literal);
 
 /// Independently projects every closed Spatial constraint carrier from a
 /// sealed, base-valid Mapping and checks the exact canonical K. The routine

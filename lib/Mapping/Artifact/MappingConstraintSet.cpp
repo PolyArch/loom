@@ -3,6 +3,7 @@
 #include "MappingConstraintCanonicalization.h"
 
 #include "Common/ArtifactFinalizer.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -56,6 +57,42 @@ std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr record) {
 llvm::Expected<ArtifactIdentity>
 decodeIdentity(::mapping::ArtifactIdentityAttr attribute) {
   return ArtifactIdentity::fromBytes(unsignedBytes(attribute.getRecord()));
+}
+
+llvm::Expected<ArtifactRootReference>
+decodeRootReference(::mapping::ArtifactRootReferenceAttr attribute) {
+  std::vector<std::uint8_t> bytes = unsignedBytes(attribute.getRecord());
+  auto decoded = decodeArtifactRootReferencePrefix(bytes);
+  if (!decoded)
+    return decoded.takeError();
+  if (decoded->byteCount != bytes.size() ||
+      encodeArtifactRootReference(decoded->reference) != bytes)
+    return invalid("no-good Mapping reference has noncanonical framing");
+  return std::move(decoded->reference);
+}
+
+llvm::Expected<SpatialRuntimeCounterexampleNoGoodView::Lineage>
+decodeRuntimeCounterexampleLineage(
+    ::mapping::RuntimeCounterexampleLineageAttr attribute) {
+  auto parent = decodeRootReference(attribute.getParentMapping());
+  if (!parent)
+    return parent.takeError();
+  auto evidence = decodeRootReference(attribute.getRuntimeEvidence());
+  if (!evidence)
+    return evidence.takeError();
+  auto request = decodeRootReference(attribute.getEvaluationRequest());
+  if (!request)
+    return request.takeError();
+  auto execution = decodeRootReference(attribute.getRuntimeExecution());
+  if (!execution)
+    return execution.takeError();
+  auto digest = ComponentViewDigest::fromBytes(
+      unsignedBytes(attribute.getCertificateDigest()));
+  if (!digest)
+    return digest.takeError();
+  return SpatialRuntimeCounterexampleNoGoodView::Lineage{
+      std::move(*parent), std::move(*evidence), std::move(*request),
+      std::move(*execution), std::move(*digest)};
 }
 
 template <typename Ref, typename Attr>
@@ -552,7 +589,8 @@ llvm::Expected<SpatialNoGoodLiteral>
 decodeNoGoodLiteral(Attribute attribute,
                     const ::dataflow::CanonicalDataflowProgramView &dataflow,
                     const TechMappingView &techMapping,
-                    const ::loom::fabric::FabricArtifactView &fabric) {
+                    const ::loom::fabric::FabricArtifactView &fabric,
+                    const ArtifactStore &store) {
   if (auto literal = dyn_cast<::mapping::NetUsesTraversalAttr>(attribute)) {
     auto producer =
         decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -605,6 +643,27 @@ decodeNoGoodLiteral(Attribute attribute,
       return invalid("no-good Physical Tag value has zero width");
     return SpatialNoGoodLiteral(SpatialNetTagEqualsLiteral{
         std::move(*producer), literal.getSegmentOrdinal(), value});
+  }
+
+  if (auto literal =
+          dyn_cast<::mapping::SpatialMappingIdentityEqualsAttr>(attribute)) {
+    auto reference = decodeRootReference(literal.getSpatialMapping());
+    if (!reference)
+      return reference.takeError();
+    if (reference->schemaIdentity != mappingArtifactSchema.identity ||
+        reference->schemaVersion != mappingArtifactSchema.version)
+      return invalid("no-good parent has the wrong Mapping schema");
+    auto parent = importSpatialMapping(*reference, store);
+    if (!parent)
+      return contextual(parent.takeError(),
+                        "no-good parent SpatialMapping cannot be imported");
+    if (parent->view().dataflowIdentity() != dataflow.identity() ||
+        parent->view().techMappingIdentity() != techMapping.identity() ||
+        parent->view().fabricIdentity() != fabric.identity())
+      return invalid("no-good parent SpatialMapping has foreign D/T/F owners");
+    return SpatialNoGoodLiteral(SpatialMappingIdentityEqualsLiteral{
+        std::move(*reference),
+        std::make_shared<const FinalizedSpatialMapping>(std::move(*parent))});
   }
 
   auto literal = cast<::mapping::TransferAttachmentEqualsAttr>(attribute);
@@ -708,6 +767,16 @@ encodeNoGoodLiteral(MLIRContext *context, const SpatialNoGoodLiteral &literal,
         context, *producer, tag->segmentOrdinal,
         IntegerAttr::get(IntegerType::get(context, value.getBitWidth()),
                          value)));
+  }
+
+  if (const auto *mapping =
+          std::get_if<SpatialMappingIdentityEqualsLiteral>(&literal)) {
+    return Attribute(::mapping::SpatialMappingIdentityEqualsAttr::get(
+        context,
+        ::mapping::ArtifactRootReferenceAttr::get(
+            context,
+            denseBytes(context,
+                       encodeArtifactRootReference(mapping->mapping)))));
   }
 
   const auto &attachment =
@@ -828,7 +897,7 @@ strictImport(const ArtifactIdentity &identity,
 
   auto view = SpatialMappingConstraintSetView::import(
       identity, parsed->root, *dataflowView, techMapping->view(),
-      fabric->view());
+      fabric->view(), store);
   if (!view)
     return view.takeError();
   auto rewritten = writeCanonicalSpatialConstraintAssembly(parsed->root);
@@ -896,7 +965,8 @@ SpatialMappingConstraintSetView::import(
     const ArtifactIdentity &identity, ::mapping::ConstraintsSpatialOp root,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
-    const ::loom::fabric::FabricArtifactView &fabric) {
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ArtifactStore &store) {
   auto dataflowIdentity = decodeIdentity(root.getDataflow());
   if (!dataflowIdentity)
     return dataflowIdentity.takeError();
@@ -971,10 +1041,17 @@ SpatialMappingConstraintSetView::import(
     if (noGood.getLiterals().empty())
       return invalid("runtime-counterexample no-good clause is empty");
     SpatialRuntimeCounterexampleNoGoodView clause;
+    if (auto lineage = noGood.getLineage()) {
+      auto decoded = decodeRuntimeCounterexampleLineage(*lineage);
+      if (!decoded)
+        return decoded.takeError();
+      clause.lineage = std::move(*decoded);
+    }
     clause.literals.reserve(noGood.getLiterals().size());
     for (Attribute attribute : noGood.getLiterals()) {
       auto literal =
-          decodeNoGoodLiteral(attribute, dataflow, techMapping, fabric);
+          decodeNoGoodLiteral(attribute, dataflow, techMapping, fabric,
+                              store);
       if (!literal)
         return literal.takeError();
       clause.literals.push_back(std::move(*literal));
@@ -1019,7 +1096,7 @@ finalizeSpatialMappingConstraintSet(
     return prepared.takeError();
   auto view = SpatialMappingConstraintSetView::import(
       prepared->reference.artifact, prepared->root, dataflow, techMapping,
-      fabric);
+      fabric, store);
   if (!view)
     return view.takeError();
   if (llvm::Error error = publishPreparedSpatialConstraintSet(*prepared, store))
@@ -1030,12 +1107,13 @@ finalizeSpatialMappingConstraintSet(
 }
 
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
-finalizeSpatialRuntimeCounterexampleConstraintSet(
+finalizeRuntimeCounterexampleConstraintSet(
     const ArtifactRootReference &parent,
-    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store) {
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store,
+    std::optional<SpatialRuntimeCounterexampleNoGoodView::Lineage> lineage) {
   if (literals.empty())
     return invalid("a runtime-counterexample no-good clause must be non-empty");
-  // Importing the parent proves it is a 1.2 payload over one exact D/T/F
+  // Importing the parent proves it is a 1.3 payload over one exact D/T/F
   // closure before anything is added to it.
   auto imported = importSpatialMappingConstraintSet(parent, store);
   if (!imported)
@@ -1056,12 +1134,45 @@ finalizeSpatialRuntimeCounterexampleConstraintSet(
       return attribute.takeError();
     encoded.push_back(*attribute);
   }
+  ::mapping::RuntimeCounterexampleLineageAttr lineageAttr;
+  if (lineage) {
+    const auto rootAttr = [&](const ArtifactRootReference &reference) {
+      return ::mapping::ArtifactRootReferenceAttr::get(
+          context,
+          denseBytes(context, encodeArtifactRootReference(reference)));
+    };
+    lineageAttr = ::mapping::RuntimeCounterexampleLineageAttr::get(
+        context, rootAttr(lineage->parentMapping),
+        rootAttr(lineage->runtimeEvidence),
+        rootAttr(lineage->evaluationRequest),
+        rootAttr(lineage->runtimeExecution),
+        denseBytes(context, lineage->certificateDigest.bytes()));
+  }
   ::mapping::ConstraintRuntimeCounterexampleNoGoodOp::create(
-      builder, builder.getUnknownLoc(), builder.getArrayAttr(encoded));
+      builder, builder.getUnknownLoc(), builder.getArrayAttr(encoded),
+      lineageAttr);
   // Canonicalization owns literal ordering, deduplication, and the union with
   // any clause the parent already carried, so republishing an identical
   // counterexample reproduces the parent identity exactly.
   return finalizeSpatialMappingConstraintSet(parsed->root, store);
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeSpatialRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store) {
+  return finalizeRuntimeCounterexampleConstraintSet(parent, literals, store,
+                                                     std::nullopt);
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals,
+    const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
+    const ArtifactStore &store) {
+  return finalizeRuntimeCounterexampleConstraintSet(parent, literals, store,
+                                                     lineage);
 }
 
 llvm::Expected<FinalizedSpatialMappingConstraintSet>

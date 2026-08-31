@@ -11,10 +11,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 namespace loom::pnr {
+
+/// Derived routing cut for one frozen NetUsesTraversal literal. The frozen
+/// constraint remains the semantic owner; this ordinal form exists only while
+/// one exact-repair probe is active.
+struct SpatialTraversalRouteCut final {
+  PnrIndex logicalNet = 0;
+  std::optional<PnrIndex> sinkObligation;
+  PnrIndex traversal = 0;
+};
 
 namespace detail {
 class SpatialNetRouterPrivate;
@@ -54,25 +64,37 @@ public:
   planNegotiatedRoute(const SpatialCandidateState &candidate,
                       const SpatialRouteCostState &costs, PnrIndex logicalNet);
 
+  /// Whether the internal RouteTree portion selected by a derived cut still
+  /// contains its traversal. Source- and sink-local traversals belong to
+  /// attachment decisions and are intentionally outside this query.
+  llvm::Expected<bool>
+  internalRouteCutHolds(const SpatialCandidateState &candidate,
+                        const SpatialTraversalRouteCut &cut) const;
+
   llvm::Expected<RouteCost>
   routeWholeNet(SpatialMoveTransaction &move,
                 const SpatialCandidateState &candidate,
                 SpatialRouteCostState &costs, PnrIndex logicalNet,
-                std::uint64_t endpointExpansionLimit);
-  llvm::Expected<RouteCost> routeSingleSink(
-      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
-      SpatialRouteCostState &costs, PnrIndex logicalNet,
-      PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit);
+                std::uint64_t endpointExpansionLimit,
+                std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
+  llvm::Expected<RouteCost>
+  routeSingleSink(SpatialMoveTransaction &move,
+                  const SpatialCandidateState &candidate,
+                  SpatialRouteCostState &costs, PnrIndex logicalNet,
+                  PnrIndex sinkObligation, std::uint64_t endpointExpansionLimit,
+                  std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
   llvm::Expected<RouteCost> routeRootedSubtree(
       SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
-      std::uint64_t endpointExpansionLimit);
+      std::uint64_t endpointExpansionLimit,
+      std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
   llvm::Expected<RouteCost>
   routeSinkSet(SpatialMoveTransaction &move,
                const SpatialCandidateState &candidate,
                SpatialRouteCostState &costs, PnrIndex logicalNet,
                llvm::ArrayRef<PnrIndex> sinkObligations,
-               std::uint64_t endpointExpansionLimit);
+               std::uint64_t endpointExpansionLimit,
+               std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
 
   std::uint64_t endpointExpansionCount() const {
     return endpointSearch_.endpointExpansionCount();
@@ -112,10 +134,14 @@ private:
     bool requiresTraversal = false;
   };
 
-  llvm::Error collectSourceFrontier(const RouteTreeState &tree,
-                                    PnrIndex unroutedSource);
-  llvm::Error collectTargetFrontier(const SpatialCandidateState &candidate,
-                                    PnrIndex logicalNet, PnrIndex sinkCount);
+  llvm::Error collectSourceFrontier(
+      const RouteTreeState &tree, PnrIndex unroutedSource,
+      std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
+  llvm::Error
+  collectTargetFrontier(const SpatialCandidateState &candidate,
+                        PnrIndex logicalNet, PnrIndex sinkCount,
+                        std::optional<PnrIndex> onlySink = std::nullopt,
+                        bool allowEmpty = false);
   llvm::Error addPathClaims(const FrozenSpatialRoutingGraph &routing,
                             llvm::ArrayRef<PnrIndex> forwardArcs);
   llvm::Error collectCurrentClaims(const RouteTreeState &tree);
@@ -132,7 +158,8 @@ private:
   routeSelectedSinks(SpatialMoveTransaction &move,
                      const SpatialCandidateState &candidate,
                      SpatialRouteCostState &costs, PnrIndex logicalNet,
-                     std::uint64_t endpointExpansionLimit);
+                     std::uint64_t endpointExpansionLimit,
+                     std::optional<SpatialTraversalRouteCut> cut);
   void beginEndpointMarks();
 
   EndpointRouteSearchScratch endpointSearch_;
@@ -149,6 +176,7 @@ private:
   std::vector<std::uint8_t> unresolvedSinks_;
   std::vector<std::uint64_t> prospectiveClaimBits_;
   std::vector<std::uint64_t> bufferedTraversalBits_;
+  std::vector<std::uint64_t> effectiveTraversalBits_;
   std::vector<std::uint64_t> arcTimingDelayQuanta_;
   std::vector<std::uint8_t> arcTimingRegisteredDestination_;
   EndpointRouteInputRevisionOwner physicalTimingRevisionOwner_;

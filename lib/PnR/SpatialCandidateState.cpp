@@ -751,11 +751,15 @@ SpatialCandidateState::snapshotFullyRouted() const {
   const auto arcs = routing.routingArcs();
   const auto arcSources = routing.arcSources();
   snapshot.routeSources.assign(routeTrees_.size(), getInvalidPnrIndex());
+  snapshot.routeTagValueOffsets.reserve(routeTrees_.size() + 1);
+  snapshot.routeTagValueOffsets.push_back(0);
   std::vector<PnrIndex> reversePath;
   for (PnrIndex logicalNet = 0; logicalNet != routeTrees_.size();
        ++logicalNet) {
-    if (usesRegisterFifo(logicalNet))
+    if (usesRegisterFifo(logicalNet)) {
+      snapshot.routeTagValueOffsets.push_back(snapshot.routeTagValues.size());
       continue;
+    }
     const RouteTreeState &sourceTree = routeTree(logicalNet);
     const auto source = sourceTree.sourceEndpoint();
     if (!source)
@@ -794,6 +798,10 @@ SpatialCandidateState::snapshotFullyRouted() const {
       snapshot.arcPaths.insert(snapshot.arcPaths.end(), reversePath.rbegin(),
                                reversePath.rend());
     }
+    const auto values = tagValues(logicalNet);
+    snapshot.routeTagValues.insert(snapshot.routeTagValues.end(), values.begin(),
+                                   values.end());
+    snapshot.routeTagValueOffsets.push_back(snapshot.routeTagValues.size());
   }
   return snapshot;
 }
@@ -803,6 +811,12 @@ SpatialCandidateState::materializeFullyRouted(
     const SpatialFullyRoutedSnapshot &snapshot) {
   if (!snapshot.problem)
     return candidateError("fully routed snapshot has no problem owner");
+  if (snapshot.routeTagValueOffsets.size() !=
+          snapshot.problem->transfers().logicalNets().size() + 1 ||
+      snapshot.routeTagValueOffsets.empty() ||
+      snapshot.routeTagValueOffsets.front() != 0 ||
+      snapshot.routeTagValueOffsets.back() != snapshot.routeTagValues.size())
+    return candidateError("fully routed snapshot tag CSR is malformed");
   const SpatialCandidateInitialization initialization{
       snapshot.computeBindings,       snapshot.memoryBindings,
       snapshot.portAttachments,       snapshot.graphBoundaryAttachments,
@@ -866,6 +880,31 @@ SpatialCandidateState::materializeFullyRouted(
     return candidateError("fully routed snapshot sink is out of net order");
 
   if (llvm::Error error = move->commit())
+    return std::move(error);
+
+  auto tagMove = (*cloned)->beginMove(scratch);
+  if (!tagMove)
+    return tagMove.takeError();
+  for (PnrIndex logicalNet = 0;
+       logicalNet != snapshot.problem->transfers().logicalNets().size();
+       ++logicalNet) {
+    const std::size_t begin = snapshot.routeTagValueOffsets[logicalNet];
+    const std::size_t end = snapshot.routeTagValueOffsets[logicalNet + 1];
+    if (begin > end || end > snapshot.routeTagValues.size())
+      return candidateError("fully routed snapshot tag slice is malformed");
+    if (end - begin != (*cloned)->tagValues(logicalNet).size())
+      return candidateError(
+          "fully routed snapshot tag slice disagrees with its RouteTree");
+    for (std::size_t local = 0; local != end - begin; ++local) {
+      const auto &value = snapshot.routeTagValues[begin + local];
+      if (!value)
+        continue;
+      if (llvm::Error error = tagMove->setPhysicalTagValue(
+              logicalNet, static_cast<PnrIndex>(local), *value))
+        return std::move(error);
+    }
+  }
+  if (llvm::Error error = tagMove->commit())
     return std::move(error);
   if (llvm::Error error = (*cloned)->verify())
     return std::move(error);
@@ -1199,6 +1238,9 @@ llvm::Error SpatialCandidateState::refreshRuntimeCounterexampleState(
         scratch.runtimeCounterexampleAffectedClauses_,
         problem_->constraints().resolvedNoGoodClausesForNet(logicalNet));
   }
+  llvm::append_range(
+      scratch.runtimeCounterexampleAffectedClauses_,
+      problem_->constraints().resolvedMappingWideNoGoodClauses());
   llvm::sort(scratch.runtimeCounterexampleAffectedClauses_);
   scratch.runtimeCounterexampleAffectedClauses_.erase(
       std::unique(scratch.runtimeCounterexampleAffectedClauses_.begin(),

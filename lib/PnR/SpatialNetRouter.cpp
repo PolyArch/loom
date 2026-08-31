@@ -40,6 +40,30 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
+llvm::Expected<bool> pathUsesTraversal(const RouteTreeState &tree,
+                                       PnrIndex endpoint, PnrIndex traversal) {
+  const auto slot = tree.findNode(endpoint);
+  if (!slot)
+    return netRouterError("RouteTree path endpoint is absent");
+  const auto arcs = tree.routingGraph().routingArcs();
+  const auto arcSources = tree.routingGraph().arcSources();
+  PnrIndex cursor = *slot;
+  for (std::size_t depth = 0; depth <= tree.nodeStorage().size(); ++depth) {
+    const RouteTreeNode &node = tree.node(cursor);
+    if (node.parentArc == getInvalidPnrIndex())
+      return false;
+    if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+      return netRouterError("RouteTree path arc is out of range");
+    if (arcs[node.parentArc].traversal == traversal)
+      return true;
+    const auto parent = tree.findNode(arcSources[node.parentArc]);
+    if (!parent)
+      return netRouterError("RouteTree path parent is absent");
+    cursor = *parent;
+  }
+  return netRouterError("RouteTree path ancestry is cyclic");
+}
+
 } // namespace
 
 SpatialNetRouterScratch::SpatialNetRouterScratch()
@@ -84,6 +108,7 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem,
       (problem.routing().routeClaims().size() + 63) / 64, 0);
   bufferedTraversalBits_.assign(
       (problem.routing().traversals().size() + 63) / 64, 0);
+  effectiveTraversalBits_.assign(bufferedTraversalBits_.size(), 0);
   for (auto [traversal, record] :
        llvm::enumerate(problem.routing().traversals())) {
     const auto *fifo = std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
@@ -144,9 +169,45 @@ SpatialNetRouterScratch::planNegotiatedRoute(
   return private_->routeTreePruning.project(candidate, costs, logicalNet);
 }
 
-llvm::Error
-SpatialNetRouterScratch::collectSourceFrontier(const RouteTreeState &tree,
-                                               PnrIndex unroutedSource) {
+llvm::Expected<bool> SpatialNetRouterScratch::internalRouteCutHolds(
+    const SpatialCandidateState &candidate,
+    const SpatialTraversalRouteCut &cut) const {
+  if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
+    return netRouterError("scratch is not prepared for the candidate freeze");
+  const auto nets = candidate.problem().transfers().logicalNets();
+  const auto &routing = candidate.problem().routing();
+  if (cut.logicalNet >= nets.size())
+    return netRouterError("route cut logical net is out of range");
+  if (cut.traversal >= routing.traversals().size())
+    return netRouterError("route cut traversal is out of range");
+  if (cut.sinkObligation &&
+      *cut.sinkObligation >= nets[cut.logicalNet].sinkCount)
+    return netRouterError("route cut sink is out of range");
+  if (candidate.usesRegisterFifo(cut.logicalNet))
+    return false;
+  const RouteTreeState &tree = candidate.routeTree(cut.logicalNet);
+  if (tree.isUnrouted())
+    return false;
+  if (cut.sinkObligation) {
+    const auto endpoint = tree.sinkEndpoint(*cut.sinkObligation);
+    if (!endpoint)
+      return false;
+    return pathUsesTraversal(tree, *endpoint, cut.traversal);
+  }
+  for (const RouteTreeNode &node : tree.nodeStorage()) {
+    if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+      continue;
+    if (node.parentArc >= routing.routingArcs().size())
+      return netRouterError("route cut RouteTree arc is out of range");
+    if (routing.routingArcs()[node.parentArc].traversal == cut.traversal)
+      return true;
+  }
+  return false;
+}
+
+llvm::Error SpatialNetRouterScratch::collectSourceFrontier(
+    const RouteTreeState &tree, PnrIndex unroutedSource,
+    std::optional<SpatialTraversalRouteCut> cut) {
   sourceCandidates_.clear();
   sourceEndpoints_.clear();
   sourceReplicationGroups_.clear();
@@ -158,6 +219,13 @@ SpatialNetRouterScratch::collectSourceFrontier(const RouteTreeState &tree,
     for (const RouteTreeNode &node : tree.nodeStorage()) {
       if (!node.isActive())
         continue;
+      if (cut) {
+        auto blocked = pathUsesTraversal(tree, node.endpoint, cut->traversal);
+        if (!blocked)
+          return blocked.takeError();
+        if (*blocked)
+          continue;
+      }
       PnrIndex replicationGroup = getInvalidPnrIndex();
       if (node.firstChild != getInvalidPnrIndex()) {
         if (node.firstChild >= tree.nodeStorage().size())
@@ -191,14 +259,16 @@ SpatialNetRouterScratch::collectSourceFrontier(const RouteTreeState &tree,
 
 llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
     const SpatialCandidateState &candidate, PnrIndex logicalNet,
-    PnrIndex sinkCount) {
+    PnrIndex sinkCount, std::optional<PnrIndex> onlySink, bool allowEmpty) {
+  if (onlySink && *onlySink >= sinkCount)
+    return netRouterError("target-frontier sink is out of range");
   targetCandidates_.clear();
   targetEndpoints_.clear();
   targetPreferenceRanks_.clear();
   targetRequiresTraversal_.clear();
   targetTimingDelayQuanta_.clear();
   for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
-    if (!unresolvedSinks_[sink])
+    if (!unresolvedSinks_[sink] || (onlySink && sink != *onlySink))
       continue;
     auto prerequisites =
         spatialSinkProgressDependencies(candidate.problem(), logicalNet, sink);
@@ -240,6 +310,8 @@ llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
          requiresBufferedTraversal});
   }
   if (targetCandidates_.empty()) {
+    if (allowEmpty)
+      return llvm::Error::success();
     std::string witness =
         "unresolved sink dependencies contain no routable frontier for net " +
         std::to_string(logicalNet) + ":";
@@ -414,7 +486,8 @@ void SpatialNetRouterScratch::beginEndpointMarks() {
 llvm::Expected<RouteCost> SpatialNetRouterScratch::routeWholeNet(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return netRouterError("scratch is not prepared for the candidate freeze");
   if (logicalNet >= candidate.problem().transfers().logicalNets().size())
@@ -438,13 +511,14 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeWholeNet(
   if (llvm::Error error = move.bindRouteSource(logicalNet, source))
     return std::move(error);
   return routeSelectedSinks(move, candidate, costs, logicalNet,
-                            endpointExpansionLimit);
+                            endpointExpansionLimit, cut);
 }
 
 llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSingleSink(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex sinkObligation,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return netRouterError("scratch is not prepared for the candidate freeze");
   if (logicalNet >= candidate.problem().transfers().logicalNets().size())
@@ -465,13 +539,14 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSingleSink(
   if (llvm::Error error = move.ripUpRouteSink(logicalNet, sinkObligation))
     return std::move(error);
   return routeSelectedSinks(move, candidate, costs, logicalNet,
-                            endpointExpansionLimit);
+                            endpointExpansionLimit, cut);
 }
 
 llvm::Expected<RouteCost> SpatialNetRouterScratch::routeRootedSubtree(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return netRouterError("scratch is not prepared for the candidate freeze");
   if (logicalNet >= candidate.problem().transfers().logicalNets().size())
@@ -517,14 +592,15 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeRootedSubtree(
   if (llvm::Error error = move.ripUpRouteSubtree(logicalNet, rootEndpoint))
     return std::move(error);
   return routeSelectedSinks(move, candidate, costs, logicalNet,
-                            endpointExpansionLimit);
+                            endpointExpansionLimit, cut);
 }
 
 llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSinkSet(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet,
     llvm::ArrayRef<PnrIndex> sinkObligations,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return netRouterError("scratch is not prepared for the candidate freeze");
   if (logicalNet >= candidate.problem().transfers().logicalNets().size())
@@ -554,17 +630,25 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSinkSet(
     if (llvm::Error error = move.ripUpRouteSink(logicalNet, sink))
       return std::move(error);
   return routeSelectedSinks(move, candidate, costs, logicalNet,
-                            endpointExpansionLimit);
+                            endpointExpansionLimit, cut);
 }
 
 llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, PnrIndex logicalNet,
-    std::uint64_t endpointExpansionLimit) {
+    std::uint64_t endpointExpansionLimit,
+    std::optional<SpatialTraversalRouteCut> cut) {
   if (endpointExpansionLimit == 0)
     return netRouterError("endpoint expansion limit must be positive");
   const FrozenSpatialLogicalNet &net =
       candidate.problem().transfers().logicalNets()[logicalNet];
+  if (cut && cut->logicalNet != logicalNet)
+    return netRouterError("route cut belongs to another logical net");
+  if (cut &&
+      cut->traversal >= candidate.problem().routing().traversals().size())
+    return netRouterError("route cut traversal is out of range");
+  if (cut && cut->sinkObligation && *cut->sinkObligation >= net.sinkCount)
+    return netRouterError("route cut sink is out of range");
   auto eligibleTraversals =
       private_->routeConstraints.eligibleTraversals(candidate, logicalNet);
   if (!eligibleTraversals)
@@ -602,6 +686,13 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
           candidate.logicalNetSinkEndpoint(logicalNet, sink);
       if (target != source && !tree.findNode(target))
         continue;
+      if (cut && (!cut->sinkObligation || *cut->sinkObligation == sink)) {
+        auto blocked = pathUsesTraversal(tree, target, cut->traversal);
+        if (!blocked)
+          return blocked.takeError();
+        if (*blocked)
+          continue;
+      }
       auto prerequisites = spatialSinkProgressDependencies(candidate.problem(),
                                                            logicalNet, sink);
       if (!prerequisites)
@@ -648,7 +739,26 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (unresolvedCount == 0)
       break;
 
-    if (llvm::Error error = collectSourceFrontier(tree, source))
+    std::optional<SpatialTraversalRouteCut> activeCut;
+    if (cut && !cut->sinkObligation) {
+      activeCut = cut;
+      if (llvm::Error error =
+              collectTargetFrontier(candidate, logicalNet, net.sinkCount))
+        return std::move(error);
+    } else if (cut && unresolvedSinks_[*cut->sinkObligation]) {
+      if (llvm::Error error = collectTargetFrontier(
+              candidate, logicalNet, net.sinkCount, cut->sinkObligation, true))
+        return std::move(error);
+      if (!targetEndpoints_.empty())
+        activeCut = cut;
+      else if (llvm::Error error =
+                   collectTargetFrontier(candidate, logicalNet, net.sinkCount))
+        return std::move(error);
+    } else if (llvm::Error error =
+                   collectTargetFrontier(candidate, logicalNet, net.sinkCount))
+      return std::move(error);
+
+    if (llvm::Error error = collectSourceFrontier(tree, source, activeCut))
       return std::move(error);
     auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
         candidate.problem(), logicalNet, tree,
@@ -676,9 +786,6 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         sourceTimingArrivalQuanta_.push_back(routeNodeTimingArrivals_[*slot]);
       }
     }
-    if (llvm::Error error =
-            collectTargetFrontier(candidate, logicalNet, net.sinkCount))
-      return std::move(error);
     const bool requiresBufferedTraversal =
         llvm::is_contained(targetRequiresTraversal_, std::uint8_t{1});
     if (requiresBufferedTraversal &&
@@ -701,7 +808,15 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     routeRequest.requiredPayloadWidthBits =
         candidate.logicalNetPayloadWidth(logicalNet);
     routeRequest.endpointExpansionLimit = endpointExpansionLimit;
-    routeRequest.eligibleTraversalBits = *eligibleTraversals;
+    if (activeCut) {
+      effectiveTraversalBits_.assign(eligibleTraversals->begin(),
+                                     eligibleTraversals->end());
+      effectiveTraversalBits_[activeCut->traversal / 64] &=
+          ~(std::uint64_t{1} << (activeCut->traversal % 64));
+      routeRequest.eligibleTraversalBits = effectiveTraversalBits_;
+    } else {
+      routeRequest.eligibleTraversalBits = *eligibleTraversals;
+    }
     routeRequest.lowerBoundArcCostRevision = costs.lowerBoundArcCostRevision();
     routeRequest.currentArcCostRevision = costs.currentArcCostRevision();
     routeRequest.requiredTraversalBits = requiredTraversals;
@@ -743,6 +858,9 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (sink == getInvalidPnrIndex() || sink >= net.sinkCount ||
         !unresolvedSinks_[sink])
       return netRouterError("route search selected no unresolved obligation");
+    if (activeCut && activeCut->sinkObligation &&
+        *activeCut->sinkObligation != sink)
+      return netRouterError("branch-local route cut selected another sink");
     const bool selectedRequiresTraversal =
         targetRequiresTraversal_[targetOrdinal] != 0;
     if (selectedRequiresTraversal) {
@@ -866,6 +984,15 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (llvm::Error error = updateTagUsesForBranch(
             candidate.routeTree(logicalNet), costs, attachment, branch))
       return std::move(error);
+    if (activeCut) {
+      auto blocked = pathUsesTraversal(candidate.routeTree(logicalNet),
+                                       result->target, activeCut->traversal);
+      if (!blocked)
+        return blocked.takeError();
+      if (*blocked)
+        return netRouterError(
+            "route search retained its forbidden branch traversal");
+    }
     unresolvedSinks_[sink] = 0;
     --unresolvedCount;
     totalCost = *nextTotal;
@@ -886,6 +1013,7 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(unresolvedSinks_) +
          retainedBytes(prospectiveClaimBits_) +
          retainedBytes(bufferedTraversalBits_) +
+         retainedBytes(effectiveTraversalBits_) +
          retainedBytes(arcTimingDelayQuanta_) +
          retainedBytes(arcTimingRegisteredDestination_) +
          retainedBytes(routeNodeTimingArrivals_) +

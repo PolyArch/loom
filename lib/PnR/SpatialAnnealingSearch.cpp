@@ -5,6 +5,7 @@
 #include "PnR/SpatialCanonicalSeed.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 
 #include <limits>
@@ -160,8 +161,17 @@ void encodeSpatialAction(llvm::json::Object &fields,
                   fields["witness_kind"] =
                       static_cast<std::uint64_t>(choice.witnessKind);
                   fields["witness_ordinal"] = choice.witnessOrdinal;
-                } else {
+                } else if constexpr (std::is_same_v<
+                                         Choice, SpatialGlobalRoutingAction>) {
                   fields["action_kind"] = "global";
+                } else {
+                  fields["action_kind"] = "physical_tag";
+                  fields["logical_net"] = choice.logicalNet;
+                  fields["segment_ordinal"] = choice.segmentOrdinal;
+                  fields["tag_width_bits"] = choice.value.getBitWidth();
+                  llvm::SmallString<32> tagValue;
+                  choice.value.toStringUnsigned(tagValue, 10);
+                  fields["tag_value"] = std::string(tagValue);
                 }
               },
               domainAction);

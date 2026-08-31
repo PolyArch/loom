@@ -541,6 +541,40 @@ def Mapping_NetTagEqualsAttr
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
+def Mapping_SpatialMappingIdentityEqualsAttr
+    : Mapping_Attr<"SpatialMappingIdentityEquals",
+                   "spatial_mapping_identity_equals"> {
+  let summary = "one exact Spatial choice: the complete Mapping identity";
+  let description = [{
+    Names the exact sealed SpatialMapping whose complete persistent selection
+    still holds. The referenced Mapping is the semantic owner; frozen search
+    state may only cache an independently verified expansion of its choices.
+  }];
+  let parameters = (ins
+      "::mapping::ArtifactRootReferenceAttr":$spatial_mapping);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def Mapping_RuntimeCounterexampleLineageAttr
+    : Mapping_Attr<"RuntimeCounterexampleLineage",
+                   "runtime_counterexample_lineage"> {
+  let summary = "durable replay lineage for one learned Spatial no-good";
+  let description = [{
+    References the exact parent SpatialMapping, Evaluation Evidence, Request,
+    and SimulationExecution that own one replay-verified closed-wait
+    certificate. `certificate_digest` is the domain-separated certificate
+    digest, not a second certificate. Absence on the clause denotes an
+    explicitly authored no-good rather than learned runtime feedback.
+  }];
+  let parameters = (ins
+      "::mapping::ArtifactRootReferenceAttr":$parent_mapping,
+      "::mapping::ArtifactRootReferenceAttr":$runtime_evidence,
+      "::mapping::ArtifactRootReferenceAttr":$evaluation_request,
+      "::mapping::ArtifactRootReferenceAttr":$runtime_execution,
+      "::mlir::DenseI8ArrayAttr":$certificate_digest);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 def Mapping_ConstraintFuContextAttr
     : Mapping_Attr<"ConstraintFuContext", "constraint_fu_context"> {
   let summary = "correlated FU occurrence and instruction context carrier";

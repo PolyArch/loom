@@ -242,8 +242,8 @@ importVerifiedCgraClosedWaitEvidence(
     return invalid("stored closed-wait Evidence differs from deterministic "
                    "replay");
   return VerifiedCgraClosedWaitEvidence(
-      evidenceReference, projection->request, executionReference, *certificate,
-      std::move(*digest));
+      evidenceReference, projection->request, executionReference, *workload,
+      *runtimeInput, *certificate, std::move(*digest));
 }
 
 llvm::Expected<CgraSimulationEvidenceTerminal>

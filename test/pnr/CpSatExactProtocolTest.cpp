@@ -233,6 +233,35 @@ void localInfeasibilityIsProofBearingButNotGlobal() {
           "infeasible model exposed an assignment or wrong call count");
 }
 
+void memoReplayRetainsLogicalSolveWork() {
+  using namespace loom::pnr::detail;
+  using namespace operations_research::sat;
+
+  CpModelBuilder model;
+  const IntVar value =
+      model.NewIntVar(operations_research::Domain(0, 3));
+  model.AddGreaterOrEqual(value, 2);
+  const std::array<std::int64_t, 4> values{0, 1, 2, 3};
+  const std::array<CpSatCanonicalVariable, 1> variables{{
+      {value.index(), values},
+  }};
+  const CpSatCanonicalResult first = take(solveCanonicalCpSat(
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/4,
+      /*randomSeed=*/97));
+  const CpSatCanonicalResult replay = take(solveCanonicalCpSat(
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/4,
+      /*randomSeed=*/97));
+  require(first.kind == CpSatCanonicalResultKind::Assignment &&
+              replay.kind == first.kind && replay.assignment == first.assignment,
+          "exact memo replay changed the canonical result");
+  require(first.solverCalls != 0 &&
+              first.logicalSolverCalls == first.solverCalls,
+          "cold exact solve lost its logical work count");
+  require(replay.solverCalls == 0 &&
+              replay.logicalSolverCalls == first.logicalSolverCalls,
+          "exact memo replay changed deterministic logical solve work");
+}
+
 void nonProofStatusesFailClosed() {
   using namespace loom::pnr::detail;
   using operations_research::sat::CpSolverStatus;
@@ -276,6 +305,7 @@ int main() {
   solverSafeRangeStartsAnotherCanonicalBlock();
   fixedAssignmentConsumesOneCall();
   localInfeasibilityIsProofBearingButNotGlobal();
+  memoReplayRetainsLogicalSolveWork();
   nonProofStatusesFailClosed();
   seedProjectionIsUnsignedAndStable();
   llvm::outs() << "CP-SAT exact protocol tests passed\n";

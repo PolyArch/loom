@@ -583,7 +583,7 @@ generator invocation and contributes no selected output binding.
 
 ## MappingConstraintSet Artifact Family
 
-`loom.mapping_constraints 1.2` is the single schema family for Spatial and
+`loom.mapping_constraints 1.3` is the single schema family for Spatial and
 System invocation constraints. Its MLIR roots and canonical codecs own one
 finite canonical clause sequence and exact upstream bindings. Constraint
 content does not enter Mapping semantic identity; the invocation manifest
@@ -611,6 +611,7 @@ The closed Spatial no-good literal catalog is:
 NetUsesTraversal(producer, sink?, traversal)
 TransferAttachmentEquals(terminal, endpoint)
 NetTagEquals(producer, segment_ordinal, physical_tag_bits)  # since 1.2
+SpatialMappingIdentityEquals(spatial_mapping)               # since 1.3
 ```
 
 A literal kind exists only when a current production admission consumer can
@@ -627,22 +628,38 @@ storage width is not a second identity field: the literal uses the canonical
 minimal unsigned representation, while the exact Fabric owner supplies the
 port width used for Mapping and hardware encoding.
 
+`SpatialMappingIdentityEquals` strictly imports one exact sealed
+SpatialMapping and asserts equality to its complete persistent selection. The
+referenced Mapping is the semantic owner; a frozen candidate may cache an
+expanded selection only after independently comparing it with the imported
+Mapping. This literal is a conservative exact-assignment blocker. It is not a
+minimal closed-SCC causal core, and its presence does not prove that any
+individual traversal, attachment, or tag anchor caused the wait. Learned
+clauses retain those certificate-derived anchors for explanation and local
+repair, while the exact identity supplies the full persistent Mapping closure
+needed by the Request-scoped soundness proof.
+
 This clause kind is a persistent legality input, not automatically learned
-runtime feedback. A publisher may construct it only from a durable typed
-certificate that is mechanically bound to its Evaluation Evidence and only
-after an independent owner proves that the listed literals are a complete
-causal core: every Mapping satisfying all literals must reproduce the
-certified closed wait. Traversal and attachment projection alone does not meet
-that obligation. In particular, a tag-local FIFO edge depends on Mapping-owned
-Physical Tag equality, and Fabric defines no FIFO-wide tag-match domain from
-which that equality could be inferred. Version 1.2 makes that fact expressible,
-but a publisher must still prove that every other Mapping decision capable of
-changing the dynamic SCC is either quoted or mechanically entailed. The
-current runtime feedback path therefore keeps its projected anchors
-invocation-local, returns
-`ProofNotEstablished(CausalCoreNotEstablished)`, and publishes no
-`MappingConstraintSet` clause. Explicitly authored no-goods remain valid and
-are enforced by ordinary admission.
+runtime feedback. Runtime projection remains invocation-local. Promotion is a
+separate fail-closed operation and is permitted only when deterministic replay
+verifies the durable Evaluation Evidence, the certificate projection supplies
+the complete closed-SCC anchor set, and an independent verifier establishes
+the exact Request-scoped invariant: every legal Mapping satisfying all clause
+literals under the same Request, workload, runtime model, and Fabric closure
+reproduces the certified closed wait. Traversal and attachment projection
+alone does not meet that obligation. In particular, a tag-local FIFO edge
+depends on Mapping-owned Physical Tag equality, and Fabric defines no
+FIFO-wide tag-match domain from which that equality could be inferred.
+
+A promoted runtime clause therefore carries exactly one
+`SpatialMappingIdentityEquals` literal matching its parent lineage in addition
+to its complete certificate-derived anchors. Equality to the replayed parent
+under the exact Request establishes the conservative invariant; the anchors
+do not independently claim sufficiency. If replay, anchor projection, identity
+comparison, or the Request-scoped invariant is unavailable, feedback returns
+`ProofNotEstablished(CausalCoreNotEstablished)`, exposes no executable partial
+clause, and publishes no constraint Artifact. Explicitly authored no-goods
+omit runtime lineage and remain valid ordinary admission inputs.
 
 The durable runtime carrier has one ownership chain. Evaluation registry 3.1
 owns `cgra_closed_wait`; the exact `SimulationExecution::Halted` terminal owns
@@ -654,6 +671,16 @@ the complete Evidence identity to match before exposing the certificate. It
 never accepts a separate Request view, invocation diagnostic, JSON object, or
 caller-supplied certificate. `CgraClosedWaitSetDiagnostic` remains
 invocation-local and cannot publish a constraint.
+
+Each promoted clause records one canonical runtime-counterexample lineage:
+the exact parent SpatialMapping, replay-verified Evidence, Evaluation Request,
+SimulationExecution, and domain-separated certificate digest. The lineage's
+parent must equal the clause's exact-Mapping literal. It is provenance and
+scope, not a second certificate or a second legality owner. A consumer may
+select a learned constraint set only for the exact Request named by that
+lineage. After promotion, the MappingConstraintSet is the sole persistent
+legality owner; invocation-local feedback, repair witnesses, diagnostic JSON,
+and replay caches cannot independently exclude a Mapping.
 
 A no-good clause is never empty: an empty clause would assert that no Mapping
 whatsoever is admissible, which is exactly the intrinsic-infeasibility claim
@@ -681,29 +708,38 @@ the meaning or wire encoding of an existing carrier, renumbering a clause kind
 or projection ordinal, or removing a kind would instead be breaking and
 require a major step. Version 1.2 appends `NetTagEquals` without changing the
 two 1.1 literal kinds or their canonical keys, so 1.1 to 1.2 is another
-compatible minor transition.
+compatible minor transition. Version 1.3 appends
+`SpatialMappingIdentityEquals` and optional durable runtime lineage without
+changing the three 1.2 literal kinds or explicitly authored clause semantics.
+An authored clause has no lineage; a promoted runtime clause has both lineage
+and one matching exact-parent identity literal.
 
 Non-breaking is a statement about semantics, not about references. The schema
-version is hashed into Artifact identity, so 1.0, 1.1, and 1.2 constraint sets
-never collide even when their clause bytes agree, and their references are
-deliberately not interchangeable. Every
+version is hashed into Artifact identity, so 1.0, 1.1, 1.2, and 1.3 constraint
+sets never collide even when their clause bytes agree, and their references
+are deliberately not interchangeable. Every
 ordinary Spatial and System importer compares schema identity and version by
-exact value and therefore rejects a 1.0 or 1.1 reference outright; no importer
-silently upgrades an older payload on read, and there is no automatic fallback.
+exact value and therefore rejects a 1.0, 1.1, or 1.2 reference outright; no
+importer silently upgrades an older payload on read, and there is no automatic
+fallback.
 
 Migration is explicit and opt-in, and `loom.mapping_constraints` has one
-superseded descriptor covering both roots. The two owners are
+superseded descriptor for each predecessor version covering both roots. The
+chain begins with
 `migrateSpatialConstraintRootV1_0ToV1_1` and
 `migrateSystemConstraintRootV1_0ToV1_1`, followed by the corresponding
-`V1_1ToV1_2` owner. Each reads one superseded payload by
-its own 1.0 reference, proves that reference identity really is the identity of
-those bytes under the 1.0 descriptor, re-finalizes the identical clause
-sequence at a new identity, and then repeats that boundary under 1.2. A 1.0
-payload that already carries the 1.1-only clause kind, or a 1.1 payload that
-already carries a 1.2-only tag literal, is rejected as mislabelled rather than
-migrated. The explicit `V1_0ToV1_2` convenience owners materialize and verify
-both transitions. Every plan, provenance record, and frozen-model cache entry
-naming an older root must be regenerated against the migrated root.
+`V1_1ToV1_2` and `V1_2ToV1_3` owners. Each reads one superseded payload by
+its exact predecessor reference, proves that the reference identifies those
+bytes under the predecessor descriptor, and re-finalizes the canonical clause
+sequence at a new identity. A 1.0 payload that already carries the 1.1-only
+clause kind, or a 1.1 payload that
+already carries a 1.2-only tag literal, or a 1.2 payload that already carries
+a 1.3-only exact-Mapping literal or lineage, is rejected as mislabelled rather
+than migrated. The explicit `V1_0ToV1_3` convenience owners materialize and
+verify every intermediate transition. Migrated 1.2 authored no-goods remain
+lineage-free; migration never fabricates runtime provenance. Every plan,
+provenance record, and frozen-model cache entry naming an older root must be
+regenerated against the migrated root.
 
 Constraint admission is separate from base Mapping verification:
 
@@ -1141,11 +1177,12 @@ them independently from raw shared-FIFO incidence.
 
 `RuntimeCounterexampleViolation` is derived from the exact
 `MappingConstraintSet` clause and the candidate's route, terminal attachment,
-and local-disposition selections. It is a hard violation: changing any literal
-satisfies the clause, while retaining every literal forbids candidate
-publication. The committed candidate incrementally refreshes only clauses
-reached through the frozen logical-net reverse index. Prospective routing and
-the independent cold verifier rebuild the same literal truth from complete
+route-local Physical Tag, local-disposition, and complete persistent Mapping
+selections. It is a hard violation: changing any literal satisfies the clause,
+while retaining every literal forbids candidate publication. The committed
+candidate incrementally refreshes logical-net clauses and every semantic
+Mapping change refreshes an exact-identity clause. Prospective routing and the
+independent cold verifier rebuild the same literal truth from complete
 candidate state; neither cache nor dense ordinal participates in Mapping or
 constraint identity. System PnR has no Spatial runtime no-good owner and
 therefore projects this source as structural zero.
@@ -1287,10 +1324,16 @@ Promotion of feedback into a persistent `MappingConstraintSet` is a separate,
 fail-closed operation. The certificate owner must first provide a durable
 Evidence-bound witness, and the Mapping feedback owner must prove a complete
 causal literal core. The resulting constraint Artifact is the sole persistent
-legality input and mechanically records that provenance; transient feedback,
-diagnostic JSON, and an in-process certificate object cannot substitute for it.
-Until both obligations are established, promotion is unavailable and feedback
-remains invocation-local.
+legality input and mechanically records the exact parent Mapping, Request,
+Evidence, execution, and certificate digest. A runtime-promoted clause also
+contains the conservative exact-parent identity literal and the complete
+certificate-derived anchors. Its independent verifier proves the invariant
+only under that exact Request closure; the identity literal is a full
+assignment blocker, not a minimal SCC-core claim. Explicitly authored clauses
+have no runtime lineage. Transient feedback, diagnostic JSON, and an in-process
+certificate object cannot substitute for the promoted Artifact. Until replay,
+anchor completeness, and the Request-scoped invariant are all established,
+promotion is unavailable and feedback remains invocation-local.
 
 Feedback may prune only the exact conflicting combination proven by its
 witness. A failed route under fixed attachments cannot globally exclude a Tech

@@ -73,6 +73,8 @@ decodeCgraClosedWaitCertificate(llvm::ArrayRef<std::uint8_t> bytes);
 
 inline constexpr llvm::StringLiteral cgraClosedWaitCertificateDigestDomain =
     "loom.cgra_closed_wait_certificate.1";
+inline constexpr llvm::StringLiteral cgraClosedWaitStructureDigestDomain =
+    "loom.cgra_closed_wait_structure.1";
 
 /// Domain-separated digest of the complete canonical certificate wire. This
 /// type cannot be confused with a Mapping, config-view, or diagnostic digest.
@@ -105,6 +107,42 @@ digestCgraClosedWaitCertificate(
 
 std::string formatCgraClosedWaitCertificateDigest(
     const CgraClosedWaitCertificateDigest &digest);
+
+/// Request-independent grouping key for the complete dynamic wait structure.
+/// It retains exact D/T/F owners, transfers, queue classes, tags, storage
+/// owners, occurrences, and wait edges, but deliberately omits the
+/// SpatialMapping root. The full certificate digest remains the durable
+/// Evidence identity. Structural equality across different Mappings is
+/// diagnostic only: an exact-assignment no-good may still soundly exclude the
+/// new Mapping and continue cumulative repair.
+class CgraClosedWaitStructureDigest final {
+public:
+  const ComponentViewDigest &value() const { return value_; }
+
+  friend bool operator==(const CgraClosedWaitStructureDigest &lhs,
+                         const CgraClosedWaitStructureDigest &rhs) {
+    return lhs.value_ == rhs.value_;
+  }
+  friend bool operator!=(const CgraClosedWaitStructureDigest &lhs,
+                         const CgraClosedWaitStructureDigest &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  explicit CgraClosedWaitStructureDigest(ComponentViewDigest value)
+      : value_(std::move(value)) {}
+
+  ComponentViewDigest value_;
+
+  friend llvm::Expected<CgraClosedWaitStructureDigest>
+  digestCgraClosedWaitStructure(const CgraClosedWaitCertificate &);
+};
+
+llvm::Expected<CgraClosedWaitStructureDigest>
+digestCgraClosedWaitStructure(const CgraClosedWaitCertificate &certificate);
+
+std::string formatCgraClosedWaitStructureDigest(
+    const CgraClosedWaitStructureDigest &digest);
 
 } // namespace loom::sim
 
