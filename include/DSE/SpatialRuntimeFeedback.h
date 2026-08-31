@@ -13,6 +13,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -275,6 +276,11 @@ struct SpatialTransportRuntimeFeedback final {
   /// The canonical union of `parentConstraints` with the projected clause.
   /// Engaged exactly when the disposition is Exact.
   std::optional<ArtifactRootReference> constraintSet;
+  /// Removable strict-import cache of `constraintSet`. Persistent legality is
+  /// still owned solely by the Artifact root; cumulative CEGAR may reuse this
+  /// object after requiring exact reference equality.
+  std::shared_ptr<const mapping::FinalizedSpatialMappingConstraintSet>
+      importedConstraintSet;
   SpatialTransportRuntimeFeedbackDisposition disposition =
       SpatialTransportRuntimeFeedbackDisposition::ProofNotEstablished;
   SpatialTransportRuntimeFeedbackReason reason =
@@ -346,6 +352,18 @@ llvm::Expected<SpatialTransportRuntimeFeedback>
 deriveSpatialTransportRuntimeFeedback(
     const ArtifactRootReference &parentSpatialMapping,
     const ArtifactRootReference &parentConstraints,
+    const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
+        &runtimeEvidence,
+    const ArtifactStore &artifacts,
+    std::optional<ArtifactRootReference> parentSystemMapping = std::nullopt);
+
+/// Incremental equivalent for a parent constraint set that has already passed
+/// strict import. The resulting persistent Artifact and feedback are identical
+/// to the root-reference overload.
+llvm::Expected<SpatialTransportRuntimeFeedback>
+deriveSpatialTransportRuntimeFeedback(
+    const ArtifactRootReference &parentSpatialMapping,
+    const mapping::FinalizedSpatialMappingConstraintSet &parentConstraints,
     const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
         &runtimeEvidence,
     const ArtifactStore &artifacts,

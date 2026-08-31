@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -316,10 +317,12 @@ llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
   llvm_unreachable("unknown Spatial transport runtime feedback reason");
 }
 
-llvm::Expected<SpatialTransportRuntimeFeedback>
-deriveSpatialTransportRuntimeFeedback(
+static llvm::Expected<SpatialTransportRuntimeFeedback>
+deriveSpatialTransportRuntimeFeedbackImpl(
     const ArtifactRootReference &parentSpatialMapping,
     const ArtifactRootReference &parentConstraints,
+    const mapping::FinalizedSpatialMappingConstraintSet
+        *importedParentConstraints,
     const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
         &runtimeEvidence,
     const ArtifactStore &artifacts,
@@ -380,13 +383,27 @@ deriveSpatialTransportRuntimeFeedback(
       ::loom::fabric::importEntireFabricRoot(result.owners->fabric, artifacts);
   if (!fabric)
     return fabric.takeError();
-  auto spatial = mapping::importSpatialMapping(parentSpatialMapping, artifacts);
-  if (!spatial)
-    return spatial.takeError();
-  auto constraints =
-      mapping::importSpatialMappingConstraintSet(parentConstraints, artifacts);
-  if (!constraints)
-    return constraints.takeError();
+  auto importedSpatial =
+      mapping::importSpatialMapping(parentSpatialMapping, artifacts);
+  if (!importedSpatial)
+    return importedSpatial.takeError();
+  auto spatial = std::make_shared<const mapping::FinalizedSpatialMapping>(
+      std::move(*importedSpatial));
+  std::optional<mapping::FinalizedSpatialMappingConstraintSet>
+      coldParentConstraints;
+  if (importedParentConstraints &&
+      importedParentConstraints->reference() != parentConstraints)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "incremental parent constraint cache has foreign identity");
+  if (!importedParentConstraints) {
+    auto imported = mapping::importSpatialMappingConstraintSet(
+        parentConstraints, artifacts);
+    if (!imported)
+      return imported.takeError();
+    coldParentConstraints.emplace(std::move(*imported));
+    importedParentConstraints = &*coldParentConstraints;
+  }
   std::optional<mapping::FinalizedSystemMapping> parentSystem;
   if (result.parentMapping) {
     auto imported =
@@ -405,9 +422,12 @@ deriveSpatialTransportRuntimeFeedback(
       spatial->view().fabricIdentity() != fabric->view().identity() ||
       tech->view().dataflowIdentity() != dataflowView->identity() ||
       tech->view().fabricIdentity() != fabric->view().identity() ||
-      constraints->view().dataflowIdentity() != dataflowView->identity() ||
-      constraints->view().techMappingIdentity() != tech->view().identity() ||
-      constraints->view().fabricIdentity() != fabric->view().identity() ||
+      importedParentConstraints->view().dataflowIdentity() !=
+          dataflowView->identity() ||
+      importedParentConstraints->view().techMappingIdentity() !=
+          tech->view().identity() ||
+      importedParentConstraints->view().fabricIdentity() !=
+          fabric->view().identity() ||
       (parentSystem &&
        (parentSystem->view().dataflowIdentity() != dataflowView->identity() ||
         !llvm::is_contained(
@@ -417,8 +437,8 @@ deriveSpatialTransportRuntimeFeedback(
     return result;
   }
   if (llvm::Error error = mapping::admitSpatialMappingConstraints(
-          *dataflowView, tech->view(), fabric->view(), constraints->view(),
-          spatial->view())) {
+          *dataflowView, tech->view(), fabric->view(),
+          importedParentConstraints->view(), spatial->view())) {
     llvm::consumeError(std::move(error));
     result.reason =
         SpatialTransportRuntimeFeedbackReason::ParentConstraintRejection;
@@ -726,7 +746,7 @@ deriveSpatialTransportRuntimeFeedback(
   // stay in the same clause as the finite local repair anchors.
   if (llvm::Error error =
           remember(mapping::SpatialMappingIdentityEqualsLiteral{
-              parentSpatialMapping, nullptr}))
+              parentSpatialMapping, spatial}))
     return std::move(error);
 
   for (auto &[key, literal] : literals) {
@@ -762,13 +782,42 @@ deriveSpatialTransportRuntimeFeedback(
       runtimeEvidence.certificateDigest().value()};
   auto promoted =
       mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
-          parentConstraints, result.literals, lineage, artifacts);
+          *importedParentConstraints, result.literals, lineage, artifacts);
   if (!promoted)
     return promoted.takeError();
   result.constraintSet = promoted->reference();
+  result.importedConstraintSet =
+      std::make_shared<const mapping::FinalizedSpatialMappingConstraintSet>(
+          std::move(*promoted));
   result.disposition = SpatialTransportRuntimeFeedbackDisposition::Exact;
   result.reason = SpatialTransportRuntimeFeedbackReason::ExactClosedStorageWait;
   return result;
+}
+
+llvm::Expected<SpatialTransportRuntimeFeedback>
+deriveSpatialTransportRuntimeFeedback(
+    const ArtifactRootReference &parentSpatialMapping,
+    const ArtifactRootReference &parentConstraints,
+    const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
+        &runtimeEvidence,
+    const ArtifactStore &artifacts,
+    std::optional<ArtifactRootReference> parentSystemMapping) {
+  return deriveSpatialTransportRuntimeFeedbackImpl(
+      parentSpatialMapping, parentConstraints, nullptr, runtimeEvidence,
+      artifacts, std::move(parentSystemMapping));
+}
+
+llvm::Expected<SpatialTransportRuntimeFeedback>
+deriveSpatialTransportRuntimeFeedback(
+    const ArtifactRootReference &parentSpatialMapping,
+    const mapping::FinalizedSpatialMappingConstraintSet &parentConstraints,
+    const ::loom::evaluation::models::VerifiedCgraClosedWaitEvidence
+        &runtimeEvidence,
+    const ArtifactStore &artifacts,
+    std::optional<ArtifactRootReference> parentSystemMapping) {
+  return deriveSpatialTransportRuntimeFeedbackImpl(
+      parentSpatialMapping, parentConstraints.reference(), &parentConstraints,
+      runtimeEvidence, artifacts, std::move(parentSystemMapping));
 }
 
 void emitSpatialTransportRuntimeFeedback(

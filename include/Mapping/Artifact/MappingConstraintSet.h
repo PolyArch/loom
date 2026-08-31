@@ -243,7 +243,9 @@ public:
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          const TechMappingView &techMapping,
          const ::loom::fabric::FabricArtifactView &fabric,
-         const ArtifactStore &store);
+         const ArtifactStore &store,
+         llvm::ArrayRef<SpatialMappingIdentityEqualsLiteral>
+             importedMappingCache = {});
 
   const ArtifactIdentity &identity() const { return identity_; }
   const ArtifactIdentity &dataflowIdentity() const { return dataflowIdentity_; }
@@ -305,6 +307,12 @@ private:
   friend llvm::Expected<FinalizedSpatialMappingConstraintSet>
   importSpatialMappingConstraintSet(const ArtifactRootReference &reference,
                                     const ArtifactStore &store);
+  friend llvm::Expected<FinalizedSpatialMappingConstraintSet>
+  finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+      const FinalizedSpatialMappingConstraintSet &parent,
+      llvm::ArrayRef<SpatialNoGoodLiteral> literals,
+      const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
+      const ArtifactStore &store);
 };
 
 /// Typed negative result of applying one exact Spatial MappingConstraintSet to
@@ -393,6 +401,18 @@ finalizeSpatialRuntimeCounterexampleConstraintSet(
 llvm::Expected<FinalizedSpatialMappingConstraintSet>
 finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
     const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals,
+    const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
+    const ArtifactStore &store);
+
+/// Incremental equivalent of the cold root-reference finalizer. `parent` is a
+/// previously strict-imported immutable set; its Mapping literal caches and
+/// those carried by `literals` may be reused only after exact reference and
+/// D/T/F owner validation. Canonical bytes, identity, and the published
+/// Artifact are identical to the cold path.
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+    const FinalizedSpatialMappingConstraintSet &parent,
     llvm::ArrayRef<SpatialNoGoodLiteral> literals,
     const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
     const ArtifactStore &store);

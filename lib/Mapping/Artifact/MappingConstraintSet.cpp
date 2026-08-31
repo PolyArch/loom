@@ -590,7 +590,9 @@ decodeNoGoodLiteral(Attribute attribute,
                     const ::dataflow::CanonicalDataflowProgramView &dataflow,
                     const TechMappingView &techMapping,
                     const ::loom::fabric::FabricArtifactView &fabric,
-                    const ArtifactStore &store) {
+                    const ArtifactStore &store,
+                    llvm::ArrayRef<SpatialMappingIdentityEqualsLiteral>
+                        importedMappingCache) {
   if (auto literal = dyn_cast<::mapping::NetUsesTraversalAttr>(attribute)) {
     auto producer =
         decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
@@ -653,6 +655,20 @@ decodeNoGoodLiteral(Attribute attribute,
     if (reference->schemaIdentity != mappingArtifactSchema.identity ||
         reference->schemaVersion != mappingArtifactSchema.version)
       return invalid("no-good parent has the wrong Mapping schema");
+    for (const auto &cached : importedMappingCache) {
+      if (cached.mapping != *reference)
+        continue;
+      if (!cached.importedMapping ||
+          cached.importedMapping->reference() != *reference)
+        return invalid("no-good parent Mapping cache has foreign identity");
+      const SpatialMappingView &view = cached.importedMapping->view();
+      if (view.dataflowIdentity() != dataflow.identity() ||
+          view.techMappingIdentity() != techMapping.identity() ||
+          view.fabricIdentity() != fabric.identity())
+        return invalid("no-good parent Mapping cache has foreign D/T/F owners");
+      return SpatialNoGoodLiteral(SpatialMappingIdentityEqualsLiteral{
+          std::move(*reference), cached.importedMapping});
+    }
     auto parent = importSpatialMapping(*reference, store);
     if (!parent)
       return contextual(parent.takeError(),
@@ -853,7 +869,9 @@ llvm::Error requirePublishedUpstreams(
 llvm::Expected<SpatialMappingConstraintSetView>
 strictImport(const ArtifactIdentity &identity,
              const CanonicalSemanticBytes &canonicalBytes,
-             const ArtifactStore &store) {
+             const ArtifactStore &store,
+             llvm::ArrayRef<SpatialMappingIdentityEqualsLiteral>
+                 importedMappingCache = {}) {
   if (finalizeArtifactIdentity(mappingConstraintSetSchema, canonicalBytes) !=
       identity)
     return invalid("constraint identity does not match canonical bytes");
@@ -897,7 +915,7 @@ strictImport(const ArtifactIdentity &identity,
 
   auto view = SpatialMappingConstraintSetView::import(
       identity, parsed->root, *dataflowView, techMapping->view(),
-      fabric->view(), store);
+      fabric->view(), store, importedMappingCache);
   if (!view)
     return view.takeError();
   auto rewritten = writeCanonicalSpatialConstraintAssembly(parsed->root);
@@ -966,7 +984,9 @@ SpatialMappingConstraintSetView::import(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const ArtifactStore &store) {
+    const ArtifactStore &store,
+    llvm::ArrayRef<SpatialMappingIdentityEqualsLiteral>
+        importedMappingCache) {
   auto dataflowIdentity = decodeIdentity(root.getDataflow());
   if (!dataflowIdentity)
     return dataflowIdentity.takeError();
@@ -1051,7 +1071,7 @@ SpatialMappingConstraintSetView::import(
     for (Attribute attribute : noGood.getLiterals()) {
       auto literal =
           decodeNoGoodLiteral(attribute, dataflow, techMapping, fabric,
-                              store);
+                              store, importedMappingCache);
       if (!literal)
         return literal.takeError();
       clause.literals.push_back(std::move(*literal));
@@ -1106,30 +1126,21 @@ finalizeSpatialMappingConstraintSet(
       std::move(*view));
 }
 
-llvm::Expected<FinalizedSpatialMappingConstraintSet>
-finalizeRuntimeCounterexampleConstraintSet(
-    const ArtifactRootReference &parent,
-    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store,
+llvm::Error
+appendRuntimeCounterexampleConstraint(
+    ::mapping::ConstraintsSpatialOp root,
+    const ArtifactIdentity &dataflowIdentity,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals,
     std::optional<SpatialRuntimeCounterexampleNoGoodView::Lineage> lineage) {
   if (literals.empty())
     return invalid("a runtime-counterexample no-good clause must be non-empty");
-  // Importing the parent proves it is a 1.3 payload over one exact D/T/F
-  // closure before anything is added to it.
-  auto imported = importSpatialMappingConstraintSet(parent, store);
-  if (!imported)
-    return imported.takeError();
-  auto parsed = parseSpatialConstraintRoot(imported->canonicalBytes());
-  if (!parsed)
-    return parsed.takeError();
-
-  MLIRContext *context = parsed->root.getContext();
+  MLIRContext *context = root.getContext();
   OpBuilder builder(context);
-  builder.setInsertionPointToEnd(&parsed->root.getBody().front());
+  builder.setInsertionPointToEnd(&root.getBody().front());
   std::vector<Attribute> encoded;
   encoded.reserve(literals.size());
   for (const SpatialNoGoodLiteral &literal : literals) {
-    auto attribute = encodeNoGoodLiteral(context, literal,
-                                         imported->view().dataflowIdentity());
+    auto attribute = encodeNoGoodLiteral(context, literal, dataflowIdentity);
     if (!attribute)
       return attribute.takeError();
     encoded.push_back(*attribute);
@@ -1151,6 +1162,26 @@ finalizeRuntimeCounterexampleConstraintSet(
   ::mapping::ConstraintRuntimeCounterexampleNoGoodOp::create(
       builder, builder.getUnknownLoc(), builder.getArrayAttr(encoded),
       lineageAttr);
+  return llvm::Error::success();
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizeRuntimeCounterexampleConstraintSet(
+    const ArtifactRootReference &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals, const ArtifactStore &store,
+    std::optional<SpatialRuntimeCounterexampleNoGoodView::Lineage> lineage) {
+  // Importing the parent proves it is a 1.3 payload over one exact D/T/F
+  // closure before anything is added to it.
+  auto imported = importSpatialMappingConstraintSet(parent, store);
+  if (!imported)
+    return imported.takeError();
+  auto parsed = parseSpatialConstraintRoot(imported->canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+  if (llvm::Error error = appendRuntimeCounterexampleConstraint(
+          parsed->root, imported->view().dataflowIdentity(), literals,
+          lineage))
+    return std::move(error);
   // Canonicalization owns literal ordering, deduplication, and the union with
   // any clause the parent already carried, so republishing an identical
   // counterexample reproduces the parent identity exactly.
@@ -1173,6 +1204,64 @@ finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
     const ArtifactStore &store) {
   return finalizeRuntimeCounterexampleConstraintSet(parent, literals, store,
                                                      lineage);
+}
+
+llvm::Expected<FinalizedSpatialMappingConstraintSet>
+finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+    const FinalizedSpatialMappingConstraintSet &parent,
+    llvm::ArrayRef<SpatialNoGoodLiteral> literals,
+    const SpatialRuntimeCounterexampleNoGoodView::Lineage &lineage,
+    const ArtifactStore &store) {
+  std::vector<SpatialMappingIdentityEqualsLiteral> importedMappingCache;
+  const auto remember = [&](const SpatialMappingIdentityEqualsLiteral &literal)
+      -> llvm::Error {
+    if (!literal.importedMapping)
+      return llvm::Error::success();
+    if (literal.importedMapping->reference() != literal.mapping)
+      return invalid("no-good Mapping cache differs from its literal");
+    if (llvm::any_of(importedMappingCache, [&](const auto &cached) {
+          return cached.mapping == literal.mapping;
+        }))
+      return llvm::Error::success();
+    importedMappingCache.push_back(literal);
+    return llvm::Error::success();
+  };
+  for (const SpatialConstraintClauseView &clause : parent.view().clauses()) {
+    const auto *noGood =
+        std::get_if<SpatialRuntimeCounterexampleNoGoodView>(&clause);
+    if (!noGood)
+      continue;
+    for (const SpatialNoGoodLiteral &literal : noGood->literals)
+      if (const auto *identity =
+              std::get_if<SpatialMappingIdentityEqualsLiteral>(&literal))
+        if (llvm::Error error = remember(*identity))
+          return std::move(error);
+  }
+  for (const SpatialNoGoodLiteral &literal : literals)
+    if (const auto *identity =
+            std::get_if<SpatialMappingIdentityEqualsLiteral>(&literal))
+      if (llvm::Error error = remember(*identity))
+        return std::move(error);
+
+  auto parsed = parseSpatialConstraintRoot(parent.canonicalBytes());
+  if (!parsed)
+    return parsed.takeError();
+  if (llvm::Error error = appendRuntimeCounterexampleConstraint(
+          parsed->root, parent.view().dataflowIdentity(), literals, lineage))
+    return std::move(error);
+  auto prepared = prepareSpatialConstraintSet(parsed->root);
+  if (!prepared)
+    return prepared.takeError();
+  auto view = strictImport(prepared->reference.artifact,
+                           prepared->canonicalBytes, store,
+                           importedMappingCache);
+  if (!view)
+    return view.takeError();
+  if (llvm::Error error = publishPreparedSpatialConstraintSet(*prepared, store))
+    return std::move(error);
+  return FinalizedSpatialMappingConstraintSet(
+      std::move(prepared->reference), std::move(prepared->canonicalBytes),
+      std::move(*view));
 }
 
 llvm::Expected<FinalizedSpatialMappingConstraintSet>

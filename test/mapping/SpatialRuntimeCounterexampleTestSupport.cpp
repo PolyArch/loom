@@ -189,8 +189,7 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
       syntheticDigest(44)};
   const auto learned =
       take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
-          parent.reference(), {parentIdentity, usesTraversal}, lineage,
-          store));
+          parent.reference(), {parentIdentity, usesTraversal}, lineage, store));
   const auto learnedNoGood =
       llvm::find_if(learned.view().clauses(), [](const auto &clause) {
         const auto *noGood =
@@ -203,6 +202,65 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
              *learnedNoGood)
              .lineage == lineage))
     fail("runtime-counterexample lineage did not survive strict import");
+
+  const auto strictParent = take(
+      mapping::importSpatialMappingConstraintSet(parent.reference(), store));
+  auto cachedParentMapping =
+      std::make_shared<const mapping::FinalizedSpatialMapping>(
+          take(mapping::importSpatialMapping(mapping.reference(), store)));
+  const mapping::SpatialNoGoodLiteral cachedParentIdentity =
+      mapping::SpatialMappingIdentityEqualsLiteral{mapping.reference(),
+                                                   cachedParentMapping};
+  const auto requireSameConstraint = [&](const auto &lhs, const auto &rhs,
+                                         llvm::StringRef diagnostic) {
+    if (lhs.reference() != rhs.reference() ||
+        !lhs.canonicalBytes().bytes().equals(rhs.canonicalBytes().bytes()))
+      fail(diagnostic);
+  };
+
+  const auto incrementalLearned =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          strictParent, {cachedParentIdentity, usesTraversal}, lineage, store));
+  requireSameConstraint(
+      incrementalLearned, learned,
+      "incremental promoted no-good finalization diverged from cold rebuild");
+
+  const auto coldRepeated =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          learned.reference(), {cachedParentIdentity, usesTraversal}, lineage,
+          store));
+  const auto incrementalRepeated =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          incrementalLearned, {cachedParentIdentity, usesTraversal}, lineage,
+          store));
+  requireSameConstraint(coldRepeated, learned,
+                        "cold promoted clause repetition changed identity");
+  requireSameConstraint(
+      incrementalRepeated, learned,
+      "incremental promoted clause repetition changed identity");
+
+  const auto coldAccumulated =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          learned.reference(), {cachedParentIdentity, attachment}, lineage,
+          store));
+  const auto incrementalAccumulated =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          incrementalLearned, {cachedParentIdentity, attachment}, lineage,
+          store));
+  const auto coldSecondFirst =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          parent.reference(), {cachedParentIdentity, attachment}, lineage,
+          store));
+  const auto coldReverseAccumulated =
+      take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
+          coldSecondFirst.reference(), {cachedParentIdentity, usesTraversal},
+          lineage, store));
+  requireSameConstraint(
+      incrementalAccumulated, coldAccumulated,
+      "incremental two-clause accumulation diverged from cold rebuild");
+  requireSameConstraint(
+      incrementalAccumulated, coldReverseAccumulated,
+      "promoted clause discovery order changed accumulated identity");
 
   auto tamperedDigest = lineage;
   tamperedDigest.certificateDigest = syntheticDigest(45);
@@ -218,8 +276,8 @@ void exerciseSpatialRuntimeCounterexampleNoGood(
       syntheticRootReference("loom.evaluation_evidence", {3, 1}, 46);
   const auto evidenceChanged =
       take(mapping::finalizePromotedSpatialRuntimeCounterexampleConstraintSet(
-          parent.reference(), {parentIdentity, usesTraversal},
-          tamperedEvidence, store));
+          parent.reference(), {parentIdentity, usesTraversal}, tamperedEvidence,
+          store));
   if (evidenceChanged.reference() == learned.reference())
     fail("tampering a runtime evidence reference did not change constraint "
          "identity");

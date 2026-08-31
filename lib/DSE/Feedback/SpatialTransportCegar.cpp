@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <set>
+#include <memory>
 #include <system_error>
 
 namespace loom::dse {
@@ -158,6 +159,13 @@ executeSpatialTransportCegar(
   SpatialTransportCegarResult result;
   ArtifactRootReference currentMapping = parentMapping;
   ArtifactRootReference currentConstraints = parentConstraints;
+  auto importedInitialConstraints =
+      mapping::importSpatialMappingConstraintSet(parentConstraints, artifacts);
+  if (!importedInitialConstraints)
+    return importedInitialConstraints.takeError();
+  auto currentConstraintSet =
+      std::make_shared<const mapping::FinalizedSpatialMappingConstraintSet>(
+          std::move(*importedInitialConstraints));
   evaluation::models::VerifiedCgraClosedWaitEvidence currentEvidence =
       parentEvidence;
   std::set<ComponentViewDigest::Storage> observedCertificates;
@@ -172,12 +180,13 @@ executeSpatialTransportCegar(
     }
     ExecutionResourceTracker promotionTracker;
     auto feedback = deriveSpatialTransportRuntimeFeedback(
-        currentMapping, currentConstraints, currentEvidence, artifacts);
+        currentMapping, *currentConstraintSet, currentEvidence, artifacts);
     if (!feedback)
       return feedback.takeError();
     if (feedback->disposition !=
             SpatialTransportRuntimeFeedbackDisposition::Exact ||
-        !feedback->constraintSet || !feedback->runtimeExecution ||
+        !feedback->constraintSet || !feedback->importedConstraintSet ||
+        !feedback->runtimeExecution ||
         !feedback->evaluationRequest || !feedback->certificateDigest) {
       result.termination =
           SpatialTransportCegarTermination::ProofNotEstablished;
@@ -191,18 +200,17 @@ executeSpatialTransportCegar(
       result.finalEvidence = currentEvidence.evidence();
       return result;
     }
-    auto constraints = mapping::importSpatialMappingConstraintSet(
-        *feedback->constraintSet, artifacts);
-    if (!constraints)
-      return constraints.takeError();
-    if (noGoodCount(constraints->view()) >
+    const auto &constraints = *feedback->importedConstraintSet;
+    if (constraints.reference() != *feedback->constraintSet)
+      return invalid("incremental promoted constraint cache has foreign identity");
+    if (noGoodCount(constraints.view()) >
         policy.maximumAccumulatedClauses) {
       result.termination =
           SpatialTransportCegarTermination::ClauseBudgetExhausted;
       result.finalConstraints = feedback->constraintSet;
       return result;
     }
-    auto clauseOrdinal = findPromotedClause(constraints->view(), *feedback);
+    auto clauseOrdinal = findPromotedClause(constraints.view(), *feedback);
     if (!clauseOrdinal)
       return clauseOrdinal.takeError();
     const ExecutionResourceStatistics promotionWork =
@@ -211,7 +219,7 @@ executeSpatialTransportCegar(
     ExecutionResourceTracker freezeTracker;
     auto problem = pnr::freezeSpatialPnrProblem(
         *dataflowView, tech->view(), fabricArtifact->view(), physicalTiming,
-        *spatialConfig, constraints->view());
+        *spatialConfig, constraints.view());
     if (!problem)
       return problem.takeError();
     const ExecutionResourceStatistics freezeWork = freezeTracker.observe();
@@ -285,7 +293,7 @@ executeSpatialTransportCegar(
     ExecutionResourceTracker finalizationTracker;
     auto child = pnr::finalizeSpatialMappingCandidate(
         **candidate, *dataflowView, tech->view(), fabricArtifact->view(),
-        constraints->view(), artifacts);
+        constraints.view(), artifacts);
     if (!child)
       return child.takeError();
     if (child->reference() == currentMapping) {
@@ -296,7 +304,7 @@ executeSpatialTransportCegar(
     }
     if (llvm::Error error = mapping::admitSpatialMappingConstraints(
             *dataflowView, tech->view(), fabricArtifact->view(),
-            constraints->view(), child->view()))
+            constraints.view(), child->view()))
       return error;
     record.work.childFinalization = finalizationTracker.observe();
     record.childMapping = child->reference();
@@ -367,6 +375,7 @@ executeSpatialTransportCegar(
     }
     currentMapping = child->reference();
     currentConstraints = *feedback->constraintSet;
+    currentConstraintSet = feedback->importedConstraintSet;
     currentEvidence = std::move(*verified);
   }
 
