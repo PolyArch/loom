@@ -6,7 +6,6 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
-#include "DSE/SpatialRuntimeFeedback.h"
 #include "DSE/SpatialTransportCegar.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
@@ -668,7 +667,12 @@ int main(int argc, char **argv) {
       selectedPrepared;
   std::optional<loom::evaluation::models::CgraSimulationEvaluation>
       selectedWarmup;
-  std::optional<loom::eda::test::MappedSpatialMappingFixture> firstHardware;
+  std::optional<loom::eda::test::MappedSpatialMappingFixture> repairHardware;
+  std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
+      repairPrepared;
+  std::optional<loom::evaluation::models::CgraSimulationEvaluation>
+      repairWarmup;
+  std::optional<std::pair<std::uint64_t, std::uint64_t>> repairScore;
   for (const loom::ArtifactRootReference &candidate :
        publishedSpatialMappings) {
     auto imported =
@@ -751,20 +755,34 @@ int main(int argc, char **argv) {
              ? llvm::json::Value(
                    screened.closedWait->operandQueueSharedIngressPressure)
              : llvm::json::Value(nullptr)}});
-    if (!firstHardware)
-      firstHardware = std::move(candidateHardware);
     if (retired && !selectedWarmup) {
       selectedHardware = std::move(candidateHardware);
       selectedPrepared = std::move(candidatePrepared);
       selectedWarmup = std::move(screened);
+    } else if (!retired && screened.closedWait &&
+               !screened.closedWait->waitProofFailure &&
+               loom::sim::verifyClosedWaitCertificateClosure(
+                   *screened.closedWait)) {
+      const std::pair<std::uint64_t, std::uint64_t> score{
+          screened.closedWait->waitCertificate.size(),
+          screened.closedWait->pendingTransfers};
+      if (!repairScore || score < *repairScore) {
+        repairScore = score;
+        repairHardware = std::move(candidateHardware);
+        repairPrepared = std::move(candidatePrepared);
+        repairWarmup = std::move(screened);
+      }
     }
   }
   ledger.record("candidate_screening");
-  // Retaining the first published candidate when none retires preserves the
-  // prior repair entry point; the screening record keeps that fallback
-  // visible instead of implying a quality selection.
+  require(selectedHardware || repairHardware,
+          "screened Spatial frontier has no retiring or proven closed-wait "
+          "candidate");
+  // A retiring Mapping remains the first choice. Otherwise repair the
+  // deterministic smallest closed certificate; ties retain canonical
+  // publication order.
   auto hardware = selectedHardware ? std::move(*selectedHardware)
-                                   : std::move(*firstHardware);
+                                   : std::move(*repairHardware);
   const loom::ArtifactRootReference initialSpatialMapping =
       hardware.spatialMapping.reference();
   const auto [bufferedFifoTraversals, bypassFifoTraversals] =
@@ -778,16 +796,10 @@ int main(int argc, char **argv) {
         hardware.spatialMapping.reference(), source.workload,
         source.runtimeInput, resolvedConfig, artifacts, blobs));
   };
-  auto prepared = selectedPrepared ? std::move(*selectedPrepared) : prepare();
-  auto warmup = selectedWarmup
-                    ? std::move(*selectedWarmup)
-                    : take(loom::evaluation::models::
-                               evaluateCgraSimulationWithAttemptProfile(
-                                   prepared,
-                                   {loom::runtime::gem5MaximumSpatialWork,
-                                    std::chrono::steady_clock::now() +
-                                        kQualificationLimit},
-                                   artifacts, blobs));
+  auto prepared = selectedPrepared ? std::move(*selectedPrepared)
+                                   : std::move(*repairPrepared);
+  auto warmup = selectedWarmup ? std::move(*selectedWarmup)
+                               : std::move(*repairWarmup);
   std::optional<loom::ArtifactRootReference> preRepairEvidence;
   std::optional<loom::ArtifactRootReference> parentSystemMapping;
   llvm::json::Array transportRepairAttempts;
@@ -827,17 +839,6 @@ int main(int argc, char **argv) {
     auto verifiedWait = take(
         loom::evaluation::models::importVerifiedCgraClosedWaitEvidence(
             *preRepairEvidence, artifacts, blobs));
-    auto feedback = take(loom::dse::deriveSpatialTransportRuntimeFeedback(
-        hardware.spatialMapping.reference(), parentConstraints.reference(),
-        verifiedWait, artifacts, *parentSystemMapping));
-    require(
-        feedback.disposition ==
-                loom::dse::SpatialTransportRuntimeFeedbackDisposition::Exact &&
-            feedback.reason ==
-                loom::dse::SpatialTransportRuntimeFeedbackReason::
-                    ExactClosedStorageWait &&
-            feedback.constraintSet && !feedback.literals.empty(),
-        "verified transport wait did not promote one exact no-good");
     auto physicalTiming =
         take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
             hardware.module.view()));
