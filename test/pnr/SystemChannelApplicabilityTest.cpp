@@ -275,7 +275,14 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-loom::ResolvedConfig buildResolvedConfig() {
+enum class SystemSearchProbeDomain : std::uint8_t {
+  Assignment,
+  Routing,
+};
+
+loom::ResolvedConfig
+buildResolvedConfig(SystemSearchProbeDomain probeDomain =
+                        SystemSearchProbeDomain::Routing) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
   resolved.dse.objectiveCatalogs.dimensions = {
@@ -317,7 +324,10 @@ loom::ResolvedConfig buildResolvedConfig() {
   resolved.dse.systemPnr.objectiveSelection = {0, 0};
   auto &systemSearch = resolved.dse.systemPnr.search;
   systemSearch.initializer.seedAttemptCount = 1;
-  systemSearch.actionProposal = {1, 0, 0};
+  systemSearch.actionProposal =
+      probeDomain == SystemSearchProbeDomain::Assignment
+          ? loom::ResolvedPnrActionProposalPolicy{1, 0, 0}
+          : loom::ResolvedPnrActionProposalPolicy{0, 1, 0};
   systemSearch.annealing.calibrationProposalCount = 1;
   systemSearch.annealing.fallbackTemperature = 1;
   systemSearch.annealing.minimumTemperature = 1;
@@ -840,44 +850,89 @@ int main() {
                   sameOwner->selectedAccCore(consumerDecisions[1]),
           "candidate fixtures do not select the requested owner relation");
 
-  auto firstAnnealed = take(loom::pnr::initializeSystemCandidate(
-      problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
-  auto secondAnnealed = take(loom::pnr::initializeSystemCandidate(
-      problem, sameOwner->threadChoices(), sameOwner->graphChoices()));
-  loom::pnr::SystemActionDomainScratch actionDomain;
-  if (llvm::Error error = actionDomain.rebuild(*firstAnnealed))
-    fail(llvm::toString(std::move(error)));
-  require(!actionDomain.view().bindingAnchors.empty() &&
-              !actionDomain.view().routingAnchors.empty(),
-          "System search did not expose independent binding and routing "
-          "Action domains");
-  loom::pnr::SystemAnnealingSearchScratch firstSearch;
-  loom::pnr::SystemAnnealingSearchScratch secondSearch;
-  const auto firstStatistics = take(firstSearch.run(firstAnnealed, 0));
-  const auto secondStatistics = take(secondSearch.run(secondAnnealed, 0));
-  require(firstStatistics == secondStatistics,
-          "System transactional search changed work on replay");
-  require(firstStatistics.assignmentAttempts != 0,
-          "System transactional search performed no assignment probes");
-  require(firstStatistics.endpointExpansions != 0,
-          "System transactional search performed no endpoint probes");
-  require(firstAnnealed->threadChoices() == secondAnnealed->threadChoices() &&
-              firstAnnealed->graphChoices() == secondAnnealed->graphChoices(),
-          "System transactional search changed decisions on replay");
-  if (llvm::Error error = firstAnnealed->verify())
-    fail(llvm::toString(std::move(error)));
-  auto firstAnnealedDraft =
-      take(loom::pnr::materializeSystemCandidateDraft(*firstAnnealed, context));
-  auto secondAnnealedDraft = take(
-      loom::pnr::materializeSystemCandidateDraft(*secondAnnealed, context));
-  const auto firstAnnealedBytes =
-      take(loom::mapping::writeCanonicalSystemMappingAssembly(
-          mlir::cast<::mapping::SystemOp>(firstAnnealedDraft.get())));
-  const auto secondAnnealedBytes =
-      take(loom::mapping::writeCanonicalSystemMappingAssembly(
-          mlir::cast<::mapping::SystemOp>(secondAnnealedDraft.get())));
-  require(firstAnnealedBytes.bytes() == secondAnnealedBytes.bytes(),
-          "System transactional search changed canonical replay output");
+  const auto exerciseSearchProbeDomain =
+      [&](const loom::pnr::FrozenSystemPnrProblemHandle &scenarioProblem,
+          SystemSearchProbeDomain probeDomain) {
+        auto firstAnnealed = take(loom::pnr::initializeSystemCandidate(
+            scenarioProblem, sameOwner->threadChoices(),
+            sameOwner->graphChoices()));
+        auto secondAnnealed = take(loom::pnr::initializeSystemCandidate(
+            scenarioProblem, sameOwner->threadChoices(),
+            sameOwner->graphChoices()));
+        loom::pnr::SystemActionDomainScratch actionDomain;
+        if (llvm::Error error = actionDomain.rebuild(*firstAnnealed))
+          fail(llvm::toString(std::move(error)));
+        require(!actionDomain.view().bindingAnchors.empty() &&
+                    !actionDomain.view().routingAnchors.empty(),
+                "System search did not expose independent binding and routing "
+                "Action domains");
+        loom::pnr::SystemAnnealingSearchScratch firstSearch;
+        loom::pnr::SystemAnnealingSearchScratch secondSearch;
+        auto firstRun = firstSearch.run(firstAnnealed, 0);
+        if (!firstRun)
+          fail(llvm::Twine(probeDomain == SystemSearchProbeDomain::Assignment
+                               ? "assignment-domain"
+                               : "routing-domain") +
+               " search failed: " + llvm::toString(firstRun.takeError()));
+        auto secondRun = secondSearch.run(secondAnnealed, 0);
+        if (!secondRun)
+          fail(llvm::Twine(probeDomain == SystemSearchProbeDomain::Assignment
+                               ? "assignment-domain"
+                               : "routing-domain") +
+               " replay failed: " + llvm::toString(secondRun.takeError()));
+        const auto firstStatistics = *firstRun;
+        const auto secondStatistics = *secondRun;
+        require(firstStatistics == secondStatistics,
+                "System transactional search changed work on replay");
+        if (probeDomain == SystemSearchProbeDomain::Assignment)
+          require(firstStatistics.assignmentAttempts != 0,
+                  "assignment-domain search performed no assignment probes");
+        else
+          require(firstStatistics.endpointExpansions != 0,
+                  "routing-domain search performed no endpoint probes");
+        require(
+            firstAnnealed->threadChoices() == secondAnnealed->threadChoices() &&
+                firstAnnealed->graphChoices() ==
+                    secondAnnealed->graphChoices(),
+            "System transactional search changed decisions on replay");
+        if (llvm::Error error = firstAnnealed->verify())
+          fail(llvm::toString(std::move(error)));
+        if (llvm::Error error = secondAnnealed->verify())
+          fail(llvm::toString(std::move(error)));
+        auto firstDraft = take(loom::pnr::materializeSystemCandidateDraft(
+            *firstAnnealed, context));
+        auto secondDraft = take(loom::pnr::materializeSystemCandidateDraft(
+            *secondAnnealed, context));
+        const auto firstBytes =
+            take(loom::mapping::writeCanonicalSystemMappingAssembly(
+                mlir::cast<::mapping::SystemOp>(firstDraft.get())));
+        const auto secondBytes =
+            take(loom::mapping::writeCanonicalSystemMappingAssembly(
+                mlir::cast<::mapping::SystemOp>(secondDraft.get())));
+        require(firstBytes.bytes() == secondBytes.bytes(),
+                "System transactional search changed canonical replay output");
+      };
+
+  exerciseSearchProbeDomain(problem, SystemSearchProbeDomain::Routing);
+  const loom::ResolvedConfig assignmentResolved =
+      buildResolvedConfig(SystemSearchProbeDomain::Assignment);
+  const auto assignmentConfig =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(assignmentResolved));
+  auto assignmentSearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, assignmentConfig, constraints, partition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
+  auto assignmentProblem =
+      take(loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
+          dataflow, system, assignmentSearchDomain, assignmentConfig,
+          constraints,
+          store));
+  require(assignmentProblem->threadDecisions().size() ==
+                  problem->threadDecisions().size() &&
+              assignmentProblem->graphDecisions().size() ==
+                  problem->graphDecisions().size(),
+          "System probe scenarios changed the frozen decision domain");
+  exerciseSearchProbeDomain(assignmentProblem,
+                            SystemSearchProbeDomain::Assignment);
 
   std::optional<loom::pnr::PnrIndex> channelLeg;
   for (const auto &[ordinal, leg] : llvm::enumerate(problem->serviceLegs()))

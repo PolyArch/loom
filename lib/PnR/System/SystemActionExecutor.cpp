@@ -236,6 +236,14 @@ llvm::Expected<SystemCandidateStateHandle> executeFixedBinding(
         return invalid("binding closure names a foreign graph decision");
       reroute |= changed(threadCount + graph, current->graphChoice(graph));
     }
+    for (const FrozenSystemApplicableMessageSink &sink :
+         service.applicableMessageSinks) {
+      if (sink.ownerThreadDecision >= threadCount)
+        return invalid(
+            "binding closure names a foreign applicable-sink decision");
+      reroute |= changed(sink.ownerThreadDecision,
+                         current->threadChoice(sink.ownerThreadDecision));
+    }
     if (reroute)
       routeSeed.reroutedLegs.push_back(leg);
   }
