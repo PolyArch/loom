@@ -63,15 +63,12 @@ struct MaterializedHandshakeGraph final {
 struct ChangedArcContribution final {
   /// Frozen dense projection arc ordinal.
   PnrIndex arc = 0;
-  PnrIndex fragment = 0;
   bool add = false;
 };
 
 struct HandshakeArcChange final {
   /// Frozen dense projection arc ordinal.
   PnrIndex arc = 0;
-  std::size_t contributionOffset = 0;
-  std::size_t contributionCount = 0;
   PnrIndex additionCount = 0;
   PnrIndex removalCount = 0;
 };
@@ -512,7 +509,7 @@ llvm::Error appendChangedFragmentContributions(
     if (frozenArc >= index.projectionArcs().size())
       return candidateError("changed handshake arc is out of range");
     addWork(work);
-    storage.changedContributions.push_back({frozenArc, fragmentOrdinal, add});
+    storage.changedContributions.push_back({frozenArc, add});
   }
   return llvm::Error::success();
 }
@@ -533,18 +530,9 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
   llvm::sort(storage.changedContributions,
              [](const detail::ChangedArcContribution &lhs,
                 const detail::ChangedArcContribution &rhs) {
-               return std::tie(lhs.arc, lhs.fragment, lhs.add) <
-                      std::tie(rhs.arc, rhs.fragment, rhs.add);
+               return std::tie(lhs.arc, lhs.add) <
+                      std::tie(rhs.arc, rhs.add);
              });
-  storage.changedContributions.erase(
-      std::unique(storage.changedContributions.begin(),
-                  storage.changedContributions.end(),
-                  [](const detail::ChangedArcContribution &lhs,
-                     const detail::ChangedArcContribution &rhs) {
-                    return lhs.arc == rhs.arc && lhs.fragment == rhs.fragment &&
-                           lhs.add == rhs.add;
-                  }),
-      storage.changedContributions.end());
   for (std::size_t offset = 0; offset != storage.changedContributions.size();) {
     const detail::ChangedArcContribution &first =
         storage.changedContributions[offset];
@@ -560,8 +548,7 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
       ++end;
       addWork(result.deterministicWork);
     }
-    storage.arcChanges.push_back(
-        {first.arc, offset, end - offset, additionCount, removalCount});
+    storage.arcChanges.push_back({first.arc, additionCount, removalCount});
     offset = end;
   }
 
@@ -572,7 +559,9 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
     const PnrIndex currentCount =
         currentArc ? graph.arcContributorCounts[*currentArc] : 0;
     const bool fixed = currentArc && graph.fixedArcs[*currentArc];
-    addWork(result.deterministicWork, change.contributionCount);
+    addWork(result.deterministicWork,
+            static_cast<std::uint64_t>(change.additionCount) +
+                change.removalCount);
     if (change.removalCount > currentCount)
       return candidateError("changed handshake arc refcount underflows");
     const std::uint64_t retained = currentCount - change.removalCount;
@@ -891,21 +880,21 @@ applyHandshakeArcDelta(const FrozenSpatialHandshakeIndex &index,
     if (!node)
       return node.takeError();
   }
-  for (const detail::ChangedArcContribution &change :
-       storage.changedContributions) {
+  for (const detail::HandshakeArcChange &change : storage.arcChanges) {
     auto arc = ensureHandshakeArc(graph, index, change.arc);
     if (!arc)
       return arc.takeError();
     PnrIndex &count = graph.arcContributorCounts[*arc];
-    if (change.add) {
-      if (llvm::Error error = increment(count, "arc contributor"))
-        return std::move(error);
-    } else {
-      if (count == 0)
-        return candidateError("handshake contribution is not active");
-      --count;
-    }
-    addWork(work);
+    if (change.removalCount > count)
+      return candidateError("handshake contribution is not active");
+    const std::uint64_t proposed =
+        static_cast<std::uint64_t>(count - change.removalCount) +
+        change.additionCount;
+    if (proposed >= static_cast<std::uint64_t>(getInvalidPnrIndex()))
+      return candidateError("arc contributor count exceeds PnrIndex");
+    count = static_cast<PnrIndex>(proposed);
+    addWork(work, static_cast<std::uint64_t>(change.additionCount) +
+                      change.removalCount);
   }
   for (PnrIndex changeOrdinal : storage.insertedArcChanges) {
     const detail::HandshakeArcChange &change =
