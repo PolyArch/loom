@@ -321,7 +321,6 @@ residualTransportLatency(const SpatialCandidateState &candidate,
 
   const auto &routing = problem.routing();
   const auto arcs = routing.routingArcs();
-  const auto sources = routing.arcSources();
   PnrIndex slot = *sinkSlot;
   for (std::size_t depth = 0;; ++depth) {
     if (depth > route->nodeStorage().size())
@@ -329,7 +328,7 @@ residualTransportLatency(const SpatialCandidateState &candidate,
     const RouteTreeNode &node = route->node(slot);
     if (node.parentArc == getInvalidPnrIndex())
       break;
-    if (node.parentArc >= arcs.size() || node.parentArc >= sources.size())
+    if (node.parentArc >= arcs.size())
       return projectionInvalid("recurrence RouteTree arc is out of range");
     auto latency = traversalLatency(problem, arcs[node.parentArc].traversal);
     if (!latency)
@@ -338,7 +337,7 @@ residualTransportLatency(const SpatialCandidateState &candidate,
     if (!next)
       return next.takeError();
     total = *next;
-    const auto parent = route->findNode(sources[node.parentArc]);
+    const auto parent = route->parentNodeSlot(slot);
     if (!parent)
       return projectionInvalid("recurrence RouteTree parent is absent");
     slot = *parent;

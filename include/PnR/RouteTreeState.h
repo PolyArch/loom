@@ -32,6 +32,7 @@ struct RouteTreeLookupEntry {
 struct RouteTreeNode {
   PnrIndex endpoint = getInvalidPnrIndex();
   PnrIndex parentArc = getInvalidPnrIndex();
+  PnrIndex parentSlot = getInvalidPnrIndex();
   PnrIndex firstChild = getInvalidPnrIndex();
   PnrIndex nextSibling = getInvalidPnrIndex();
   PnrIndex previousSibling = getInvalidPnrIndex();
@@ -42,6 +43,7 @@ struct RouteTreeNode {
 
   friend bool operator==(const RouteTreeNode &lhs, const RouteTreeNode &rhs) {
     return lhs.endpoint == rhs.endpoint && lhs.parentArc == rhs.parentArc &&
+           lhs.parentSlot == rhs.parentSlot &&
            lhs.firstChild == rhs.firstChild &&
            lhs.nextSibling == rhs.nextSibling &&
            lhs.previousSibling == rhs.previousSibling &&
@@ -163,6 +165,7 @@ public:
   std::optional<PnrIndex> sourceEndpoint() const;
   std::optional<PnrIndex> sinkEndpoint(PnrIndex obligation) const;
   std::optional<PnrIndex> sinkNode(PnrIndex obligation) const;
+  std::optional<PnrIndex> parentNodeSlot(PnrIndex slot) const;
   llvm::ArrayRef<RouteTreeNode> nodeStorage() const { return nodes_; }
   const FrozenSpatialRoutingGraph &routingGraph() const { return *graph_; }
   std::optional<PnrIndex> findNode(PnrIndex endpoint) const;

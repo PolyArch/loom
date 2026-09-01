@@ -277,6 +277,13 @@ std::optional<PnrIndex> RouteTreeState::findNode(PnrIndex endpoint) const {
   return lookupSlot(endpoint);
 }
 
+std::optional<PnrIndex> RouteTreeState::parentNodeSlot(PnrIndex slot) const {
+  if (slot >= nodes_.size() || !nodes_[slot].isActive() ||
+      nodes_[slot].parentSlot == getInvalidPnrIndex())
+    return std::nullopt;
+  return nodes_[slot].parentSlot;
+}
+
 const RouteTreeNode &RouteTreeState::node(PnrIndex slot) const {
   assert(slot < nodes_.size() && nodes_[slot].isActive());
   return nodes_[slot];
@@ -506,6 +513,8 @@ RouteTreeState::verifyState(bool allowRetainedInactiveStorage) const {
       const RouteTreeNode &childNode = nodes_[child];
       if (childNode.previousSibling != previous)
         return routeTreeError("sibling linkage is inconsistent");
+      if (childNode.parentSlot != static_cast<PnrIndex>(parentSlot))
+        return routeTreeError("child parent-slot cache is inconsistent");
       if (childNode.parentArc == getInvalidPnrIndex() ||
           childNode.parentArc >= graph_->routingArcs().size())
         return routeTreeError("non-root node has no valid parent arc");
@@ -526,6 +535,8 @@ RouteTreeState::verifyState(bool allowRetainedInactiveStorage) const {
     if (childReferences[slot] != expected)
       return routeTreeError("route tree is disconnected or reconvergent");
   }
+  if (nodes_[*rootSlot].parentSlot != getInvalidPnrIndex())
+    return routeTreeError("route root has a parent-slot cache");
 
   std::fill(visited.begin(), visited.end(), 0);
   std::vector<PnrIndex> worklist;
@@ -731,16 +742,15 @@ void RouteTreeTransaction::linkChild(PnrIndex parentSlot, PnrIndex childSlot) {
   }
   state_->nodes_[childSlot].nextSibling = oldFirstChild;
   state_->nodes_[childSlot].previousSibling = getInvalidPnrIndex();
+  state_->nodes_[childSlot].parentSlot = parentSlot;
   parent.firstChild = childSlot;
 }
 
 PnrIndex RouteTreeTransaction::parentSlot(PnrIndex childSlot) const {
   const RouteTreeNode &child = state_->nodes_[childSlot];
-  assert(child.parentArc != getInvalidPnrIndex());
-  const PnrIndex parentEndpoint = state_->arcSourceEndpoint(child.parentArc);
-  const std::optional<PnrIndex> parent = state_->lookupSlot(parentEndpoint);
-  assert(parent && "parent arc source is absent from the route tree");
-  return *parent;
+  assert(child.parentArc != getInvalidPnrIndex() &&
+         child.parentSlot != getInvalidPnrIndex());
+  return child.parentSlot;
 }
 
 void RouteTreeTransaction::detachNode(PnrIndex slot, PnrIndex parentSlot) {

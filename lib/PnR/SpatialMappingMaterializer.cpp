@@ -448,7 +448,6 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
   const auto sinks = problem.transfers().logicalNetSinks();
   const auto endpoints = problem.routing().routingEndpoints();
   const auto arcs = problem.routing().routingArcs();
-  const auto arcSources = problem.routing().arcSources();
   const auto traversals = problem.routing().traversals();
   if (netOrdinal >= logicalNets.size())
     return invalid("logical-net ordinal exceeds the frozen transfer index");
@@ -488,12 +487,12 @@ llvm::Error materializeRouteTree(mlir::OpBuilder &builder,
       if (node.endpoint != *source)
         return invalid("RouteTree has a non-source root node");
     } else {
-      if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+      if (node.parentArc >= arcs.size())
         return invalid("RouteTree node names an absent routing arc");
       const auto &arc = arcs[node.parentArc];
       if (arc.target != node.endpoint || arc.traversal >= traversals.size())
         return invalid("RouteTree node disagrees with its incoming arc");
-      auto parentSlot = tree.findNode(arcSources[node.parentArc]);
+      auto parentSlot = tree.parentNodeSlot(slot);
       if (!parentSlot || *parentSlot >= ordinals->size() ||
           (*ordinals)[*parentSlot] == getInvalidPnrIndex())
         return invalid("RouteTree incoming arc has no active parent node");

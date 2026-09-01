@@ -135,7 +135,6 @@ SpatialRouteTreePruningScratch::project(const SpatialCandidateState &candidate,
 
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
   const auto arcs = routing.routingArcs();
-  const auto arcSources = routing.arcSources();
   for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
     const auto sinkSlot =
         tree.findNode(candidate.logicalNetSinkEndpoint(logicalNet, sink));
@@ -153,9 +152,9 @@ SpatialRouteTreePruningScratch::project(const SpatialCandidateState &candidate,
         slot = getInvalidPnrIndex();
         break;
       }
-      if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+      if (node.parentArc >= arcs.size())
         return invalid("RouteTree parent arc is out of range");
-      const auto parent = tree.findNode(arcSources[node.parentArc]);
+      const auto parent = tree.parentNodeSlot(slot);
       if (!parent)
         return invalid("RouteTree parent endpoint is absent");
       slot = *parent;

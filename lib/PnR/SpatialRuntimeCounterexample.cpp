@@ -126,7 +126,6 @@ llvm::Expected<bool> SpatialCandidateState::runtimeCounterexampleLiteralHolds(
   };
 
   const auto arcs = problem_->routing().routingArcs();
-  const auto arcSources = problem_->routing().arcSources();
   if (!literal.sink) {
     for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
       auto holds = sinkLocalHolds(sink);
@@ -166,12 +165,12 @@ llvm::Expected<bool> SpatialCandidateState::runtimeCounterexampleLiteralHolds(
     const RouteTreeNode &node = route->node(*slot);
     if (node.parentArc == getInvalidPnrIndex())
       return false;
-    if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+    if (node.parentArc >= arcs.size())
       return candidateError(
           "runtime-counterexample branch arc is out of range");
     if (arcs[node.parentArc].traversal == literal.target)
       return true;
-    slot = route->findNode(arcSources[node.parentArc]);
+    slot = route->parentNodeSlot(*slot);
     if (!slot)
       return candidateError("runtime-counterexample branch parent is absent");
   }

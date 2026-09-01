@@ -51,10 +51,9 @@ llvm::Expected<PnrIndex> parentSlot(const RouteTreeState &tree, PnrIndex slot) {
   if (node.parentArc == getInvalidPnrIndex())
     return getInvalidPnrIndex();
   const auto arcs = tree.routingGraph().routingArcs();
-  const auto sources = tree.routingGraph().arcSources();
-  if (node.parentArc >= arcs.size() || node.parentArc >= sources.size())
+  if (node.parentArc >= arcs.size())
     return invalid("route-tree parent arc is out of range");
-  const auto parent = tree.findNode(sources[node.parentArc]);
+  const auto parent = tree.parentNodeSlot(slot);
   if (!parent)
     return invalid("route-tree parent endpoint is absent");
   return *parent;

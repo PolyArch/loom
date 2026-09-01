@@ -749,7 +749,6 @@ SpatialCandidateState::snapshotFullyRouted() const {
 
   const FrozenSpatialRoutingGraph &routing = problem_->routing();
   const auto arcs = routing.routingArcs();
-  const auto arcSources = routing.arcSources();
   snapshot.routeSources.assign(routeTrees_.size(), getInvalidPnrIndex());
   snapshot.routeTagValueOffsets.reserve(routeTrees_.size() + 1);
   snapshot.routeTagValueOffsets.push_back(0);
@@ -784,11 +783,10 @@ SpatialCandidateState::snapshotFullyRouted() const {
         const RouteTreeNode &node = sourceTree.node(*slot);
         if (node.parentArc == getInvalidPnrIndex())
           break;
-        if (node.parentArc >= arcs.size() ||
-            node.parentArc >= arcSources.size())
+        if (node.parentArc >= arcs.size())
           return candidateError("snapshot RouteTree arc is out of range");
         reversePath.push_back(node.parentArc);
-        slot = sourceTree.findNode(arcSources[node.parentArc]);
+        slot = sourceTree.parentNodeSlot(*slot);
         if (!slot)
           return candidateError("snapshot RouteTree parent is absent");
       }

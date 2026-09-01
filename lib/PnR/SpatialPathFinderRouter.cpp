@@ -152,7 +152,6 @@ llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
   capturedSinkPathOffsets_.push_back(0);
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
   const auto arcs = routing.routingArcs();
-  const auto arcSources = routing.arcSources();
   const auto captureLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= candidate.problem().transfers().logicalNets().size())
       return pathFinderError("temporary routing region contains a foreign net");
@@ -180,12 +179,11 @@ llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
         const RouteTreeNode &node = tree.node(*slot);
         if (node.parentArc == getInvalidPnrIndex())
           break;
-        if (node.parentArc >= arcs.size() ||
-            node.parentArc >= arcSources.size())
+        if (node.parentArc >= arcs.size())
           return pathFinderError(
               "temporary iterate RouteTree arc is out of range");
         reversePath_.push_back(node.parentArc);
-        slot = tree.findNode(arcSources[node.parentArc]);
+        slot = tree.parentNodeSlot(*slot);
         if (!slot)
           return pathFinderError(
               "temporary iterate RouteTree parent is absent");

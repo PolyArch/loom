@@ -46,17 +46,16 @@ llvm::Expected<bool> pathUsesTraversal(const RouteTreeState &tree,
   if (!slot)
     return netRouterError("RouteTree path endpoint is absent");
   const auto arcs = tree.routingGraph().routingArcs();
-  const auto arcSources = tree.routingGraph().arcSources();
   PnrIndex cursor = *slot;
   for (std::size_t depth = 0; depth <= tree.nodeStorage().size(); ++depth) {
     const RouteTreeNode &node = tree.node(cursor);
     if (node.parentArc == getInvalidPnrIndex())
       return false;
-    if (node.parentArc >= arcs.size() || node.parentArc >= arcSources.size())
+    if (node.parentArc >= arcs.size())
       return netRouterError("RouteTree path arc is out of range");
     if (arcs[node.parentArc].traversal == traversal)
       return true;
-    const auto parent = tree.findNode(arcSources[node.parentArc]);
+    const auto parent = tree.parentNodeSlot(cursor);
     if (!parent)
       return netRouterError("RouteTree path parent is absent");
     cursor = *parent;

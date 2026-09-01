@@ -473,7 +473,6 @@ loom::pnr::detail::spatialRuntimeTraversalRequiresRouteCut(
   if (route.isUnrouted())
     return false;
   const auto arcs = candidate.problem().routing().routingArcs();
-  const auto sources = candidate.problem().routing().arcSources();
   if (!literal.sink) {
     for (const RouteTreeNode &node : route.nodeStorage()) {
       if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
@@ -495,11 +494,11 @@ loom::pnr::detail::spatialRuntimeTraversalRequiresRouteCut(
     const RouteTreeNode &node = route.node(*slot);
     if (node.parentArc == getInvalidPnrIndex())
       return false;
-    if (node.parentArc >= arcs.size() || node.parentArc >= sources.size())
+    if (node.parentArc >= arcs.size())
       return invalid("traversal route-cut branch arc is out of range");
     if (arcs[node.parentArc].traversal == literal.target)
       return true;
-    slot = route.findNode(sources[node.parentArc]);
+    slot = route.parentNodeSlot(*slot);
     if (!slot)
       return invalid("traversal route-cut branch parent is absent");
   }
