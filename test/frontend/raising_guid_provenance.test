@@ -1,0 +1,14 @@
+# The Structured Program of one source is independent of the checkout path:
+# the link-time GUIDs that LLVM derives from the originating file never reach
+# the canonical program.
+# RUN: sed -e 's|/first/tree/|/second/tree/deeper/|' \
+# RUN:   -e 's|3358523359079058097|-317645748503908643|' \
+# RUN:   %S/Inputs/guid_provenance.ll > %t.relocated.ll
+# RUN: %loom-raise %S/Inputs/guid_provenance.ll -o %t.first.mlir
+# RUN: %loom-raise %t.relocated.ll -o %t.second.mlir
+# RUN: diff %t.first.mlir %t.second.mlir
+# RUN: FileCheck %s --input-file=%t.first.mlir
+
+# CHECK-NOT: guid
+# CHECK: llvm.func internal @accumulate
+# CHECK-NOT: guid
