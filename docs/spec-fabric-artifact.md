@@ -624,6 +624,14 @@ Selected verification starts from this immutable closure and materializes only
 the owner-local nodes and arcs reached by the exact typed selection. The final
 verifier independently rebuilds that active overlay; it does not trust a
 candidate's incremental graph or a diagnostic projection.
+The shared context is keyed by a SHA-256 over the algorithm identity
+`loom.fabric.handshake_context.2`, the `loom.fabric` schema descriptor, the
+root kind, and the root identity, so a context built by another algorithm
+version is never reused. Algorithm version 2 activates the exact writer and
+reader pairing fragments of every Mapping-selected Temporal-PE register-FIFO
+connection (`FabricPeRegisterFifoHandshakeSelection`) in the selected
+handshake graph; a same-FU pairing therefore surfaces as a selected
+combinational cycle instead of an unconditional one.
 
 `FabricHandshakeOwner` is a sealed view-only union of existing
 occurrence-level Fabric owners and fixed point connections.
