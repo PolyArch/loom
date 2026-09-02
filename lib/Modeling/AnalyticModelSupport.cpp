@@ -604,6 +604,25 @@ lowConfidenceMetricQuantumBase10Exponent(MetricKind metric) {
   llvm_unreachable("unknown MetricKind");
 }
 
+namespace {
+
+llvm::Expected<std::uint64_t>
+lowConfidenceClockFrequencyHertz(const PhysicalEstimate &physical) {
+  if (physical.criticalDelayPicoseconds == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: zero critical delay");
+  const std::uint64_t frequency =
+      kPicosecondsPerSecond / physical.criticalDelayPicoseconds;
+  if (frequency == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: critical delay exceeds one second");
+  return frequency;
+}
+
+} // namespace
+
 llvm::Expected<LowConfidenceMetricSet>
 estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
                              AnalyticWorkloadEstimate workload,
@@ -643,16 +662,9 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
   auto physical = summarizeFabric(fabricRoot);
   if (!physical)
     return physical.takeError();
-  if (physical->criticalDelayPicoseconds == 0)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "low_confidence_model_invalid: zero critical delay");
-  const std::uint64_t frequency =
-      kPicosecondsPerSecond / physical->criticalDelayPicoseconds;
-  if (frequency == 0)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "low_confidence_model_invalid: critical delay exceeds one second");
+  auto frequency = lowConfidenceClockFrequencyHertz(*physical);
+  if (!frequency)
+    return frequency.takeError();
   std::uint64_t dynamicActivity = workload.activityUnits;
   if (llvm::Error error =
           accumulateScaled(dynamicActivity, workload.boundaryPayloadBytes, 1,
@@ -669,7 +681,7 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_overflow: dynamic power estimate");
   return LowConfidenceMetricSet{
-      runtime, frequency,
+      runtime, *frequency,
       std::max<std::uint64_t>(physical->areaSquareMicrometers, 1),
       *dynamicPower, std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
 }
@@ -680,16 +692,9 @@ llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
   auto physical = summarizeFabric(fabricRoot);
   if (!physical)
     return physical.takeError();
-  if (physical->criticalDelayPicoseconds == 0)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "low_confidence_model_invalid: zero critical delay");
-  const std::uint64_t frequency =
-      kPicosecondsPerSecond / physical->criticalDelayPicoseconds;
-  if (frequency == 0)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "low_confidence_model_invalid: critical delay exceeds one second");
+  auto frequency = lowConfidenceClockFrequencyHertz(*physical);
+  if (!frequency)
+    return frequency.takeError();
 
   const std::uint64_t area =
       std::max<std::uint64_t>(physical->areaSquareMicrometers, 1);
@@ -702,8 +707,19 @@ llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_overflow: hardware dynamic power estimate");
   return LowConfidenceMetricSet{
-      0, frequency, area, static_cast<std::uint64_t>(rounded),
+      0, *frequency, area, static_cast<std::uint64_t>(rounded),
       std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
+}
+
+llvm::Expected<std::uint64_t> lowConfidenceClockPeriodPicoseconds(
+    const fabric::FinalizedFabricRoot &fabricRoot) {
+  auto physical = summarizeFabric(fabricRoot);
+  if (!physical)
+    return physical.takeError();
+  auto frequency = lowConfidenceClockFrequencyHertz(*physical);
+  if (!frequency)
+    return frequency.takeError();
+  return physical->criticalDelayPicoseconds;
 }
 
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>

@@ -142,6 +142,10 @@ struct PreparedApplicationBuild final {
   ArtifactRootReference preMappingRuntimeInput;
   ComponentViewDigest preMappingFrontierPolicyDigest;
   std::uint64_t preMappingFabricAccCoreCount = 0;
+  /// The low-confidence clock period of the pre-Mapping Fabric: the picosecond
+  /// basis in which the funnel states every predicted makespan. Measured CGRA
+  /// cycles enter the funnel comparison through exactly this period.
+  std::uint64_t preMappingFabricAnalyticClockPeriodPicoseconds = 0;
   /// The InvocationManifest-owned semantic closure for the pre-Mapping
   /// planning invocation.  It is present even when cancellation happens
   /// before a Mapping provider is dispatched, so the pair decision never
@@ -379,12 +383,21 @@ struct ApplicationPairMappingObservation final {
       dse::ResourceTimeEstimateSupport::Unsupported;
   dse::ResourceTimeEstimateSupport physicalModelSupport =
       dse::ResourceTimeEstimateSupport::Unsupported;
+  /// The measured CGRA cycles expressed in the funnel's picosecond basis
+  /// (cycles times the pre-Mapping Fabric's low-confidence clock period) and
+  /// the funnel's relative prediction error against them in parts per
+  /// million. Both stay absent for a foreign System or without measured
+  /// cycles; a prediction is never rewritten by its measurement.
+  std::optional<std::uint64_t> measuredMakespanPicoseconds;
+  std::optional<std::uint64_t> predictionErrorPartsPerMillion;
 };
 
 /// Exact comparison of the analytic funnel against the real Mapping/PnR
 /// outcomes of every candidate that entered Mapping in this invocation. Counts
 /// describe only the mapped sample; ranking recall compares the funnel's
-/// lowest predicted makespan with the lowest measured CGRA cycle count.
+/// lowest predicted makespan with the lowest measured CGRA cycle count, and
+/// the prediction error compares each predicted makespan with the measured
+/// cycles expressed through the pre-Mapping Fabric's analytic clock period.
 struct ApplicationFunnelExactComparison final {
   std::uint64_t mappedCandidates = 0;
   std::uint64_t predictedFeasibleCandidates = 0;
@@ -392,6 +405,10 @@ struct ApplicationFunnelExactComparison final {
   std::uint64_t measuredCandidates = 0;
   std::uint64_t outOfDistributionCandidates = 0;
   std::optional<bool> bestRankingMatch;
+  /// Zero when the pre-Mapping Fabric has no analytic clock basis.
+  std::uint64_t analyticClockPeriodPicoseconds = 0;
+  std::uint64_t predictionErrorCandidates = 0;
+  std::optional<std::uint64_t> maximumPredictionErrorPartsPerMillion;
 };
 
 /// Quality facts from one exact joint-design invocation. Application runtime

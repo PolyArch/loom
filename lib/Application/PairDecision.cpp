@@ -52,6 +52,32 @@ void setObjective(ApplicationObjectiveObservation &observation,
 
 constexpr std::uint16_t analyticConfidencePermille = 250;
 constexpr std::uint16_t calibratedConfidencePermille = 500;
+constexpr std::uint64_t partsPerMillion = 1000000;
+
+/// Expresses measured CGRA cycles in the funnel's picosecond basis and states
+/// the funnel's relative prediction error against them. The prediction stays
+/// untouched; both values are absent when the basis, the measurement, or the
+/// 64-bit domain is missing.
+void setFunnelExactMeasurement(ApplicationPairMappingObservation &observation,
+                               std::uint64_t analyticClockPeriodPicoseconds) {
+  if (!observation.cgraCycles || analyticClockPeriodPicoseconds == 0)
+    return;
+  const unsigned __int128 measured =
+      static_cast<unsigned __int128>(*observation.cgraCycles) *
+      analyticClockPeriodPicoseconds;
+  if (measured > std::numeric_limits<std::uint64_t>::max())
+    return;
+  observation.measuredMakespanPicoseconds = static_cast<std::uint64_t>(measured);
+  if (!observation.predictedMakespanPicoseconds || measured == 0)
+    return;
+  const unsigned __int128 predicted = *observation.predictedMakespanPicoseconds;
+  const unsigned __int128 difference =
+      predicted > measured ? predicted - measured : measured - predicted;
+  const unsigned __int128 error = difference * partsPerMillion / measured;
+  if (error <= std::numeric_limits<std::uint64_t>::max())
+    observation.predictionErrorPartsPerMillion =
+        static_cast<std::uint64_t>(error);
+}
 
 /// Pre-Mapping analytic dimensions of one candidate: the projection is exact
 /// structural provenance of the ownership, not a calibrated prediction.
@@ -530,6 +556,10 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         }
         break;
       }
+      if (outcome.system == prepared.preMappingFabric)
+        setFunnelExactMeasurement(
+            mappingObservation,
+            prepared.preMappingFabricAnalyticClockPeriodPicoseconds);
       if (outcome.resourceTimeSpectrum) {
         if (const auto *verification =
                 std::get_if<dse::VerifiedResourceTimeSpectrum>(
@@ -586,12 +616,22 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   }
 
   ApplicationFunnelExactComparison &comparison = result.funnelExactComparison;
+  comparison.analyticClockPeriodPicoseconds =
+      prepared.preMappingFabricAnalyticClockPeriodPicoseconds;
   const ApplicationPairMappingObservation *bestPredicted = nullptr;
   const ApplicationPairMappingObservation *bestMeasured = nullptr;
   for (const ApplicationPairCandidateRecord &candidate : result.candidates)
     for (const ApplicationPairMappingObservation &observation :
          candidate.mappingObservations) {
       ++comparison.mappedCandidates;
+      if (observation.predictionErrorPartsPerMillion) {
+        ++comparison.predictionErrorCandidates;
+        if (!comparison.maximumPredictionErrorPartsPerMillion ||
+            *observation.predictionErrorPartsPerMillion >
+                *comparison.maximumPredictionErrorPartsPerMillion)
+          comparison.maximumPredictionErrorPartsPerMillion =
+              observation.predictionErrorPartsPerMillion;
+      }
       if (observation.predictedMakespanPicoseconds)
         ++comparison.predictedFeasibleCandidates;
       if (observation.mappingDisposition ==

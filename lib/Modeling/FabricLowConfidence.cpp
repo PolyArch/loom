@@ -117,4 +117,9 @@ llvm::Error registerFabricLowConfidenceProvider() {
   return registerEvaluationModelProvider(kProvider);
 }
 
+llvm::Expected<std::uint64_t> fabricLowConfidenceClockPeriodPicoseconds(
+    const fabric::FinalizedFabricRoot &fabricRoot) {
+  return detail::lowConfidenceClockPeriodPicoseconds(fabricRoot);
+}
+
 } // namespace loom::evaluation::models

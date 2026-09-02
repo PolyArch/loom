@@ -12,6 +12,7 @@
 #include "DSE/ResolvedConfigView.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Models/CalibratedFpa.h"
+#include "Evaluation/Models/FabricLowConfidence.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
@@ -316,6 +317,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   auto systemView = fabric::requireSystemRoot(system->view());
   if (!systemView)
     return systemView.takeError();
+  auto analyticClockPeriodPicoseconds =
+      evaluation::models::fabricLowConfidenceClockPeriodPicoseconds(*system);
+  if (!analyticClockPeriodPicoseconds)
+    return analyticClockPeriodPicoseconds.takeError();
 
   auto source = frontend::raiseLlvmModuleToStructured(
       llvm::CloneModule(finalLinkedModule), *system,
@@ -1034,6 +1039,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       completed.runtimeInput,
       completed.frontierPolicyDigest,
       systemView->artifact().accCoreOccurrences().size(),
+      *analyticClockPeriodPicoseconds,
       std::nullopt,
       std::move(request.portfolioInput),
       std::move(edaPredictionModelWeight),
