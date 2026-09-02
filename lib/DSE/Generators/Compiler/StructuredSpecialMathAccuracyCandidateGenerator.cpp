@@ -1,5 +1,6 @@
 #include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/MappingDebugLog.h"
@@ -175,8 +176,22 @@ cloneRoot(StructuredOwnershipInvocation *invocation,
 llvm::Expected<std::optional<frontend::MaterializedOwnershipCandidate>>
 finalizeCandidate(
     frontend::MaterializedStructuredOwnershipCandidate candidate,
+    const ArtifactRootReference &reference,
+    StructuredOwnershipInvocation *invocation,
     const fabric::FinalizedFabricRoot &fabric,
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  // A refused leaf leaves no candidate behind; the bound invocation retains
+  // the typed refusal against the leaf's Ownership coordinate so the
+  // application decision can state it.
+  const auto retainRejection =
+      [&](StructuredOwnershipCandidateRejectionRecord rejection)
+      -> llvm::Error {
+    if (!invocation)
+      return llvm::Error::success();
+    return detail::StructuredOwnershipInvocationAccess::
+        recordFinalizationRejection(*invocation, reference,
+                                    std::move(rejection));
+  };
   if (candidate.ownedSpatialRegion) {
     auto view = candidate.structuredProgram.view();
     if (!view)
@@ -189,6 +204,10 @@ finalizeCandidate(
     if (std::optional<std::string> rejection =
             lowering::explainSpatialCarrierParallelRejection(
                 owner->operation)) {
+      if (llvm::Error error = retainRejection(
+              {frontend::SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+               std::move(*rejection), std::nullopt}))
+        return std::move(error);
       return std::optional<frontend::MaterializedOwnershipCandidate>{};
     }
   }
@@ -201,16 +220,21 @@ finalizeCandidate(
 
   std::optional<frontend::SpatialOwnershipCandidateRejectionKind> rejectionKind;
   std::string rejectionMessage;
+  std::optional<dataflow::MemoryContractClass> rejectionContract;
   llvm::Error unhandled = llvm::handleErrors(
       finalized.takeError(),
       [&](const frontend::SpatialOwnershipCandidateRejection &rejection) {
         rejectionKind = rejection.kind();
         rejectionMessage = rejection.message();
+        rejectionContract = rejection.memoryContract();
       });
   if (unhandled)
     return std::move(unhandled);
   if (!rejectionKind)
     return invalid("candidate failed without a classified rejection");
+  if (llvm::Error error = retainRejection(
+          {*rejectionKind, rejectionMessage, rejectionContract}))
+    return std::move(error);
   mapping_debug::emit(
       mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
       mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
@@ -222,6 +246,9 @@ finalizeCandidate(
                 ? "non_finalizable"
                 : "exact_fabric_inadmissible";
         fields["diagnostic"] = rejectionMessage;
+        if (rejectionContract)
+          fields["memory_contract"] =
+              dataflow::memoryContractClassSpelling(*rejectionContract);
       });
   return std::optional<frontend::MaterializedOwnershipCandidate>{};
 }
@@ -347,7 +374,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         outputLimitReached = true;
         return llvm::Error::success();
       }
-      auto finalized = finalizeCandidate(std::move(candidate), *exactFabric,
+      auto finalized = finalizeCandidate(std::move(candidate), reference,
+                                         invocation, *exactFabric,
                                          loweringOptions);
       if (!finalized)
         return finalized.takeError();

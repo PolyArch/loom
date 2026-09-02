@@ -3,6 +3,7 @@
 
 #include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Simulator/CGRAAdmission.h"
@@ -29,16 +30,10 @@
 
 namespace loom::sim {
 
-enum class CgraUnsupportedMemoryContractKind : std::uint8_t {
-  Volatile,
-  AtomicAccess,
-  AtomicRmw,
-  CompareExchange,
-  Fence,
-};
-
+/// One memory actor whose Dataflow-owned contract class the exact CGRA
+/// execution provider does not model. The class is never `Plain`.
 struct CgraUnsupportedMemoryContract final {
-  CgraUnsupportedMemoryContractKind kind;
+  dataflow::MemoryContractClass contractClass;
   dataflow::ActorRef actor;
 };
 

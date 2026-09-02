@@ -2,6 +2,7 @@
 #define LOOM_FRONTEND_COMPILATION_FABRICCAPABILITYINDEX_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -19,6 +20,10 @@ struct ExactFabricCapabilityMiss final {
   ::dataflow::CanonicalDataflowActorKind actorKind;
   ::dataflow::OperationSchemaId schema;
   ::mlir::FunctionType type;
+  /// The Dataflow-owned contract class of a refused memory actor. A fixed
+  /// Fabric that admits only plain accesses refuses every other class here,
+  /// before Mapping, so the class is the typed cause of a host fallback.
+  std::optional<::dataflow::MemoryContractClass> memoryContract;
 };
 
 /// A compact invocation-local index over one exact finalized Fabric. It owns

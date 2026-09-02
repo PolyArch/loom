@@ -1,5 +1,7 @@
 #include "Application/ProductBuild.h"
 
+#include "BuildInternal.h"
+
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
@@ -747,10 +749,21 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
                         "resource-time planning ended with reason " +
                             dse::resourceTimeFrontierIncompleteReasonSpelling(
                                 incomplete->reason));
-  if (std::holds_alternative<dse::CompletedPreMappingNoFeasibleCandidate>(
-          *outcome))
+  if (const auto *noFeasible =
+          std::get_if<dse::CompletedPreMappingNoFeasibleCandidate>(
+              &*outcome)) {
+    // The pair decision already states the host path; the product build
+    // names the refused hardware capability instead of a generic absence.
+    if (build_detail::classifyPreMappingNoFeasibleOutcome(*noFeasible) ==
+        ApplicationPairDecisionDisposition::ExactHardwareIncompatible)
+      return productError(
+          "loom_pre_mapping_exact_hardware_incompatible",
+          "the exact Fabric keeps the verified host path: " +
+              build_detail::exactFabricOwnershipRejection(*noFeasible)
+                  ->message);
     return productError("loom_pre_mapping_no_feasible_candidate",
                         "no verified software candidate was selected");
+  }
   const auto &unsupported = std::get<UnsupportedApplicationBuild>(*outcome);
   switch (unsupported.kind) {
   case ApplicationBuildUnsupportedKind::RootCoordinates:

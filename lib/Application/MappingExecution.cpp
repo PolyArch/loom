@@ -368,7 +368,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::nullopt,
             std::nullopt,
             std::nullopt,
-            {}});
+            {},
+            std::nullopt});
       }
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
@@ -592,6 +593,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         continue;
       outcome.runtimeDisposition = runtime->disposition;
       outcome.runtimeEvidence = runtime->evidence;
+      outcome.runtimeMemoryContractRefusal =
+          runtime->cgraMemoryContractRefusal;
       outcome.oracleEvidence = runtime->oracleEvidence;
       outcome.dfgCycles = runtime->dfgCycles;
       outcome.cgraCycles = runtime->cgraCycles;
@@ -709,7 +712,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               childRuntime.dfgCycles,
               childRuntime.cgraCycles,
               childRuntime.resourceCoreCost,
-              childRuntime.oracleEvidence});
+              childRuntime.oracleEvidence,
+              childRuntime.cgraMemoryContractRefusal});
         }
         return llvm::Error::success();
       };
@@ -984,7 +988,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 childRuntime->dfgCycles,
                 childRuntime->cgraCycles,
                 std::nullopt,
-                childRuntime->oracleEvidence});
+                childRuntime->oracleEvidence,
+                childRuntime->cgraMemoryContractRefusal});
           }
           bool coldVerified = false;
           if (adjacent->coldMapping) {
@@ -1050,7 +1055,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 std::nullopt,
                 std::nullopt,
-                {}});
+                {},
+                std::nullopt});
         }
         const std::uint64_t observationOrdinal =
             incrementalMappingObservations.size();

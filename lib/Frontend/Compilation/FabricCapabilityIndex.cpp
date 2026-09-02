@@ -351,10 +351,18 @@ frontend::FabricCapabilityIndex::firstInadmissibleActor(
       auto resources = admittingMemoryResources(actor.op);
       if (!resources)
         return resources.takeError();
-      if (resources->empty())
+      if (resources->empty()) {
+        std::optional<dataflow::MemoryContractClass> memoryContract;
+        if (const auto *contract =
+                std::get_if<dataflow::MemoryContractPayload>(
+                    &projection->payload))
+          memoryContract = dataflow::classifyMemoryContract(*contract);
         return std::optional<frontend::ExactFabricCapabilityMiss>{
-            frontend::ExactFabricCapabilityMiss{
-                actor.ref, actor.kind, projection->schema, projection->type}};
+            frontend::ExactFabricCapabilityMiss{actor.ref, actor.kind,
+                                                projection->schema,
+                                                projection->type,
+                                                memoryContract}};
+      }
       continue;
     }
     auto resources = admittingOperationResources(actor.op);
@@ -362,8 +370,9 @@ frontend::FabricCapabilityIndex::firstInadmissibleActor(
       return resources.takeError();
     if (resources->empty())
       return std::optional<frontend::ExactFabricCapabilityMiss>{
-          frontend::ExactFabricCapabilityMiss{
-              actor.ref, actor.kind, projection->schema, projection->type}};
+          frontend::ExactFabricCapabilityMiss{actor.ref, actor.kind,
+                                              projection->schema,
+                                              projection->type, std::nullopt}};
   }
   return std::optional<frontend::ExactFabricCapabilityMiss>{};
 }

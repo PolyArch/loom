@@ -1007,9 +1007,11 @@ void graphActivationExecutesExactMemoryInternalConnections() {
 void graphActivationRejectsUnsupportedMemoryContracts() {
   auto artifact = unsupportedMemoryProgram();
   auto view = take(artifact.view());
-  using UnsupportedKind = loom::sim::CgraUnsupportedMemoryContractKind;
-  std::array<bool, 5> seen{};
-  require(view.graphs().size() == seen.size(),
+  using ContractClass = dataflow::MemoryContractClass;
+  // One graph per non-plain contract class; index 0 (Plain) stays unused.
+  std::array<bool, 6> seen{};
+  seen[static_cast<std::size_t>(ContractClass::Plain)] = true;
+  require(view.graphs().size() == seen.size() - 1,
           "unsupported CGRA memory fixture lost a graph");
 
   for (const dataflow::CanonicalGraphView &graphView : view.graphs()) {
@@ -1018,7 +1020,7 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
         take(prepareGraphExecution(artifact.module(), graph));
     auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
     require(prepared, "unsupported CGRA memory graph preparation failed");
-    std::optional<UnsupportedKind> kind;
+    std::optional<ContractClass> kind;
     std::optional<dataflow::ActorRef> actorRef;
     llvm::StringRef actorName;
     for (const ActorExecutionPlan &actor : prepared->actorPlans) {
@@ -1026,25 +1028,11 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
           &actor.projection.payload);
       if (!memory)
         continue;
-      if (const auto *plain =
-              std::get_if<dataflow::PlainAccessProjection>(memory)) {
-        if (!plain->isVolatile)
-          continue;
-        kind = UnsupportedKind::Volatile;
-      } else if (std::holds_alternative<dataflow::AtomicAccessProjection>(
-                     *memory)) {
-        kind = UnsupportedKind::AtomicAccess;
-      } else if (std::holds_alternative<dataflow::AtomicRmwProjection>(
-                     *memory)) {
-        kind = UnsupportedKind::AtomicRmw;
-      } else if (std::holds_alternative<dataflow::CompareExchangeProjection>(
-                     *memory)) {
-        kind = UnsupportedKind::CompareExchange;
-      } else {
-        require(std::holds_alternative<dataflow::FenceProjection>(*memory),
-                "unsupported CGRA memory fixture has an unknown contract");
-        kind = UnsupportedKind::Fence;
-      }
+      const ContractClass contractClass =
+          dataflow::classifyMemoryContract(*memory);
+      if (contractClass == ContractClass::Plain)
+        continue;
+      kind = contractClass;
       actorName = actor.operation->getName().getStringRef();
       auto canonical = llvm::find_if(view.actors(), [&](const auto &candidate) {
         return candidate.op == actor.operation;
@@ -1090,8 +1078,9 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
             "CGRA memory contract rejection was not typed Unsupported");
     require(llvm::StringRef(diagnostic).contains(actorName),
             "CGRA memory contract rejection named the wrong actor");
-    require(contract && contract->kind == *kind && contract->actor == *actorRef,
-            "CGRA memory contract rejection lost its kind or actor identity");
+    require(contract && contract->contractClass == *kind &&
+                contract->actor == *actorRef,
+            "CGRA memory contract rejection lost its class or actor identity");
   }
   require(llvm::all_of(seen, [](bool value) { return value; }),
           "CGRA activation rejection did not cover every memory contract");

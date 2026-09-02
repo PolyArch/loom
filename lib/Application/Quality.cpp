@@ -398,7 +398,8 @@ detail::projectApplicationQualityRuntime(
       matching->provenance.spatialOperandQueueFeedback,
       matching->provenance.spatialTransportFeedback,
       matching->provenance.verificationEvidence,
-      resourceCoreCost};
+      resourceCoreCost,
+      std::nullopt};
 }
 
 llvm::Expected<dse::JointBoundedQualityPolicy>

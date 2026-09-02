@@ -1,0 +1,17 @@
+# The exact product Fabric admits only plain non-volatile accesses. A candidate
+# carrying the atomic_access memory contract is refused before Mapping, the pair
+# decision names the class, and the program keeps its verified host path.
+# RUN: rm -rf %t.deployment
+# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_atomic_access.c -o %t.native
+# RUN: %t.native
+# RUN: env LOOM_VERBOSE_LEVEL=1 not %loom-cc %loom-product-acceleration-profile \
+# RUN:   -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_atomic_access.c -o %t.elf \
+# RUN:   --loom-deploy-output=%t.deployment \
+# RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-medium-ms \
+# RUN:   > %t.build.stdout 2> %t.build.stderr
+# RUN: grep 'loom_pre_mapping_exact_hardware_incompatible' %t.build.stderr
+# RUN: grep '"disposition":"exact_hardware_incompatible"' %t.build.stderr
+# RUN: grep 'with the atomic_access memory contract' %t.build.stderr
+# RUN: grep '"host_only_baseline_complete":true' %t.build.stderr

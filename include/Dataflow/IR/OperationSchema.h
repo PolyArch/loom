@@ -410,6 +410,25 @@ using MemoryContractPayload =
                  AtomicRmwProjection, CompareExchangeProjection,
                  FenceProjection>;
 
+/// The closed contract class of one memory actor, derived from its exact
+/// contract payload. `Plain` is the ordinary non-volatile access; every other
+/// class names a contract that a Fabric capability or an execution provider
+/// admits only explicitly and that no owner may lower to a plain access.
+enum class MemoryContractClass : std::uint8_t {
+  Plain,
+  Volatile,
+  AtomicAccess,
+  AtomicRmw,
+  CompareExchange,
+  Fence,
+};
+
+MemoryContractClass
+classifyMemoryContract(const MemoryContractPayload &contract);
+
+/// The stable spelling of one memory contract class, used for diagnostics.
+llvm::StringRef memoryContractClassSpelling(MemoryContractClass value);
+
 /// The closed payload sum, one alternative per declared semantic case.
 using SemanticPayload = std::variant<
     NoPayload, FloatingPointPayload, SpecialMathPayload, ExactPayload,

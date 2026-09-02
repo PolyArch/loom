@@ -68,7 +68,7 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
         candidate.takeError(),
         [&](const frontend::SpatialOwnershipCandidateRejection &error) {
           rejection.emplace(StructuredOwnershipCandidateRejectionRecord{
-              error.kind(), error.message()});
+              error.kind(), error.message(), error.memoryContract()});
         });
     if (unhandled)
       return std::move(unhandled);
@@ -281,7 +281,7 @@ generateStructuredOwnershipCandidatesImpl(
                                                   std::nullopt},
            StructuredOwnershipCandidateRejectionRecord{
                frontend::SpatialOwnershipCandidateRejectionKind::NonFinalizable,
-               rejected->message}});
+               rejected->message, std::nullopt}});
       continue;
     }
     const auto &scope = std::get<frontend::SpatialOwnershipScope>(entry);

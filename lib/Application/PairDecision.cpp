@@ -4,6 +4,7 @@
 #include "DSE/Promotion.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
@@ -230,6 +231,10 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
 
 ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
     const dse::CompletedPreMappingNoFeasibleCandidate &outcome) {
+  // A representable candidate the exact Fabric refused is the decision; a
+  // coordinate whose schedule intent had no applicable candidate does not
+  // turn that hardware refusal into an unsupported program.
+  const bool fabricRefused = exactFabricOwnershipRejection(outcome) != nullptr;
   std::vector<ApplicationPairDecisionDisposition> causes;
   for (const dse::PreMappingCandidatePlanningRecord &record :
        outcome.candidateInventory) {
@@ -242,7 +247,9 @@ ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
     case dse::PreMappingCandidatePlanningDisposition::ExactGateRejected:
       break;
     case dse::PreMappingCandidatePlanningDisposition::Unsupported:
-      causes.push_back(ApplicationPairDecisionDisposition::UnsupportedSemantic);
+      if (!fabricRefused)
+        causes.push_back(
+            ApplicationPairDecisionDisposition::UnsupportedSemantic);
       break;
     case dse::PreMappingCandidatePlanningDisposition::Unknown:
     case dse::PreMappingCandidatePlanningDisposition::Retained:
@@ -274,7 +281,37 @@ ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
         ApplicationPairDecisionDisposition::MappingProofNotEstablished);
   if (!causes.empty())
     return prioritizeIncompletePairDisposition(causes, false);
-  return ApplicationPairDecisionDisposition::NoPromisingCandidate;
+  // The program then keeps its verified host path, and the decision names
+  // the incompatible hardware rather than an absent candidate.
+  return fabricRefused
+             ? ApplicationPairDecisionDisposition::ExactHardwareIncompatible
+             : ApplicationPairDecisionDisposition::NoPromisingCandidate;
+}
+
+const dse::StructuredOwnershipCandidateRejectionRecord *
+exactFabricOwnershipRejection(
+    const dse::CompletedPreMappingNoFeasibleCandidate &outcome) {
+  // A refusal explains the outcome only when no Dataflow candidate was ever
+  // planned; once candidates exist, their own records own the reason.
+  if (llvm::any_of(outcome.candidateInventory,
+                   [](const dse::PreMappingCandidatePlanningRecord &record) {
+                     return record.structuredProgram.has_value();
+                   }))
+    return nullptr;
+  const dse::StructuredOwnershipCandidateRejectionRecord *first = nullptr;
+  for (const dse::StructuredOwnershipFinalizationRejection &finalization :
+       outcome.finalizationRejections) {
+    const dse::StructuredOwnershipCandidateRejectionRecord *rejection =
+        &finalization.rejection;
+    if (rejection->kind != frontend::SpatialOwnershipCandidateRejectionKind::
+                               ExactFabricInadmissible)
+      continue;
+    if (rejection->memoryContract)
+      return rejection;
+    if (!first)
+      first = rejection;
+  }
+  return first;
 }
 
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
@@ -543,7 +580,16 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           case ApplicationMappingRuntimeDisposition::Unsupported:
             result.disposition =
                 ApplicationPairDecisionDisposition::UnsupportedSemantic;
-            setRuntimeDetail("selected application runtime is unsupported");
+            if (const auto &refusal = outcome.runtimeMemoryContractRefusal)
+              result.detail =
+                  ("exact CGRA execution provider does not model the " +
+                   dataflow::memoryContractClassSpelling(
+                       refusal->contractClass) +
+                   " memory contract of actor " +
+                   llvm::Twine(refusal->actor.entity.value()))
+                      .str();
+            else
+              setRuntimeDetail("selected application runtime is unsupported");
             break;
           case ApplicationMappingRuntimeDisposition::ProofNotEstablished:
           case ApplicationMappingRuntimeDisposition::NotRequested:
