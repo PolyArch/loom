@@ -106,6 +106,7 @@ add_library(LoomApplicationBuild
   ApplicationRuntimeValidation.cpp
   Build.cpp
   BuildDiagnostics.cpp
+  PairDecisionDiagnostics.cpp
   DeploymentBuild.cpp
   ExecutionGlue.cpp
   MappingExecution.cpp
