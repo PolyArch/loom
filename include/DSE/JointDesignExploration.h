@@ -112,6 +112,9 @@ enum class JointDesignQualityIncompleteReason : std::uint8_t {
 JointDesignQualityDisposition jointDesignQualityDisposition(
     JointDesignQualityIncompleteReason reason);
 
+llvm::StringRef jointDesignQualityIncompleteReasonSpelling(
+    JointDesignQualityIncompleteReason reason);
+
 /// Exact reusable facts returned by a quality acquisition before Objective
 /// quantization. Supporting Evidence establishes the measures; verification
 /// Evidence independently checks the candidate and may be a typed subset.

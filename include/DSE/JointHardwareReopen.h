@@ -218,6 +218,16 @@ materializeJointModuleHardwareMutation(
     SpatialMicroarchitectureDecisionDomain decision,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
+/// Materializes one exact Module topology rewrite through the canonical
+/// topology candidate generator and the same System replacement path. The
+/// adopted lineage decision owns the `SpatialTopology` impact family.
+llvm::Expected<JointHardwareMutationChild>
+materializeJointModuleHardwareMutation(
+    ResolvedConfig config, const ArtifactRootReference &parentSystem,
+    const ArtifactRootReference &parentModule,
+    SpatialTopologyDecisionDomain decision, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
+
 /// Materializes one exact System rewrite through the canonical composition
 /// candidate generator. Module lineage is derived from the finalized parent
 /// and child AccCore targets. Non-bijective attachment lineage retains the
@@ -252,6 +262,11 @@ llvm::StringRef jointSystemMappingReuseDispositionSpelling(
 /// provider execution; import accounting is kept per side so memory and work
 /// are not inferred from plan counts.
 struct JointHardwareMutationRepair final {
+  /// Durable per-family evidence published by the executor
+  /// (`loom.dse.hardware_mutation_repair_record`): affected cones, typed
+  /// dispositions, cold and preserve-first Mapping roots, dispatch and
+  /// verifier accounting, and quality observations.
+  ArtifactRootReference record;
   ArtifactRootReference parentMapping;
   JointHardwareMutationChild child;
   JointMappingRebaseResult rebase;

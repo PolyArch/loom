@@ -893,6 +893,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "invalidated_spatial_mappings",
                         "mapping_rebase_work",
                         "families",
+                        "record",
                         "child_system",
                         "system_mapping_reuse_disposition",
                         "rebase_failure_count",

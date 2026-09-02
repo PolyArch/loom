@@ -54,6 +54,7 @@ struct HardwareRecipeGrowth final {
   std::optional<ChangeTemporalOperandBufferMode> operandBufferModeChange;
   std::optional<ResizeTemporalOperandBuffer> operandBufferResize;
   std::optional<SpatialMicroarchitectureDecisionDomain> moduleDecision;
+  std::optional<SpatialTopologyDecisionDomain> topologyDecision;
   std::uint64_t resizedInstructionStoreCount = 0;
   std::uint64_t maximumInstructionStoreCapacity = 0;
   std::uint64_t addedContexts = 0;

@@ -3409,6 +3409,24 @@ resource-time spectrum verifier. One execution is never charged to both wall-
 time classes, and a missing or incomplete side cannot publish a verified
 paired observation.
 
+Every executed hardware mutation repair (`executeJointHardwareMutationRepair`)
+publishes one durable `loom.dse.hardware_mutation_repair_record` 1.0 artifact
+and names it in its `joint_hardware_mutation_repair` observation. The record
+carries the exact parent Mapping and System, the child System, every
+component impact cone (typed family, locality, Tech realization roots, Spatial
+placement and route roots, System execution, instruction-context, transport,
+route, service, memory-service, and memory roots), the typed Mapping and
+System reuse dispositions with their rebase failures and complete accounting,
+the independently verified cold and preserve-first Mapping roots with
+provider dispatch, journal replay, wall-time, and verifier accounting, and
+the quality observations of the preserve-first execution. Strict import
+replays the canonical encoding. The dedicated mutation families
+`spatial_topology` (Module topology rewrite through the topology candidate
+generator), `instruction_capacity` (Temporal instruction-store resize), and
+`system_instruction_context` (InstructionCore realization selection) use the
+same executor and record as the FU, memory, FIFO, operand-buffer, switch,
+SpatialCore, AccCore, transport, service, and combined families.
+
 The rebase ledger must account for the System layer separately from lower
 Mapping layers. For every parent SystemMapping it records parent, preserved,
 and reopened thread bindings, graph bindings, resource uses, service
