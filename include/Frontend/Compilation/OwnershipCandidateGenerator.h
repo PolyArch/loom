@@ -170,10 +170,18 @@ public:
   static char ID;
 
   SpatialOwnershipCandidateRejection(
-      SpatialOwnershipCandidateRejectionKind kind, std::string message)
-      : kind_(kind), message_(std::move(message)) {}
+      SpatialOwnershipCandidateRejectionKind kind, std::string message,
+      std::optional<::dataflow::MemoryContractClass> memoryContract =
+          std::nullopt)
+      : kind_(kind), message_(std::move(message)),
+        memoryContract_(memoryContract) {}
 
   SpatialOwnershipCandidateRejectionKind kind() const { return kind_; }
+  /// The contract class of the memory actor an exact Fabric refused, when
+  /// the rejection is that typed capability miss.
+  std::optional<::dataflow::MemoryContractClass> memoryContract() const {
+    return memoryContract_;
+  }
   std::string message() const override { return message_; }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
@@ -181,6 +189,7 @@ public:
 private:
   SpatialOwnershipCandidateRejectionKind kind_;
   std::string message_;
+  std::optional<::dataflow::MemoryContractClass> memoryContract_;
 };
 
 /// One finite ownership search coordinate in the exact parent candidate.

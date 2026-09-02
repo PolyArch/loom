@@ -288,7 +288,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         {},
-        resourceCoreCost};
+        resourceCoreCost,
+        std::nullopt};
 
   if (prepared.portfolioInput &&
       (prepared.portfolioInput->input.profile.warmupSamples != 0 ||
@@ -302,7 +303,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         {},
-        resourceCoreCost};
+        resourceCoreCost,
+        std::nullopt};
 
   auto contexts = mapping::projectSystemExecutionContexts(
       imported->dataflowView, imported->mapping.view().executionBindings());
@@ -409,7 +411,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         std::nullopt,
         std::nullopt,
         {},
-        resourceCoreCost};
+        resourceCoreCost,
+        std::nullopt};
   }
   auto deadline = applicationReplayDeadline(
       executionPolicy,
@@ -599,6 +602,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         evaluation::EvidenceOutcomeKind::Completed) {
       emitRuntimeEvidenceFailure("cgra_simulation", cgraEvidence);
       validation.disposition = runtimeDisposition(cgraEvidence.outcomeKind());
+      validation.cgraMemoryContractRefusal =
+          cgraEvaluation->unsupportedMemoryContract;
       return validation;
     }
     auto cgraTerminal =

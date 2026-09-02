@@ -140,6 +140,14 @@ public:
       frontend::MaterializedOwnershipCandidate candidate,
       const ArtifactStore &store);
 
+  /// Retains the typed finalization refusal of a candidate derived from one
+  /// Ownership coordinate, so a domain that admits no candidate still owns
+  /// the proof of why each coordinate was refused.
+  static llvm::Error recordFinalizationRejection(
+      StructuredOwnershipInvocation &invocation,
+      const ArtifactRootReference &candidate,
+      StructuredOwnershipCandidateRejectionRecord rejection);
+
   static llvm::Error recordMemoryCommunicationCandidate(
       StructuredOwnershipInvocation &invocation,
       const ArtifactRootReference &parent, const ArtifactRootReference &child,

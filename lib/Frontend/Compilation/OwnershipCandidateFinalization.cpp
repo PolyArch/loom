@@ -12,9 +12,11 @@ namespace loom::frontend {
 namespace {
 
 llvm::Error reject(SpatialOwnershipCandidateRejectionKind kind,
-                   const llvm::Twine &message) {
-  return llvm::make_error<SpatialOwnershipCandidateRejection>(kind,
-                                                              message.str());
+                   const llvm::Twine &message,
+                   std::optional<dataflow::MemoryContractClass> memoryContract =
+                       std::nullopt) {
+  return llvm::make_error<SpatialOwnershipCandidateRejection>(
+      kind, message.str(), memoryContract);
 }
 
 std::string typeSpelling(mlir::FunctionType type) {
@@ -44,10 +46,18 @@ llvm::Error requireExactFabricCapabilities(
       (*miss)->actorKind == dataflow::CanonicalDataflowActorKind::Memory
           ? "memory resource"
           : "operation resource";
+  const std::string contract =
+      (*miss)->memoryContract
+          ? (" with the " +
+             dataflow::memoryContractClassSpelling(*(*miss)->memoryContract) +
+             " memory contract")
+                .str()
+          : std::string();
   return reject(SpatialOwnershipCandidateRejectionKind::ExactFabricInadmissible,
                 "exact Fabric admits no " + resource + " for actor " +
                     dataflow::operationSchemaSpelling((*miss)->schema) +
-                    " with type " + typeSpelling((*miss)->type));
+                    contract + " with type " + typeSpelling((*miss)->type),
+                (*miss)->memoryContract);
 }
 
 } // namespace

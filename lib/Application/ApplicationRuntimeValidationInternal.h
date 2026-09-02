@@ -8,6 +8,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Simulator/CGRASimulator.h"
 
 #include "llvm/Support/Error.h"
 
@@ -36,6 +37,10 @@ struct ApplicationRuntimeValidation final {
   std::optional<dse::SpatialTransportRuntimeFeedback> spatialTransportFeedback;
   std::vector<ArtifactRootReference> oracleEvidence;
   std::optional<std::uint64_t> resourceCoreCost;
+  /// The memory actor whose contract class the exact CGRA execution provider
+  /// refused. It explains an Unsupported disposition with the typed class and
+  /// actor rather than a generic runtime unavailability.
+  std::optional<sim::CgraUnsupportedMemoryContract> cgraMemoryContractRefusal;
 };
 
 llvm::Expected<ImportedApplicationMapping>

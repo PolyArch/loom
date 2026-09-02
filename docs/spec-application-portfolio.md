@@ -221,6 +221,19 @@ derived `execution_binding_established` compatibility field is true only in
 that state. A pre-admission or unsupported profile decision remains
 `declared_only` and cannot be interpreted as correctness Evidence.
 
+A complete bounded front-end that retains no candidate because the exact
+Fabric refused every representable ownership coordinate publishes
+`exact_hardware_incompatible`, not a proof-not-established or generic
+unsupported decision. Its detail names the refused actor and, for a memory
+actor, the Dataflow memory contract class (`volatile`, `atomic_access`,
+`atomic_rmw`, `compare_exchange`, or `fence`) that no Fabric capability admits.
+The program keeps its verified host path and the host-only baseline stays
+complete; no owner lowers such a contract to a plain access to obtain a
+candidate. The product build reports the same refusal as the typed error
+`loom_pre_mapping_exact_hardware_incompatible`. A rejection that comes from
+the exact CGRA execution provider after Mapping carries the same contract
+class through the selected Mapping's runtime disposition.
+
 The manifest exact-output host report is an additional conformance gate, not
 a substitute for that canonical Simulation binding. Manifest and repository
 paths are operational inputs and never enter pair, candidate, Mapping,

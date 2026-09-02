@@ -571,6 +571,7 @@ public:
   StructuredOwnershipEvaluationTiming evaluationTiming;
   bool generationRecorded = false;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::vector<StructuredOwnershipFinalizationRejection> finalizationRejections;
   std::map<ArtifactRootReference,
            frontend::MaterializedStructuredOwnershipCandidate,
            decltype(&artifactRootReferenceLess)>
@@ -954,6 +955,11 @@ StructuredOwnershipInvocation::selectedCandidateHasLogicalThreadDomain(
 llvm::ArrayRef<StructuredOwnershipCandidateDisposition>
 StructuredOwnershipInvocation::dispositions() const {
   return impl_->dispositions;
+}
+
+llvm::ArrayRef<StructuredOwnershipFinalizationRejection>
+StructuredOwnershipInvocation::finalizationRejections() const {
+  return impl_->finalizationRejections;
 }
 
 llvm::Expected<SelectedStructuredOwnershipCandidate>
@@ -1456,6 +1462,25 @@ detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
              candidate.structuredProgram.canonicalBytes().bytes()) {
     return invalid("deduplicated Schedule child changed canonical bytes");
   }
+  return llvm::Error::success();
+}
+
+llvm::Error
+detail::StructuredOwnershipInvocationAccess::recordFinalizationRejection(
+    StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &candidate,
+    StructuredOwnershipCandidateRejectionRecord rejection) {
+  StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded)
+    return invalid("finalization rejection precedes Ownership generation");
+  auto lineage = impl.resolveLineage(candidate);
+  if (!lineage)
+    return lineage.takeError();
+  const StructuredOwnershipDerivation &ownership = lineage->ownership.front();
+  impl.finalizationRejections.push_back(
+      {StructuredOwnershipCandidateCoordinate{ownership.scope,
+                                              ownership.decision},
+       std::move(rejection)});
   return llvm::Error::success();
 }
 

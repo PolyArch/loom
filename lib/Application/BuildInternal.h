@@ -74,6 +74,13 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
 ApplicationPairDecisionDisposition classifyPreMappingNoFeasibleOutcome(
     const dse::CompletedPreMappingNoFeasibleCandidate &outcome);
 
+/// The exact-Fabric capability refusal that explains a complete no-candidate
+/// outcome, preferring a refusal that names a memory contract class. Absent
+/// when no ownership coordinate was refused by the exact Fabric.
+const dse::StructuredOwnershipCandidateRejectionRecord *
+exactFabricOwnershipRejection(
+    const dse::CompletedPreMappingNoFeasibleCandidate &outcome);
+
 ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,

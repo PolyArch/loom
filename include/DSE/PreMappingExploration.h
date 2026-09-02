@@ -72,7 +72,8 @@ struct PreMappingSearchCompleteness final {
   bool evidenceComplete = false;
   /// True when the admitted selection domain was fully adjudicated. A
   /// complete exact search may set this for an empty selected set when every
-  /// candidate was rejected by the immutable exact gate.
+  /// coordinate was rejected by the immutable exact gate or completed its
+  /// generations with a typed empty candidate domain.
   bool selectionComplete = false;
 
   bool exactComplete() const {
@@ -245,6 +246,12 @@ struct CompletedPreMappingNoFeasibleCandidate final {
   PreMappingSearchCompleteness completeness;
   std::optional<ComponentViewDigest> frontierPolicyDigest;
   std::optional<std::uint64_t> sourceHostOnlyWork;
+  /// The typed finalization refusals of the ownership coordinates, retained
+  /// when the bounded front-end kept no Dataflow candidate: they are then the
+  /// only proof of why nothing was retained, and the application decision
+  /// states an exact-Fabric refusal from them. Later no-finalist outcomes
+  /// leave it empty.
+  std::vector<StructuredOwnershipFinalizationRejection> finalizationRejections;
 };
 
 struct IncompletePreMappingExploration final {

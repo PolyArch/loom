@@ -27,8 +27,9 @@ llvm::Error rejectUnsupportedMemoryContracts(
         &actor.projection.payload);
     if (!memory)
       continue;
-    const auto *plain = std::get_if<::dataflow::PlainAccessProjection>(memory);
-    if (plain && !plain->isVolatile)
+    const ::dataflow::MemoryContractClass contractClass =
+        ::dataflow::classifyMemoryContract(*memory);
+    if (contractClass == ::dataflow::MemoryContractClass::Plain)
       continue;
 
     auto canonical = llvm::find_if(dataflow.actors(), [&](const auto &view) {
@@ -36,27 +37,11 @@ llvm::Error rejectUnsupportedMemoryContracts(
     });
     if (canonical == dataflow.actors().end())
       return invalid("CGRA memory actor has no canonical identity");
-
-    CgraUnsupportedMemoryContractKind kind;
-    if (plain)
-      kind = CgraUnsupportedMemoryContractKind::Volatile;
-    else if (std::holds_alternative<::dataflow::AtomicAccessProjection>(
-                 *memory))
-      kind = CgraUnsupportedMemoryContractKind::AtomicAccess;
-    else if (std::holds_alternative<::dataflow::AtomicRmwProjection>(*memory))
-      kind = CgraUnsupportedMemoryContractKind::AtomicRmw;
-    else if (std::holds_alternative<::dataflow::CompareExchangeProjection>(
-                 *memory))
-      kind = CgraUnsupportedMemoryContractKind::CompareExchange;
-    else {
-      assert(std::holds_alternative<::dataflow::FenceProjection>(*memory) &&
-             "closed memory contract payload");
-      kind = CgraUnsupportedMemoryContractKind::Fence;
-    }
     return llvm::make_error<CgraExecutionUnsupported>(
-        CgraUnsupportedMemoryContract{kind, canonical->ref},
-        (llvm::Twine("CGRA graph activation does not model atomic, volatile, "
-                     "or fence actor '") +
+        CgraUnsupportedMemoryContract{contractClass, canonical->ref},
+        (llvm::Twine("CGRA graph activation does not model the ") +
+         ::dataflow::memoryContractClassSpelling(contractClass) +
+         " memory contract of actor '" +
          actor.operation->getName().getStringRef() + "'")
             .str());
   }

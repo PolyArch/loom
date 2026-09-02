@@ -17,6 +17,7 @@
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/CompilerTargetLinker.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -499,6 +500,10 @@ struct ApplicationMappingCandidateOutcome final {
   std::optional<std::uint64_t> cgraCycles;
   std::optional<std::uint64_t> resourceCoreCost;
   std::vector<ArtifactRootReference> oracleEvidence;
+  /// The memory actor and contract class the exact CGRA execution provider
+  /// refused when the runtime disposition is Unsupported for that reason.
+  std::optional<sim::CgraUnsupportedMemoryContract>
+      runtimeMemoryContractRefusal;
 };
 
 /// Evidence for one application-level resource-time transition attempt. The

@@ -283,6 +283,10 @@ void emitOwnershipRejections(
                   ? "non_finalizable"
                   : "exact_fabric_inadmissible";
           fields["diagnostic"] = rejection->message;
+          if (rejection->memoryContract)
+            fields["memory_contract"] =
+                dataflow::memoryContractClassSpelling(
+                    *rejection->memoryContract);
           fields["scope_ordinal"] =
               disposition.coordinate.scope.selection.ordinal;
           if (disposition.coordinate.decision) {
@@ -584,6 +588,7 @@ struct CompletedOwnershipSelection final {
   std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::vector<StructuredOwnershipFinalizationRejection> finalizationRejections;
   DsePlanGenerateInvocationRecords generateInvocations;
   std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
   std::uint64_t programMaterializations = 0;
@@ -1028,6 +1033,9 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
                   selectionExecution->resolve({selectionNode, 1}));
   std::vector<StructuredOwnershipCandidateDisposition> dispositions(
       invocation->dispositions().begin(), invocation->dispositions().end());
+  std::vector<StructuredOwnershipFinalizationRejection> finalizationRejections(
+      invocation->finalizationRejections().begin(),
+      invocation->finalizationRejections().end());
   auto programMaterializations =
       consumedCompilerMaterializations(*selectionExecution);
   if (!programMaterializations)
@@ -1040,6 +1048,7 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   return OwnershipSelectionOutcome{CompletedOwnershipSelection{
       std::move(invocation), std::move(selected), std::move(*preferenceOrder),
       std::move(evidence), std::move(dispositions),
+      std::move(finalizationRejections),
       takeDsePlanGenerateInvocationRecords(std::move(*executed)),
       std::move(retainedIncompleteness), *programMaterializations,
       (baseline ? 1 : 0) + evaluationCandidateCount,
@@ -1523,6 +1532,7 @@ exploreStructuredCompilationToPreMapping(
   std::vector<RetainedOwnershipAlternative> semanticAlternatives;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::vector<StructuredOwnershipFinalizationRejection> finalizationRejections;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
   std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
   StructuredOwnershipEvaluationTiming evaluationTiming;
@@ -1533,14 +1543,25 @@ exploreStructuredCompilationToPreMapping(
   const auto deriveNoFeasibleCompleteness =
       [&]() -> llvm::Expected<PreMappingSearchCompleteness> {
     PreMappingSearchCompleteness completeness;
+    // A coordinate the exact gate rejected, or whose completed generations
+    // produced no candidate, was fully adjudicated; incomplete generations
+    // are excluded separately through the provider flags below. An ownership
+    // domain that planned coordinates yet kept no inventory at all was
+    // likewise adjudicated before any candidate existed.
+    const bool ownershipProvenInfeasible =
+        candidateInventory.empty() && !dispositions.empty();
     const bool allExactGateRejected =
-        !candidateInventory.empty() &&
-        llvm::all_of(candidateInventory,
-                     [](const PreMappingCandidatePlanningRecord &record) {
-                       return record.disposition ==
-                              PreMappingCandidatePlanningDisposition::
-                                  ExactGateRejected;
-                     });
+        ownershipProvenInfeasible ||
+        (!candidateInventory.empty() &&
+         llvm::all_of(candidateInventory,
+                      [](const PreMappingCandidatePlanningRecord &record) {
+                        return record.disposition ==
+                                   PreMappingCandidatePlanningDisposition::
+                                       ExactGateRejected ||
+                               record.disposition ==
+                                   PreMappingCandidatePlanningDisposition::
+                                       Unsupported;
+                      }));
     const bool dependenciesComplete = llvm::none_of(
         protocolDependencyProjection->relations, [](const auto &relation) {
           return relation.knowledge ==
@@ -1749,6 +1770,8 @@ exploreStructuredCompilationToPreMapping(
                                          {},
                                          {}});
       bool coordinateCompleted = false;
+      const std::size_t coordinateRejectionsBegin =
+          finalizationRejections.size();
       for (std::size_t depth = 0; depth != depthCount && !beam.empty();
            ++depth) {
         if (options.executionControl.stopRequested())
@@ -1991,6 +2014,11 @@ exploreStructuredCompilationToPreMapping(
               dispositions.end(),
               std::make_move_iterator(completed.dispositions.begin()),
               std::make_move_iterator(completed.dispositions.end()));
+          finalizationRejections.insert(
+              finalizationRejections.end(),
+              std::make_move_iterator(
+                  completed.finalizationRejections.begin()),
+              std::make_move_iterator(completed.finalizationRejections.end()));
           planGenerateInvocations.push_back(
               std::move(completed.generateInvocations));
           if (completed.retainedIncompleteness)
@@ -2192,9 +2220,23 @@ exploreStructuredCompilationToPreMapping(
           beam.push_back(std::move(*found));
         }
       }
-      if (!coordinateCompleted)
-        addBudgetRecord(coordinate,
-                        PreMappingCandidatePlanningDisposition::Unsupported);
+      if (!coordinateCompleted) {
+        // The exact Fabric is the immutable exact gate applied at candidate
+        // finalization: a coordinate whose generations retained such a
+        // refusal was rejected by that gate, not left unsupported.
+        const bool exactFabricRejected = llvm::any_of(
+            llvm::drop_begin(finalizationRejections, coordinateRejectionsBegin),
+            [](const StructuredOwnershipFinalizationRejection &rejection) {
+              return rejection.rejection.kind ==
+                     frontend::SpatialOwnershipCandidateRejectionKind::
+                         ExactFabricInadmissible;
+            });
+        addBudgetRecord(
+            coordinate,
+            exactFabricRejected
+                ? PreMappingCandidatePlanningDisposition::ExactGateRejected
+                : PreMappingCandidatePlanningDisposition::Unsupported);
+      }
     }
   }
   std::vector<RetainedOwnershipAlternative> alternatives;
@@ -2228,7 +2270,8 @@ exploreStructuredCompilationToPreMapping(
             std::move(candidateInventory),
             std::move(*completeness),
             *frontierPolicyDigest,
-            sourceHostOnlyWork}};
+            sourceHostOnlyWork,
+            std::move(finalizationRejections)}};
   }
     std::vector<PreMappingFrontierCandidate> rankedInputs;
     rankedInputs.reserve(semanticAlternatives.size());
@@ -2690,7 +2733,8 @@ exploreStructuredCompilationToPreMapping(
         std::move(candidateInventory),
         std::move(*noFeasibleCompleteness),
         *frontierPolicyDigest,
-        sourceHostOnlyWork}};
+        sourceHostOnlyWork,
+        std::move(finalizationRejections)}};
   }
   const StructuredOwnershipSharedEvaluationStatistics sharedStatistics =
       sharedEvaluation.statistics();

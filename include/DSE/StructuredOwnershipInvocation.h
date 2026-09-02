@@ -141,6 +141,10 @@ public:
   operator=(const StructuredOwnershipInvocation &) = delete;
 
   llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions() const;
+  /// Typed finalization refusals retained by the bound generators, in the
+  /// order they were recorded.
+  llvm::ArrayRef<StructuredOwnershipFinalizationRejection>
+  finalizationRejections() const;
 
   llvm::Error prepareInputs(const ArtifactRootReference &generationParent,
                             const ArtifactRootReference &source,

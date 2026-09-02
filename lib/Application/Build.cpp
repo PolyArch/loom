@@ -274,6 +274,7 @@ publishApplicationWorkloads(
 } // namespace build_detail
 using build_detail::ApplicationBuildOperationTimer;
 using build_detail::classifyPreMappingNoFeasibleOutcome;
+using build_detail::exactFabricOwnershipRejection;
 using build_detail::derivePreMappingInvocationRunKey;
 using build_detail::deriveSystemBindingPartitionIntent;
 using build_detail::elapsedNanoseconds;
@@ -389,11 +390,18 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       return invocationRunKey.takeError();
     const ApplicationPairDecisionDisposition disposition =
         classifyPreMappingNoFeasibleOutcome(*noFeasible);
+    const dse::StructuredOwnershipCandidateRejectionRecord *fabricRejection =
+        disposition ==
+                ApplicationPairDecisionDisposition::ExactHardwareIncompatible
+            ? exactFabricOwnershipRejection(*noFeasible)
+            : nullptr;
     auto decision = makePreparationPairDecision(
         noFeasible->sourceProgram, noFeasible->fabric, noFeasible->workload,
         noFeasible->runtimeInput, noFeasible->candidateInventory, disposition,
-        disposition == ApplicationPairDecisionDisposition::NoPromisingCandidate
-            ? "bounded front-end retained no candidate"
+        fabricRejection ? llvm::StringRef(fabricRejection->message)
+        : disposition ==
+                ApplicationPairDecisionDisposition::NoPromisingCandidate
+            ? llvm::StringRef("bounded front-end retained no candidate")
             : toString(disposition),
         noFeasible->sourceHostOnlyWork, *invocationRunKey, false,
         request.portfolioInput);
@@ -716,7 +724,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
             completed.sourceProgram, completed.fabric, completed.workload,
             completed.runtimeInput, std::move(completed.candidateInventory),
             completed.completeness, completed.frontierPolicyDigest,
-            completed.sourceHostOnlyWork}};
+            completed.sourceHostOnlyWork, {}}};
   }
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
@@ -982,7 +990,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
             completed.sourceProgram, completed.fabric, completed.workload,
             completed.runtimeInput, std::move(completed.candidateInventory),
             completed.completeness, completed.frontierPolicyDigest,
-            completed.sourceHostOnlyWork}};
+            completed.sourceHostOnlyWork, {}}};
   }
   for (dse::PreMappingCandidatePlanningRecord &record :
        completed.candidateInventory) {

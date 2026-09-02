@@ -161,11 +161,15 @@ struct StructuredOwnershipCandidateCoordinate final {
 struct StructuredOwnershipCandidateRejectionRecord final {
   frontend::SpatialOwnershipCandidateRejectionKind kind;
   std::string message;
+  /// The memory contract class an exact Fabric refused, retained so the
+  /// application pair decision can state the typed cause of a host fallback.
+  std::optional<dataflow::MemoryContractClass> memoryContract;
 
   friend bool
   operator==(const StructuredOwnershipCandidateRejectionRecord &lhs,
              const StructuredOwnershipCandidateRejectionRecord &rhs) {
-    return lhs.kind == rhs.kind && lhs.message == rhs.message;
+    return lhs.kind == rhs.kind && lhs.message == rhs.message &&
+           lhs.memoryContract == rhs.memoryContract;
   }
 };
 
@@ -183,6 +187,20 @@ struct StructuredOwnershipCandidateDisposition final {
   friend bool operator==(const StructuredOwnershipCandidateDisposition &lhs,
                          const StructuredOwnershipCandidateDisposition &rhs) {
     return lhs.coordinate == rhs.coordinate && lhs.result == rhs.result;
+  }
+};
+
+/// A typed refusal of a candidate derived from one Ownership coordinate at
+/// its finalization. It is retained beside, not inside, the coordinate's
+/// attempt accounting: the disposition still records the materialized
+/// attempt, and this record owns why that attempt admitted no candidate.
+struct StructuredOwnershipFinalizationRejection final {
+  StructuredOwnershipCandidateCoordinate coordinate;
+  StructuredOwnershipCandidateRejectionRecord rejection;
+
+  friend bool operator==(const StructuredOwnershipFinalizationRejection &lhs,
+                         const StructuredOwnershipFinalizationRejection &rhs) {
+    return lhs.coordinate == rhs.coordinate && lhs.rejection == rhs.rejection;
   }
 };
 

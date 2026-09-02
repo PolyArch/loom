@@ -586,6 +586,46 @@ dataflow::operationSemanticsCaseSpelling(OperationSemanticsCase kind) {
   return semanticsCaseTable()[static_cast<std::size_t>(kind)];
 }
 
+dataflow::MemoryContractClass
+dataflow::classifyMemoryContract(const MemoryContractPayload &contract) {
+  return std::visit(
+      [](const auto &projection) {
+        using Projection = std::decay_t<decltype(projection)>;
+        if constexpr (std::is_same_v<Projection, PlainAccessProjection>)
+          return projection.isVolatile ? MemoryContractClass::Volatile
+                                       : MemoryContractClass::Plain;
+        else if constexpr (std::is_same_v<Projection, AtomicAccessProjection>)
+          return MemoryContractClass::AtomicAccess;
+        else if constexpr (std::is_same_v<Projection, AtomicRmwProjection>)
+          return MemoryContractClass::AtomicRmw;
+        else if constexpr (std::is_same_v<Projection,
+                                          CompareExchangeProjection>)
+          return MemoryContractClass::CompareExchange;
+        else
+          return MemoryContractClass::Fence;
+      },
+      contract);
+}
+
+llvm::StringRef
+dataflow::memoryContractClassSpelling(MemoryContractClass value) {
+  switch (value) {
+  case MemoryContractClass::Plain:
+    return "plain";
+  case MemoryContractClass::Volatile:
+    return "volatile";
+  case MemoryContractClass::AtomicAccess:
+    return "atomic_access";
+  case MemoryContractClass::AtomicRmw:
+    return "atomic_rmw";
+  case MemoryContractClass::CompareExchange:
+    return "compare_exchange";
+  case MemoryContractClass::Fence:
+    return "fence";
+  }
+  llvm_unreachable("unknown memory contract class");
+}
+
 std::optional<dataflow::OperationSchemaId>
 dataflow::findOperationSchema(llvm::StringRef spelling) {
   const auto &index = spellingIndex();
