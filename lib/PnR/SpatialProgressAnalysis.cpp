@@ -13,6 +13,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -20,7 +21,6 @@
 #include <iterator>
 #include <limits>
 #include <map>
-#include <set>
 #include <system_error>
 #include <vector>
 
@@ -377,21 +377,29 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
   if (!sourceSlot)
     return invalid("routed capacity proof channel has no source node");
 
+  // One net crosses few FIFO owners and each channel few buffered
+  // traversals, so owner-sorted flat storage replaces per-probe node maps.
   struct MutableUse final {
+    PnrIndex owner = getInvalidPnrIndex();
     std::uint64_t channels = 0;
     std::uint64_t initializedFeedbackChannels = 0;
     bool repeated = false;
     bool queueClassIndeterminate = false;
     std::vector<llvm::APInt> queueClasses;
   };
-  std::map<PnrIndex, MutableUse> uses;
+  llvm::SmallVector<MutableUse, 8> uses;
+  struct ChannelUse final {
+    PnrIndex owner = getInvalidPnrIndex();
+    llvm::SmallVector<PnrIndex, 4> traversals;
+    bool queueClassIndeterminate = false;
+    llvm::SmallVector<llvm::APInt, 4> queueClasses;
+  };
+  llvm::SmallVector<ChannelUse, 8> channelUses;
+  const auto ownerLess = [](const auto &use, PnrIndex target) {
+    return use.owner < target;
+  };
   for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
-    struct ChannelUse final {
-      std::set<PnrIndex> traversals;
-      bool queueClassIndeterminate = false;
-      std::vector<llvm::APInt> queueClasses;
-    };
-    std::map<PnrIndex, ChannelUse> channelUses;
+    channelUses.clear();
     const auto appendTraversal = [&](PnrIndex traversal,
                                      PnrIndex node) -> llvm::Error {
       if (traversal >= problem.routing().traversals().size())
@@ -402,9 +410,16 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
         return llvm::Error::success();
       if (owner >= problem.progressIndex().ownerQueueDisciplines().size())
         return invalid("capacity proof traversal owner is out of range");
-      ChannelUse &use = channelUses[owner];
-      if (!use.traversals.insert(traversal).second)
+      auto channel = llvm::lower_bound(channelUses, owner, ownerLess);
+      if (channel == channelUses.end() || channel->owner != owner) {
+        channel = channelUses.insert(channel, ChannelUse{});
+        channel->owner = owner;
+      }
+      ChannelUse &use = *channel;
+      const auto seen = llvm::lower_bound(use.traversals, traversal);
+      if (seen != use.traversals.end() && *seen == traversal)
         return llvm::Error::success();
+      use.traversals.insert(seen, traversal);
       if (problem.progressIndex().ownerQueueDisciplines()[owner] !=
           ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
         return llvm::Error::success();
@@ -472,8 +487,13 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
           return std::holds_alternative<
               FrozenSpatialInitializedFeedbackPrerequisite>(value);
         });
-    for (auto &[owner, channel] : channelUses) {
-      MutableUse &use = uses[owner];
+    for (ChannelUse &channel : channelUses) {
+      auto position = llvm::lower_bound(uses, channel.owner, ownerLess);
+      if (position == uses.end() || position->owner != channel.owner) {
+        position = uses.insert(position, MutableUse{});
+        position->owner = channel.owner;
+      }
+      MutableUse &use = *position;
       if (use.channels == std::numeric_limits<std::uint64_t>::max())
         return invalid("capacity proof owner channel count exceeds u64");
       ++use.channels;
@@ -494,7 +514,7 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
 
   SpatialProgressNetCapacityProjection result;
   result.owners.reserve(uses.size());
-  for (auto &[owner, use] : uses) {
+  for (MutableUse &use : uses) {
     llvm::sort(use.queueClasses, [](const llvm::APInt &lhs,
                                     const llvm::APInt &rhs) {
       return ::fabric::comparePhysicalTagValues(lhs, rhs) < 0;
@@ -505,7 +525,7 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
                       return ::fabric::comparePhysicalTagValues(lhs, rhs) == 0;
                     }),
         use.queueClasses.end());
-    result.owners.push_back({owner, use.channels,
+    result.owners.push_back({use.owner, use.channels,
                              use.initializedFeedbackChannels, use.repeated,
                              use.queueClassIndeterminate,
                              std::move(use.queueClasses)});
