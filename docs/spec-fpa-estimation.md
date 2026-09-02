@@ -129,7 +129,32 @@ implementation domain has no independently routed leaf product, or
 `RoutedAsicImplementationUnavailable` when the enclosing implementation is not
 a routed ASIC product. A malformed, foreign, or non-leaf local reference is an
 error. These dispositions do not invalidate routed SpatialCore FPA Evidence
-and are not physical Evidence or signoff claims.
+and are not physical Evidence or signoff claims. The leaf breadth of one
+routed implementation is the assessment of every PE, FU, memory, and switch
+occurrence and every transport boundary endpoint of its subject Module in
+canonical inventory order; the collection report records it per partition
+member as the provider-specific typed-unavailable disposition of the leaf
+level, next to the completed SpatialCore-closure Evidence.
+
+The offline campaign has one production entry, `loom-dse`, in three staged
+plans over one ArtifactStore. The physical stage lowers Fabric System roots to
+portable SpatialCore RTL and synthesizes and routes exact RTL roots through
+the Yosys and OpenROAD candidate generators on one `ImplementationPlatform`
+(`--fpa-physical-system`, `--fpa-physical-rtl`, `--fpa-asic-technology`,
+`--fpa-asic-release`, `--fpa-technology-corner`, `--fpa-yosys-build`,
+`--fpa-openroad-build`, `--fpa-placement`); the technology files enter the
+plan only through their content fingerprints resolved from the local tool
+configuration. The collection stage partitions routed implementations into
+Training, Validation, and HeldOut, binds the operating conditions anchored on
+the first Training member, and runs under the FPA campaign policy
+(`--fpa-collection-*`, `--fpa-operating-conditions`,
+`--ground-truth-campaign=fpa`). The model stage trains, validates, and
+releases the bundle from the three Evidence partitions (`--fpa-model-*`) and
+writes the released root for `loom-cc --loom-fpa-weight-root`. Each stage
+writes a durable JSON report (`loom.fpa_physical_implementation_report`,
+`loom.fpa_ground_truth_collection_report`, `loom.fpa_model_release_report`)
+naming the resolved configuration, the provider builds, every produced root,
+the observed metrics, the leaf breadth, and the calibration quantiles.
 
 An EDA-derived parameter bundle remains the same canonical
 `ModelParameterBundle` in its machine-local Artifact Store;

@@ -2581,7 +2581,9 @@ provider, or weaken a model target.
 
 The campaign runner coordinates through a caller- or site-owned scheduler that
 is resource-aware over declared CPU, memory, scratch, external-tool, and
-license capacities. These are operational claims, not semantic candidate
+license capacities. A site may grant one default unit count to every external
+tool binding it did not name explicitly; licenses are never granted
+implicitly. These are operational claims, not semantic candidate
 properties, and do not give Loom ownership of an external process tree.
 Independent work units may run concurrently; one exclusive resource claim
 serializes only its actual users. Scheduling must preserve stable WorkUnitKeys

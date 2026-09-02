@@ -80,14 +80,16 @@ struct MutableUsage final {
 
 bool resourcesFit(llvm::ArrayRef<CountedSiteResource> claim,
                   llvm::ArrayRef<CountedSiteResource> capacity,
-                  const std::map<SiteResourceKey, std::uint64_t> &allocated) {
+                  const std::map<SiteResourceKey, std::uint64_t> &allocated,
+                  std::uint64_t undeclaredUnits) {
   for (const CountedSiteResource &entry : claim) {
     const CountedSiteResource *limit = findResource(capacity, entry.key);
-    if (!limit || entry.units > limit->units)
+    const std::uint64_t units = limit ? limit->units : undeclaredUnits;
+    if (entry.units > units)
       return false;
     auto found = allocated.find(entry.key);
     const std::uint64_t used = found == allocated.end() ? 0 : found->second;
-    if (used > limit->units || entry.units > limit->units - used)
+    if (used > units || entry.units > units - used)
       return false;
   }
   return true;
@@ -105,9 +107,10 @@ bool fits(const SiteResourceClaim &claim, const SiteCapacity &capacity,
       claim.scratchBytes() > capacity.scratchBytes() - allocated.scratchBytes)
     return false;
   return resourcesFit(claim.externalTools(), capacity.externalTools(),
-                      allocated.externalTools) &&
-         resourcesFit(claim.licenses(), capacity.licenses(),
-                      allocated.licenses);
+                      allocated.externalTools,
+                      capacity.undeclaredExternalToolUnits()) &&
+         resourcesFit(claim.licenses(), capacity.licenses(), allocated.licenses,
+                      0);
 }
 
 bool admitted(const SiteResourceClaim &claim, const SiteCapacity &capacity) {
@@ -361,7 +364,8 @@ llvm::Expected<SiteCapacity>
 SiteCapacity::get(std::uint64_t cpuCores, std::uint64_t memoryBytes,
                   std::uint64_t scratchBytes,
                   llvm::ArrayRef<CountedSiteResource> externalTools,
-                  llvm::ArrayRef<CountedSiteResource> licenses) {
+                  llvm::ArrayRef<CountedSiteResource> licenses,
+                  std::uint64_t undeclaredExternalToolUnits) {
   if (cpuCores == 0)
     return invalid("site capacity requires at least one CPU core");
   auto checkedTools = validateResources(
@@ -373,7 +377,8 @@ SiteCapacity::get(std::uint64_t cpuCores, std::uint64_t memoryBytes,
   if (!checkedLicenses)
     return checkedLicenses.takeError();
   return SiteCapacity(cpuCores, memoryBytes, scratchBytes,
-                      std::move(*checkedTools), std::move(*checkedLicenses));
+                      std::move(*checkedTools), std::move(*checkedLicenses),
+                      undeclaredExternalToolUnits);
 }
 
 SiteResourceLease::SiteResourceLease(SiteResourceLease &&other) noexcept

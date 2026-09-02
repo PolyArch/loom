@@ -125,48 +125,138 @@ validateCharacterizationLeaf(const fabric::FabricModuleDomainMemberRef &leaf,
 
 } // namespace
 
-llvm::Expected<FpaCharacterizationUnavailable>
-assessFpaLeafCharacterizationTarget(const FpaLeafCharacterizationTarget &target,
-                                    const ArtifactStore &artifactStore,
-                                    const BlobStore &blobStore) {
+namespace {
+
+/// One imported HardwareImplementation together with its subject SpatialCore
+/// Module view; every leaf assessment of that implementation shares it.
+struct LeafCharacterizationScope final {
+  hardware::FinalizedHardwareImplementation imported;
+  fabric::FinalizedFabricRoot fabricRoot;
+  std::size_t moduleOrdinal = 0;
+
+  const fabric::FabricArtifactView &module() const {
+    return fabricRoot.view().importedModules()[moduleOrdinal];
+  }
+};
+
+llvm::Expected<LeafCharacterizationScope>
+openLeafCharacterizationScope(const ArtifactRootReference &hardwareImplementation,
+                              const ArtifactStore &artifactStore,
+                              const BlobStore &blobStore) {
   auto contracts = eda::makeKnownAsicStandardCellContractCatalog();
   if (!contracts)
     return contracts.takeError();
   auto imported = hardware::importHardwareImplementation(
-      target.hardwareImplementation, *contracts, artifactStore, blobStore);
+      hardwareImplementation, *contracts, artifactStore, blobStore);
   if (!imported)
     return imported.takeError();
-  const hardware::HardwareImplementation &implementation =
-      imported->implementation();
-  auto fabricRoot =
-      fabric::importEntireFabricRoot(implementation.fabric(), artifactStore);
+  auto fabricRoot = fabric::importEntireFabricRoot(
+      imported->implementation().fabric(), artifactStore);
   if (!fabricRoot)
     return fabricRoot.takeError();
-  auto system = fabric::requireSystemRoot(fabricRoot->view());
+  LeafCharacterizationScope scope{std::move(*imported), std::move(*fabricRoot),
+                                  0};
+  auto system = fabric::requireSystemRoot(scope.fabricRoot.view());
   if (!system)
     return system.takeError();
   const auto selected =
-      system->spatialCoreTarget(implementation.subject().core);
+      system->spatialCoreTarget(scope.imported.implementation().subject().core);
   if (!selected || selected->dependencyOrdinal >=
                        system->artifact().importedModules().size())
     return invalid("implementation subject has no imported SpatialCore Module");
-  const fabric::FabricArtifactView &module =
-      system->artifact().importedModules()[selected->dependencyOrdinal];
-  if (llvm::Error error = validateCharacterizationLeaf(target.leaf, module))
-    return std::move(error);
+  scope.moduleOrdinal = selected->dependencyOrdinal;
+  return scope;
+}
 
+FpaCharacterizationUnavailable
+assessScopedLeaf(const LeafCharacterizationScope &scope,
+                 const FpaLeafCharacterizationTarget &target) {
   const hardware::ImplementationRepresentationRoot &representation =
-      implementation.representationRoot();
+      scope.imported.implementation().representationRoot();
   if (representation.variant !=
           hardware::RepresentationRootVariant::AsicPhysical ||
       representation.stage != hardware::RepresentationPhysicalStage::Routed ||
-      !implementation.implementationPlatform())
+      !scope.imported.implementation().implementationPlatform())
     return FpaCharacterizationUnavailable{
         target, FpaCharacterizationUnavailableReason::
                     RoutedAsicImplementationUnavailable};
   return FpaCharacterizationUnavailable{
       target,
       FpaCharacterizationUnavailableReason::IndependentlyRoutedLeafUnavailable};
+}
+
+} // namespace
+
+llvm::Expected<FpaCharacterizationUnavailable>
+assessFpaLeafCharacterizationTarget(const FpaLeafCharacterizationTarget &target,
+                                    const ArtifactStore &artifactStore,
+                                    const BlobStore &blobStore) {
+  auto scope = openLeafCharacterizationScope(target.hardwareImplementation,
+                                             artifactStore, blobStore);
+  if (!scope)
+    return scope.takeError();
+  if (llvm::Error error =
+          validateCharacterizationLeaf(target.leaf, scope->module()))
+    return std::move(error);
+  return assessScopedLeaf(*scope, target);
+}
+
+llvm::Expected<std::vector<FpaCharacterizationUnavailable>>
+assessFpaLeafCharacterizationBreadth(
+    const ArtifactRootReference &hardwareImplementation,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto scope = openLeafCharacterizationScope(hardwareImplementation,
+                                             artifactStore, blobStore);
+  if (!scope)
+    return scope.takeError();
+  const fabric::FabricArtifactView &module = scope->module();
+  std::vector<FpaCharacterizationUnavailable> breadth;
+  const auto assessOwner = [&](const auto &occurrence) -> llvm::Error {
+    auto owner = fabric::FabricModulePhysicalOwnerRef::create(occurrence);
+    if (!owner)
+      return owner.takeError();
+    FpaLeafCharacterizationTarget target{
+        hardwareImplementation, fabric::FabricModuleDomainMemberRef::of(*owner)};
+    if (llvm::Error error = validateCharacterizationLeaf(target.leaf, module))
+      return error;
+    breadth.push_back(assessScopedLeaf(*scope, target));
+    return llvm::Error::success();
+  };
+  for (const fabric::FabricPeOccurrenceRef &pe : module.peOccurrences())
+    if (llvm::Error error = assessOwner(pe))
+      return std::move(error);
+  for (const fabric::FabricFuOccurrenceRef &fu : module.fuOccurrences())
+    if (llvm::Error error = assessOwner(fu))
+      return std::move(error);
+  for (const fabric::FabricMemoryOccurrenceRef &memory :
+       module.memoryOccurrences())
+    if (llvm::Error error = assessOwner(memory))
+      return std::move(error);
+  for (const fabric::FabricSwitchOccurrenceRef &sw : module.switchOccurrences())
+    if (llvm::Error error = assessOwner(sw))
+      return std::move(error);
+  const auto moduleTemplate = module.moduleRootTemplate();
+  if (!moduleTemplate)
+    return invalid("subject SpatialCore Module has no root template");
+  for (fabric::FabricPortDirection direction :
+       {fabric::FabricPortDirection::Input, fabric::FabricPortDirection::Output}) {
+    const std::uint64_t count =
+        module.moduleBoundaryEndpointCount(*moduleTemplate, direction);
+    for (std::uint64_t ordinal = 0; ordinal != count; ++ordinal) {
+      const fabric::FabricModuleBoundaryEndpointRef boundary{
+          *moduleTemplate, direction, ordinal};
+      if (module.moduleBoundaryEndpointPlane(boundary) !=
+          fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport)
+        continue;
+      FpaLeafCharacterizationTarget target{
+          hardwareImplementation,
+          fabric::FabricModuleDomainMemberRef::of(boundary)};
+      if (llvm::Error error = validateCharacterizationLeaf(target.leaf, module))
+        return std::move(error);
+      breadth.push_back(assessScopedLeaf(*scope, target));
+    }
+  }
+  return breadth;
 }
 
 llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
