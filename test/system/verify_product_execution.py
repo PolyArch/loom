@@ -129,6 +129,77 @@ def search_invocations(
     return rows
 
 
+def root_identity(encoded_root: str) -> str:
+    """The encoded ArtifactRootReference ends with the 32-byte identity."""
+    return encoded_root[-64:]
+
+
+def validate_schedule_lineage(
+    events: list[dict[str, Any]],
+    pair_decision: dict[str, Any],
+    required_kind: str,
+) -> dict[str, Any]:
+    """Joins one Structured schedule proposal to the Mapping work recorded
+    against the selected compilation that carries it."""
+    frontend_rows = matching_payloads(
+        events, stage="dataflow_lowering", event="candidate"
+    )
+    proposals = [
+        row
+        for row in frontend_rows
+        if row.get("operation") == "structured_schedule_candidate"
+        and row.get("decision_kind") == required_kind
+    ]
+    require(proposals, f"the Schedule generator published no {required_kind} child")
+    lineage_rows = [
+        row
+        for row in frontend_rows
+        if row.get("operation") == "selected_candidate_lineage"
+        and any(
+            isinstance(decision, dict) and decision.get("kind") == required_kind
+            for decision in row.get("schedule_decisions", [])
+        )
+    ]
+    require(lineage_rows, f"no selected compilation carries a {required_kind} decision")
+    proposal_children = {row.get("child") for row in proposals}
+    require(
+        any(
+            decision.get("child") in proposal_children
+            for row in lineage_rows
+            for decision in row.get("schedule_decisions", [])
+            if isinstance(decision, dict) and decision.get("kind") == required_kind
+        ),
+        "the selected lineage does not name a published schedule child",
+    )
+    programs = {row.get("structured_program") for row in lineage_rows}
+    candidates = [
+        candidate
+        for candidate in pair_decision.get("candidates", [])
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get("structured_program"), str)
+        and root_identity(candidate["structured_program"]) in programs
+    ]
+    require(candidates, "the pair decision inventory lost the schedule-derived candidate")
+    require(
+        any(candidate.get("entered_mapping") is True for candidate in candidates),
+        "the schedule-derived candidate never entered Mapping",
+    )
+    verified = [
+        observation
+        for candidate in candidates
+        for observation in candidate.get("mapping_observations", [])
+        if isinstance(observation, dict)
+        and observation.get("mapping_disposition") == "verified"
+    ]
+    require(verified, "the schedule-derived candidate has no verified Mapping observation")
+    return {
+        "decision_kind": required_kind,
+        "proposal_count": len(proposals),
+        "selected": any(candidate.get("selected") is True for candidate in candidates),
+        "verified_observation_count": len(verified),
+    }
+
+
 def validate_mapping_work(
     events: list[dict[str, Any]],
     expected_system_active_contexts: int | None,
@@ -1112,6 +1183,11 @@ def main() -> None:
     parser.add_argument("--require-register-fifo", action="store_true")
     parser.add_argument("--require-packed-switch-row", action="store_true")
     parser.add_argument("--require-temporal-dispatch", action="store_true")
+    parser.add_argument(
+        "--require-schedule-decision",
+        help="a Structured schedule decision kind that one selected compilation "
+        "must carry into verified Mapping work",
+    )
     parser.add_argument("--dense-coordinate-rank", type=int)
     parser.add_argument("--require-unique-dense-coordinates", action="store_true")
     parser.add_argument("--minimum-unique-acc-cores", type=int, default=1)
@@ -1188,6 +1264,13 @@ def main() -> None:
         )
     if arguments.require_spatial_unconditional_handshake:
         validate_spatial_unconditional_handshake(events)
+    if arguments.require_schedule_decision is not None:
+        lineage = validate_schedule_lineage(
+            events,
+            pair_evidence.get("pair_decision", {}),
+            arguments.require_schedule_decision,
+        )
+        print(json.dumps({"schedule_lineage": lineage}, sort_keys=True))
     validate_manifest(
         read_json(arguments.manifest),
         arguments.manifest,
