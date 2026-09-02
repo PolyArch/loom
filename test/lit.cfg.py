@@ -58,6 +58,19 @@ try:
 except (OSError, json.JSONDecodeError):
     pass
 
+# The backend tool catalog probe below and every test see the same tool
+# environment: the license and installation variables of the external tools
+# pass through before the probe runs, because a tool launcher such as VCS
+# resolves its installation from them.
+llvm_config.with_system_environment(
+    ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
+     "JOBS", "LOOM_TEST_JOBS",
+     "LOOM_EXTERNAL_TOOL_CACHE_ROOT", "LOOM_VERBOSE_LEVEL",
+     "LOOM_NATIVE_RUNNER_JOBS", "LOCALDOMAIN", "LM_LICENSE_FILE",
+     "SNPSLMD_LICENSE_FILE", "VCS_HOME", "VCSMX_HOME",
+     "ALTERAD_LICENSE_FILE", "ALTERA_INSTALL_ROOT_HOME", "QUARTUS_ROOTDIR",
+     "QUARTUS_ROOTDIR_OVERRIDE", "QCORE_ROOTDIR", "QSYS_ROOTDIR"])
+
 catalog_executable = os.path.join(
     config.loom_obj_root, "bin", "loom-backend-tool-catalog")
 try:
@@ -122,13 +135,6 @@ config.substitutions.append(
 config.substitutions.append(
     ("%loom_external", config.loom_external_source_root))
 
-llvm_config.with_system_environment(
-    ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
-     "JOBS", "LOOM_TEST_JOBS",
-     "LOOM_EXTERNAL_TOOL_CACHE_ROOT", "LOOM_VERBOSE_LEVEL",
-     "LOOM_NATIVE_RUNNER_JOBS", "LOCALDOMAIN", "LM_LICENSE_FILE",
-     "ALTERAD_LICENSE_FILE", "ALTERA_INSTALL_ROOT_HOME", "QUARTUS_ROOTDIR",
-     "QUARTUS_ROOTDIR_OVERRIDE", "QCORE_ROOTDIR", "QSYS_ROOTDIR"])
 llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
