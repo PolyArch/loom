@@ -289,7 +289,12 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
                                       artifacts, blobs);
   if (!manifest)
     return manifest.takeError();
-  return publishApplicationRuntimeManifest(std::move(*manifest), artifacts);
+  auto published =
+      publishApplicationRuntimeManifest(std::move(*manifest), artifacts);
+  if (!published)
+    return published.takeError();
+  emitApplicationRuntimeManifestDiagnostics(*published);
+  return published;
 }
 
 llvm::Expected<deployment::HostProgramEntry>
