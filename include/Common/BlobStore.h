@@ -4,14 +4,21 @@
 #include "Common/BlobDigest.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace loom {
+
+struct GeneratedBlobPublication final {
+  BlobDigest digest;
+  std::uint64_t logicalByteCount = 0;
+};
 
 /// Local filesystem store of complete logical blobs keyed by full BlobDigest.
 /// Publication is atomic and never overwrites or repairs an existing object.
@@ -28,6 +35,13 @@ public:
 
   llvm::Expected<BlobDigest>
   put(llvm::ArrayRef<std::uint8_t> logicalBytes) const;
+
+  /// Atomically publishes bytes emitted once by the caller without retaining
+  /// the complete logical sequence in memory. The writer is invoked on a
+  /// temporary object inside this store; publication derives and verifies the
+  /// same BlobDigest and collision contract as put(ArrayRef).
+  llvm::Expected<GeneratedBlobPublication> putGenerated(
+      llvm::function_ref<llvm::Error(llvm::raw_ostream &)> writer) const;
 
   llvm::Expected<std::vector<std::uint8_t>> get(const BlobDigest &digest) const;
 

@@ -1,13 +1,72 @@
 #include "Common/BlobDigest.h"
 
-#include "llvm/Support/SHA256.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/ErrorHandling.h"
+
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace loom {
+namespace {
+
+llvm::Error digestError(const llvm::Twine &detail) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "blob_digest_failure: " + detail);
+}
+
+} // namespace
+
+struct BlobDigestBuilder::State final {
+  EVP_MD_CTX *context = nullptr;
+  bool finished = false;
+
+  ~State() {
+    if (context)
+      EVP_MD_CTX_free(context);
+  }
+};
+
+BlobDigestBuilder::BlobDigestBuilder(std::unique_ptr<State> state)
+    : state_(std::move(state)) {}
+
+BlobDigestBuilder::BlobDigestBuilder(BlobDigestBuilder &&) noexcept = default;
+BlobDigestBuilder &
+BlobDigestBuilder::operator=(BlobDigestBuilder &&) noexcept = default;
+BlobDigestBuilder::~BlobDigestBuilder() = default;
+
+llvm::Expected<BlobDigestBuilder> BlobDigestBuilder::create() {
+  auto state = std::make_unique<State>();
+  state->context = EVP_MD_CTX_new();
+  if (!state->context ||
+      EVP_DigestInit_ex(state->context, EVP_sha256(), nullptr) != 1)
+    return digestError("cannot initialize SHA-256");
+  return BlobDigestBuilder(std::move(state));
+}
+
+llvm::Error BlobDigestBuilder::update(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (!state_ || state_->finished)
+    return digestError("incremental digest is not active");
+  if (EVP_DigestUpdate(state_->context, bytes.data(), bytes.size()) != 1)
+    return digestError("cannot update SHA-256");
+  return llvm::Error::success();
+}
+
+llvm::Expected<BlobDigest> BlobDigestBuilder::finish() {
+  if (!state_ || state_->finished)
+    return digestError("incremental digest is not active");
+  BlobDigest::Storage bytes{};
+  unsigned size = 0;
+  if (EVP_DigestFinal_ex(state_->context, bytes.data(), &size) != 1 ||
+      size != bytes.size())
+    return digestError("cannot finalize SHA-256");
+  state_->finished = true;
+  return BlobDigest::fromBytes(bytes);
+}
 
 llvm::Expected<BlobDigest>
 BlobDigest::fromBytes(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -20,7 +79,16 @@ BlobDigest::fromBytes(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 BlobDigest computeBlobDigest(llvm::ArrayRef<std::uint8_t> logicalBytes) {
-  return BlobDigest(llvm::SHA256::hash(logicalBytes));
+  auto builder = BlobDigestBuilder::create();
+  if (!builder)
+    llvm::report_fatal_error(llvm::Twine(llvm::toString(builder.takeError())));
+  if (llvm::Error error = builder->update(logicalBytes))
+    llvm::report_fatal_error(
+        llvm::Twine(llvm::toString(std::move(error))));
+  auto digest = builder->finish();
+  if (!digest)
+    llvm::report_fatal_error(llvm::Twine(llvm::toString(digest.takeError())));
+  return std::move(*digest);
 }
 
 std::string formatBlobDigestHex(const BlobDigest &digest) {

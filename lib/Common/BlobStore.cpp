@@ -7,7 +7,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #if !defined(__linux__)
@@ -22,9 +21,10 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <system_error>
 #include <sys/stat.h>
+#include <system_error>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace loom {
@@ -161,6 +161,43 @@ llvm::Expected<int> openStoreDirectory(llvm::StringRef root) {
   return directory;
 }
 
+llvm::Expected<int> openAnonymousTemporaryObject(int directory) {
+  int file;
+  do {
+    file = ::openat(directory, ".", O_TMPFILE | O_RDWR | O_CLOEXEC,
+                    S_IRUSR | S_IWUSR);
+  } while (file == -1 && errno == EINTR);
+  if (file == -1)
+    return storeErrno("blob_store_io",
+                      "unable to create anonymous temporary object");
+  return file;
+}
+
+llvm::Error verifyStoreDirectoryBinding(int directory, llvm::StringRef root) {
+  struct stat expected{};
+  if (::fstat(directory, &expected) != 0)
+    return storeErrno("blob_store_io", "unable to inspect store directory");
+  auto currentOrError = openStoreDirectory(root);
+  if (!currentOrError)
+    return currentOrError.takeError();
+  int current = *currentOrError;
+  llvm::scope_exit closeCurrent([&] {
+    if (current != -1)
+      llvm::consumeError(closeFile(current, "current store directory"));
+  });
+  struct stat observed{};
+  if (::fstat(current, &observed) != 0)
+    return storeErrno("blob_store_io",
+                      "unable to inspect current store directory");
+  if (expected.st_dev != observed.st_dev || expected.st_ino != observed.st_ino)
+    return storeError("blob_store_root_changed",
+                      "store root changed during publication");
+  if (llvm::Error error = closeFile(current, "current store directory"))
+    return error;
+  closeCurrent.release();
+  return llvm::Error::success();
+}
+
 llvm::Expected<OpenedBlobObject>
 readStoredObject(llvm::StringRef root, const BlobDigest &digest,
                  std::uint64_t maximumLogicalBytes) {
@@ -225,6 +262,18 @@ std::error_code publishNoReplace(int source, int directory,
   return std::error_code();
 }
 
+std::error_code publishAnonymousNoReplace(int source, int directory,
+                                          llvm::StringRef objectName) {
+  const std::string name = objectName.str();
+  int result;
+  do {
+    result = ::linkat(source, "", directory, name.c_str(), AT_EMPTY_PATH);
+  } while (result == -1 && errno == EINTR);
+  if (result == -1)
+    return llvm::errnoAsErrorCode();
+  return std::error_code();
+}
+
 llvm::Error discardTemporary(llvm::sys::fs::TempFile &temporary) {
   if (llvm::Error error = temporary.discard())
     return storeError("blob_store_io",
@@ -242,13 +291,11 @@ bool sameFileState(const struct stat &lhs, const struct stat &rhs) {
          lhs.st_ctim.tv_nsec == rhs.st_ctim.tv_nsec;
 }
 
-llvm::Expected<std::uint64_t>
-copyAndVerifyOpenedObject(int source, int destination,
-                          const BlobDigest &expectedDigest,
-                          std::uint64_t maximumLogicalBytes,
-                          llvm::StringRef objectErrorCode,
-                          llvm::StringRef description) {
-  struct stat before {};
+llvm::Expected<std::uint64_t> copyAndVerifyOpenedObject(
+    int source, int destination, const BlobDigest &expectedDigest,
+    std::uint64_t maximumLogicalBytes, llvm::StringRef objectErrorCode,
+    llvm::StringRef description) {
+  struct stat before{};
   if (::fstat(source, &before) != 0)
     return storeErrno("blob_store_io",
                       llvm::Twine("unable to inspect ") + description);
@@ -261,7 +308,9 @@ copyAndVerifyOpenedObject(int source, int destination,
                       llvm::Twine(description) +
                           " exceeds the caller-owned logical-byte bound");
 
-  llvm::SHA256 digest;
+  auto digest = BlobDigestBuilder::create();
+  if (!digest)
+    return digest.takeError();
   std::uint64_t observedSize = 0;
   std::array<std::uint8_t, 64 * 1024> buffer{};
   while (true) {
@@ -275,7 +324,9 @@ copyAndVerifyOpenedObject(int source, int destination,
                         llvm::Twine("unable to read ") + description);
     }
     const auto count = static_cast<std::size_t>(amount);
-    digest.update(llvm::ArrayRef<std::uint8_t>(buffer.data(), count));
+    if (llvm::Error error = digest->update(
+            llvm::ArrayRef<std::uint8_t>(buffer.data(), count)))
+      return std::move(error);
     observedSize += count;
 
     if (destination != -1) {
@@ -297,20 +348,19 @@ copyAndVerifyOpenedObject(int source, int destination,
     }
   }
 
-  struct stat after {};
+  struct stat after{};
   if (::fstat(source, &after) != 0)
     return storeErrno("blob_store_io",
                       llvm::Twine("unable to re-inspect ") + description);
   if (!sameFileState(before, after) || observedSize != logicalSize)
     return storeError(objectErrorCode,
                       llvm::Twine(description) + " changed while copied");
-  auto actualDigest = BlobDigest::fromBytes(digest.final());
+  auto actualDigest = digest->finish();
   if (!actualDigest)
     return actualDigest.takeError();
   if (*actualDigest != expectedDigest)
-    return storeError(objectErrorCode,
-                      llvm::Twine(description) +
-                          " does not match its derived key");
+    return storeError(objectErrorCode, llvm::Twine(description) +
+                                           " does not match its derived key");
   return observedSize;
 }
 
@@ -324,13 +374,15 @@ llvm::Expected<bool> openedFilesEqual(int lhs, int rhs,
         std::min<std::uint64_t>(lhsBytes.size(), logicalSize - offset));
     ssize_t lhsRead;
     do {
-      lhsRead = ::pread(lhs, lhsBytes.data(), count, static_cast<off_t>(offset));
+      lhsRead =
+          ::pread(lhs, lhsBytes.data(), count, static_cast<off_t>(offset));
     } while (lhsRead < 0 && errno == EINTR);
     if (lhsRead < 0)
       return storeErrno("blob_store_io", "unable to compare imported object");
     ssize_t rhsRead;
     do {
-      rhsRead = ::pread(rhs, rhsBytes.data(), count, static_cast<off_t>(offset));
+      rhsRead =
+          ::pread(rhs, rhsBytes.data(), count, static_cast<off_t>(offset));
     } while (rhsRead < 0 && errno == EINTR);
     if (rhsRead < 0)
       return storeErrno("blob_store_io", "unable to compare existing object");
@@ -346,12 +398,85 @@ llvm::Expected<bool> openedFilesEqual(int lhs, int rhs,
   return true;
 }
 
+struct OpenedBlobDigest final {
+  llvm::sys::fs::file_status status;
+  BlobDigest digest;
+  std::uint64_t logicalSize = 0;
+};
+
+llvm::Expected<OpenedBlobDigest>
+digestOpenedObject(int file, llvm::StringRef objectErrorCode,
+                   llvm::StringRef description) {
+  auto status = regularFileStatus(file, objectErrorCode, description);
+  if (!status)
+    return status.takeError();
+  struct stat before{};
+  if (::fstat(file, &before) != 0)
+    return storeErrno("blob_store_io",
+                      llvm::Twine("unable to inspect ") + description);
+  if (!S_ISREG(before.st_mode) || before.st_size < 0)
+    return storeError(objectErrorCode,
+                      llvm::Twine(description) + " is not a regular file");
+  const std::uint64_t logicalSize = static_cast<std::uint64_t>(before.st_size);
+
+  auto digest = BlobDigestBuilder::create();
+  if (!digest)
+    return digest.takeError();
+  std::array<std::uint8_t, 64 * 1024> buffer{};
+  std::uint64_t offset = 0;
+  while (offset < logicalSize) {
+    const std::size_t count = static_cast<std::size_t>(
+        std::min<std::uint64_t>(buffer.size(), logicalSize - offset));
+    ssize_t amount;
+    do {
+      amount = ::pread(file, buffer.data(), count, static_cast<off_t>(offset));
+    } while (amount < 0 && errno == EINTR);
+    if (amount < 0)
+      return storeErrno("blob_store_io",
+                        llvm::Twine("unable to read ") + description);
+    if (amount != static_cast<ssize_t>(count))
+      return storeError(objectErrorCode,
+                        llvm::Twine(description) +
+                            " changed while deriving its digest");
+    if (llvm::Error error = digest->update(
+            llvm::ArrayRef<std::uint8_t>(buffer.data(), count)))
+      return std::move(error);
+    offset += count;
+  }
+
+  struct stat after{};
+  if (::fstat(file, &after) != 0)
+    return storeErrno("blob_store_io",
+                      llvm::Twine("unable to re-inspect ") + description);
+  if (!sameFileState(before, after) || offset != logicalSize)
+    return storeError(objectErrorCode,
+                      llvm::Twine(description) +
+                          " changed while deriving its digest");
+  auto value = digest->finish();
+  if (!value)
+    return value.takeError();
+  return OpenedBlobDigest{*status, *value, offset};
+}
+
 } // namespace
 
 llvm::Expected<BlobDigest>
 BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
-  const BlobDigest digest = computeBlobDigest(logicalBytes);
-  const std::string objectName = formatBlobDigestHex(digest);
+  auto publication =
+      putGenerated([&](llvm::raw_ostream &output) -> llvm::Error {
+        output.write(reinterpret_cast<const char *>(logicalBytes.data()),
+                     logicalBytes.size());
+        return llvm::Error::success();
+      });
+  if (!publication)
+    return publication.takeError();
+  return publication->digest;
+}
+
+llvm::Expected<GeneratedBlobPublication> BlobStore::putGenerated(
+    llvm::function_ref<llvm::Error(llvm::raw_ostream &)> writer) const {
+  if (!writer)
+    return storeError("blob_store_io", "generated object has no writer");
 
   auto directoryOrError = openStoreDirectory(root_);
   if (!directoryOrError)
@@ -362,22 +487,19 @@ BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
       llvm::consumeError(closeFile(directory, "store directory"));
   });
 
-  llvm::SmallString<256> temporaryModel(root_);
-  llvm::sys::path::append(temporaryModel, ".blob-%%%%%%");
-  auto temporaryOrError = llvm::sys::fs::TempFile::create(
-      temporaryModel, llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
+  auto temporaryOrError = openAnonymousTemporaryObject(directory);
   if (!temporaryOrError)
-    return storeError("blob_store_io",
-                      llvm::Twine("unable to create temporary object: ") +
-                          llvm::toString(temporaryOrError.takeError()));
-  llvm::sys::fs::TempFile temporary = std::move(*temporaryOrError);
-  llvm::scope_exit discardTemporaryOnFailure(
-      [&] { llvm::consumeError(temporary.discard()); });
+    return temporaryOrError.takeError();
+  int temporary = *temporaryOrError;
+  llvm::scope_exit closeTemporaryOnFailure([&] {
+    if (temporary != -1)
+      llvm::consumeError(closeFile(temporary, "anonymous temporary object"));
+  });
 
   {
-    llvm::raw_fd_ostream output(temporary.FD, false);
-    output.write(reinterpret_cast<const char *>(logicalBytes.data()),
-                 logicalBytes.size());
+    llvm::raw_fd_ostream output(temporary, false);
+    if (llvm::Error error = writer(output))
+      return std::move(error);
     output.flush();
     if (std::error_code error = output.error()) {
       output.clear_error();
@@ -387,21 +509,17 @@ BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
     }
   }
 
-  if (llvm::Error error = syncFile(temporary.FD, "temporary object"))
+  if (llvm::Error error = syncFile(temporary, "temporary object"))
     return std::move(error);
-  auto temporaryObject =
-      readOpenedObject(temporary.FD, "temporary object", "blob_store_io");
+  auto temporaryObject = digestOpenedObject(temporary, "blob_store_io",
+                                            "generated temporary object");
   if (!temporaryObject)
     return temporaryObject.takeError();
-  if (llvm::Error error = validateStoredObject(
-          *temporaryObject, "temporary object", digest, "blob_store_io"))
-    return std::move(error);
-  if (!temporaryObject->logicalBytes().equals(logicalBytes))
-    return storeError("blob_digest_collision",
-                      "different logical bytes share one digest");
+  const BlobDigest digest = temporaryObject->digest;
+  const std::string objectName = formatBlobDigestHex(digest);
 
   const std::error_code publishError =
-      publishNoReplace(temporary.FD, directory, objectName);
+      publishAnonymousNoReplace(temporary, directory, objectName);
   if (!publishError) {
     auto published = openStoredObject(directory, objectName);
     if (!published)
@@ -432,15 +550,21 @@ BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
         llvm::consumeError(closeFile(existingFile, "existing object"));
     });
 
-    auto existingObject = readOpenedObject(existingFile, "existing object",
-                                           "blob_store_corruption");
+    auto existingObject = digestOpenedObject(
+        existingFile, "blob_store_corruption", "existing object");
     if (!existingObject)
       return existingObject.takeError();
-    if (llvm::Error error =
-            validateStoredObject(*existingObject, "existing object", digest,
-                                 "blob_store_corruption"))
-      return std::move(error);
-    if (!existingObject->logicalBytes().equals(logicalBytes))
+    if (existingObject->digest != digest)
+      return storeError("blob_store_corruption",
+                        "existing object does not match its derived key");
+    if (existingObject->logicalSize != temporaryObject->logicalSize)
+      return storeError("blob_digest_collision",
+                        "different logical bytes share one digest");
+    auto equal =
+        openedFilesEqual(temporary, existingFile, temporaryObject->logicalSize);
+    if (!equal)
+      return equal.takeError();
+    if (!*equal)
       return storeError("blob_digest_collision",
                         "different logical bytes share one digest");
     if (llvm::Error error = closeFile(existingFile, "existing object"))
@@ -452,17 +576,17 @@ BlobStore::put(llvm::ArrayRef<std::uint8_t> logicalBytes) const {
                           publishError.message());
   }
 
-  if (llvm::Error error = discardTemporary(temporary)) {
-    discardTemporaryOnFailure.release();
-    return std::move(error);
-  }
-  discardTemporaryOnFailure.release();
   if (llvm::Error error = syncFile(directory, "store directory"))
     return std::move(error);
+  if (llvm::Error error = verifyStoreDirectoryBinding(directory, root_))
+    return std::move(error);
+  if (llvm::Error error = closeFile(temporary, "anonymous temporary object"))
+    return std::move(error);
+  closeTemporaryOnFailure.release();
   if (llvm::Error error = closeFile(directory, "store directory"))
     return std::move(error);
   closeDirectoryOnFailure.release();
-  return digest;
+  return GeneratedBlobPublication{digest, temporaryObject->logicalSize};
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -563,8 +687,8 @@ BlobStore::importVerified(const BlobDigest &digest, const BlobStore &source,
         publishedFile, "blob_store_corruption", "published object");
     if (!publishedStatus)
       return publishedStatus.takeError();
-    auto temporaryStatus = regularFileStatus(
-        temporary.FD, "blob_store_io", "imported temporary object");
+    auto temporaryStatus = regularFileStatus(temporary.FD, "blob_store_io",
+                                             "imported temporary object");
     if (!temporaryStatus)
       return temporaryStatus.takeError();
     if (publishedStatus->getUniqueID() != temporaryStatus->getUniqueID())
@@ -583,9 +707,9 @@ BlobStore::importVerified(const BlobDigest &digest, const BlobStore &source,
         llvm::consumeError(closeFile(existingFile, "existing object"));
     });
 
-    auto existingSize = copyAndVerifyOpenedObject(
-        existingFile, -1, digest, maximumLogicalBytes,
-        "blob_store_corruption", "existing object");
+    auto existingSize =
+        copyAndVerifyOpenedObject(existingFile, -1, digest, maximumLogicalBytes,
+                                  "blob_store_corruption", "existing object");
     if (!existingSize)
       return existingSize.takeError();
     if (*existingSize != *logicalSize)
@@ -611,11 +735,11 @@ BlobStore::importVerified(const BlobDigest &digest, const BlobStore &source,
     return std::move(error);
   }
   discardTemporaryOnFailure.release();
-  if (llvm::Error error = syncFile(destinationDirectory,
-                                   "destination store directory"))
+  if (llvm::Error error =
+          syncFile(destinationDirectory, "destination store directory"))
     return std::move(error);
-  if (llvm::Error error = closeFile(destinationDirectory,
-                                    "destination store directory"))
+  if (llvm::Error error =
+          closeFile(destinationDirectory, "destination store directory"))
     return std::move(error);
   closeDestinationDirectory.release();
   if (llvm::Error error = closeFile(sourceFile, "source stored object"))

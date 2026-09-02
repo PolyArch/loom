@@ -151,6 +151,25 @@ void digestMatchesKnownVectors() {
           "logical bytes did not affect the blob digest");
 }
 
+void incrementalDigestCrossesShaLengthBoundary() {
+  constexpr std::size_t chunkBytes = 1024 * 1024;
+  constexpr std::size_t chunkCount = 512;
+  constexpr char expected[] =
+      "7c40fe5ce847740d0f0d0cdde3949d6585804cdec3ae61a15b923165699c8137";
+  const std::vector<std::uint8_t> zeros(chunkBytes, 0);
+  BlobDigestBuilder digest =
+      takeExpected(__func__, BlobDigestBuilder::create());
+  for (std::size_t chunk = 0; chunk != chunkCount; ++chunk)
+    if (llvm::Error error = digest.update(zeros))
+      fail(__func__, llvm::toString(std::move(error)));
+  if (llvm::Error error = digest.update(llvm::ArrayRef<std::uint8_t>(zeros)
+                                            .take_front(1)))
+    fail(__func__, llvm::toString(std::move(error)));
+  const BlobDigest result = takeExpected(__func__, digest.finish());
+  require(__func__, formatBlobDigestHex(result) == expected,
+          "SHA-256 length encoding narrowed above 512 MiB");
+}
+
 void digestBoundariesRejectInvalidValues() {
   static_assert(!std::is_default_constructible_v<BlobDigest>);
   static_assert(!std::is_same_v<BlobDigest, ArtifactIdentity>);
@@ -252,6 +271,47 @@ void storedLogicalBytesRoundTrip() {
           "stored object is not the exact logical bytes");
 }
 
+void generatedLogicalBytesRoundTrip() {
+  TemporaryDirectory directory(__func__);
+  BlobStore store(directory.path());
+  std::vector<std::uint8_t> bytes(128 * 1024 + 17);
+  for (std::size_t index = 0; index != bytes.size(); ++index)
+    bytes[index] = static_cast<std::uint8_t>(index * 37 + 11);
+  std::uint64_t writerCalls = 0;
+  const auto write = [&](llvm::raw_ostream &output) -> llvm::Error {
+    ++writerCalls;
+    output.write(reinterpret_cast<const char *>(bytes.data()), 2);
+    output.write(reinterpret_cast<const char *>(bytes.data() + 2),
+                 bytes.size() - 2);
+    return llvm::Error::success();
+  };
+  const GeneratedBlobPublication first =
+      takeExpected(__func__, store.putGenerated(write));
+  const GeneratedBlobPublication repeated =
+      takeExpected(__func__, store.putGenerated(write));
+  const BlobDigest buffered = takeExpected(__func__, store.put(bytes));
+  require(__func__,
+          writerCalls == 2 && first.digest == repeated.digest &&
+              first.digest == buffered &&
+              first.digest == computeBlobDigest(bytes) &&
+              first.logicalByteCount == bytes.size() &&
+              repeated.logicalByteCount == bytes.size(),
+          "streamed blob publication changed content identity");
+  require(__func__, takeExpected(__func__, store.get(first.digest)) == bytes,
+          "streamed blob publication changed logical bytes");
+  require(__func__, regularFiles(__func__, directory.path()).size() == 1,
+          "streamed duplicate publication retained a temporary object");
+
+  auto failed = store.putGenerated([&](llvm::raw_ostream &output) {
+    output << "partial";
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "generated writer failed");
+  });
+  expectErrorContains(__func__, std::move(failed), "generated writer failed");
+  require(__func__, regularFiles(__func__, directory.path()).size() == 1,
+          "failed streamed publication retained a partial object");
+}
+
 void missingStoredObjectIsRejected() {
   TemporaryDirectory directory(__func__);
   BlobStore store(directory.path());
@@ -295,27 +355,27 @@ void verifiedImportIsBoundedAndContentAddressed() {
           "rejected import published a destination object");
 
   require(__func__,
-          takeExpected(__func__, destination.importVerified(
-                                     digest, source, bytes.size())) ==
+          takeExpected(__func__, destination.importVerified(digest, source,
+                                                            bytes.size())) ==
               bytes.size(),
           "verified import returned a different logical-byte count");
   require(__func__, takeExpected(__func__, destination.get(digest)) == bytes,
           "verified import changed logical bytes");
   require(__func__,
-          takeExpected(__func__, destination.importVerified(
-                                     digest, source, bytes.size())) ==
+          takeExpected(__func__, destination.importVerified(digest, source,
+                                                            bytes.size())) ==
               bytes.size(),
           "deduplicated verified import changed the logical-byte count");
-  require(__func__, regularFiles(__func__, destinationDirectory.path()).size() ==
-                        1,
+  require(__func__,
+          regularFiles(__func__, destinationDirectory.path()).size() == 1,
           "verified import did not deduplicate by exact digest");
 
   std::vector<std::uint8_t> tampered = bytes;
   tampered.back() ^= 0xff;
   writeFile(__func__, objectPath(sourceDirectory.path(), digest), tampered);
-  expectErrorContains(
-      __func__, destination.importVerified(digest, source, bytes.size()),
-      "blob_store_corruption");
+  expectErrorContains(__func__,
+                      destination.importVerified(digest, source, bytes.size()),
+                      "blob_store_corruption");
   require(__func__, takeExpected(__func__, destination.get(digest)) == bytes,
           "failed import changed the published destination object");
 }
@@ -427,10 +487,12 @@ void nonRegularStoredObjectsAreRejected() {
 
 int main() {
   digestMatchesKnownVectors();
+  incrementalDigestCrossesShaLengthBoundary();
   digestBoundariesRejectInvalidValues();
   textCodecIsStrictAndCanonical();
   missingStoreRootIsRejected();
   storedLogicalBytesRoundTrip();
+  generatedLogicalBytesRoundTrip();
   missingStoredObjectIsRejected();
   equalBytesDeduplicate();
   verifiedImportIsBoundedAndContentAddressed();

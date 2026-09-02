@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace loom {
@@ -43,6 +44,26 @@ private:
   computeBlobDigest(llvm::ArrayRef<std::uint8_t> logicalBytes);
 
   Storage bytes_;
+};
+
+/// Incremental implementation of BlobDigest's exact SHA-256 semantic. The
+/// byte count is not narrowed at the 512 MiB SHA length-encoding boundary.
+class BlobDigestBuilder final {
+public:
+  static llvm::Expected<BlobDigestBuilder> create();
+
+  BlobDigestBuilder(BlobDigestBuilder &&) noexcept;
+  BlobDigestBuilder &operator=(BlobDigestBuilder &&) noexcept;
+  ~BlobDigestBuilder();
+
+  llvm::Error update(llvm::ArrayRef<std::uint8_t> bytes);
+  llvm::Expected<BlobDigest> finish();
+
+private:
+  struct State;
+  explicit BlobDigestBuilder(std::unique_ptr<State> state);
+
+  std::unique_ptr<State> state_;
 };
 
 /// Digests the exact logical bytes presented to consumers, including the
