@@ -1360,6 +1360,12 @@ struct CgraExecutionSession::Impl final {
            head.occupancy, head.reservations, head.headBindingOrdinal,
            head.headOccurrenceOrdinal, head.headProducerSequenceOrdinal,
            head.headTag, head.exactHead, head.consumers});
+    for (auto &rotation : runtime->exhaustedOfferRotationDiagnostics())
+      closedWait->exhaustedOfferRotations.push_back(
+          {rotation.storageOrdinal, rotation.fifoOccurrence,
+           rotation.residentChannelCount, rotation.refusedOffersSinceCommit,
+           rotation.occupancy, rotation.capacity,
+           std::move(rotation.residentTagValues)});
     for (const auto &firing : runtime->pendingActorFiringDiagnostics())
       closedWait->actorFirings.push_back(
           {firing.semanticActorOrdinal, firing.occurrenceOrdinal,

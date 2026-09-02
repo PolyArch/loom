@@ -4,8 +4,11 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialCanonicalSeed.h"
 
+#include "SpatialLocalTransferIndex.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <limits>
@@ -22,6 +25,7 @@ namespace {
 enum class SpatialSearchScope : std::uint8_t {
   Calibration,
   Annealing,
+  LocalTransferAdoption,
 };
 
 enum class SpatialActionOutcome : std::uint8_t {
@@ -39,6 +43,8 @@ llvm::StringRef spelling(SpatialSearchScope scope) {
     return "calibration";
   case SpatialSearchScope::Annealing:
     return "annealing";
+  case SpatialSearchScope::LocalTransferAdoption:
+    return "local_transfer_adoption";
   }
   llvm_unreachable("unknown Spatial search scope");
 }
@@ -317,6 +323,44 @@ void emitSpatialActionEvent(
       });
 }
 
+/// One local-transfer adoption probe: the register-FIFO whole-net Action and,
+/// when the option needs it, the single endpoint relocation it is coupled to.
+void emitLocalTransferAdoptionEvent(
+    loom::mapping_debug::Event event, std::uint64_t seedAttemptOrdinal,
+    std::uint64_t probeOrdinal, PnrIndex logicalNet,
+    const SpatialLocalTransferAdoption &adoption,
+    std::optional<SpatialActionOutcome> outcome = std::nullopt,
+    std::optional<dse::ObjectiveSignedDifference> difference = std::nullopt) {
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Decision,
+      loom::mapping_debug::Stage::SpatialPnr, event,
+      [&](llvm::json::Object &fields) {
+        fields["search_scope"] =
+            spelling(SpatialSearchScope::LocalTransferAdoption);
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        fields["proposal_slot"] = probeOrdinal;
+        if (outcome)
+          fields["outcome"] = spelling(*outcome);
+        encodeSpatialAction(
+            fields,
+            SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{
+                logicalNet, SpatialWholeNetDispositionKind::RegisterFifo,
+                adoption.option}});
+        if (adoption.relocation) {
+          fields["relocation_realization"] = adoption.relocation->realization;
+          fields["relocation_placement"] = adoption.relocation->placement;
+          fields["relocation_instruction_context"] =
+              adoption.relocation->instructionContext;
+        }
+        if (difference &&
+            loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
+          fields["energy_difference_sign"] = differenceSign(difference->sign);
+          fields["energy_difference_high"] = difference->magnitude.high;
+          fields["energy_difference_low"] = difference->magnitude.low;
+        }
+      });
+}
+
 } // namespace
 
 llvm::Expected<bool>
@@ -331,6 +375,180 @@ SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
   if (unhandled)
     return std::move(unhandled);
   return consumed;
+}
+
+llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
+    SpatialCandidateState &candidate, std::uint64_t seedAttemptOrdinal,
+    SpatialAnnealingStatistics &statistics,
+    ExecutionControlView executionControl,
+    SpatialPnrWorkLedgerView workLedger) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &localTransfers = problem.localTransfers();
+  const std::size_t logicalNetCount = problem.transfers().logicalNets().size();
+  std::uint64_t consideredNets = 0;
+  std::uint64_t probes = 0;
+  std::uint64_t adopted = 0;
+  std::uint64_t relocated = 0;
+  const auto emitSweep = [&](llvm::StringRef status) {
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Summary,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::Statistics,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "local_transfer_adoption_sweep";
+          fields["seed_attempt"] = seedAttemptOrdinal;
+          fields["status"] = status;
+          fields["admitted_option_count"] = localTransfers.options().size();
+          fields["candidate_nets"] = consideredNets;
+          fields["probes"] = probes;
+          fields["adopted"] = adopted;
+          fields["relocated"] = relocated;
+          std::uint64_t selected = 0;
+          for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount;
+               ++logicalNet)
+            selected += candidate.usesRegisterFifo(logicalNet);
+          fields["register_fifo_transfers"] = selected;
+        });
+  };
+  auto feasible = spatialMappingViolationsAreZero(candidate);
+  if (!feasible)
+    return feasible.takeError();
+  if (!*feasible) {
+    emitSweep("skipped_violation");
+    return llvm::Error::success();
+  }
+  if (localTransfers.options().empty()) {
+    emitSweep("no_admitted_option");
+    return llvm::Error::success();
+  }
+  if (llvm::Error error = actionDomain_.prepare(problem))
+    return error;
+  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger))
+    return error;
+  if (llvm::Error error = actionDomain_.rebuild(candidate))
+    return error;
+
+  // A relocation may drop the pairing of another net incident to the moved
+  // realization, so after a pass that relocated an endpoint a second,
+  // relocation-free pass adopts every pairing that became resident; it only
+  // adds pairings and therefore terminates.
+  bool interrupted = false;
+  for (const bool relocationsAdmitted : {true, false}) {
+    if (interrupted || (!relocationsAdmitted && relocated == 0))
+      break;
+    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount && !interrupted;
+         ++logicalNet) {
+      if (candidate.usesRegisterFifo(logicalNet) ||
+          localTransfers.domains()[logicalNet].optionCount == 0)
+        continue;
+      if (llvm::Error error = detail::enumerateSpatialLocalTransferAdoptions(
+              problem, candidate.computeBindingSelections(),
+              candidate.registerFifoTransferSelections(), logicalNet,
+              relocationsAdmitted
+                  ? actionDomain_.view().realizationChoices
+                  : llvm::ArrayRef<SpatialRealizationBindingAction>(),
+              adoptionAlternatives_))
+        return error;
+      if (adoptionAlternatives_.empty())
+        continue;
+      consideredNets += relocationsAdmitted;
+      for (const SpatialLocalTransferAdoption &adoption :
+           adoptionAlternatives_) {
+        if (executionControl.stopRequested()) {
+          interrupted = true;
+          break;
+        }
+        llvm::SmallVector<SpatialMappingAction, 2> actions;
+        if (adoption.relocation)
+          actions.push_back(
+              SpatialRealizationBindingAction{*adoption.relocation});
+        actions.push_back(
+            SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{
+                logicalNet, SpatialWholeNetDispositionKind::RegisterFifo,
+                adoption.option}});
+        if (llvm::Error error =
+                addCount(statistics.plannedLocalTransferAdoptionProbes, 1,
+                         "planned local-transfer adoption probe"))
+          return error;
+        if (llvm::Error error =
+                workLedger.plan(SpatialPnrWorkKind::LocalTransferAdoptionProbe))
+          return error;
+        emitLocalTransferAdoptionEvent(
+            loom::mapping_debug::Event::ActionProposal, seedAttemptOrdinal,
+            probes, logicalNet, adoption);
+        auto probe = actionExecutor_.probeBatch(
+            candidate, actions, SpatialActionExecutionContext::Search);
+        if (llvm::Error error = addCount(statistics.localTransferAdoptionProbes,
+                                         1, "local-transfer adoption probe"))
+          return error;
+        if (llvm::Error error = workLedger.consume(
+                SpatialPnrWorkKind::LocalTransferAdoptionProbe))
+          return error;
+        const std::uint64_t probeOrdinal = probes++;
+        if (!probe) {
+          auto consumed = consumeTransitionFailure(probe.takeError());
+          if (!consumed)
+            return consumed.takeError();
+          if (!*consumed)
+            return searchError(
+                "adoption failure had no failure classification");
+          emitLocalTransferAdoptionEvent(
+              loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
+              probeOrdinal, logicalNet, adoption,
+              SpatialActionOutcome::TransitionFailure);
+          continue;
+        }
+        const dse::ObjectiveSignedDifference difference =
+            probe->energyDifference();
+        if (probe->isSemanticNoop()) {
+          if (llvm::Error error = probe->discard())
+            return error;
+          emitLocalTransferAdoptionEvent(
+              loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
+              probeOrdinal, logicalNet, adoption,
+              SpatialActionOutcome::SemanticNoop, difference);
+          continue;
+        }
+        auto comparison = problem.objectiveProgram().compareSelectedRank(
+            probe->objective(), {}, actionExecutor_.currentObjective(), {});
+        if (!comparison)
+          return comparison.takeError();
+        if (*comparison > 0) {
+          if (llvm::Error error = probe->discard())
+            return error;
+          emitLocalTransferAdoptionEvent(
+              loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
+              probeOrdinal, logicalNet, adoption,
+              SpatialActionOutcome::Rejected, difference);
+          continue;
+        }
+        if (llvm::Error error = probe->commit())
+          return error;
+        ++adopted;
+        relocated += adoption.relocation.has_value();
+        emitLocalTransferAdoptionEvent(
+            loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
+            probeOrdinal, logicalNet, adoption, SpatialActionOutcome::Accepted,
+            difference);
+        if (llvm::Error error = actionDomain_.rebuild(candidate))
+          return error;
+        break;
+      }
+    }
+  }
+  auto closed = spatialMappingViolationsAreZero(candidate);
+  if (!closed)
+    return closed.takeError();
+  if (!*closed)
+    return searchError("local-transfer adoption left a Mapping violation");
+  if (llvm::Error error = addCount(statistics.adoptedLocalTransfers, adopted,
+                                   "adopted local transfer"))
+    return error;
+  if (llvm::Error error = addCount(statistics.relocatedLocalTransfers,
+                                   relocated, "relocated local transfer"))
+    return error;
+  emitSweep(interrupted ? "interrupted" : "completed");
+  return llvm::Error::success();
 }
 
 llvm::Expected<SpatialAnnealingStatistics>
@@ -369,6 +587,13 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_on_entry";
                               });
+    if (llvm::Error error = adoptAdmittedLocalTransfers(
+            candidate, seedAttemptOrdinal, statistics, executionControl,
+            workLedger))
+      return std::move(error);
+    statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
+    statistics.negotiationIterations =
+        actionExecutor_.negotiationIterationCount();
     if (llvm::Error error = candidate.verify())
       return std::move(error);
     emitProvisionalHandshakeProjectionStatistics(
@@ -491,6 +716,23 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["reason"] = "feasible_on_entry";
                               });
   }
+  // The restored incumbent is a fresh candidate object: the sweep re-prepares
+  // the executor on it, so its routing work is added to the annealing totals
+  // captured before the restore.
+  const auto adoptRestoredIncumbentLocalTransfers = [&]() -> llvm::Error {
+    if (llvm::Error error = adoptAdmittedLocalTransfers(
+            *candidateHandle, seedAttemptOrdinal, statistics, executionControl,
+            workLedger))
+      return error;
+    if (llvm::Error error =
+            addCount(statistics.endpointExpansions,
+                     actionExecutor_.endpointExpansionCount(),
+                     "endpoint expansion"))
+      return error;
+    return addCount(statistics.negotiationIterations,
+                    actionExecutor_.negotiationIterationCount(),
+                    "negotiation iteration");
+  };
   const auto finishInterrupted =
       [&]() -> llvm::Expected<SpatialAnnealingStatistics> {
     statistics.interrupted = true;
@@ -537,6 +779,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
                               });
+    if (llvm::Error error = adoptRestoredIncumbentLocalTransfers())
+      return std::move(error);
     emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
@@ -1068,6 +1312,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["incumbent_snapshots"] =
                                     statistics.incumbentSnapshotCount;
                               });
+    if (llvm::Error error = adoptRestoredIncumbentLocalTransfers())
+      return std::move(error);
   } else if (bestSelectedRankIncumbent) {
     if (llvm::Error error = restoreIncumbent(
             *bestSelectedRankIncumbent, bestSelectedRankObjective,
@@ -1097,5 +1343,6 @@ std::size_t SpatialAnnealingSearchScratch::retainedStorageBytes() const {
   return actionDomain_.retainedStorageBytes() +
          actionExecutor_.retainedStorageBytes() +
          retainedBytes(positiveCalibrationDeltas_) +
-         retainedBytes(inactiveActionKeys_);
+         retainedBytes(inactiveActionKeys_) +
+         retainedBytes(adoptionAlternatives_);
 }

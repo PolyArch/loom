@@ -42,6 +42,15 @@ struct SpatialWholeNetRoutingAction final {
   PnrIndex registerFifoTransfer = getInvalidPnrIndex();
 };
 
+/// One way an external net can adopt an admitted register-FIFO option: the
+/// option alone when both endpoints already occupy its placements, or the
+/// option coupled with the single compute-binding relocation that moves one
+/// endpoint onto the placement the option requires.
+struct SpatialLocalTransferAdoption final {
+  PnrIndex option = 0;
+  std::optional<SpatialComputeBindingAction> relocation;
+};
+
 struct SpatialSingleSinkRoutingAction final {
   PnrIndex logicalNet;
   PnrIndex sinkObligation;

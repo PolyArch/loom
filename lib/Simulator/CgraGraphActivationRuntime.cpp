@@ -236,6 +236,11 @@ CgraGraphActivationRuntime::storageResidencyDiagnostics(
   return transport_->storageResidencyDiagnostics(storageOrdinal);
 }
 
+std::vector<CgraStorageOfferRotationDiagnostic>
+CgraGraphActivationRuntime::exhaustedOfferRotationDiagnostics() const {
+  return transport_->exhaustedOfferRotationDiagnostics();
+}
+
 std::vector<CgraOperandQueueHeadDiagnostic>
 CgraGraphActivationRuntime::pendingOperandQueueHeadDiagnostics() const {
   return transport_->pendingOperandQueueHeadDiagnostics();

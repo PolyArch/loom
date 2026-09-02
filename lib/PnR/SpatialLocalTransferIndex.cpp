@@ -1,8 +1,11 @@
 #include "SpatialLocalTransferIndex.h"
 
+#include "Common/MappingDebugLog.h"
+#include "Fabric/Identity/FabricHandshake.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialCandidateState.h"
+#include "SpatialPnrHandshakeIndex.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -77,6 +80,9 @@ public:
   build(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping,
         const ::loom::fabric::FabricArtifactView &fabric,
+        const ::loom::fabric::FabricHandshakeContext &handshakeContext,
+        const detail::SpatialComputePlacementHandshakeSelections
+            &placementSelections,
         const FrozenSpatialRealizationIndex &realizations,
         const FrozenSpatialTransferIndex &transfers,
         const FrozenSpatialRoutingGraph &routing) {
@@ -94,6 +100,9 @@ public:
       auto offset = checked(optionOffsetContext, result.options_.size());
       if (!offset)
         return offset.takeError();
+      const std::uint64_t closedBefore = result.closedOptionCount_;
+      std::optional<PnrIndex> producerOrdinal;
+      std::optional<PnrIndex> consumerOrdinal;
       const auto &sourceNet = techMapping.residualLogicalNets()[netOrdinal];
       if (sourceNet.producer != logicalNet.producer ||
           sourceNet.sinks.size() != logicalNet.sinkCount)
@@ -112,16 +121,17 @@ public:
         const TechComputeRealizationView *consumerRealization =
             findRealization(techMapping, consumer->actor);
         if (producerRealization && consumerRealization) {
-          auto producerOrdinal = findFrozenRealization(
+          producerOrdinal = findFrozenRealization(
               realizations, producerRealization->entityId);
-          auto consumerOrdinal = findFrozenRealization(
+          consumerOrdinal = findFrozenRealization(
               realizations, consumerRealization->entityId);
           if (!producerOrdinal || !consumerOrdinal)
             return invalid("local-transfer realization was not frozen");
           if (llvm::Error error = appendPlacementPairs(
                   dataflow, *producerRealization, *consumerRealization, fabric,
-                  realizations, routing, sourceNet,
-                  netOrdinal, *producerOrdinal, *consumerOrdinal, result))
+                  handshakeContext, placementSelections, realizations, routing,
+                  sourceNet, netOrdinal, *producerOrdinal, *consumerOrdinal,
+                  result))
             return std::move(error);
         }
       }
@@ -131,6 +141,18 @@ public:
       if (!count)
         return count.takeError();
       result.domains_.push_back({*offset, *count});
+      if (*count != 0 || result.closedOptionCount_ != closedBefore)
+        mapping_debug::emit(
+            mapping_debug::Level::Detail, mapping_debug::Stage::SpatialPnr,
+            mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+              fields["operation"] = "register_fifo_transfer_domain";
+              fields["logical_net"] = netOrdinal;
+              fields["producer_realization"] = *producerOrdinal;
+              fields["consumer_realization"] = *consumerOrdinal;
+              fields["admitted_option_count"] = *count;
+              fields["closed_option_count"] =
+                  result.closedOptionCount_ - closedBefore;
+            });
     }
     return result;
   }
@@ -141,6 +163,10 @@ private:
                        const TechComputeRealizationView &producerTech,
                        const TechComputeRealizationView &consumerTech,
                        const ::loom::fabric::FabricArtifactView &fabric,
+                       const ::loom::fabric::FabricHandshakeContext
+                           &handshakeContext,
+                       const detail::SpatialComputePlacementHandshakeSelections
+                           &placementSelections,
                        const FrozenSpatialRealizationIndex &realizations,
                        const FrozenSpatialRoutingGraph &routing,
                        const TechResidualLogicalNetView &logicalNet,
@@ -211,13 +237,28 @@ private:
           if (*write >= routing.traversals().size() ||
               *read >= routing.traversals().size())
             return invalid("local-transfer traversal ordinal is out of range");
+          auto pairing = ::loom::fabric::makePeRegisterFifoHandshakeSelection(
+              fabric, option.pe, option.registerFifo, option.writer,
+              option.reader, option.writeTraversal, option.readTraversal);
+          if (!pairing)
+            return pairing.takeError();
+          auto closed = placementSelections.registerFifoTransferClosed(
+              handshakeContext, producerPlacement, consumerPlacement,
+              *pairing);
+          if (!closed)
+            return closed.takeError();
+          if (*closed) {
+            ++result.closedOptionCount_;
+            continue;
+          }
           if (llvm::Error error = preflightPnrIndexCapacity(
                   optionCountContext, result.options_.size() + 1))
             return error;
           result.options_.push_back(FrozenSpatialRegisterFifoTransferOption{
               logicalNetOrdinal, producerRealization, consumerRealization,
               producerPlacement, consumerPlacement, option.pe,
-              option.registerFifo, *write, *read, option.tag});
+              option.registerFifo, option.writer, option.reader, *write, *read,
+              option.tag});
         }
       }
     }
@@ -230,11 +271,14 @@ loom::pnr::detail::buildFrozenSpatialLocalTransferIndex(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricHandshakeContext &handshakeContext,
+    const SpatialComputePlacementHandshakeSelections &placementSelections,
     const FrozenSpatialRealizationIndex &realizations,
     const FrozenSpatialTransferIndex &transfers,
     const FrozenSpatialRoutingGraph &routing) {
   return FrozenSpatialLocalTransferIndexBuilder::build(
-      dataflow, techMapping, fabric, realizations, transfers, routing);
+      dataflow, techMapping, fabric, handshakeContext, placementSelections,
+      realizations, transfers, routing);
 }
 
 namespace {
@@ -289,6 +333,100 @@ loom::pnr::detail::findPreferredAvailableSpatialLocalTransfer(
       return std::optional<PnrIndex>(option);
   }
   return std::optional<PnrIndex>{};
+}
+
+llvm::Error loom::pnr::detail::enumerateSpatialLocalTransferAdoptions(
+    const FrozenSpatialPnrProblem &problem,
+    llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
+    llvm::ArrayRef<PnrIndex> selections, PnrIndex logicalNet,
+    llvm::ArrayRef<SpatialRealizationBindingAction> legalComputeChoices,
+    std::vector<SpatialLocalTransferAdoption> &adoptions) {
+  adoptions.clear();
+  if (logicalNet >= problem.localTransfers().domains().size() ||
+      computeBindings.size() !=
+          problem.realizations().computeRealizations().size() ||
+      selections.size() != problem.transfers().logicalNets().size())
+    return invalid("local-transfer adoption dimensions are inconsistent");
+  if (selections[logicalNet] != getInvalidPnrIndex() ||
+      problem.routeConstraints().netHasConstraints(logicalNet))
+    return llvm::Error::success();
+
+  std::set<FifoKey> occupied;
+  const auto options = problem.localTransfers().options();
+  for (PnrIndex net = 0; net < selections.size(); ++net) {
+    if (selections[net] == getInvalidPnrIndex())
+      continue;
+    if (selections[net] >= options.size())
+      return invalid("selected local-transfer option is out of range");
+    const auto &selected = options[selections[net]];
+    occupied.emplace(selected.pe.id(), selected.registerFifo);
+  }
+
+  // The first relation-legal compute choice that lands `realization` on
+  // `placement`; the relocation keeps the option's other endpoint fixed.
+  const auto relocationOnto =
+      [&](PnrIndex realization,
+          PnrIndex placement) -> std::optional<SpatialComputeBindingAction> {
+    for (const SpatialRealizationBindingAction &choice : legalComputeChoices) {
+      const auto *compute = std::get_if<SpatialComputeBindingAction>(&choice);
+      if (compute && compute->realization == realization &&
+          compute->placement == placement)
+        return *compute;
+    }
+    return std::nullopt;
+  };
+
+  const auto &domain = problem.localTransfers().domains()[logicalNet];
+  const auto domainOptions =
+      options.slice(domain.optionOffset, domain.optionCount);
+  // The register FIFOs of one PE bank are interchangeable for the pairing's
+  // handshake structure and placements, so one free FIFO stands for every
+  // option that pairs the same writer and reader under the same placements.
+  const auto samePairing =
+      [](const FrozenSpatialRegisterFifoTransferOption &lhs,
+         const FrozenSpatialRegisterFifoTransferOption &rhs) {
+        return lhs.producerPlacement == rhs.producerPlacement &&
+               lhs.consumerPlacement == rhs.consumerPlacement &&
+               lhs.writer == rhs.writer && lhs.reader == rhs.reader;
+      };
+  const auto admitted =
+      [&](const FrozenSpatialRegisterFifoTransferOption &option) {
+        if (option.producerRealization >= computeBindings.size() ||
+            option.consumerRealization >= computeBindings.size() ||
+            occupied.find({option.pe.id(), option.registerFifo}) !=
+                occupied.end())
+          return false;
+        return llvm::none_of(adoptions, [&](const auto &adoption) {
+          return samePairing(options[adoption.option], option);
+        });
+      };
+  for (auto [local, option] : llvm::enumerate(domainOptions)) {
+    if (admitted(option) && matchesBindings(option, computeBindings))
+      adoptions.push_back(
+          {static_cast<PnrIndex>(domain.optionOffset + local), std::nullopt});
+  }
+  for (auto [local, option] : llvm::enumerate(domainOptions)) {
+    if (!admitted(option))
+      continue;
+    const bool producerResident =
+        computeBindings[option.producerRealization].placement ==
+        option.producerPlacement;
+    const bool consumerResident =
+        computeBindings[option.consumerRealization].placement ==
+        option.consumerPlacement;
+    if (producerResident == consumerResident)
+      continue;
+    const PnrIndex moved = producerResident ? option.consumerRealization
+                                            : option.producerRealization;
+    const PnrIndex placement = producerResident ? option.consumerPlacement
+                                                : option.producerPlacement;
+    auto relocation = relocationOnto(moved, placement);
+    if (!relocation)
+      continue;
+    adoptions.push_back(
+        {static_cast<PnrIndex>(domain.optionOffset + local), *relocation});
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<PnrIndex>>

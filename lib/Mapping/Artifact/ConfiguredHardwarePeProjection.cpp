@@ -1,5 +1,6 @@
 #include "ConfiguredHardwareProjectionInternal.h"
 
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,16 +39,50 @@ struct PeSelectorUse final {
   std::uint64_t nodeOrdinal = 0;
 };
 
-struct PeLocalTransferUse final {
-  std::uint64_t producerRealization = 0;
-  std::uint64_t consumerRealization = 0;
-  ::loom::fabric::FabricFuOccurrencePortRef producerPort;
-  ::loom::fabric::FabricFuOccurrencePortRef consumerPort;
-  ::loom::fabric::FabricOrdinal registerFifo = 0;
-  llvm::APInt tag = llvm::APInt(1, 0);
-};
-
 using ActorRealizationMap = std::map<std::uint64_t, std::uint64_t>;
+
+/// FU boundary outputs driven by each compute realization's selected
+/// capability template, keyed by realization. A driven output without a route
+/// or register-FIFO transfer carries a dead actor result that the PE must drain
+/// with an output `Discard`; an undriven output stays `Disconnected`.
+using DrivenOutputSet = std::set<::loom::fabric::FabricOrdinal>;
+using DrivenOutputMap = std::map<std::uint64_t, DrivenOutputSet>;
+
+llvm::Expected<DrivenOutputMap>
+collectDrivenOutputs(const ::loom::fabric::FabricArtifactView &fabric,
+                     const TechMappingView &techMapping) {
+  DrivenOutputMap result;
+  for (const TechComputeRealizationView &realization :
+       techMapping.computeRealizations()) {
+    const auto templates =
+        fabric.fuCapabilityTemplates(realization.capabilityTemplate.fu);
+    if (realization.capabilityTemplate.ordinal >= templates.size())
+      return invalid("compute realization selects an absent capability "
+                     "template");
+    auto edges = ::loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(
+        templates[realization.capabilityTemplate.ordinal]);
+    if (!edges)
+      return edges.takeError();
+    DrivenOutputSet &driven = result[realization.entityId];
+    for (const ::loom::fabric::FabricFuCapabilityTemplateEdge &edge : *edges) {
+      if (edge.destination.kind() !=
+          ::loom::fabric::FabricFuCapabilityTemplateEndpointKind::BoundaryPort)
+        continue;
+      const auto &port = std::get<::loom::fabric::FabricFuTemplatePortRef>(
+          edge.destination.payload);
+      if (port.direction == ::loom::fabric::FabricPortDirection::Output)
+        driven.insert(port.ordinal);
+    }
+  }
+  return result;
+}
+
+const DrivenOutputSet &drivenOutputsOf(const DrivenOutputMap &driven,
+                                       std::uint64_t realization) {
+  static const DrivenOutputSet empty;
+  const auto found = driven.find(realization);
+  return found == driven.end() ? empty : found->second;
+}
 
 void appendSelectorUse(
     const std::optional<::loom::fabric::FabricPhysicalTraversalRef> &traversal,
@@ -111,7 +147,8 @@ collectSelectorUses(const TechMappingView &techMapping,
   return result;
 }
 
-llvm::Expected<std::vector<PeLocalTransferUse>> collectLocalTransferUses(
+llvm::Expected<std::vector<SpatialPeLocalTransferUse>>
+deriveSpatialPeLocalTransferUsesImpl(
     const ::loom::fabric::FabricArtifactView &fabric,
     const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
@@ -156,7 +193,7 @@ llvm::Expected<std::vector<PeLocalTransferUse>> collectLocalTransferUses(
     return result;
   };
 
-  std::vector<PeLocalTransferUse> result;
+  std::vector<SpatialPeLocalTransferUse> result;
   result.reserve(transfers.size());
   for (const SpatialRegisterFifoTransferView &transfer : transfers) {
     const auto *producer =
@@ -197,16 +234,19 @@ llvm::Expected<std::vector<PeLocalTransferUse>> collectLocalTransferUses(
         *consumerPe != transfer.pe)
       return invalid("register-FIFO transfer spans physical PEs");
     result.push_back(
-        PeLocalTransferUse{*producerRealization,
-                           *consumerRealization,
-                           {producerBinding->occurrence,
-                            ::loom::fabric::FabricPortDirection::Output,
-                            producerBoundary->fabricPort.ordinal},
-                           {consumerBinding->occurrence,
-                            ::loom::fabric::FabricPortDirection::Input,
-                            consumerBoundary->fabricPort.ordinal},
-                           transfer.registerFifo,
-                           transfer.tag});
+        SpatialPeLocalTransferUse{*producerRealization,
+                                  *consumerRealization,
+                                  {producerBinding->occurrence,
+                                   ::loom::fabric::FabricPortDirection::Output,
+                                   producerBoundary->fabricPort.ordinal},
+                                  {consumerBinding->occurrence,
+                                   ::loom::fabric::FabricPortDirection::Input,
+                                   consumerBoundary->fabricPort.ordinal},
+                                  transfer.pe,
+                                  transfer.registerFifo,
+                                  transfer.writeTraversal,
+                                  transfer.readTraversal,
+                                  transfer.tag});
   }
   return result;
 }
@@ -304,6 +344,7 @@ llvm::Error
 appendSpatialPeFields(const ::loom::fabric::FabricArtifactView &fabric,
                       const PeBindingGroup &group,
                       llvm::ArrayRef<PeSelectorUse> selectorUses,
+                      const DrivenOutputMap &drivenOutputs,
                       std::vector<ConfiguredHardwareFieldValueView> &fields) {
   if (group.bindings.size() != 1)
     return invalid("one Spatial PE selects multiple compute realizations");
@@ -311,6 +352,8 @@ appendSpatialPeFields(const ::loom::fabric::FabricArtifactView &fabric,
   auto schema = fabric.spatialPeConfigurationSchema(group.pe);
   if (!schema)
     return schema.takeError();
+  const DrivenOutputSet &driven =
+      drivenOutputsOf(drivenOutputs, binding.realization);
 
   for (const ::loom::fabric::FabricPeConfigurationFieldView &field :
        schema->fields()) {
@@ -328,6 +371,10 @@ appendSpatialPeFields(const ::loom::fabric::FabricArtifactView &fabric,
         if (!endpoint)
           return endpoint.takeError();
         selected = ::loom::fabric::FabricPeRoute{*endpoint};
+      } else if (field.port->direction ==
+                     ::loom::fabric::FabricPortDirection::Output &&
+                 driven.count(field.port->ordinal)) {
+        selected = ::loom::fabric::FabricPeOutputDiscard{};
       } else {
         selected = ::loom::fabric::FabricPeDisconnected{};
       }
@@ -365,13 +412,13 @@ selectorTag(const ::loom::fabric::FabricArtifactView &fabric,
 llvm::Expected<::loom::fabric::FabricTemporalPeOperandSelection>
 temporalOperandSelection(
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
+    llvm::ArrayRef<SpatialPeLocalTransferUse> localTransferUses,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> matchGroups,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
     std::uint64_t realization, const ::fabric::LogicalOperandQueueKey &queue,
     std::uint32_t tagWidth) {
-  const PeLocalTransferUse *local = nullptr;
-  for (const PeLocalTransferUse &candidate : localTransferUses) {
+  const SpatialPeLocalTransferUse *local = nullptr;
+  for (const SpatialPeLocalTransferUse &candidate : localTransferUses) {
     if (candidate.consumerRealization != realization ||
         candidate.consumerPort != port)
       continue;
@@ -423,15 +470,16 @@ temporalOperandSelection(
 llvm::Expected<::loom::fabric::FabricTemporalPeResultSelection>
 temporalResultSelection(
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
+    llvm::ArrayRef<SpatialPeLocalTransferUse> localTransferUses,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
     llvm::ArrayRef<PeSelectorUse> selectorUses,
+    const DrivenOutputSet &drivenOutputs,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
     std::uint64_t realization, std::uint32_t tagWidth) {
-  const PeLocalTransferUse *local = nullptr;
-  for (const PeLocalTransferUse &candidate : localTransferUses) {
+  const SpatialPeLocalTransferUse *local = nullptr;
+  for (const SpatialPeLocalTransferUse &candidate : localTransferUses) {
     if (candidate.producerRealization != realization ||
         candidate.producerPort != port)
       continue;
@@ -458,7 +506,9 @@ temporalResultSelection(
   }
   if (!*use)
     return ::loom::fabric::FabricTemporalPeResultSelection{
-        ::loom::fabric::FabricTemporalPeSelectorKind::Disconnected,
+        drivenOutputs.count(port.ordinal)
+            ? ::loom::fabric::FabricTemporalPeSelectorKind::Discard
+            : ::loom::fabric::FabricTemporalPeSelectorKind::Disconnected,
         std::nullopt, llvm::APInt(tagWidth, 0)};
   auto endpoint = peEndpointFor(**use, port.direction);
   if (!endpoint)
@@ -480,12 +530,13 @@ temporalResultSelection(
 llvm::Error appendTemporalPeField(
     const ::loom::fabric::FabricArtifactView &fabric,
     const PeBindingGroup &group,
-    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
+    llvm::ArrayRef<SpatialPeLocalTransferUse> localTransferUses,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
     llvm::ArrayRef<PeSelectorUse> selectorUses,
     llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueMatchGroups,
+    const DrivenOutputMap &drivenOutputs,
     std::vector<ConfiguredHardwareFieldValueView> &fields) {
   auto schema = fabric.temporalPeConfigurationSchema(group.pe);
   if (!schema)
@@ -527,7 +578,7 @@ llvm::Error appendTemporalPeField(
     for (std::uint32_t output = 0; output < shape->outputCount; ++output) {
       auto selection = temporalResultSelection(
           fabric, localTransferUses, routes, resourceUses, tagSegments,
-          selectorUses,
+          selectorUses, drivenOutputsOf(drivenOutputs, binding->realization),
           {binding->occurrence, ::loom::fabric::FabricPortDirection::Output,
            output},
           binding->realization, layout.tagWidthBits);
@@ -551,6 +602,16 @@ llvm::Error appendTemporalPeField(
 
 } // namespace
 
+llvm::Expected<std::vector<SpatialPeLocalTransferUse>>
+deriveSpatialPeLocalTransferUses(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const TechMappingView &techMapping,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> transfers) {
+  return deriveSpatialPeLocalTransferUsesImpl(fabric, techMapping, bindings,
+                                              transfers);
+}
+
 llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
 deriveConfiguredPeFields(
     const ::loom::fabric::FabricArtifactView &fabric,
@@ -568,16 +629,19 @@ deriveConfiguredPeFields(
   auto selectorUses = collectSelectorUses(techMapping, routes);
   if (!selectorUses)
     return selectorUses.takeError();
-  auto localTransferUses = collectLocalTransferUses(
+  auto localTransferUses = deriveSpatialPeLocalTransferUses(
       fabric, techMapping, bindings, registerFifoTransfers);
   if (!localTransferUses)
     return localTransferUses.takeError();
+  auto drivenOutputs = collectDrivenOutputs(fabric, techMapping);
+  if (!drivenOutputs)
+    return drivenOutputs.takeError();
   std::vector<ConfiguredHardwareFieldValueView> fields;
   for (const PeBindingGroup &group : *groups) {
     const auto schedule = fabric.peSchedule(group.pe);
     if (schedule == ::fabric::Schedule::Spatial) {
-      if (llvm::Error error =
-              appendSpatialPeFields(fabric, group, *selectorUses, fields))
+      if (llvm::Error error = appendSpatialPeFields(
+              fabric, group, *selectorUses, *drivenOutputs, fields))
         return std::move(error);
       continue;
     }
@@ -586,7 +650,7 @@ deriveConfiguredPeFields(
     if (llvm::Error error = appendTemporalPeField(
             fabric, group, *localTransferUses, routes, resourceUses,
             physicalTagSegments, *selectorUses, operandQueueMatchGroups,
-            fields))
+            *drivenOutputs, fields))
       return std::move(error);
   }
   return fields;

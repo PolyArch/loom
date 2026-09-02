@@ -329,6 +329,10 @@ public:
   computeBinding(PnrIndex realization) const;
   const SpatialMemoryBindingSelection &
   memoryBinding(PnrIndex realization) const;
+  llvm::ArrayRef<SpatialComputeBindingSelection>
+  computeBindingSelections() const {
+    return computeBindings_;
+  }
   PnrIndex portAttachment(PnrIndex demand) const;
   llvm::ArrayRef<PnrIndex> portAttachmentSelections() const {
     return portAttachments_;
@@ -343,6 +347,9 @@ public:
   PnrIndex memoryUseDispatch(PnrIndex use) const;
   PnrIndex memoryExposureSelection(PnrIndex exposure) const;
   PnrIndex registerFifoTransfer(PnrIndex logicalNet) const;
+  llvm::ArrayRef<PnrIndex> registerFifoTransferSelections() const {
+    return registerFifoTransfers_;
+  }
   bool usesRegisterFifo(PnrIndex logicalNet) const {
     return registerFifoTransfer(logicalNet) != getInvalidPnrIndex();
   }
@@ -353,6 +360,16 @@ public:
   std::uint32_t logicalNetPayloadWidth(PnrIndex logicalNet) const;
   const RouteTreeState &routeTree(PnrIndex logicalNet) const;
   const HandshakeCandidateState &handshake() const { return *handshake_; }
+  /// Whether the selected register-FIFO disposition of `logicalNet` activates
+  /// a fragment on the current handshake cycle witness.
+  bool registerFifoTransferContributesToHandshakeCycle(
+      PnrIndex logicalNet) const;
+  /// The lowest logical net whose selected register-FIFO disposition lies on
+  /// the current handshake cycle witness, or the invalid ordinal when the
+  /// witness passes through no register-FIFO pairing. Routing that net
+  /// externally cuts the witnessed cycle; a remaining cycle names its own cut
+  /// after the pending graph is refreshed.
+  PnrIndex selectedHandshakeRegisterFifoCut() const;
   std::uint64_t unroutedObligationCount() const {
     return unroutedObligationCount_;
   }
@@ -381,6 +398,9 @@ public:
   std::uint64_t runtimeCounterexampleViolation() const {
     return runtimeCounterexampleViolation_;
   }
+  std::uint64_t selectedHandshakeViolation() const {
+    return handshake_->acyclic() ? 0 : 1;
+  }
   bool runtimeCounterexampleClauseViolated(PnrIndex clause) const {
     assert(clause < runtimeCounterexampleClauseViolated_.size());
     return runtimeCounterexampleClauseViolated_[clause] != 0;
@@ -390,6 +410,7 @@ public:
     return hardProgressViolation() != 0 ||
            progressProofDebtWitnessCount() != 0 ||
            runtimeCounterexampleViolation() != 0 ||
+           selectedHandshakeViolation() != 0 ||
            unroutedObligationCount() != 0 || routeCapacityOveruse() != 0 ||
            tagResidentCapacityOveruse() != 0 || tagUnassignedCount() != 0 ||
            tagConflictCount() != 0;
@@ -747,6 +768,13 @@ public:
   projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary);
 
   llvm::Expected<bool> close();
+  /// Re-materializes the pending handshake graph of a still-open move whose
+  /// committed candidate is cyclic, so a witness cut can observe the next
+  /// witness before closing. Returns whether the pending selection is acyclic.
+  llvm::Expected<bool> refreshHandshakeCycle();
+  /// Whether the handshake selection of the still-open move is acyclic, so
+  /// an optional local disposition can be declined before the move commits.
+  llvm::Expected<bool> pendingHandshakeAcyclic();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::ArrayRef<PnrIndex> touchedRouteTraversals() const;
   llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;

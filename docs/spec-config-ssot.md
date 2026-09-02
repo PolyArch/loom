@@ -145,7 +145,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.3`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.4`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -313,6 +313,24 @@ every dependent Mapping, ConfigurationABI, Deployment,
 HardwareImplementation, and EDA Evidence or provenance record is regenerated
 against the new exact identities. Paths, cached projections, and prior
 provider availability never authorize retaining an older reference.
+
+Version 11.4 compatibly extends the closed Mapping violation catalog with
+`SelectedHandshakeViolation`. Spatial CandidateState projects one exactly when
+the selected Fabric handshake graph contains a combinational cycle; System
+projects structural zero. The violation is a hard legality input and is never
+eligible for temporary admission. The builtin closure ordering places it in
+its own highest-priority level, strictly before every other hard violation and
+every QoR measure.
+
+The 11.3 to 11.4 transition is explicit authoring-source re-resolution. The
+owner resolves the same source profile against the 11.4 objective catalog and
+produces new ResolvedConfig, Spatial/System PnR component-view, Mapping, and
+dependent provenance identities. Ordinary parsing and Artifact import do not
+accept an 11.3 reference as current, reinterpret its objective ordinals, or
+silently insert the new hard violation. Authoring-source re-resolution
+preserves the semantics of an 11.3 Mapping only when its selected handshake
+graph is acyclic; a Mapping with a previously unmodeled selected cycle must be
+remapped rather than migrated as legal.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.
 Feedback remains invocation-local until the Mapping owner verifies replayed

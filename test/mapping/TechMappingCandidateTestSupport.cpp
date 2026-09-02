@@ -361,7 +361,7 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   disjointSelection.selectedSearchEnergy =
       disjointResolved.dse.objectiveCatalogs
           .totalOrderings[disjointSelection.selectedTotalOrdering]
-          .weightedLevels.front();
+          .weightedLevels[1];
   disjointResolved.dse.spatialPnr.temporaryViolations.admitted.push_back(
       ResolvedPnrViolationKind::TagUnassigned);
   const auto disjointPnrConfig =

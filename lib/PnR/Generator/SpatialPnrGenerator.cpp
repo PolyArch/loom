@@ -138,6 +138,11 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
         fields["planned_exact_repair_solver_calls"] =
             accounting.plannedExactRepairSolverCalls;
         fields["exact_repair_solver_calls"] = accounting.exactRepairSolverCalls;
+        fields["planned_local_transfer_adoption_probes"] =
+            accounting.plannedLocalTransferAdoptionProbes;
+        fields["local_transfer_adoption_probes"] =
+            accounting.localTransferAdoptionProbes;
+        fields["adopted_local_transfers"] = accounting.adoptedLocalTransfers;
         fields["planned_final_closure_attempts"] =
             accounting.plannedFinalClosureAttempts;
         fields["final_closure_attempts"] = accounting.finalClosureAttempts;
@@ -439,6 +444,9 @@ canonicalWorkLedger(SpatialPnrGenerationAccounting &accounting) {
   bind(SpatialPnrWorkKind::ExactRepairSolverCall,
        accounting.plannedExactRepairSolverCalls,
        accounting.exactRepairSolverCalls);
+  bind(SpatialPnrWorkKind::LocalTransferAdoptionProbe,
+       accounting.plannedLocalTransferAdoptionProbes,
+       accounting.localTransferAdoptionProbes);
   bind(SpatialPnrWorkKind::FinalClosureAttempt,
        accounting.plannedFinalClosureAttempts, accounting.finalClosureAttempts);
   return SpatialPnrWorkLedgerView(counters);
@@ -459,8 +467,13 @@ internal(InternalSpatialPnrGenerationReason reason,
 
 llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                 SpatialPnrGenerationAccounting &target) {
-  return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
-                    "annealing accepted Actions");
+  if (llvm::Error error =
+          checkedAdd(source.acceptedActionCount,
+                     target.annealingAcceptedActions,
+                     "annealing accepted Actions"))
+    return error;
+  return checkedAdd(source.adoptedLocalTransfers, target.adoptedLocalTransfers,
+                    "adopted local transfers");
 }
 
 llvm::Expected<std::optional<ResolvedPnrViolationKind>>
@@ -602,6 +615,10 @@ void emitRestartFailure(std::uint32_t ordinal,
             restart.accounting.exactRepairRegionDecisions;
         fields["exact_repair_solver_calls"] =
             restart.accounting.exactRepairSolverCalls;
+        fields["local_transfer_adoption_probes"] =
+            restart.accounting.localTransferAdoptionProbes;
+        fields["adopted_local_transfers"] =
+            restart.accounting.adoptedLocalTransfers;
         fields["final_closure_attempts"] =
             restart.accounting.finalClosureAttempts;
       });
@@ -696,6 +713,13 @@ public:
     fields["progress_route_anchors"] = candidate.progressRouteAnchorCount();
     fields["runtime_counterexample_violations"] =
         candidate.runtimeCounterexampleViolation();
+    fields["selected_handshake_violations"] =
+        candidate.selectedHandshakeViolation();
+    std::uint64_t registerFifoTransfers = 0;
+    for (PnrIndex logicalNet = 0;
+         logicalNet < problem.transfers().logicalNets().size(); ++logicalNet)
+      registerFifoTransfers += candidate.usesRegisterFifo(logicalNet);
+    fields["register_fifo_transfers"] = registerFifoTransfers;
     fields["shared_finite_buffer_conflicts"] =
         candidate.progress().sharedFiniteBufferConflictCount();
     fields["route_dependency_violations"] =
@@ -1192,6 +1216,8 @@ accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
                                 "planned exact repair region decisions");
   LOOM_ACCUMULATE_SPATIAL_FIELD(plannedExactRepairSolverCalls,
                                 "planned exact repair solver calls");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(plannedLocalTransferAdoptionProbes,
+                                "planned local transfer adoption probes");
   LOOM_ACCUMULATE_SPATIAL_FIELD(plannedFinalClosureAttempts,
                                 "planned final closure attempts");
   LOOM_ACCUMULATE_SPATIAL_FIELD(plannedSeedAttemptSlots,
@@ -1218,6 +1244,10 @@ accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
                                 "exact repair region decisions");
   LOOM_ACCUMULATE_SPATIAL_FIELD(exactRepairSolverCalls,
                                 "exact repair solver calls");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(localTransferAdoptionProbes,
+                                "local transfer adoption probes");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(adoptedLocalTransfers,
+                                "adopted local transfers");
   LOOM_ACCUMULATE_SPATIAL_FIELD(finalClosureAttempts, "final closure attempts");
 #undef LOOM_ACCUMULATE_SPATIAL_FIELD
   return llvm::Error::success();
@@ -1271,6 +1301,7 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
       accounting.annealingBaseProposalSlots,
       accounting.annealingMovableProposalSlots,
       accounting.exactRepairSolverCalls,
+      accounting.localTransferAdoptionProbes,
       accounting.finalClosureAttempts,
       accounting.finalizedRestarts,
       accounting.publicationSlots,
@@ -1320,6 +1351,8 @@ interruptionPayload(const SpatialPnrInterruptionSnapshot &snapshot) {
       snapshot.frontier.annealingMovableProposalSlots;
   frontier["exact_repair_solver_calls"] =
       snapshot.frontier.exactRepairSolverCalls;
+  frontier["local_transfer_adoption_probes"] =
+      snapshot.frontier.localTransferAdoptionProbes;
   frontier["final_closure_attempts"] = snapshot.frontier.finalClosureAttempts;
   frontier["finalized_restarts"] = snapshot.frontier.finalizedRestarts;
   frontier["publication_slots"] = snapshot.frontier.publicationSlots;
@@ -1423,7 +1456,7 @@ spatialPnrInterruptionStageSpelling(SpatialPnrInterruptionStage stage) {
 llvm::Error
 verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
                                bool requireClosedWork) {
-  const std::array<std::pair<std::uint64_t, std::uint64_t>, 10> counters = {{
+  const std::array<std::pair<std::uint64_t, std::uint64_t>, 11> counters = {{
       {accounting.plannedSeedAttemptSlots, accounting.seedAttemptSlots},
       {accounting.plannedInitializerAssignmentAttempts,
        accounting.initializerAssignmentAttempts},
@@ -1441,6 +1474,8 @@ verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
        accounting.exactRepairRegionDecisions},
       {accounting.plannedExactRepairSolverCalls,
        accounting.exactRepairSolverCalls},
+      {accounting.plannedLocalTransferAdoptionProbes,
+       accounting.localTransferAdoptionProbes},
       {accounting.plannedFinalClosureAttempts, accounting.finalClosureAttempts},
   }};
   for (const auto [planned, consumed] : counters) {

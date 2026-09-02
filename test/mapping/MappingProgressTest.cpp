@@ -741,6 +741,38 @@ module {
   if (!provenCycle(closureOf(fixture.sameTagEdges())))
     fail("same-tag virtual-channel order cycle was not proven");
 
+  // The capacity control: per-tag classes remove the order cycle, but the
+  // two nets still share one physical slot pool. A proven minimum above the
+  // selected pool is a closed wait by itself; a sufficient pool keeps the
+  // virtual-channel liveness verdict.
+  const auto virtualChannelPool = [&](std::uint64_t selectedCapacity) {
+    loom::mapping::MappingProgressProjection candidate = projection;
+    candidate.bufferDependencyEdges = fixture.virtualChannelEdges();
+    candidate.reconvergentCapacityObligations = {
+        loom::mapping::MappingReconvergentCapacityObligation{
+            loom::fabric::FabricFifoOccurrenceRef(7),
+            {MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
+                                     llvm::APInt(4, 3)},
+             MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
+                                     llvm::APInt(4, 5)}},
+            {},
+            selectedCapacity,
+            2,
+            loom::mapping::MappingReconvergentCapacityProofKind::Proven}};
+    return take(
+        loom::mapping::deriveMappingProgressClosure(model, candidate));
+  };
+  const auto undersized = virtualChannelPool(1);
+  if (undersized.kind !=
+          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+      undersized.reason != loom::mapping::MappingProgressClosureReason::
+                               ReconvergentCapacityShortfall ||
+      undersized.capacityShortfall != 1)
+    fail("an undersized virtual-channel pool was not a proven closed wait");
+  if (virtualChannelPool(2).kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("a sufficient virtual-channel pool lost its liveness verdict");
+
   // A cycle carrying a capacity edge is mediated by the capacity proof: its
   // members carry no obligations here, so it stays unestablished.
   const std::vector<MappingBufferDependencyEdge> capacityCycle{

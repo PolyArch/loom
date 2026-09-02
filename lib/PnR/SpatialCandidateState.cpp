@@ -35,6 +35,7 @@ namespace {
 using detail::attachmentTraversal;
 using detail::candidateError;
 using detail::computePlacementFragments;
+using detail::localTransferFragments;
 using detail::memoryPlanFragments;
 using detail::rangeContains;
 
@@ -125,6 +126,8 @@ llvm::Expected<HandshakeCandidateStateHandle> createInitialHandshakeState(
     if (option >= problem->localTransfers().options().size())
       return candidateError("initial register-FIFO transfer is out of range");
     const auto &transfer = problem->localTransfers().options()[option];
+    llvm::append_range(selectedFragments,
+                       localTransferFragments(problem->handshake(), option));
     if (llvm::Error error = addTraversalUse(transfer.writeTraversal))
       return std::move(error);
     if (llvm::Error error = addTraversalUse(transfer.readTraversal))
@@ -171,6 +174,8 @@ llvm::Expected<bool> projectHandshakeSelections(
     if (option >= problem.localTransfers().options().size())
       return candidateError("projected register-FIFO transfer is out of range");
     const auto &transfer = problem.localTransfers().options()[option];
+    llvm::append_range(selectedFragments,
+                       localTransferFragments(problem.handshake(), option));
     if (llvm::Error error = addTraversalUse(transfer.writeTraversal))
       return std::move(error);
     if (llvm::Error error = addTraversalUse(transfer.readTraversal))
@@ -1434,6 +1439,31 @@ SpatialCandidateState::summarizeCurrentTagAssignments() const {
   return tagAssignments_.summarizeCurrentState(true);
 }
 
+bool SpatialCandidateState::registerFifoTransferContributesToHandshakeCycle(
+    PnrIndex logicalNet) const {
+  assert(logicalNet < registerFifoTransfers_.size());
+  const PnrIndex option = registerFifoTransfers_[logicalNet];
+  if (option == getInvalidPnrIndex() || handshake_->acyclic())
+    return false;
+  assert(option < problem_->localTransfers().options().size());
+  const auto optionFragments =
+      localTransferFragments(problem_->handshake(), option);
+  for (PnrIndex arc : handshake_->cycleWitness())
+    if (handshake_->activeArcContributedBy(arc, optionFragments))
+      return true;
+  return false;
+}
+
+PnrIndex SpatialCandidateState::selectedHandshakeRegisterFifoCut() const {
+  if (handshake_->acyclic())
+    return getInvalidPnrIndex();
+  for (PnrIndex logicalNet = 0; logicalNet < registerFifoTransfers_.size();
+       ++logicalNet)
+    if (registerFifoTransferContributesToHandshakeCycle(logicalNet))
+      return logicalNet;
+  return getInvalidPnrIndex();
+}
+
 llvm::Expected<SpatialTagAssignmentDelta>
 SpatialCandidateState::summarizeCurrentTagAssignmentDelta(
     llvm::ArrayRef<PnrIndex> logicalNets,
@@ -1515,6 +1545,9 @@ llvm::Error SpatialCandidateState::verifyHandshakeProjection() const {
     if (option >= problem_->localTransfers().options().size())
       return candidateError("register-FIFO handshake option is out of range");
     const auto &transfer = problem_->localTransfers().options()[option];
+    if (llvm::Error error =
+            addFragments(localTransferFragments(index, option)))
+      return error;
     if (transfer.writeTraversal >= expectedTraversals.size() ||
         transfer.readTraversal >= expectedTraversals.size())
       return candidateError(

@@ -45,6 +45,10 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t incumbentSnapshotCount = 0;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
+  std::uint64_t plannedLocalTransferAdoptionProbes = 0;
+  std::uint64_t localTransferAdoptionProbes = 0;
+  std::uint64_t adoptedLocalTransfers = 0;
+  std::uint64_t relocatedLocalTransfers = 0;
   bool bestSelectedRankIncumbentRestored = false;
   bool bestFeasibleIncumbentRestored = false;
 
@@ -84,6 +88,11 @@ struct SpatialAnnealingStatistics final {
            lhs.incumbentSnapshotCount == rhs.incumbentSnapshotCount &&
            lhs.endpointExpansions == rhs.endpointExpansions &&
            lhs.negotiationIterations == rhs.negotiationIterations &&
+           lhs.plannedLocalTransferAdoptionProbes ==
+               rhs.plannedLocalTransferAdoptionProbes &&
+           lhs.localTransferAdoptionProbes == rhs.localTransferAdoptionProbes &&
+           lhs.adoptedLocalTransfers == rhs.adoptedLocalTransfers &&
+           lhs.relocatedLocalTransfers == rhs.relocatedLocalTransfers &&
            lhs.bestSelectedRankIncumbentRestored ==
                rhs.bestSelectedRankIncumbentRestored &&
            lhs.bestFeasibleIncumbentRestored ==
@@ -105,6 +114,22 @@ public:
   run(SpatialPathFinderSeed &seed, ExecutionControlView executionControl = {},
       SpatialPnrWorkLedgerView workLedger = {});
 
+  /// Adopts admitted register-FIFO pairings on a candidate with zero Mapping
+  /// violations: every external net whose local-transfer domain admits an
+  /// alternative is probed in canonical net and option order, first with the
+  /// current placements and then with exactly one endpoint relocated onto its
+  /// peer's PE, and the first alternative that keeps the selected handshake
+  /// graph acyclic without worsening the selected total ordering is
+  /// committed. Declined alternatives keep their external route. Annealing
+  /// runs this sweep after restoring its best feasible incumbent; a candidate
+  /// with a violation is left unchanged.
+  llvm::Error
+  adoptAdmittedLocalTransfers(SpatialCandidateState &candidate,
+                              std::uint64_t seedAttemptOrdinal,
+                              SpatialAnnealingStatistics &statistics,
+                              ExecutionControlView executionControl = {},
+                              SpatialPnrWorkLedgerView workLedger = {});
+
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -114,6 +139,7 @@ private:
   SpatialActionExecutorScratch actionExecutor_;
   std::vector<dse::ObjectiveWideValue> positiveCalibrationDeltas_;
   std::vector<SpatialActionKey> inactiveActionKeys_;
+  std::vector<SpatialLocalTransferAdoption> adoptionAlternatives_;
 };
 
 } // namespace loom::pnr

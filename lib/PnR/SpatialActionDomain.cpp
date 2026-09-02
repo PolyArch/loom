@@ -855,6 +855,16 @@ llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
       return invalid("transport witness count overflows u64");
     ++progressWitnessCount;
   }
+  if (candidate.selectedHandshakeViolation() != 0) {
+    if (candidate.selectedHandshakeRegisterFifoCut() == getInvalidPnrIndex())
+      return invalid("selected handshake cycle has no register-FIFO cut");
+    if (llvm::Error error = appendWitness(
+            ResolvedPnrViolationKind::SelectedHandshakeViolation, 0))
+      return error;
+    if (progressWitnessCount == std::numeric_limits<std::uint64_t>::max())
+      return invalid("transport witness count overflows u64");
+    ++progressWitnessCount;
+  }
   if (progressWitnessCount >
       std::numeric_limits<std::uint64_t>::max() - externalNetCount)
     return invalid("transport movable decision count overflows u64");

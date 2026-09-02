@@ -34,6 +34,7 @@ namespace {
 using detail::attachmentTraversal;
 using detail::candidateError;
 using detail::computePlacementFragments;
+using detail::localTransferFragments;
 using detail::memoryPlanFragments;
 using detail::rangeContains;
 
@@ -747,6 +748,16 @@ llvm::Error SpatialMoveTransaction::setRegisterFifoTransfer(
   const std::optional<PnrIndex> newOption = replacement == getInvalidPnrIndex()
                                                 ? std::nullopt
                                                 : std::optional(replacement);
+  const llvm::ArrayRef<PnrIndex> oldFragments =
+      oldOption ? localTransferFragments(state_->problem_->handshake(),
+                                         *oldOption)
+                : llvm::ArrayRef<PnrIndex>();
+  const llvm::ArrayRef<PnrIndex> newFragments =
+      newOption ? localTransferFragments(state_->problem_->handshake(),
+                                         *newOption)
+                : llvm::ArrayRef<PnrIndex>();
+  if (llvm::Error error = changeFragments(oldFragments, newFragments))
+    return error;
   if (llvm::Error error =
           changeRegisterFifoTransferResources(logicalNet, oldOption, newOption))
     return error;
@@ -1579,6 +1590,22 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
   if (cycle_)
     emitHandshakeCycle(state_->problem(), state_->handshake(), cycleWitness());
   return !cycle_;
+}
+
+llvm::Expected<bool> SpatialMoveTransaction::refreshHandshakeCycle() {
+  if (!scratch_)
+    return candidateError("move is no longer active");
+  if (closed_)
+    return candidateError("cannot refresh a closed move");
+  return scratch_->handshakeTransaction_->refreshCycleWitness();
+}
+
+llvm::Expected<bool> SpatialMoveTransaction::pendingHandshakeAcyclic() {
+  if (!scratch_)
+    return candidateError("move is no longer active");
+  if (closed_)
+    return candidateError("cannot project a closed move");
+  return scratch_->handshakeTransaction_->pendingSelectionAcyclic();
 }
 
 llvm::ArrayRef<PnrIndex> SpatialMoveTransaction::cycleWitness() const {

@@ -4,6 +4,7 @@
 #include "TemporalMappingFabricTestSupport.h"
 
 #include "ADG/Builder.h"
+#include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -18,7 +19,10 @@
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/MappingObjective.h"
 #include "PnR/SpatialActionExecutor.h"
+#include "PnR/SpatialActionDomain.h"
+#include "PnR/SpatialAnnealingSearch.h"
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialMappingMaterializer.h"
@@ -113,27 +117,27 @@ dataflow::CanonicalDataflowArtifact
 buildRegisterFifoDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @chain(%start: none, %value: i32) -> i32
-      attributes {input_segments = array<i32: 1, 0, 0>,
+  dataflow.graph private @chain(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %first:2 = dataflow.sync %start, %value
+    %sum = arith.addi %lhs, %rhs : i32
+    %retired:2 = dataflow.sync %start, %sum
         : (none, i32) -> (none, i32)
-    %second:2 = dataflow.sync %first#0, %first#1
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%second#1 : i32) streams() memories()
-        complete(%second#0 : none)
+    dataflow.graph.return values(%retired#1 : i32) streams() memories()
+        complete(%retired#0 : none)
   }
   dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
-      %value: i32) ctrl (%ctrl: none) {
+      %lhs: i32, %rhs: i32) ctrl (%ctrl: none) {
     %result, %done = dataflow.graph.launch @chain deps(%ctrl)
-        values(%value) stream_inputs() memories() stream_outputs()
-        : (none, i32) -> (i32, none)
+        values(%lhs, %rhs) stream_inputs() memories() stream_outputs()
+        : (none, i32, i32) -> (i32, none)
     dataflow.thread.yield %done : none
   }
   func.func private @host() {
-    %value = arith.constant 7 : i32
-    %thread = dataflow.thread.launch @worker(%value)
-        : (i32) -> !dataflow.thread_token
+    %lhs = arith.constant 7 : i32
+    %rhs = arith.constant 11 : i32
+    %thread = dataflow.thread.launch @worker(%lhs, %rhs)
+        : (i32, i32) -> !dataflow.thread_token
     return
   }
 }
@@ -144,8 +148,55 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
+/// A chain of adds retired through the token-sync FU. Two adds on the
+/// fixture's single ALU would pair through that FU's own register FIFO, which
+/// closes a combinational ready cycle by itself; three adds on two ALUs admit
+/// two individually acyclic pairings whose union closes a cycle through both.
+dataflow::CanonicalDataflowArtifact
+buildChainedAddDataflow(mlir::MLIRContext &context, std::size_t addCount) {
+  std::string body = "    %sum0 = arith.addi %lhs, %rhs : i32\n";
+  for (std::size_t add = 1; add < addCount; ++add)
+    body += "    %sum" + std::to_string(add) + " = arith.addi %sum" +
+            std::to_string(add - 1) + ", %rhs : i32\n";
+  const std::string source = R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @chain(%start: none, %lhs: i32, %rhs: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+)mlir" + body +
+                             "    %retired:2 = dataflow.sync %start, %sum" +
+                             std::to_string(addCount - 1) + R"mlir(
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%retired#1 : i32) streams() memories()
+        complete(%retired#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %lhs: i32, %rhs: i32) ctrl (%ctrl: none) {
+    %result, %done = dataflow.graph.launch @chain deps(%ctrl)
+        values(%lhs, %rhs) stream_inputs() memories() stream_outputs()
+        : (none, i32, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %lhs = arith.constant 7 : i32
+    %rhs = arith.constant 11 : i32
+    %thread = dataflow.thread.launch @worker(%lhs, %rhs)
+        : (i32, i32) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir";
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  if (!module)
+    fail("cannot parse chained-add register-FIFO Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
 fabric::FinalizedFabricRoot
-buildRegisterFifoFabric(const ArtifactStore &store) {
+buildRegisterFifoFabric(const ArtifactStore &store,
+                        bool feedbackBypassable = true,
+                        std::size_t aluCount = 1,
+                        std::uint32_t residentContexts = 3) {
   using namespace adg;
 
   const PortType bits128 = take(PortType::bits(128));
@@ -171,13 +222,19 @@ buildRegisterFifoFabric(const ArtifactStore &store) {
       peInputs,
       PeSpec::temporal(
           std::vector<PortType>(4, bits128), moduleTypes,
-          TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
+          TemporalPeParameters{residentContexts,
+                               FuConfigurationMode::PerInstruction,
                                ::fabric::OperandBufferMode::PerInstruction, 2,
                                TemporalRegisterFifoParameters{2, 2, 2}})));
   std::vector<PeValue> fuInputs;
   fuInputs.reserve(moduleTypes.size());
   for (std::size_t input = 0; input < moduleTypes.size(); ++input)
     fuInputs.push_back(take(pe.input(input)));
+  for (std::size_t alu = 0; alu < aluCount; ++alu)
+    requireSuccess(addCoreAluFu(
+        pe, llvm::ArrayRef<PeValue>(fuInputs).take_front(3),
+        ::fabric::ResolvedIndexWidthSet::get(
+            {::fabric::ResolvedIndexWidth::I64})));
   addTokenSyncFu(pe, fuInputs, bits128,
                  ::fabric::oneCycleElasticOperationResourceContract());
   requireSuccess(pe.close());
@@ -190,7 +247,8 @@ buildRegisterFifoFabric(const ArtifactStore &store) {
                              std::nullopt)));
     SpatialValue buffered =
         take(spatial.addFifo(fanout[0],
-                             FifoSpec{tagged128, 2, true, std::nullopt}))
+                             FifoSpec{tagged128, 2, feedbackBypassable,
+                                      std::nullopt}))
             .value();
     requireSuccess(
         spatial.resolveBackedge(std::move(feedback[output]), buffered));
@@ -762,17 +820,19 @@ void exerciseSpatialTaggedRuntimeCounterexampleExactRepair(
     fail("mixed traversal/tag repair retained every exact literal");
 }
 
-void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
-  ExactRepairTemporaryDirectory directory;
-  ArtifactStore store(directory.path());
-  mlir::MLIRContext context = makeExactRepairContext();
+struct ChainedAddProblem final {
+  mapping::FinalizedTechMapping tech;
+  mapping::FinalizedSpatialMappingConstraintSet constraints;
+  pnr::FrozenSpatialPnrProblemHandle problem;
+};
 
-  auto dataflowArtifact = buildRegisterFifoDataflow(context);
-  const auto dataflowReference =
-      take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  (void)dataflowReference;
+ChainedAddProblem freezeChainedAddProblem(ArtifactStore &store,
+                                          mlir::MLIRContext &context,
+                                          const fabric::FinalizedFabricRoot &fabric,
+                                          std::size_t addCount) {
+  auto dataflowArtifact = buildChainedAddDataflow(context, addCount);
+  (void)take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   const auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildRegisterFifoFabric(store);
 
   ResolvedConfig resolved = defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -785,40 +845,63 @@ void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
   const auto *techCandidates =
       std::get_if<mapping::GeneratedTechMappings>(&generated);
   if (!techCandidates || techCandidates->candidates.size() != 1)
-    fail("register-FIFO fixture did not generate one TechMapping");
-  const auto tech = take(
+    fail("chained-add register-FIFO fixture did not generate one TechMapping");
+  auto tech = take(
       mapping::importTechMapping(techCandidates->candidates.front(), store));
-  const auto constraints = buildSpatialMappingConstraints(
+  auto constraints = buildSpatialMappingConstraints(
       context, dataflow, tech.view(), fabric.view(), store);
-
   ResolvedConfig pnrResolved = buildSpatialPnrTestResolvedConfig();
-  pnrResolved.dse.spatialPnr.search.exactRepair = {
-      ResolvedPnrExactRepairKind::CpSat, 256, 1024};
   const auto pnrConfig =
       take(pnr::projectResolvedSpatialPnrConfigView(pnrResolved));
   auto problem = take(pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
+  return {std::move(tech), std::move(constraints), std::move(problem)};
+}
+
+/// The frozen local-transfer domain never admits a pairing that closes a
+/// combinational cycle through its own producer and consumer placements:
+/// two adds on one elastic ALU keep only the external route, while the
+/// cross-FU pairing into the token-sync FU survives and seeds acyclic.
+void exerciseStaticallyClosedRegisterFifoDomain(
+    ArtifactStore &store, mlir::MLIRContext &context,
+    const fabric::FinalizedFabricRoot &fabric) {
+  const ChainedAddProblem chain =
+      freezeChainedAddProblem(store, context, fabric, /*addCount=*/2);
+  const auto &problem = chain.problem;
+  const auto &localTransfers = problem->localTransfers();
+  if (localTransfers.closedOptionCount() == 0)
+    fail("single-ALU chain admitted its self-closing register-FIFO pairing");
+  for (const pnr::FrozenSpatialRegisterFifoTransferOption &option :
+       localTransfers.options())
+    if (option.writer.fu == option.reader.fu)
+      fail("frozen local-transfer domain admits a same-FU pairing");
   pnr::SpatialPathFinderSeedWorkSummary work;
   auto seed = take(pnr::createCanonicalPathFinderSpatialSeed(problem, work));
-  constexpr pnr::PnrIndex temporalPePortCount = 4;
-  pnr::PnrIndex selectedNet = pnr::getInvalidPnrIndex();
+  if (seed.candidate->selectedHandshakeViolation() != 0)
+    fail("closed pairings left the frozen domain but the seed is cyclic");
+  bool pairs = false;
   for (pnr::PnrIndex logicalNet = 0;
        logicalNet < problem->transfers().logicalNets().size(); ++logicalNet)
-    if (seed.candidate->usesRegisterFifo(logicalNet)) {
-      selectedNet = logicalNet;
-      break;
-    }
-  if (selectedNet == pnr::getInvalidPnrIndex())
-    fail("real register-FIFO fixture selected no local transfer");
-  const pnr::PnrIndex selectedRegisterFifoOption =
-      seed.candidate->registerFifoTransfer(selectedNet);
+    pairs |= seed.candidate->usesRegisterFifo(logicalNet);
+  if (!pairs)
+    fail("static closure also removed the cross-FU register-FIFO pairing");
+  requireSuccess(seed.candidate->verify());
 
+}
+
+/// Routes the register-FIFO net `selectedNet` of `candidate` externally
+/// through the feedback-matched sink attachment of the fixture, so the
+/// candidate keeps a legal external route where the local pairing was.
+void routeRegisterFifoNetExternally(
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    pnr::SpatialCandidateState &candidate, pnr::PnrIndex selectedNet) {
+  constexpr pnr::PnrIndex temporalPePortCount = 4;
   const auto &selectedLogicalNet =
       problem->transfers().logicalNets()[selectedNet];
   if (selectedLogicalNet.sinkCount != 1)
     fail("register-FIFO fixture local net does not have one sink");
   const pnr::PnrIndex sourceEndpoint =
-      seed.candidate->logicalNetSourceEndpoint(selectedNet);
+      candidate.logicalNetSourceEndpoint(selectedNet);
   const auto endpoints = problem->routing().routingEndpoints();
   if (sourceEndpoint >= endpoints.size() ||
       endpoints[sourceEndpoint].reference.ordinal < temporalPePortCount)
@@ -845,14 +928,14 @@ void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
   if (!feedbackSinkOption)
     fail("register-FIFO fixture has no feedback-matched sink attachment");
 
-  auto routeCosts = take(pnr::SpatialRouteCostState::create(*seed.candidate));
+  auto routeCosts = take(pnr::SpatialRouteCostState::create(candidate));
   pnr::SpatialNetRouterScratch router;
   requireSuccess(router.prepare(*problem));
   const std::array<pnr::PnrIndex, 1> routedNets = {selectedNet};
   requireSuccess(router.beginConstraintSweep(routedNets));
   pnr::SpatialCandidateScratch candidateScratch;
   requireSuccess(candidateScratch.prepare(*problem));
-  auto externalMove = take(seed.candidate->beginMove(candidateScratch));
+  auto externalMove = take(candidate.beginMove(candidateScratch));
   requireSuccess(routeCosts.selectLogicalNet(selectedNet));
   requireSuccess(
       externalMove.setRegisterFifoTransfer(selectedNet, std::nullopt));
@@ -863,17 +946,253 @@ void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
     requireSuccess(externalMove.setGraphBoundaryAttachment(
         sinkBinding.index, *feedbackSinkOption));
   take(router.routeWholeNet(
-      externalMove, *seed.candidate, routeCosts, selectedNet,
-      pnrConfig.policy().search.routing.endpointExpansionLimit));
+      externalMove, candidate, routeCosts, selectedNet,
+      problem->config().policy().search.routing.endpointExpansionLimit));
   requireSuccess(routeCosts.acceptSelectedLogicalNet());
   requireSuccess(router.finishConstraintNet(selectedNet));
   if (!take(externalMove.close()))
     fail("external parent route closes a combinational handshake cycle");
   requireSuccess(externalMove.commit());
-  if (seed.candidate->usesRegisterFifo(selectedNet) ||
-      seed.candidate->routeTree(selectedNet).isUnrouted())
+  if (candidate.usesRegisterFifo(selectedNet) ||
+      candidate.routeTree(selectedNet).isUnrouted())
     fail("external parent transition did not materialize one routed net");
-  requireSuccess(seed.candidate->verify());
+  requireSuccess(candidate.verify());
+}
+
+/// Routes the fixture's seeded register-FIFO net externally and returns the
+/// net together with the option the seed had selected for it.
+std::pair<pnr::PnrIndex, pnr::PnrIndex>
+routeSeededRegisterFifoNetExternally(
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    pnr::SpatialCandidateState &candidate) {
+  pnr::PnrIndex pairedNet = pnr::getInvalidPnrIndex();
+  for (pnr::PnrIndex logicalNet = 0;
+       logicalNet < problem->transfers().logicalNets().size(); ++logicalNet)
+    if (candidate.usesRegisterFifo(logicalNet))
+      pairedNet = logicalNet;
+  if (pairedNet == pnr::getInvalidPnrIndex() ||
+      !take(pnr::spatialMappingViolationsAreZero(candidate)))
+    fail("adoption fixture seed is not a feasible paired candidate");
+  const pnr::PnrIndex pairedOption = candidate.registerFifoTransfer(pairedNet);
+  routeRegisterFifoNetExternally(problem, candidate, pairedNet);
+  if (!take(pnr::spatialMappingViolationsAreZero(candidate)))
+    fail("external disposition did not leave a feasible routed candidate");
+  return {pairedNet, pairedOption};
+}
+
+/// Routing the seeded pairing externally leaves a feasible candidate whose
+/// local-transfer domain still admits it. The selected total ordering is the
+/// adoption authority: with the traversal-claim measure selected, the
+/// fixture's external route claims less than the pairing and the sweep
+/// declines the resident alternative; with only violations selected, the
+/// pairing ties the external route and the sweep adopts it under the current
+/// placements without touching any other decision.
+void exerciseAdmittedRegisterFifoAdoption(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &tech,
+    const fabric::FabricArtifactView &fabric,
+    const mapping::SpatialMappingConstraintSetView &constraints,
+    const ResolvedConfig &pnrResolved) {
+  const auto freeze = [&](const ResolvedConfig &config) {
+    return take(pnr::freezeSpatialPnrProblem(
+        dataflow, tech, fabric,
+        take(pnr::projectResolvedSpatialPnrConfigView(config)), constraints));
+  };
+  {
+    const auto problem = freeze(pnrResolved);
+    pnr::SpatialPathFinderSeedWorkSummary work;
+    auto seed = take(pnr::createCanonicalPathFinderSpatialSeed(problem, work));
+    pnr::SpatialCandidateState &candidate = *seed.candidate;
+    const auto [pairedNet, pairedOption] =
+        routeSeededRegisterFifoNetExternally(problem, candidate);
+    const auto externalObjective =
+        take(problem->objectiveProgram().evaluate(candidate));
+    pnr::SpatialAnnealingSearchScratch search;
+    pnr::SpatialAnnealingStatistics statistics;
+    requireSuccess(
+        search.adoptAdmittedLocalTransfers(candidate, 0, statistics));
+    if (statistics.localTransferAdoptionProbes != 1 ||
+        statistics.adoptedLocalTransfers != 0 ||
+        candidate.usesRegisterFifo(pairedNet) ||
+        candidate.routeTree(pairedNet).isUnrouted())
+      fail("adoption sweep adopted a pairing that worsens the selected "
+           "total ordering");
+    requireSuccess(candidate.verify());
+    if (take(problem->objectiveProgram().evaluate(candidate)).codes() !=
+        externalObjective.codes())
+      fail("declined adoption changed the candidate objective");
+  }
+  {
+    ResolvedConfig tie = pnrResolved;
+    tie.dse.objectiveCatalogs.dimensions.erase(
+        llvm::find_if(tie.dse.objectiveCatalogs.dimensions,
+                      [](const auto &dimension) {
+                        return std::holds_alternative<
+                            ResolvedMappingMeasureObjectiveSource>(
+                            dimension.source);
+                      }),
+        tie.dse.objectiveCatalogs.dimensions.end());
+    tie.dse.objectiveCatalogs.weightedLevels = {{{{0, 1}, {1, 1}}}};
+    const auto problem = freeze(tie);
+    pnr::SpatialPathFinderSeedWorkSummary work;
+    auto seed = take(pnr::createCanonicalPathFinderSpatialSeed(problem, work));
+    pnr::SpatialCandidateState &candidate = *seed.candidate;
+    const auto [pairedNet, pairedOption] =
+        routeSeededRegisterFifoNetExternally(problem, candidate);
+    const auto externalObjective =
+        take(problem->objectiveProgram().evaluate(candidate));
+    pnr::SpatialAnnealingSearchScratch search;
+    pnr::SpatialAnnealingStatistics statistics;
+    requireSuccess(
+        search.adoptAdmittedLocalTransfers(candidate, 0, statistics));
+    if (statistics.localTransferAdoptionProbes != 1 ||
+        statistics.adoptedLocalTransfers != 1 ||
+        statistics.relocatedLocalTransfers != 0 ||
+        !candidate.usesRegisterFifo(pairedNet) ||
+        candidate.registerFifoTransfer(pairedNet) != pairedOption ||
+        !candidate.routeTree(pairedNet).isUnrouted())
+      fail("adoption sweep did not restore the admitted resident pairing");
+    requireSuccess(candidate.verify());
+    if (take(problem->objectiveProgram().compareSelectedRank(
+            take(problem->objectiveProgram().evaluate(candidate)), {},
+            externalObjective, {})) != 0)
+      fail("tied adoption changed the selected total ordering");
+  }
+}
+
+/// Two individually acyclic pairings on two ALUs close a mutual handshake
+/// cycle: the initializer pairs each chained add with its already placed
+/// producer on the other ALU, so the seed carries the cycle. The witness
+/// Action cuts exactly one register-FIFO disposition on the witnessed cycle,
+/// routes that net externally, and leaves the other pairing in place;
+/// rollback restores the cyclic selection.
+void exerciseSelectedRegisterFifoHandshakeCut(
+    ArtifactStore &store, mlir::MLIRContext &context,
+    const fabric::FinalizedFabricRoot &fabric) {
+  const ChainedAddProblem chain =
+      freezeChainedAddProblem(store, context, fabric, /*addCount=*/3);
+  const auto &problem = chain.problem;
+  pnr::SpatialPathFinderSeedWorkSummary work;
+  auto seed = take(pnr::createCanonicalPathFinderSpatialSeed(problem, work));
+  pnr::SpatialCandidateState &candidate = *seed.candidate;
+  std::vector<pnr::PnrIndex> cycleNets;
+  for (pnr::PnrIndex logicalNet = 0;
+       logicalNet < problem->transfers().logicalNets().size(); ++logicalNet)
+    if (candidate.usesRegisterFifo(logicalNet) &&
+        candidate.registerFifoTransferContributesToHandshakeCycle(logicalNet))
+      cycleNets.push_back(logicalNet);
+  if (candidate.selectedHandshakeViolation() != 1 || cycleNets.size() != 2)
+    fail("alternating ALU pairings did not seed a mutual handshake cycle");
+  requireSuccess(candidate.verify());
+
+  pnr::SpatialActionDomainScratch actionDomain;
+  requireSuccess(actionDomain.prepare(*problem));
+  requireSuccess(actionDomain.rebuild(candidate));
+  std::optional<pnr::SpatialMappingAction> witnessAction;
+  for (const pnr::SpatialTransportRoutingAction &choice :
+       actionDomain.view().transportChoices) {
+    const auto *witness =
+        std::get_if<pnr::SpatialWitnessRegionRoutingAction>(&choice);
+    if (!witness ||
+        witness->witnessKind !=
+            ResolvedPnrViolationKind::SelectedHandshakeViolation ||
+        witness->witnessOrdinal != 0)
+      continue;
+    witnessAction = pnr::SpatialTransportRoutingAction{*witness};
+    break;
+  }
+  if (!witnessAction)
+    fail("mutual register-FIFO cycle has no atomic handshake witness Action");
+
+  const auto pairedNets = [&]() {
+    return static_cast<int>(candidate.usesRegisterFifo(cycleNets[0])) +
+           static_cast<int>(candidate.usesRegisterFifo(cycleNets[1]));
+  };
+  pnr::SpatialActionExecutorScratch executor;
+  requireSuccess(executor.prepare(candidate));
+  auto rollbackProbe = take(executor.probe(
+      candidate, *witnessAction,
+      pnr::SpatialActionExecutionContext::FinalClosure));
+  if (rollbackProbe.isSemanticNoop() ||
+      candidate.selectedHandshakeViolation() != 0 || pairedNets() != 1)
+    fail("witness probe did not cut exactly one pairing of the cycle");
+  requireSuccess(rollbackProbe.discard());
+  if (pairedNets() != 2 || candidate.selectedHandshakeViolation() != 1)
+    fail("witness rollback did not restore the mutual cycle");
+  requireSuccess(candidate.verify());
+
+  auto commitProbe = take(executor.probe(
+      candidate, *witnessAction,
+      pnr::SpatialActionExecutionContext::FinalClosure));
+  requireSuccess(commitProbe.commit());
+  const pnr::PnrIndex cut =
+      candidate.usesRegisterFifo(cycleNets[0]) ? cycleNets[1] : cycleNets[0];
+  if (pairedNets() != 1 || candidate.routeTree(cut).isUnrouted() ||
+      candidate.selectedHandshakeViolation() != 0)
+    fail("witness commit did not route exactly one cut net externally");
+  requireSuccess(candidate.verify());
+}
+
+void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
+  ExactRepairTemporaryDirectory directory;
+  ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeExactRepairContext();
+
+  auto dataflowArtifact = buildRegisterFifoDataflow(context);
+  const auto dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  (void)dataflowReference;
+  const auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildRegisterFifoFabric(store);
+  exerciseStaticallyClosedRegisterFifoDomain(
+      store, context,
+      buildRegisterFifoFabric(store, /*feedbackBypassable=*/false));
+  exerciseSelectedRegisterFifoHandshakeCut(
+      store, context,
+      buildRegisterFifoFabric(store, /*feedbackBypassable=*/false,
+                              /*aluCount=*/2, /*residentContexts=*/4));
+
+  ResolvedConfig resolved = defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto techConfig =
+      take(mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<::dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  auto generated = mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), techConfig, store});
+  const auto *techCandidates =
+      std::get_if<mapping::GeneratedTechMappings>(&generated);
+  if (!techCandidates || techCandidates->candidates.size() != 1)
+    fail("register-FIFO fixture did not generate one TechMapping");
+  const auto tech = take(
+      mapping::importTechMapping(techCandidates->candidates.front(), store));
+  const auto constraints = buildSpatialMappingConstraints(
+      context, dataflow, tech.view(), fabric.view(), store);
+
+  ResolvedConfig pnrResolved = buildSpatialPnrTestResolvedConfig();
+  pnrResolved.dse.spatialPnr.search.exactRepair = {
+      ResolvedPnrExactRepairKind::CpSat, 256, 1024};
+  const auto pnrConfig =
+      take(pnr::projectResolvedSpatialPnrConfigView(pnrResolved));
+  auto problem = take(pnr::freezeSpatialPnrProblem(
+      dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
+  exerciseAdmittedRegisterFifoAdoption(dataflow, tech.view(), fabric.view(),
+                                       constraints.view(), pnrResolved);
+  pnr::SpatialPathFinderSeedWorkSummary work;
+  auto seed = take(pnr::createCanonicalPathFinderSpatialSeed(problem, work));
+  pnr::PnrIndex selectedNet = pnr::getInvalidPnrIndex();
+  for (pnr::PnrIndex logicalNet = 0;
+       logicalNet < problem->transfers().logicalNets().size(); ++logicalNet)
+    if (seed.candidate->usesRegisterFifo(logicalNet)) {
+      selectedNet = logicalNet;
+      break;
+    }
+  if (selectedNet == pnr::getInvalidPnrIndex())
+    fail("real register-FIFO fixture selected no local transfer");
+  const pnr::PnrIndex selectedRegisterFifoOption =
+      seed.candidate->registerFifoTransfer(selectedNet);
+
+  routeRegisterFifoNetExternally(problem, *seed.candidate, selectedNet);
   pnr::SpatialActionExecutorScratch dispositionExecutor;
   requireSuccess(dispositionExecutor.prepare(*seed.candidate));
   const pnr::SpatialMappingAction registerFifoAction =

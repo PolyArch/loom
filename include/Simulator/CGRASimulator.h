@@ -461,6 +461,22 @@ struct CgraClosedWaitSetDiagnostic final {
   std::uint8_t operandQueueProgressSupport = 0;
   std::optional<::loom::ComponentViewDigest> operandQueueProjectionDigest;
   std::vector<OperandQueueHead> operandQueueHeads;
+  /// Terminal witness of one per-tag virtual-channel storage: every resident
+  /// channel was presented once since the last queue commit and refused, so
+  /// the offer cursor completed a full rotation without a grant and the queue
+  /// sleeps until an external event. At quiescence no such event remains, so
+  /// the refused class heads in the certificate are exact, not the artifact
+  /// of an offer the port never made.
+  struct OfferRotationWitness final {
+    std::uint64_t storageOrdinal = std::numeric_limits<std::uint64_t>::max();
+    std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifoOccurrence;
+    std::uint32_t residentChannelCount = 0;
+    std::uint32_t refusedOffersSinceCommit = 0;
+    std::uint32_t occupancy = 0;
+    std::uint32_t capacity = 0;
+    std::vector<llvm::APInt> residentTagValues;
+  };
+  std::vector<OfferRotationWitness> exhaustedOfferRotations;
 };
 
 struct RetiredCgraSimulation final {

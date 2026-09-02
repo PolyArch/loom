@@ -21,6 +21,7 @@ enum class PnrWorkKind : std::uint8_t {
   AnnealingMovableProposal,
   ExactRepairRegionDecision,
   ExactRepairSolverCall,
+  LocalTransferAdoptionProbe,
   FinalClosureAttempt,
   Count,
 };

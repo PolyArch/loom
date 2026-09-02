@@ -27,7 +27,7 @@ namespace loom::fabric {
 namespace {
 
 constexpr llvm::StringLiteral handshakeContextAlgorithmIdentity =
-    "loom.fabric.handshake_context.1";
+    "loom.fabric.handshake_context.2";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -526,6 +526,52 @@ llvm::Expected<FabricMemoryHandshakeSelection> makeMemoryHandshakeSelection(
       std::vector(roleDestinations.begin(), roleDestinations.end()));
 }
 
+llvm::Expected<FabricPeRegisterFifoHandshakeSelection>
+makePeRegisterFifoHandshakeSelection(const FabricArtifactView &view,
+                                     FabricPeOccurrenceRef pe,
+                                     FabricOrdinal registerFifo,
+                                     FabricFuOccurrencePortRef writer,
+                                     FabricFuOccurrencePortRef reader,
+                                     FabricPhysicalTraversalRef writeTraversal,
+                                     FabricPhysicalTraversalRef readTraversal) {
+  if (llvm::Error error = validateFabricRef(view, pe))
+    return std::move(error);
+  if (view.peSchedule(pe) != ::fabric::Schedule::Temporal)
+    return invalid("register-FIFO handshake owner is not a Temporal PE");
+  const FabricInventoryOwnerRef owner = FabricInventoryOwnerRef::of(pe);
+  if (registerFifo >=
+      view.inventorySize(owner, FabricInventoryKind::RegisterFifo))
+    return invalid("register-FIFO handshake ordinal is out of range");
+  if (writer.direction != FabricPortDirection::Output ||
+      reader.direction != FabricPortDirection::Input)
+    return invalid("register-FIFO handshake endpoint direction is invalid");
+  if (view.parentPeOf(writer.fu) != pe || view.parentPeOf(reader.fu) != pe)
+    return invalid("register-FIFO handshake endpoint has a foreign PE owner");
+  const auto writerEndpoint = view.fuOccurrenceTransportEndpoint(writer);
+  const auto readerEndpoint = view.fuOccurrenceTransportEndpoint(reader);
+  if (!writerEndpoint || !readerEndpoint ||
+      view.transportEndpointDirection(*writerEndpoint) !=
+          FabricPortDirection::Output ||
+      view.transportEndpointDirection(*readerEndpoint) !=
+          FabricPortDirection::Input)
+    return invalid("register-FIFO handshake endpoint does not resolve");
+
+  const FabricPhysicalTraversalRef expectedWrite =
+      FabricPhysicalTraversalRef::peRegisterFifo(
+          pe, registerFifo, FabricRegisterFifoPathRole::Write);
+  const FabricPhysicalTraversalRef expectedRead =
+      FabricPhysicalTraversalRef::peRegisterFifo(
+          pe, registerFifo, FabricRegisterFifoPathRole::Read);
+  if (writeTraversal != expectedWrite || readTraversal != expectedRead)
+    return invalid("register-FIFO handshake traversal pairing is invalid");
+  if (!view.physicalTraversal(writeTraversal) ||
+      !view.physicalTraversal(readTraversal))
+    return invalid("register-FIFO handshake traversal does not resolve");
+  return FabricPeRegisterFifoHandshakeSelection(
+      pe, registerFifo, writer, reader, std::move(writeTraversal),
+      std::move(readTraversal));
+}
+
 std::optional<std::uint32_t>
 HandshakeOwnerModel::nodeForSignal(const HandshakeSignalRef &signal) const {
   for (std::uint32_t ordinal = 0; ordinal != nodeCount(); ++ordinal) {
@@ -606,6 +652,17 @@ memorySelector(FabricMemoryCapabilityAlternativeRef capability,
   return selector;
 }
 
+detail::HandshakeFragmentSelector
+peRegisterFifoSelector(FabricPeOccurrenceRef pe, FabricOrdinal registerFifo,
+                       FabricFuOccurrencePortRef port,
+                       FabricRegisterFifoPathRole role) {
+  detail::HandshakeFragmentSelector selector;
+  selector.kind = detail::HandshakeFragmentSelectorKind::PeRegisterFifoBinding;
+  selector.peRegisterFifo =
+      detail::HandshakePeRegisterFifoSelector{pe, registerFifo, port, role};
+  return selector;
+}
+
 void addDirectTraversal(detail::HandshakeOwnerModelBuilder &builder,
                         detail::HandshakeFragmentSelector selector,
                         FabricTransportEndpointRef source,
@@ -645,6 +702,8 @@ compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner,
                llvm::ArrayRef<const FabricPhysicalTraversalView *> traversals) {
   detail::HandshakeOwnerModelBuilder builder(FabricHandshakeOwner::pe(owner));
   const bool temporal = view.peSchedule(owner) == ::fabric::Schedule::Temporal;
+  const std::uint64_t registerFifoCount = view.inventorySize(
+      FabricInventoryOwnerRef::of(owner), FabricInventoryKind::RegisterFifo);
   const FabricTransportEndpointOwnerRef peEndpointOwner =
       FabricTransportEndpointOwnerRef::of(owner);
   for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
@@ -670,6 +729,55 @@ compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner,
                        traversal.sources.front(),
                        traversal.destinations.front(),
                        /*forwardValid=*/true, /*backwardReady=*/true);
+  }
+  if (registerFifoCount != 0) {
+    if (!temporal)
+      return invalid("Spatial PE declares register-FIFO storage");
+    const std::uint32_t ports = view.peRegisterFifoPorts(owner);
+    if (ports != 1 && ports != 2)
+      return invalid("Temporal PE register-FIFO port count is invalid");
+    std::vector<std::uint32_t> readyJunctions;
+    readyJunctions.reserve(registerFifoCount);
+    for (std::uint64_t fifo = 0; fifo != registerFifoCount; ++fifo)
+      readyJunctions.push_back(builder.junction(ordinalKey(4, fifo, 0)));
+
+    for (FabricFuOccurrenceRef fu : view.fuOccurrences()) {
+      if (view.parentPeOf(fu) != owner)
+        continue;
+      const FabricTransportEndpointOwnerRef endpointOwner =
+          FabricTransportEndpointOwnerRef::of(fu);
+      std::array<FabricOrdinal, 2> directionOrdinals = {0, 0};
+      for (FabricOrdinal endpointOrdinal = 0;
+           endpointOrdinal != view.transportEndpointCount(endpointOwner);
+           ++endpointOrdinal) {
+        const FabricTransportEndpointRef endpoint{endpointOwner,
+                                                  endpointOrdinal};
+        const auto direction = view.transportEndpointDirection(endpoint);
+        if (!direction)
+          return invalid("FU register-FIFO endpoint has no direction");
+        const std::size_t directionIndex =
+            *direction == FabricPortDirection::Input ? 0 : 1;
+        const FabricFuOccurrencePortRef port{
+            fu, *direction, directionOrdinals[directionIndex]++};
+        if (view.fuOccurrenceTransportEndpoint(port) != endpoint)
+          return invalid("FU register-FIFO endpoint ordinal is inconsistent");
+        const std::uint32_t ready =
+            builder.boundarySignal({endpoint, HandshakeSignalKind::Ready});
+        const FabricRegisterFifoPathRole role =
+            *direction == FabricPortDirection::Output
+                ? FabricRegisterFifoPathRole::Write
+                : FabricRegisterFifoPathRole::Read;
+        for (std::uint64_t fifo = 0; fifo != registerFifoCount; ++fifo) {
+          std::vector<Arc> arcs;
+          if (role == FabricRegisterFifoPathRole::Write)
+            arcs.emplace_back(readyJunctions[fifo], ready);
+          else
+            arcs.emplace_back(ready, readyJunctions[fifo]);
+          builder.addFragment(peRegisterFifoSelector(owner, fifo, port, role),
+                              std::move(arcs));
+        }
+      }
+    }
   }
   return builder.finish();
 }
@@ -1229,10 +1337,10 @@ buildFabricHandshakeContext(const FabricArtifactView &view) {
     const std::vector<std::uint8_t> key =
         detail::handshakeOwnerKey(model.owner());
     if (!ownerIndex->ordinals
-             .try_emplace(llvm::StringRef(
-                              reinterpret_cast<const char *>(key.data()),
-                              key.size()),
-                          static_cast<std::uint32_t>(ordinal))
+             .try_emplace(
+                 llvm::StringRef(reinterpret_cast<const char *>(key.data()),
+                                 key.size()),
+                 static_cast<std::uint32_t>(ordinal))
              .second)
       return invalid("handshake model inventory repeats an owner");
   }
@@ -1469,11 +1577,29 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
       return invalid("selected memory operation placement is contradictory");
   }
 
+  using RegisterFifoKey = std::pair<std::vector<std::uint8_t>, FabricOrdinal>;
+  std::set<RegisterFifoKey> registerFifoKeys;
+  for (const FabricPeRegisterFifoHandshakeSelection &selected :
+       selection.peRegisterFifos) {
+    if (!registerFifoKeys
+             .emplace(canonicalFabricBytes(selected.pe()),
+                      selected.registerFifo())
+             .second)
+      return invalid(
+          "selected register-FIFO handshake relation repeats one FIFO");
+    if (!llvm::is_contained(selection.traversals, selected.writeTraversal()) ||
+        !llvm::is_contained(selection.traversals, selected.readTraversal()))
+      return invalid(
+          "selected register-FIFO handshake relation omits its traversal");
+  }
+
   std::vector<bool> active(model.fragmentCount(), false);
   std::vector<bool> selectedTraversalConsumed(selection.traversals.size(),
                                               false);
   std::vector<bool> selectedMemoryConsumed(selection.memoryOperations.size(),
                                            false);
+  std::vector<std::uint8_t> selectedRegisterFifoConsumed(
+      selection.peRegisterFifos.size(), 0);
   const FabricFuHandshakeSelection *selectedFu = nullptr;
   if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
     const FabricFuOccurrenceRef owner =
@@ -1579,6 +1705,30 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
         selectedMemoryConsumed[selectedOrdinal] = true;
       }
       break;
+    case detail::HandshakeFragmentSelectorKind::PeRegisterFifoBinding:
+      if (!selector.peRegisterFifo)
+        return invalid("register-FIFO handshake fragment has no exact key");
+      for (std::size_t selectedOrdinal = 0;
+           selectedOrdinal < selection.peRegisterFifos.size();
+           ++selectedOrdinal) {
+        const FabricPeRegisterFifoHandshakeSelection &candidate =
+            selection.peRegisterFifos[selectedOrdinal];
+        if (candidate.pe() != selector.peRegisterFifo->pe ||
+            candidate.registerFifo() != selector.peRegisterFifo->registerFifo)
+          continue;
+        const FabricFuOccurrencePortRef port =
+            selector.peRegisterFifo->role == FabricRegisterFifoPathRole::Write
+                ? candidate.writer()
+                : candidate.reader();
+        if (port != selector.peRegisterFifo->port)
+          continue;
+        selected = true;
+        selectedRegisterFifoConsumed[selectedOrdinal] |=
+            selector.peRegisterFifo->role == FabricRegisterFifoPathRole::Write
+                ? 1
+                : 2;
+      }
+      break;
     }
     if (!selected)
       continue;
@@ -1663,6 +1813,17 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
         continue;
       if (!selectedMemoryConsumed[ordinal])
         return invalid("selected memory operation plan is stale for its owner");
+    }
+  }
+  if (model.owner().kind() == FabricHandshakeOwnerKind::PeOccurrence) {
+    const auto owner = std::get<FabricPeOccurrenceRef>(model.owner().payload());
+    for (std::size_t ordinal = 0; ordinal < selection.peRegisterFifos.size();
+         ++ordinal) {
+      if (selection.peRegisterFifos[ordinal].pe() != owner)
+        continue;
+      if (selectedRegisterFifoConsumed[ordinal] != 3)
+        return invalid(
+            "selected register-FIFO handshake relation is stale for its PE");
     }
   }
 

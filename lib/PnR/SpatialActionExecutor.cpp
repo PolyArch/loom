@@ -4,6 +4,7 @@
 
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialCandidateTopologyPreference.h"
 #include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
@@ -561,7 +562,7 @@ llvm::Error SpatialActionExecutorScratch::markLocalNet(PnrIndex logicalNet,
 }
 
 llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
-    SpatialWitnessRegionRoutingAction action) {
+    SpatialMoveTransaction &move, SpatialWitnessRegionRoutingAction action) {
   const FrozenSpatialPnrProblem &problem = candidate_->problem();
   const auto &transfers = problem.transfers();
   switch (action.witnessKind) {
@@ -717,8 +718,191 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
     }
     return llvm::Error::success();
   }
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation: {
+    if (action.witnessOrdinal != 0 ||
+        candidate_->selectedHandshakeViolation() == 0)
+      return executorError("selected-handshake witness is no longer live");
+    // Cut one register-FIFO disposition on the witnessed cycle, refresh the
+    // pending graph, and continue only while a cycle remains. Every cut lies
+    // on a cycle that was live when it was chosen; nets off every witness
+    // keep their local disposition.
+    std::uint64_t cutCount = 0;
+    while (candidate_->selectedHandshakeViolation() != 0) {
+      const PnrIndex logicalNet =
+          candidate_->selectedHandshakeRegisterFifoCut();
+      if (logicalNet == getInvalidPnrIndex())
+        return llvm::make_error<SpatialActionTransitionFailure>(
+            SpatialActionTransitionFailureKind::IntrinsicInvalid,
+            "selected handshake cycle has no register-FIFO cut");
+      const PnrIndex option = candidate_->registerFifoTransfer(logicalNet);
+      if (llvm::Error error =
+              selectExternalAttachments(move, *candidate_, logicalNet))
+        return error;
+      if (llvm::Error error =
+              move.setRegisterFifoTransfer(logicalNet, std::nullopt))
+        return error;
+      if (llvm::Error error = markWholeNet(SpatialWholeNetRoutingAction{
+              logicalNet, SpatialWholeNetDispositionKind::External,
+              getInvalidPnrIndex()}))
+        return error;
+      ++cutCount;
+      auto acyclic = move.refreshHandshakeCycle();
+      if (!acyclic)
+        return acyclic.takeError();
+      mapping_debug::emit(mapping_debug::Level::Decision,
+                          mapping_debug::Stage::SpatialPnr,
+                          mapping_debug::Event::Statistics,
+                          [&](llvm::json::Object &fields) {
+                            fields["operation"] =
+                                "selected_handshake_register_fifo_cut";
+                            fields["logical_net"] = logicalNet;
+                            fields["register_fifo_transfer"] = option;
+                            fields["cut_ordinal"] = cutCount;
+                            fields["acyclic"] = *acyclic;
+                          });
+      if (*acyclic)
+        break;
+    }
+    return llvm::Error::success();
+  }
   }
   llvm_unreachable("unknown Spatial violation kind");
+}
+
+llvm::Error SpatialActionExecutorScratch::selectExternalAttachments(
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+    PnrIndex logicalNet) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &transfers = problem.transfers();
+  const auto &ports = problem.ports();
+  const auto &bindings = problem.bindingRelations();
+  if (logicalNet >= transfers.logicalNets().size())
+    return executorError("handshake breaker net is out of range");
+  const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+  const auto sinks = transfers.logicalNetSinkBindings().slice(
+      net.sinkOffset, net.sinkCount);
+
+  const auto choicesFor =
+      [&](FrozenSpatialTerminalBinding terminal)
+      -> llvm::Expected<std::vector<PnrIndex>> {
+    llvm::ArrayRef<PnrIndex> choices;
+    if (terminal.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
+      if (terminal.index >= ports.portDemands().size())
+        return executorError("handshake breaker PortDemand is out of range");
+      choices = bindings.portAttachmentChoices(terminal.index);
+    } else {
+      if (terminal.index >= ports.graphBoundaries().size())
+        return executorError(
+            "handshake breaker graph boundary is out of range");
+      choices = bindings.graphBoundaryAttachmentChoices(terminal.index);
+    }
+    std::vector<PnrIndex> result;
+    result.reserve(choices.size());
+    for (PnrIndex option : choices) {
+      if (option >= ports.attachmentOptions().size())
+        return executorError(
+            "handshake breaker attachment option is out of range");
+      const FrozenSpatialAttachmentOption &record =
+          ports.attachmentOptions()[option];
+      if (terminal.kind == FrozenSpatialTerminalBindingKind::GraphBoundary) {
+        if (record.ownerKind == FrozenSpatialAttachmentOwnerKind::GraphBoundary &&
+            record.owner == terminal.index)
+          result.push_back(option);
+        continue;
+      }
+      if (record.ownerKind !=
+              FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+          record.owner >= ports.placementDomains().size())
+        continue;
+      const FrozenSpatialPortDemand &demand =
+          ports.portDemands()[terminal.index];
+      const PnrIndex placement =
+          demand.kind == FrozenSpatialPortDemandKind::Compute
+              ? candidate.computeBinding(demand.realization).placement
+              : candidate.memoryBinding(demand.realization).placement;
+      if (ports.placementDomains()[record.owner].placement == placement)
+        result.push_back(option);
+    }
+    if (result.empty())
+      return executorError("handshake breaker terminal has no attachment domain");
+    return result;
+  };
+
+  const FrozenSpatialTerminalBinding source =
+      transfers.logicalNetSourceBindings()[logicalNet];
+  auto sourceChoices = choicesFor(source);
+  if (!sourceChoices)
+    return sourceChoices.takeError();
+  std::vector<std::vector<PnrIndex>> sinkChoices;
+  sinkChoices.reserve(sinks.size());
+  for (FrozenSpatialTerminalBinding sink : sinks) {
+    auto choices = choicesFor(sink);
+    if (!choices)
+      return choices.takeError();
+    sinkChoices.push_back(std::move(*choices));
+  }
+
+  auto topology = detail::SpatialCandidateTopologyPreference::create(problem);
+  if (!topology)
+    return topology.takeError();
+  std::vector<PnrIndex> selectedSinks(sinks.size(), getInvalidPnrIndex());
+  PnrIndex selectedSource = getInvalidPnrIndex();
+  constexpr std::uint32_t unreachable =
+      std::numeric_limits<std::uint32_t>::max();
+  for (PnrIndex sourceOption : *sourceChoices) {
+    const FrozenSpatialAttachmentOption &sourceRecord =
+        ports.attachmentOptions()[sourceOption];
+    auto distances = topology->hopDistancesFrom(
+        llvm::ArrayRef(sourceRecord), candidate.logicalNetPayloadWidth(logicalNet),
+        /*forward=*/true);
+    if (!distances)
+      return distances.takeError();
+    bool complete = true;
+    for (std::size_t sinkOrdinal = 0; sinkOrdinal < sinkChoices.size();
+         ++sinkOrdinal) {
+      selectedSinks[sinkOrdinal] = getInvalidPnrIndex();
+      for (PnrIndex sinkOption : sinkChoices[sinkOrdinal]) {
+        const PnrIndex endpoint =
+            ports.attachmentOptions()[sinkOption].endpoint;
+        if (endpoint < distances->size() &&
+            (*distances)[endpoint] != unreachable) {
+          selectedSinks[sinkOrdinal] = sinkOption;
+          break;
+        }
+      }
+      complete &= selectedSinks[sinkOrdinal] != getInvalidPnrIndex();
+    }
+    if (complete) {
+      selectedSource = sourceOption;
+      break;
+    }
+  }
+  if (selectedSource == getInvalidPnrIndex())
+    return llvm::make_error<SpatialActionTransitionFailure>(
+        SpatialActionTransitionFailureKind::IntrinsicInvalid,
+        "selected handshake breaker has no routable attachment combination");
+
+  const auto select = [&](FrozenSpatialTerminalBinding terminal,
+                          PnrIndex option) -> llvm::Error {
+    if (terminal.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
+      if (llvm::Error error = move.setPortAttachment(terminal.index, option))
+        return error;
+      markExplicitAttachment(bindings.portDecisionOffset() + terminal.index);
+    } else {
+      if (llvm::Error error =
+              move.setGraphBoundaryAttachment(terminal.index, option))
+        return error;
+      markExplicitAttachment(bindings.graphBoundaryDecisionOffset() +
+                             terminal.index);
+    }
+    return markNet(logicalNet);
+  };
+  if (llvm::Error error = select(source, selectedSource))
+    return error;
+  for (auto [sinkOrdinal, sink] : llvm::enumerate(sinks))
+    if (llvm::Error error = select(sink, selectedSinks[sinkOrdinal]))
+      return error;
+  return llvm::Error::success();
 }
 
 llvm::Error SpatialActionExecutorScratch::applyComputeBinding(
@@ -865,7 +1049,7 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                 else if constexpr (std::is_same_v<
                                        Choice,
                                        SpatialWitnessRegionRoutingAction>)
-                  return markWitnessRegion(choice);
+                  return markWitnessRegion(move, choice);
                 else if constexpr (std::is_same_v<Choice,
                                                   SpatialGlobalRoutingAction>) {
                   if (globalRouting_)
@@ -1618,6 +1802,33 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
         if (!local)
           return local.takeError();
         selectedLocal = *local;
+      }
+      if (selectedLocal &&
+          disposition == SpatialWholeNetDispositionKind::Preferred &&
+          candidate.registerFifoTransfer(logicalNet) != *selectedLocal) {
+        // A preferred pairing is only a preference: when it would close a
+        // handshake cycle with the pairings already selected, the net keeps
+        // the external route instead of rejecting the whole move.
+        if (llvm::Error error =
+                move.setRegisterFifoTransfer(logicalNet, *selectedLocal))
+          return error;
+        auto acyclic = move.pendingHandshakeAcyclic();
+        if (!acyclic)
+          return acyclic.takeError();
+        if (!*acyclic) {
+          if (llvm::Error error =
+                  move.setRegisterFifoTransfer(logicalNet, std::nullopt))
+            return error;
+          selectedLocal.reset();
+          mapping_debug::emit(mapping_debug::Level::Decision,
+                              mapping_debug::Stage::SpatialPnr,
+                              mapping_debug::Event::Statistics,
+                              [&](llvm::json::Object &fields) {
+                                fields["operation"] =
+                                    "register_fifo_pairing_declined";
+                                fields["logical_net"] = logicalNet;
+                              });
+        }
       }
       if (selectedLocal) {
         if (candidate.registerFifoTransfer(logicalNet) != *selectedLocal)

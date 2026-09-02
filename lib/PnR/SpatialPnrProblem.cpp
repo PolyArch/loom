@@ -305,8 +305,14 @@ public:
       return std::move(error);
     const auto &resources = staticContext.resources;
     const auto &routing = timingContext.routing;
+    auto placementSelections =
+        detail::SpatialComputePlacementHandshakeSelections::build(
+            dataflow, techMapping, fabric, *realizations);
+    if (!placementSelections)
+      return placementSelections.takeError();
     auto localTransfers = detail::buildFrozenSpatialLocalTransferIndex(
-        dataflow, techMapping, fabric, *realizations, *transfers, *routing);
+        dataflow, techMapping, fabric, *staticContext.handshake,
+        *placementSelections, *realizations, *transfers, *routing);
     if (!localTransfers)
       return localTransfers.takeError();
     auto ports = detail::buildFrozenSpatialPortIndex(
@@ -337,7 +343,8 @@ public:
       return routeConstraints.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
         dataflow, techMapping, fabric, *staticContext.handshake,
-        *realizations, *resources, *routing, *activeRouting);
+        *placementSelections, *realizations, *localTransfers, *resources,
+        *routing, *activeRouting);
     if (!handshake)
       return handshake.takeError();
     auto capacity = detail::buildFrozenSpatialCapacityIndex(
@@ -1097,7 +1104,7 @@ public:
             "traversal replication group is not the Fabric projection");
     }
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
-            handshake, realizations, resources, routing))
+            handshake, realizations, localTransfers, resources, routing))
       return error;
     return llvm::Error::success();
   }

@@ -141,6 +141,26 @@ struct CgraPendingTransferDiagnostic final {
       blockingDownstreamTraversals;
 };
 
+/// Terminal arbitration witness of one per-tag virtual-channel storage. Every
+/// resident channel has been presented once since the last enqueue or dequeue
+/// commit and every offer was refused, so the offer cursor completed one full
+/// rotation without a grant. The queue schedules no further OfferAdvance until
+/// an external event (a queue commit, released downstream capacity, or a
+/// consumer publication) changes readiness; when no such event is pending the
+/// rotation is arbitration progress that cannot become token progress, and
+/// the execution is a closed wait rather than an infinite cursor rotation.
+struct CgraStorageOfferRotationDiagnostic final {
+  std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
+  std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifoOccurrence;
+  std::uint32_t residentChannelCount = 0;
+  std::uint32_t refusedOffersSinceCommit = 0;
+  std::uint32_t occupancy = 0;
+  std::uint32_t capacity = 0;
+  /// Exact Physical Tag bit values of the resident channels in canonical
+  /// unsigned ascending order, the order the rotation presented them.
+  std::vector<llvm::APInt> residentTagValues;
+};
+
 /// Exact runtime witness for one selected Temporal PE operand queue. The
 /// queue head is tracked as a producer binding/occurrence/sequence tuple, so
 /// a closed wait can be joined to the Mapping-owned qualified pairing domain
@@ -219,6 +239,12 @@ public:
   /// no identity the runtime does not already own.
   std::vector<CgraStorageResidencyDiagnostic>
   storageResidencyDiagnostics(std::uint64_t storageOrdinal) const;
+  /// Every non-empty virtual-channel storage whose refused-offer rotation is
+  /// exhausted: each resident channel was presented and refused since the
+  /// last commit, so the storage sleeps until an external event. At
+  /// quiescence this is the typed no-complement terminal witness.
+  std::vector<CgraStorageOfferRotationDiagnostic>
+  exhaustedOfferRotationDiagnostics() const;
 
   /// Virtual-channel identity of one plan Physical Tag ordinal: the dense
   /// rank of its canonical tag value among the distinct values of the plan.

@@ -319,6 +319,66 @@ llvm::Expected<FabricMemoryHandshakeSelection> makeMemoryHandshakeSelection(
     llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleDestination>>
         roleDestinations);
 
+/// One exact Mapping-selected Temporal-PE register-FIFO connection. The
+/// physical write/read traversals own storage visibility; this transient
+/// selection adds only the endpoint-qualified backward-ready relation implied
+/// by the PE's existing single-port priority or two-port full replacement.
+class FabricPeRegisterFifoHandshakeSelection final {
+public:
+  FabricPeOccurrenceRef pe() const { return pe_; }
+  FabricOrdinal registerFifo() const { return registerFifo_; }
+  FabricFuOccurrencePortRef writer() const { return writer_; }
+  FabricFuOccurrencePortRef reader() const { return reader_; }
+  const FabricPhysicalTraversalRef &writeTraversal() const {
+    return writeTraversal_;
+  }
+  const FabricPhysicalTraversalRef &readTraversal() const {
+    return readTraversal_;
+  }
+
+  friend bool operator==(const FabricPeRegisterFifoHandshakeSelection &lhs,
+                         const FabricPeRegisterFifoHandshakeSelection &rhs) {
+    return lhs.pe_ == rhs.pe_ && lhs.registerFifo_ == rhs.registerFifo_ &&
+           lhs.writer_ == rhs.writer_ && lhs.reader_ == rhs.reader_ &&
+           lhs.writeTraversal_ == rhs.writeTraversal_ &&
+           lhs.readTraversal_ == rhs.readTraversal_;
+  }
+
+private:
+  FabricPeRegisterFifoHandshakeSelection(
+      FabricPeOccurrenceRef pe, FabricOrdinal registerFifo,
+      FabricFuOccurrencePortRef writer, FabricFuOccurrencePortRef reader,
+      FabricPhysicalTraversalRef writeTraversal,
+      FabricPhysicalTraversalRef readTraversal)
+      : pe_(pe), registerFifo_(registerFifo), writer_(writer), reader_(reader),
+        writeTraversal_(std::move(writeTraversal)),
+        readTraversal_(std::move(readTraversal)) {}
+
+  FabricPeOccurrenceRef pe_;
+  FabricOrdinal registerFifo_ = 0;
+  FabricFuOccurrencePortRef writer_;
+  FabricFuOccurrencePortRef reader_;
+  FabricPhysicalTraversalRef writeTraversal_;
+  FabricPhysicalTraversalRef readTraversal_;
+
+  friend llvm::Expected<FabricPeRegisterFifoHandshakeSelection>
+  makePeRegisterFifoHandshakeSelection(const FabricArtifactView &,
+                                       FabricPeOccurrenceRef, FabricOrdinal,
+                                       FabricFuOccurrencePortRef,
+                                       FabricFuOccurrencePortRef,
+                                       FabricPhysicalTraversalRef,
+                                       FabricPhysicalTraversalRef);
+};
+
+llvm::Expected<FabricPeRegisterFifoHandshakeSelection>
+makePeRegisterFifoHandshakeSelection(const FabricArtifactView &view,
+                                     FabricPeOccurrenceRef pe,
+                                     FabricOrdinal registerFifo,
+                                     FabricFuOccurrencePortRef writer,
+                                     FabricFuOccurrencePortRef reader,
+                                     FabricPhysicalTraversalRef writeTraversal,
+                                     FabricPhysicalTraversalRef readTraversal);
+
 /// One exact `(resident row, input)` activation and its complete selected
 /// crosspoint set. The Fabric resolver validates the relation against the
 /// occurrence model; the requester identity remains owned by each traversal's
@@ -342,6 +402,7 @@ struct FabricHandshakeSelection final {
   std::vector<FabricSwitchHandshakeActivationSelection> switchActivations;
   std::vector<FabricFuHandshakeSelection> fuCapabilities;
   std::vector<FabricMemoryHandshakeSelection> memoryOperations;
+  std::vector<FabricPeRegisterFifoHandshakeSelection> peRegisterFifos;
 };
 
 namespace detail {
@@ -359,6 +420,7 @@ enum class HandshakeFragmentSelectorKind : std::uint8_t {
   FuOperationInputActive,
   FuOperationResultActive,
   MemoryOperationPlan,
+  PeRegisterFifoBinding,
   AnySwitchActivationTraversal,
   ExactSwitchActivationTraversal,
 };
@@ -369,6 +431,13 @@ struct HandshakeFuOperationSelector final {
       ::dataflow::OperationSchemaId::ArithAddI;
   std::uint32_t caseOrdinal = 0;
   std::uint64_t physicalPortOrdinal = 0;
+};
+
+struct HandshakePeRegisterFifoSelector final {
+  FabricPeOccurrenceRef pe;
+  FabricOrdinal registerFifo = 0;
+  FabricFuOccurrencePortRef port;
+  FabricRegisterFifoPathRole role = FabricRegisterFifoPathRole::Write;
 };
 
 /// Selection metadata is implementation-only. It remains separate from the
@@ -386,6 +455,7 @@ struct HandshakeFragmentSelector final {
       requiredExternalMemoryInputRoles;
   std::vector<::dataflow::semantics::ServiceValueRole>
       requiredExternalMemoryOutputRoles;
+  std::optional<HandshakePeRegisterFifoSelector> peRegisterFifo;
   std::optional<FabricSwitchHandshakeActivationKey> switchActivation;
   std::optional<std::uint32_t> exclusiveGroup;
 };
@@ -486,8 +556,7 @@ private:
       : fabricIdentity_(std::move(fabricIdentity)), key_(key),
         models_(std::move(models)),
         unconditionalArcs_(std::move(unconditionalArcs)),
-        ownerIndex_(std::move(ownerIndex)),
-        statistics_(statistics) {}
+        ownerIndex_(std::move(ownerIndex)), statistics_(statistics) {}
 
   ArtifactIdentity fabricIdentity_;
   std::array<std::uint8_t, 32> key_{};
@@ -553,6 +622,18 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
 llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
     const FabricHandshakeContext &context);
+
+/// Whether the fragments activated by one selection inside the owners it
+/// names form an acyclic graph. The unconditional closure of an owner the
+/// selection does not name is not consulted: such an owner meets the named
+/// owners only through a traversal, and a selected traversal names its owner.
+/// The answer is therefore exact for a selection that names every owner it
+/// touches, which lets a domain builder classify one alternative by the
+/// fragments that alternative alone implies. Publication verification keeps
+/// using the Fabric-wide verifier above.
+llvm::Expected<bool>
+selectedOwnerHandshakeAcyclic(const FabricHandshakeSelection &selection,
+                              const FabricHandshakeContext &context);
 
 /// Derives exact reachability between the requested boundary signals under one
 /// selected configuration. Owner-local junctions remain private, and an

@@ -232,7 +232,25 @@ schedule on a plan-local tag ordinal in place of the exact tag value. A
 refused offer that rotates the cursor is arbitration progress, not token
 progress; if every resident channel completes a full rotation without a grant
 and no other event can change readiness, the execution is a closed wait, not
-an infinite cursor rotation.
+an infinite cursor rotation. The simulator therefore counts refused offers per
+queue since the last enqueue or dequeue commit; when that count reaches the
+number of resident channels, the last `OfferAdvance` retires without
+re-presenting the queue and the queue sleeps until an external event (a queue
+commit, released downstream capacity, or a consumer publication) restarts the
+epoch. A quiescent execution reports every such sleeping queue as a typed
+exhausted-rotation witness (storage, FIFO occurrence, resident channel count,
+refused offers, occupancy, capacity, and the resident tag values in canonical
+order) inside its closed-wait diagnostic. That witness, not a frame or wall
+budget, is the terminal outcome of a virtual-channel queue with no ready
+complement, and it is what makes every refused class head quoted by the
+closed-wait certificate an offer the port actually made.
+
+The virtual-channel discipline partitions dequeue order, never capacity. The
+static reconvergent-capacity obligation of a `per_tag_virtual_channel`
+occurrence names every resident tag class but compares one selected pool
+against one proven minimum, so a pool smaller than the number of nets that can
+each hold one resident token is a proven `ReconvergentCapacityShortfall`
+closed wait even when the per-tag classes remove every order cycle.
 
 Fabric-to-RTL implements the same capability and selected-mode behavior. It
 compares the actual tag bits of resident entries, selects the arrival-oldest
@@ -255,10 +273,17 @@ rejection only when selected switch rows and bypass traversals close that
 cycle. Discipline anchors additionally cover global order under
 `strict_fifo`, per-channel order and blocked-channel bypass under
 `per_tag_virtual_channel`, cursor wraparound and channel re-entry, the shared
-pool capacity boundary, the refused-offer next-cycle presentation, and
-simulator/RTL agreement on the presented tag, validity, occupancy, and cursor
-at every cycle. Tests do not preserve internal pointer encoding, queue
-implementation, raw configuration bits, or exhaustive occupancy traces.
+pool capacity boundary, the refused-offer next-cycle presentation, the
+no-complement terminal witness (every resident channel refused once, no
+scheduled event, a typed exhausted-rotation witness instead of a budget), the
+static shared-pool capacity control, and simulator/RTL agreement on the
+presented tag, validity, input ready, grants, occupancy, and cursor at every
+cycle. The simulator/RTL agreement anchor walks every reachable queue state of
+one small occurrence (a few slots and tag values) under every single-cycle
+stimulus, with the simulator storage queue as the oracle; the walk is a
+derived stimulus, not a preserved trace. Tests do not preserve internal
+pointer encoding, queue implementation, raw configuration bits, or hand-written
+occupancy traces.
 
 An explicit `fabric.fifo` is a different hardware owner from a Temporal PE
 operand-buffer pool. FIFO depth, bypass, and traversal feedback cannot be

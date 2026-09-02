@@ -574,6 +574,8 @@ struct FrozenSpatialRegisterFifoTransferOption final {
   PnrIndex consumerPlacement = 0;
   ::loom::fabric::FabricPeOccurrenceRef pe;
   ::loom::fabric::FabricOrdinal registerFifo = 0;
+  ::loom::fabric::FabricFuOccurrencePortRef writer;
+  ::loom::fabric::FabricFuOccurrencePortRef reader;
   PnrIndex writeTraversal = 0;
   PnrIndex readTraversal = 0;
   llvm::APInt tag = llvm::APInt(1, 0);
@@ -586,7 +588,8 @@ struct FrozenSpatialRegisterFifoTransferDomain final {
 
 /// Factorized local-transfer alternative domains keyed by logical net.
 /// External routing is the implicit fallback and is therefore not duplicated
-/// as an option record.
+/// as an option record. An alternative whose own implied handshake selection
+/// closes a combinational cycle is never an option; only its count remains.
 class FrozenSpatialLocalTransferIndex final {
 public:
   llvm::ArrayRef<FrozenSpatialRegisterFifoTransferDomain> domains() const {
@@ -601,10 +604,12 @@ public:
     return llvm::ArrayRef(options_).slice(domain.optionOffset,
                                           domain.optionCount);
   }
+  std::uint64_t closedOptionCount() const { return closedOptionCount_; }
 
 private:
   std::vector<FrozenSpatialRegisterFifoTransferDomain> domains_;
   std::vector<FrozenSpatialRegisterFifoTransferOption> options_;
+  std::uint64_t closedOptionCount_ = 0;
 
   friend class FrozenSpatialLocalTransferIndexBuilder;
 };
@@ -1176,6 +1181,12 @@ public:
   llvm::ArrayRef<PnrIndex> computePlacementFragments() const {
     return computePlacementFragments_;
   }
+  llvm::ArrayRef<PnrIndex> localTransferFragmentOffsets() const {
+    return localTransferFragmentOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> localTransferFragments() const {
+    return localTransferFragments_;
+  }
   llvm::ArrayRef<FrozenSpatialMemoryOperationHandshakeDomain>
   memoryOperationDomains() const {
     return memoryOperationDomains_;
@@ -1234,6 +1245,8 @@ private:
   std::vector<PnrIndex> switchTraversalFragments_;
   std::vector<PnrIndex> computePlacementFragmentOffsets_;
   std::vector<PnrIndex> computePlacementFragments_;
+  std::vector<PnrIndex> localTransferFragmentOffsets_;
+  std::vector<PnrIndex> localTransferFragments_;
   std::vector<FrozenSpatialMemoryOperationHandshakeDomain>
       memoryOperationDomains_;
   std::vector<PnrIndex> memoryPlacementDomainOffsets_;
@@ -1284,6 +1297,7 @@ struct SpatialActiveProblemStatistics final {
   std::uint64_t logicalNetCount = 0;
   std::uint64_t logicalSinkCount = 0;
   std::uint64_t localTransferOptionCount = 0;
+  std::uint64_t localTransferClosedOptionCount = 0;
   std::uint64_t portDemandCount = 0;
   std::uint64_t attachmentOptionCount = 0;
   std::uint64_t operandPairingGroupCount = 0;

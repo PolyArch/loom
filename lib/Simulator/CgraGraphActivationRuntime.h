@@ -72,6 +72,8 @@ public:
   std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
   std::vector<CgraStorageResidencyDiagnostic>
   storageResidencyDiagnostics(std::uint64_t storageOrdinal) const;
+  std::vector<CgraStorageOfferRotationDiagnostic>
+  exhaustedOfferRotationDiagnostics() const;
   std::vector<CgraOperandQueueHeadDiagnostic>
   pendingOperandQueueHeadDiagnostics() const;
   std::vector<CgraPendingGraphPhysicalActionDiagnostic>

@@ -371,6 +371,8 @@ struct SpatialPeLocalTransferOptionView final {
   ::dataflow::CanonicalGraphConsumerEndpointRef sink;
   ::loom::fabric::FabricPeOccurrenceRef pe;
   ::loom::fabric::FabricOrdinal registerFifo = 0;
+  ::loom::fabric::FabricFuOccurrencePortRef writer;
+  ::loom::fabric::FabricFuOccurrencePortRef reader;
   ::loom::fabric::FabricPhysicalTraversalRef writeTraversal;
   ::loom::fabric::FabricPhysicalTraversalRef readTraversal;
   llvm::APInt tag = llvm::APInt(1, 0);

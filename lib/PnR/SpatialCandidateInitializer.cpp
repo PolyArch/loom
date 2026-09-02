@@ -124,6 +124,7 @@ struct PreferredRootAssignment final {
   std::uint64_t pairingScoredPortAttachments = 0;
   std::uint64_t preferredSharedOperandIngressPressure = 0;
   std::uint64_t structurallyAdjustedRootPreferences = 0;
+  std::uint64_t localTransferRefinedComputeRoots = 0;
   std::uint64_t maximumEndpointSelections = 0;
   bool applied = false;
   llvm::StringRef status = "unchanged";
@@ -187,6 +188,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
               result.preferredSharedOperandIngressPressure;
           fields["structurally_adjusted_root_preferences"] =
               result.structurallyAdjustedRootPreferences;
+          fields["local_transfer_refined_compute_roots"] =
+              result.localTransferRefinedComputeRoots;
           fields["maximum_endpoint_selections"] =
               result.maximumEndpointSelections;
           fields["assignment_attempts"] = result.assignmentAttempts;
@@ -707,12 +710,116 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     structurallyFeasibleChoices = std::move(feasible->choices);
   }
 
+  std::vector<PnrIndex> adjustedComputeRoots;
   for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
        ++decision) {
-    result.structurallyAdjustedRootPreferences +=
+    const bool adjusted =
         structurallyFeasibleChoices[decision] != fixedChoices[decision];
+    result.structurallyAdjustedRootPreferences += adjusted;
+    if (adjusted && decision < bindings.computeDecisionCount())
+      adjustedComputeRoots.push_back(decision);
     fixedChoices[decision] = structurallyFeasibleChoices[decision];
     selectedChoiceOrdinals[decision] = structurallyFeasibleChoices[decision];
+  }
+
+  // The relation solver falls back in canonical choice order when a preferred
+  // root is structurally infeasible, so an adjusted root lands on the first
+  // feasible FU of its PE regardless of the register-FIFO pairings its
+  // selected peers admit. With every peer now selected, move each adjusted
+  // compute root to the choice on the same PE occurrence and resident context
+  // that leaves the fewest local-transfer nets unmatched, and keep the move
+  // only when the relation solver accepts the complete assignment.
+  for (PnrIndex realization : adjustedComputeRoots) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex current = fixedChoices[realization];
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
+    auto currentPlacement = computePlacement(choices[current]);
+    if (!currentPlacement)
+      return currentPlacement.takeError();
+    auto currentKey = contextKey(choices[current]);
+    if (!currentKey)
+      return currentKey.takeError();
+    PnrIndex best = current;
+    bool accepted = false;
+    const auto emitRefinement = [&]() {
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Detail,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::ContextChoice,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "initializer_local_transfer_refinement";
+            fields["attempt"] = attemptOrdinal;
+            fields["realization"] = realization;
+            fields["adjusted_choice"] = current;
+            fields["adjusted_fu_ref"] =
+                loom::fabric::printFabricRef((*currentPlacement)->fu);
+            fields["instruction_context_ref"] = loom::fabric::printFabricRef(
+                contexts[choices[current].instructionContext]);
+            fields["refined_choice"] = best;
+            fields["refined_fu_ref"] = loom::fabric::printFabricRef(
+                realizations.computePlacements()[choices[best].placement].fu);
+            fields["local_transfer_active_net_count"] =
+                localTransferScores->activeNets;
+            fields["unmatched_local_transfer_nets_before"] =
+                localTransferScores->unmatchedNets[current];
+            fields["unmatched_local_transfer_nets_after"] =
+                localTransferScores->unmatchedNets[best];
+            fields["accepted"] = accepted;
+          });
+    };
+    if (localTransferScores->activeNets == 0 ||
+        localTransferScores->unmatchedNets[current] == 0) {
+      emitRefinement();
+      continue;
+    }
+    for (auto [local, choice] : llvm::enumerate(choices)) {
+      auto key = contextKey(choice);
+      if (!key)
+        return key.takeError();
+      if (*key != *currentKey)
+        continue;
+      auto placement = computePlacement(choice);
+      if (!placement)
+        return placement.takeError();
+      if ((*placement)->parentPe != (*currentPlacement)->parentPe)
+        continue;
+      if (localTransferScores->unmatchedNets[local] <
+          localTransferScores->unmatchedNets[best])
+        best = static_cast<PnrIndex>(local);
+    }
+    if (best == current) {
+      emitRefinement();
+      continue;
+    }
+    std::vector<PnrIndex> trial = fixedChoices;
+    trial[realization] = best;
+    auto feasible = solver.solveCanonicalWithFixedChoices(
+        assignmentLimit - result.assignmentAttempts, trial);
+    result.assignmentAttempts += solver.assignmentAttempts();
+    if (!feasible) {
+      llvm::Error unhandled = llvm::handleErrors(
+          feasible.takeError(),
+          [](const InitializerRelationSolveFailure &) {});
+      if (unhandled)
+        return std::move(unhandled);
+      emitRefinement();
+      continue;
+    }
+    for (PnrIndex decision = 0;
+         decision < bindings.realizationDecisionCount(); ++decision) {
+      fixedChoices[decision] = feasible->choices[decision];
+      selectedChoiceOrdinals[decision] = feasible->choices[decision];
+      structurallyFeasibleChoices[decision] = feasible->choices[decision];
+    }
+    accepted = true;
+    ++result.localTransferRefinedComputeRoots;
+    emitRefinement();
   }
   result.changedComputeRoots = 0;
   result.changedMemoryRoots = 0;

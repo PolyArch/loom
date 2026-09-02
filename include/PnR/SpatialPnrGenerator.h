@@ -40,6 +40,7 @@ struct SpatialPnrGenerationAccounting final {
   std::uint64_t plannedAnnealingMovableProposalSlots = 0;
   std::uint64_t plannedExactRepairRegionDecisions = 0;
   std::uint64_t plannedExactRepairSolverCalls = 0;
+  std::uint64_t plannedLocalTransferAdoptionProbes = 0;
   std::uint64_t plannedFinalClosureAttempts = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
@@ -53,6 +54,8 @@ struct SpatialPnrGenerationAccounting final {
   std::uint64_t exactRepairInvocations = 0;
   std::uint64_t exactRepairRegionDecisions = 0;
   std::uint64_t exactRepairSolverCalls = 0;
+  std::uint64_t localTransferAdoptionProbes = 0;
+  std::uint64_t adoptedLocalTransfers = 0;
   std::uint64_t finalClosureAttempts = 0;
   std::uint64_t finalizedRestarts = 0;
   std::uint64_t publicationSlots = 0;
@@ -76,6 +79,8 @@ struct SpatialPnrGenerationAccounting final {
                rhs.plannedExactRepairRegionDecisions &&
            lhs.plannedExactRepairSolverCalls ==
                rhs.plannedExactRepairSolverCalls &&
+           lhs.plannedLocalTransferAdoptionProbes ==
+               rhs.plannedLocalTransferAdoptionProbes &&
            lhs.plannedFinalClosureAttempts == rhs.plannedFinalClosureAttempts &&
            lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
@@ -91,6 +96,8 @@ struct SpatialPnrGenerationAccounting final {
            lhs.exactRepairInvocations == rhs.exactRepairInvocations &&
            lhs.exactRepairRegionDecisions == rhs.exactRepairRegionDecisions &&
            lhs.exactRepairSolverCalls == rhs.exactRepairSolverCalls &&
+           lhs.localTransferAdoptionProbes == rhs.localTransferAdoptionProbes &&
+           lhs.adoptedLocalTransfers == rhs.adoptedLocalTransfers &&
            lhs.finalClosureAttempts == rhs.finalClosureAttempts &&
            lhs.finalizedRestarts == rhs.finalizedRestarts &&
            lhs.publicationSlots == rhs.publicationSlots;
@@ -189,6 +196,7 @@ struct SpatialPnrSearchFrontier final {
   std::uint64_t annealingBaseProposalSlots = 0;
   std::uint64_t annealingMovableProposalSlots = 0;
   std::uint64_t exactRepairSolverCalls = 0;
+  std::uint64_t localTransferAdoptionProbes = 0;
   std::uint64_t finalClosureAttempts = 0;
   std::uint64_t finalizedRestarts = 0;
   std::uint64_t publicationSlots = 0;

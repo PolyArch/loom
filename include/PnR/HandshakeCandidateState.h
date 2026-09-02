@@ -175,7 +175,14 @@ public:
   activeNodeSignals() const;
   llvm::ArrayRef<FrozenSpatialHandshakeArc> activeArcs() const;
   std::vector<PnrIndex> activeArcContributors(PnrIndex arc) const;
+  /// Whether one of `fragments` is active and contributes to the compact arc.
+  /// This is the allocation-free form of the contributor query for hot
+  /// witness attribution.
+  bool activeArcContributedBy(PnrIndex arc,
+                              llvm::ArrayRef<PnrIndex> fragments) const;
   std::size_t activeArcContributionCount() const;
+  bool acyclic() const;
+  llvm::ArrayRef<PnrIndex> cycleWitness() const;
   HandshakeActiveDemandStatistics materializationStatistics() const;
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;
   llvm::ArrayRef<PnrIndex> topologicalRanks() const;
@@ -245,6 +252,15 @@ public:
   llvm::Error removeTraversalUses(PnrIndex traversal, PnrIndex count);
 
   llvm::Expected<bool> close();
+  /// Materializes the graph of the current pending selection without closing
+  /// the transaction, so a repair that cuts one witness cycle can observe the
+  /// next witness before it commits. Returns whether the pending selection is
+  /// acyclic; the candidate's cycle witness reads the refreshed graph.
+  llvm::Expected<bool> refreshCycleWitness();
+  /// Whether the pending selection is acyclic, decided by the same delta
+  /// closure that `close` uses but without closing the transaction, so a
+  /// move can decline one optional fragment set before it commits.
+  llvm::Expected<bool> pendingSelectionAcyclic();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::Error commit();
   void rollback() noexcept;
@@ -254,6 +270,11 @@ private:
                                 HandshakeCandidateScratch &scratch,
                                 HandshakeProjectionScratch *projectionScratch);
 
+  llvm::Expected<bool>
+  materializePendingGraph(detail::HandshakeCandidateScratchStorage &storage,
+                          std::uint64_t projectionWork);
+  llvm::Expected<std::uint64_t>
+  collectChangedContributions(detail::HandshakeCandidateScratchStorage &storage);
   llvm::Error validateFragmentSlice(llvm::ArrayRef<PnrIndex> fragments) const;
   llvm::Error changeFragment(PnrIndex fragment, bool add);
   void recordFragment(PnrIndex fragment);

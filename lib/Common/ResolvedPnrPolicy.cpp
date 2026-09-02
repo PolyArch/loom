@@ -212,7 +212,7 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 9}};
+          ResolvedPnrObjectiveSelection{0, 10}};
 }
 
 ResolvedPnrPolicyConfig
@@ -220,7 +220,7 @@ resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset) {
   ResolvedPnrPolicyConfig policy = resolvedBuiltinSpatialPnrPolicy(preset);
   policy.search.exactRepair =
       ResolvedPnrExactRepairPolicy{ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 10};
+  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 11};
   return policy;
 }
 
@@ -252,18 +252,25 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel energy;
   ResolvedWeightedObjectiveLevel operandPairing;
   ResolvedWeightedObjectiveLevel progressDebt;
+  ResolvedWeightedObjectiveLevel selectedHandshake;
   ResolvedWeightedObjectiveLevel progressCapacity;
   ResolvedWeightedObjectiveLevel progressAnchors;
   for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
        ++dimension) {
     if (dimension != static_cast<std::uint32_t>(
-                         ResolvedPnrViolationKind::ProgressProofDebt))
+                         ResolvedPnrViolationKind::ProgressProofDebt) &&
+        dimension != static_cast<std::uint32_t>(
+                         ResolvedPnrViolationKind::SelectedHandshakeViolation))
       closure.terms.push_back({dimension, 1});
     spatialEnergy.terms.push_back({dimension, UINT64_C(281474976710656)});
     energy.terms.push_back({dimension, UINT64_C(281474976710656)});
   }
   progressDebt.terms.push_back(
       {static_cast<std::uint32_t>(ResolvedPnrViolationKind::ProgressProofDebt),
+       1});
+  selectedHandshake.terms.push_back(
+      {static_cast<std::uint32_t>(
+           ResolvedPnrViolationKind::SelectedHandshakeViolation),
        1});
   traversal.terms.push_back({resolvedPnrViolationKindCount, 1});
   spatialEnergy.terms.push_back({resolvedPnrViolationKindCount, 1});
@@ -324,15 +331,16 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                BuiltinMappingMeasureKind::ProgressRouteAnchorCount),
        1});
   catalogs.weightedLevels = {
-      std::move(progressDebt),   std::move(traversal),
-      std::move(schedule),       std::move(operandPairing),
+      std::move(progressDebt),   std::move(selectedHandshake),
+      std::move(traversal),      std::move(schedule),
+      std::move(operandPairing),
       std::move(progressCapacity), std::move(progressAnchors),
       std::move(spatialTiming),  std::move(timing),
       std::move(closure),        std::move(spatialEnergy),
       std::move(energy)};
   catalogs.totalOrderings = {
-      {{8, 0, 4, 5, 6, 2, 1, 3}},
-      {{8, 0, 4, 5, 7, 2, 1, 3}}};
+      {{1, 9, 0, 5, 6, 7, 3, 2, 4}},
+      {{1, 9, 0, 5, 6, 8, 3, 2, 4}}};
   return catalogs;
 }
 
@@ -571,6 +579,9 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
   std::uint32_t previousViolation = 0;
   bool firstViolation = true;
   for (ResolvedPnrViolationKind kind : policy.temporaryViolations.admitted) {
+    if (kind == ResolvedPnrViolationKind::RuntimeCounterexampleViolation ||
+        kind == ResolvedPnrViolationKind::SelectedHandshakeViolation)
+      return invalid("hard semantic violations cannot be temporarily admitted");
     const std::uint32_t ordinal = static_cast<std::uint32_t>(kind);
     if (!firstViolation && ordinal <= previousViolation)
       return invalid("temporary violations are not canonical");

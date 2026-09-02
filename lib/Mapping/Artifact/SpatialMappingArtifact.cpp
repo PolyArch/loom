@@ -1011,6 +1011,23 @@ llvm::Expected<SelectedHandshakeProjection> deriveSelectedHandshakeSelection(
   selection.memoryOperations = std::move(memorySelections->operations);
   result.memoryServices = std::move(memorySelections->services);
 
+  auto localTransferUses = detail::deriveSpatialPeLocalTransferUses(
+      context.fabric, context.techMapping, context.computeBindings,
+      registerFifoTransfers);
+  if (!localTransferUses)
+    return localTransferUses.takeError();
+  if (localTransferUses->size() != registerFifoTransfers.size())
+    return invalid("register-FIFO handshake projection is incomplete");
+  selection.peRegisterFifos.reserve(localTransferUses->size());
+  for (const detail::SpatialPeLocalTransferUse &use : *localTransferUses) {
+    auto selected = ::loom::fabric::makePeRegisterFifoHandshakeSelection(
+        context.fabric, use.pe, use.registerFifo, use.producerPort,
+        use.consumerPort, use.writeTraversal, use.readTraversal);
+    if (!selected)
+      return selected.takeError();
+    selection.peRegisterFifos.push_back(std::move(*selected));
+  }
+
   const auto appendTraversal =
       [&](const ::loom::fabric::FabricPhysicalTraversalRef &traversal,
           std::vector<::loom::fabric::FabricPhysicalTraversalRef> &route) {

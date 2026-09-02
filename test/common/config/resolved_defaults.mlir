@@ -59,9 +59,9 @@
 // JSON-DAG: "max_region_decisions": 256
 // JSON-DAG: "max_solver_calls": 1024
 // JSON-DAG: "selected_total_ordering": 0
-// JSON-DAG: "selected_search_energy": 9
-// JSON-DAG: "selected_total_ordering": 1
 // JSON-DAG: "selected_search_energy": 10
+// JSON-DAG: "selected_total_ordering": 1
+// JSON-DAG: "selected_search_energy": 11
 // JSON-NOT: "config_id"
 // JSON-NOT: "global"
 // JSON-NOT: "ranking_policy"

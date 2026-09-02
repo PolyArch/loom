@@ -17,6 +17,27 @@ struct ConfiguredHardwareProjectionViewAccess final {
   }
 };
 
+/// One mechanically resolved register-FIFO Mapping selection shared by
+/// configured-hardware projection and selected-handshake verification.
+struct SpatialPeLocalTransferUse final {
+  std::uint64_t producerRealization = 0;
+  std::uint64_t consumerRealization = 0;
+  ::loom::fabric::FabricFuOccurrencePortRef producerPort;
+  ::loom::fabric::FabricFuOccurrencePortRef consumerPort;
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  ::loom::fabric::FabricOrdinal registerFifo = 0;
+  ::loom::fabric::FabricPhysicalTraversalRef writeTraversal;
+  ::loom::fabric::FabricPhysicalTraversalRef readTraversal;
+  llvm::APInt tag = llvm::APInt(1, 0);
+};
+
+llvm::Expected<std::vector<SpatialPeLocalTransferUse>>
+deriveSpatialPeLocalTransferUses(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const TechMappingView &techMapping,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> transfers);
+
 llvm::Expected<ConfiguredHardwareProjectionView>
 canonicalizeConfiguredHardwareProjection(
     std::vector<ConfiguredHardwareFieldValueView> fields);

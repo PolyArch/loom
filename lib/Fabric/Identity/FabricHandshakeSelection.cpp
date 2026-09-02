@@ -50,8 +50,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
     FabricHandshakeSelection selection;
   };
   std::map<OwnerKey, OwnerSelection> ownerSelections;
-  const auto selectionFor = [&](FabricHandshakeOwner owner)
-      -> llvm::Expected<OwnerSelection *> {
+  const auto selectionFor =
+      [&](FabricHandshakeOwner owner) -> llvm::Expected<OwnerSelection *> {
     OwnerKey key = detail::handshakeOwnerKey(owner);
     OwnerSelection &entry = ownerSelections[key];
     if (entry.owner && *entry.owner != owner)
@@ -76,26 +76,32 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
   }
   for (const FabricSwitchHandshakeActivationSelection &activation :
        selection.switchActivations) {
-    auto entry = selectionFor(FabricHandshakeOwner::switchResource(
-        activation.key.occurrence));
+    auto entry = selectionFor(
+        FabricHandshakeOwner::switchResource(activation.key.occurrence));
     if (!entry)
       return entry.takeError();
     (*entry)->selection.switchActivations.push_back(activation);
   }
   for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities) {
-    auto entry = selectionFor(
-        FabricHandshakeOwner::fu(selected.occurrence()));
+    auto entry = selectionFor(FabricHandshakeOwner::fu(selected.occurrence()));
     if (!entry)
       return entry.takeError();
     (*entry)->selection.fuCapabilities.push_back(selected);
   }
   for (const FabricMemoryHandshakeSelection &selected :
        selection.memoryOperations) {
-    auto entry = selectionFor(FabricHandshakeOwner::memory(
-        selected.capability().port.memory));
+    auto entry = selectionFor(
+        FabricHandshakeOwner::memory(selected.capability().port.memory));
     if (!entry)
       return entry.takeError();
     (*entry)->selection.memoryOperations.push_back(selected);
+  }
+  for (const FabricPeRegisterFifoHandshakeSelection &selected :
+       selection.peRegisterFifos) {
+    auto entry = selectionFor(FabricHandshakeOwner::pe(selected.pe()));
+    if (!entry)
+      return entry.takeError();
+    (*entry)->selection.peRegisterFifos.push_back(selected);
   }
 
   ResolvedSelectedHandshakeGraph graph;
@@ -113,8 +119,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
   std::map<OwnerKey, const HandshakeOwnerModel *> modelsByOwner;
   if (!context)
     for (const HandshakeOwnerModel &model : models)
-      if (!modelsByOwner.emplace(detail::handshakeOwnerKey(model.owner()),
-                                 &model)
+      if (!modelsByOwner
+               .emplace(detail::handshakeOwnerKey(model.owner()), &model)
                .second)
         return invalid("handshake model inventory repeats an owner");
 
@@ -151,7 +157,8 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
           activeArcs.push_back(model->fragmentContributionOrdinal(
               fragment.contributionOffset + index));
       }
-    } else if (model->owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
+    } else if (model->owner().kind() ==
+               FabricHandshakeOwnerKind::FuOccurrence) {
       for (const FabricFuHandshakeSelection &fuSelection :
            ownerSelection.fuCapabilities) {
         FabricHandshakeSelection local;
@@ -210,44 +217,59 @@ llvm::Expected<ResolvedSelectedHandshakeGraph> resolveSelectedHandshakeGraph(
   return graph;
 }
 
-llvm::Expected<std::vector<std::vector<std::size_t>>>
-acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph,
-                 std::vector<std::size_t> *topologicalOrder = nullptr,
-                 ExecutionControlView executionControl = {}) {
+/// Builds the forward adjacency of one resolved graph and visits it in
+/// topological order. The visited count equals the node count exactly when
+/// the graph is acyclic.
+struct TopologicalVisit final {
+  std::vector<std::vector<std::size_t>> adjacency;
+  std::vector<std::size_t> order;
+  std::size_t visited = 0;
+};
+
+llvm::Expected<TopologicalVisit>
+visitTopologically(const ResolvedSelectedHandshakeGraph &graph,
+                   ExecutionControlView executionControl = {}) {
   if (executionControl.stopRequested())
     return invalid("selected handshake acyclicity was interrupted");
-  std::vector<std::vector<std::size_t>> adjacency(graph.nodeCount);
+  TopologicalVisit visit;
+  visit.adjacency.resize(graph.nodeCount);
   std::vector<std::size_t> indegree(graph.nodeCount, 0);
   for (const auto &[source, destination] : graph.arcs) {
-    adjacency[source].push_back(destination);
+    visit.adjacency[source].push_back(destination);
     ++indegree[destination];
   }
   std::vector<std::size_t> worklist;
   worklist.reserve(graph.nodeCount);
-  std::vector<std::size_t> order;
-  if (topologicalOrder)
-    order.reserve(graph.nodeCount);
+  visit.order.reserve(graph.nodeCount);
   for (std::size_t node = 0; node < graph.nodeCount; ++node)
     if (indegree[node] == 0)
       worklist.push_back(node);
-  std::size_t visited = 0;
   while (!worklist.empty()) {
-    if ((visited & 4095U) == 0 && executionControl.stopRequested())
+    if ((visit.visited & 4095U) == 0 && executionControl.stopRequested())
       return invalid("selected handshake acyclicity was interrupted");
     const std::size_t node = worklist.back();
     worklist.pop_back();
-    ++visited;
-    if (topologicalOrder)
-      order.push_back(node);
-    for (std::size_t destination : adjacency[node])
+    ++visit.visited;
+    visit.order.push_back(node);
+    for (std::size_t destination : visit.adjacency[node])
       if (--indegree[destination] == 0)
         worklist.push_back(destination);
   }
-  if (visited != graph.nodeCount)
+  return visit;
+}
+
+llvm::Expected<std::vector<std::vector<std::size_t>>>
+acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph,
+                 std::vector<std::size_t> *topologicalOrder = nullptr,
+                 ExecutionControlView executionControl = {}) {
+  auto visit = visitTopologically(graph, executionControl);
+  if (!visit)
+    return visit.takeError();
+  if (visit->visited != graph.nodeCount)
     return invalid("SelectedCombinationalHandshakeCycle");
   if (topologicalOrder)
-    *topologicalOrder = std::move(order);
-  return adjacency;
+    *topologicalOrder = std::move(visit->order);
+  return std::move(visit->adjacency);
 }
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>
@@ -330,10 +352,9 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
   auto context = buildFabricHandshakeContext(view);
   if (!context)
     return context.takeError();
-  auto graph =
-      resolveSelectedHandshakeGraph(selection, context->ownerModels(),
-                                    context->unconditionalDependencyArcs(),
-                                    &*context);
+  auto graph = resolveSelectedHandshakeGraph(
+      selection, context->ownerModels(), context->unconditionalDependencyArcs(),
+      &*context);
   if (!graph)
     return graph.takeError();
   auto adjacency = acyclicAdjacency(*graph);
@@ -356,6 +377,20 @@ llvm::Error verifySelectedCombinationalHandshakeAcyclic(
   if (!adjacency)
     return adjacency.takeError();
   return llvm::Error::success();
+}
+
+llvm::Expected<bool>
+selectedOwnerHandshakeAcyclic(const FabricHandshakeSelection &selection,
+                              const FabricHandshakeContext &context) {
+  auto graph = resolveSelectedHandshakeGraph(selection, context.ownerModels(),
+                                             /*unconditionalArcs=*/{},
+                                             &context);
+  if (!graph)
+    return graph.takeError();
+  auto visit = visitTopologically(*graph);
+  if (!visit)
+    return visit.takeError();
+  return visit->visited == graph->nodeCount;
 }
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>

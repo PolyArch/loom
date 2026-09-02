@@ -36,6 +36,14 @@ memoryPlanFragments(const FrozenSpatialHandshakeIndex &handshake,
                                                record.fragmentCount);
 }
 
+inline llvm::ArrayRef<PnrIndex>
+localTransferFragments(const FrozenSpatialHandshakeIndex &handshake,
+                       PnrIndex option) {
+  const auto offsets = handshake.localTransferFragmentOffsets();
+  return handshake.localTransferFragments().slice(
+      offsets[option], offsets[option + 1] - offsets[option]);
+}
+
 inline std::optional<PnrIndex>
 attachmentTraversal(const FrozenSpatialPortIndex &ports, PnrIndex option) {
   return ports.attachmentOptions()[option].localTraversal;

@@ -1165,8 +1165,9 @@ deriveSpatialPeLocalTransferOptionsForRealizations(
     if (llvm::Error error = ::loom::fabric::validateFabricRef(fabric, read))
       return std::move(error);
     options.push_back(SpatialPeLocalTransferOptionView{
-        logicalNet.producer, logicalNet.sinks.front(), *producerPe, fifo, write,
-        read, llvm::APInt(layout.tagWidthBits, 0)});
+        logicalNet.producer, logicalNet.sinks.front(), *producerPe, fifo,
+        sourcePort,          sinkPort,                 write,       read,
+        llvm::APInt(layout.tagWidthBits, 0)});
   }
   return options;
 }

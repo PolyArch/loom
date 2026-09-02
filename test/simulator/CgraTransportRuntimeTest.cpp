@@ -1015,6 +1015,222 @@ void temporalOperandQueueAdmissionPrioritizesComplement() {
           "its complement");
 }
 
+/// Two producers share one per-tag virtual-channel FIFO with distinct tag
+/// values while both consumers refuse. The queue presents each resident
+/// channel once, spends exactly one OfferAdvance per refused channel, and then
+/// sleeps: no scheduled event remains, so the runtime is quiescent and reports
+/// the typed exhausted-rotation witness instead of rotating forever. A
+/// consumer publication is the external event that restarts the rotation; it
+/// drains that channel and the remaining channel closes again.
+void virtualChannelNoComplementRotationIsAClosedWait() {
+  auto artifact = fanoutProgram();
+  auto view = take(artifact.view());
+  llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::ArithAddI)
+      adds.push_back(&actor);
+  require(adds.size() == 3, "virtual-channel fixture lacks its add actors");
+  const dataflow::CanonicalActorView &left = *adds[0];
+  const dataflow::CanonicalActorView &right = *adds[1];
+  const dataflow::CanonicalActorView &sum = *adds[2];
+  auto graphView = take(view.resolve(left.graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "virtual-channel graph preparation failed");
+  const auto semanticOrdinal = [&](const dataflow::CanonicalActorView &actor) {
+    for (auto [ordinal, plan] : llvm::enumerate(prepared->actorPlans))
+      if (plan.operation == actor.op)
+        return static_cast<std::uint64_t>(ordinal);
+    fail("virtual-channel fixture actor has no prepared plan");
+  };
+
+  constexpr std::uint64_t enqueueAction = 0;
+  constexpr std::uint64_t dequeueAction = 1;
+  constexpr std::uint64_t simultaneousAction = 2;
+  constexpr std::uint64_t offerAdvanceAction = 3;
+  CgraFrozenExecutionPlan plan;
+  plan.computeActors.push_back(
+      {left.ref, left.graph, {}, {}, 0, 0, std::nullopt, 0});
+  plan.computeActors.push_back(
+      {right.ref, right.graph, {}, {}, 0, 0, std::nullopt, 0});
+  for (std::uint64_t action = 0; action != 4; ++action) {
+    plan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::TraversalTransport);
+    plan.resources.selectedUses.push_back({});
+    plan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
+  }
+  plan.transport.traversals.resize(1);
+  plan.transport.traversals.front().kind =
+      loom::fabric::FabricPhysicalTraversalKind::FifoTraversal;
+  plan.transport.traversals.front().storageKind =
+      CgraTraversalStorageKind::BufferedFifo;
+  plan.transport.traversals.front().storageOrdinal = 0;
+  plan.transport.traversalStorages.push_back({});
+  auto &storage = plan.transport.traversalStorages.front();
+  storage.kind = CgraTraversalStorageKind::BufferedFifo;
+  storage.capacity = 2;
+  storage.queueDiscipline = ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  storage.enqueuePhysicalUseOrdinal = enqueueAction;
+  storage.dequeuePhysicalUseOrdinal = dequeueAction;
+  storage.simultaneousPhysicalUseOrdinal = simultaneousAction;
+  storage.offerAdvancePhysicalUseOrdinal = offerAdvanceAction;
+  // Channel identity is the exact tag value: the left net carries tag 3 and
+  // the right net carries tag 5 through the same shared pool.
+  plan.transport.physicalTags.push_back({llvm::APInt(4, 3), std::nullopt});
+  plan.transport.physicalTags.push_back({llvm::APInt(4, 5), std::nullopt});
+  for (std::uint64_t tag = 0; tag != 2; ++tag)
+    plan.transport.routeNodes.push_back(
+        {std::numeric_limits<std::uint32_t>::max(),
+         invalidCgraTransportOrdinal, tag});
+  plan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{sum.ref, 0}}, 0,
+       invalidCgraTransportOrdinal});
+  plan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{sum.ref, 1}}, 0,
+       invalidCgraTransportOrdinal});
+  plan.transport.routes.push_back(
+      {{dataflow::ActorTokenResultRef{left.ref, 0}}, left.graph, 0, 0, 1, 0,
+       1});
+  plan.transport.routes.push_back(
+      {{dataflow::ActorTokenResultRef{right.ref, 0}}, right.graph, 0, 1, 1,
+       1, 1});
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  const auto token = [](std::uint64_t value) {
+    return take(tokenFromBitPattern(llvm::APInt(32, value),
+                                    mlir::IntegerType::get(&context(), 32)));
+  };
+  // Both consumer channels already hold a token, so neither channel head has
+  // a ready complement.
+  TokenQueue &leftSink = channelQueue(state, sum.op->getOpOperand(0));
+  TokenQueue &rightSink = channelQueue(state, sum.op->getOpOperand(1));
+  leftSink.push_back(token(1));
+  rightSink.push_back(token(2));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, view, left.graph, *prepared, state, physical));
+
+  struct EpochObservation final {
+    std::uint64_t offerAdvances = 0;
+    /// OfferAdvance transitions requested after the last enqueue or dequeue
+    /// request: the refused offers of the final probe epoch.
+    std::uint64_t offerAdvancesSinceLastCommit = 0;
+    std::uint64_t enqueues = 0;
+    std::uint64_t dequeues = 0;
+    std::uint64_t publications = 0;
+  };
+  const auto runToQuiescence = [&]() {
+    EpochObservation observed;
+    for (unsigned iteration = 0; iteration != 64; ++iteration) {
+      const auto transportCoordinate = transport.nextCoordinate();
+      const auto physicalCoordinate = physical.nextCoordinate();
+      if (!transportCoordinate && !physicalCoordinate)
+        return observed;
+      const bool advancePhysical =
+          physicalCoordinate &&
+          (!transportCoordinate ||
+           loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
+                                                     *transportCoordinate) <= 0);
+      if (advancePhysical) {
+        auto frame = take(physical.advance());
+        require(frame.has_value(), "virtual-channel physical event vanished");
+        (void)take(transport.acceptPhysicalEvents(*frame));
+        continue;
+      }
+      auto frame = take(transport.advance());
+      require(frame.has_value(), "virtual-channel transport event vanished");
+      bool commitRequested = false;
+      for (const CgraPhysicalLifecycleEvent &event : frame->physicalEvents) {
+        if (event.kind != CgraPhysicalLifecycleKind::Requested)
+          continue;
+        const bool offerAdvance = event.actionOrdinal == offerAdvanceAction;
+        observed.offerAdvances += offerAdvance;
+        observed.offerAdvancesSinceLastCommit += offerAdvance;
+        observed.enqueues += event.actionOrdinal == enqueueAction;
+        observed.dequeues += event.actionOrdinal == dequeueAction ||
+                             event.actionOrdinal == simultaneousAction;
+        commitRequested |= !offerAdvance;
+      }
+      // An offer refused in the cycle a commit is requested belongs to the
+      // epoch that commit ends.
+      if (commitRequested)
+        observed.offerAdvancesSinceLastCommit = 0;
+      observed.publications += frame->publications.size();
+    }
+    fail("virtual-channel rotation did not reach quiescence within the "
+         "frame budget");
+  };
+
+  llvm::SmallVector<CgraActorEmission, 2> emissions;
+  emissions.push_back({semanticOrdinal(left), 0, 0, 0, token(11)});
+  emissions.push_back({semanticOrdinal(right), 0, 0, 0, token(22)});
+  if (llvm::Error error =
+          transport.acceptActorEmissions(coordinate(10), emissions))
+    fail(llvm::toString(std::move(error)));
+  const EpochObservation closed = runToQuiescence();
+  require(closed.enqueues == 2 && closed.dequeues == 0 &&
+              closed.publications == 0,
+          "blocked virtual channels dequeued or published without a ready "
+          "consumer");
+  // After the last enqueue commit, exactly one refused offer per resident
+  // channel rotates the cursor, then the queue sleeps: no event is scheduled,
+  // so the rotation ends in a closed wait, not in a frame budget.
+  require(closed.offerAdvancesSinceLastCommit == 2,
+          "virtual-channel rotation did not spend exactly one OfferAdvance "
+          "per refused channel");
+  require(!transport.nextCoordinate() && !physical.nextCoordinate() &&
+              transport.hasBlockedTransfers(),
+          "exhausted rotation left a scheduled event or no blocked transfer");
+  const auto witnesses = transport.exhaustedOfferRotationDiagnostics();
+  require(witnesses.size() == 1, "exhausted rotation produced no witness");
+  const CgraStorageOfferRotationDiagnostic &witness = witnesses.front();
+  require(witness.storageOrdinal == 0 && witness.residentChannelCount == 2 &&
+              witness.refusedOffersSinceCommit == 2 &&
+              witness.occupancy == 2 && witness.capacity == 2 &&
+              witness.residentTagValues.size() == 2 &&
+              witness.residentTagValues[0] == llvm::APInt(4, 3) &&
+              witness.residentTagValues[1] == llvm::APInt(4, 5),
+          "exhausted rotation witness misstates the resident channels");
+  std::uint64_t blockedHeads = 0;
+  for (const CgraPendingTransferDiagnostic &pending :
+       transport.pendingTransferDiagnostics())
+    blockedHeads += pending.blocked && pending.blockingStorageOrdinal == 0;
+  require(blockedHeads == 2,
+          "both refused channel heads were not reported as blocked");
+
+  // The consumer of tag 5 drains its channel: that publication is the
+  // external event that restarts the rotation. The tag-5 head is granted and
+  // published; the tag-3 channel completes its own rotation and closes again.
+  rightSink.pop_front();
+  if (llvm::Error error = transport.retryBlocked(coordinate(20)))
+    fail(llvm::toString(std::move(error)));
+  const EpochObservation reopened = runToQuiescence();
+  require(reopened.enqueues == 0 && reopened.dequeues == 1 &&
+              reopened.offerAdvancesSinceLastCommit == 1 &&
+              reopened.publications == 1 && rightSink.size() == 1 &&
+              take(tokenBitPattern(rightSink.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 22),
+          "a ready complement did not drain exactly its own channel");
+  require(leftSink.size() == 1,
+          "the refused channel published into a full consumer channel");
+  const auto remaining = transport.exhaustedOfferRotationDiagnostics();
+  require(remaining.size() == 1 && remaining.front().residentChannelCount == 1 &&
+              remaining.front().refusedOffersSinceCommit == 1 &&
+              remaining.front().occupancy == 1 &&
+              remaining.front().residentTagValues.size() == 1 &&
+              remaining.front().residentTagValues[0] == llvm::APInt(4, 3),
+          "the remaining channel did not close its own rotation");
+  require(!transport.nextCoordinate() && !physical.nextCoordinate(),
+          "the remaining refused channel kept rotating");
+}
+
 } // namespace
 
 int main() {
@@ -1023,5 +1239,6 @@ int main() {
   ordinaryFanoutPublicationsProgressIndependently();
   temporalOperandQueueCapacityAndFanoutAreAtomic();
   temporalOperandQueueAdmissionPrioritizesComplement();
+  virtualChannelNoComplementRotationIsAClosedWait();
   return EXIT_SUCCESS;
 }

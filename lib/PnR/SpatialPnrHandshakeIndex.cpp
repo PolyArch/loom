@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -164,7 +165,10 @@ public:
   build(const dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
         const FabricHandshakeContext &handshakeContext,
+        const detail::SpatialComputePlacementHandshakeSelections
+            &placementSelections,
         const FrozenSpatialRealizationIndex &realizations,
+        const FrozenSpatialLocalTransferIndex &localTransfers,
         const FrozenSpatialResourceIndex &resources,
         const FrozenSpatialRoutingGraph &routing,
         const FrozenSpatialActiveRoutingDomain &activeRouting) {
@@ -174,9 +178,10 @@ public:
       return activeModels.takeError();
     FrozenSpatialHandshakeIndex result;
     result.fabricContext_ = handshakeContext;
-    BuildState state{result,      *activeModels, dataflow,
-                     techMapping, fabric,        realizations,
-                     resources,   routing,       activeRouting};
+    BuildState state{result,          *activeModels,  dataflow,
+                     techMapping,     fabric,         placementSelections,
+                     realizations,    localTransfers, resources,
+                     routing,         activeRouting};
     if (llvm::Error error = state.prepareActiveFragments())
       return std::move(error);
     if (llvm::Error error = state.buildFragments())
@@ -186,7 +191,7 @@ public:
     if (llvm::Error error = state.buildDenseProjectionIndex())
       return std::move(error);
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
-            result, realizations, resources, routing))
+            result, realizations, localTransfers, resources, routing))
       return std::move(error);
     return result;
   }
@@ -247,13 +252,18 @@ private:
                const dataflow::CanonicalDataflowProgramView &dataflow,
                const TechMappingView &techMapping,
                const FabricArtifactView &fabric,
+               const detail::SpatialComputePlacementHandshakeSelections
+                   &placementSelections,
                const FrozenSpatialRealizationIndex &realizations,
+               const FrozenSpatialLocalTransferIndex &localTransfers,
                const FrozenSpatialResourceIndex &resources,
                const FrozenSpatialRoutingGraph &routing,
                const FrozenSpatialActiveRoutingDomain &activeRouting)
         : result_(result), models_(models), dataflow_(dataflow),
           techMapping_(techMapping), fabric_(fabric),
-          realizations_(realizations), resources_(resources), routing_(routing),
+          placementSelections_(placementSelections),
+          realizations_(realizations), localTransfers_(localTransfers),
+          resources_(resources), routing_(routing),
           activeRouting_(activeRouting) {}
 
     llvm::Error prepareActiveFragments() {
@@ -290,6 +300,8 @@ private:
       if (llvm::Error error = prepareComputeSelections())
         return error;
       if (llvm::Error error = prepareMemorySelections())
+        return error;
+      if (llvm::Error error = prepareLocalTransferSelections())
         return error;
 
       for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
@@ -571,52 +583,18 @@ private:
     }
 
     llvm::Error prepareComputeSelections() {
-      std::vector<std::vector<FabricFuOperationHandshakeBinding>> bindings;
-      bindings.reserve(techMapping_.computeRealizations().size());
-      for (const TechComputeRealizationView &realization :
-           techMapping_.computeRealizations()) {
-        std::vector<FabricFuOperationHandshakeBinding> actorBindings;
-        actorBindings.reserve(realization.actors.size());
-        for (const TechComputeActorView &actor : realization.actors) {
-          auto resolved = dataflow_.resolve(actor.actor);
-          if (!resolved)
-            return resolved.takeError();
-          auto projection =
-              dataflow::projectRegisteredActorSchemaProjection(resolved->op);
-          if (!projection)
-            return projection.takeError();
-          auto indexBitWidth = getIndexBitWidth(resolved->op);
-          if (!indexBitWidth)
-            return indexBitWidth.takeError();
-          auto pointerLayout = pointerLayoutFor(dataflow_, *projection);
-          if (!pointerLayout)
-            return pointerLayout.takeError();
-          actorBindings.push_back({actor.fabricOperation,
-                                   std::move(*projection), *indexBitWidth,
-                                   std::move(*pointerLayout),
-                                   actor.operandPorts, actor.resultPorts});
-        }
-        bindings.push_back(std::move(actorBindings));
-      }
-
+      const auto selections = placementSelections_.placements();
+      if (selections.size() != realizations_.computePlacements().size())
+        return invalid("compute placement handshake selections are stale");
       computePlacementLocalFragments_.resize(
           realizations_.computePlacements().size());
       for (auto [placementOrdinal, placement] :
            llvm::enumerate(realizations_.computePlacements())) {
-        if (placement.realization >= techMapping_.computeRealizations().size())
-          return invalid("compute placement realization is out of range");
-        const TechComputeRealizationView &realization =
-            techMapping_.computeRealizations()[placement.realization];
-        auto selection = makeFuHandshakeSelection(
-            fabric_, placement.fu, realization.capabilityTemplate,
-            bindings[placement.realization]);
-        if (!selection)
-          return selection.takeError();
         auto model = modelIndex(FabricHandshakeOwner::fu(placement.fu));
         if (!model)
           return model.takeError();
         FabricHandshakeSelection exact;
-        exact.fuCapabilities.push_back(std::move(*selection));
+        exact.fuCapabilities.push_back(selections[placementOrdinal]);
         auto activation = resolveSelectedHandshake(*models_[*model], exact);
         if (!activation)
           return activation.takeError();
@@ -774,6 +752,58 @@ private:
       return llvm::Error::success();
     }
 
+    llvm::Error prepareLocalTransferSelections() {
+      localTransferModels_.resize(localTransfers_.options().size());
+      localTransferLocalFragments_.resize(localTransfers_.options().size());
+      for (auto [optionOrdinal, option] :
+           llvm::enumerate(localTransfers_.options())) {
+        if (option.writeTraversal >= routing_.traversals().size() ||
+            option.readTraversal >= routing_.traversals().size())
+          return invalid(
+              "register-FIFO handshake traversal is out of range");
+        auto model = modelIndex(FabricHandshakeOwner::pe(option.pe));
+        if (!model)
+          return model.takeError();
+        localTransferModels_[optionOrdinal] = *model;
+
+        FabricHandshakeSelection traversalSelection;
+        traversalSelection.traversals = {
+            routing_.traversals()[option.writeTraversal].reference,
+            routing_.traversals()[option.readTraversal].reference};
+        auto traversalActivation =
+            resolveSelectedHandshake(*models_[*model], traversalSelection);
+        if (!traversalActivation)
+          return traversalActivation.takeError();
+
+        auto pairing = makePeRegisterFifoHandshakeSelection(
+            fabric_, option.pe, option.registerFifo, option.writer,
+            option.reader, traversalSelection.traversals[0],
+            traversalSelection.traversals[1]);
+        if (!pairing)
+          return pairing.takeError();
+        FabricHandshakeSelection exactSelection = traversalSelection;
+        exactSelection.peRegisterFifos.push_back(std::move(*pairing));
+        auto exactActivation =
+            resolveSelectedHandshake(*models_[*model], exactSelection);
+        if (!exactActivation)
+          return exactActivation.takeError();
+
+        auto &pairingFragments = localTransferLocalFragments_[optionOrdinal];
+        std::set_difference(exactActivation->fragmentOrdinals().begin(),
+                            exactActivation->fragmentOrdinals().end(),
+                            traversalActivation->fragmentOrdinals().begin(),
+                            traversalActivation->fragmentOrdinals().end(),
+                            std::back_inserter(pairingFragments));
+        if (pairingFragments.empty())
+          return invalid(
+              "register-FIFO handshake pairing has no exact contribution");
+        auto &active = activeLocalFragments_[*model];
+        active.insert(active.end(), pairingFragments.begin(),
+                      pairingFragments.end());
+      }
+      return llvm::Error::success();
+    }
+
     llvm::Error materializeExactSelections() {
       std::vector<std::vector<PnrIndex>> placementFragments(
           computePlacementLocalFragments_.size());
@@ -792,6 +822,19 @@ private:
       if (llvm::Error error = flattenSlices(
               placementFragments, result_.computePlacementFragmentOffsets_,
               result_.computePlacementFragments_))
+        return error;
+
+      std::vector<std::vector<PnrIndex>> localTransferFragments(
+          localTransferLocalFragments_.size());
+      for (auto [option, localFragments] :
+           llvm::enumerate(localTransferLocalFragments_))
+        if (llvm::Error error = appendResolvedFragments(
+                localTransferModels_[option], localFragments,
+                localTransferFragments[option]))
+          return error;
+      if (llvm::Error error = flattenSlices(
+              localTransferFragments, result_.localTransferFragmentOffsets_,
+              result_.localTransferFragments_))
         return error;
 
       result_.memoryOperationPlans_.reserve(pendingMemoryPlans_.size());
@@ -1015,7 +1058,10 @@ private:
     const dataflow::CanonicalDataflowProgramView &dataflow_;
     const TechMappingView &techMapping_;
     const FabricArtifactView &fabric_;
+    const detail::SpatialComputePlacementHandshakeSelections
+        &placementSelections_;
     const FrozenSpatialRealizationIndex &realizations_;
+    const FrozenSpatialLocalTransferIndex &localTransfers_;
     const FrozenSpatialResourceIndex &resources_;
     const FrozenSpatialRoutingGraph &routing_;
     const FrozenSpatialActiveRoutingDomain &activeRouting_;
@@ -1023,6 +1069,8 @@ private:
     std::vector<std::vector<PnrIndex>> modelWitnessOrdinals_;
     std::vector<std::vector<std::uint32_t>> activeLocalFragments_;
     std::vector<std::vector<std::uint32_t>> computePlacementLocalFragments_;
+    std::vector<PnrIndex> localTransferModels_;
+    std::vector<std::vector<std::uint32_t>> localTransferLocalFragments_;
     std::vector<PendingMemoryPlan> pendingMemoryPlans_;
     std::vector<std::vector<PnrIndex>> modelFragmentOrdinals_;
   };
@@ -1033,18 +1081,93 @@ loom::pnr::detail::buildFrozenSpatialHandshakeIndex(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const FabricHandshakeContext &handshakeContext,
+    const detail::SpatialComputePlacementHandshakeSelections
+        &placementSelections,
     const FrozenSpatialRealizationIndex &realizations,
+    const FrozenSpatialLocalTransferIndex &localTransfers,
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing,
     const FrozenSpatialActiveRoutingDomain &activeRouting) {
   return FrozenSpatialHandshakeIndexBuilder::build(
-      dataflow, techMapping, fabric, handshakeContext, realizations,
-      resources, routing, activeRouting);
+      dataflow, techMapping, fabric, handshakeContext, placementSelections,
+      realizations, localTransfers, resources, routing, activeRouting);
+}
+
+llvm::Expected<loom::pnr::detail::SpatialComputePlacementHandshakeSelections>
+loom::pnr::detail::SpatialComputePlacementHandshakeSelections::build(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping, const FabricArtifactView &fabric,
+    const FrozenSpatialRealizationIndex &realizations) {
+  std::vector<std::vector<FabricFuOperationHandshakeBinding>> bindings;
+  bindings.reserve(techMapping.computeRealizations().size());
+  for (const TechComputeRealizationView &realization :
+       techMapping.computeRealizations()) {
+    std::vector<FabricFuOperationHandshakeBinding> actorBindings;
+    actorBindings.reserve(realization.actors.size());
+    for (const TechComputeActorView &actor : realization.actors) {
+      auto resolved = dataflow.resolve(actor.actor);
+      if (!resolved)
+        return resolved.takeError();
+      auto projection =
+          dataflow::projectRegisteredActorSchemaProjection(resolved->op);
+      if (!projection)
+        return projection.takeError();
+      auto indexBitWidth = getIndexBitWidth(resolved->op);
+      if (!indexBitWidth)
+        return indexBitWidth.takeError();
+      auto pointerLayout = pointerLayoutFor(dataflow, *projection);
+      if (!pointerLayout)
+        return pointerLayout.takeError();
+      actorBindings.push_back({actor.fabricOperation, std::move(*projection),
+                               *indexBitWidth, std::move(*pointerLayout),
+                               actor.operandPorts, actor.resultPorts});
+    }
+    bindings.push_back(std::move(actorBindings));
+  }
+
+  SpatialComputePlacementHandshakeSelections result;
+  result.placements_.reserve(realizations.computePlacements().size());
+  for (const FrozenSpatialComputePlacement &placement :
+       realizations.computePlacements()) {
+    if (placement.realization >= techMapping.computeRealizations().size())
+      return invalid("compute placement realization is out of range");
+    const TechComputeRealizationView &realization =
+        techMapping.computeRealizations()[placement.realization];
+    auto selection = makeFuHandshakeSelection(
+        fabric, placement.fu, realization.capabilityTemplate,
+        bindings[placement.realization]);
+    if (!selection)
+      return selection.takeError();
+    result.placements_.push_back(std::move(*selection));
+  }
+  return result;
+}
+
+llvm::Expected<bool>
+loom::pnr::detail::SpatialComputePlacementHandshakeSelections::
+    registerFifoTransferClosed(
+        const FabricHandshakeContext &context, PnrIndex producerPlacement,
+        PnrIndex consumerPlacement,
+        const FabricPeRegisterFifoHandshakeSelection &pairing) const {
+  if (producerPlacement >= placements_.size() ||
+      consumerPlacement >= placements_.size())
+    return invalid("register-FIFO transfer placement is out of range");
+  FabricHandshakeSelection selection;
+  selection.traversals = {pairing.writeTraversal(), pairing.readTraversal()};
+  selection.peRegisterFifos.push_back(pairing);
+  selection.fuCapabilities.push_back(placements_[producerPlacement]);
+  if (consumerPlacement != producerPlacement)
+    selection.fuCapabilities.push_back(placements_[consumerPlacement]);
+  auto acyclic = selectedOwnerHandshakeAcyclic(selection, context);
+  if (!acyclic)
+    return acyclic.takeError();
+  return !*acyclic;
 }
 
 llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
     const FrozenSpatialHandshakeIndex &handshake,
     const FrozenSpatialRealizationIndex &realizations,
+    const FrozenSpatialLocalTransferIndex &localTransfers,
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing) {
   (void)resources;
@@ -1210,6 +1333,12 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
   if (handshake.computePlacementFragmentOffsets().size() !=
       realizations.computePlacements().size() + 1)
     return invalid("compute handshake incidence is incomplete");
+  if (handshake.localTransferFragmentOffsets().size() !=
+      localTransfers.options().size() + 1)
+    return invalid("register-FIFO handshake incidence is incomplete");
+  for (PnrIndex fragment : handshake.localTransferFragments())
+    if (fragment >= handshake.fragments().size())
+      return invalid("register-FIFO handshake fragment is out of range");
   if (handshake.memoryPlacementDomainOffsets().size() !=
           realizations.memoryPlacements().size() + 1 ||
       handshake.memoryPlacementDomainOffsets().empty() ||

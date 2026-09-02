@@ -619,9 +619,8 @@ void bufferedPhysicalCycleIsAcceptedBeforeSelection() {
   auto spatial = take(test, design.createSpatialCore("ready-cycle", {}, {}));
   auto backedge = take(test, spatial.createBackedge(bits32));
   auto buffered =
-      take(test, spatial.addFifo(
-                         backedge.value(),
-                         FifoSpec{bits32, 2, false, std::nullopt}))
+      take(test, spatial.addFifo(backedge.value(),
+                                 FifoSpec{bits32, 2, false, std::nullopt}))
           .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), buffered))
@@ -649,8 +648,8 @@ void selectedGlobalCycleUsesExactTraversalSelection() {
                                                        {bits32, bits32},
                                                        {{0, 1}, {0, 1}})));
   SpatialValue feedback =
-      take(test, spatial.addFifo(
-                         routed[0], FifoSpec{bits32, 2, true, std::nullopt}))
+      take(test,
+           spatial.addFifo(routed[0], FifoSpec{bits32, 2, true, std::nullopt}))
           .value();
   if (llvm::Error error =
           spatial.resolveBackedge(std::move(backedge), feedback))
@@ -935,7 +934,7 @@ void oneToOneBoundariesUseDirectHandshake() {
           "fixture did not validate all one-to-one boundary forms");
 }
 
-void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
+void temporalPeRegisterFifoPairOwnsReplacementDependency() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -1078,6 +1077,94 @@ void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
     require(test, activation.arcOrdinals().empty(),
             "registered register-FIFO path created a combinational arc");
   }
+
+  const auto fus = finalized.view().fuOccurrences();
+  require(test, fus.size() == 1,
+          "register-FIFO fixture has no unique FU occurrence");
+  const FabricFuOccurrenceRef fu = fus.front();
+  const loom::fabric::FabricFuOccurrencePortRef writer{
+      fu, FabricPortDirection::Output, 0};
+  const loom::fabric::FabricFuOccurrencePortRef reader{
+      fu, FabricPortDirection::Input, 0};
+  const FabricPhysicalTraversalRef write =
+      FabricPhysicalTraversalRef::peRegisterFifo(
+          pe, 0, FabricRegisterFifoPathRole::Write);
+  const FabricPhysicalTraversalRef read =
+      FabricPhysicalTraversalRef::peRegisterFifo(
+          pe, 0, FabricRegisterFifoPathRole::Read);
+  const auto paired =
+      take(test, loom::fabric::makePeRegisterFifoHandshakeSelection(
+                     finalized.view(), pe, 0, writer, reader, write, read));
+
+  FabricHandshakeSelection unpaired;
+  unpaired.traversals = {write, read};
+  const ResolvedHandshakeActivation unpairedActivation =
+      take(test, loom::fabric::resolveSelectedHandshake(*model, unpaired));
+  require(test, unpairedActivation.arcOrdinals().empty(),
+          "unpaired register-FIFO traversals lost their registered cut");
+
+  FabricHandshakeSelection pairedSelection = unpaired;
+  pairedSelection.peRegisterFifos.push_back(paired);
+  const ResolvedHandshakeActivation pairedActivation = take(
+      test, loom::fabric::resolveSelectedHandshake(*model, pairedSelection));
+  const auto writerEndpoint =
+      finalized.view().fuOccurrenceTransportEndpoint(writer);
+  const auto readerEndpoint =
+      finalized.view().fuOccurrenceTransportEndpoint(reader);
+  require(test, writerEndpoint && readerEndpoint,
+          "register-FIFO pairing endpoint does not resolve");
+  require(
+      test,
+      hasPath(
+          *model, pairedActivation,
+          node(test, *model, {*readerEndpoint, HandshakeSignalKind::Ready}),
+          node(test, *model, {*writerEndpoint, HandshakeSignalKind::Ready})),
+      "paired register FIFO omitted its replacement-ready dependency");
+
+  const auto definition = finalized.view().fuTemplateOf(fu);
+  require(test, definition.has_value(),
+          "register-FIFO fixture FU has no definition");
+  const auto templates = finalized.view().fuCapabilityTemplates(*definition);
+  require(test, templates.size() == 1,
+          "register-FIFO fixture FU has no unique capability row");
+  const auto operation =
+      llvm::find_if(templates.front().activeNodes, [](const auto &node) {
+        return node.node == FabricFuNodeKind::Op;
+      });
+  require(test, operation != templates.front().activeNodes.end(),
+          "register-FIFO fixture capability has no operation");
+  mlir::Type i16 = mlir::IntegerType::get(&context(), 16);
+  dataflow::CanonicalActorSchemaProjection actor{
+      dataflow::OperationSchemaId::ArithAddI,
+      mlir::FunctionType::get(&context(), {i16, i16}, {i16}),
+      dataflow::NoPayload{}};
+  const loom::fabric::FabricFuOperationHandshakeBinding operationBinding{
+      *operation, actor, 64, std::nullopt, {0, 1}, {0}};
+  pairedSelection.fuCapabilities.push_back(
+      take(test, loom::fabric::makeFuHandshakeSelection(
+                     finalized.view(), fu,
+                     FabricFuCapabilityTemplateRef{*definition, 0},
+                     {operationBinding})));
+  const HandshakeOwnerModel *fuModel = nullptr;
+  for (const HandshakeOwnerModel &candidate : models)
+    if (candidate.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence &&
+        std::get<FabricFuOccurrenceRef>(candidate.owner().payload()) == fu)
+      fuModel = &candidate;
+  require(test, fuModel != nullptr,
+          "register-FIFO fixture has no FU handshake owner");
+  const ResolvedHandshakeActivation fuActivation = take(
+      test, loom::fabric::resolveSelectedHandshake(*fuModel, pairedSelection));
+  require(
+      test,
+      hasPath(
+          *fuModel, fuActivation,
+          node(test, *fuModel, {*writerEndpoint, HandshakeSignalKind::Ready}),
+          node(test, *fuModel, {*readerEndpoint, HandshakeSignalKind::Ready})),
+      "registered FU omitted its replacement-ready dependency");
+  requireRejected(test,
+                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                      finalized.view(), pairedSelection),
+                  "SelectedCombinationalHandshakeCycle");
 }
 
 void memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak() {
@@ -1616,7 +1703,7 @@ int main() {
   selectedGlobalCycleUsesExactTraversalSelection();
   atomicBoundarySelectionActivatesWholeOwner();
   oneToOneBoundariesUseDirectHandshake();
-  temporalPeQueuesAndRegisterFifosAreRegisteredBreaks();
+  temporalPeRegisterFifoPairOwnsReplacementDependency();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();
   temporalMemoryInternalConnectionIsClosedAndRegistered();
   fuSelectionUsesExactActorPortCorrespondence();

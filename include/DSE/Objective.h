@@ -68,7 +68,11 @@ private:
   explicit ObjectiveVector(std::size_t dimensionCount)
       : codes_(dimensionCount, 0) {}
 
-  llvm::SmallVector<std::uint64_t, 16> codes_;
+  /// Inline capacity covers the builtin Mapping objective catalog, every
+  /// violation source plus every measure, so hot candidate evaluation never
+  /// touches the heap; a larger catalog degrades to heap storage, which the
+  /// warm-Action allocation probes detect.
+  llvm::SmallVector<std::uint64_t, 24> codes_;
 
   friend class ObjectiveProgram;
 };

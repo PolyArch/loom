@@ -596,6 +596,8 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       } else if (std::holds_alternative<loom::fabric::FabricPeRoute>(value)) {
         ++peRouteCount;
       } else if (!std::holds_alternative<loom::fabric::FabricPeDisconnected>(
+                     value) &&
+                 !std::holds_alternative<loom::fabric::FabricPeOutputDiscard>(
                      value)) {
         fail("configured PE selector has an unexpected semantic value");
       }

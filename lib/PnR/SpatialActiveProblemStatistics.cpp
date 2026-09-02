@@ -52,6 +52,7 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   result.logicalNetCount = transfers.logicalNets().size();
   result.logicalSinkCount = transfers.logicalNetSinks().size();
   result.localTransferOptionCount = localTransfers.options().size();
+  result.localTransferClosedOptionCount = localTransfers.closedOptionCount();
   result.portDemandCount = ports.portDemands().size();
   result.attachmentOptionCount = ports.attachmentOptions().size();
   result.operandPairingGroupCount = ports.operandPairingGroups().size();
@@ -114,6 +115,8 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   addTrackedArray(bytes, work, handshake.fragments());
   addTrackedArray(bytes, work, handshake.traversalFragments());
   addTrackedArray(bytes, work, handshake.computePlacementFragments());
+  addTrackedArray(bytes, work, handshake.localTransferFragmentOffsets());
+  addTrackedArray(bytes, work, handshake.localTransferFragments());
   addTrackedArray(bytes, work, handshake.memoryOperationDomains());
   addTrackedArray(bytes, work, handshake.memoryOperationPlans());
   addTrackedArray(bytes, work, handshake.memoryPlanFragments());
@@ -155,6 +158,8 @@ void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
         fields["logical_sink_count"] = statistics.logicalSinkCount;
         fields["local_transfer_option_count"] =
             statistics.localTransferOptionCount;
+        fields["local_transfer_closed_option_count"] =
+            statistics.localTransferClosedOptionCount;
         fields["port_demand_count"] = statistics.portDemandCount;
         fields["attachment_option_count"] = statistics.attachmentOptionCount;
         fields["operand_pairing_group_count"] =

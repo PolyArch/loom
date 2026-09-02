@@ -242,7 +242,11 @@ private:
   llvm::Error markWholeNet(SpatialWholeNetRoutingAction action);
   llvm::Error markLocalNet(PnrIndex logicalNet, PendingRouteKind kind,
                            PnrIndex localAnchor);
-  llvm::Error markWitnessRegion(SpatialWitnessRegionRoutingAction action);
+  llvm::Error markWitnessRegion(SpatialMoveTransaction &move,
+                                SpatialWitnessRegionRoutingAction action);
+  llvm::Error selectExternalAttachments(SpatialMoveTransaction &move,
+                                        SpatialCandidateState &candidate,
+                                        PnrIndex logicalNet);
   void beginDependencyClosure();
   llvm::Error restoreAfterFailure(SpatialMoveTransaction &move,
                                   llvm::Error failure,

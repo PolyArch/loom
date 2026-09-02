@@ -921,6 +921,8 @@ finalizeSpatialMappingCandidate(
   if (candidate.runtimeCounterexampleViolation() != 0)
     return invalid(
         "candidate repeats a recorded runtime counterexample clause");
+  if (candidate.selectedHandshakeViolation() != 0)
+    return invalid("candidate selects a combinational handshake cycle");
   mlir::DialectRegistry registry;
   registry.insert<::mapping::MappingDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);

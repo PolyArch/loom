@@ -274,7 +274,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.1`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.6`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -306,7 +306,7 @@ The current descriptors are:
 
 ```text
 loom.system_pnr_search_domain.4.0
-loom.system_pnr.config.8.0
+loom.system_pnr.config.8.5
 ```
 
 The System config may carry a canonical root-keyed binding-partition intent.
@@ -861,10 +861,28 @@ Every canonical software edge has exactly one disposition:
 
 The initial RegFIFO domain admits only one producer, one consumer, one exact
 Temporal PE, compatible data width, tag and ordering, and an exact write
-traversal, FIFO, and read traversal. The local disposition owns those
-traversals and their resource uses. Multicast and mixed local/external fanout
-remain one external net. Locality is a soft preference; lack of a local FIFO
-must leave the external route alternative available.
+traversal, FIFO, and read traversal. It excludes an alternative whose own
+implied selection (its producer and consumer FU selections, its write and read
+traversals, and its exact writer/reader pairing) closes a combinational ready
+cycle by itself, such as a pairing whose writer and reader are one elastic FU;
+that alternative is counted and never becomes an option. The local disposition
+owns those traversals and their resource uses. Multicast and mixed
+local/external fanout remain one external net. Locality is a soft preference;
+lack of a local FIFO must leave the external route alternative available.
+
+A selected-handshake witness that passes through register-FIFO pairings is
+repaired one pairing at a time: the lowest net whose pairing lies on the
+witnessed cycle is routed externally, the pending handshake graph is
+re-materialized, and the next witness names its own cut, so nets off every
+witness keep their local disposition. After annealing restores its best
+feasible incumbent, the provider adopts admitted local transfers in canonical
+net and option order: an alternative resident under the current placements, or
+one reached by relocating exactly one endpoint onto its peer's PE, is committed
+when the selected handshake graph stays acyclic and the selected total ordering
+does not worsen; a declined alternative keeps its external route. The register
+FIFOs of one PE bank are interchangeable for that decision, so one free FIFO
+stands for every alternative that pairs the same writer and reader under the
+same placements.
 
 Co-location, a register-file name, or common ownership is not a local transfer.
 No edge may be absent from both the local and external projections or appear in
@@ -1144,12 +1162,14 @@ legality.
 
 ## Objective Projection
 
-The Mapping objective registry is `loom.mapping.pnr.objective 3.3`. It owns
-seven violation sources: the five structural/hard sources above,
+The Mapping objective registry is `loom.mapping.pnr.objective 3.4`. It owns
+eight violation sources: the five structural/hard sources above,
 `ProgressProofDebt`, which is nonzero exactly for a selected
 `ProofNotEstablished` activity witness, and
 `RuntimeCounterexampleViolation`, which counts persisted no-good clauses whose
-exact literals all still hold. It also owns these ten nonnegative
+exact literals all still hold, plus `SelectedHandshakeViolation`, which is one
+exactly when the selected Fabric handshake graph is cyclic. It also owns these
+ten nonnegative
 measures in stable
 ordinal order:
 
@@ -1186,6 +1206,19 @@ independent cold verifier rebuild the same literal truth from complete
 candidate state; neither cache nor dense ordinal participates in Mapping or
 constraint identity. System PnR has no Spatial runtime no-good owner and
 therefore projects this source as structural zero.
+
+`SelectedHandshakeViolation` is derived only from the exact selected fragment
+graph owned by the frozen Fabric handshake index. A selected Temporal-PE
+register-FIFO option activates the exact writer-output/reader-input pairing
+fragments resolved by the Fabric handshake owner; traversal selection alone
+does not infer that pairing. Candidate transactions update those fragments and
+their graph ranks with the local-disposition decision, while the cold verifier
+rebuilds the same graph from complete selected state. A cycle is a hard,
+non-temporary violation. Its dedicated first total-order level is strictly
+earlier than every other hard violation and QoR level, so eliminating a cycle
+cannot depend on temperature accepting temporary route or capacity cost.
+System projects structural zero because it does not own Spatial local-transfer
+decisions.
 
 `SharedOperandIngressPressure` is the sum, over Dataflow-owned co-firing input
 groups, of independently produced Temporal operand members beyond the number

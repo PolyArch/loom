@@ -27,7 +27,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 3, 3};
+    "loom.mapping.pnr.objective", 3, 4};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -168,6 +168,7 @@ bool loom::pnr::spatialMappingViolationAvailable(
   case ResolvedPnrViolationKind::HardProgressViolation:
   case ResolvedPnrViolationKind::ProgressProofDebt:
   case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
     return true;
   }
   llvm_unreachable("unknown Mapping violation kind");
@@ -224,6 +225,8 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
     return candidate.progressProofDebtWitnessCount();
   case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
     return candidate.runtimeCounterexampleViolation();
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
+    return candidate.selectedHandshakeViolation();
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -256,6 +259,8 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialMappingViolationValue(
     return projection.progressProofDebtWitnessCount;
   case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
     return projection.runtimeCounterexampleViolation;
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
+    return projection.selectedHandshakeAcyclic ? 0 : 1;
   }
   llvm_unreachable("unknown Mapping violation kind");
 }
@@ -312,6 +317,7 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
   case ResolvedPnrViolationKind::TagUnassigned:
   case ResolvedPnrViolationKind::TagConflict:
   case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
     return 0;
   case ResolvedPnrViolationKind::CapacityOveruse:
     return candidate.capacityOveruse();
@@ -548,6 +554,7 @@ MappingObjectiveProgram::evaluateSystemProjection(
     case ResolvedPnrViolationKind::TagUnassigned:
     case ResolvedPnrViolationKind::TagConflict:
     case ResolvedPnrViolationKind::RuntimeCounterexampleViolation:
+    case ResolvedPnrViolationKind::SelectedHandshakeViolation:
       violations[ordinal] = 0;
       break;
     case ResolvedPnrViolationKind::CapacityOveruse:

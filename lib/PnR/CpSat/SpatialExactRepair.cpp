@@ -177,6 +177,9 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   if (const auto clause = candidate.firstRuntimeCounterexampleViolation())
     return TransportWitness{
         ResolvedPnrViolationKind::RuntimeCounterexampleViolation, *clause};
+  if (candidate.selectedHandshakeViolation() != 0)
+    return TransportWitness{
+        ResolvedPnrViolationKind::SelectedHandshakeViolation, 0};
 
   if (candidate.unroutedObligationCount() != 0 ||
       candidate.routeCapacityOveruse() != 0 ||
@@ -185,7 +188,8 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
       candidate.tagConflictCount() != 0 ||
       candidate.hardProgressViolation() != 0 ||
       candidate.progressProofDebtWitnessCount() != 0 ||
-      candidate.runtimeCounterexampleViolation() != 0)
+      candidate.runtimeCounterexampleViolation() != 0 ||
+      candidate.selectedHandshakeViolation() != 0)
     return invocationError(
         "transport violation aggregates have no canonical witness");
   return std::optional<TransportWitness>();
@@ -246,6 +250,10 @@ transportWitnessIsLive(const SpatialCandidateState &candidate,
     if (witness.ordinal >= problem.constraints().resolvedNoGoods().size())
       return invocationError("runtime-counterexample witness is out of range");
     return candidate.runtimeCounterexampleClauseViolated(witness.ordinal);
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
+    if (witness.ordinal != 0)
+      return invocationError("selected-handshake witness is out of range");
+    return candidate.selectedHandshakeViolation() != 0;
   }
   llvm_unreachable("unknown Spatial transport witness kind");
 }
@@ -1165,6 +1173,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     }
     break;
   }
+  case ResolvedPnrViolationKind::SelectedHandshakeViolation:
+    return result(
+        SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
+        "selected-handshake repair is owned by the ordinary external-route "
+        "Action domain");
   }
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
     for (const SpatialFixedTerminalCutNet &cut : certificate.forcedNetCuts)

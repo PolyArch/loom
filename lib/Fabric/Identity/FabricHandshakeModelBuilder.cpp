@@ -248,6 +248,7 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
     case HandshakeFragmentSelectorKind::FuOperationInputActive:
     case HandshakeFragmentSelectorKind::FuOperationResultActive:
     case HandshakeFragmentSelectorKind::MemoryOperationPlan:
+    case HandshakeFragmentSelectorKind::PeRegisterFifoBinding:
       break;
     }
 
