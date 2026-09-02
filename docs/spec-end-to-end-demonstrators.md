@@ -192,6 +192,13 @@ production PnR provider to consume its complete configured work ledger.
 
 Before System + CGRA conformance begins, the conformance owner must publish one
 suite-wide CGRA Spatial-only absolute budget in tracked gate configuration.
+That configuration is `test/data/cgra-simulation-gate-v1.json`; its generator
+is the lit-owned qualification cell that runs `test/qualify_cgra_budget.py`
+over the production tools, and the tracked file is validated against the
+conformance owner's policy constants and the current operator-gate digest in
+every suite run. Once the gate is published, the paired runner consumes it as
+the only Spatial absolute budget; the `medium`-tier bootstrap ceiling is not
+retained as a second value.
 The value is selected from the aggregate evidence and the 100 k
 reference-cycles-per-wall-second target, and is derived with integer arithmetic:
 

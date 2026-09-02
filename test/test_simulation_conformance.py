@@ -640,7 +640,29 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
         readiness.write_text("{}\n", encoding="ascii")
         return runner, readiness
 
-    def test_real_process_pair_produces_a_provisional_measurement(self) -> None:
+    @staticmethod
+    def _synthetic_gate() -> simulation_conformance.CgraGateConfiguration:
+        operator_gate_sha256, _ = (
+            simulation_conformance.load_cgra_representative_operators()
+        )
+        return simulation_conformance.CgraGateConfiguration(
+            500_000_000, "0" * 64, operator_gate_sha256, ()
+        )
+
+    def test_resolved_gate_is_tracked_or_typed_provisional(self) -> None:
+        gate = simulation_conformance.resolve_cgra_gate_configuration()
+        self.assertGreater(gate.spatial_absolute_budget_nanoseconds, 0)
+        if gate.source is simulation_conformance.CgraGateSource.TRACKED:
+            self.assertEqual(
+                len(gate.profiles),
+                len(simulation_conformance.CGRA_REPRESENTATIVE_WORKLOADS),
+            )
+        else:
+            self.assertFalse(
+                simulation_conformance.CGRA_GATE_CONFIGURATION.is_file()
+            )
+
+    def test_real_process_pair_produces_a_measurement(self) -> None:
         scratch_root = ROOT / "temp"
         scratch_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
@@ -648,6 +670,7 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
             report = simulation_conformance.run_paired_execution_matrix(
                 runner,
                 readiness,
+                self._synthetic_gate(),
                 spatial_warmup_runs=1,
                 spatial_measurement_runs=3,
                 termination_grace_seconds=0.1,
@@ -660,8 +683,11 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
         self.assertEqual(len(report.spatial_measurements), 3)
         self.assertIsNotNone(report.system_measurement)
         projected = simulation_conformance.report_json(report)
-        self.assertEqual(projected["publication_status"], "provisional_bootstrap_only")
-        self.assertEqual(projected["durable_replay_profiles"], 0)
+        self.assertEqual(
+            projected["spatial_absolute_budget"]["path"],
+            simulation_conformance.CGRA_GATE_RELATIVE_PATH,
+        )
+        self.assertEqual(projected["spatial_absolute_budget"]["seconds"], 0.5)
 
     def test_pair_rejects_each_exact_work_or_config_mismatch(self) -> None:
         scratch_root = ROOT / "temp"
@@ -675,6 +701,7 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
                         report = simulation_conformance.run_paired_execution_matrix(
                             runner,
                             readiness,
+                            self._synthetic_gate(),
                             spatial_warmup_runs=1,
                             spatial_measurement_runs=2,
                             termination_grace_seconds=0.1,
@@ -697,6 +724,7 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
                 report = simulation_conformance.run_paired_execution_matrix(
                     runner,
                     readiness,
+                    self._synthetic_gate(),
                     spatial_process_timeout_seconds=0.1,
                     system_process_timeout_seconds=1.0,
                     termination_grace_seconds=0.1,

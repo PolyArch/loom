@@ -110,6 +110,11 @@ if product_acceleration_profile:
         "--loom-accel-profile=" + product_acceleration_profile)
 config.substitutions.append(
     ("%loom-product-acceleration-profile", product_acceleration_profile))
+# The ten-profile CGRA budget qualification regenerates the tracked gate; it
+# runs only when requested because it exhausts the production PnR work of
+# every representative workload.
+if lit_config.params.get("loom_cgra_budget_qualification", ""):
+    config.available_features.add("loom-cgra-budget-qualification")
 # %loom_include is the tracked include root, so a generator anchor can name
 # the one canonical registry source without a relative path walk.
 config.substitutions.append(

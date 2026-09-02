@@ -212,14 +212,14 @@ def qualify_workload(
 
 def main() -> int:
     parser = ArgumentParser()
-    parser.add_argument("--loom-cc", required=True, type=Path)
-    parser.add_argument("--loom-dfg-run", required=True, type=Path)
+    parser.add_argument("--compiler", required=True, type=Path)
+    parser.add_argument("--dfg-run", required=True, type=Path)
     parser.add_argument("--cgra-profile", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
     arguments.output.unlink(missing_ok=True)
-    loom_cc = arguments.loom_cc.resolve(strict=True)
-    loom_dfg_run = arguments.loom_dfg_run.resolve(strict=True)
+    loom_cc = arguments.compiler.resolve(strict=True)
+    loom_dfg_run = arguments.dfg_run.resolve(strict=True)
     cgra_profile = arguments.cgra_profile.resolve(strict=True)
     operator_gate_sha256, workloads = resolve_workloads()
     if tuple(workload.name for workload in workloads) != (

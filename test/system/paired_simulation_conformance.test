@@ -4,4 +4,4 @@
 
 # CHECK: "disposition": "measured"
 # CHECK: "meets_reference_rate_target": true
-# CHECK: "schema": "loom.paired_simulation_measurement_report.2"
+# CHECK: "schema": "loom.paired_simulation_measurement_report.3"
