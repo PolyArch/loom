@@ -965,6 +965,23 @@ explicitly to the generated build. This compilation plan is operational
 evidence, not a claim that a particular large design meets its wall-time or
 memory budget.
 
+Synopsys VCS is the second member of the mapped-RTL simulator set. Its bundle
+materializes the same semantic inputs and the same generated harness, one VCS
+argument file, and two frozen commands: the compile, whose executable is the
+catalog-frozen VCS launcher followed by the mandatory `-full64` token and the
+argument file, and the simulation, which runs the tool-produced simulator from
+its work directory. The argument file selects SystemVerilog, applies the
+harness's own femtosecond timescale to every module so the clock periods are
+exact, names the harness top, the parallel compilation count from the same
+closed job domain, the compile work directory, and the simulator output, and
+lists the exact semantic RTL source before the harness. VCS elaborates the
+semantic source directly: no hierarchy plan, derived library, block
+metacomment, or auxiliary build tool exists for this member, because VCS
+compiles and links the simulator itself. The generated harness is legal for
+both members: a variable that the initialization block and a clocked process
+both write is driven by a general clocked process, not an `always_ff`, which
+SystemVerilog forbids to share drivers and which VCS rejects.
+
 A plan that selects no block is a distinct Verilation style rather than a
 degenerate hierarchical plan. Flat Verilation annotates no module, emits
 neither `--hierarchical` nor `--hierarchical-threads`, carries no hierarchy

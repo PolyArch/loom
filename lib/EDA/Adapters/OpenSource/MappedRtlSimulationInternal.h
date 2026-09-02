@@ -174,6 +174,18 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
     llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
     std::optional<llvm::StringRef> bridgeEngineSourcePath);
 
+/// Renders the VCS argument file of one bundle: the SystemVerilog and
+/// timescale mode, the harness top, the parallel compilation count, the
+/// compile work directory, the simulator output, and the exact source list.
+/// The mandatory `-full64` architecture token is a command token, not an
+/// argument-file line.
+llvm::Expected<std::string>
+renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
+                         const MappedRtlVcsCompilationPlan &plan,
+                         llvm::StringRef testbenchPath,
+                         llvm::StringRef workDirectoryPath,
+                         llvm::StringRef simulatorExecutablePath);
+
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(const MappedRtlObservationFacts &facts,
                                        const MappedRtlSimulationResult &result);

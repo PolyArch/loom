@@ -99,9 +99,24 @@ llvm::cl::opt<bool>
               llvm::cl::desc(
                   "Execute each materialized Spatial invocation as mapped RTL"),
               llvm::cl::init(false));
+llvm::cl::opt<loom::eda::open_source::MappedRtlHdlSimulator> mappedRtlSimulator(
+    "mapped-rtl-simulator",
+    llvm::cl::desc("HDL simulator that compiles and runs the mapped RTL"),
+    llvm::cl::values(
+        clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Verilator,
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       loom::eda::open_source::MappedRtlHdlSimulator::Verilator)
+                       .data(),
+                   "Verilator, hierarchical multithreaded model"),
+        clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Vcs,
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       loom::eda::open_source::MappedRtlHdlSimulator::Vcs)
+                       .data(),
+                   "Synopsys VCS, event-driven four-state model")),
+    llvm::cl::init(loom::eda::open_source::MappedRtlHdlSimulator::Verilator));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildJobs(
     "mapped-rtl-build-jobs",
-    llvm::cl::desc("C++ build jobs for mapped RTL hierarchy compilation"),
+    llvm::cl::desc("Parallel compilation jobs of the mapped RTL simulator"),
     llvm::cl::init(loom::eda::open_source::mappedRtlDefaultBuildJobs));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildWorkers(
     "mapped-rtl-build-workers",
@@ -1920,7 +1935,8 @@ llvm::Error run() {
       if (mappedRtl) {
         auto cell = loom::system_run::executeMappedRtlCell(
             invocation, *rtlDeployment, child(workspacePath, "bundles"),
-            {mappedRtlBuildJobs, mappedRtlBuildWorkers, mappedRtlModelThreads},
+            {mappedRtlSimulator, mappedRtlBuildJobs, mappedRtlBuildWorkers,
+             mappedRtlModelThreads},
             artifacts, blobs);
         if (!cell)
           return cell.takeError();

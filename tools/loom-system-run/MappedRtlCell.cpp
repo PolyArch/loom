@@ -168,7 +168,8 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   if (!resolution)
     return resolution.takeError();
 
-  const auto &provider = loom::external_tool::verilatorProvider();
+  const auto &provider =
+      loom::eda::open_source::mappedRtlHdlSimulatorProvider(options.simulator);
   const std::string probePath = child(
       bundleRoot, ("spatial-rtl-probe-" + llvm::Twine(invocation.ordinal)).str());
   std::error_code directoryError;
@@ -188,10 +189,13 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
       resolvedTool->executable;
   local.tools[provider.binding.key].providerOptions["build_jobs"] =
       options.buildJobs;
-  local.tools[provider.binding.key].providerOptions["build_workers"] =
-      options.buildWorkers;
-  local.tools[provider.binding.key].providerOptions["model_threads"] =
-      options.modelThreads;
+  if (options.simulator ==
+      loom::eda::open_source::MappedRtlHdlSimulator::Verilator) {
+    local.tools[provider.binding.key].providerOptions["build_workers"] =
+        options.buildWorkers;
+    local.tools[provider.binding.key].providerOptions["model_threads"] =
+        options.modelThreads;
+  }
 
   auto subjects = loom::evaluation::EvaluationSubjectBindings::get(
       {{loom::evaluation::models::mappedRtlHardwareImplementationSubjectRole(),
@@ -251,7 +255,10 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
     releaseStage.finish();
   }
   loom::hardware::rtl::RtlMaterializationStageTracker executionStage(
-      "verilator_execution", materializationKey);
+      (loom::eda::open_source::mappedRtlHdlSimulatorSpelling(options.simulator) +
+       "_execution")
+          .str(),
+      materializationKey);
   auto execution =
       loom::external_tool::executeExternalToolInvocationBundleObserved(
           external);
@@ -268,4 +275,3 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   return MappedRtlCellEvidence{std::move(*request), std::move(*resolution),
                                std::move(*evidence)};
 }
-

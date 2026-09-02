@@ -29,6 +29,12 @@ inline constexpr llvm::StringLiteral mappedRtlBridgeEngineSourcePath =
     "drivers/loom-gem5-rtl-engine.cpp";
 inline constexpr llvm::StringLiteral mappedRtlSimulatorExecutablePath =
     "work/verilator/simulation";
+inline constexpr llvm::StringLiteral mappedRtlVcsDriverPath =
+    "drivers/vcs.args";
+inline constexpr llvm::StringLiteral mappedRtlVcsWorkDirectoryPath =
+    "work/vcs";
+inline constexpr llvm::StringLiteral mappedRtlVcsSimulatorExecutablePath =
+    "work/vcs/simulation";
 inline constexpr llvm::StringLiteral mappedRtlResultPath =
     "outputs/mapped-rtl-result.txt";
 

@@ -126,8 +126,15 @@ prepareProvider(const EvaluationRequest &request,
   if (!closure)
     return closure.takeError();
 
-  const ExternalToolProviderDescriptor &toolProvider = verilatorProvider();
-  auto options = resolveMappedRtlExecutionAttemptOptions(context.localConfig);
+  const std::optional<MappedRtlHdlSimulator> simulator =
+      classifyMappedRtlHdlSimulator(
+          closure->simulatorBinding.stableHdlSimulatorBuildIdentity);
+  if (!simulator)
+    return invalid("HDL simulator build identity names no mapped-RTL simulator");
+  const ExternalToolProviderDescriptor &toolProvider =
+      mappedRtlHdlSimulatorProvider(*simulator);
+  auto options =
+      resolveMappedRtlExecutionAttemptOptions(context.localConfig, *simulator);
   if (!options)
     return options.takeError();
 
@@ -142,7 +149,9 @@ prepareProvider(const EvaluationRequest &request,
     return tool.takeError();
   if (tool->version !=
       closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
-    return invalid("resolved Verilator build differs from the model binding");
+    return invalid("resolved " +
+                   findBackendTool(toolProvider.binding.key)->officialProductName +
+                   " build differs from the model binding");
   if (!findValidatedRelease(toolProvider.binding.key, tool->version))
     return EvaluationModelProviderPreparation{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
@@ -166,51 +175,92 @@ prepareProvider(const EvaluationRequest &request,
   if (!runtime)
     return runtime.takeError();
 
-  auto buildTools = resolveMappedRtlBuildTools(context.localConfig);
-  if (!buildTools)
-    return buildTools.takeError();
-  auto projection = deriveMappedRtlExecutionBundleProjection(
-      *closure,
-      MappedRtlVerilationPlan{options->cycleLimit, options->buildJobs,
-                              options->modelThreads, tool->executable,
-                              *buildTools},
-      artifacts, blobs);
-  if (!projection)
-    return projection.takeError();
-  if (const auto *unsupported = std::get_if<UnsupportedEvidence>(&*projection))
-    return EvaluationModelProviderPreparation{*unsupported};
-  auto bundle =
-      std::get<MappedRtlExecutionBundleProjection>(std::move(*projection));
-  std::vector<MaterializedBundleFile> files{
-      {bundle.testbenchPath, std::move(bundle.testbench), std::nullopt, false},
-      {bundle.standaloneVerilatorDriverPath,
-       std::move(bundle.standaloneVerilatorDriver), std::nullopt, false}};
-  files.insert(files.end(),
-               std::make_move_iterator(bundle.toolLocalInputs.begin()),
-               std::make_move_iterator(bundle.toolLocalInputs.end()));
-  files.insert(files.end(),
-               std::make_move_iterator(bundle.semanticInputs.begin()),
-               std::make_move_iterator(bundle.semanticInputs.end()));
-
-  const std::string executable = tool->executable;
+  // Both simulators share the harness, the result protocol, and the import;
+  // they differ in the frozen command schedule and the tool-local material.
+  std::vector<MaterializedBundleFile> files;
+  std::vector<std::vector<std::string>> commands;
+  std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryTools;
+  std::string simulatorExecutablePath;
+  std::string resultPath;
+  switch (*simulator) {
+  case MappedRtlHdlSimulator::Verilator: {
+    auto buildTools = resolveMappedRtlBuildTools(context.localConfig);
+    if (!buildTools)
+      return buildTools.takeError();
+    auto projection = deriveMappedRtlExecutionBundleProjection(
+        *closure,
+        MappedRtlVerilationPlan{options->cycleLimit, options->buildJobs,
+                                options->modelThreads, tool->executable,
+                                *buildTools},
+        artifacts, blobs);
+    if (!projection)
+      return projection.takeError();
+    if (const auto *unsupported =
+            std::get_if<UnsupportedEvidence>(&*projection))
+      return EvaluationModelProviderPreparation{*unsupported};
+    auto bundle =
+        std::get<MappedRtlExecutionBundleProjection>(std::move(*projection));
+    files = {{bundle.testbenchPath, std::move(bundle.testbench), std::nullopt,
+              false},
+             {bundle.standaloneVerilatorDriverPath,
+              std::move(bundle.standaloneVerilatorDriver), std::nullopt,
+              false}};
+    files.insert(files.end(),
+                 std::make_move_iterator(bundle.toolLocalInputs.begin()),
+                 std::make_move_iterator(bundle.toolLocalInputs.end()));
+    files.insert(files.end(),
+                 std::make_move_iterator(bundle.semanticInputs.begin()),
+                 std::make_move_iterator(bundle.semanticInputs.end()));
+    commands = {{tool->executable, "-f", bundle.standaloneVerilatorDriverPath},
+                std::move(bundle.buildCommand),
+                {bundle.simulatorExecutablePath}};
+    auxiliaryTools = std::move(buildTools->provenance);
+    simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
+    resultPath = std::move(bundle.resultPath);
+    break;
+  }
+  case MappedRtlHdlSimulator::Vcs: {
+    auto projection = deriveMappedRtlVcsBundleProjection(
+        *closure,
+        MappedRtlVcsCompilationPlan{options->cycleLimit, options->buildJobs,
+                                    tool->executable},
+        artifacts, blobs);
+    if (!projection)
+      return projection.takeError();
+    if (const auto *unsupported =
+            std::get_if<UnsupportedEvidence>(&*projection))
+      return EvaluationModelProviderPreparation{*unsupported};
+    auto bundle = std::get<MappedRtlVcsBundleProjection>(std::move(*projection));
+    files = {{bundle.testbenchPath, std::move(bundle.testbench), std::nullopt,
+              false},
+             {bundle.driverPath, std::move(bundle.driver), std::nullopt,
+              false}};
+    files.insert(files.end(),
+                 std::make_move_iterator(bundle.semanticInputs.begin()),
+                 std::make_move_iterator(bundle.semanticInputs.end()));
+    commands = {std::move(bundle.compileCommand),
+                std::move(bundle.simulationCommand)};
+    simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
+    resultPath = std::move(bundle.resultPath);
+    break;
+  }
+  }
+  const std::uint64_t simulationCommandOrdinal = commands.size() - 1;
   ExternalToolInvocationBundleSpec specification{
       closure->semanticContract,
       std::move(*tool),
       toolProvider.versionProbe,
       std::move(*runtime),
       containerProvider.versionProbe,
-      {{executable, "-f", bundle.standaloneVerilatorDriverPath},
-       std::move(bundle.buildCommand),
-       {bundle.simulatorExecutablePath}},
+      std::move(commands),
       std::move(inheritEnvironment),
-      {bundle.resultPath},
+      {resultPath},
       std::move(files),
       {},
       {},
-      {bundle.simulatorExecutablePath}};
-  specification.diagnosticCommandOrdinals = {2};
-  specification.auxiliaryToolExecutables =
-      std::move(buildTools->provenance);
+      {simulatorExecutablePath}};
+  specification.diagnosticCommandOrdinals = {simulationCommandOrdinal};
+  specification.auxiliaryToolExecutables = std::move(auxiliaryTools);
   auto prepared = finalizeExternalToolInvocationBundle(
       context.bundleDestination, specification);
   if (!prepared)

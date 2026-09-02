@@ -6,6 +6,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Deployment/Deployment.h"
+#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Request.h"
@@ -17,9 +18,11 @@
 
 namespace loom::system_run {
 
-/// Provider options of the Verilator-backed mapped RTL simulation, resolved by
+/// Provider selection and options of the mapped RTL simulation, resolved by
 /// the driver's command line and handed to the provider as local tool config.
 struct MappedRtlProviderOptions final {
+  eda::open_source::MappedRtlHdlSimulator simulator =
+      eda::open_source::MappedRtlHdlSimulator::Verilator;
   std::uint64_t buildJobs = 0;
   std::uint64_t buildWorkers = 0;
   std::uint64_t modelThreads = 0;
@@ -45,8 +48,8 @@ deriveMappedRtlDeployment(const deployment::FinalizedDeployment &source,
 
 /// Executes one materialized Spatial invocation as mapped RTL under
 /// `bundleRoot`: resolves the launch selection against the mapped RTL
-/// Deployment, binds the Verilator provider, publishes the Request, runs the
-/// frozen invocation bundle, and imports its Evidence.
+/// Deployment, binds the selected HDL simulator provider, publishes the
+/// Request, runs the frozen invocation bundle, and imports its Evidence.
 llvm::Expected<MappedRtlCellEvidence>
 executeMappedRtlCell(const SpatialInvocationCase &invocation,
                      const deployment::FinalizedDeployment &rtlDeployment,

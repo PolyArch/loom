@@ -8,9 +8,11 @@
 #include "ExternalTool/InvocationBundle.h"
 #include "Simulator/SimulationExecution.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -18,9 +20,34 @@
 namespace loom {
 class ArtifactStore;
 class BlobStore;
+namespace external_tool {
+struct ExternalToolProviderDescriptor;
+}
 } // namespace loom
 
 namespace loom::eda::open_source {
+
+/// The closed HDL simulator set of the mapped-RTL provider. Every member is a
+/// catalog-owned backend tool that compiles the same generated harness and
+/// writes the same result protocol; the Request's stable HDL simulator build
+/// identity names exactly one member through that tool's version-probe marker.
+enum class MappedRtlHdlSimulator : std::uint8_t { Verilator, Vcs };
+
+/// The canonical command-line spelling of one simulator and its inverse.
+llvm::StringRef mappedRtlHdlSimulatorSpelling(MappedRtlHdlSimulator simulator);
+std::optional<MappedRtlHdlSimulator>
+parseMappedRtlHdlSimulator(llvm::StringRef spelling);
+
+/// The catalog provider that compiles and runs the harness for one member.
+const external_tool::ExternalToolProviderDescriptor &
+mappedRtlHdlSimulatorProvider(MappedRtlHdlSimulator simulator);
+
+/// Recovers the member named by one stable HDL simulator build identity: the
+/// unique member whose catalog version-probe marker the identity contains.
+/// The identity's exact release is qualified separately through the catalog's
+/// validated-release relation.
+std::optional<MappedRtlHdlSimulator>
+classifyMappedRtlHdlSimulator(llvm::StringRef stableHdlSimulatorBuildIdentity);
 
 /// Complete typed inputs for one mapped-RTL engine. Evaluation descriptors
 /// derive this closure from their own exact Request; the engine does not infer
@@ -126,12 +153,14 @@ constexpr bool isMappedRtlParallelismCount(std::uint64_t value) {
   return value == 1 || value == 2 || value == 4 || value == 8;
 }
 
-/// The Verilator parallelism and thread contract of one mapped-RTL attempt.
-/// `buildJobs` is Verilator's `-j`, the Verilation job count and the make job
-/// count of the generated build; `modelThreads` is the simulation thread
-/// count emitted as both `--threads` and `--hierarchical-threads` so the
-/// generated main, the root model, and the hierarchical schedule agree. Both
-/// satisfy `isMappedRtlParallelismCount`.
+/// The parallelism and thread contract of one mapped-RTL attempt, read from
+/// the selected simulator's provider options. `buildJobs` is the compiler's
+/// `-j`: for Verilator the Verilation job count and the make job count of the
+/// generated build, for VCS its parallel compilation count. `modelThreads` is
+/// Verilator's simulation thread count emitted as both `--threads` and
+/// `--hierarchical-threads` so the generated main, the root model, and the
+/// hierarchical schedule agree; VCS simulates single-threaded and admits no
+/// thread option. Both counts satisfy `isMappedRtlParallelismCount`.
 struct MappedRtlExecutionAttemptOptions final {
   std::uint64_t cycleLimit = 0;
   std::uint64_t buildJobs = 0;
@@ -151,13 +180,42 @@ struct MappedRtlVerilationPlan final {
   MappedRtlBuildTools buildTools;
 };
 
+/// The compile inputs of one VCS bundle: the attempt limit, the parallel
+/// compilation count, and the frozen VCS executable. VCS compiles and links
+/// the simulator itself, so the bundle freezes no auxiliary build tool.
+struct MappedRtlVcsCompilationPlan final {
+  std::uint64_t cycleLimit = 0;
+  std::uint64_t buildJobs = 0;
+  std::string vcsExecutable;
+};
+
+/// The VCS bundle: the semantic inputs, the shared harness, the VCS argument
+/// file, the frozen compile command, and the simulation command that runs the
+/// tool-produced simulator. The harness compiles the semantic RTL source
+/// directly; no hierarchy plan or derived library exists for this simulator.
+struct MappedRtlVcsBundleProjection final {
+  std::vector<external_tool::MaterializedBundleFile> semanticInputs;
+  std::string testbenchPath;
+  std::string driverPath;
+  std::string simulatorExecutablePath;
+  std::string resultPath;
+  std::string testbench;
+  std::string driver;
+  std::vector<std::string> compileCommand;
+  std::vector<std::string> simulationCommand;
+};
+
 using MappedRtlExecutionProjectionOrUnsupported =
     std::variant<MappedRtlExecutionBundleProjection,
                  evaluation::UnsupportedEvidence>;
 
+using MappedRtlVcsProjectionOrUnsupported =
+    std::variant<MappedRtlVcsBundleProjection, evaluation::UnsupportedEvidence>;
+
 llvm::Expected<MappedRtlExecutionAttemptOptions>
 resolveMappedRtlExecutionAttemptOptions(
-    const external_tool::LocalToolConfig &localConfig);
+    const external_tool::LocalToolConfig &localConfig,
+    MappedRtlHdlSimulator simulator);
 
 llvm::Expected<MappedRtlBuildTools>
 resolveMappedRtlBuildTools(
@@ -171,6 +229,14 @@ deriveMappedRtlExecutionBundleProjection(
     const MappedRtlExecutionClosure &closure,
     const MappedRtlVerilationPlan &plan, const ArtifactStore &artifacts,
     const BlobStore &blobs, llvm::StringRef pathPrefix = {});
+
+/// Derives the VCS materialization of one closure. The generated harness is
+/// the same source the Verilator projection compiles.
+llvm::Expected<MappedRtlVcsProjectionOrUnsupported>
+deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
+                                   const MappedRtlVcsCompilationPlan &plan,
+                                   const ArtifactStore &artifacts,
+                                   const BlobStore &blobs);
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
 deriveMappedRtlExecutionImportExpectation(

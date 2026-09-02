@@ -248,7 +248,10 @@ void renderMemoryService(llvm::raw_ostream &output,
   if (facts.memoryBoundaryPorts.empty())
     return;
 
-  output << "  always_ff @(posedge " << facts.selectedClock << ") begin\n"
+  // The runtime memory is also written by the initialization block, and
+  // SystemVerilog forbids a second procedural driver of an `always_ff`
+  // variable, so the service is a general clocked process.
+  output << "  always @(posedge " << facts.selectedClock << ") begin\n"
          << "    if (!loom_resets_released) begin\n";
   for (const auto &[ordinal, port] :
        llvm::enumerate(facts.memoryBoundaryPorts)) {
@@ -1044,6 +1047,30 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
   output << testbenchPath << "\n";
   if (bridgeEngineSourcePath)
     output << *bridgeEngineSourcePath << "\n";
+  return text;
+}
+
+llvm::Expected<std::string>
+renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
+                         const MappedRtlVcsCompilationPlan &plan,
+                         llvm::StringRef testbenchPath,
+                         llvm::StringRef workDirectoryPath,
+                         llvm::StringRef simulatorExecutablePath) {
+  if (facts.rtlPaths.empty())
+    return invalid("VCS driver has no RTL sources");
+  if (plan.buildJobs == 0)
+    return invalid("VCS parallel compilation count must be positive");
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  // The harness declares its own 1 fs timescale; the same scale is applied to
+  // every RTL module so the clock periods of the harness are exact.
+  output << "-sverilog\n-timescale=1fs/1fs\n-top\n"
+         << mappedRtlHarnessTop << "\n-j" << plan.buildJobs << "\n-Mdir="
+         << workDirectoryPath << "/csrc\n-o\n" << simulatorExecutablePath
+         << "\n";
+  for (const std::string &path : facts.rtlPaths)
+    output << path << "\n";
+  output << testbenchPath << "\n";
   return text;
 }
 

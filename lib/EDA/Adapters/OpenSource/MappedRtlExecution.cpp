@@ -56,9 +56,9 @@ llvm::Error invalid(const llvm::Twine &detail) {
 
 llvm::Expected<std::uint64_t>
 positiveOption(const external_tool::LocalToolConfig &config,
+               const external_tool::ExternalToolProviderDescriptor &provider,
                llvm::StringRef name, std::uint64_t defaultValue,
                std::uint64_t maximum) {
-  const auto &provider = external_tool::verilatorProvider();
   const auto configured = config.tools.find(provider.binding.key);
   if (configured == config.tools.end())
     return defaultValue;
@@ -67,7 +67,7 @@ positiveOption(const external_tool::LocalToolConfig &config,
     return defaultValue;
   const std::optional<std::uint64_t> parsed = value->getAsUINT64();
   if (!parsed || *parsed == 0 || *parsed > maximum)
-    return invalid("verilator.provider_options." + name +
+    return invalid(provider.binding.key + ".provider_options." + name +
                    " is outside its positive unsigned range");
   return *parsed;
 }
@@ -79,14 +79,35 @@ llvm::Error invalidParallelism(const llvm::Twine &name) {
 /// A provider option from the closed parallelism domain.
 llvm::Expected<std::uint64_t>
 parallelismOption(const external_tool::LocalToolConfig &config,
+                  const external_tool::ExternalToolProviderDescriptor &provider,
                   llvm::StringRef name, std::uint64_t defaultValue) {
-  auto value = positiveOption(config, name, defaultValue,
+  auto value = positiveOption(config, provider, name, defaultValue,
                               std::numeric_limits<std::uint64_t>::max());
   if (!value)
     return value.takeError();
   if (!isMappedRtlParallelismCount(*value))
-    return invalidParallelism("verilator.provider_options." + name);
+    return invalidParallelism(provider.binding.key + ".provider_options." +
+                              name);
   return *value;
+}
+
+/// The provider option names each simulator admits. Verilator owns the model
+/// thread count and the gem5 build worker share; VCS compiles and simulates
+/// without either.
+llvm::ArrayRef<llvm::StringLiteral>
+admittedProviderOptions(MappedRtlHdlSimulator simulator) {
+  static constexpr llvm::StringLiteral verilatorOptions[]{
+      kCycleLimitOption, kBuildJobsOption, kBuildWorkersOption,
+      kModelThreadsOption};
+  static constexpr llvm::StringLiteral vcsOptions[]{kCycleLimitOption,
+                                                    kBuildJobsOption};
+  switch (simulator) {
+  case MappedRtlHdlSimulator::Verilator:
+    return verilatorOptions;
+  case MappedRtlHdlSimulator::Vcs:
+    return vcsOptions;
+  }
+  llvm_unreachable("closed HDL simulator set");
 }
 
 llvm::Expected<std::string> canonicalPathPrefix(llvm::StringRef prefix) {
@@ -857,37 +878,86 @@ resolveBuildTool(const external_tool::LocalToolConfig &localConfig,
 
 } // namespace
 
+llvm::StringRef mappedRtlHdlSimulatorSpelling(MappedRtlHdlSimulator simulator) {
+  switch (simulator) {
+  case MappedRtlHdlSimulator::Verilator:
+    return "verilator";
+  case MappedRtlHdlSimulator::Vcs:
+    return "vcs";
+  }
+  llvm_unreachable("closed HDL simulator set");
+}
+
+std::optional<MappedRtlHdlSimulator>
+parseMappedRtlHdlSimulator(llvm::StringRef spelling) {
+  for (MappedRtlHdlSimulator simulator :
+       {MappedRtlHdlSimulator::Verilator, MappedRtlHdlSimulator::Vcs})
+    if (spelling == mappedRtlHdlSimulatorSpelling(simulator))
+      return simulator;
+  return std::nullopt;
+}
+
+const external_tool::ExternalToolProviderDescriptor &
+mappedRtlHdlSimulatorProvider(MappedRtlHdlSimulator simulator) {
+  switch (simulator) {
+  case MappedRtlHdlSimulator::Verilator:
+    return external_tool::verilatorProvider();
+  case MappedRtlHdlSimulator::Vcs:
+    return external_tool::vcsProvider();
+  }
+  llvm_unreachable("closed HDL simulator set");
+}
+
+std::optional<MappedRtlHdlSimulator>
+classifyMappedRtlHdlSimulator(llvm::StringRef stableHdlSimulatorBuildIdentity) {
+  std::optional<MappedRtlHdlSimulator> classified;
+  for (MappedRtlHdlSimulator simulator :
+       {MappedRtlHdlSimulator::Verilator, MappedRtlHdlSimulator::Vcs}) {
+    const auto &marker =
+        mappedRtlHdlSimulatorProvider(simulator).versionProbe
+            .requiredOutputSubstring;
+    if (!marker || !stableHdlSimulatorBuildIdentity.contains(*marker))
+      continue;
+    if (classified)
+      return std::nullopt;
+    classified = simulator;
+  }
+  return classified;
+}
+
 llvm::Expected<MappedRtlExecutionAttemptOptions>
 resolveMappedRtlExecutionAttemptOptions(
-    const external_tool::LocalToolConfig &localConfig) {
-  const auto &provider = external_tool::verilatorProvider();
+    const external_tool::LocalToolConfig &localConfig,
+    MappedRtlHdlSimulator simulator) {
+  const auto &provider = mappedRtlHdlSimulatorProvider(simulator);
+  const llvm::ArrayRef<llvm::StringLiteral> admitted =
+      admittedProviderOptions(simulator);
   const auto configured = localConfig.tools.find(provider.binding.key);
   if (configured != localConfig.tools.end()) {
     for (const auto &option : configured->second.providerOptions) {
       const llvm::StringRef name = option.first;
-      if (name != kCycleLimitOption && name != kBuildJobsOption &&
-          name != kBuildWorkersOption && name != kModelThreadsOption)
-        return invalid(
-            llvm::Twine("verilator.provider_options contains unknown field ") +
-            name);
+      if (!llvm::is_contained(admitted, name))
+        return invalid(provider.binding.key +
+                       ".provider_options contains unknown field " + name);
     }
   }
   auto cycleLimit =
-      positiveOption(localConfig, kCycleLimitOption, kDefaultCycleLimit,
-                     std::numeric_limits<std::uint64_t>::max());
+      positiveOption(localConfig, provider, kCycleLimitOption,
+                     kDefaultCycleLimit, std::numeric_limits<std::uint64_t>::max());
   if (!cycleLimit)
     return cycleLimit.takeError();
-  auto buildJobs = parallelismOption(localConfig, kBuildJobsOption,
+  auto buildJobs = parallelismOption(localConfig, provider, kBuildJobsOption,
                                      mappedRtlDefaultBuildJobs);
   if (!buildJobs)
     return buildJobs.takeError();
   auto buildWorkers =
-      positiveOption(localConfig, kBuildWorkersOption,
+      positiveOption(localConfig, provider, kBuildWorkersOption,
                      mappedRtlDefaultBuildWorkers, kMaximumBuildWorkers);
   if (!buildWorkers)
     return buildWorkers.takeError();
-  auto modelThreads = parallelismOption(localConfig, kModelThreadsOption,
-                                        mappedRtlDefaultModelThreads);
+  auto modelThreads =
+      parallelismOption(localConfig, provider, kModelThreadsOption,
+                        mappedRtlDefaultModelThreads);
   if (!modelThreads)
     return modelThreads.takeError();
   return MappedRtlExecutionAttemptOptions{
@@ -1093,6 +1163,60 @@ deriveMappedRtlExecutionBundleProjection(
   result.standaloneVerilatorDriver = std::move(*standalone);
   result.bridgedVerilatorDriver = std::move(*bridged);
   return MappedRtlExecutionProjectionOrUnsupported{std::move(result)};
+}
+
+llvm::Expected<MappedRtlVcsProjectionOrUnsupported>
+deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
+                                   const MappedRtlVcsCompilationPlan &plan,
+                                   const ArtifactStore &artifacts,
+                                   const BlobStore &blobs) {
+  if (plan.cycleLimit == 0)
+    return invalid("execution cycle limit must be positive");
+  if (!isMappedRtlParallelismCount(plan.buildJobs))
+    return invalidParallelism("mapped RTL build jobs");
+  if (plan.vcsExecutable.empty())
+    return invalid("mapped RTL plan has no VCS executable");
+  auto factsOrUnsupported =
+      detail::deriveMappedRtlInvocationFacts(closure, artifacts, blobs);
+  if (!factsOrUnsupported)
+    return factsOrUnsupported.takeError();
+  if (const auto *unsupported =
+          std::get_if<evaluation::UnsupportedEvidence>(&*factsOrUnsupported))
+    return MappedRtlVcsProjectionOrUnsupported{*unsupported};
+  detail::MappedRtlInvocationFacts facts =
+      std::get<detail::MappedRtlInvocationFacts>(
+          std::move(*factsOrUnsupported));
+  facts.cycleLimit = plan.cycleLimit;
+  auto testbench = detail::renderMappedRtlTestbench(
+      facts, facts.configurationProgramPaths, mappedRtlResultPath);
+  if (!testbench)
+    return testbench.takeError();
+  auto driver = detail::renderMappedRtlVcsDriver(
+      facts, plan, mappedRtlTestbenchPath, mappedRtlVcsWorkDirectoryPath,
+      mappedRtlVcsSimulatorExecutablePath);
+  if (!driver)
+    return driver.takeError();
+  MappedRtlVcsBundleProjection result;
+  result.semanticInputs = std::move(facts.semanticInputs);
+  result.testbenchPath = mappedRtlTestbenchPath.str();
+  result.driverPath = mappedRtlVcsDriverPath.str();
+  result.simulatorExecutablePath = mappedRtlVcsSimulatorExecutablePath.str();
+  result.resultPath = mappedRtlResultPath.str();
+  result.testbench = std::move(*testbench);
+  result.driver = std::move(*driver);
+  // The mandatory 64-bit architecture token is projected into the structured
+  // command by the provider descriptor's contract, never left to the
+  // argument file. `-file` admits every option in the file; `-f` admits only
+  // sources and a subset of options.
+  result.compileCommand = {plan.vcsExecutable, "-full64", "-file",
+                           result.driverPath};
+  // The simulator records interactive commands in a key file in its working
+  // directory unless told not to, and re-executes itself to disable address
+  // space randomization for save/restore unless that feature is off; the
+  // bundle root admits no undeclared product and the harness saves nothing.
+  result.simulationCommand = {result.simulatorExecutablePath, "-k", "off",
+                              "-no_save"};
+  return MappedRtlVcsProjectionOrUnsupported{std::move(result)};
 }
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
