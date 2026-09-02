@@ -888,16 +888,25 @@ The bundle manifest references the exact semantic owners rather than copying
 their contracts. The harness must program mapped RTL through the exact
 ConfigurationABI path and use the implementation interface catalog rather than
 private hierarchy guesses. Its configuration driver is clocked and free of
-delay controls: each task is entered and left on a falling edge and drives the
-request channels from that edge, the write task presents the address and data
-channels together and retires them per channel, and every write still
-completes through its own B response before the next begins. Simulation cost
-is one complete model evaluation per event, so the driver uses the fewest
-edges the protocol allows; the programmed words, their order, the readback of
+delay controls: each task samples the handshake at the rising edge and drives
+the request channels from it with nonblocking assignments, so the design
+observes every request from the following edge; the write task presents the
+address and data channels together and retires them per channel, and every
+write still completes through its own B response before the next begins. A
+simulator evaluates the configuration fan-out at every edge the driver acts
+on, so the driver acts only at the sampling edge. The response wait of the
+commit write and of the status read alone is taken at the falling edge: the
+readback and the kernel launch follow those responses through an idle channel,
+so they become visible one edge earlier, at the edges a falling-edge driver
+used, which keeps the launch phase of the design's free-running arbitration
+rotations and therefore the retirement coordinates of the result identical to
+that driver; every other transaction is followed by a busy controller edge and
+gains nothing from it. The programmed words, their order, the readback of
 every active word, and the atomic commit are unchanged by that shape. The
 boundary between the configuration, readback, and kernel stages is announced
-once at the ordinary verbosity level, because those three stages have very
-different cost.
+once at the ordinary verbosity level with its simulation time, because those
+three stages have very different cost and the stamp gives each its exact cycle
+count.
 
 The portable mapped-RTL provider derives a tool-local hierarchical compilation
 plan without making generated SystemVerilog a second hierarchy authority. The

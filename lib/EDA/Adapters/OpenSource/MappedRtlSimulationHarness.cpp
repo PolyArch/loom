@@ -411,15 +411,24 @@ void renderInputCounters(llvm::raw_ostream &output,
 }
 
 /// Renders the AXI4-Lite configuration tasks of one configuration port. Both
-/// tasks are entered and left on a falling clock edge and drive the request
-/// channels from that edge, so no delay control is needed to keep a request
-/// off the sampling edge. The write task presents the address and data
-/// channels together, which AXI4-Lite permits and the configuration
-/// controller accepts independently, and retires them per channel; the write
-/// still completes only through its own B response and the readback and the
-/// atomic commit write are unchanged. Every additional evaluation slot costs
-/// one complete model evaluation, which dominates the mapped-RTL simulation
-/// wall, so the driver uses the fewest edges the protocol allows.
+/// tasks sample the handshake at the rising edge and drive the request
+/// channels from it with nonblocking assignments, so a request becomes
+/// visible after the edge and no delay control is needed to keep it off the
+/// sampling edge. The write task presents the address and data channels
+/// together, which AXI4-Lite permits and the configuration controller accepts
+/// independently, and retires them per channel; the write still completes only
+/// through its own B response before the caller continues, and the readback
+/// and the atomic commit write are unchanged. A simulator evaluates the
+/// configuration fan-out at every edge the driver acts on, so a driver that
+/// acts only at the sampling edge spares the falling-edge evaluation of every
+/// configuration cycle. The response wait alone may be taken at the falling
+/// edge: a caller whose next action follows the response through an idle
+/// channel (the readback after the commit write, the kernel launch after the
+/// status read) then presents that action one edge earlier, exactly when a
+/// falling-edge driver did, which keeps the launch phase of the design's
+/// free-running arbitration rotations and therefore the retirement
+/// coordinates unchanged. Every other transaction gains nothing from it,
+/// because the controller is busy for that edge anyway.
 void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
                              std::size_t ordinal, llvm::StringRef clock) {
   output << "  task automatic loom_cfg_write_" << ordinal << "(input logic ["
@@ -428,18 +437,18 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] data, input logic ["
          << hardware::rtl::portableConfigurationByteCount - 1
-         << ":0] strobe);\n"
+         << ":0] strobe, input logic falling_edge_response);\n"
          << "    integer wait_cycles;\n"
          << "    logic address_accepted;\n"
          << "    logic data_accepted;\n"
          << "    begin\n"
          << "      if (loom_verbose_level >= 1) $display(\"[loom][rtl][cfg] "
             "write address=%h data=%h strobe=%h\", address, data, strobe);\n"
-         << "      " << prefix << "_awaddr = address;\n"
-         << "      " << prefix << "_awvalid = 1;\n"
-         << "      " << prefix << "_wdata = data;\n"
-         << "      " << prefix << "_wstrb = strobe;\n"
-         << "      " << prefix << "_wvalid = 1;\n"
+         << "      " << prefix << "_awaddr <= address;\n"
+         << "      " << prefix << "_awvalid <= 1;\n"
+         << "      " << prefix << "_wdata <= data;\n"
+         << "      " << prefix << "_wstrb <= strobe;\n"
+         << "      " << prefix << "_wvalid <= 1;\n"
          << "      address_accepted = 0;\n"
          << "      data_accepted = 0;\n"
          << "      wait_cycles = 0;\n"
@@ -449,9 +458,8 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "_awready;\n"
          << "        data_accepted = data_accepted | " << prefix
          << "_wready;\n"
-         << "        @(negedge " << clock << ");\n"
-         << "        if (address_accepted) " << prefix << "_awvalid = 0;\n"
-         << "        if (data_accepted) " << prefix << "_wvalid = 0;\n"
+         << "        if (address_accepted) " << prefix << "_awvalid <= 0;\n"
+         << "        if (data_accepted) " << prefix << "_wvalid <= 0;\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && (!address_accepted || !data_accepted)) $fatal(1, "
@@ -459,7 +467,8 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "      end while (!address_accepted || !data_accepted);\n"
          << "      wait_cycles = 0;\n"
          << "      while (!" << prefix << "_bvalid) begin\n"
-         << "        @(negedge " << clock << ");\n"
+         << "        if (falling_edge_response) @(negedge " << clock
+         << "); else @(posedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
@@ -474,11 +483,11 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << ":0] address, output logic ["
          << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] data, output logic [" << kAxiResponseWidth - 1
-         << ":0] response);\n"
+         << ":0] response, input logic falling_edge_response);\n"
          << "    integer wait_cycles;\n"
          << "    begin\n"
-         << "      " << prefix << "_araddr = address;\n"
-         << "      " << prefix << "_arvalid = 1;\n"
+         << "      " << prefix << "_araddr <= address;\n"
+         << "      " << prefix << "_arvalid <= 1;\n"
          << "      wait_cycles = 0;\n"
          << "      do begin\n"
          << "        @(posedge " << clock << ");\n"
@@ -487,11 +496,11 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << " && !" << prefix
          << "_arready) $fatal(1, \"AXI4-Lite AR handshake timed out\");\n"
          << "      end while (!" << prefix << "_arready);\n"
-         << "      @(negedge " << clock << ");\n"
-         << "      " << prefix << "_arvalid = 0;\n"
+         << "      " << prefix << "_arvalid <= 0;\n"
          << "      wait_cycles = 0;\n"
          << "      while (!" << prefix << "_rvalid) begin\n"
-         << "        @(negedge " << clock << ");\n"
+         << "        if (falling_edge_response) @(negedge " << clock
+         << "); else @(posedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
@@ -522,7 +531,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount << ", " << words
          << "[" << wordIndex << "][31:0], " << words << "[" << wordIndex
-         << "][35:32]);\n";
+         << "][35:32], 0);\n";
   output << "    loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -531,12 +540,17 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << ", " << hardware::rtl::portableConfigurationDataWidth
          << "'h00000001, " << hardware::rtl::portableConfigurationByteCount
-         << "'h1);\n";
+         << "'h1, 1);\n";
   // The three configuration stages have very different simulation cost, so
-  // each boundary is announced once at the ordinary verbosity level.
-  output << "    if (loom_verbose_level >= 1) $display(\"[loom][rtl][stage] "
-            "readback_begin program="
-         << taskOrdinal << "\");\n";
+  // each boundary is announced once at the ordinary verbosity level with its
+  // simulation time and flushed, so a host-side timestamp of the announcement
+  // is the stage boundary even under a simulator that buffers its standard
+  // output, and the simulation time gives the stage its exact cycle count.
+  output << "    if (loom_verbose_level >= 1) begin\n"
+         << "      $display(\"[loom][rtl][stage] readback_begin program="
+         << taskOrdinal << " time=%0t\", $time);\n"
+         << "      $fflush();\n"
+         << "    end\n";
   output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
          << program.layout.payloadWordCount << "; " << wordIndex << " = "
          << wordIndex << " + 1) begin\n"
@@ -548,7 +562,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount
-         << ", loom_cfg_readback, loom_cfg_response);\n"
+         << ", loom_cfg_readback, loom_cfg_response, 0);\n"
          << "      if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << words << "[" << wordIndex
@@ -560,7 +574,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                 program.layout.statusAddress,
                 hardware::rtl::portableConfigurationAddressWidth /
                     kBitsPerHexDigit)
-         << ", loom_cfg_readback, loom_cfg_response);\n"
+         << ", loom_cfg_readback, loom_cfg_response, 1);\n"
          << "    if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << hardware::rtl::portableConfigurationDataWidth
@@ -845,18 +859,28 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   }
   for (const ResetPort &reset : facts.resetPorts)
     output << "    " << reset.name << " = " << reset.assertedValue << ";\n";
+  // The reset release, the harness enables, and every configuration request
+  // are driven at the rising edge with nonblocking assignments, so the design
+  // observes each of them from the following edge. The first request is
+  // presented in the same edge as the reset release, so the design observes
+  // both from the next edge; together with the falling-edge response waits of
+  // the commit write and the status read this keeps every design-observed
+  // configuration edge and the kernel launch edge where a falling-edge driver
+  // put them.
   output << "    repeat (" << kResetReleaseCycleCount << ") @(posedge "
-         << facts.selectedClock << ");\n"
-         << "    @(negedge " << facts.selectedClock << ");\n";
+         << facts.selectedClock << ");\n";
   for (const ResetPort &reset : facts.resetPorts)
-    output << "    " << reset.name << " = " << !reset.assertedValue << ";\n";
-  output << "    loom_resets_released = 1;\n";
+    output << "    " << reset.name << " <= " << !reset.assertedValue << ";\n";
+  output << "    loom_resets_released <= 1;\n";
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationProgram(output, program, ordinal);
-  output << "    if (loom_verbose_level >= 1) $display(\"[loom][rtl][stage] "
-            "kernel_begin\");\n"
-         << "    loom_inputs_enabled = 1;\n"
+  output << "    if (loom_verbose_level >= 1) begin\n"
+         << "      $display(\"[loom][rtl][stage] kernel_begin time=%0t\", "
+            "$time);\n"
+         << "      $fflush();\n"
+         << "    end\n"
+         << "    loom_inputs_enabled <= 1;\n"
          << "    while (!loom_retired && loom_cycle < " << facts.cycleLimit
          << ") @(posedge " << facts.selectedClock << ");\n"
          << "    if (loom_retired) begin\n"
