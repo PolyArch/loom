@@ -103,13 +103,13 @@ class PairedSimulationBudgetTest(unittest.TestCase):
 
     def test_cgra_gate_budget_is_derived_from_the_complete_profile_suite(self) -> None:
         def reference(
-            identity: int,
-            schema: str = "loom.mapping",
-            version: str = "6.0",
+            identity: int, schema: str = "loom.mapping"
         ) -> dict[str, object]:
             return {
                 "schema": schema,
-                "schema_version": version,
+                "schema_version": (
+                    simulation_conformance.OWNED_SCHEMA_VERSIONS[schema]
+                ),
                 "artifact": f"{identity:064x}",
             }
 
@@ -164,7 +164,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 "physical_grant_wait_cycle_max": 2,
                 "physical_grant_delayed_count": 2,
                 "evaluation_evidence": reference(
-                    600 + ordinal, "evaluation.evidence", "1.0"
+                    600 + ordinal, "evaluation.evidence"
                 ),
             }
             profiles.append(
@@ -178,20 +178,16 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     "measurement_runs": 3,
                     "batch_peak_resident_bytes": 4096,
                     "canonical_dataflow": reference(
-                        ordinal, "loom.canonical_dataflow", "3.0"
+                        ordinal, "loom.canonical_dataflow"
                     ),
                     "simulation_workload": reference(
-                        100 + ordinal, "loom.simulation_workload", "1.1"
+                        100 + ordinal, "loom.simulation_workload"
                     ),
                     "simulation_runtime_input": reference(
-                        200 + ordinal, "loom.simulation_runtime_input", "2.0"
+                        200 + ordinal, "loom.simulation_runtime_input"
                     ),
-                    "resolved_config": {
-                        "schema": "loom.config.resolved",
-                        "schema_version": "11.4",
-                        "artifact": f"{300:064x}",
-                    },
-                    "fabric": reference(301, "loom.fabric", "7.1"),
+                    "resolved_config": reference(300, "loom.config.resolved"),
+                    "fabric": reference(301, "loom.fabric"),
                     "tech_mapping": reference(400 + ordinal),
                     "tech_mapping_search": {
                         "outcome": "incomplete",
@@ -216,7 +212,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     },
                     "transport_repair": None,
                     "warmup_evidence": reference(
-                        700 + ordinal, "evaluation.evidence", "1.0"
+                        700 + ordinal, "evaluation.evidence"
                     ),
                     "measurements": [dict(measurement) for _ in range(3)],
                 }
@@ -347,7 +343,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             repaired_profile["transport_repair"] = {
                 "parent_system_mapping": reference(901),
                 "pre_repair_evidence": reference(
-                    902, "evaluation.evidence", "1.0"
+                    902, "evaluation.evidence"
                 ),
                 "attempts": [
                     {
@@ -355,7 +351,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "initial_spatial_mapping"
                         ],
                         "constraint_set": reference(
-                            903, "loom.mapping_constraints", "1.3"
+                            903, "loom.mapping_constraints"
                         ),
                         "spatial_pnr": repair_pnr,
                         "child_spatial_mapping": repair_child,

@@ -446,6 +446,21 @@ _EVALUATION_EVIDENCE_SCHEMA = _owned_schema(
     "lib/Evaluation/Evidence.cpp", "evaluation.evidence"
 )
 
+# Every artifact schema version the runner accepts, keyed by schema name and
+# derived from the C++ owners above; fixtures take versions from here.
+OWNED_SCHEMA_VERSIONS: dict[str, str] = dict(
+    (
+        _CANONICAL_DATAFLOW_SCHEMA,
+        _SIMULATION_WORKLOAD_SCHEMA,
+        _SIMULATION_RUNTIME_INPUT_SCHEMA,
+        _RESOLVED_CONFIG_SCHEMA,
+        _FABRIC_SCHEMA,
+        _MAPPING_SCHEMA,
+        _MAPPING_CONSTRAINT_SET_SCHEMA,
+        _EVALUATION_EVIDENCE_SCHEMA,
+    )
+)
+
 
 def _validate_artifact_reference(
     value: object,
@@ -836,8 +851,8 @@ def _validate_cgra_profiles(
         resolved_config = profile["resolved_config"]
         assert isinstance(resolved_config, Mapping)
         if (
-            resolved_config["schema"] != "loom.config.resolved"
-            or resolved_config["schema_version"] != "11.4"
+            resolved_config["schema"] != _RESOLVED_CONFIG_SCHEMA[0]
+            or resolved_config["schema_version"] != _RESOLVED_CONFIG_SCHEMA[1]
         ):
             raise ValueError("CGRA profile uses a foreign ResolvedConfig schema")
         resolved_config_identities.add(str(resolved_config["artifact"]))
