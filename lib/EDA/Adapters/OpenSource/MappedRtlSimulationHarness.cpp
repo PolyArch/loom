@@ -546,9 +546,11 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
   // simulation time and flushed, so a host-side timestamp of the announcement
   // is the stage boundary even under a simulator that buffers its standard
   // output, and the simulation time gives the stage its exact cycle count.
+  // The time is printed as an integer of the harness's femtosecond unit,
+  // because the simulators format `%t` in different units.
   output << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] readback_begin program="
-         << taskOrdinal << " time=%0t\", $time);\n"
+         << taskOrdinal << " time_fs=%0d\", $time);\n"
          << "      $fflush();\n"
          << "    end\n";
   output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
@@ -876,7 +878,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationProgram(output, program, ordinal);
   output << "    if (loom_verbose_level >= 1) begin\n"
-         << "      $display(\"[loom][rtl][stage] kernel_begin time=%0t\", "
+         << "      $display(\"[loom][rtl][stage] kernel_begin time_fs=%0d\", "
             "$time);\n"
          << "      $fflush();\n"
          << "    end\n"
