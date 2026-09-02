@@ -737,12 +737,19 @@ def validate_portfolio_pair(
         observations = selected_candidate.get("mapping_observations")
         selected_plan = _integer(evidence.get("selected_plan_ordinal"))
         selected_mapping = decision.get("selected_system_mapping")
+        # Equivalent schedule hints share one Mapping plan and are each
+        # verified against the same Mapping; the finalist digest named by the
+        # decision is what identifies the one selected observation.
+        selected_hint = decision.get("selected_schedule_hint_digest")
+        if not _digest(selected_hint):
+            typed_reasons.append("selected_schedule_hint_missing")
         selected_observations = (
             [
                 observation
                 for observation in observations
                 if isinstance(observation, dict)
                 and observation.get("plan_ordinal") == selected_plan
+                and observation.get("schedule_hint_digest") == selected_hint
                 and isinstance(observation.get("system_mappings"), list)
                 and selected_mapping in observation["system_mappings"]
             ]

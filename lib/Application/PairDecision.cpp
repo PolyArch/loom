@@ -488,6 +488,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                                                 requestedSpectrumClass)) {
         result.selectedSystem = outcome.system;
         result.selectedSystemMapping = summary.selectedMapping;
+        if (!result.selectedScheduleHintDigest)
+          result.selectedScheduleHintDigest =
+              outcome.resourceTimeScheduleHintDigest;
         const auto &objective = selected->objective;
         const auto dfg = objective[static_cast<std::size_t>(
             ApplicationObjectiveDimension::DfgCycles)];

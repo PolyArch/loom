@@ -505,6 +505,11 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
   result["selected_objective"] = std::move(selectedObjective);
   addOptionalRoot(result, "selected_system_mapping",
                   decision.selectedSystemMapping);
+  if (decision.selectedScheduleHintDigest)
+    result["selected_schedule_hint_digest"] =
+        formatComponentViewDigestHex(*decision.selectedScheduleHintDigest);
+  else
+    result["selected_schedule_hint_digest"] = nullptr;
   llvm::json::Array candidates;
   for (const ApplicationPairCandidateRecord &candidate : decision.candidates) {
     llvm::json::Object encoded;

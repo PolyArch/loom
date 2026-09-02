@@ -367,16 +367,23 @@ def validate_mapping_work(
         and selected_mapping == pair_decision.get("selected_system_mapping"),
         "selected Mapping checkpoint disagrees with the pair decision",
     )
+    selected_hint = pair_decision.get("selected_schedule_hint_digest")
+    require(
+        isinstance(selected_hint, str) and len(selected_hint) == 64,
+        "pair decision does not name the finalist schedule hint",
+    )
     selected_observations = [
         observation
         for observation in selected_candidate.get("mapping_observations", [])
         if isinstance(observation, dict)
         and observation.get("plan_ordinal") == selected_plan
+        and observation.get("schedule_hint_digest") == selected_hint
         and selected_mapping in observation.get("system_mappings", [])
     ]
     require(
         len(selected_observations) == 1,
-        "selected plan and Mapping do not identify one candidate observation",
+        "selected plan, schedule hint, and Mapping do not identify one "
+        "candidate observation",
     )
     selected_observation = selected_observations[0]
     require(

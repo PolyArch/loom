@@ -218,7 +218,11 @@ existing Mapping runtime owner completes source-backed DFG and CGRA
 Simulation and a native `SimulationComparison` reports no finding. Its exact
 Evidence references are carried by the selected Mapping observation, and the
 derived `execution_binding_established` compatibility field is true only in
-that state. A pre-admission or unsupported profile decision remains
+that state. The decision names the selected System, the selected Mapping, and
+the resource-time schedule finalist (`selected_schedule_hint_digest`) whose
+verified observation selected them. Equivalent schedule hints share one
+Mapping plan and are each verified against the same Mapping, so the plan and
+Mapping alone do not identify one observation; the finalist digest does. A pre-admission or unsupported profile decision remains
 `declared_only` and cannot be interpreted as correctness Evidence.
 
 The manifest exact-output host report is an additional conformance gate, not

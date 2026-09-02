@@ -455,6 +455,10 @@ struct ApplicationPairDecisionRecord final {
   std::optional<ComponentViewDigest> selectedCandidateIdentity;
   std::optional<ArtifactRootReference> selectedSystem;
   std::optional<ArtifactRootReference> selectedSystemMapping;
+  /// The resource-time schedule finalist whose verified observation selected
+  /// the Mapping. Equivalent schedule hints share one Mapping plan, so the
+  /// selected plan and Mapping alone do not name one observation.
+  std::optional<ComponentViewDigest> selectedScheduleHintDigest;
   bool hostOnlyBaselineComplete = false;
   bool finalApplicationQorComplete = false;
   std::optional<std::string> detail;
