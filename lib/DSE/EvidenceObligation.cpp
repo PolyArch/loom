@@ -304,15 +304,6 @@ llvm::Error rebindCandidateTargets(EvaluationCondition &condition,
   llvm_unreachable("unknown EvaluationConditionKind");
 }
 
-llvm::Error rebindCandidateTargets(std::vector<EvaluationCondition> &conditions,
-                                   CaseSubjectRoleRef candidateRole,
-                                   const ArtifactRootReference &candidate) {
-  for (EvaluationCondition &condition : conditions)
-    if (llvm::Error error =
-            rebindCandidateTargets(condition, candidateRole, candidate))
-      return error;
-  return llvm::Error::success();
-}
 
 llvm::Error validateOptionalCaseReference(
     ArtifactRequirement requirement,
@@ -795,7 +786,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
     return bindings.takeError();
 
   std::vector<EvaluationCondition> baseConditions = obligation.baseConditions_;
-  if (llvm::Error error = rebindCandidateTargets(
+  if (llvm::Error error = rebindCandidateConditionTargets(
           baseConditions, obligation.candidateRole_, candidate))
     return std::move(error);
   std::vector<MetricRequestTemplate> metricTemplates =
@@ -805,7 +796,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
       if (llvm::Error error = rebindCandidateTarget(
               target, obligation.candidateRole_, candidate))
         return std::move(error);
-    if (llvm::Error error = rebindCandidateTargets(
+    if (llvm::Error error = rebindCandidateConditionTargets(
             request.conditions, obligation.candidateRole_, candidate))
       return std::move(error);
   }
@@ -816,7 +807,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
       if (llvm::Error error = rebindCandidateTarget(
               target, obligation.candidateRole_, candidate))
         return std::move(error);
-    if (llvm::Error error = rebindCandidateTargets(
+    if (llvm::Error error = rebindCandidateConditionTargets(
             request.conditions, obligation.candidateRole_, candidate))
       return std::move(error);
   }
@@ -855,6 +846,16 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
   return EvaluationRequest::get(*evaluationCase, metrics, findings,
                                 obligation.modelBinding_, replicateIndex,
                                 resolution, artifactStore, blobStore);
+}
+
+llvm::Error rebindCandidateConditionTargets(
+    std::vector<EvaluationCondition> &conditions,
+    CaseSubjectRoleRef candidateRole, const ArtifactRootReference &candidate) {
+  for (EvaluationCondition &condition : conditions)
+    if (llvm::Error error =
+            rebindCandidateTargets(condition, candidateRole, candidate))
+      return error;
+  return llvm::Error::success();
 }
 
 } // namespace loom::dse

@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "DSE/EvidenceObligation.h"
 #include "DSE/Objective.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
@@ -69,10 +70,19 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
     llvm::ArrayRef<evaluation::EvaluationCondition> operatingConditions,
     const ResolvedConfig &config, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
+  // Operating conditions are authored against the product System; every
+  // hardware candidate is evaluated under the same conditions rebound to its
+  // own Fabric root, so an alternative System never inherits a foreign anchor.
+  std::vector<evaluation::EvaluationCondition> conditions(
+      operatingConditions.begin(), operatingConditions.end());
+  if (llvm::Error error = dse::rebindCandidateConditionTargets(
+          conditions,
+          evaluation::models::canonicalDataflowFabricAnalyticFabricRole(),
+          system))
+    return std::move(error);
   auto prepared =
       evaluation::models::prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
-          dataflow, system, weight, operatingConditions, config, artifacts,
-          blobs);
+          dataflow, system, weight, conditions, config, artifacts, blobs);
   if (!prepared)
     return prepared.takeError();
   auto evaluated = evaluation::evaluateRequest(

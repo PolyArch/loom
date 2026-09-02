@@ -533,6 +533,14 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       }
       physicalModelSupport = observation->second.support;
       modelSnapshot = observation->second.modelSnapshot;
+      // The frozen weight refused this candidate's exact Fabric case: its
+      // pre-Mapping estimate is outside the calibrated distribution rather
+      // than merely uncalibrated.
+      if (physicalModelSupport == dse::ResourceTimeEstimateSupport::OutOfDomain)
+        if (auto &projection =
+                completed.candidateInventory[planningRecordOrdinal].projection)
+          projection->estimateConfidence =
+              dse::PreMappingEstimateConfidence::OutOfDistribution;
     }
     dse::ResourceTimeInvocationKey invocation{
         *planningRecord.structuredProgram,

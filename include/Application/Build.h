@@ -296,17 +296,31 @@ llvm::StringRef toString(ApplicationPortfolioExecutionBinding value);
 
 /// Fixed application-QoR dimensions. The ordering is stable for reports, but
 /// the existing DSE ObjectiveProgram remains the sole ordering authority.
+/// Every value is a non-negative integer in the unit named here; the owning
+/// Evidence root retains the exact decimal observation.
 enum class ApplicationObjectiveDimension : std::uint8_t {
+  /// Host-only baseline work: measured host cycles or the analytic picosecond
+  /// estimate of the source program.
   HostOnlyWork,
+  /// Measured DFG simulation cycles of the selected Mapping.
   DfgCycles,
+  /// Measured CGRA simulation cycles of the selected Mapping.
   CgraCycles,
+  /// Dynamic leaf executions left on the host by the selected ownership.
   HostResidualWork,
+  /// Bytes crossing the host/accelerator cut per invocation.
   CutTransferWork,
+  /// Launch and synchronization cost units of the selected ownership.
   LaunchSynchronizationWork,
+  /// Exact System resource-core count of the selected Mapping.
   ResourceCoreCost,
+  /// Mapping dispatch count of the selected invocation.
   MappingWork,
+  /// Calibrated total area in square micrometers.
   Area,
+  /// Calibrated dynamic plus leakage power in microwatts.
   Power,
+  /// Calibrated energy of one CGRA execution in picojoules.
   Energy,
 };
 
@@ -325,9 +339,10 @@ struct ApplicationObjectiveObservation final {
   std::optional<std::uint64_t> value;
   ApplicationObjectiveEvidence evidence =
       ApplicationObjectiveEvidence::Unsupported;
-  /// A value in [0, 1000]. Exact and runtime-measured values use 1000;
-  /// unsupported values use 0. This is evidence metadata, not an objective
-  /// score and never participates in candidate identity.
+  /// A value in [0, 1000]. Exact and runtime-measured values use 1000,
+  /// calibrated point estimates inside their training envelope 500, analytic
+  /// estimates 250, and unsupported values 0. This is evidence metadata, not
+  /// an objective score and never participates in candidate identity.
   std::uint16_t confidencePermille = 0;
   bool outOfDistribution = false;
 };
@@ -356,6 +371,27 @@ struct ApplicationPairMappingObservation final {
   std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
   std::optional<dse::ResourceTimeSpectrumIncompleteReason>
       resourceTimeSpectrumIncompleteReason;
+  /// The analytic funnel's best schedule prediction for this candidate before
+  /// exact Mapping, retained next to the exact outcome so prediction and
+  /// backend result stay distinguishable.
+  std::optional<std::uint64_t> predictedMakespanPicoseconds;
+  dse::ResourceTimeEstimateSupport predictedSupport =
+      dse::ResourceTimeEstimateSupport::Unsupported;
+  dse::ResourceTimeEstimateSupport physicalModelSupport =
+      dse::ResourceTimeEstimateSupport::Unsupported;
+};
+
+/// Exact comparison of the analytic funnel against the real Mapping/PnR
+/// outcomes of every candidate that entered Mapping in this invocation. Counts
+/// describe only the mapped sample; ranking recall compares the funnel's
+/// lowest predicted makespan with the lowest measured CGRA cycle count.
+struct ApplicationFunnelExactComparison final {
+  std::uint64_t mappedCandidates = 0;
+  std::uint64_t predictedFeasibleCandidates = 0;
+  std::uint64_t verifiedCandidates = 0;
+  std::uint64_t measuredCandidates = 0;
+  std::uint64_t outOfDistributionCandidates = 0;
+  std::optional<bool> bestRankingMatch;
 };
 
 /// Quality facts from one exact joint-design invocation. Application runtime
@@ -410,6 +446,7 @@ struct ApplicationPairCandidateRecord final {
 /// PreMappingCandidatePlanningRecord, checkpoints, and their ledgers.
 struct ApplicationPairDecisionRecord final {
   std::optional<SelectedApplicationInput> portfolioInput;
+  ApplicationFunnelExactComparison funnelExactComparison;
   ApplicationPortfolioExecutionBinding portfolioExecutionBinding =
       ApplicationPortfolioExecutionBinding::NotSelected;
   std::optional<ComponentViewDigest> pairIdentity;

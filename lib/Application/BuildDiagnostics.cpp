@@ -592,12 +592,32 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
       addOptionalUnsigned(mapping, "cgra_cycles", observation.cgraCycles);
       addOptionalUnsigned(mapping, "resource_core_cost",
                           observation.resourceCoreCost);
+      addOptionalUnsigned(mapping, "predicted_makespan_picoseconds",
+                          observation.predictedMakespanPicoseconds);
+      mapping["predicted_support"] = dse::resourceTimeEstimateSupportSpelling(
+          observation.predictedSupport);
+      mapping["physical_model_support"] =
+          dse::resourceTimeEstimateSupportSpelling(
+              observation.physicalModelSupport);
       mappingObservations.push_back(std::move(mapping));
     }
     encoded["mapping_observations"] = std::move(mappingObservations);
     candidates.push_back(std::move(encoded));
   }
   result["candidates"] = std::move(candidates);
+  const ApplicationFunnelExactComparison &comparison =
+      decision.funnelExactComparison;
+  result["funnel_exact_comparison"] = llvm::json::Object{
+      {"mapped_candidates", comparison.mappedCandidates},
+      {"predicted_feasible_candidates", comparison.predictedFeasibleCandidates},
+      {"verified_candidates", comparison.verifiedCandidates},
+      {"measured_candidates", comparison.measuredCandidates},
+      {"out_of_distribution_candidates",
+       comparison.outOfDistributionCandidates},
+      {"best_ranking_match",
+       comparison.bestRankingMatch
+           ? llvm::json::Value(*comparison.bestRankingMatch)
+           : llvm::json::Value(nullptr)}};
   if (decision.selectedCandidateIdentity)
     result["selected_candidate_identity"] =
         formatComponentViewDigestHex(*decision.selectedCandidateIdentity);

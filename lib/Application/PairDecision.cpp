@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -46,6 +48,103 @@ void setObjective(ApplicationObjectiveObservation &observation,
   observation.evidence = evidence;
   observation.confidencePermille = confidencePermille;
   observation.outOfDistribution = outOfDistribution;
+}
+
+constexpr std::uint16_t analyticConfidencePermille = 250;
+constexpr std::uint16_t calibratedConfidencePermille = 500;
+
+/// Pre-Mapping analytic dimensions of one candidate: the projection is exact
+/// structural provenance of the ownership, not a calibrated prediction.
+void setProjectedObjectiveDimensions(
+    std::vector<ApplicationObjectiveObservation> &objective,
+    const dse::PreMappingCandidateProjection &projection) {
+  setObjective(objective[static_cast<std::size_t>(
+                   ApplicationObjectiveDimension::HostResidualWork)],
+               projection.hostDynamicLeafExecutions,
+               ApplicationObjectiveEvidence::Analytic,
+               analyticConfidencePermille, true);
+  if (projection.estimatedCutTrafficBytes)
+    setObjective(objective[static_cast<std::size_t>(
+                     ApplicationObjectiveDimension::CutTransferWork)],
+                 *projection.estimatedCutTrafficBytes,
+                 ApplicationObjectiveEvidence::Analytic,
+                 analyticConfidencePermille, true);
+  setObjective(objective[static_cast<std::size_t>(
+                   ApplicationObjectiveDimension::LaunchSynchronizationWork)],
+               projection.launchSynchronizationCost,
+               ApplicationObjectiveEvidence::Analytic,
+               analyticConfidencePermille, true);
+}
+
+std::optional<long double> decimalMeasure(const ResolvedObjectiveScalar &value) {
+  const auto *decimal = std::get_if<ResolvedObjectiveDecimal>(&value);
+  if (!decimal)
+    return std::nullopt;
+  return static_cast<long double>(decimal->coefficient) *
+         std::pow(10.0L, static_cast<long double>(decimal->base10Exponent));
+}
+
+std::optional<std::uint64_t> scaledUnit(long double value,
+                                        long double unitsPerBase) {
+  const long double scaled = std::round(value * unitsPerBase);
+  if (!(scaled >= 0.0L) ||
+      scaled > static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
+    return std::nullopt;
+  return static_cast<std::uint64_t>(scaled);
+}
+
+/// Physical dimensions of the selected Mapping from its completed calibrated
+/// FPA observation: area, power, and the energy of one measured CGRA execution
+/// at the predicted limiting clock. Absent or incomplete observations leave
+/// the dimensions unsupported.
+void setCalibratedPhysicalDimensions(
+    std::vector<ApplicationObjectiveObservation> &objective,
+    const dse::JointDesignExecutionSummary &summary,
+    const ArtifactRootReference &selectedMapping,
+    std::optional<std::uint64_t> cgraCycles) {
+  const std::vector<std::string> &labels = summary.qualityObjectiveDimensionLabels;
+  for (const dse::JointDesignQualityObservation &observation :
+       summary.qualityObservations) {
+    if (observation.candidate != selectedMapping || observation.incompleteReason)
+      continue;
+    const std::vector<ResolvedObjectiveScalar> &measures =
+        observation.provenance.rawMeasures;
+    if (measures.size() != labels.size())
+      continue;
+    const auto measure = [&](llvm::StringRef label) -> std::optional<long double> {
+      for (std::size_t ordinal = 0; ordinal != labels.size(); ++ordinal)
+        if (labels[ordinal] == label)
+          return decimalMeasure(measures[ordinal]);
+      return std::nullopt;
+    };
+    const auto frequencyHz = measure("limiting_clock_frequency");
+    const auto areaSquareMeters = measure("total_area");
+    const auto dynamicWatts = measure("dynamic_power");
+    const auto leakageWatts = measure("leakage_power");
+    if (areaSquareMeters)
+      if (auto area = scaledUnit(*areaSquareMeters, 1e12L))
+        setObjective(objective[static_cast<std::size_t>(
+                         ApplicationObjectiveDimension::Area)],
+                     *area, ApplicationObjectiveEvidence::Calibrated,
+                     calibratedConfidencePermille);
+    if (!dynamicWatts || !leakageWatts)
+      return;
+    const long double powerWatts = *dynamicWatts + *leakageWatts;
+    if (auto power = scaledUnit(powerWatts, 1e6L))
+      setObjective(objective[static_cast<std::size_t>(
+                       ApplicationObjectiveDimension::Power)],
+                   *power, ApplicationObjectiveEvidence::Calibrated,
+                   calibratedConfidencePermille);
+    if (frequencyHz && *frequencyHz > 0.0L && cgraCycles)
+      if (auto energy = scaledUnit(
+              powerWatts * static_cast<long double>(*cgraCycles) / *frequencyHz,
+              1e12L))
+        setObjective(objective[static_cast<std::size_t>(
+                         ApplicationObjectiveDimension::Energy)],
+                     *energy, ApplicationObjectiveEvidence::Calibrated,
+                     calibratedConfidencePermille);
+    return;
+  }
 }
 
 ApplicationPairDecisionDisposition mapIncompleteReasonToPairDisposition(
@@ -339,7 +438,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
                      ApplicationObjectiveDimension::HostOnlyWork)],
                  *planning.estimatedRuntimePicoseconds,
-                 ApplicationObjectiveEvidence::Analytic, 250, true);
+                 ApplicationObjectiveEvidence::Analytic,
+                 analyticConfidencePermille, true);
     result.hostOnlyBaselineComplete = true;
     break;
   }
@@ -385,8 +485,12 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
       setObjective(candidate.objective[static_cast<std::size_t>(
                        ApplicationObjectiveDimension::HostOnlyWork)],
                    *planning.estimatedRuntimePicoseconds,
-                   ApplicationObjectiveEvidence::Analytic, 250, true);
+                   ApplicationObjectiveEvidence::Analytic,
+                   analyticConfidencePermille, true);
     }
+    if (planning.projection)
+      setProjectedObjectiveDimensions(candidate.objective,
+                                      *planning.projection);
     for (const ApplicationMappingCandidateOutcome &outcome : outcomes) {
       if (outcome.preMappingCandidateRecordOrdinal != ordinal)
         continue;
@@ -413,6 +517,19 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.resourceCoreCost,
           std::nullopt,
           std::nullopt};
+      for (const dse::ResourceTimeCandidateFunnelEvaluation &evaluation :
+           prepared.resourceTimeFunnel.evaluations) {
+        if (evaluation.candidateIdentity != *planning.candidateIdentity)
+          continue;
+        mappingObservation.physicalModelSupport =
+            evaluation.physicalModelSupport;
+        if (evaluation.bestHint) {
+          mappingObservation.predictedMakespanPicoseconds =
+              evaluation.bestHint->estimatedMakespanPicoseconds;
+          mappingObservation.predictedSupport = evaluation.bestHint->support;
+        }
+        break;
+      }
       if (outcome.resourceTimeSpectrum) {
         if (const auto *verification =
                 std::get_if<dse::VerifiedResourceTimeSpectrum>(
@@ -468,6 +585,36 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     result.candidates.push_back(std::move(candidate));
   }
 
+  ApplicationFunnelExactComparison &comparison = result.funnelExactComparison;
+  const ApplicationPairMappingObservation *bestPredicted = nullptr;
+  const ApplicationPairMappingObservation *bestMeasured = nullptr;
+  for (const ApplicationPairCandidateRecord &candidate : result.candidates)
+    for (const ApplicationPairMappingObservation &observation :
+         candidate.mappingObservations) {
+      ++comparison.mappedCandidates;
+      if (observation.predictedMakespanPicoseconds)
+        ++comparison.predictedFeasibleCandidates;
+      if (observation.mappingDisposition ==
+          dse::JointDesignAttemptDisposition::Verified)
+        ++comparison.verifiedCandidates;
+      if (observation.cgraCycles)
+        ++comparison.measuredCandidates;
+      if (observation.physicalModelSupport ==
+          dse::ResourceTimeEstimateSupport::OutOfDomain)
+        ++comparison.outOfDistributionCandidates;
+      if (!observation.predictedMakespanPicoseconds || !observation.cgraCycles)
+        continue;
+      if (!bestPredicted || *observation.predictedMakespanPicoseconds <
+                                *bestPredicted->predictedMakespanPicoseconds)
+        bestPredicted = &observation;
+      if (!bestMeasured || *observation.cgraCycles < *bestMeasured->cgraCycles)
+        bestMeasured = &observation;
+    }
+  if (bestPredicted && bestMeasured)
+    comparison.bestRankingMatch =
+        bestPredicted->system == bestMeasured->system &&
+        bestPredicted->scheduleHintDigest == bestMeasured->scheduleHintDigest;
+
   const ApplicationPairCandidateRecord *selected = nullptr;
   for (const ApplicationPairCandidateRecord &candidate : result.candidates)
     if (candidate.selected) {
@@ -506,6 +653,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                          summary.spatialPnrDispatchCount +
                          summary.systemPnrDispatchCount,
                      ApplicationObjectiveEvidence::RuntimeMeasured);
+        setCalibratedPhysicalDimensions(result.selectedObjective, summary,
+                                        *summary.selectedMapping,
+                                        outcome.cgraCycles);
         result.finalApplicationQorComplete = result.hostOnlyBaselineComplete &&
                                              dfg.value.has_value() &&
                                              cgra.value.has_value();

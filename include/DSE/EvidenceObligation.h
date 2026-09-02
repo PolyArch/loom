@@ -19,6 +19,14 @@ class BlobStore;
 
 namespace loom::dse {
 
+/// Rebinds every condition target bound to `candidateRole` from its exact
+/// prototype root to `candidate`. A target of that role whose anchor is not
+/// the same root as its target is invalid; other roles are left untouched.
+llvm::Error rebindCandidateConditionTargets(
+    std::vector<evaluation::EvaluationCondition> &conditions,
+    evaluation::CaseSubjectRoleRef candidateRole,
+    const ArtifactRootReference &candidate);
+
 class EvidenceObligationTemplateRef final {
 public:
   explicit constexpr EvidenceObligationTemplateRef(std::uint32_t ordinal)
