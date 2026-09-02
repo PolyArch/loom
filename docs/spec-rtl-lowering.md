@@ -932,8 +932,9 @@ never annotated. The testbench is the only explicit SystemVerilog input, and
 the Hardware root is resolved lazily through the derived `-y` library. The plan
 records the complete CIRCT dependency DAG, per-module source and derived bytes
 and digests, selected blocks, exact unmarked block closures, paths, and policy
-parameters. These generated files and the plan are ordinary
-manifest-digested bundle inputs, not another HardwareImplementation Artifact.
+parameters. The plan is published as `loom.mapped_rtl_hierarchy_plan.2`.
+These generated files and the plan are ordinary manifest-digested bundle
+inputs, not another HardwareImplementation Artifact.
 
 For Verilator 5.050, the first frozen command owns hierarchy planning and all
 child/root Verilation; it does not use `--build` and no later command repeats a
