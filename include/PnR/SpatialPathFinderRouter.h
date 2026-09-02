@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALPATHFINDERROUTER_H
 #define LOOM_PNR_SPATIALPATHFINDERROUTER_H
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialNetRouter.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -56,6 +57,7 @@ public:
     RegionalLimit,
     FixedTerminalCapacityCut,
     SelectedCombinationalHandshakeCycle,
+    Interrupted,
   };
 
   static char ID;
@@ -113,8 +115,14 @@ public:
   operator=(SpatialPathFinderRouterScratch &&) = delete;
   ~SpatialPathFinderRouterScratch() = default;
 
+  /// The execution control is observed only between atomic owner work units:
+  /// before each negotiation iteration and between the net routes of one
+  /// iteration. An observed stop rolls back the active route overlay through
+  /// the caller's move and returns the typed Interrupted closure failure
+  /// without consuming the planned iteration.
   llvm::Error prepare(const FrozenSpatialPnrProblem &problem,
-                      SpatialPnrWorkLedgerView workLedger = {});
+                      SpatialPnrWorkLedgerView workLedger = {},
+                      ExecutionControlView executionControl = {});
 
   llvm::Expected<SpatialPathFinderClosureResult>
   routeToClosure(SpatialCandidateState &candidate,
@@ -303,6 +311,7 @@ private:
   std::uint64_t projectionEpoch_ = 0;
   std::uint64_t negotiationIterationCount_ = 0;
   SpatialPnrWorkLedgerView workLedger_;
+  ExecutionControlView executionControl_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 

@@ -83,9 +83,11 @@ classifyProjection(const SpatialCandidateState &candidate,
 
 llvm::Error
 SpatialPathFinderRouterScratch::prepare(const FrozenSpatialPnrProblem &problem,
-                                        SpatialPnrWorkLedgerView workLedger) {
+                                        SpatialPnrWorkLedgerView workLedger,
+                                        ExecutionControlView executionControl) {
   if (llvm::Error error = netRouter_.prepare(problem, workLedger))
     return error;
+  executionControl_ = executionControl;
   const std::size_t logicalNetCount = problem.transfers().logicalNets().size();
   const std::size_t routeClaimCount = problem.routing().routeClaims().size();
   const std::size_t capacityCount =
@@ -1370,8 +1372,16 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                          });
   };
 
+  const auto interrupted = [&](llvm::StringRef boundary) {
+    emitStatistics(loom::mapping_debug::ClosureStatus::CancelledOrTimeout);
+    return llvm::make_error<SpatialPathFinderClosureFailure>(
+        SpatialPathFinderClosureFailure::Kind::Interrupted,
+        ("Spatial PathFinder observed an execution stop " + boundary).str());
+  };
   for (std::uint64_t iteration = 0; iteration < limits.iterationLimit;
        ++iteration) {
+    if (executionControl_.stopRequested())
+      return interrupted("before a negotiation iteration");
     if (negotiationIterationCount_ ==
         std::numeric_limits<std::uint64_t>::max()) {
       ++debugStatistics.arithmeticFailures;
@@ -1424,6 +1434,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       return completeIterationFailure(std::move(error));
 
     for (const NetOrderEntry &entry : netOrder_) {
+      if (executionControl_.stopRequested())
+        return completeIterationFailure(
+            interrupted("between the net routes of an iteration"));
       auto routePlan =
           netRouter_.planNegotiatedRoute(candidate, costs, entry.logicalNet);
       if (!routePlan)

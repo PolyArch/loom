@@ -606,7 +606,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
                   *regionDecisionCount, solved->solverCalls, 0,
                   "exact repair produced an empty ActionBatch");
 
-  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger_))
+  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger_,
+                                                  executionControl_))
     return result(SpatialExactRepairResultKind::InternalError,
                   *regionDecisionCount, solved->solverCalls, actions_.size(),
                   llvm::toString(std::move(error)));
@@ -635,10 +636,19 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
                             llvm::toString(std::move(error)));
     SpatialExactRepairResultKind kind =
         SpatialExactRepairResultKind::InternalError;
-    if (transitionFailure)
-      kind = *transitionFailure == SpatialActionTransitionFailureKind::WorkLimit
-                 ? SpatialExactRepairResultKind::UnknownBudgetExhausted
-                 : SpatialExactRepairResultKind::UnsupportedEncoding;
+    if (transitionFailure) {
+      switch (*transitionFailure) {
+      case SpatialActionTransitionFailureKind::WorkLimit:
+        kind = SpatialExactRepairResultKind::UnknownBudgetExhausted;
+        break;
+      case SpatialActionTransitionFailureKind::Interrupted:
+        kind = SpatialExactRepairResultKind::TimedOut;
+        break;
+      case SpatialActionTransitionFailureKind::IntrinsicInvalid:
+        kind = SpatialExactRepairResultKind::UnsupportedEncoding;
+        break;
+      }
+    }
     return executedResult(kind, std::move(detail));
   }
   for (PnrIndex decision : decisions_) {
@@ -1510,7 +1520,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   accountedRegionDecisions_ = decisionIncluded_;
   accountedRegionNets_ = netIncluded_;
 
-  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger_))
+  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger_,
+                                                  executionControl_))
     return result(SpatialExactRepairResultKind::InternalError,
                   canonicalRegionDecisionCount, 0, 0,
                   llvm::toString(std::move(error)));
@@ -1613,12 +1624,16 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       const bool hasUnhandled = static_cast<bool>(unhandled);
       if (hasUnhandled)
         failureDetail = llvm::toString(std::move(unhandled));
-      const SpatialExactRepairResultKind kind =
-          !hasUnhandled && transitionFailure &&
-                  *transitionFailure ==
-                      SpatialActionTransitionFailureKind::WorkLimit
-              ? SpatialExactRepairResultKind::UnknownBudgetExhausted
-              : SpatialExactRepairResultKind::InternalError;
+      SpatialExactRepairResultKind kind =
+          SpatialExactRepairResultKind::InternalError;
+      if (!hasUnhandled && transitionFailure) {
+        if (*transitionFailure ==
+            SpatialActionTransitionFailureKind::WorkLimit)
+          kind = SpatialExactRepairResultKind::UnknownBudgetExhausted;
+        else if (*transitionFailure ==
+                 SpatialActionTransitionFailureKind::Interrupted)
+          kind = SpatialExactRepairResultKind::TimedOut;
+      }
       return executedResult(
           kind, (llvm::Twine("best legal route-repair fallback could not be "
                              "replayed: ") +
@@ -2045,6 +2060,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       if (unhandled)
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(unhandled)));
+      if (transitionFailure &&
+          *transitionFailure ==
+              SpatialActionTransitionFailureKind::Interrupted)
+        return executedResult(SpatialExactRepairResultKind::TimedOut,
+                              std::move(detail));
       if (transitionFailure &&
           *transitionFailure == SpatialActionTransitionFailureKind::WorkLimit) {
         routeWorkUnknown = true;

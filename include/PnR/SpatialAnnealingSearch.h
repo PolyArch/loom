@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::pnr {
@@ -133,7 +134,11 @@ public:
   std::size_t retainedStorageBytes() const;
 
 private:
-  llvm::Expected<bool> consumeTransitionFailure(llvm::Error failure);
+  /// Classifies one Action probe failure. A missing kind means the failure
+  /// was not a transition failure; an Interrupted kind ends the search as an
+  /// interrupted result rather than a transition failure.
+  llvm::Expected<std::optional<SpatialActionTransitionFailureKind>>
+  consumeTransitionFailure(llvm::Error failure);
 
   SpatialActionDomainScratch actionDomain_;
   SpatialActionExecutorScratch actionExecutor_;

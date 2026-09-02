@@ -32,6 +32,7 @@ class SpatialActionExecutorScratch;
 enum class SpatialActionTransitionFailureKind : std::uint8_t {
   IntrinsicInvalid,
   WorkLimit,
+  Interrupted,
 };
 
 enum class SpatialActionExecutionContext : std::uint8_t {
@@ -124,7 +125,8 @@ public:
   ~SpatialActionExecutorScratch();
 
   llvm::Error prepare(SpatialCandidateState &candidate,
-                      SpatialPnrWorkLedgerView workLedger = {});
+                      SpatialPnrWorkLedgerView workLedger = {},
+                      ExecutionControlView executionControl = {});
   llvm::Expected<SpatialActionProbe>
   probe(SpatialCandidateState &candidate, const SpatialMappingAction &action,
         SpatialActionExecutionContext context =

@@ -66,7 +66,10 @@ llvm::Error retainSeedFailure(llvm::Error error,
       },
       [&](std::unique_ptr<SpatialPathFinderClosureFailure> failure)
           -> llvm::Error {
-        sawCompletedFailure = true;
+        // An interrupted closure completed no owner boundary, so the seed
+        // attempt stays planned and unconsumed.
+        if (failure->kind() != SpatialPathFinderClosureFailure::Kind::Interrupted)
+          sawCompletedFailure = true;
         return llvm::Error(std::move(failure));
       },
       [&](const llvm::ErrorInfoBase &failure) -> llvm::Error {
@@ -96,7 +99,10 @@ llvm::Expected<bool> retainRolledBackInitializer(llvm::Error error) {
         }
         llvm_unreachable("unknown endpoint route failure kind");
       },
-      [&](const SpatialPathFinderClosureFailure &) -> llvm::Error {
+      [&](std::unique_ptr<SpatialPathFinderClosureFailure> failure)
+          -> llvm::Error {
+        if (failure->kind() == SpatialPathFinderClosureFailure::Kind::Interrupted)
+          return llvm::Error(std::move(failure));
         recoverable = true;
         return llvm::Error::success();
       });
@@ -110,7 +116,8 @@ llvm::Expected<bool> retainRolledBackInitializer(llvm::Error error) {
 llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
     SpatialPathFinderSeedWorkSummary &workSummary,
-    llvm::ArrayRef<RouteCost> evaluationPriorities) {
+    llvm::ArrayRef<RouteCost> evaluationPriorities,
+    ExecutionControlView executionControl) {
   workSummary = {};
   const SpatialPnrWorkLedgerView ledger = workLedger(workSummary);
   if (llvm::Error error = ledger.plan(SpatialPnrWorkKind::SeedAttempt))
@@ -139,7 +146,8 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     return costs.takeError();
 
   SpatialPathFinderRouterScratch router;
-  if (llvm::Error error = router.prepare(candidate->problem(), ledger))
+  if (llvm::Error error =
+          router.prepare(candidate->problem(), ledger, executionControl))
     return std::move(error);
 
   const ResolvedPnrRoutingPolicy &policy =

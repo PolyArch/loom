@@ -1,0 +1,2 @@
+# RUN: %loom-root-complete-spatial-pnr-generator-test typed-interruption
+# RUN: %loom-root-complete-spatial-pnr-generator-test routing-interruption

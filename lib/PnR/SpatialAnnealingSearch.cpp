@@ -363,13 +363,13 @@ void emitLocalTransferAdoptionEvent(
 
 } // namespace
 
-llvm::Expected<bool>
+llvm::Expected<std::optional<SpatialActionTransitionFailureKind>>
 SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
-  bool consumed = false;
+  std::optional<SpatialActionTransitionFailureKind> consumed;
   llvm::Error unhandled = llvm::handleErrors(
       std::move(failure),
-      [&](const SpatialActionTransitionFailure &) -> llvm::Error {
-        consumed = true;
+      [&](const SpatialActionTransitionFailure &transition) -> llvm::Error {
+        consumed = transition.kind();
         return llvm::Error::success();
       });
   if (unhandled)
@@ -423,7 +423,8 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
   }
   if (llvm::Error error = actionDomain_.prepare(problem))
     return error;
-  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger))
+  if (llvm::Error error =
+          actionExecutor_.prepare(candidate, workLedger, executionControl))
     return error;
   if (llvm::Error error = actionDomain_.rebuild(candidate))
     return error;
@@ -492,6 +493,10 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
           if (!*consumed)
             return searchError(
                 "adoption failure had no failure classification");
+          if (**consumed == SpatialActionTransitionFailureKind::Interrupted) {
+            interrupted = true;
+            break;
+          }
           emitLocalTransferAdoptionEvent(
               loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
               probeOrdinal, logicalNet, adoption,
@@ -602,7 +607,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
   }
   if (llvm::Error error = actionDomain_.prepare(problem))
     return std::move(error);
-  if (llvm::Error error = actionExecutor_.prepare(candidate, workLedger))
+  if (llvm::Error error =
+          actionExecutor_.prepare(candidate, workLedger, executionControl))
     return std::move(error);
 
   const ResolvedPnrAnnealingPolicy &annealing = policy.search.annealing;
@@ -876,6 +882,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         return consumed.takeError();
       if (!*consumed)
         return searchError("Action failure had no failure classification");
+      if (**consumed == SpatialActionTransitionFailureKind::Interrupted)
+        return finishInterrupted();
       rememberInactiveAction(actionKey);
       if (llvm::Error error =
               addCount(statistics.calibrationTransitionFailureCount, 1,
@@ -1082,6 +1090,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           return consumed.takeError();
         if (!*consumed)
           return searchError("Action failure had no failure classification");
+        if (**consumed == SpatialActionTransitionFailureKind::Interrupted)
+          return finishInterrupted();
         rememberInactiveAction(actionKey);
         if (llvm::Error error =
                 addCount(statistics.annealingTransitionFailureCount, 1,

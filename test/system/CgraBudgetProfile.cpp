@@ -107,6 +107,17 @@ public:
     return {this, stopRequested, remainingTime};
   }
 
+  /// Nanoseconds the observing owner ran past the deadline; zero while the
+  /// deadline has not been reached. Measured when the owner returns.
+  std::uint64_t overrunNanoseconds() const {
+    const auto now = std::chrono::steady_clock::now();
+    if (now <= notAfter_)
+      return 0;
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - notAfter_)
+            .count());
+  }
+
 private:
   static bool stopRequested(const void *context) {
     const auto &deadline =
@@ -619,6 +630,8 @@ int main(int argc, char **argv) {
       take(loom::eda::test::invokeMappedBuiltinSpatialPnrFixture(
           "cgra-budget-profile", dataflow, targetScale, techMappingConfig,
           spatialPnrConfig, spatialPnrExecution, artifacts, blobs));
+  const std::uint64_t spatialPnrDeadlineOverrun =
+      spatialPnrDeadline.overrunNanoseconds();
   llvm::json::Object techMappingResult = candidateGeneratorResultJson(
       loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor(),
       pnrInvocation.techMappingResult);
@@ -639,6 +652,11 @@ int main(int argc, char **argv) {
   }
   llvm::json::Object pnrResult =
       spatialPnrResultJson(spatialPnrConfig, *pnrInvocation.spatialPnrResult);
+  pnrResult["deadline_ns"] = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          kSpatialPnrQualificationLimit)
+          .count());
+  pnrResult["deadline_overrun_ns"] = spatialPnrDeadlineOverrun;
   const std::vector<loom::ArtifactRootReference> &publishedSpatialMappings =
       candidateArtifacts(*pnrInvocation.spatialPnrResult);
   if (publishedSpatialMappings.empty()) {

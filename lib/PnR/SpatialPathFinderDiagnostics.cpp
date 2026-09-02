@@ -40,6 +40,8 @@ std::error_code SpatialPathFinderClosureFailure::convertToErrorCode() const {
     return std::make_error_code(std::errc::address_not_available);
   case Kind::SelectedCombinationalHandshakeCycle:
     return std::make_error_code(std::errc::state_not_recoverable);
+  case Kind::Interrupted:
+    return std::make_error_code(std::errc::operation_canceled);
   }
   llvm_unreachable("invalid Spatial PathFinder closure failure kind");
 }
@@ -112,7 +114,8 @@ llvm::Error classifyIterationFailure(llvm::Error failure, bool &completed) {
       },
       [&](std::unique_ptr<SpatialPathFinderClosureFailure> typed)
           -> llvm::Error {
-        completed = true;
+        completed = typed->kind() !=
+                    SpatialPathFinderClosureFailure::Kind::Interrupted;
         return llvm::Error(std::move(typed));
       });
 }
