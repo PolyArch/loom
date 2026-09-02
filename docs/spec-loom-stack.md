@@ -503,7 +503,12 @@ The driver's `loom.execution_matrix_workspace.1.2` manifest is a nonsemantic
 workspace projection. It records the exact Deployment, binding, workload,
 runtime-input, Request, Evidence, SimulationExecution, Dataflow,
 SpatialMapping, and HardwareImplementation references that already own the
-run. Each Spatial cell also records the dense coordinate tuple decoded from
+run. When the driver also executed the mapped-RTL Spatial engine, the same
+workspace is published as `loom.execution_matrix_workspace.1.3`: it adds the
+exact `mapped_rtl_deployment` reference and one Spatial run with engine `rtl`
+per invocation beside the `dfg` and `cgra` runs, with every other field
+unchanged. The version names the engine set that ran; it is not a second
+workspace schema. Each Spatial cell also records the dense coordinate tuple decoded from
 the actual System invocation wire; the DFG and CGRA cells for one invocation
 must agree on that tuple. It also records the dispatch target ordinal,
 canonical AccCore reference, and canonical Spatial execution-context key from
