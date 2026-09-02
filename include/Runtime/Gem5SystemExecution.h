@@ -16,6 +16,15 @@ inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
 inline constexpr char gem5RootEventControlSocketPath[] =
     "outputs/system-root-event-control.sock";
 
+/// Finite endpoint table addressed by the gem5 root event controller. Ordinal
+/// zero is the entry Deployment of the prepared transition graph; every later
+/// ordinal is one other preverified graph endpoint in graph order. The table
+/// is derived from an independently verified graph, never authored.
+struct Gem5RootEventEndpointTable final {
+  ArtifactIdentity dataflow;
+  std::vector<ArtifactRootReference> deployments;
+};
+
 /// Returns the exact integral distance between launch acceptance and graph
 /// retirement. Fractional endpoint coordinates are accepted when their
 /// difference is an unsigned integer.
@@ -170,17 +179,19 @@ prepareGem5SystemInvocation(
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context);
 
-/// Prepares a completion-safe-point controlled invocation. Endpoint zero uses
-/// the projected Deployment targets. Nonzero endpoints are acknowledged and
-/// recorded but reject any later dispatch until a complete endpoint target
-/// projection is supplied by a broader execution owner.
+/// Prepares a completion-safe-point controlled invocation whose root events
+/// are acknowledged synchronously by the host controller of
+/// `gem5RootEventControlSocketPath`. Endpoint zero uses the projected entry
+/// Deployment targets. Nonzero endpoints are acknowledged and recorded as
+/// terminal safe-point decisions: the device rejects any later dispatch, so the
+/// endpoint table admits only terminal edges.
 llvm::Expected<evaluation::EvaluationModelProviderPreparation>
 prepareGem5SystemCompletionControlledInvocation(
     const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context,
-    std::uint64_t endpointCount);
+    const Gem5RootEventEndpointTable &endpoints);
 
 /// Validates the Request and prepares an explicitly diagnostic gem5
 /// invocation. Performance outputs are part of this dedicated bundle contract

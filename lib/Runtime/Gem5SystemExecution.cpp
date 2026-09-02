@@ -226,7 +226,7 @@ inheritedEnvironment(const LocalToolConfig &config,
 }
 
 struct RootEventControlProjection final {
-  std::uint64_t endpointCount = 0;
+  const Gem5RootEventEndpointTable &endpoints;
 };
 
 llvm::Expected<std::string>
@@ -332,13 +332,15 @@ renderProjection(const Gem5SystemFacts &facts,
       json.attribute("logical_target_count", facts.spatialLaunches.size());
       json.attributeArray("endpoint_target_offsets", [&] {
         const std::uint64_t endpointCount =
-            rootEventControl ? rootEventControl->endpointCount : 1;
+            rootEventControl ? rootEventControl->endpoints.deployments.size()
+                             : 1;
         for (std::uint64_t endpoint = 0; endpoint != endpointCount; ++endpoint)
           json.value(0);
       });
       json.attributeArray("endpoint_dispatch_enabled", [&] {
         const std::uint64_t endpointCount =
-            rootEventControl ? rootEventControl->endpointCount : 1;
+            rootEventControl ? rootEventControl->endpoints.deployments.size()
+                             : 1;
         for (std::uint64_t endpoint = 0; endpoint != endpointCount; ++endpoint)
           json.value(endpoint == 0 ? 1 : 0);
       });
@@ -1111,6 +1113,11 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       }))
     return EvaluationModelProviderPreparation{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+  if (rootEventControl &&
+      (rootEventControl->endpoints.deployments.front() != facts.deployment ||
+       rootEventControl->endpoints.dataflow != facts.dataflow.artifact))
+    return invalid("gem5 root event control endpoint table does not start at "
+                   "the projected entry Deployment");
 
   const ExternalToolProviderDescriptor &gem5ToolProvider = gem5Provider();
   const std::filesystem::path destination(context.bundleDestination);
@@ -1448,12 +1455,12 @@ prepareGem5SystemCompletionControlledInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const ExternalToolPreparationContext &context,
-    std::uint64_t endpointCount) {
-  if (endpointCount == 0 ||
-      endpointCount > gem5MaximumDynamicSpatialInvocations)
-    return invalid("gem5 root event control endpoint count is outside its "
+    const Gem5RootEventEndpointTable &endpoints) {
+  if (endpoints.deployments.empty() ||
+      endpoints.deployments.size() > gem5MaximumDynamicSpatialInvocations)
+    return invalid("gem5 root event control endpoint table is outside its "
                    "bounded domain");
-  const RootEventControlProjection control{endpointCount};
+  const RootEventControlProjection control{endpoints};
   return prepareGem5SystemInvocationImpl(request, resolution, artifacts, blobs,
                                          context, false, &control);
 }

@@ -33,6 +33,7 @@ add_library(LoomRuntimeDynamicWork
 )
 
 add_library(LoomRuntimeResourceTime
+  Gem5RootEventControl.cpp
   ResourceTimeTransitionSelection.cpp
 )
 
@@ -53,8 +54,11 @@ target_include_directories(LoomRuntimeResourceTime PUBLIC
 
 target_link_libraries(LoomRuntimeResourceTime PUBLIC
   LoomDeployment
+  LoomMappingArtifact
   LoomPnR
   LoomRuntimeDeploymentLoader
+  LoomSimulator
+  MLIRDataflow
   LLVMSupport
 )
 

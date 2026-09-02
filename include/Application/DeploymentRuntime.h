@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_DEPLOYMENTRUNTIME_H
 
 #include "Application/ResourceTimeExecution.h"
+#include "Runtime/Gem5RootEventControl.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -65,6 +66,15 @@ public:
 
   llvm::Expected<ApplicationResourceTimeExecutionEvent> applyResourceTimeEvent(
       const sim::SystemRootLifecycleObservation &observation);
+
+  /// Synchronous gem5 drive of one root event: applies the event through the
+  /// prepared selector and loaded Deployment, then projects the accepted
+  /// outcome onto the device decision addressed by `endpoints`. A root start
+  /// continues, a typed stay keeps the active endpoint, and a selected child
+  /// activates its endpoint ordinal.
+  llvm::Expected<runtime::Gem5RootEventDecision> driveGem5RootEvent(
+      const sim::SystemRootLifecycleObservation &observation,
+      const runtime::Gem5RootEventEndpointTable &endpoints);
 
   llvm::Expected<FinalizedApplicationResourceTimeExecutionTrace>
   publishResourceTimeExecutionTrace(const ArtifactStore &artifacts,

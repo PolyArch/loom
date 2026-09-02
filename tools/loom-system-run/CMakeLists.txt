@@ -17,6 +17,7 @@ target_link_libraries(loom-system-run PRIVATE
   LoomApplicationRuntimeManifest
   LoomDSEProductionOwners
   LoomEDAOpenSource
+  LoomGem5SystemExecution
   LoomRuntimeResourceTime
   LoomRuntimePlatformBinding
   LoomStructuredFabricAnalyticModel

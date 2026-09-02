@@ -514,6 +514,12 @@ Deployment authority. The workspace does not acquire an Artifact identity,
 cache a mutable execution, or replace independent import and verification.
 Repeating the command in a new workspace therefore revalidates the package and
 result closure even when immutable implementation or tool caches are reused.
+When the package carries a resource-time transition graph the workspace also
+records `resource_time_drive`: `synchronous` with the controlling engine, the
+endpoint count, and the acknowledged event count when the System DFG cell ran
+as the completion-controlled invocation, or `unsupported` with the typed
+refusal reason (see the Runtime ABI root event control contract) when the
+graph is outside the drive's admitted profile.
 
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,
