@@ -2,6 +2,7 @@
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -470,6 +471,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       auto ownerPayload = frontend::encodeStructuredScheduleDecision(decision);
       if (!ownerPayload)
         return ownerPayload.takeError();
+      mapping_debug::emit(
+          mapping_debug::Level::Summary,
+          mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "structured_schedule_candidate";
+            fields["decision_kind"] =
+                frontend::structuredScheduleDecisionKindSpelling(decision.kind);
+            fields["factor"] = decision.factor;
+            fields["loop_ordinal"] = decision.loop.ordinal;
+            fields["parent"] = formatArtifactIdentityHex(reference.artifact);
+            fields["child"] = formatArtifactIdentityHex(published->artifact);
+          });
       lineageEdges.push_back(CandidateGeneratorLineageEdge{
           CandidateGeneratorLineageEdgeKind::CandidateDecision,
           CandidateGeneratorOutputSlotRef(0),

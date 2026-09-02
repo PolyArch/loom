@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
@@ -2396,6 +2397,34 @@ exploreStructuredCompilationToPreMapping(
                     std::make_move_iterator(
                         candidate.memoryCommunicationDerivations.end()));
     }
+    // The schedule lineage of a selected compilation is the replayable join
+    // between a Structured schedule proposal and the Mapping work that the
+    // application owner records against this exact program.
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+          fields["operation"] = "selected_candidate_lineage";
+          if (planningRecordOrdinal)
+            fields["planning_record_ordinal"] = *planningRecordOrdinal;
+          fields["structured_program"] = formatArtifactIdentityHex(
+              candidate.candidate.structuredProgram.identity());
+          fields["canonical_dataflow"] = formatArtifactIdentityHex(
+              candidate.candidate.canonicalDataflow.identity());
+          llvm::json::Array decisions;
+          for (const StructuredScheduleDerivation &derivation : schedule) {
+            llvm::json::Object entry;
+            entry["kind"] = frontend::structuredScheduleDecisionKindSpelling(
+                derivation.decision.kind);
+            entry["factor"] = derivation.decision.factor;
+            entry["loop_ordinal"] = derivation.decision.loop.ordinal;
+            entry["parent"] =
+                formatArtifactIdentityHex(derivation.parent.artifact);
+            entry["child"] =
+                formatArtifactIdentityHex(derivation.child.artifact);
+            decisions.push_back(std::move(entry));
+          }
+          fields["schedule_decisions"] = std::move(decisions);
+        });
     return SelectedPreMappingCompilation{
         0,
         planningRecordOrdinal,
