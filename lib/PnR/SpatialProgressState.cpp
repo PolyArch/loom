@@ -10,7 +10,6 @@
 #include "SpatialProgressIndex.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -21,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -128,13 +128,6 @@ bool sparseRefcountsEqual(
     }
   }
   return true;
-}
-
-std::string physicalTagKey(const llvm::APInt &value) {
-  llvm::SmallString<32> text;
-  value.toString(text, /*Radix=*/16, /*Signed=*/false,
-                 /*formatAsCLiteral=*/false);
-  return text.str().str();
 }
 
 std::string capacityProjectionDifference(
@@ -446,10 +439,7 @@ std::size_t SpatialProgressState::retainedStorageBytes() const {
        netCapacityProjections_)
     bytes += retainedBytes(projection.owners);
   for (const auto &classes : ownerQueueClassRefcounts_)
-    for (const auto &[key, count] : classes) {
-      (void)count;
-      bytes += sizeof(key) + key.capacity() + sizeof(PnrIndex);
-    }
+    bytes += classes.retainedBytes();
   return bytes;
 }
 
@@ -729,8 +719,8 @@ llvm::Error SpatialProgressState::applyNetCapacityProjection(
           ::fabric::comparePhysicalTagValues(use.queueClasses[index - 1],
                                              use.queueClasses[index]) >= 0)
         return invalid("capacity proof queue classes are not canonical");
-      const std::string key = physicalTagKey(use.queueClasses[index]);
-      const auto found = ownerQueueClassRefcounts_[use.owner].find(key);
+      const auto found =
+          ownerQueueClassRefcounts_[use.owner].find(use.queueClasses[index]);
       const PnrIndex refcount =
           found == ownerQueueClassRefcounts_[use.owner].end() ? 0
                                                               : found->second;
@@ -776,13 +766,8 @@ llvm::Error SpatialProgressState::applyNetCapacityProjection(
           use.repeatedWithinChannel;
       ownerIndeterminateQueueClassNetCounts_[use.owner] +=
           use.queueClassIndeterminate;
-      for (const llvm::APInt &queueClass : use.queueClasses) {
-        const std::string key = physicalTagKey(queueClass);
-        auto [position, inserted] =
-            ownerQueueClassRefcounts_[use.owner].try_emplace(key, 0);
-        (void)inserted;
-        ++position->second;
-      }
+      for (const llvm::APInt &queueClass : use.queueClasses)
+        ++ownerQueueClassRefcounts_[use.owner][queueClass];
     } else {
       ownerChannelCounts_[use.owner] -= use.channelCount;
       ownerInitializedFeedbackChannelCounts_[use.owner] -=
@@ -792,8 +777,7 @@ llvm::Error SpatialProgressState::applyNetCapacityProjection(
       ownerIndeterminateQueueClassNetCounts_[use.owner] -=
           use.queueClassIndeterminate;
       for (const llvm::APInt &queueClass : use.queueClasses) {
-        const std::string key = physicalTagKey(queueClass);
-        auto position = ownerQueueClassRefcounts_[use.owner].find(key);
+        auto position = ownerQueueClassRefcounts_[use.owner].find(queueClass);
         assert(position != ownerQueueClassRefcounts_[use.owner].end() &&
                position->second != 0);
         if (--position->second == 0)
@@ -1100,7 +1084,7 @@ SpatialProgressState::verifyCachedState(
   std::vector<std::uint64_t> expectedFeedbackChannels(ownerCount_, 0);
   std::vector<std::uint64_t> expectedRepeatedNets(ownerCount_, 0);
   std::vector<std::uint64_t> expectedIndeterminateClasses(ownerCount_, 0);
-  std::vector<std::map<std::string, PnrIndex>> expectedQueueClasses(
+  std::vector<PhysicalTagKeyedMap<PnrIndex>> expectedQueueClasses(
       ownerCount_);
   for (const SpatialProgressNetCapacityProjection &projection :
        netCapacityProjections_) {
@@ -1130,8 +1114,7 @@ SpatialProgressState::verifyCachedState(
                                                use.queueClasses[index]) >= 0)
           return invalid("capacity proof queue classes are not canonical");
         PnrIndex &refcount =
-            expectedQueueClasses[use.owner][physicalTagKey(
-                use.queueClasses[index])];
+            expectedQueueClasses[use.owner][use.queueClasses[index]];
         if (refcount == std::numeric_limits<PnrIndex>::max())
           return invalid("capacity proof queue-class refcount exceeds "
                          "PnrIndex");

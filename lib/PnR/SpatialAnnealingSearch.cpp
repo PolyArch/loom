@@ -985,6 +985,10 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         actionExecutor_.forwardHeuristicQueryCount();
     const std::uint64_t levelForwardHeuristicUnreachableBegin =
         actionExecutor_.forwardHeuristicUnreachableCount();
+    const std::uint64_t levelArcCostValidationScanBegin =
+        actionExecutor_.arcCostValidationScanCount();
+    const std::uint64_t levelPhysicalTimingValidationScanBegin =
+        actionExecutor_.physicalTimingValidationScanCount();
     const std::uint64_t movableDecisionCount =
         actionDomain_.selectableMovableDecisionCount(
             policy.search.actionProposal);
@@ -1247,6 +1251,12 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
               actionExecutor_.heuristicCacheEvictionCount();
           fields["heuristic_cache_retained_bytes"] =
               actionExecutor_.heuristicCacheRetainedBytes();
+          fields["arc_cost_validation_scans"] =
+              actionExecutor_.arcCostValidationScanCount() -
+              levelArcCostValidationScanBegin;
+          fields["physical_timing_validation_scans"] =
+              actionExecutor_.physicalTimingValidationScanCount() -
+              levelPhysicalTimingValidationScanBegin;
           fields["inactive_cache_size"] = inactiveActionKeys_.size();
           const HandshakeActiveDemandStatistics handshakeStatistics =
               candidate.handshake().materializationStatistics();

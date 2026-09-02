@@ -114,6 +114,12 @@ public:
   std::uint64_t heuristicCacheEvictionCount() const {
     return endpointSearch_.heuristicCacheEvictionCount();
   }
+  std::uint64_t arcCostValidationScanCount() const {
+    return endpointSearch_.arcCostValidationScanCount();
+  }
+  std::uint64_t physicalTimingValidationScanCount() const {
+    return endpointSearch_.physicalTimingValidationScanCount();
+  }
   std::size_t heuristicCacheEntryCount() const {
     return endpointSearch_.heuristicCacheEntryCount();
   }
