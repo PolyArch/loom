@@ -1,6 +1,7 @@
 #include "Application/BuildDiagnostics.h"
 
 #include "Application/Build.h"
+#include "Application/RuntimeManifest.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/InvocationDiagnosticLog.h"
@@ -2002,6 +2003,41 @@ void emitApplicationPairDecisionDiagnostics(
 llvm::json::Object projectApplicationPairDecisionJson(
     const ApplicationPairDecisionRecord &decision) {
   return encodePairDecision(decision);
+}
+
+void emitApplicationRuntimeManifestDiagnostics(
+    const FinalizedApplicationRuntimeManifest &manifest) {
+  const ApplicationRuntimeManifest &record = manifest.manifest();
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::Deployment,
+      InvocationDiagnosticEvent::Statistics, [&] {
+        llvm::json::Object payload;
+        payload["schema"] = "loom.application_runtime_manifest_binding";
+        payload["version"] = "1.0";
+        payload["domain"] = "application_runtime_manifest";
+        payload["runtime_manifest"] = encodeRoot(manifest.reference());
+        payload["pair_identity"] =
+            formatComponentViewDigestHex(record.pairIdentity());
+        payload["invocation_manifest_run_key"] = llvm::toHex(
+            llvm::ArrayRef<std::uint8_t>(record.invocationRunKey()),
+            /*LowerCase=*/true);
+        payload["disposition"] = toString(record.pairDisposition());
+        payload["selected_candidate_identity"] =
+            formatComponentViewDigestHex(record.selectedCandidateIdentity());
+        payload["selected_plan_ordinal"] = record.selectedPlanOrdinal();
+        payload["source_program"] = encodeRoot(record.sourceProgram());
+        payload["fabric"] = encodeRoot(record.fabric());
+        payload["workload"] = encodeRoot(record.workload());
+        payload["runtime_input"] = encodeRoot(record.runtimeInput());
+        payload["selected_system"] = encodeRoot(record.selectedSystem());
+        payload["selected_mapping"] = encodeRoot(record.selectedMapping());
+        payload["deployment"] = encodeRoot(record.deployment());
+        payload["activation_workload"] =
+            encodeRoot(record.activationWorkload());
+        payload["activation_runtime_input"] =
+            encodeRoot(record.activationRuntimeInput());
+        return llvm::json::Value(std::move(payload));
+      });
 }
 
 } // namespace loom::application

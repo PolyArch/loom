@@ -227,7 +227,14 @@ paths are operational inputs and never enter pair, candidate, Mapping,
 workload, or runtime-input identity. The canonical source program, workload,
 runtime input, Fabric, Mapping, and execution Evidence remain owned by their
 existing Artifacts; the portfolio projection is repository provenance, not a
-second copy of those payloads.
+second copy of those payloads. The published application runtime manifest
+binds the pair identity, its source program, Fabric, workload, runtime input,
+selected System and Mapping, the entry Deployment, and the activation
+workload and runtime input that Deployment executes; the build projects it
+once into its diagnostics (`application_runtime_manifest` statistics), so an
+execution manifest naming the same Deployment, activation workload, and
+activation runtime input is verifiably bound to the pair decision's exact
+identities without decoding the package.
 
 A successful decision is published inside
 `loom.application_pair_evidence` version `1.0`. That envelope is the canonical

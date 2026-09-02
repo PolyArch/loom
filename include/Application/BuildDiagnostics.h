@@ -16,6 +16,7 @@ namespace loom::application {
 struct PreparedApplicationBuild;
 struct ApplicationMappingExecution;
 struct ApplicationPairDecisionRecord;
+class FinalizedApplicationRuntimeManifest;
 
 enum class ApplicationBuildOperation : std::uint8_t {
   ProductTargetPreparation,
@@ -83,6 +84,16 @@ void emitApplicationPairDecisionDiagnostics(
 /// visualization. The decision record remains the semantic owner.
 llvm::json::Object projectApplicationPairDecisionJson(
     const ApplicationPairDecisionRecord &decision);
+
+/// Emits the published application runtime manifest: the exact join between
+/// the pair decision (pair identity, source program, Fabric, workload,
+/// runtime input, selected System and Mapping) and the activation the entry
+/// Deployment executes (activation workload and runtime input). An execution
+/// manifest naming the same Deployment, activation workload, and activation
+/// runtime input is thereby bound to the decision without decoding the
+/// package. The immutable manifest Artifact remains the semantic owner.
+void emitApplicationRuntimeManifestDiagnostics(
+    const FinalizedApplicationRuntimeManifest &manifest);
 
 } // namespace loom::application
 

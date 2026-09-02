@@ -63,6 +63,88 @@ def matching_payloads(
     ]
 
 
+def decode_root_hex(encoded: Any) -> dict[str, Any] | None:
+    """Decodes the canonical hex spelling of one artifact root reference.
+
+    The spelling is u32be(schema length), the ASCII schema, u32be(major),
+    u32be(minor), and the 32-byte artifact identity; the decoded form matches
+    the reference objects of the execution manifest.
+    """
+    if not isinstance(encoded, str):
+        return None
+    try:
+        raw = bytes.fromhex(encoded)
+    except ValueError:
+        return None
+    if len(raw) < 4:
+        return None
+    length = int.from_bytes(raw[:4], "big")
+    if len(raw) != 4 + length + 4 + 4 + 32:
+        return None
+    try:
+        schema = raw[4 : 4 + length].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    major = int.from_bytes(raw[4 + length : 8 + length], "big")
+    minor = int.from_bytes(raw[8 + length : 12 + length], "big")
+    return {
+        "schema": schema,
+        "schema_version": f"{major}.{minor}",
+        "artifact": raw[12 + length :].hex(),
+    }
+
+
+def validate_identity_binding(
+    events: list[dict[str, Any]],
+    pair_evidence: dict[str, Any],
+    manifest: dict[str, Any],
+    required: bool,
+) -> None:
+    """Binds the pair decision to the executed Deployment through the published
+    application runtime manifest: the decision's identities must equal the
+    manifest's, and the execution manifest must name the manifest's Deployment,
+    activation workload, and activation runtime input."""
+    bindings = [
+        payload
+        for payload in matching_payloads(events, stage="deployment", event="statistics")
+        if payload.get("domain") == "application_runtime_manifest"
+    ]
+    if not bindings and not required:
+        return
+    require(len(bindings) == 1, "expected one application runtime manifest binding")
+    binding = bindings[0]
+    decision = pair_evidence.get("pair_decision")
+    require(isinstance(decision, dict), "identity binding has no pair decision")
+    for binding_field, decision_field in (
+        ("pair_identity", "pair_identity"),
+        ("invocation_manifest_run_key", "invocation_manifest_run_key"),
+        ("selected_candidate_identity", "selected_candidate_identity"),
+        ("source_program", "source_program"),
+        ("fabric", "fabric"),
+        ("workload", "workload"),
+        ("runtime_input", "runtime_input"),
+        ("selected_system", "selected_system"),
+        ("selected_mapping", "selected_system_mapping"),
+    ):
+        value = binding.get(binding_field)
+        require(
+            isinstance(value, str) and value == decision.get(decision_field),
+            "application runtime manifest " + binding_field
+            + " is not bound to the pair decision",
+        )
+    for manifest_field, binding_field in (
+        ("deployment", "deployment"),
+        ("workload", "activation_workload"),
+        ("runtime_input", "activation_runtime_input"),
+    ):
+        decoded = decode_root_hex(binding.get(binding_field))
+        require(
+            decoded is not None and decoded == manifest.get(manifest_field),
+            "execution manifest " + manifest_field
+            + " is not bound to the application runtime manifest",
+        )
+
+
 def validate_context(
     events: list[dict[str, Any]],
     stage: str,
@@ -1181,8 +1263,9 @@ def main() -> None:
         )
     if arguments.require_spatial_unconditional_handshake:
         validate_spatial_unconditional_handshake(events)
+    manifest = read_json(arguments.manifest)
     validate_manifest(
-        read_json(arguments.manifest),
+        manifest,
         arguments.manifest,
         arguments.expected_i32,
         arguments.spatial_invocations,
@@ -1201,6 +1284,12 @@ def main() -> None:
         arguments.minimum_unique_acc_cores,
         arguments.require_mapped_rtl,
         arguments.expected_fifo_queue_discipline,
+    )
+    validate_identity_binding(
+        events,
+        pair_evidence,
+        manifest,
+        arguments.portfolio_application is not None,
     )
 
 
