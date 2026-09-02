@@ -3,9 +3,11 @@
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/HardwareDecision.h"
+#include "DSE/HardwareMutationRepairRecord.h"
 #include "DSE/JointHardwareReopen.h"
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
@@ -99,6 +101,17 @@ constexpr MutationFamilyContract mutationFamilyContracts[] = {
      loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
     {"service", loom::dse::JointMappingReuseDisposition::Preserved,
      loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"spatial-topology", loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    // A Temporal instruction-store resize changes the Module's internal
+    // instruction-context inventory, which the local Module correspondence
+    // does not yet map; the family therefore witnesses the cold fallback.
+    {"instruction-capacity",
+     loom::dse::JointMappingReuseDisposition::ColdFallback,
+     loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
+    {"system-instruction-context",
+     loom::dse::JointMappingReuseDisposition::Preserved,
+     loom::dse::JointSystemMappingReuseDisposition::Reopened},
     {"combined", loom::dse::JointMappingReuseDisposition::ColdFallback,
      loom::dse::JointSystemMappingReuseDisposition::ColdFallback},
 };
@@ -992,7 +1005,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
              llvm::toString(std::move(error)));
       const MutationFamilyContract &contract = mutationFamilyContract(label);
       if (repair.rebase.disposition != contract.rebase ||
-          repair.systemDisposition != contract.system)
+          repair.systemDisposition != contract.system) {
+        std::string failures;
+        for (const auto &failure : repair.rebase.failures)
+          failures += " failure=" +
+                      loom::dse::jointMappingRebaseFailureReasonSpelling(
+                          failure.reason)
+                          .str() +
+                      ":" + failure.diagnostic;
         fail(label + " mutation reached " +
              loom::dse::jointMappingReuseDispositionSpelling(
                  repair.rebase.disposition) +
@@ -1003,7 +1023,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
              loom::dse::jointMappingReuseDispositionSpelling(contract.rebase) +
              "/" +
              loom::dse::jointSystemMappingReuseDispositionSpelling(
-                 contract.system));
+                 contract.system) +
+             failures);
+      }
       if (contract.rebase != loom::dse::JointMappingReuseDisposition::ColdFallback &&
           repair.rebase.accounting.preservedTechMappings == 0 &&
           repair.rebase.accounting.preservedSpatialMappings == 0 &&
@@ -1019,6 +1041,28 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           if (mapping.view().fabricIdentity() != repair.child.system.artifact)
             fail(label + " mutation Mapping names a foreign System");
         }
+      // The executor publishes the durable per-family record; the strict
+      // re-import must agree with the executed repair it summarizes.
+      auto record = take(
+          loom::dse::importHardwareMutationRepairRecord(repair.record, store));
+      const loom::dse::HardwareMutationRepairRecord &durable = record.record();
+      if (durable.parentMapping != repair.parentMapping ||
+          durable.childSystem != repair.child.system ||
+          durable.impacts.size() != repair.child.impacts.size() ||
+          durable.mappingReuseDisposition != repair.rebase.disposition ||
+          durable.systemMappingReuseDisposition != repair.systemDisposition ||
+          durable.cold.has_value() != repair.coldExecution.has_value() ||
+          (durable.cold && durable.cold->mappings != repair.coldMappings) ||
+          durable.incremental.mappings != repair.incrementalMappings ||
+          durable.incremental.systemPnrDispatches !=
+              repair.incrementalExecution.summary.systemPnrDispatchCount)
+        fail(label + " mutation record disagrees with the executed repair");
+      for (const auto indexed : llvm::enumerate(repair.child.impacts))
+        if (durable.impacts[indexed.index()].family !=
+                indexed.value().family ||
+            durable.impacts[indexed.index()].locality !=
+                indexed.value().locality)
+          fail(label + " mutation record lost its typed impact family");
       // One durable line per family so a sharded run still reports the typed
       // dispositions its family reached.
       llvm::outs() << "mutation-family " << label << " rebase="
@@ -1026,7 +1070,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                           repair.rebase.disposition)
                    << " system="
                    << loom::dse::jointSystemMappingReuseDispositionSpelling(
-                          repair.systemDisposition);
+                          repair.systemDisposition)
+                   << " record="
+                   << loom::formatArtifactIdentityHex(repair.record.artifact);
       for (const auto &failure : repair.rebase.failures)
         llvm::outs() << " failure=" << static_cast<int>(failure.reason) << ":"
                      << failure.diagnostic;
@@ -1042,6 +1088,18 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
               blobs));
           if (child.system == system || child.impacts.size() != 1)
             fail(label + " did not materialize one distinct hardware child");
+          return child;
+        };
+    const auto materializeTopology =
+        [&](llvm::StringRef label,
+            loom::dse::SpatialTopologyDecisionDomain decision) {
+          auto child = take(loom::dse::materializeJointModuleHardwareMutation(
+              config, system, targetModules.front(), std::move(decision), store,
+              blobs));
+          if (child.system == system || child.impacts.size() != 1 ||
+              child.impacts.front().family !=
+                  loom::dse::HardwareMutationFamily::SpatialTopology)
+            fail(label + " did not materialize one distinct topology child");
           return child;
         };
     const auto materializeSystem =
@@ -1236,6 +1294,62 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                             0,
                             {memoryContract->regions().front().sizeBytes + 1}},
                         targetModules));
+
+    // The three dedicated families named by the acceptance matrix: a Module
+    // topology rewrite (one more FU occurrence), a Temporal instruction-store
+    // capacity change, and a System InstructionCore realization change.
+    executeMutation(
+        "spatial-topology",
+        materializeTopology(
+            "spatial-topology",
+            loom::dse::AddOccurrenceDomain{
+                {take(loom::fabric::FabricModulePhysicalOwnerRef::create(
+                    targetModule.view().fuOccurrences().front()))}}));
+
+    const std::uint64_t instructionCapacity =
+        targetModule.view().peResidentContextCount(*operandPe);
+    if (instructionCapacity == 0 ||
+        instructionCapacity >=
+            static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+      fail("instruction-capacity fixture has no growable instruction store");
+    executeMutation(
+        "instruction-capacity",
+        materializeModule(
+            "instruction-capacity",
+            loom::dse::ResizeInstructionStoreDomain{
+                *operandPe,
+                {static_cast<std::uint32_t>(instructionCapacity + 1)}}));
+
+    std::optional<loom::fabric::AccCoreOccurrenceRef> realizationTarget;
+    std::optional<loom::fabric::AccCoreOccurrenceRef> realizationPrototype;
+    std::optional<loom::fabric::InstructionCoreRealizationKind> targetKind;
+    for (const auto core : systemView.artifact().accCoreOccurrences()) {
+      const auto *realization = systemView.instructionCoreMicroarchitecture(
+          loom::fabric::InstructionCoreContextRef{core});
+      if (!realization)
+        continue;
+      if (!realizationTarget) {
+        realizationTarget = core;
+        targetKind = realization->kind();
+        continue;
+      }
+      if (realization->kind() != *targetKind) {
+        realizationPrototype = core;
+        break;
+      }
+    }
+    if (!realizationTarget || !realizationPrototype)
+      fail("system-instruction-context fixture has no alternative "
+           "InstructionCore realization");
+    executeMutation(
+        "system-instruction-context",
+        materializeSystem(
+            "system-instruction-context", system,
+            loom::dse::SelectInstructionCoreRealizationDomain{
+                loom::fabric::InstructionCoreContextRef{*realizationTarget},
+                {loom::fabric::InstructionCoreContextRef{
+                    *realizationPrototype}}},
+            targetModules));
 
     auto combinedSystem =
         take(loom::fabric::importEntireFabricRoot(combinedFirst.system, store));

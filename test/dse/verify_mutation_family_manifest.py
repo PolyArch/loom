@@ -2,8 +2,10 @@
 
 Each sharded mutation-matrix invocation must publish one
 ``joint_hardware_mutation_repair`` migration observation whose typed
-families cover the expected family set and whose repair dispositions and
-cold-versus-incremental accounting survived manifest collection.
+families cover the expected family set, whose durable record identity
+(``loom.dse.hardware_mutation_repair_record``) is named, and whose repair
+dispositions and cold-versus-incremental accounting survived manifest
+collection.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ def main(argv: list[str]) -> int:
             f"{sorted(expected)}; observed {observed}"
         )
     for key in (
+        "record",
         "parent_mapping",
         "child_system",
         "mapping_reuse_disposition",

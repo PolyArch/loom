@@ -11,6 +11,7 @@
 #include "DSE/ExecutionJournal.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/HardwareDecision.h"
+#include "DSE/HardwareMutationRepairRecord.h"
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ProductionOwners.h"
 #include "DSE/ResolvedConfigView.h"
@@ -553,19 +554,14 @@ llvm::StringRef jointSystemMappingReuseDispositionSpelling(
   llvm_unreachable("unknown System Mapping reuse disposition");
 }
 
-llvm::Expected<JointHardwareMutationChild>
-materializeJointModuleHardwareMutation(
-    ResolvedConfig config, const ArtifactRootReference &parentSystem,
-    const ArtifactRootReference &parentModule,
-    SpatialMicroarchitectureDecisionDomain decision,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+static llvm::Expected<JointHardwareMutationChild>
+materializeJointModuleGrowthChild(HardwareRecipeGrowth growth,
+                                  const ArtifactRootReference &parentSystem,
+                                  const ArtifactStore &artifacts,
+                                  const BlobStore &blobs) {
   if (llvm::Error error = registerProductionDseOwners())
     return std::move(error);
-  HardwareRecipeGrowth growth;
-  growth.config = std::move(config);
   growth.config.dse.planNodes.clear();
-  growth.techModule = parentModule;
-  growth.moduleDecision = std::move(decision);
   auto materialized = materializeTypedModuleSystemGrowth(
       std::move(growth), parentSystem, artifacts, blobs);
   if (!materialized)
@@ -581,6 +577,34 @@ materializeJointModuleHardwareMutation(
       std::move(materialized->config),
       std::move(materialized->executionBindingCorrespondence),
       {std::move(*materialized->mappingImpact)}};
+}
+
+llvm::Expected<JointHardwareMutationChild>
+materializeJointModuleHardwareMutation(
+    ResolvedConfig config, const ArtifactRootReference &parentSystem,
+    const ArtifactRootReference &parentModule,
+    SpatialMicroarchitectureDecisionDomain decision,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  HardwareRecipeGrowth growth;
+  growth.config = std::move(config);
+  growth.techModule = parentModule;
+  growth.moduleDecision = std::move(decision);
+  return materializeJointModuleGrowthChild(std::move(growth), parentSystem,
+                                           artifacts, blobs);
+}
+
+llvm::Expected<JointHardwareMutationChild>
+materializeJointModuleHardwareMutation(
+    ResolvedConfig config, const ArtifactRootReference &parentSystem,
+    const ArtifactRootReference &parentModule,
+    SpatialTopologyDecisionDomain decision, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  HardwareRecipeGrowth growth;
+  growth.config = std::move(config);
+  growth.techModule = parentModule;
+  growth.topologyDecision = std::move(decision);
+  return materializeJointModuleGrowthChild(std::move(growth), parentSystem,
+                                           artifacts, blobs);
 }
 
 llvm::Expected<JointHardwareMutationChild>
@@ -871,40 +895,11 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
       artifacts);
   if (!incrementalVerification)
     return incrementalVerification.takeError();
-  mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-        fields["operation"] = "joint_hardware_mutation_repair";
-        llvm::json::Array families;
-        for (const HardwareImpactProjection &impact : child.impacts)
-          families.push_back(hardwareMutationFamilySpelling(impact.family));
-        fields["families"] = std::move(families);
-        fields["parent_mapping"] =
-            formatArtifactIdentityHex(parentMapping.artifact);
-        fields["child_system"] =
-            formatArtifactIdentityHex(child.system.artifact);
-        fields["mapping_reuse_disposition"] =
-            jointMappingReuseDispositionSpelling(rebased->disposition);
-        fields["system_mapping_reuse_disposition"] =
-            jointSystemMappingReuseDispositionSpelling(systemDisposition);
-        fields["rebase_failure_count"] = rebased->failures.size();
-        fields["cold_comparison_baseline"] = coldComparisonBaseline;
-        fields["cold_mapping_count"] = coldMappings.size();
-        fields["incremental_mapping_count"] = incrementalMappings.size();
-        if (coldExecution)
-          fields["cold_wall_time_ns"] =
-              coldExecution->summary.executionWallTimeNanoseconds;
-        fields["incremental_wall_time_ns"] =
-            incrementalExecution->summary.executionWallTimeNanoseconds;
-        fields["cold_verifier_retained_bytes"] =
-            coldVerification->retainedBytes;
-        fields["incremental_verifier_retained_bytes"] =
-            incrementalVerification->retainedBytes;
-        fields["cold_verifier_work"] = coldVerification->deterministicWork;
-        fields["incremental_verifier_work"] =
-            incrementalVerification->deterministicWork;
-      });
-  return JointHardwareMutationRepair{parentMapping,
+  // The record is content-addressed from every other field, so its
+  // reference is assigned after publication; the parent Mapping reference
+  // only occupies the slot until then.
+  JointHardwareMutationRepair repair{parentMapping,
+                                     parentMapping,
                                      std::move(child),
                                      std::move(*rebased),
                                      systemDisposition,
@@ -916,6 +911,46 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
                                      std::move(*incrementalExecution),
                                      std::move(*coldVerification),
                                      std::move(*incrementalVerification)};
+  auto record = publishHardwareMutationRepairRecord(repair, artifacts);
+  if (!record)
+    return record.takeError();
+  repair.record = record->reference();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "joint_hardware_mutation_repair";
+        fields["record"] = formatArtifactIdentityHex(repair.record.artifact);
+        llvm::json::Array families;
+        for (const HardwareImpactProjection &impact : repair.child.impacts)
+          families.push_back(hardwareMutationFamilySpelling(impact.family));
+        fields["families"] = std::move(families);
+        fields["parent_mapping"] =
+            formatArtifactIdentityHex(parentMapping.artifact);
+        fields["child_system"] =
+            formatArtifactIdentityHex(repair.child.system.artifact);
+        fields["mapping_reuse_disposition"] =
+            jointMappingReuseDispositionSpelling(repair.rebase.disposition);
+        fields["system_mapping_reuse_disposition"] =
+            jointSystemMappingReuseDispositionSpelling(systemDisposition);
+        fields["rebase_failure_count"] = repair.rebase.failures.size();
+        fields["cold_comparison_baseline"] = coldComparisonBaseline;
+        fields["cold_mapping_count"] = repair.coldMappings.size();
+        fields["incremental_mapping_count"] = repair.incrementalMappings.size();
+        if (repair.coldExecution)
+          fields["cold_wall_time_ns"] =
+              repair.coldExecution->summary.executionWallTimeNanoseconds;
+        fields["incremental_wall_time_ns"] =
+            repair.incrementalExecution.summary.executionWallTimeNanoseconds;
+        fields["cold_verifier_retained_bytes"] =
+            repair.coldVerification.retainedBytes;
+        fields["incremental_verifier_retained_bytes"] =
+            repair.incrementalVerification.retainedBytes;
+        fields["cold_verifier_work"] =
+            repair.coldVerification.deterministicWork;
+        fields["incremental_verifier_work"] =
+            repair.incrementalVerification.deterministicWork;
+      });
+  return llvm::Expected<JointHardwareMutationRepair>(std::move(repair));
 }
 
 llvm::Expected<JointSpatialFifoHardwareRepair>

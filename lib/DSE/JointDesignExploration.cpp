@@ -231,6 +231,21 @@ JointDesignQualityDisposition jointDesignQualityDisposition(
   llvm_unreachable("unknown bounded-quality incomplete reason");
 }
 
+llvm::StringRef jointDesignQualityIncompleteReasonSpelling(
+    JointDesignQualityIncompleteReason reason) {
+  switch (reason) {
+  case JointDesignQualityIncompleteReason::Unsupported:
+    return "unsupported";
+  case JointDesignQualityIncompleteReason::ProofNotEstablished:
+    return "proof_not_established";
+  case JointDesignQualityIncompleteReason::ExecutionFailed:
+    return "execution_failed";
+  case JointDesignQualityIncompleteReason::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  }
+  llvm_unreachable("unknown bounded-quality incomplete reason");
+}
+
 llvm::Error validateJointDesignQualityProvenanceDomain(
     const JointBoundedQualityPolicy &policy,
     const JointDesignQualityProvenance &provenance, bool objectiveComplete) {

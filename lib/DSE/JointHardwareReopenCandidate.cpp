@@ -17,6 +17,7 @@
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
+#include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -1075,6 +1076,69 @@ struct MaterializedModuleGrowth final {
   std::optional<HardwareImpactProjection> impact;
 };
 
+/// Materializes one exact Module topology rewrite through the canonical
+/// topology candidate generator. The adopted lineage decision is the impact
+/// owner; the Module child keeps the parent's imported-Module identity role
+/// so the System replacement path is shared with microarchitecture growth.
+llvm::Expected<MaterializedModuleGrowth> materializeTypedModuleTopologyGrowth(
+    const ArtifactRootReference &parentModule,
+    const SpatialTopologyDecisionDomain &domain, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  auto config = resolveSpatialTopologyRewriteConfig(
+      llvm::ArrayRef<SpatialTopologyDecisionDomain>(domain), 1);
+  if (!config)
+    return config.takeError();
+  auto inputs = bindSpatialTopologyCandidateGeneratorInputs({parentModule});
+  if (!inputs)
+    return inputs.takeError();
+  auto binding = resolveSpatialTopologyCandidateGeneratorBinding(*config);
+  if (!binding)
+    return binding.takeError();
+  auto generated =
+      invokeCandidateGenerator(*inputs, *binding, artifacts, blobs);
+  if (!generated)
+    return generated.takeError();
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&generated->outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() != 1 ||
+      completed->lineageEdges.size() != 1)
+    return invalid("typed Module topology growth did not publish one exact "
+                   "child");
+  const ArtifactRootReference childReference =
+      completed->outputBindings.front().artifacts.front();
+  const CandidateGeneratorLineageEdge &lineage =
+      completed->lineageEdges.front();
+  if (lineage.kind != CandidateGeneratorLineageEdgeKind::CandidateDecision ||
+      lineage.output != childReference ||
+      lineage.parents != std::vector<ArtifactRootReference>{parentModule})
+    return invalid("typed Module topology growth lost its exact parent "
+                   "lineage");
+  auto decision = adoptSpatialTopologyDecision(lineage.ownerPayload);
+  if (!decision)
+    return decision.takeError();
+  if (decision->parent != parentModule)
+    return invalid("typed Module topology growth changed its parent owner");
+  auto expanded = expandSpatialTopologyDecisionDomains(
+      llvm::ArrayRef<SpatialTopologyDecisionDomain>(domain));
+  if (!expanded)
+    return expanded.takeError();
+  if (expanded->size() != 1 ||
+      expanded->front().index() != decision->decision.index())
+    return invalid("typed Module topology growth changed its decision domain");
+  auto impact = projectHardwareImpact(*decision, childReference);
+  if (!impact.child || impact.family != HardwareMutationFamily::SpatialTopology)
+    return invalid("typed Module topology growth has an incompatible impact "
+                   "family");
+  auto child = fabric::importEntireFabricRoot(childReference, artifacts);
+  if (!child)
+    return child.takeError();
+  if (child->view().rootKind() != fabric::FabricRootKind::Module)
+    return invalid("typed Module topology growth published a non-Module child");
+  return MaterializedModuleGrowth{
+      childReference, {{parentModule, childReference}}, std::move(impact)};
+}
+
 llvm::Expected<MaterializedModuleGrowth>
 materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                              const ArtifactStore &artifacts,
@@ -1085,10 +1149,14 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                                  growth.fifoDisciplineChange.has_value() +
                                  growth.operandBufferModeChange.has_value() +
                                  growth.operandBufferResize.has_value() +
-                                 growth.moduleDecision.has_value();
+                                 growth.moduleDecision.has_value() +
+                                 growth.topologyDecision.has_value();
   if (!growth.techModule || decisionKinds != 1 || growth.addedContexts != 0 ||
       growth.addedGateways != 0 || growth.addedAccCores != 0)
     return invalid("typed Module growth received a mixed or empty change");
+  if (growth.topologyDecision)
+    return materializeTypedModuleTopologyGrowth(
+        *growth.techModule, *growth.topologyDecision, artifacts, blobs);
 
   std::vector<SpatialMicroarchitectureDecisionDomain> domains;
   if (growth.moduleDecision)
@@ -1400,7 +1468,8 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] =
-            growth.moduleDecision ? "typed_module_hardware_mutation"
+            growth.moduleDecision || growth.topologyDecision
+                ? "typed_module_hardware_mutation"
             : !growth.instructionStoreResizes.empty()
                 ? "typed_resize_instruction_stores_growth"
             : growth.operandBufferModeChange || growth.operandBufferResize

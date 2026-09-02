@@ -86,18 +86,7 @@ llvm::StringRef spelling(dse::JointDesignQualityDisposition value) {
 }
 
 llvm::StringRef spelling(dse::JointDesignQualityIncompleteReason value) {
-  using Reason = dse::JointDesignQualityIncompleteReason;
-  switch (value) {
-  case Reason::Unsupported:
-    return "unsupported";
-  case Reason::ProofNotEstablished:
-    return "proof_not_established";
-  case Reason::ExecutionFailed:
-    return "execution_failed";
-  case Reason::CancelledOrTimeout:
-    return "cancelled_or_timeout";
-  }
-  llvm_unreachable("unknown joint-design quality incomplete reason");
+  return dse::jointDesignQualityIncompleteReasonSpelling(value);
 }
 
 llvm::StringRef spelling(ApplicationMappingRuntimeDisposition value) {
