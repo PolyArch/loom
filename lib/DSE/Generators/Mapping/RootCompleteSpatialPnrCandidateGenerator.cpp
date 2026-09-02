@@ -843,7 +843,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
         const auto rankBegin = std::chrono::steady_clock::now();
         auto seed = ::loom::pnr::createPathFinderSpatialSeed(
-            candidate.activeProblem, 0, rankWork);
+            candidate.activeProblem, 0, rankWork, {},
+            invocation.executionControl());
         outcome.rankProjectionNanoseconds = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - rankBegin)

@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALGLOBALROUTINGCLOSURE_H
 #define LOOM_PNR_SPATIALGLOBALROUTINGCLOSURE_H
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialActionExecutor.h"
 
 #include "llvm/Support/Error.h"
@@ -46,7 +47,8 @@ private:
 class SpatialGlobalRoutingClosureScratch final {
 public:
   llvm::Error run(SpatialCandidateState &candidate,
-                  SpatialPnrWorkLedgerView workLedger = {});
+                  SpatialPnrWorkLedgerView workLedger = {},
+                  ExecutionControlView executionControl = {});
 
   std::uint64_t endpointExpansionCount() const {
     return actionExecutor_.endpointExpansionCount();

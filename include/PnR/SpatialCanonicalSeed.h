@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALCANONICALSEED_H
 #define LOOM_PNR_SPATIALCANONICALSEED_H
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
 
@@ -64,11 +65,14 @@ using SpatialPathFinderSeedHandoffHandle =
 
 /// Builds one exact initializer slot and applies its explicit global
 /// PathFinder routing Action. A failed slot is returned as an error and is not
-/// replaced by another attempt ordinal.
+/// replaced by another attempt ordinal. An execution stop observed by the
+/// routing owner returns the typed Interrupted closure failure without
+/// consuming the seed attempt.
 llvm::Expected<SpatialPathFinderSeed> createPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
     SpatialPathFinderSeedWorkSummary &workSummary,
-    llvm::ArrayRef<RouteCost> evaluationPriorities = {});
+    llvm::ArrayRef<RouteCost> evaluationPriorities = {},
+    ExecutionControlView executionControl = {});
 
 /// Builds initializer attempt zero and applies its explicit global PathFinder
 /// routing Action. The returned Candidate remains ephemeral and may still

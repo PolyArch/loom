@@ -42,6 +42,7 @@ enum class AttemptFailureKind : std::uint8_t {
   SemanticLimit,
   Rejected,
   Internal,
+  Interrupted,
 };
 
 struct AttemptFailure final {
@@ -374,20 +375,35 @@ AttemptFailure classifyAttemptFailure(llvm::Error error) {
         result.diagnostic = errorMessage(failure);
       },
       [&](const SpatialPathFinderClosureFailure &failure) {
-        result.kind =
-            failure.kind() ==
-                        SpatialPathFinderClosureFailure::Kind::NonClosure ||
-                    failure.kind() ==
-                        SpatialPathFinderClosureFailure::Kind::NoProgress
-                ? AttemptFailureKind::SemanticLimit
-                : AttemptFailureKind::Rejected;
+        switch (failure.kind()) {
+        case SpatialPathFinderClosureFailure::Kind::NonClosure:
+        case SpatialPathFinderClosureFailure::Kind::NoProgress:
+          result.kind = AttemptFailureKind::SemanticLimit;
+          break;
+        case SpatialPathFinderClosureFailure::Kind::Interrupted:
+          result.kind = AttemptFailureKind::Interrupted;
+          break;
+        case SpatialPathFinderClosureFailure::Kind::RegionalLimit:
+        case SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut:
+        case SpatialPathFinderClosureFailure::Kind::
+            SelectedCombinationalHandshakeCycle:
+          result.kind = AttemptFailureKind::Rejected;
+          break;
+        }
         result.diagnostic = errorMessage(failure);
       },
       [&](const SpatialActionTransitionFailure &failure) {
-        result.kind =
-            failure.kind() == SpatialActionTransitionFailureKind::WorkLimit
-                ? AttemptFailureKind::SemanticLimit
-                : AttemptFailureKind::Rejected;
+        switch (failure.kind()) {
+        case SpatialActionTransitionFailureKind::WorkLimit:
+          result.kind = AttemptFailureKind::SemanticLimit;
+          break;
+        case SpatialActionTransitionFailureKind::Interrupted:
+          result.kind = AttemptFailureKind::Interrupted;
+          break;
+        case SpatialActionTransitionFailureKind::IntrinsicInvalid:
+          result.kind = AttemptFailureKind::Rejected;
+          break;
+        }
         result.diagnostic = errorMessage(failure);
       },
       [&](const SpatialGlobalRoutingClosureFailure &failure) {
@@ -835,7 +851,8 @@ SpatialRestartResult runSpatialRestartImpl(
   const auto seedBegin = std::chrono::steady_clock::now();
   llvm::Expected<SpatialPathFinderSeed> seed = [&]() {
     if (!preparedSeedHandoff)
-      return createPathFinderSpatialSeed(problem, attempt, seedWork);
+      return createPathFinderSpatialSeed(problem, attempt, seedWork, {},
+                                         executionControl);
     if (preparedSeedHandoff->consumed)
       return llvm::Expected<SpatialPathFinderSeed>(llvm::createStringError(
           std::make_error_code(std::errc::invalid_argument),
@@ -871,7 +888,8 @@ SpatialRestartResult runSpatialRestartImpl(
   if (!seed)
     seedFailure.emplace(classifyAttemptFailure(seed.takeError()));
   const bool seedAttemptCompleted =
-      !seedFailure || seedFailure->kind != AttemptFailureKind::Internal;
+      !seedFailure || (seedFailure->kind != AttemptFailureKind::Internal &&
+                       seedFailure->kind != AttemptFailureKind::Interrupted);
   if (llvm::Error error = checkedAdd(seedWork.plannedSeedAttempts,
                                      accounting.plannedSeedAttemptSlots,
                                      "planned seed attempt slots"))
@@ -928,7 +946,8 @@ SpatialRestartResult runSpatialRestartImpl(
         InternalSpatialPnrGenerationReason::SeedConstruction,
         std::move(accounting),
         "canonical seed owner completion disagrees with its typed outcome");
-  if (executionControl.stopRequested())
+  if ((seedFailure && seedFailure->kind == AttemptFailureKind::Interrupted) ||
+      executionControl.stopRequested())
     return restartInterrupted(SpatialPnrInterruptionStage::SeedConstruction,
                               std::move(accounting));
   if (seedFailure) {
@@ -1093,7 +1112,8 @@ SpatialRestartResult runSpatialRestartImpl(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
     reporter.restartClock();
-    llvm::Error closureError = finalClosure.run(*seed->candidate, workLedger);
+    llvm::Error closureError =
+        finalClosure.run(*seed->candidate, workLedger, executionControl);
     reporter.phase(reporter.finalClosureNanoseconds);
     emitFinalClosureHandshakeProjectionStatistics(
         finalClosure.handshakeProjectionStatistics(), attempt,
@@ -1102,7 +1122,9 @@ SpatialRestartResult runSpatialRestartImpl(
     if (closureError)
       closureFailure.emplace(classifyAttemptFailure(std::move(closureError)));
     const bool closureAttemptCompleted =
-        !closureFailure || closureFailure->kind != AttemptFailureKind::Internal;
+        !closureFailure ||
+        (closureFailure->kind != AttemptFailureKind::Internal &&
+         closureFailure->kind != AttemptFailureKind::Interrupted);
     if (closureAttemptCompleted)
       if (llvm::Error error =
               workLedger.consume(SpatialPnrWorkKind::FinalClosureAttempt))
@@ -1113,7 +1135,9 @@ SpatialRestartResult runSpatialRestartImpl(
       return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
                              std::move(accounting),
                              std::move(closureFailure->diagnostic));
-    if (executionControl.stopRequested()) {
+    if ((closureFailure &&
+         closureFailure->kind == AttemptFailureKind::Interrupted) ||
+        executionControl.stopRequested()) {
       return restartInterrupted(SpatialPnrInterruptionStage::FinalClosure,
                                 std::move(accounting),
                                 std::move(seed->candidate));

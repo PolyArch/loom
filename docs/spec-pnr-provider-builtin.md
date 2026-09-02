@@ -284,6 +284,17 @@ Equal-cost ties use canonical endpoint and traversal keys. A route failure
 rolls back every route-derived cut and cache whose proof is not valid outside
 that transaction.
 
+The negotiated router observes the invocation-local `ExecutionControlView`
+between its atomic work units only: before each negotiation iteration and
+between the net routes of one iteration, never inside an endpoint A* search.
+An observed stop is the typed `Interrupted` closure failure: the active move
+rolls back its route overlay, a negotiation iteration that was planned but not
+completed stays unconsumed, and the enclosing seed construction, annealing,
+exact repair, or final closure owner reports the restart as interrupted at
+that stage rather than as a work-limit or rejected transition. The stop
+latency is therefore bounded by one net route, and an uninterrupted run
+executes the identical proposal, route, and accounting sequence.
+
 ### Exact Repair Profiles
 
 The Spatial provider uses the required in-process `CpSat_3_0` adapter from the

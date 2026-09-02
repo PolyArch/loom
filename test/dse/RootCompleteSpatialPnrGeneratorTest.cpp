@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <optional>
 #include <system_error>
@@ -110,6 +111,25 @@ struct ImmediateStopSource final {
   static bool query(const void *) { return true; }
 
   loom::ExecutionControlView control() const { return {this, query}; }
+};
+
+/// Requests a stop from one chosen control query onward, so the stop lands at
+/// a chosen owner boundary of the provider's deterministic query sequence.
+class CountedStopSource final {
+public:
+  explicit CountedStopSource(std::uint64_t stopAtQuery)
+      : stopAtQuery_(stopAtQuery) {}
+
+  loom::ExecutionControlView control() const { return {this, query}; }
+
+private:
+  static bool query(const void *context) {
+    const auto &source = *static_cast<const CountedStopSource *>(context);
+    return source.queries_.fetch_add(1) + 1 >= source.stopAtQuery_;
+  }
+
+  std::uint64_t stopAtQuery_;
+  mutable std::atomic<std::uint64_t> queries_{0};
 };
 
 class TemporaryDirectory final {
@@ -1138,6 +1158,70 @@ void interruptionReturnsTypedSpatialSnapshot() {
     fail("Spatial interruption did not map to a cancelled provider outcome");
 }
 
+/// A stop observed inside the negotiated router (between net routes of the
+/// seed's route closure) must surface as an interrupted seed construction that
+/// keeps its planned-but-unconsumed seed attempt and negotiation iteration,
+/// never as a rejected or work-limited seed. Every earlier stop ordinal must
+/// interrupt as well without consuming more than it planned.
+void routingInterruptionPreservesPlannedWork() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  requireSuccess(
+      llvm::errorCodeToError(llvm::sys::fs::create_directories(blobPath)));
+  const loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  Fixture fixture = buildFixture(context, store, blobs);
+  auto dataflow = take(fixture.dataflow.view());
+  auto tech = take(
+      loom::mapping::importTechMapping(fixture.techMappingReference, store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fixture.fabric.view(), store));
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fixture.fabric.view()));
+  constexpr std::uint64_t stopOrdinalLimit = 64;
+  bool observedRouterInterruption = false;
+  for (std::uint64_t stopAtQuery = 1;
+       stopAtQuery <= stopOrdinalLimit && !observedRouterInterruption;
+       ++stopAtQuery) {
+    const CountedStopSource stop(stopAtQuery);
+    const auto outcome = loom::pnr::generateSpatialMappings(
+        {dataflow, tech.view(), fixture.fabric.view(), physicalTiming,
+         buildSpatialConfig(), constraints.view(), store, 1, stop.control()});
+    const auto *interrupted =
+        std::get_if<loom::pnr::InterruptedSpatialPnrGeneration>(&outcome);
+    if (!interrupted)
+      fail("stop at control query " + llvm::Twine(stopAtQuery) +
+           " did not interrupt the Spatial generator");
+    const loom::pnr::SpatialPnrGenerationAccounting &accounting =
+        interrupted->accounting;
+    if (accounting.seedAttemptSlots > accounting.plannedSeedAttemptSlots ||
+        accounting.negotiationIterationSlots >
+            accounting.plannedNegotiationIterationSlots ||
+        accounting.endpointExpansionSlots >
+            accounting.plannedEndpointExpansionSlots ||
+        accounting.publicationSlots != 0 ||
+        interrupted->snapshot.closureResidual.retainedCandidates != 0)
+      fail("stop at control query " + llvm::Twine(stopAtQuery) +
+           " consumed more than it planned or retained a candidate");
+    if (interrupted->snapshot.stage !=
+            loom::pnr::SpatialPnrInterruptionStage::SeedConstruction ||
+        accounting.plannedNegotiationIterationSlots != 1 ||
+        accounting.negotiationIterationSlots != 0)
+      continue;
+    if (accounting.plannedSeedAttemptSlots != 1 ||
+        accounting.seedAttemptSlots != 0)
+      fail("router interruption consumed the seed attempt");
+    observedRouterInterruption = true;
+  }
+  if (!observedRouterInterruption)
+    fail("no stop ordinal below " + llvm::Twine(stopOrdinalLimit) +
+         " interrupted the negotiated router inside a planned iteration");
+}
+
 void unavailableNegotiationFailsClosedAtConfigProjection() {
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.routing.negotiation =
@@ -1977,6 +2061,7 @@ int main(int argc, char **argv) {
           .Case("first-verified-prefix",
                 firstVerifiedCandidateRetainsTypedPrefix)
           .Case("typed-interruption", interruptionReturnsTypedSpatialSnapshot)
+          .Case("routing-interruption", routingInterruptionPreservesPlannedWork)
           .Case("unavailable-negotiation",
                 unavailableNegotiationFailsClosedAtConfigProjection)
           .Case("initializer-semantic-limit",

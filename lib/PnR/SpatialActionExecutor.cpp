@@ -33,10 +33,15 @@ void SpatialActionTransitionFailure::log(llvm::raw_ostream &stream) const {
 }
 
 std::error_code SpatialActionTransitionFailure::convertToErrorCode() const {
-  return std::make_error_code(
-      kind_ == SpatialActionTransitionFailureKind::WorkLimit
-          ? std::errc::resource_unavailable_try_again
-          : std::errc::invalid_argument);
+  switch (kind_) {
+  case SpatialActionTransitionFailureKind::IntrinsicInvalid:
+    return std::make_error_code(std::errc::invalid_argument);
+  case SpatialActionTransitionFailureKind::WorkLimit:
+    return std::make_error_code(std::errc::resource_unavailable_try_again);
+  case SpatialActionTransitionFailureKind::Interrupted:
+    return std::make_error_code(std::errc::operation_canceled);
+  }
+  llvm_unreachable("invalid Spatial Action transition failure kind");
 }
 
 namespace {
@@ -108,6 +113,10 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
         std::string message;
         llvm::raw_string_ostream stream(message);
         closureFailure.log(stream);
+        if (closureFailure.kind() ==
+            SpatialPathFinderClosureFailure::Kind::Interrupted)
+          return llvm::make_error<SpatialActionTransitionFailure>(
+              SpatialActionTransitionFailureKind::Interrupted, stream.str());
         if (closureFailure.kind() == SpatialPathFinderClosureFailure::Kind::
                                          FixedTerminalCapacityCut &&
             context != SpatialActionExecutionContext::Search)
@@ -293,7 +302,8 @@ SpatialActionProbe::resolve(std::uint64_t temperature,
 
 llvm::Error
 SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate,
-                                      SpatialPnrWorkLedgerView workLedger) {
+                                      SpatialPnrWorkLedgerView workLedger,
+                                      ExecutionControlView executionControl) {
   if (activeProbe_)
     return executorError("cannot prepare while a probe is active");
   auto routeCosts = SpatialRouteCostState::create(candidate);
@@ -301,7 +311,8 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate,
     return routeCosts.takeError();
   if (llvm::Error error = candidateScratch_.prepare(candidate.problem()))
     return error;
-  if (llvm::Error error = router_.prepare(candidate.problem(), workLedger))
+  if (llvm::Error error = router_.prepare(candidate.problem(), workLedger,
+                                          executionControl))
     return error;
   auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
   if (!objective)
