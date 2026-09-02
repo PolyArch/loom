@@ -4031,6 +4031,16 @@ provider-contract error, not a calibration miss. Neither side is Mapping/PnR
 legality evidence. These counters describe only the sampled detailed set and
 do not generalize recall to deferred candidates.
 
+The application pair decision joins the same funnel to the exact backend:
+every Mapping observation retains the funnel's best predicted makespan and its
+timing and physical-model support next to the exact Mapping disposition and
+the measured CGRA cycles, and `funnel_exact_comparison` counts the mapped
+sample, the predicted-feasible, exactly verified, measured, and
+out-of-distribution members, and whether the lowest predicted makespan and the
+lowest measured cycle count name the same Mapping. A prediction is never
+relabeled as an exact result; an out-of-distribution candidate keeps its exact
+outcome and its typed refusal side by side.
+
 Screening retains two lower-bound components: the maximum per-region critical
 path bound and the aggregate resource-work bound divided by exact capacity.
 Each component carries the support of the curve point that actually selected

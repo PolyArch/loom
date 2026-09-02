@@ -252,9 +252,21 @@ join of candidate and analytic-gate inventories, actual Tech/Spatial/System
 work, selected Mapping checkpoint, failure-cone counters, work ledgers,
 Mapping outcome inventory, and the pair decision. A pre-admission or causal
 failure uses `loom.application_pair_disposition` version `1.0` and retains the
-same typed decision without fabricating Mapping work. Area, power, and energy
-remain explicit unsupported observations with null values when no owning
-Evidence exists.
+same typed decision without fabricating Mapping work.
+
+Every objective dimension is a non-negative integer in a fixed unit owned by
+`ApplicationObjectiveDimension`. Host-only work, DFG and CGRA cycles,
+resource-core cost, and Mapping work are runtime-measured. Host residual work
+(dynamic leaf executions left on the host), cut transfer work (bytes crossing
+the host/accelerator cut), and launch/synchronization work are analytic
+projections of the selected candidate's exact pre-Mapping ownership and carry
+the analytic evidence grade. Area in square micrometers, power (dynamic plus
+leakage) in microwatts, and the energy of one measured CGRA execution at the
+predicted limiting clock in picojoules are joined only from the selected
+Mapping's completed calibrated FPA observation under the invocation's frozen
+`EdaPredictionModelWeight`; they carry the calibrated evidence grade. Without
+that observation they remain explicit unsupported observations with null
+values; the exact decimal metrics stay owned by the FPA Evidence root.
 
 The selected candidate may retain several Mapping observations. The envelope's
 selected plan ordinal and Mapping root must identify exactly one of them; that
