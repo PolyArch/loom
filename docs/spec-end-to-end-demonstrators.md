@@ -245,21 +245,53 @@ than changing a valid functional result. Tool failure, cancellation, and
 execution limits retain their typed Evaluation outcomes and never become
 infeasibility.
 
-The execution-matrix harness reports setup through
-`loom.execution_matrix_lifecycle.4.0`. The inclusive `setup` aggregate has no
-parent. Its inclusive children name the stable operations
-`dataflow_construction_and_publication`,
+The execution-matrix harness reports its lifecycle through
+`loom.execution_matrix_lifecycle.4.1`. Two inclusive aggregates have no
+parent: `setup` and `host_lifecycle`. The inclusive children of `setup` name
+the stable operations `dataflow_construction_and_publication`,
 `fabric_module_construction_and_finalization`, `tech_mapping`, `spatial_pnr`,
 `system_fabric_and_interconnect_construction`,
 `configuration_abi_and_hardware_implementation_generation`,
 `system_mapping_and_pnr`, `guest_compile_and_link`,
 `runtime_binding_and_deployment_finalization`, and
 `workload_and_runtime_input_publication`; every child names `setup` as its
-parent. Every aggregate and child reports wall time, self CPU time, waited-child
-CPU time, the self-process lifetime high-water RSS snapshot, and the maximum
-waited-descendant RSS snapshot. These observations do not alter construction
-order, cache policy, identity, or evidence. Inclusive rows overlap and must not
-be summed; RSS snapshots are not interval deltas.
+parent. The inclusive children of `host_lifecycle` name `gem5_readiness`,
+`gem5_binding`, `request_construction`, `ordinary_prepare`,
+`ordinary_external_execution`, `ordinary_import_and_evidence_assembly`,
+`ordinary_evidence_publication`, `ordinary_execution_import`, and the
+`diagnostic_` counterparts of the last five; `oracle_verification` and
+`cleanup` have no parent. Every aggregate and child reports wall time, self CPU time,
+waited-child CPU time, the self-process lifetime high-water RSS snapshot, the
+maximum waited-descendant RSS snapshot, and `begin_monotonic_ns`, the
+CLOCK_MONOTONIC reading at the interval start that aligns the row with an
+external sampler recording on the same clock. An RTL cell reports every
+external Verilation, build, and controller command as one
+`loom.execution_matrix_external_command.3` row with its role, wall time, and
+exit code; gem5 configuration, gem5 simulation, managed-engine startup, and
+engine-active intervals belong to the diagnostic attempt's
+`loom.execution_matrix_summary.4` row. These observations do not alter
+construction order, cache policy, identity, or evidence. Inclusive rows
+overlap and must not be summed; RSS snapshots are not interval deltas.
+
+An attempt pair runs the ordinary and the diagnostic attempt of one System
+cell against one fixture, one gem5 binding, and one store domain. The
+removable import sessions of that domain (artifact import, Fabric import,
+ConfigurationABI import, SystemMapping import, configuration-image
+projection, and the gem5 System facts session) are reported per attempt as
+counter deltas through `loom.execution_matrix_cache.2` (requests, hits,
+misses, construction attempts, unique, uncached, unsupported, and failed
+constructions, revalidation count and revalidated artifact and blob bytes,
+construction wall time, retained bytes, entries) and per facts closure class
+through `loom.execution_matrix_facts_operation.2` (`derive_facts`,
+`system_inputs_and_deployment_import`, `gem5_binding_import`,
+`entire_fabric_root_import`, `system_mapping_import`, and
+`gem5_guest_runtime_image_projection`). A gem5 facts hit revalidates every
+artifact and blob dependency of the cold closure before reuse; strict
+validation is never disabled. The pair is admissible only when the ordinary
+attempt constructs exactly one facts closure and reuses it at import, the
+diagnostic attempt reuses that closure at prepare and import without any
+construction, and both attempts publish exactly equal functional
+observations (`loom.execution_matrix_attempt_pair.1`).
 
 ## Hardware-Implementation And Evidence Anchor
 
