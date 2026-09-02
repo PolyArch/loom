@@ -1894,7 +1894,7 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v24`; the direct constrained
+`loom.mapping.root_complete_spatial_pnr.generator.v25`; the direct constrained
 Spatial provider uses `loom.mapping.spatial_pnr.generator.v17`. It consumes the
 finite TechMapping output and the same exact Fabric Artifact. Each `T` already
 binds one unique Canonical Dataflow identity, so the descriptor strictly
@@ -1914,8 +1914,17 @@ and traverse the resulting complete quality order. Under
 `FirstVerifiedCandidate`, candidate quality outside the verified prefix is not
 part of the requested result. The adapter therefore performs no speculative
 routing for ordering. It repeatedly selects the prepared `T` covering the
-greatest number of not-yet-covered graph references, breaks ties by canonical
-Artifact reference, and invokes ordinary Spatial PnR. A graph becomes covered
+greatest number of not-yet-covered graph references, breaks ties by ascending
+physical occurrence demand and then by canonical Artifact reference, and
+invokes ordinary Spatial PnR. Physical occurrence demand is the target-aware
+projection of the canonical Tech order's realization demand: the fewest exact
+Fabric occurrences `T` can occupy, counting one FU capability instance per
+compute row, one Memory Operation Engine per memory row on a spatial template,
+and for each temporal template the operation count of its rows divided upward
+by that template's resident context capacity. It is derived from the finalized
+`T` and `F` alone, so the verified prefix follows the exact Fabric rather than
+Artifact identity hashing; it is a preference, not a placement or legality
+claim. A graph becomes covered
 only after that invocation publishes a finalized candidate; failure continues
 to the next alternative. Traversal stops when every graph represented by the
 input set has one verified SpatialMapping or when a typed limit, cancellation,
