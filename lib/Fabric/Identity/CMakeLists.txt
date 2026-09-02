@@ -23,6 +23,7 @@ add_mlir_library(LoomFabricIdentity
   FabricHandshakeModelBuilder.cpp
   FabricHandshakeSelection.cpp
   FabricHandshakeFu.cpp
+  FabricMemoryServiceHandshake.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Identity

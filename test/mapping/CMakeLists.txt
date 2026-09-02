@@ -97,6 +97,17 @@ add_executable(loom-spatial-mapping-artifact-test
   TechMappingCandidateTestSupport.cpp
 )
 
+add_executable(loom-spatial-memory-service-handshake-test
+  ../TestAllocationProbe.cpp
+  CgraAdmissionTestSupport.cpp
+  HandshakeProjectionTestSupport.cpp
+  SpatialCandidateSelectionTestSupport.cpp
+  SpatialMemoryActionTestSupport.cpp
+  SpatialMemoryMappingArtifactTestSupport.cpp
+  SpatialMemoryServiceHandshakeTest.cpp
+  TechMappingCandidateTestSupport.cpp
+)
+
 add_executable(loom-spatial-tag-continuity-index-test
   SpatialTagContinuityIndexTest.cpp
 )
@@ -106,6 +117,7 @@ loom_enable_allocation_probe(loom-tech-mapping-compute-boundary-test)
 loom_enable_allocation_probe(loom-spatial-candidate-workflow-test)
 loom_enable_allocation_probe(loom-tech-mapping-generator-test)
 loom_enable_allocation_probe(loom-spatial-mapping-artifact-test)
+loom_enable_allocation_probe(loom-spatial-memory-service-handshake-test)
 
 add_executable(loom-configured-hardware-projection-test
   ConfiguredHardwareProjectionTest.cpp
@@ -117,6 +129,12 @@ target_include_directories(loom-configured-hardware-projection-test PRIVATE
 )
 
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+  ${LOOM_SOURCE_DIR}/lib/PnR
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
+target_include_directories(loom-spatial-memory-service-handshake-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
   ${LOOM_SOURCE_DIR}/lib/PnR
   ${LOOM_SOURCE_DIR}/lib/Simulator
@@ -271,6 +289,29 @@ target_link_libraries(loom-spatial-mapping-wire-test PRIVATE
 )
 
 target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
+  LoomADGBuilder
+  LoomDSEMappingGenerator
+  LoomMappingArtifact
+  LoomMappingInspection
+  LoomStructuredFabricAnalyticModel
+  LoomPnR
+  LoomPnRCpSat
+  LoomPnRGenerator
+  LoomTechMapping
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMapping
+  MLIRMemRefDialect
+  MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-spatial-memory-service-handshake-test PRIVATE
   LoomADGBuilder
   LoomDSEMappingGenerator
   LoomMappingArtifact

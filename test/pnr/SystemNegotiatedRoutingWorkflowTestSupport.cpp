@@ -812,11 +812,20 @@ void loom::pnr::test::verifySystemNegotiatedRoutingWorkflow(
           "final capacity fixture did not isolate non-route overuse");
   auto closedDraft =
       take(materializeSystemCandidateDraft(*firstClosed, context));
-  require(std::holds_alternative<mapping::VerifiedSystemMappingBase>(
-              mapping::verifySystemMappingBase(
-                  mlir::cast<::mapping::SystemOp>(closedDraft.get()), dataflow,
-                  system, store)),
-          "artifact verifier rejected the strict capacity closure");
+  auto baseVerification = mapping::verifySystemMappingBase(
+      mlir::cast<::mapping::SystemOp>(closedDraft.get()), dataflow, system,
+      store);
+  if (!std::holds_alternative<mapping::VerifiedSystemMappingBase>(
+          baseVerification))
+    std::visit(
+        [&](const auto &outcome) {
+          using Outcome = std::decay_t<decltype(outcome)>;
+          if constexpr (!std::is_same_v<
+                            Outcome, mapping::VerifiedSystemMappingBase>)
+            fail("artifact verifier rejected the strict capacity closure: " +
+                 outcome.diagnostic);
+        },
+        baseVerification);
   auto replayConflict = take(SystemCandidateState::create(
       sufficient.problem,
       {first.state->threadChoices(), first.state->graphChoices(),

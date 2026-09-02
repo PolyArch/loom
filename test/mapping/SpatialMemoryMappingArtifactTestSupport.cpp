@@ -604,6 +604,24 @@ void completeMemorySpatialMappingRoundTrip(bool temporal, bool splitExposures) {
           engine.operations.front())
               .uses.size() != 2)
     fail("strict SpatialMapping round trip lost the rooted memory use");
+  const auto &serviceHandshake =
+      imported.view().memoryServiceHandshakeSelection();
+  if (serviceHandshake.operations.size() != engine.operations.size() ||
+      serviceHandshake.providers.empty())
+    fail("strict SpatialMapping round trip lost memory-service handshake "
+         "selection");
+  auto handshakeContext =
+      take(loom::fabric::buildFabricHandshakeContext(fabric.view()));
+  requireSuccess(loom::fabric::verifySelectedMemoryServiceHandshakeAcyclic(
+      fabric.view(), imported.view().handshakeSelection(), serviceHandshake,
+      handshakeContext));
+  auto incompleteServiceHandshake = serviceHandshake;
+  incompleteServiceHandshake.operations.pop_back();
+  if (!rejected(loom::fabric::verifySelectedMemoryServiceHandshakeAcyclic(
+          fabric.view(), imported.view().handshakeSelection(),
+          incompleteServiceHandshake, handshakeContext)))
+    fail("memory-service handshake verification accepted an incomplete exact "
+         "selection");
   const auto memorySchema =
       take(fabric.view().memoryConfigurationSchema(engine.occurrence));
   const loom::mapping::ConfiguredHardwareFieldValueView *memoryField = nullptr;

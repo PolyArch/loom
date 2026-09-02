@@ -9,6 +9,7 @@
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/ConfiguredHardwareProjection.h"
+#include "Fabric/Identity/FabricMemoryServiceHandshake.h"
 #include "Mapping/IR/MappingOps.h"
 #include "Mapping/IR/MappingSchema.h"
 
@@ -576,6 +577,10 @@ public:
   const ::loom::fabric::FabricHandshakeSelection &handshakeSelection() const {
     return handshakeSelection_;
   }
+  const ::loom::fabric::FabricMemoryServiceHandshakeSelection &
+  memoryServiceHandshakeSelection() const {
+    return memoryServiceHandshakeSelection_;
+  }
 
 private:
   SpatialMappingView(
@@ -589,7 +594,9 @@ private:
       std::vector<SpatialResourceUseView> resourceUses,
       std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments,
       ConfiguredHardwareProjectionView configuredHardware,
-      ::loom::fabric::FabricHandshakeSelection handshakeSelection)
+      ::loom::fabric::FabricHandshakeSelection handshakeSelection,
+      ::loom::fabric::FabricMemoryServiceHandshakeSelection
+          memoryServiceHandshakeSelection)
       : identity_(std::move(identity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         dataflowIdentity_(std::move(dataflowIdentity)),
@@ -602,7 +609,9 @@ private:
         resourceUses_(std::move(resourceUses)),
         physicalTagSegments_(std::move(physicalTagSegments)),
         configuredHardware_(std::move(configuredHardware)),
-        handshakeSelection_(std::move(handshakeSelection)) {}
+        handshakeSelection_(std::move(handshakeSelection)),
+        memoryServiceHandshakeSelection_(
+            std::move(memoryServiceHandshakeSelection)) {}
 
   ArtifactIdentity identity_;
   ArtifactIdentity techMappingIdentity_;
@@ -617,6 +626,8 @@ private:
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments_;
   ConfiguredHardwareProjectionView configuredHardware_;
   ::loom::fabric::FabricHandshakeSelection handshakeSelection_;
+  ::loom::fabric::FabricMemoryServiceHandshakeSelection
+      memoryServiceHandshakeSelection_;
 };
 
 /// Whether the complete selected RouteTree domain contains one exact physical

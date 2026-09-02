@@ -954,12 +954,14 @@ pointerLayoutFor(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 
 struct SelectedHandshakeProjection final {
   ::loom::fabric::FabricHandshakeSelection selection;
+  ::loom::fabric::FabricMemoryServiceHandshakeSelection memoryServices;
   std::vector<std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
       routeTraversals;
 };
 
 llvm::Expected<SelectedHandshakeProjection> deriveSelectedHandshakeSelection(
     const TerminalProjectionContext &context,
+    llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
     llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> uses,
@@ -1003,10 +1005,11 @@ llvm::Expected<SelectedHandshakeProjection> deriveSelectedHandshakeSelection(
 
   auto memorySelections = detail::deriveSpatialMemoryHandshakeSelections(
       context.dataflow, context.techMapping, context.fabric,
-      context.memoryBindings, uses);
+      context.memoryBindings, memoryBindings, uses);
   if (!memorySelections)
     return memorySelections.takeError();
-  selection.memoryOperations = std::move(*memorySelections);
+  selection.memoryOperations = std::move(memorySelections->operations);
+  result.memoryServices = std::move(memorySelections->services);
 
   const auto appendTraversal =
       [&](const ::loom::fabric::FabricPhysicalTraversalRef &traversal,
@@ -1104,6 +1107,8 @@ struct ImportedSpatialView final {
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
   ConfiguredHardwareProjectionView configuredHardware;
   ::loom::fabric::FabricHandshakeSelection handshakeSelection;
+  ::loom::fabric::FabricMemoryServiceHandshakeSelection
+      memoryServiceHandshakeSelection;
 };
 
 llvm::Expected<ImportedSpatialView>
@@ -1281,18 +1286,23 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   if (!operandQueueMatchGroups)
     return operandQueueMatchGroups.takeError();
   auto handshake =
-      deriveSelectedHandshakeSelection(terminalContext, registerFifoTransfers,
-                                       routes, uses, physicalTagSegments);
+      deriveSelectedHandshakeSelection(
+          terminalContext, importedMemory->memoryBindings,
+          registerFifoTransfers, routes, uses, physicalTagSegments);
   if (!handshake)
     return handshake.takeError();
-  if (handshakeContext) {
-    if (llvm::Error error =
-            ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-                fabric, handshake->selection, *handshakeContext))
-      return std::move(error);
-  } else if (llvm::Error error =
-                 ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-                     fabric, handshake->selection)) {
+  std::optional<::loom::fabric::FabricHandshakeContext> localHandshakeContext;
+  if (!handshakeContext) {
+    auto built = ::loom::fabric::buildFabricHandshakeContext(fabric);
+    if (!built)
+      return built.takeError();
+    localHandshakeContext.emplace(std::move(*built));
+    handshakeContext = &*localHandshakeContext;
+  }
+  if (llvm::Error error =
+          ::loom::fabric::verifySelectedMemoryServiceHandshakeAcyclic(
+              fabric, handshake->selection, handshake->memoryServices,
+              *handshakeContext)) {
     return std::move(error);
   }
 
@@ -1349,7 +1359,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                              std::move(uses),
                              std::move(physicalTagSegments),
                              std::move(*configuredHardware),
-                             std::move(handshake->selection)};
+                             std::move(handshake->selection),
+                             std::move(handshake->memoryServices)};
 }
 
 struct PreparedSpatialMapping final {
@@ -1702,7 +1713,8 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->routeTrees), std::move(imported->resourceUses),
       std::move(imported->physicalTagSegments),
       std::move(imported->configuredHardware),
-      std::move(imported->handshakeSelection));
+      std::move(imported->handshakeSelection),
+      std::move(imported->memoryServiceHandshakeSelection));
 }
 
 bool spatialRouteTreeSelectsTraversal(

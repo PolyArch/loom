@@ -241,6 +241,7 @@ set(LOOM_TEST_DEPENDS
   loom-tech-mapping-joint-legality-test
   loom-tech-mapping-search-test
   loom-spatial-mapping-artifact-test
+  loom-spatial-memory-service-handshake-test
   loom-spatial-tag-continuity-index-test
   loom-spatial-mapping-wire-test
   loom-mapping-progress-test

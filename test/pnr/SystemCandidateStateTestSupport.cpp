@@ -1155,6 +1155,40 @@ void loom::pnr::test::verifySystemServiceTargetRejections(
       loom::mapping::verifySystemMappingBase(foreignRegionRoot, dataflow,
                                              fabric, store),
       "selected service target is outside its attachment-bound closure");
+
+  mlir::OwningOpRef<mlir::Operation *> foreignBindingDraft(source->clone());
+  auto foreignBindingRoot =
+      mlir::cast<::mapping::SystemOp>(foreignBindingDraft.get());
+  auto foreignBindingTarget = findMemoryTarget(foreignBindingRoot);
+  require(static_cast<bool>(foreignBindingTarget),
+          "foreign-binding fixture has no memory target");
+  auto foreignBindingService =
+      foreignBindingTarget->getParentOfType<::mapping::ServiceRealizationOp>();
+  require(static_cast<bool>(foreignBindingService),
+          "foreign-binding memory target has no service owner");
+  auto selections = foreignBindingService.getBody()
+                        .front()
+                        .getOps<::mapping::ServicePlanSelectionOp>();
+  require(!selections.empty(),
+          "foreign-binding memory service has no selection");
+  auto selection = *selections.begin();
+  auto key = take(loom::mapping::decodeServicePlanSelectionKey(
+      unsignedBytes(selection.getKey().getRecord()), dataflow.identity()));
+  auto *spatial =
+      std::get_if<loom::mapping::SpatialExecutionContextKey>(&key.context);
+  require(spatial != nullptr,
+          "foreign-binding memory selection is not Spatial");
+  spatial->accCore = loom::fabric::AccCoreOccurrenceRef(
+      spatial->accCore.id() + UINT64_C(1000000));
+  auto encoded = take(loom::mapping::encodeServicePlanSelectionKey(
+      dataflow.identity(), key));
+  selection->setAttr(
+      "key", ::mapping::ServicePlanSelectionKeyAttr::get(
+                 &context, bytesAttr(&context, encoded)));
+  requireFailureContains(
+      loom::mapping::verifySystemMappingBase(foreignBindingRoot, dataflow,
+                                             fabric, store),
+      "ServicePlanSelection closure is incomplete or unreachable");
 }
 
 void loom::pnr::test::verifySystemResourceAction(

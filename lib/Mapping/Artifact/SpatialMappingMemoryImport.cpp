@@ -1249,14 +1249,64 @@ llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
   return result;
 }
 
-llvm::Expected<std::vector<::loom::fabric::FabricMemoryHandshakeSelection>>
+llvm::Expected<SpatialMemoryHandshakeSelections>
 deriveSpatialMemoryHandshakeSelections(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialMemoryEngineBindingView> engines,
+    llvm::ArrayRef<SpatialMemoryBindingView> bindings,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses) {
-  std::vector<::loom::fabric::FabricMemoryHandshakeSelection> result;
+  SpatialMemoryHandshakeSelections result;
+  const auto serviceTarget = [&](const SpatialMemoryOperationView &operation,
+                                 ::loom::fabric::FabricMemoryOccurrenceRef
+                                     occurrence)
+      -> llvm::Expected<
+          ::loom::fabric::FabricMemoryHandshakeServiceTarget> {
+    std::optional<::loom::fabric::FabricMemoryHandshakeServiceTarget>
+        selected;
+    llvm::Error error = llvm::Error::success();
+    std::visit(
+        [&](const auto &typed) {
+          using Operation = std::decay_t<decltype(typed)>;
+          for (const auto &use : typed.uses) {
+            ::loom::fabric::FabricMemoryHandshakeServiceTarget target = [&]()
+                -> ::loom::fabric::FabricMemoryHandshakeServiceTarget {
+              if constexpr (std::is_same_v<
+                                Operation,
+                                SpatialAddressedMemoryOperationView>) {
+                return std::visit(
+                    [](const auto &dispatch)
+                        -> ::loom::fabric::
+                            FabricMemoryHandshakeServiceTarget {
+                      return dispatch;
+                    },
+                    use.dispatch);
+              } else {
+                if (const auto *manager =
+                        std::get_if<::loom::fabric::ManagerEndpointRef>(
+                            &use.consistency))
+                  return *manager;
+                return ::loom::fabric::LocalMemoryServiceRef(
+                    ::loom::fabric::FabricMemoryServiceRef::local(
+                        occurrence));
+              }
+            }();
+            if (selected && *selected != target) {
+              error = invalid("one memory operation selects multiple service "
+                              "targets");
+              return;
+            }
+            selected = std::move(target);
+          }
+        },
+        operation);
+    if (error)
+      return std::move(error);
+    if (!selected)
+      return invalid("memory handshake operation has no rooted use");
+    return std::move(*selected);
+  };
   for (const SpatialMemoryEngineBindingView &engine : engines) {
     const TechMemoryRealizationView *realization =
         findRealization(techMapping, engine.realization);
@@ -1315,8 +1365,55 @@ deriveSpatialMemoryHandshakeSelections(
           roleDemand->sources, roleDemand->destinations);
       if (!selected)
         return selected.takeError();
-      result.push_back(std::move(*selected));
+      auto target = serviceTarget(operation, engine.occurrence);
+      if (!target)
+        return target.takeError();
+      result.operations.push_back(std::move(*selected));
+      result.services.operations.push_back(
+          {placement, capability, std::move(*target)});
     }
+  }
+  std::map<std::string,
+           ::loom::fabric::FabricMemoryProviderServiceHandshakeSelection>
+      providers;
+  for (const SpatialMemoryBindingView &binding : bindings)
+    for (const SpatialExposureEntryView &exposure : binding.exposures) {
+      const auto endpointBytes = ::loom::fabric::canonicalFabricBytes(
+          exposure.terminal.underlying());
+      const std::string key(
+          reinterpret_cast<const char *>(endpointBytes.data()),
+          endpointBytes.size());
+      auto [position, inserted] = providers.try_emplace(
+          key,
+          ::loom::fabric::FabricMemoryProviderServiceHandshakeSelection{
+              exposure.terminal, {}});
+      if (!inserted && position->second.subordinate != exposure.terminal)
+        return invalid("memory provider endpoint key is inconsistent");
+      position->second.targets.push_back(std::visit(
+          [](const auto &dispatch)
+              -> ::loom::fabric::FabricMemoryHandshakeServiceTarget {
+            return dispatch;
+          },
+          exposure.dispatch));
+    }
+  for (auto &[key, provider] : providers) {
+    (void)key;
+    llvm::sort(provider.targets, [](const auto &left, const auto &right) {
+      const auto bytes = [](const auto &target) {
+        return std::visit(
+            [](const auto &selected) {
+              return ::loom::fabric::canonicalFabricBytes(selected);
+            },
+            target);
+      };
+      if (left.index() != right.index())
+        return left.index() < right.index();
+      return bytes(left) < bytes(right);
+    });
+    provider.targets.erase(
+        std::unique(provider.targets.begin(), provider.targets.end()),
+        provider.targets.end());
+    result.services.providers.push_back(std::move(provider));
   }
   return result;
 }
