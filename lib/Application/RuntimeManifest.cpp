@@ -547,10 +547,22 @@ void writeTransition(llvm::json::OStream &json,
     writeAllocationArray(json, "before_active", transition.beforeActive);
     writeAllocationArray(json, "after_active", transition.afterActive);
     writeCompletedRoots(json, transition.completedBefore);
-    writeRootArray(json, "before_live_work", transition.beforeLiveWork);
-    writeRootArray(json, "after_live_work", transition.afterLiveWork);
-    writeOptionalRoot(json, "token_live_state_correspondence",
-                      transition.tokenLiveStateCorrespondence);
+    json.attributeArray("logical_memories", [&] {
+      for (const pnr::ResourceTimeLogicalMemoryCorrespondence &memory :
+           transition.logicalMemories)
+        json.object([&] {
+          json.attributeBegin("memory");
+          writeDataflowReference(json, memory.memory.artifact, memory.memory);
+          json.attributeEnd();
+          json.attribute("parent_binding",
+                         formatComponentViewDigestHex(memory.parentBinding));
+          json.attribute("child_binding",
+                         formatComponentViewDigestHex(memory.childBinding));
+          json.attribute("migration", pnr::resourceTimeLiveStateMigrationSpelling(
+                                          memory.migration));
+          json.attribute("migration_time_ps", memory.migrationTimePicoseconds);
+        });
+    });
     writeOptionalDigest(json, "resource_delta", transition.resourceDeltaDigest);
     writeOptionalDigest(json, "configuration_delta",
                         transition.configurationDeltaDigest);
@@ -572,8 +584,7 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
   if (llvm::Error error = rejectUnknownFields(
           *object,
           {"trigger", "safe_point", "parent", "child", "before_active",
-           "after_active", "completed_before", "before_live_work",
-           "after_live_work", "token_live_state_correspondence",
+           "after_active", "completed_before", "logical_memories",
            "resource_delta", "configuration_delta", "route_delta",
            "reprogramming_time_ps", "migration_time_ps", "status"},
           context))
@@ -631,16 +642,57 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
   auto completedBefore = parseCompletedRoots(*object, context);
   if (!completedBefore)
     return completedBefore.takeError();
-  auto beforeLive = parseRootArray(*object, "before_live_work", context);
-  if (!beforeLive)
-    return beforeLive.takeError();
-  auto afterLive = parseRootArray(*object, "after_live_work", context);
-  if (!afterLive)
-    return afterLive.takeError();
-  auto correspondence =
-      parseOptionalRoot(*object, "token_live_state_correspondence", context);
-  if (!correspondence)
-    return correspondence.takeError();
+  auto memories = requireArray(*object, "logical_memories", context);
+  if (!memories)
+    return memories.takeError();
+  std::vector<pnr::ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
+  for (const auto indexed : llvm::enumerate(**memories)) {
+    const llvm::Twine memoryContext =
+        context + " logical memory " + llvm::Twine(indexed.index());
+    const llvm::json::Object *memoryObject = indexed.value().getAsObject();
+    if (!memoryObject)
+      return malformed(memoryContext + " must be an object");
+    if (llvm::Error error = rejectUnknownFields(
+            *memoryObject,
+            {"memory", "parent_binding", "child_binding", "migration",
+             "migration_time_ps"},
+            memoryContext))
+      return std::move(error);
+    const llvm::json::Value *memoryValue = memoryObject->get("memory");
+    if (!memoryValue)
+      return malformed(memoryContext + " field 'memory' is required");
+    auto memory = parseDataflowReference<dataflow::LogicalMemoryRootRef>(
+        *memoryValue, memoryContext + " memory");
+    if (!memory)
+      return memory.takeError();
+    auto parentBinding =
+        parseOptionalDigest(*memoryObject, "parent_binding", memoryContext);
+    if (!parentBinding)
+      return parentBinding.takeError();
+    auto childBinding =
+        parseOptionalDigest(*memoryObject, "child_binding", memoryContext);
+    if (!childBinding)
+      return childBinding.takeError();
+    if (!*parentBinding || !*childBinding)
+      return malformed(memoryContext + " requires both binding digests");
+    auto migrationSpelling =
+        requireString(*memoryObject, "migration", memoryContext);
+    if (!migrationSpelling)
+      return migrationSpelling.takeError();
+    if (*migrationSpelling !=
+        pnr::resourceTimeLiveStateMigrationSpelling(
+            pnr::ResourceTimeLiveStateMigration::RetainedInPlace))
+      return malformed(memoryContext + " has an unknown migration '" +
+                       *migrationSpelling + "'");
+    auto migrationTime =
+        requireUnsigned(*memoryObject, "migration_time_ps", memoryContext);
+    if (!migrationTime)
+      return migrationTime.takeError();
+    logicalMemories.push_back(
+        {std::move(memory->reference), **parentBinding, **childBinding,
+         pnr::ResourceTimeLiveStateMigration::RetainedInPlace,
+         *migrationTime});
+  }
   auto resourceDelta = parseOptionalDigest(*object, "resource_delta", context);
   if (!resourceDelta)
     return resourceDelta.takeError();
@@ -672,9 +724,7 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
                                      std::move(*beforeActive),
                                      std::move(*afterActive),
                                      std::move(*completedBefore),
-                                     std::move(*beforeLive),
-                                     std::move(*afterLive),
-                                     std::move(*correspondence),
+                                     std::move(logicalMemories),
                                      std::move(*resourceDelta),
                                      std::move(*configurationDelta),
                                      std::move(*routeDelta),
@@ -737,8 +787,10 @@ void canonicalizeGraphOrder(pnr::ResourceTimeTransitionGraph &graph) {
                      });
                  return lhsKey < rhsKey;
                });
-    llvm::sort(transition.beforeLiveWork, artifactRootReferenceLess);
-    llvm::sort(transition.afterLiveWork, artifactRootReferenceLess);
+    llvm::sort(transition.logicalMemories,
+               [](const auto &lhs, const auto &rhs) {
+                 return lhs.memory.entity.value() < rhs.memory.entity.value();
+               });
   }
   llvm::sort(graph.endpoints, [](const auto &lhs, const auto &rhs) {
     const std::string lhsKey = canonicalJsonKey(

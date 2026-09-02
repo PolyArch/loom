@@ -242,17 +242,6 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
         if (llvm::Error error = addArtifact(
                 result.artifacts, transition.safePoint->artifact, artifacts))
           return std::move(error);
-      for (const auto *liveWork :
-           {&transition.beforeLiveWork, &transition.afterLiveWork})
-        for (const ArtifactRootReference &root : *liveWork)
-          if (llvm::Error error =
-                  addArtifact(result.artifacts, root, artifacts))
-            return std::move(error);
-      if (transition.tokenLiveStateCorrespondence)
-        if (llvm::Error error = addArtifact(
-                result.artifacts, *transition.tokenLiveStateCorrespondence,
-                artifacts))
-          return std::move(error);
     }
   for (const ArtifactRootReference &root : runtime.runtimeRequestDependencies())
     if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))

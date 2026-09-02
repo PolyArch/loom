@@ -25,7 +25,9 @@
 #include <array>
 #include <optional>
 #include <system_error>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::pnr {
@@ -256,38 +258,169 @@ bool containsChannelType(mlir::Type type) {
       .wasInterrupted();
 }
 
-bool hasNoPersistentLiveState(
-    const ::dataflow::CanonicalDataflowArtifact &artifact,
-    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
-  if (!dataflow.logicalMemoryRoots().empty())
-    return false;
-  bool closed = true;
+llvm::Error refuse(ResourceTimeTransitionRefusalReason reason,
+                   const llvm::Twine &message) {
+  return llvm::make_error<ResourceTimeTransitionRefusal>(reason,
+                                                         message.str());
+}
+
+/// Channel-typed and DynamicWork state has no correspondence owner, so a
+/// Dataflow carrying either cannot cross a verified edge.
+llvm::Error refuseUnownedLiveState(
+    const ::dataflow::CanonicalDataflowArtifact &artifact) {
+  std::optional<ResourceTimeLiveStateClass> unowned;
   artifact.module()->walk([&](mlir::Operation *operation) {
     if (auto thread = llvm::dyn_cast<::dataflow::ThreadOp>(operation)) {
       if (thread.getDomain().getKind() ==
-              ::dataflow::ThreadDomainKind::DynamicWork)
-        closed = false;
+          ::dataflow::ThreadDomainKind::DynamicWork)
+        unowned = ResourceTimeLiveStateClass::DynamicWork;
       for (mlir::Type type : thread.getFunctionType().getInputs())
-        if (containsChannelType(type))
-          closed = false;
+        if (containsChannelType(type) && !unowned)
+          unowned = ResourceTimeLiveStateClass::OrderedChannel;
     }
     for (mlir::Value operand : operation->getOperands())
-      if (containsChannelType(operand.getType()))
-        closed = false;
+      if (containsChannelType(operand.getType()) && !unowned)
+        unowned = ResourceTimeLiveStateClass::OrderedChannel;
     for (mlir::Value result : operation->getResults())
-      if (containsChannelType(result.getType()))
-        closed = false;
+      if (containsChannelType(result.getType()) && !unowned)
+        unowned = ResourceTimeLiveStateClass::OrderedChannel;
   });
-  return closed;
+  if (!unowned)
+    return llvm::Error::success();
+  return refuse(*unowned == ResourceTimeLiveStateClass::DynamicWork
+                    ? ResourceTimeTransitionRefusalReason::DynamicWorkState
+                    : ResourceTimeTransitionRefusalReason::OrderedChannelState,
+                llvm::Twine("Canonical Dataflow carries ") +
+                    resourceTimeLiveStateClassSpelling(*unowned) +
+                    " live state without a migration correspondence owner");
+}
+
+constexpr llvm::StringLiteral memoryBindingDescriptor{
+    "loom.resource_time.memory_binding.v1"};
+
+::dataflow::LogicalMemoryRootRef
+logicalMemoryRootOf(const ::dataflow::LogicalMemoryRootOrViewRef &memory) {
+  return std::visit(
+      [](const auto &value) -> ::dataflow::LogicalMemoryRootRef {
+        using Value = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Value, ::dataflow::LogicalMemoryRootRef>)
+          return value;
+        else
+          return value.root;
+      },
+      memory);
+}
+
+/// Digest of every exact physical memory target one endpoint binds for one
+/// logical memory root: the view or root, its byte interval, the memory
+/// service region, and the service transform path.
+llvm::Expected<ComponentViewDigest> memoryBindingDigest(
+    const ::loom::mapping::FinalizedSystemMapping &mapping,
+    ::dataflow::LogicalMemoryRootRef root, bool &bound) {
+  std::vector<std::vector<std::uint8_t>> rows;
+  for (const auto &realization : mapping.view().serviceRealizations())
+    for (const auto &plan : realization.plans)
+      for (const auto &target : plan.memoryTargets) {
+        if (logicalMemoryRootOf(target.element.logicalMemory) != root)
+          continue;
+        std::vector<std::uint8_t> row;
+        std::visit(
+            [&](const auto &memory) {
+              using Memory = std::decay_t<decltype(memory)>;
+              if constexpr (std::is_same_v<Memory,
+                                           ::dataflow::LogicalMemoryRootRef>) {
+                appendU64(row, 0);
+                appendU64(row, memory.entity.value());
+              } else {
+                appendU64(row, 1);
+                appendU64(row, memory.root.entity.value());
+                appendU64(row, memory.viewOrdinal);
+              }
+            },
+            target.element.logicalMemory);
+        std::visit(
+            [&](const auto &interval) {
+              using Interval = std::decay_t<decltype(interval)>;
+              if constexpr (std::is_same_v<
+                                Interval,
+                                ::loom::mapping::SpatialMemoryByteRangeView>) {
+                appendU64(row, 1);
+                appendU64(row, interval.offsetBytes);
+                appendU64(row, interval.sizeBytes);
+              } else {
+                appendU64(row, 0);
+              }
+            },
+            target.element.interval);
+        appendBlob(row, ::loom::fabric::canonicalFabricBytes(
+                            target.element.serviceRegion));
+        appendU64(row, target.element.transformPath.size());
+        for (const auto &transform : target.element.transformPath)
+          appendBlob(row, ::loom::fabric::canonicalFabricBytes(transform));
+        rows.push_back(std::move(row));
+      }
+  bound = !rows.empty();
+  llvm::sort(rows);
+  std::vector<std::uint8_t> bytes;
+  appendU64(bytes, rows.size());
+  for (const auto &row : rows)
+    appendBlob(bytes, row);
+  return computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(memoryBindingDescriptor.data()),
+       memoryBindingDescriptor.size()},
+      bytes);
+}
+
+/// Derives the live-state correspondence of every logical memory root. A
+/// memory bound to identical physical targets at both endpoints is retained
+/// in place at exact zero cost; every other case is a typed refusal because
+/// no migration executor exists.
+llvm::Expected<std::vector<ResourceTimeLogicalMemoryCorrespondence>>
+deriveLogicalMemoryCorrespondence(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::FinalizedSystemMapping &parentMapping,
+    const ::loom::mapping::FinalizedSystemMapping &childMapping,
+    const ::loom::deployment::FinalizedDeployment &childDeployment) {
+  std::vector<ResourceTimeLogicalMemoryCorrespondence> correspondence;
+  for (const auto &memory : dataflow.logicalMemoryRoots()) {
+    bool parentBound = false;
+    bool childBound = false;
+    auto parentBinding =
+        memoryBindingDigest(parentMapping, memory.ref, parentBound);
+    if (!parentBinding)
+      return parentBinding.takeError();
+    auto childBinding = memoryBindingDigest(childMapping, memory.ref, childBound);
+    if (!childBinding)
+      return childBinding.takeError();
+    if (!parentBound || !childBound)
+      return refuse(ResourceTimeTransitionRefusalReason::LogicalMemoryUnbound,
+                    "a logical memory has no exact memory target at one "
+                    "endpoint");
+    if (*parentBinding != *childBinding)
+      return refuse(ResourceTimeTransitionRefusalReason::LogicalMemoryRelocated,
+                    "endpoints bind a logical memory to different physical "
+                    "targets and no migration executor exists");
+    for (const auto &image : childDeployment.deployment().staticMemoryImages())
+      if (image.logicalMemoryRoot() == memory.ref)
+        return refuse(
+            ResourceTimeTransitionRefusalReason::LogicalMemoryReinitialized,
+            "child Deployment would reinitialize a retained logical memory");
+    correspondence.push_back(
+        {memory.ref, *parentBinding, *childBinding,
+         ResourceTimeLiveStateMigration::RetainedInPlace, 0});
+  }
+  llvm::sort(correspondence, [](const auto &lhs, const auto &rhs) {
+    return lhs.memory.entity.value() < rhs.memory.entity.value();
+  });
+  return correspondence;
 }
 
 struct DerivedTransitionDigests final {
   ComponentViewDigest resources;
   ComponentViewDigest configuration;
   ComponentViewDigest routes;
-  bool hardwareProgrammingChanged = false;
-  bool noPersistentLiveState = false;
-  bool completionFrontierIsCausallyAdmissible = false;
+  std::vector<ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
+  std::uint64_t migrationTimePicoseconds = 0;
 };
 
 bool sameRootSet(
@@ -419,14 +552,28 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
       parentMapping->view().executionBindings().rootThreadLaunches());
   if (!completionFrontier)
     return completionFrontier.takeError();
-  return DerivedTransitionDigests{
-      *resources,
-      *configuration,
-      *routes,
-      beforeConfiguration->hardwareProgramming !=
-          afterConfiguration->hardwareProgramming,
-      hasNoPersistentLiveState(*dataflowArtifact, *dataflow),
-      *completionFrontier};
+  if (!*completionFrontier)
+    return refuse(
+        ResourceTimeTransitionRefusalReason::CompletionFrontierInadmissible,
+        "completion frontier is not causally admissible under the canonical "
+        "Dataflow event relation");
+  if (llvm::Error error = refuseUnownedLiveState(*dataflowArtifact))
+    return std::move(error);
+  auto logicalMemories = deriveLogicalMemoryCorrespondence(
+      *dataflow, *parentMapping, *childMapping, *childDeployment);
+  if (!logicalMemories)
+    return logicalMemories.takeError();
+  if (beforeConfiguration->hardwareProgramming !=
+      afterConfiguration->hardwareProgramming)
+    return refuse(
+        ResourceTimeTransitionRefusalReason::HardwareProgrammingChanged,
+        "changed Deployment hardware-programming state has no exact "
+        "reprogramming-time owner");
+  std::uint64_t migrationTime = 0;
+  for (const auto &memory : *logicalMemories)
+    migrationTime += memory.migrationTimePicoseconds;
+  return DerivedTransitionDigests{*resources, *configuration, *routes,
+                                  std::move(*logicalMemories), migrationTime};
 }
 
 llvm::Error
@@ -441,9 +588,6 @@ requireCompletionSafePointDraft(const ResourceTimeTransition &transition) {
   if (transition.beforeActive.size() != 1)
     return invalid("completion transition requires one active completing "
                    "parent region");
-  if (!transition.beforeLiveWork.empty() || !transition.afterLiveWork.empty() ||
-      transition.tokenLiveStateCorrespondence)
-    return invalid("completion transition has unproved live or token state");
   if (llvm::any_of(transition.afterActive, [&](const auto &allocation) {
         return allocation.region == transition.beforeActive.front().region;
       }))
@@ -500,6 +644,8 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
     return invalid("transition draft has authored delta digests");
   if (draft.reprogrammingTimePicoseconds || draft.migrationTimePicoseconds)
     return invalid("transition draft has authored cost components");
+  if (!draft.logicalMemories.empty())
+    return invalid("transition draft has authored live-state correspondence");
   if (llvm::Error error = requireCompletionSafePointDraft(draft))
     return std::move(error);
   if (llvm::Error error = validateResourceTimeTransition(draft))
@@ -507,20 +653,12 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
   auto digests = deriveTransitionDigests(draft, artifacts, blobs);
   if (!digests)
     return digests.takeError();
-  if (!digests->completionFrontierIsCausallyAdmissible)
-    return invalid("completion frontier is not causally admissible under the "
-                   "canonical Dataflow event relation");
-  if (!digests->noPersistentLiveState)
-    return invalid("Canonical Dataflow has persistent live state without a "
-                   "migration proof owner");
-  if (digests->hardwareProgrammingChanged)
-    return invalid("changed Deployment hardware-programming state has no exact "
-                   "reprogramming-time owner");
   draft.resourceDeltaDigest = digests->resources;
   draft.configurationDeltaDigest = digests->configuration;
   draft.routeDeltaDigest = digests->routes;
+  draft.logicalMemories = std::move(digests->logicalMemories);
   draft.reprogrammingTimePicoseconds = 0;
-  draft.migrationTimePicoseconds = 0;
+  draft.migrationTimePicoseconds = digests->migrationTimePicoseconds;
   draft.status = ResourceTimeTransitionStatus::Verified;
   if (llvm::Error error =
           verifyResourceTimeTransitionClosure(draft, artifacts, blobs))
@@ -536,15 +674,6 @@ llvm::Error verifyResourceTimeTransitionDeltaDigests(
   auto expected = deriveTransitionDigests(transition, artifacts, blobs);
   if (!expected)
     return expected.takeError();
-  if (!expected->completionFrontierIsCausallyAdmissible)
-    return invalid("completion frontier is not causally admissible under the "
-                   "canonical Dataflow event relation");
-  if (!expected->noPersistentLiveState)
-    return invalid("Canonical Dataflow has persistent live state without a "
-                   "migration proof owner");
-  if (expected->hardwareProgrammingChanged)
-    return invalid("changed Deployment hardware-programming state has no exact "
-                   "reprogramming-time owner");
   if (!transition.reprogrammingTimePicoseconds ||
       !transition.migrationTimePicoseconds)
     return invalid("verified transition has no exact cost components");
@@ -552,9 +681,13 @@ llvm::Error verifyResourceTimeTransitionDeltaDigests(
     return invalid("unchanged Deployment hardware-programming state has "
                    "nonzero "
                    "reprogramming time");
-  if (*transition.migrationTimePicoseconds != 0)
-    return invalid("completion-only transition cannot claim live-state "
-                   "migration work");
+  if (transition.logicalMemories != expected->logicalMemories)
+    return invalid("live-state correspondence disagrees with endpoint memory "
+                   "bindings");
+  if (*transition.migrationTimePicoseconds !=
+      expected->migrationTimePicoseconds)
+    return invalid("migration time disagrees with the live-state "
+                   "correspondence");
   if (!transition.resourceDeltaDigest ||
       *transition.resourceDeltaDigest != expected->resources)
     return invalid("resource delta digest disagrees with endpoint semantics");

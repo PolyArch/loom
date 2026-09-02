@@ -14,9 +14,12 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -130,6 +133,90 @@ enum class ResourceTimeConcurrencyBoundStatus : std::uint8_t {
 llvm::StringRef resourceTimeConcurrencyBoundStatusSpelling(
     ResourceTimeConcurrencyBoundStatus status);
 
+/// The closed set of persistent live-state classes a Canonical Dataflow may
+/// carry across a completion safe point. `LogicalMemory` has a correspondence
+/// owner (`ResourceTimeLogicalMemoryCorrespondence`); `OrderedChannel` and
+/// `DynamicWork` state has no migration owner and is a typed refusal.
+enum class ResourceTimeLiveStateClass : std::uint8_t {
+  LogicalMemory,
+  OrderedChannel,
+  DynamicWork,
+};
+
+llvm::StringRef
+resourceTimeLiveStateClassSpelling(ResourceTimeLiveStateClass stateClass);
+
+/// How one retained live-state owner crosses the edge. `RetainedInPlace` is
+/// the only executable disposition: both endpoints bind the owner to the same
+/// physical memory targets, so no byte moves and the migration cost is exactly
+/// zero. A relocated owner has no migration executor and is refused.
+enum class ResourceTimeLiveStateMigration : std::uint8_t {
+  RetainedInPlace,
+};
+
+llvm::StringRef
+resourceTimeLiveStateMigrationSpelling(ResourceTimeLiveStateMigration migration);
+
+/// Typed correspondence of one logical memory between the parent and child
+/// endpoints. The binding digests are derived by the finalizer from the exact
+/// SystemMapping memory targets of each endpoint; an authored record cannot
+/// earn `Verified`.
+struct ResourceTimeLogicalMemoryCorrespondence final {
+  ::dataflow::LogicalMemoryRootRef memory;
+  ComponentViewDigest parentBinding;
+  ComponentViewDigest childBinding;
+  ResourceTimeLiveStateMigration migration =
+      ResourceTimeLiveStateMigration::RetainedInPlace;
+  std::uint64_t migrationTimePicoseconds = 0;
+
+  friend bool operator==(const ResourceTimeLogicalMemoryCorrespondence &lhs,
+                         const ResourceTimeLogicalMemoryCorrespondence &rhs) {
+    return lhs.memory == rhs.memory &&
+           lhs.parentBinding == rhs.parentBinding &&
+           lhs.childBinding == rhs.childBinding &&
+           lhs.migration == rhs.migration &&
+           lhs.migrationTimePicoseconds == rhs.migrationTimePicoseconds;
+  }
+  friend bool operator!=(const ResourceTimeLogicalMemoryCorrespondence &lhs,
+                         const ResourceTimeLogicalMemoryCorrespondence &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// Typed refusal of a transition proof. Every reason is an auditable
+/// negative: the edge stays `ProofNotEstablished` and the reason names the
+/// missing owner rather than a generic unsupported state.
+enum class ResourceTimeTransitionRefusalReason : std::uint8_t {
+  OrderedChannelState,
+  DynamicWorkState,
+  LogicalMemoryUnbound,
+  LogicalMemoryRelocated,
+  LogicalMemoryReinitialized,
+  HardwareProgrammingChanged,
+  CompletionFrontierInadmissible,
+};
+
+llvm::StringRef resourceTimeTransitionRefusalReasonSpelling(
+    ResourceTimeTransitionRefusalReason reason);
+
+class ResourceTimeTransitionRefusal final
+    : public llvm::ErrorInfo<ResourceTimeTransitionRefusal> {
+public:
+  static char ID;
+
+  ResourceTimeTransitionRefusal(ResourceTimeTransitionRefusalReason reason,
+                                std::string message)
+      : reason_(reason), message_(std::move(message)) {}
+
+  ResourceTimeTransitionRefusalReason reason() const { return reason_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  ResourceTimeTransitionRefusalReason reason_;
+  std::string message_;
+};
+
 /// One region's explicit allocation at a compiler-known resource-time state.
 /// The region identity is owned by Canonical Dataflow; physical owners are
 /// borrowed from the existing Fabric/System mapping domains.
@@ -156,17 +243,19 @@ struct ResourceTimeTransition final {
   /// at a completion-only safe point. Remaining roots may start under the
   /// child Mapping after the edge is selected.
   std::vector<::dataflow::RootThreadLaunchRef> completedBefore;
-  std::vector<ArtifactRootReference> beforeLiveWork;
-  std::vector<ArtifactRootReference> afterLiveWork;
-  std::optional<ArtifactRootReference> tokenLiveStateCorrespondence;
+  /// Derived live-state correspondence of every logical memory that crosses
+  /// the edge, one record per Canonical Dataflow memory root. Channel-typed
+  /// and DynamicWork state cannot cross a verified edge.
+  std::vector<ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
   std::optional<ComponentViewDigest> resourceDeltaDigest;
   std::optional<ComponentViewDigest> configurationDeltaDigest;
   std::optional<ComponentViewDigest> routeDeltaDigest;
   /// Exact compiler-owned cost of programming the changed Deployment
   /// configuration. This remains distinct from live-state migration.
   std::optional<std::uint64_t> reprogrammingTimePicoseconds;
-  /// Exact compiler-owned live-state migration cost. A quiescent completion
-  /// edge may establish the exact value zero without fabricating live work.
+  /// Exact compiler-owned live-state migration cost: the sum over
+  /// `logicalMemories`. A retained-in-place edge establishes the exact value
+  /// zero without fabricating live work.
   std::optional<std::uint64_t> migrationTimePicoseconds;
   ResourceTimeTransitionStatus status =
       ResourceTimeTransitionStatus::ProofNotEstablished;
@@ -248,13 +337,15 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
                                     const BlobStore &blobs);
 
 /// Derives the resource, Deployment-configuration, and Mapping-route deltas
-/// from exact endpoint closures, marks the edge verified, and immediately
-/// replays the independent closure verifier. The draft must carry an exact
-/// compiler-owned completion safe point; the bounded completion-only profile
-/// derives exact zero cost components here. The completion prefix may be
-/// nonterminal, but no in-flight region or persistent live state may cross the
-/// edge. This function neither discovers a Mapping nor invents live-state
-/// evidence.
+/// and the logical-memory live-state correspondence from exact endpoint
+/// closures, marks the edge verified, and immediately replays the independent
+/// closure verifier. The draft must carry an exact compiler-owned completion
+/// safe point; the completion prefix may be nonterminal, but no in-flight
+/// region may cross the edge. Logical memories bound to identical physical
+/// targets at both endpoints are retained in place at exact zero cost;
+/// relocated memories, channel-typed state, DynamicWork, and changed hardware
+/// programming are typed `ResourceTimeTransitionRefusal` values. This
+/// function neither discovers a Mapping nor invents live-state evidence.
 llvm::Expected<ResourceTimeTransition>
 finalizeResourceTimeTransition(ResourceTimeTransition draft,
                                const ArtifactStore &artifacts,

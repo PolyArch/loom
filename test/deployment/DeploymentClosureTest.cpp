@@ -299,8 +299,6 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       {},
       {precedingRoot},
       {},
-      {},
-      std::nullopt,
       std::nullopt,
       std::nullopt,
       std::nullopt,
@@ -534,8 +532,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           selectedEvent.transition->beforeActive.front().resources ==
               resources &&
           selectedEvent.transition->afterActive.empty() &&
-          selectedEvent.transition->beforeLiveWork.empty() &&
-          selectedEvent.transition->afterLiveWork.empty() &&
+          selectedEvent.transition->logicalMemories.empty() &&
           selectedEvent.transition->reprogrammingTimePicoseconds == 0 &&
           selectedEvent.transition->migrationTimePicoseconds == 0 &&
           selectedEvent.current == transition.child &&
@@ -1009,17 +1006,16 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto survivingRegion = draft;
   survivingRegion.afterActive = survivingRegion.beforeActive;
   requireFinalizationFailure(std::move(survivingRegion), "remains active");
-  auto liveWork = draft;
-  liveWork.beforeLiveWork = {parent.reference()};
-  requireFinalizationFailure(std::move(liveWork), "unproved live or token");
-  auto afterLiveWork = draft;
-  afterLiveWork.afterLiveWork = {child.reference()};
-  requireFinalizationFailure(std::move(afterLiveWork),
-                             "unproved live or token");
-  auto tokenCorrespondence = draft;
-  tokenCorrespondence.tokenLiveStateCorrespondence = dataflowReference;
-  requireFinalizationFailure(std::move(tokenCorrespondence),
-                             "unproved live or token");
+  auto authoredCorrespondence = draft;
+  authoredCorrespondence.logicalMemories.push_back(
+      {dataflow::LogicalMemoryRootRef{dataflowReference.artifact,
+                                      dataflow::LogicalMemoryRootId(0)},
+       *transition.resourceDeltaDigest,
+       *transition.resourceDeltaDigest,
+       pnr::ResourceTimeLiveStateMigration::RetainedInPlace,
+       0});
+  requireFinalizationFailure(std::move(authoredCorrespondence),
+                             "authored live-state correspondence");
   const FinalizedDeployment multiRootParent =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
   const FinalizedDeployment multiRootChild =
@@ -1115,7 +1111,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto wrongMigrationCost = transition;
   wrongMigrationCost.migrationTimePicoseconds = 1;
   requireClosureFailure(std::move(wrongMigrationCost),
-                        "live-state migration work");
+                        "migration time disagrees");
   auto wrongParentDeployment = transition;
   wrongParentDeployment.parent.deployment = child.reference();
   requireClosureFailure(std::move(wrongParentDeployment),

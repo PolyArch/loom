@@ -597,6 +597,61 @@ resourceTimeTransitionStatusSpelling(ResourceTimeTransitionStatus status) {
 }
 
 llvm::StringRef
+resourceTimeLiveStateClassSpelling(ResourceTimeLiveStateClass stateClass) {
+  switch (stateClass) {
+  case ResourceTimeLiveStateClass::LogicalMemory:
+    return "logical_memory";
+  case ResourceTimeLiveStateClass::OrderedChannel:
+    return "ordered_channel";
+  case ResourceTimeLiveStateClass::DynamicWork:
+    return "dynamic_work";
+  }
+  llvm_unreachable("unknown resource-time live-state class");
+}
+
+llvm::StringRef resourceTimeLiveStateMigrationSpelling(
+    ResourceTimeLiveStateMigration migration) {
+  switch (migration) {
+  case ResourceTimeLiveStateMigration::RetainedInPlace:
+    return "retained_in_place";
+  }
+  llvm_unreachable("unknown resource-time live-state migration");
+}
+
+llvm::StringRef resourceTimeTransitionRefusalReasonSpelling(
+    ResourceTimeTransitionRefusalReason reason) {
+  switch (reason) {
+  case ResourceTimeTransitionRefusalReason::OrderedChannelState:
+    return "ordered_channel_state";
+  case ResourceTimeTransitionRefusalReason::DynamicWorkState:
+    return "dynamic_work_state";
+  case ResourceTimeTransitionRefusalReason::LogicalMemoryUnbound:
+    return "logical_memory_unbound";
+  case ResourceTimeTransitionRefusalReason::LogicalMemoryRelocated:
+    return "logical_memory_relocated";
+  case ResourceTimeTransitionRefusalReason::LogicalMemoryReinitialized:
+    return "logical_memory_reinitialized";
+  case ResourceTimeTransitionRefusalReason::HardwareProgrammingChanged:
+    return "hardware_programming_changed";
+  case ResourceTimeTransitionRefusalReason::CompletionFrontierInadmissible:
+    return "completion_frontier_inadmissible";
+  }
+  llvm_unreachable("unknown resource-time transition refusal reason");
+}
+
+char ResourceTimeTransitionRefusal::ID = 0;
+
+void ResourceTimeTransitionRefusal::log(llvm::raw_ostream &stream) const {
+  stream << "resource_time_transition_refused("
+         << resourceTimeTransitionRefusalReasonSpelling(reason_)
+         << "): " << message_;
+}
+
+std::error_code ResourceTimeTransitionRefusal::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+llvm::StringRef
 resourceTimeSafePointKindSpelling(ResourceTimeSafePointKind kind) {
   switch (kind) {
   case ResourceTimeSafePointKind::Completion:
@@ -724,27 +779,23 @@ validateResourceTimeTransition(const ResourceTimeTransition &transition) {
         return invalid("resource-time completion frontier contains a duplicate "
                        "region");
   }
-  const auto validateRoots = [](llvm::ArrayRef<ArtifactRootReference> roots,
-                                llvm::StringRef name) -> llvm::Error {
-    for (std::size_t index = 0; index != roots.size(); ++index) {
-      if (roots[index].schemaIdentity.empty())
-        return invalid(name + " contains an empty artifact reference");
-      for (std::size_t prior = 0; prior != index; ++prior)
-        if (roots[prior] == roots[index])
-          return invalid(name + " contains a duplicate artifact reference");
-    }
-    return llvm::Error::success();
-  };
-  if (llvm::Error error =
-          validateRoots(transition.beforeLiveWork, "before_live_work"))
-    return error;
-  if (llvm::Error error =
-          validateRoots(transition.afterLiveWork, "after_live_work"))
-    return error;
-  if (transition.beforeLiveWork != transition.afterLiveWork &&
-      !transition.tokenLiveStateCorrespondence)
-    return invalid("resource-time live work changed without typed token or "
-                   "live-state correspondence");
+  for (std::size_t index = 0; index != transition.logicalMemories.size();
+       ++index) {
+    const ResourceTimeLogicalMemoryCorrespondence &memory =
+        transition.logicalMemories[index];
+    if (activeDataflow && *activeDataflow != memory.memory.artifact)
+      return invalid("resource-time live-state correspondence names a "
+                     "foreign Dataflow memory");
+    for (std::size_t prior = 0; prior != index; ++prior)
+      if (transition.logicalMemories[prior].memory == memory.memory)
+        return invalid("resource-time live-state correspondence repeats a "
+                       "logical memory");
+    if (memory.migration == ResourceTimeLiveStateMigration::RetainedInPlace &&
+        (memory.parentBinding != memory.childBinding ||
+         memory.migrationTimePicoseconds != 0))
+      return invalid("retained-in-place live state must keep its physical "
+                     "binding at exact zero migration cost");
+  }
   if (transition.status == ResourceTimeTransitionStatus::Verified) {
     if (!transition.safePoint)
       return invalid("verified resource-time transition has no compiler-known "
@@ -917,21 +968,6 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
                                             *childContexts, "child allocation"))
     return error;
 
-  for (const auto *roots :
-       {&transition.beforeLiveWork, &transition.afterLiveWork})
-    for (const ArtifactRootReference &root : *roots) {
-      auto stored = artifacts.get(root);
-      if (!stored)
-        return invalid("resource-time live-work artifact is not available: " +
-                       llvm::toString(stored.takeError()));
-    }
-  if (transition.tokenLiveStateCorrespondence) {
-    auto stored = artifacts.get(*transition.tokenLiveStateCorrespondence);
-    if (!stored)
-      return invalid("resource-time live-state correspondence is not "
-                     "available: " +
-                     llvm::toString(stored.takeError()));
-  }
   if (llvm::Error error = verifyResourceTimeTransitionDeltaDigests(
           transition, artifacts, blobs))
     return error;
