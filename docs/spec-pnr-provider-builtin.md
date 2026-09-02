@@ -89,6 +89,15 @@ alternatives, residual nets, routing topology, resource contracts, packed-row
 fragments, tags, progress dependencies, objective inputs, and reverse indexes.
 Freeze descriptor `loom.spatial_pnr.freeze.2.25` covers those observable
 domains. Internal storage layout is not replay state.
+The frozen-model cache key is a SHA-256 over the domain
+`loom.spatial_pnr.frozen_model.key.v2.25`, whose minor follows the freeze
+descriptor, plus the exact `D/T/F/C/K` identities, the ResolvedConfig view
+descriptor and digest, the freeze descriptor, the importer identity
+`loom.spatial_pnr.importers.2.1`, the native layout tag
+`loom.spatial_pnr.native_layout.2.12`, the PnR index width, and the physical
+timing profile digest. The native layout tag versions only the in-memory
+storage layout: changing it invalidates cached frozen models without changing
+any replay identity.
 
 System freeze validates exact `D/F/R/H/C/K`, imports and independently verifies
 every SpatialMapping in `H`, and derives thread, graph, service, attachment,
