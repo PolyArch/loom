@@ -148,8 +148,38 @@ void removeLoopDebugLocations(ModuleOp module) {
   replacer.recursivelyReplaceElementsIn(module.getOperation());
 }
 
+/// LLVM's link-time pipeline assigns every definition a global identifier
+/// (`!guid`) derived from its name and, for local linkage, its originating
+/// file. That identifier names the host module at link time and carries no
+/// program semantics; retaining it would bind candidate identity to the
+/// absolute source path of one checkout.
+void removeLinkTimeGlobalIdentifiers(ModuleOp module) {
+  constexpr StringRef linkTimeGlobalIdentifierKind = "guid";
+  module.walk([&](LLVM::LLVMFuncOp function) {
+    ArrayAttr metadata = function.getFunctionMetadataAttr();
+    if (!metadata)
+      return;
+    SmallVector<Attribute> retained;
+    for (Attribute entry : metadata) {
+      auto attachment = dyn_cast<LLVM::FunctionMetadataAttr>(entry);
+      if (attachment && attachment.getMetadataName().getValue() ==
+                            linkTimeGlobalIdentifierKind)
+        continue;
+      retained.push_back(entry);
+    }
+    if (retained.size() == metadata.size())
+      return;
+    if (retained.empty())
+      function.removeFunctionMetadataAttr();
+    else
+      function.setFunctionMetadataAttr(
+          ArrayAttr::get(module.getContext(), retained));
+  });
+}
+
 llvm::Error removeTransients(ModuleOp module) {
   removeLoopDebugLocations(module);
+  removeLinkTimeGlobalIdentifiers(module);
   llvm::Error result = llvm::Error::success();
   module.walk([&](Operation *op) {
     if (result)

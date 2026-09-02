@@ -308,8 +308,10 @@ private clone and:
 1. verifies the complete mixed-dialect module and every registered operation;
 2. rejects unresolved source-provider metadata, transform plans, placeholders,
    and target-specific software annotations;
-3. removes locations, debug provenance, consumed source hints, visual metadata,
-   derived analysis state, and any author-supplied identity carrier;
+3. removes locations, debug provenance, LLVM link-time global identifiers
+   (GUID metadata, which for local linkage derives from the originating file),
+   consumed source hints, visual metadata, derived analysis state, and any
+   author-supplied identity carrier;
 4. resolves symbol uses, normalizes private symbols, SSA names, block labels,
    attribute ordering, and nonsemantic symbol-table member order;
 5. preserves externally visible symbol spelling, ABI facts, ordered
