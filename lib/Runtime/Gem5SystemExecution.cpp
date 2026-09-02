@@ -200,7 +200,7 @@ verifyReadiness(const Gem5SystemFacts &facts,
   auto fingerprint = parseExternalFileFingerprint(*binarySha);
   if (!fingerprint)
     return fingerprint.takeError();
-  auto observed = fingerprintExternalFile(tool.executable);
+  auto observed = sessionExternalFileFingerprint(tool.executable);
   if (!observed)
     return observed.takeError();
   if (*observed != *fingerprint)

@@ -206,6 +206,12 @@ deriveFacts(const evaluation::EvaluationRequest &request,
             const evaluation::CaseArtifactResolution &resolution,
             const ArtifactStore &artifacts, const BlobStore &blobs);
 
+/// Proves the exact fingerprint of one external file through the current
+/// facts session when one is active, so one session hashes each unchanged
+/// file once; without a session the bytes are hashed directly.
+llvm::Expected<external_tool::ExternalFileFingerprint>
+sessionExternalFileFingerprint(llvm::StringRef path);
+
 llvm::Expected<Gem5SystemFactsOrUnsupported> deriveFactsUncached(
     const evaluation::EvaluationRequest &request,
     const evaluation::CaseArtifactResolution &resolution,

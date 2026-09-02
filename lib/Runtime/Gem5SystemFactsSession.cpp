@@ -4,9 +4,12 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Evaluation/Request.h"
+#include "ExternalTool/ExternalFile.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/JSON.h"
 
 #include <sys/resource.h>
 #include <time.h>
@@ -16,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -213,12 +217,54 @@ public:
     return facts;
   }
 
+  llvm::Expected<external_tool::ExternalFileFingerprint>
+  externalFileFingerprint(llvm::StringRef path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    addSaturated(statistics_.externalFileFingerprintRequests, 1);
+    auto identity = external_tool::observeExternalFileIdentity(path);
+    if (!identity)
+      return identity.takeError();
+    const auto found = llvm::find_if(
+        externalFiles_, [&](const ExternalFileEntry &entry) {
+          return entry.path == path && entry.observation.identity == *identity;
+        });
+    if (found != externalFiles_.end()) {
+      addSaturated(statistics_.externalFileFingerprintHits, 1);
+      return found->observation.fingerprint;
+    }
+    addSaturated(statistics_.externalFileFingerprintMisses, 1);
+    const auto begin = std::chrono::steady_clock::now();
+    auto observation = external_tool::observeExternalFile(path);
+    addSaturated(statistics_.externalFileFingerprintNanoseconds,
+                 std::chrono::duration_cast<std::chrono::nanoseconds>(
+                     std::chrono::steady_clock::now() - begin)
+                     .count());
+    if (!observation)
+      return observation.takeError();
+    addSaturated(statistics_.externalFileFingerprintedBytes,
+                 observation->identity.size);
+    const auto stale = llvm::find_if(
+        externalFiles_,
+        [&](const ExternalFileEntry &entry) { return entry.path == path; });
+    if (stale != externalFiles_.end())
+      stale->observation = *observation;
+    else
+      externalFiles_.push_back({path.str(), *observation});
+    statistics_.externalFileFingerprintEntryCount = externalFiles_.size();
+    return observation->fingerprint;
+  }
+
   Gem5SystemFactsSessionStatistics statistics() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return statistics_;
   }
 
 private:
+  struct ExternalFileEntry final {
+    std::string path;
+    external_tool::ExternalFileObservation observation;
+  };
+
   struct Key final {
     ArtifactRootReference request;
     std::uint64_t algorithmVersion = gem5SystemFactsAlgorithmVersion;
@@ -266,6 +312,7 @@ private:
   std::size_t entryLimit_ = 0;
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
+  std::vector<ExternalFileEntry> externalFiles_;
   Gem5SystemFactsSessionStatistics statistics_;
 };
 
@@ -297,6 +344,44 @@ Gem5SystemFactsSession::~Gem5SystemFactsSession() {
 
 Gem5SystemFactsSessionStatistics Gem5SystemFactsSession::statistics() const {
   return active_ ? active_->statistics() : Gem5SystemFactsSessionStatistics{};
+}
+
+void emitGem5SystemFactsSessionStatistics(
+    const Gem5SystemFactsSessionStatistics &s) {
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::Deployment,
+      InvocationDiagnosticEvent::Gem5SystemFactsSession, [&] {
+        llvm::json::Object payload;
+        payload["requests"] = s.requests;
+        payload["cache_hits"] = s.cacheHits;
+        payload["cache_misses"] = s.cacheMisses;
+        payload["construction_attempts"] = s.constructionAttempts;
+        payload["unique_constructions"] = s.uniqueConstructions;
+        payload["uncached_constructions"] = s.uncachedConstructions;
+        payload["unsupported_constructions"] = s.unsupportedConstructions;
+        payload["failed_constructions"] = s.failedConstructions;
+        payload["revalidation_count"] = s.revalidationCount;
+        payload["revalidated_artifact_bytes"] = s.revalidatedArtifactBytes;
+        payload["revalidated_blob_bytes"] = s.revalidatedBlobBytes;
+        payload["construction_time_ns"] = s.constructionNanoseconds;
+        payload["construction_time_saved_ns"] =
+            s.constructionNanosecondsSaved;
+        payload["minimum_retained_bytes"] = s.minimumRetainedBytes;
+        payload["entry_count"] = s.entryCount;
+        payload["external_file_fingerprint_requests"] =
+            s.externalFileFingerprintRequests;
+        payload["external_file_fingerprint_hits"] =
+            s.externalFileFingerprintHits;
+        payload["external_file_fingerprint_misses"] =
+            s.externalFileFingerprintMisses;
+        payload["external_file_fingerprinted_bytes"] =
+            s.externalFileFingerprintedBytes;
+        payload["external_file_fingerprint_time_ns"] =
+            s.externalFileFingerprintNanoseconds;
+        payload["external_file_fingerprint_entry_count"] =
+            s.externalFileFingerprintEntryCount;
+        return llvm::json::Value(std::move(payload));
+      });
 }
 
 namespace {
@@ -358,6 +443,13 @@ openGem5SystemInvocationContext(
 }
 
 namespace gem5_system {
+
+llvm::Expected<external_tool::ExternalFileFingerprint>
+sessionExternalFileFingerprint(llvm::StringRef path) {
+  if (currentFactsSession)
+    return currentFactsSession->externalFileFingerprint(path);
+  return external_tool::fingerprintExternalFile(path);
+}
 
 llvm::Expected<std::shared_ptr<const Gem5SystemFactsOrUnsupported>>
 deriveFacts(const evaluation::EvaluationRequest &request,

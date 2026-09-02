@@ -41,6 +41,7 @@
 #include "Runtime/FabricModelRuntimeProvider.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/Gem5SystemExecution.h"
 #include "Runtime/ResourceTimeTransitionSelection.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -1878,6 +1879,9 @@ llvm::Error run() {
   const std::string &workspacePath = workspace->path;
   loom::ArtifactStore artifacts(child(workspacePath, "objects"));
   loom::BlobStore blobs(child(workspacePath, "blobs"));
+  // One immutable gem5 facts session for the workspace's store lifetime: every
+  // System cell's prepare and import reuse its verified closures and proofs.
+  loom::runtime::Gem5SystemFactsSession gem5FactsSession(artifacts, blobs);
   loom::evaluation::ArtifactImportCacheScope artifactImportSession(
       artifacts, &blobs, invocationArtifactImportEntries);
   loom::fabric::FabricArtifactImportSession fabricImportSession;
@@ -2057,6 +2061,8 @@ llvm::Error run() {
   loom::mapping::emitSystemMappingImportSessionStatistics(
       loom::mapping::SystemMappingImportVerificationDomain::SourceInvocation,
       systemMappingImportSession.statistics());
+  loom::runtime::emitGem5SystemFactsSessionStatistics(
+      gem5FactsSession.statistics());
   return result;
 }
 

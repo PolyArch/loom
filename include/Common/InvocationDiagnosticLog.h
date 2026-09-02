@@ -48,6 +48,7 @@ enum class InvocationDiagnosticEvent : std::uint8_t {
   ConfigurationImageProjectionSession,
   SystemMappingImportSession,
   ArtifactImportSession,
+  Gem5SystemFactsSession,
   ApplicationBuildStatistics,
   DeploymentConstructionStatistics,
   DeploymentPackageStatistics,
