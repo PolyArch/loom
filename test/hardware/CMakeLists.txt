@@ -249,6 +249,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-provider-coverage-test PRIVATE
+    LoomHardwareConfigurationTestSupport
     LoomHardwareRTL
     LLVMSupport
   )

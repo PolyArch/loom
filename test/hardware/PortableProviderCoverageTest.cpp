@@ -1,4 +1,5 @@
 #include "Hardware/RTL/PortableProviders.h"
+#include "Hardware/RTL/SpatialCoreImplementation.h"
 #include "Hardware/RTL/Providers/FixedVectorFloatFma.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerAddSub.h"
 #include "Hardware/RTL/Providers/FixedVectorIntegerCompareMinMax.h"
@@ -42,12 +43,26 @@
 #include "Hardware/RTL/Providers/TokenConstantSync.h"
 #include "Hardware/RTL/Providers/TokenMuxDemux.h"
 
+#include "ConfigurationABITestSupport.h"
+
+#include "ADG/Builder.h"
+#include "ADG/FuLibrary.h"
+#include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
+
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -66,6 +81,39 @@ void require(bool condition, llvm::StringRef message) {
   if (!condition)
     fail(message);
 }
+
+template <typename T> T take(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
+}
+
+class TemporaryDirectory final {
+public:
+  TemporaryDirectory() {
+    llvm::SmallString<128> path;
+    if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
+            "loom-portable-provider-closure", path))
+      fail(error.message());
+    path_ = path.str().str();
+  }
+
+  ~TemporaryDirectory() {
+    if (std::error_code error = llvm::sys::fs::remove_directories(path_))
+      llvm::errs() << "portable provider coverage test: unable to remove "
+                   << path_ << ": " << error.message() << '\n';
+  }
+
+  llvm::StringRef path() const { return path_; }
+
+private:
+  std::string path_;
+};
 
 bool sameCoverage(llvm::ArrayRef<FabricOperationProviderCoverage> lhs,
                   llvm::ArrayRef<FabricOperationProviderCoverage> rhs) {
@@ -318,10 +366,98 @@ void aggregateRegistrationIsTransactional() {
           "failed aggregate registration changed the registry");
 }
 
+loom::fabric::FinalizedFabricRoot
+buildPortableSpecialMathModule(const loom::ArtifactStore &artifacts) {
+  const loom::adg::PortType bits128 =
+      take(loom::adg::PortType::bits(128));
+  const std::vector<loom::adg::PortType> inputTypes(2, bits128);
+  const std::vector<loom::adg::PortType> outputTypes(1, bits128);
+  loom::adg::DesignBuilder design(artifacts);
+  auto spatial = take(design.createSpatialCore(
+      "portable-special-math-provider-closure", inputTypes, outputTypes));
+  std::vector<loom::adg::SpatialValue> spatialInputs;
+  for (std::size_t ordinal = 0; ordinal != inputTypes.size(); ++ordinal)
+    spatialInputs.push_back(take(spatial.input(ordinal)));
+  auto pe = take(spatial.addPe(
+      spatialInputs, loom::adg::PeSpec::spatial(inputTypes, outputTypes)));
+  std::vector<loom::adg::PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal != inputTypes.size(); ++ordinal)
+    peInputs.push_back(take(pe.input(ordinal)));
+  requireSuccess(loom::adg::addSpecialMathFu(
+      pe, peInputs,
+      loom::adg::BuiltinSpecialMathCapabilityProfile::PortableProviderClosed));
+  requireSuccess(pe.close());
+  requireSuccess(spatial.close({take(pe.output(0))}));
+  auto finalized = take(std::move(design).finalize());
+  require(finalized.roots().size() == 1,
+          "special-math fixture did not finalize one Module");
+  return std::move(finalized.roots().front());
+}
+
+struct PortableClosureResult final {
+  loom::ArtifactRootReference module;
+  loom::ArtifactRootReference system;
+  loom::ArtifactRootReference configurationAbi;
+  loom::ArtifactRootReference implementation;
+  std::vector<std::uint8_t> implementationBytes;
+};
+
+PortableClosureResult materializePortableSpecialMathClosure(
+    const std::filesystem::path &root) {
+  const std::filesystem::path objectRoot = root / "objects";
+  const std::filesystem::path blobRoot = root / "blobs";
+  std::error_code error;
+  std::filesystem::create_directories(objectRoot, error);
+  if (error)
+    fail("could not create the provider-closure ArtifactStore");
+  std::filesystem::create_directories(blobRoot, error);
+  if (error)
+    fail("could not create the provider-closure BlobStore");
+  loom::ArtifactStore artifacts(objectRoot.string());
+  loom::BlobStore blobs(blobRoot.string());
+  auto module = buildPortableSpecialMathModule(artifacts);
+  auto system = take(loom::hardware::test::makeSingleSpatialCoreSystem(
+      module, artifacts));
+  auto abiDraft = take(
+      loom::hardware::test::makeCompleteConfigurationABIDraft(system));
+  auto abi = take(loom::hardware::finalizeConfigurationABI(
+      std::move(abiDraft), artifacts));
+  const loom::fabric::SpatialCoreOccurrenceRef subject =
+      take(loom::hardware::test::requireSingleSpatialCoreOccurrence(system));
+  auto implementation = take(
+      loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
+          abi, subject, std::nullopt, artifacts, blobs));
+  requireSuccess(
+      loom::hardware::rtl::verifyPortableSpatialCoreHardwareImplementation(
+          abi, implementation));
+  return {module.reference(),
+          system.reference(),
+          abi.reference(),
+          implementation.reference(),
+          std::vector<std::uint8_t>(
+              implementation.canonicalBytes().bytes().begin(),
+              implementation.canonicalBytes().bytes().end())};
+}
+
+void portableSpecialMathProfileHasExecutableProviderClosure() {
+  TemporaryDirectory directory;
+  const std::filesystem::path root(directory.path().str());
+  const PortableClosureResult first =
+      materializePortableSpecialMathClosure(root / "first");
+  const PortableClosureResult repeated =
+      materializePortableSpecialMathClosure(root / "repeated");
+  require(first.module == repeated.module && first.system == repeated.system &&
+              first.configurationAbi == repeated.configurationAbi &&
+              first.implementation == repeated.implementation &&
+              first.implementationBytes == repeated.implementationBytes,
+          "cold portable provider closure changed an artifact identity");
+}
+
 } // namespace
 
 int main() {
   aggregateRegistrationIsTheCoverageAuthority();
   aggregateRegistrationIsTransactional();
+  portableSpecialMathProfileHasExecutableProviderClosure();
   return EXIT_SUCCESS;
 }

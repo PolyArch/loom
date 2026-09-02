@@ -128,6 +128,23 @@ guarantee is no weaker than the actor allowance. Lowering must implement that
 Fabric guarantee or return typed `Unsupported`; it cannot weaken the guarantee,
 reinterpret `afn` as an accuracy level, or select a different tier.
 
+The version 8.1 builtin target has one typed
+`BuiltinSpecialMathCapabilityProfile` authoring parameter. `FullCatalog`
+retains every version 8.0 elementary-math format under strict IEEE behavior and
+a correctly-rounded guarantee. `PortableProviderClosed` selects the exact
+per-family format, behavior, and accuracy table owned by
+[ADG Builder](spec-adg-builder.md#specialmathfu-resource-inventory). All current
+builtin presets select `PortableProviderClosed`. Scalar integer and floating
+divide/remainder are invariant across the two profiles.
+
+The profile is resolved before Fabric finalization and is not a backend recipe
+or a second selector persisted in HardwareImplementation. A provider sees only
+the resulting Fabric-owned capability parameters. It cannot inspect the
+original profile spelling, broaden a narrowed domain, or replace a
+`FullCatalog` capability with the provider-closed relation. Conversely,
+`PortableProviderClosed` does not authorize a runtime query of installed
+providers while constructing Fabric; its table is frozen by the target schema.
+
 Backend recipes may realize the guarantee with portable synthesizable RTL,
 DesignWare, ChipWare, or FPGA primitives and configured IP. Those choices may
 change structure and PPA but not the selected actor tier, Fabric guarantee,
@@ -140,6 +157,17 @@ the exact supported formats, relevant boundary classes, and the claimed ULP
 bound. A provider-generated golden function is not independent evidence. Full
 application correctness remains owned by the application oracle; a leaf-level
 ULP test cannot replace it.
+
+The production portable registry must completely materialize the capability
+domain emitted by `PortableProviderClosed`; this is a conformance obligation,
+not ownership of the target table. Missing tool availability remains an
+execution condition, and unsupported topology, interface, or another Fabric
+capability still has its ordinary typed outcome. `FullCatalog` is a valid
+Fabric target even when the portable recipe cannot implement it. Changing the
+provider-closed table requires a new builtin target schema and regeneration of
+the Fabric, Mapping, ConfigurationABI, Deployment, HardwareImplementation, and
+EDA provenance closure; changing a provider binary alone cannot reinterpret an
+existing Fabric.
 
 ## Common CIRCT Skeleton
 
