@@ -5,6 +5,7 @@ add_library(LoomHardwareImplementation
   FpgaNativeExternalContracts.cpp
   SynopsysDesignWareExternalContract.cpp
   HardwareImplementation.cpp
+  HardwareImplementationDiagnostics.cpp
   HardwareImplementationLocalReference.cpp
   HardwareImplementationValidation.cpp
   ImplementationPayload.cpp

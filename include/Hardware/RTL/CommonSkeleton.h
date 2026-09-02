@@ -11,11 +11,14 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 
 namespace loom::hardware::rtl {
+
+struct RtlModuleGraphProjection;
 
 inline constexpr llvm::StringLiteral fabricOperationGeneratorSchemaSymbol =
     "loom_fabric_operation";
@@ -34,6 +37,14 @@ struct FabricOperationLeafAssociation final {
 struct ModuleRootCirctSkeleton final {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<FabricOperationLeafAssociation> operationLeaves;
+};
+
+/// Optional graph capture for the generated portable SpatialCore path. The
+/// output is populated only after exact post-lowering framed emission and a
+/// cold comparison of the post-export HW graph.
+struct RtlModuleGraphCapture final {
+  llvm::StringRef exactTopModule;
+  RtlModuleGraphProjection *output = nullptr;
 };
 
 /// A valid finalized Fabric whose structural requirements are outside the
@@ -74,8 +85,14 @@ llvm::Error verifySpecializedCirctModule(mlir::ModuleOp module);
 /// Verifies, lowers Seq to SV, verifies again, and exports SystemVerilog.
 /// The input module is consumed by the lowering pipeline and must contain no
 /// unresolved Loom Fabric operation leaf.
-llvm::Expected<std::string>
-lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module);
+llvm::Expected<std::string> lowerAndExportSpecializedSystemVerilog(
+    mlir::ModuleOp module, llvm::StringRef materializationKey = {},
+    std::optional<RtlModuleGraphCapture> moduleGraph = std::nullopt);
+
+llvm::Error lowerAndExportSpecializedSystemVerilog(
+    mlir::ModuleOp module, llvm::raw_ostream &output,
+    llvm::StringRef materializationKey = {},
+    std::optional<RtlModuleGraphCapture> moduleGraph = std::nullopt);
 
 } // namespace loom::hardware::rtl
 

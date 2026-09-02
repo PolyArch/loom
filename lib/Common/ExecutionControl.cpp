@@ -4,7 +4,13 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <limits>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
@@ -26,8 +32,39 @@ std::uint64_t saturatedNanoseconds(std::chrono::steady_clock::duration value) {
   return static_cast<std::uint64_t>(nanoseconds);
 }
 
+std::optional<std::uint64_t> linuxResidentStatusBytes(const char *field) {
+#if defined(__linux__)
+  std::FILE *status = std::fopen("/proc/self/status", "r");
+  if (!status)
+    return std::nullopt;
+  char line[256];
+  std::optional<std::uint64_t> result;
+  const std::size_t fieldLength = std::strlen(field);
+  while (std::fgets(line, sizeof(line), status)) {
+    if (std::strncmp(line, field, fieldLength) != 0)
+      continue;
+    unsigned long long kibibytes = 0;
+    if (std::sscanf(line + fieldLength, "%llu kB", &kibibytes) == 1) {
+      const std::uint64_t value = static_cast<std::uint64_t>(kibibytes);
+      result = value > std::numeric_limits<std::uint64_t>::max() / 1024
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : value * 1024;
+    }
+    break;
+  }
+  if (std::fclose(status) != 0)
+    return std::nullopt;
+  return result;
+#else
+  (void)field;
+  return std::nullopt;
+#endif
+}
+
 std::optional<std::uint64_t> peakResidentMemoryBytes() {
-#if defined(__unix__) || defined(__APPLE__)
+#if defined(__linux__)
+  return linuxResidentStatusBytes("VmHWM:");
+#elif defined(__unix__) || defined(__APPLE__)
   struct rusage usage{};
   if (::getrusage(RUSAGE_SELF, &usage) != 0 || usage.ru_maxrss < 0)
     return std::nullopt;
@@ -39,6 +76,14 @@ std::optional<std::uint64_t> peakResidentMemoryBytes() {
     return std::numeric_limits<std::uint64_t>::max();
   return resident * 1024;
 #endif
+#else
+  return std::nullopt;
+#endif
+}
+
+std::optional<std::uint64_t> currentResidentMemoryBytes() {
+#if defined(__linux__)
+  return linuxResidentStatusBytes("VmRSS:");
 #else
   return std::nullopt;
 #endif
@@ -80,6 +125,14 @@ std::optional<std::uint64_t> processCpuTimeNanoseconds() {
 
 } // namespace
 
+bool releaseUnusedProcessMemory() {
+#if defined(__GLIBC__)
+  return ::malloc_trim(0) != 0;
+#else
+  return false;
+#endif
+}
+
 ExecutionResourceTracker::ExecutionResourceTracker()
     : begin_(std::chrono::steady_clock::now()),
       beginCpuTimeNanoseconds_(processCpuTimeNanoseconds()) {}
@@ -97,7 +150,8 @@ ExecutionResourceStatistics ExecutionResourceTracker::observe() const {
           allocated > std::numeric_limits<std::uint64_t>::max()
               ? std::numeric_limits<std::uint64_t>::max()
               : static_cast<std::uint64_t>(allocated),
-          peakResidentMemoryBytes(), processCpuDelta};
+          currentResidentMemoryBytes(), peakResidentMemoryBytes(),
+          processCpuDelta};
 }
 
 } // namespace loom

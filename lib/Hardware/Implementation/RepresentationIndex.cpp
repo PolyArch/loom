@@ -1,5 +1,6 @@
 #include "Hardware/Implementation/RepresentationIndex.h"
 
+#include "HardwareImplementationDiagnostics.h"
 #include "RepresentationIndexInternal.h"
 
 #include "slang/ast/Compilation.h"
@@ -762,10 +763,24 @@ llvm::Expected<detail::RawIndex> detail::indexHdlRepresentation(
     const RepresentationLocator &exactRoot,
     llvm::ArrayRef<ImplementationPayload> canonicalPayloads,
     const BlobStore &blobs) {
-  auto loaded = loadStoredPayloads(canonicalPayloads, blobs);
+  auto loaded = [&]() -> llvm::Expected<std::vector<LoadedPayload>> {
+    detail::HardwareImplementationStageTracker stage(
+        "representation_blob_load_verify");
+    auto result = loadStoredPayloads(canonicalPayloads, blobs);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!loaded)
     return loaded.takeError();
-  auto raw = indexInitialHdl(formatRef, exactRoot, *loaded);
+  auto raw = [&]() -> llvm::Expected<RawIndex> {
+    detail::HardwareImplementationStageTracker stage(
+        "representation_frontend_index");
+    auto result = indexInitialHdl(formatRef, exactRoot, *loaded);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!raw)
     return raw.takeError();
   const detail::StaticRepresentationFormatEntry &entry =

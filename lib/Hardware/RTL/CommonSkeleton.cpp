@@ -1,8 +1,11 @@
 #include "Hardware/RTL/CommonSkeleton.h"
 
+#include "Hardware/RTL/RtlModuleGraph.h"
+
 #include "Hierarchy/ModuleHierarchy.h"
 
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/RTL/MaterializationDiagnostics.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Transport.h"
@@ -15,6 +18,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
@@ -48,6 +52,26 @@ llvm::Error skeletonError(const llvm::Twine &message) {
 bool isFabricOperationLeaf(circt::hw::HWModuleGeneratedOp module) {
   return module.getGeneratorKind() == fabricOperationGeneratorSchemaSymbol;
 }
+
+class CountingRawOstream final : public llvm::raw_ostream {
+public:
+  explicit CountingRawOstream(llvm::raw_ostream &output) : output_(output) {
+    SetUnbuffered();
+  }
+
+  std::uint64_t byteCount() const { return position_; }
+
+private:
+  void write_impl(const char *data, std::size_t size) override {
+    output_.write(data, size);
+    position_ += size;
+  }
+
+  std::uint64_t current_pos() const override { return position_; }
+
+  llvm::raw_ostream &output_;
+  std::uint64_t position_ = 0;
+};
 
 llvm::Expected<std::set<std::vector<std::uint8_t>>>
 expectedOperationOccurrences(
@@ -196,28 +220,86 @@ llvm::Error verifyCommonCirctSkeleton(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::string>
-lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
-  if (llvm::Error error = verifySpecializedCirctModule(module))
-    return std::move(error);
+llvm::Error lowerAndExportSpecializedSystemVerilog(
+    mlir::ModuleOp module, llvm::raw_ostream &output,
+    llvm::StringRef materializationKey,
+    std::optional<RtlModuleGraphCapture> moduleGraph) {
+  {
+    RtlMaterializationStageTracker stage("verify_before_lowering",
+                                         materializationKey, module);
+    if (llvm::Error error = verifySpecializedCirctModule(module))
+      return error;
+    stage.finish(module);
+  }
 
+  mlir::MLIRContext *context = module.getContext();
+  const bool restoreMultithreading = context->isMultithreadingEnabled();
+  context->disableMultithreading();
+  llvm::scope_exit restoreThreading([&] {
+    if (restoreMultithreading)
+      context->enableMultithreading();
+  });
   circt::LowerSeqToSVOptions loweringOptions;
   loweringOptions.disableRegRandomization = true;
-  mlir::PassManager pipeline(module.getContext());
-  pipeline.addPass(circt::createLowerSeqToSVPass(loweringOptions));
-  circt::seq::HWMemSimImplOptions memoryOptions;
-  memoryOptions.disableMemRandomization = true;
-  memoryOptions.disableRegRandomization = true;
-  pipeline.addPass(circt::seq::createHWMemSimImpl(memoryOptions));
-  if (mlir::failed(pipeline.run(module)))
-    return skeletonError("Seq and memory lowering failed");
-  if (llvm::Error error = verifySpecializedCirctModule(module))
-    return std::move(error);
+  {
+    RtlMaterializationStageTracker stage("lower_seq_to_sv", materializationKey,
+                                         module);
+    mlir::PassManager pipeline(context);
+    pipeline.addPass(circt::createLowerSeqToSVPass(loweringOptions));
+    if (mlir::failed(pipeline.run(module)))
+      return skeletonError("Seq lowering failed");
+    stage.finish(module);
+  }
+  {
+    RtlMaterializationStageTracker stage("hwmem_sim_impl", materializationKey,
+                                         module);
+    circt::seq::HWMemSimImplOptions memoryOptions;
+    memoryOptions.disableMemRandomization = true;
+    memoryOptions.disableRegRandomization = true;
+    mlir::PassManager pipeline(context);
+    pipeline.addPass(circt::seq::createHWMemSimImpl(memoryOptions));
+    if (mlir::failed(pipeline.run(module)))
+      return skeletonError("memory lowering failed");
+    stage.finish(module);
+  }
+  {
+    RtlMaterializationStageTracker stage("verify_after_lowering",
+                                         materializationKey, module);
+    if (llvm::Error error = verifySpecializedCirctModule(module))
+      return error;
+    stage.finish(module);
+  }
+  {
+    RtlMaterializationStageTracker stage("export_verilog", materializationKey,
+                                         module);
+    CountingRawOstream counted(output);
+    if (moduleGraph) {
+      if (!moduleGraph->output || moduleGraph->exactTopModule.empty())
+        return skeletonError("RTL module graph capture is incomplete");
+      auto before = projectRtlModuleGraph(module, moduleGraph->exactTopModule);
+      if (!before)
+        return before.takeError();
+      auto emitted = exportFramedRtlModuleGraph(module, *before, counted);
+      if (!emitted)
+        return emitted.takeError();
+      *moduleGraph->output = std::move(*emitted);
+    } else if (mlir::failed(circt::exportVerilog(module, counted))) {
+      return skeletonError("ExportVerilog rejected the specialized module");
+    }
+    counted.flush();
+    stage.finish(module, counted.byteCount());
+  }
+  return llvm::Error::success();
+}
 
+llvm::Expected<std::string> lowerAndExportSpecializedSystemVerilog(
+    mlir::ModuleOp module, llvm::StringRef materializationKey,
+    std::optional<RtlModuleGraphCapture> moduleGraph) {
   llvm::SmallString<1024> storage;
   llvm::raw_svector_ostream output(storage);
-  if (mlir::failed(circt::exportVerilog(module, output)))
-    return skeletonError("ExportVerilog rejected the specialized module");
+  if (llvm::Error error = lowerAndExportSpecializedSystemVerilog(
+          module, output, materializationKey, moduleGraph))
+    return error;
   return output.str().str();
 }
 

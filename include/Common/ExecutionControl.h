@@ -51,9 +51,15 @@ struct ExecutionResourceBudget final {
 struct ExecutionResourceStatistics final {
   std::uint64_t activeWallTimeNanoseconds = 0;
   std::uint64_t allocatedMemoryBytes = 0;
+  std::optional<std::uint64_t> currentResidentMemoryBytes;
   std::optional<std::uint64_t> peakResidentMemoryBytes;
   std::optional<std::uint64_t> processCpuTimeDeltaNanoseconds;
 };
+
+/// Requests that the host allocator return currently unused pages before an
+/// external child tool starts. This is invocation policy, never semantic work
+/// or an artifact input. False means unsupported or no pages were released.
+bool releaseUnusedProcessMemory();
 
 class ExecutionResourceTracker final {
 public:

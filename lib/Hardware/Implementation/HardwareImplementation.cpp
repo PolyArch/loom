@@ -1,6 +1,8 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/Implementation/FabricModel.h"
 
+#include "HardwareImplementationDiagnostics.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -52,6 +54,8 @@ public:
 };
 
 namespace {
+
+using detail::HardwareImplementationStageTracker;
 
 using ByteVector = std::vector<std::uint8_t>;
 
@@ -1051,10 +1055,13 @@ canonicalize(HardwareImplementationDraft draft,
   if (abi->abi().fabric() != draft.fabric)
     return invalid("ConfigurationABI must describe the same Fabric System");
 
+  HardwareImplementationStageTracker representationIndexStage(
+      "representation_index");
   auto representationIndex =
       indexRepresentationRoot(draft.representationRoot, blobs);
   if (!representationIndex)
     return representationIndex.takeError();
+  representationIndexStage.finish();
 
   std::optional<std::vector<ImplementationInterface>> expectedModelInterfaces;
   if (draft.representationRoot.variant ==
@@ -1266,23 +1273,50 @@ llvm::Expected<FinalizedHardwareImplementation> finalizeHardwareImplementation(
     HardwareImplementationDraft draft,
     const ExternalImplementationContractCatalog &contracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto implementation =
-      canonicalize(std::move(draft), contracts, artifacts, blobs);
+  auto implementation = [&]() -> llvm::Expected<HardwareImplementation> {
+    HardwareImplementationStageTracker stage("draft_canonicalization");
+    auto result =
+        canonicalize(std::move(draft), contracts, artifacts, blobs);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!implementation)
     return implementation.takeError();
-  const std::string json = serialize(*implementation);
-  auto strict = decode(json, contracts, artifacts, blobs);
+  const std::string json = [&] {
+    HardwareImplementationStageTracker stage("canonical_serialization");
+    std::string result = serialize(*implementation);
+    stage.finish();
+    return result;
+  }();
+  auto strict = [&]() -> llvm::Expected<HardwareImplementation> {
+    HardwareImplementationStageTracker stage("strict_decode");
+    auto result = decode(json, contracts, artifacts, blobs);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!strict)
     return strict.takeError();
   CanonicalSemanticBytes bytes(
       std::vector<std::uint8_t>(json.begin(), json.end()));
-  auto identity = artifacts.put(hardwareImplementationSchema, bytes);
+  auto identity = [&]() -> llvm::Expected<ArtifactIdentity> {
+    HardwareImplementationStageTracker stage("artifact_publication");
+    auto result = artifacts.put(hardwareImplementationSchema, bytes);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!identity)
     return identity.takeError();
-  return importHardwareImplementation(
+  HardwareImplementationStageTracker publishedImportStage("published_import");
+  auto imported = importHardwareImplementation(
       {hardwareImplementationSchema.identity.str(),
        hardwareImplementationSchema.version, *identity},
       contracts, artifacts, blobs);
+  if (imported)
+    publishedImportStage.finish();
+  return imported;
 }
 
 llvm::Expected<FinalizedHardwareImplementation>
@@ -1300,11 +1334,24 @@ llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
     return invalid("reference schema is not loom.hardware_implementation 4.1");
-  auto bytes = artifacts.get(hardwareImplementationSchema, reference.artifact);
+  auto bytes = [&]() -> llvm::Expected<CanonicalSemanticBytes> {
+    HardwareImplementationStageTracker stage("artifact_load");
+    auto result =
+        artifacts.get(hardwareImplementationSchema, reference.artifact);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!bytes)
     return bytes.takeError();
-  auto implementation =
-      decode(asText(bytes->bytes()), contracts, artifacts, blobs);
+  auto implementation = [&]() -> llvm::Expected<HardwareImplementation> {
+    HardwareImplementationStageTracker stage("canonical_decode");
+    auto result =
+        decode(asText(bytes->bytes()), contracts, artifacts, blobs);
+    if (result)
+      stage.finish();
+    return result;
+  }();
   if (!implementation)
     return implementation.takeError();
   return FinalizedHardwareImplementation(reference, std::move(*bytes),

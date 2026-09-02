@@ -2,6 +2,7 @@
 #define LOOM_LIB_HARDWARE_RTL_HIERARCHY_MEMORYSERVICE_H
 
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Hardware/RTL/MemoryServiceTransport.h"
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "llvm/ADT/SmallVector.h"
@@ -12,12 +13,6 @@
 #include <vector>
 
 namespace loom::hardware::rtl::hierarchy {
-
-struct PortableMemoryServiceLayout final {
-  std::uint32_t addressWidthBits = 0;
-  std::uint32_t dataWidthBits = 0;
-  std::uint32_t maskWidthBits = 0;
-};
 
 struct MemoryServicePortPlan final {
   std::string name;
@@ -51,9 +46,6 @@ struct ModuleBoundaryMemoryPortProjection final {
   fabric::FabricModuleBoundaryEndpointRef boundary;
   MemoryServicePortPlan ports;
 };
-
-llvm::Expected<PortableMemoryServiceLayout>
-derivePortableMemoryServiceLayout(const fabric::FabricArtifactView &fabric);
 
 llvm::Expected<std::vector<MemoryEndpointPortPlan>>
 deriveMemoryEndpointPortPlans(mlir::OpBuilder &builder,

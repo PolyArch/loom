@@ -11,6 +11,8 @@ add_library(LoomHardwareRTL
   Hierarchy/Routing.cpp
   Hierarchy/Support.cpp
   Hierarchy/TemporalPe.cpp
+  MaterializationDiagnostics.cpp
+  MemoryServiceTransport.cpp
   OperationLeaf.cpp
   PhysicalOperation.cpp
   PortableProviders.cpp
@@ -61,6 +63,7 @@ add_library(LoomHardwareRTL
   Providers/ScalarValueSelect.cpp
   Providers/TokenConstantSync.cpp
   Providers/TokenMuxDemux.cpp
+  RtlModuleGraph.cpp
   Specialization.cpp
   SpatialCoreImplementation.cpp
   Transport.cpp
@@ -79,6 +82,7 @@ target_link_libraries(LoomHardwareRTL PUBLIC
   CIRCTSeqToSV
   CIRCTSV
   CIRCTSupport
+  LoomCommon
   LoomFabricIdentity
   LoomHardwareConfiguration
   LoomHardwareImplementation

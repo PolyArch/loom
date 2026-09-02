@@ -2,6 +2,7 @@
 #define LOOM_HARDWARE_RTL_SPATIALCOREIMPLEMENTATION_H
 
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Hardware/RTL/RtlModuleGraph.h"
 #include "Hardware/RTL/Specialization.h"
 
 #include "llvm/Support/Error.h"
@@ -31,6 +32,15 @@ finalizePortableSpatialCoreHardwareImplementation(
 /// Re-derives the canonical portable operation-leaf specialization and checks
 /// one imported implementation without publishing artifacts or payloads.
 llvm::Error verifyPortableSpatialCoreHardwareImplementation(
+    const FinalizedConfigurationABI &configurationAbi,
+    const FinalizedHardwareImplementation &implementation);
+
+/// Rebuilds the generated portable RTL without publication and returns its
+/// transient CIRCT-owned module graph only when the exact imported
+/// HardwareImplementation is byte-for-byte the canonical result. A valid but
+/// different implementation returns std::nullopt.
+llvm::Expected<std::optional<RtlModuleGraphProjection>>
+projectPortableSpatialCoreRtlModuleGraph(
     const FinalizedConfigurationABI &configurationAbi,
     const FinalizedHardwareImplementation &implementation);
 
