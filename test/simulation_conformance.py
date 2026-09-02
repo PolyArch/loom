@@ -32,16 +32,14 @@ HARD_FAILURE_RATIO = 10.0
 REFERENCE_RATE_TARGET_CYCLES_PER_SECOND = 100_000
 REFERENCE_RATE_TARGET_HZ = float(REFERENCE_RATE_TARGET_CYCLES_PER_SECOND)
 DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS = float(timeout_seconds(Tier.FAST))
-CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS = float(timeout_seconds(Tier.MEDIUM))
 RESERVED_DEVELOPMENT_CPUS = 4
 MAX_OUTER_WORKERS = 120
 CGRA_QUALIFICATION_LIMIT_NANOSECONDS = 45_000_000_000
 CGRA_QUALIFICATION_WARMUP_RUNS = 1
 CGRA_QUALIFICATION_MEASUREMENT_RUNS = 3
 MAX_CANDIDATE_PROOF_KIND = (1 << 32) - 1
-CGRA_GATE_CONFIGURATION = (
-    Path(__file__).resolve().parent / "data" / "cgra-simulation-gate-v1.json"
-)
+CGRA_GATE_RELATIVE_PATH = "test/data/cgra-simulation-gate-v1.json"
+CGRA_GATE_CONFIGURATION = ROOT / CGRA_GATE_RELATIVE_PATH
 CGRA_OPERATOR_GATE_RELATIVE_PATH = "test/data/corpus-operator-gate-v1.jsonl"
 CGRA_OPERATOR_GATE = ROOT / CGRA_OPERATOR_GATE_RELATIVE_PATH
 CGRA_REPRESENTATIVE_WORKLOADS = (
@@ -260,12 +258,12 @@ class MeasurementDisposition(str, Enum):
     MEASURED = "measured"
     SPATIAL_EXECUTION_FAILED = "spatial_execution_failed"
     SPATIAL_TIMED_OUT = "spatial_timed_out"
-    SPATIAL_BOOTSTRAP_BUDGET_EXCEEDED = "spatial_bootstrap_budget_exceeded"
+    SPATIAL_ABSOLUTE_BUDGET_EXCEEDED = "spatial_absolute_budget_exceeded"
     SYSTEM_EXECUTION_FAILED = "system_execution_failed"
     SYSTEM_TIMED_OUT = "system_timed_out"
     PROCESS_CLEANUP_FAILED = "process_cleanup_failed"
     PAIRED_WORK_MISMATCH = "paired_work_mismatch"
-    SYSTEM_BOOTSTRAP_BUDGET_EXCEEDED = "system_bootstrap_budget_exceeded"
+    SYSTEM_BUDGET_EXCEEDED = "system_budget_exceeded"
     HARD_RATIO_EXCEEDED = "hard_ratio_exceeded"
     REFERENCE_RATE_BELOW_TARGET = "reference_rate_below_target"
 
@@ -273,6 +271,7 @@ class MeasurementDisposition(str, Enum):
 @dataclass(frozen=True)
 class PairedMeasurementReport:
     disposition: MeasurementDisposition
+    gate: "CgraGateConfiguration"
     spatial_measurements: tuple[ExecutionMatrixMeasurement, ...]
     system_measurement: ExecutionMatrixMeasurement | None
     paired_result: PairedExecutionResult | None
@@ -281,12 +280,22 @@ class PairedMeasurementReport:
     diagnostic: str = ""
 
 
+class CgraGateSource(str, Enum):
+    #: The tracked ten-profile qualification published by the gate generator.
+    TRACKED = "tracked"
+    #: No tracked gate exists yet, so the canonical medium tier stands in. The
+    #: value is provisional and is labelled as such in every report; it is
+    #: never derived from a case, a caller, or a simulator.
+    PROVISIONAL_BOOTSTRAP = "provisional_bootstrap"
+
+
 @dataclass(frozen=True)
 class CgraGateConfiguration:
     spatial_absolute_budget_nanoseconds: int
     configuration_sha256: str
     operator_gate_sha256: str
     profiles: tuple[Mapping[str, object], ...]
+    source: CgraGateSource = CgraGateSource.TRACKED
 
     @property
     def spatial_absolute_budget_seconds(self) -> float:
@@ -1092,6 +1101,26 @@ def derive_cgra_spatial_budget_nanoseconds(
     )
 
 
+def resolve_cgra_gate_configuration() -> CgraGateConfiguration:
+    """The Spatial absolute budget owner for one paired conformance run.
+
+    The tracked gate is the only published authority. Until the ten-profile
+    qualification succeeds there is no published value, so the canonical
+    medium tier stands in under an explicit provisional source that every
+    report carries; no second tracked value is introduced.
+    """
+    if CGRA_GATE_CONFIGURATION.is_file():
+        return load_cgra_gate_configuration()
+    operator_gate_sha256, _ = load_cgra_representative_operators()
+    return CgraGateConfiguration(
+        int(timeout_seconds(Tier.MEDIUM)) * 1_000_000_000,
+        "",
+        operator_gate_sha256,
+        (),
+        CgraGateSource.PROVISIONAL_BOOTSTRAP,
+    )
+
+
 def load_cgra_gate_configuration(
     path: Path = CGRA_GATE_CONFIGURATION,
 ) -> CgraGateConfiguration:
@@ -1444,6 +1473,7 @@ def parse_execution_matrix_measurement(
 
 def _failed_report(
     disposition: MeasurementDisposition,
+    gate: CgraGateConfiguration,
     spatial_measurements: Sequence[ExecutionMatrixMeasurement],
     *,
     spatial_process: ProcessExecution | None,
@@ -1453,6 +1483,7 @@ def _failed_report(
 ) -> PairedMeasurementReport:
     return PairedMeasurementReport(
         disposition=disposition,
+        gate=gate,
         spatial_measurements=tuple(spatial_measurements),
         system_measurement=system_measurement,
         paired_result=None,
@@ -1483,6 +1514,7 @@ def _process_failure_disposition(
 def run_paired_execution_matrix(
     execution_matrix_runner: Path,
     gem5_readiness: Path,
+    gate: CgraGateConfiguration,
     *,
     spatial_warmup_runs: int = 1,
     spatial_measurement_runs: int = 3,
@@ -1523,6 +1555,7 @@ def run_paired_execution_matrix(
     if spatial_process.disposition is not ProcessDisposition.COMPLETED:
         return _failed_report(
             _process_failure_disposition(spatial_process, spatial=True),
+            gate,
             (),
             spatial_process=spatial_process,
             system_process=None,
@@ -1537,6 +1570,7 @@ def run_paired_execution_matrix(
     except ValueError as error:
         return _failed_report(
             MeasurementDisposition.SPATIAL_EXECUTION_FAILED,
+            gate,
             (),
             spatial_process=spatial_process,
             system_process=None,
@@ -1562,21 +1596,23 @@ def run_paired_execution_matrix(
     ):
         return _failed_report(
             MeasurementDisposition.PAIRED_WORK_MISMATCH,
+            gate,
             spatial_measurements,
             spatial_process=spatial_process,
             system_process=None,
             diagnostic="Spatial measurements do not name one exact work/config pair",
         )
     if any(
-        sample.timing.active_wall_seconds > CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS
+        sample.timing.active_wall_seconds > gate.spatial_absolute_budget_seconds
         for sample in spatial_measurements
     ):
         return _failed_report(
-            MeasurementDisposition.SPATIAL_BOOTSTRAP_BUDGET_EXCEEDED,
+            MeasurementDisposition.SPATIAL_ABSOLUTE_BUDGET_EXCEEDED,
+            gate,
             spatial_measurements,
             spatial_process=spatial_process,
             system_process=None,
-            diagnostic="a Spatial sample exceeded the provisional bootstrap budget",
+            diagnostic="a Spatial sample exceeded the tracked Spatial absolute budget",
         )
 
     system_process = execute_process(
@@ -1588,6 +1624,7 @@ def run_paired_execution_matrix(
     if system_process.disposition is not ProcessDisposition.COMPLETED:
         return _failed_report(
             _process_failure_disposition(system_process, spatial=False),
+            gate,
             spatial_measurements,
             spatial_process=spatial_process,
             system_process=system_process,
@@ -1600,6 +1637,7 @@ def run_paired_execution_matrix(
     except ValueError as error:
         return _failed_report(
             MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
+            gate,
             spatial_measurements,
             spatial_process=spatial_process,
             system_process=system_process,
@@ -1615,6 +1653,7 @@ def run_paired_execution_matrix(
     if observed_system_work != expected_work:
         return _failed_report(
             MeasurementDisposition.PAIRED_WORK_MISMATCH,
+            gate,
             spatial_measurements,
             spatial_process=spatial_process,
             system_process=system_process,
@@ -1624,19 +1663,20 @@ def run_paired_execution_matrix(
 
     budget = paired_system_budget(
         [sample.timing.active_wall_seconds for sample in spatial_measurements],
-        CGRA_SPATIAL_BOOTSTRAP_BUDGET_SECONDS,
+        gate.spatial_absolute_budget_seconds,
     )
     paired = evaluate_paired_execution(budget, system_measurement.timing)
     if paired.hard_ratio_failure:
         disposition = MeasurementDisposition.HARD_RATIO_EXCEEDED
     elif not paired.within_system_budget:
-        disposition = MeasurementDisposition.SYSTEM_BOOTSTRAP_BUDGET_EXCEEDED
+        disposition = MeasurementDisposition.SYSTEM_BUDGET_EXCEEDED
     elif not paired.meets_reference_rate_target:
         disposition = MeasurementDisposition.REFERENCE_RATE_BELOW_TARGET
     else:
         disposition = MeasurementDisposition.MEASURED
     return PairedMeasurementReport(
         disposition=disposition,
+        gate=gate,
         spatial_measurements=spatial_measurements,
         system_measurement=system_measurement,
         paired_result=paired,
@@ -1681,14 +1721,19 @@ def _process_json(process: ProcessExecution | None) -> dict[str, object] | None:
 
 def report_json(report: PairedMeasurementReport) -> dict[str, object]:
     projected: dict[str, object] = {
-        "schema": "loom.paired_simulation_measurement_report.2",
-        "publication_status": "provisional_bootstrap_only",
+        "schema": "loom.paired_simulation_measurement_report.3",
         "disposition": report.disposition.value,
-        "bootstrap_budget_source": "config.timeout_budgets:medium",
+        "spatial_absolute_budget": {
+            "source": report.gate.source.value,
+            "path": CGRA_GATE_RELATIVE_PATH,
+            "gate_sha256": report.gate.configuration_sha256,
+            "operator_gate_sha256": report.gate.operator_gate_sha256,
+            "seconds": report.gate.spatial_absolute_budget_seconds,
+            "profiles": len(report.gate.profiles),
+        },
         "spatial_timeout_source": "config.timeout_budgets:medium",
         "system_timeout_source": "config.timeout_budgets:xlong",
         "cleanup_timeout_source": "config.timeout_budgets:ultrafast",
-        "durable_replay_profiles": 0,
         "spatial": [
             _measurement_json(measurement)
             for measurement in report.spatial_measurements
@@ -1723,10 +1768,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spatial-warmup-runs", type=int, default=1)
     parser.add_argument("--spatial-measurement-runs", type=int, default=3)
     arguments = parser.parse_args(argv)
+    gate = resolve_cgra_gate_configuration()
     measurement_attempts = 1
     report = run_paired_execution_matrix(
         arguments.execution_matrix_runner,
         arguments.gem5_readiness,
+        gate,
         spatial_warmup_runs=arguments.spatial_warmup_runs,
         spatial_measurement_runs=arguments.spatial_measurement_runs,
     )
@@ -1740,6 +1787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = run_paired_execution_matrix(
             arguments.execution_matrix_runner,
             arguments.gem5_readiness,
+            gate,
             spatial_warmup_runs=arguments.spatial_warmup_runs,
             spatial_measurement_runs=arguments.spatial_measurement_runs,
         )
