@@ -20,10 +20,12 @@ REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
+from scripts.loom_gem5_build import resolve_gem5_source  # noqa: E402
 
 CONFIG_SCRIPT = REPOSITORY_ROOT / "runtime" / "gem5" / "configure_loom_system.py"
-M5OP_SOURCE = REPOSITORY_ROOT / "externals" / "gem5" / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
-M5_INCLUDE = REPOSITORY_ROOT / "externals" / "gem5" / "include"
+GEM5_SOURCE = resolve_gem5_source(REPOSITORY_ROOT)
+M5OP_SOURCE = GEM5_SOURCE / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
+M5_INCLUDE = GEM5_SOURCE / "include"
 TEST_RUN_ROOT = REPOSITORY_ROOT / "temp" / "g5"
 
 WIRE_MAGIC = b"LGB1"

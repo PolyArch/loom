@@ -237,21 +237,69 @@ findApplication(const ApplicationManifest &manifest, llvm::StringRef identity) {
   return &*found;
 }
 
-llvm::Expected<std::variant<std::filesystem::path, GitUnavailable>>
+using GitlinkCheckoutResult =
+    std::variant<std::filesystem::path, GitUnavailable>;
+
+/// A Gitlink checkout carries its own `.git` entry, a directory or a gitdir
+/// file. Linked worktrees own no submodule checkouts and share the primary
+/// worktree's, so a Gitlink without a checkout under `repositoryRoot`
+/// resolves under the primary worktree Git reports for it; the resolved
+/// checkout is still validated against this repository's index entry.
+llvm::Expected<GitlinkCheckoutResult>
+gitlinkCheckoutOwner(llvm::StringRef git,
+                     const std::filesystem::path &repositoryRoot,
+                     llvm::StringRef sourceRoot) {
+  const auto hasCheckout = [&](const std::filesystem::path &root) {
+    return pathExists(root / sourceRoot.str() / ".git", "Gitlink checkout");
+  };
+  auto local = hasCheckout(repositoryRoot);
+  if (!local)
+    return local.takeError();
+  if (*local)
+    return GitlinkCheckoutResult{repositoryRoot};
+  const std::string repositoryText = repositoryRoot.string();
+  const llvm::SmallVector<llvm::StringRef, 6> arguments = {
+      "-C", repositoryText, "worktree", "list", "--porcelain"};
+  auto worktrees = runGit(git, arguments);
+  if (!worktrees)
+    return worktrees.takeError();
+  if (worktrees->executionFailed || worktrees->status != 0)
+    return GitlinkCheckoutResult{GitUnavailable{}};
+  llvm::StringRef primary =
+      llvm::StringRef(worktrees->output).split('\n').first;
+  if (!primary.consume_front("worktree "))
+    return GitlinkCheckoutResult{GitUnavailable{}};
+  std::error_code primaryError;
+  const std::filesystem::path primaryRoot =
+      std::filesystem::canonical(primary.trim().str(), primaryError);
+  if (primaryError)
+    return failed("primary worktree cannot be canonicalized: " +
+                  primaryError.message());
+  if (primaryRoot == repositoryRoot)
+    return GitlinkCheckoutResult{GitUnavailable{}};
+  auto shared = hasCheckout(primaryRoot);
+  if (!shared)
+    return shared.takeError();
+  if (!*shared)
+    return GitlinkCheckoutResult{GitUnavailable{}};
+  return GitlinkCheckoutResult{primaryRoot};
+}
+
+llvm::Expected<GitlinkCheckoutResult>
 validateGitlinkCheckout(llvm::StringRef git,
                         const std::filesystem::path &repositoryRoot,
                         const ApplicationDefinition &application,
                         llvm::StringRef expectedCommit) {
-  const std::filesystem::path checkout =
-      repositoryRoot / application.source.root;
-  auto exists = pathExists(checkout, "Gitlink checkout");
-  if (!exists)
-    return exists.takeError();
-  if (!*exists)
-    return std::variant<std::filesystem::path, GitUnavailable>{
-        GitUnavailable{}};
-  auto canonical =
-      canonicalDirectory(checkout, repositoryRoot, "Gitlink checkout");
+  auto owner =
+      gitlinkCheckoutOwner(git, repositoryRoot, application.source.root);
+  if (!owner)
+    return owner.takeError();
+  if (std::holds_alternative<GitUnavailable>(*owner))
+    return GitlinkCheckoutResult{GitUnavailable{}};
+  const std::filesystem::path &ownerRoot =
+      std::get<std::filesystem::path>(*owner);
+  auto canonical = canonicalDirectory(ownerRoot / application.source.root,
+                                      ownerRoot, "Gitlink checkout");
   if (!canonical)
     return canonical.takeError();
 

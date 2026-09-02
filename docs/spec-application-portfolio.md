@@ -169,7 +169,11 @@ by the selected oracle while no warm-up sample is misreported as evidence.
 
 Source admission resolves a Gitlink only from its mode `160000` repository
 index entry, requires the checkout `HEAD` to equal that entry, and verifies
-that selected translation units are tracked and unchanged at that commit.
+that selected translation units are tracked and unchanged at that commit. A
+checkout is a source root carrying its own `.git` entry. A linked worktree
+owns no Gitlink checkouts; admission resolves its Gitlinks under the primary
+worktree that Git reports for the repository and validates that checkout
+against the linked worktree's own index entry.
 Repository sources, selected translation units, and oracle entries must exist
 without escaping their admitted roots. An oracle entry cannot be a selected
 program translation unit. Cache bytes must match their declared SHA-256.
