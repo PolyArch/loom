@@ -1101,7 +1101,8 @@ analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
 
 llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>
 analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
-                                const StructuredEntityRef &loopReference) {
+                                const StructuredEntityRef &loopReference,
+                                llvm::ArrayRef<std::uint64_t> tileFactors) {
   if (loopReference.kind != StructuredEntityKind::Operation)
     return invalid("SCoP root does not reference an operation");
   auto candidateView = parent.view();
@@ -1419,8 +1420,8 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     providerDependences.push_back(
         {source, destination, statements[source].domain.getNumDimVars(),
          statements[destination].domain.getNumDimVars(), nullptr});
-  auto providerOutcome =
-      detail::computePinnedIslSchedule(providerStatements, providerDependences);
+  auto providerOutcome = detail::computePinnedIslSchedule(
+      providerStatements, providerDependences, tileFactors);
   if (!providerOutcome)
     return providerOutcome.takeError();
   if (auto *providerRefusal =
@@ -1439,7 +1440,10 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
   }
   detail::PolyhedralScheduleProviderView &providerSchedule =
       std::get<detail::PolyhedralScheduleProviderView>(*providerOutcome);
-  if (providerSchedule.statementSchedules.size() != statements.size())
+  if (providerSchedule.statementSchedules.size() != statements.size() ||
+      llvm::any_of(providerSchedule.tiledSchedules, [&](const auto &tiled) {
+        return tiled.schedule.statementSchedules.size() != statements.size();
+      }))
     return invalid("Polly/ISL schedule changed statement cardinality");
   if (providerSchedule.parameters.size() != providerSchedule.parameterCount)
     return invalid("Polly/ISL schedule changed parameter cardinality");
@@ -1463,6 +1467,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
                      providerSchedule.scheduleDimensionCount,
                      providerSchedule.coincidentDimensionCount,
                      std::move(providerSchedule.statementSchedules)};
+  result.tiledSchedules = std::move(providerSchedule.tiledSchedules);
   return StructuredPolyhedralScopAnalysisOutcome(std::move(result));
 }
 

@@ -38,6 +38,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -702,6 +703,127 @@ module {
     fail("an admitted vector factor hid another factor's incomplete proof");
 }
 
+/// Polyhedral tiling is the provider schedule tiled by one canonical factor of
+/// the root's static trip count. Each proven factor is one coordinate whose
+/// child is the exact sequential realization of the tiled relation, replays
+/// through lineage, and preserves native observations; a factor outside the
+/// enumerated domain is not a lineage.
+void tiledPolyhedralSchedulesMaterializeAndReplay(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto parent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+module attributes {dlti.dl_spec = #layout} {
+  memref.global @left : memref<8xi32> = dense<0>
+  memref.global @right : memref<8xi32> = dense<0>
+  llvm.mlir.global internal @observation(0 : i32) : i32
+
+  llvm.func @entry() -> i32 {
+    %left = memref.get_global @left : memref<8xi32>
+    %right = memref.get_global @right : memref<8xi32>
+    %left0, %right0 = memref.distinct_objects %left, %right
+        : memref<8xi32>, memref<8xi32>
+    %seven = arith.constant 7 : i32
+    %eleven = arith.constant 11 : i32
+    affine.for %i = 0 to 8 {
+      affine.store %seven, %left0[%i] : memref<8xi32>
+      affine.store %eleven, %right0[%i] : memref<8xi32>
+    }
+    %c5 = arith.constant 5 : index
+    %lhs = memref.load %left0[%c5] : memref<8xi32>
+    %rhs = memref.load %right0[%c5] : memref<8xi32>
+    %sum = arith.addi %lhs, %rhs : i32
+    %address = llvm.mlir.addressof @observation : !llvm.ptr
+    llvm.store %sum, %address : i32, !llvm.ptr
+    llvm.return %sum : i32
+  }
+}
+)mlir");
+  const loom::frontend::StructuredEntityRef root = affineRootReference(parent);
+  const std::vector<std::uint64_t> factors = {2, 4};
+  auto analysis = take(
+      loom::frontend::analyzeStructuredPolyhedralScop(parent, root, factors));
+  const auto *scop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&analysis);
+  if (!scop || scop->tiledSchedules.size() != factors.size())
+    fail("the provider did not freeze one tiled schedule per factor");
+  for (auto [factor, tiled] : llvm::zip(factors, scop->tiledSchedules))
+    if (tiled.factor != factor ||
+        tiled.schedule.form !=
+            loom::frontend::StructuredPolyhedralScheduleForm::General ||
+        tiled.schedule.scheduleDimensionCount <=
+            scop->schedule.scheduleDimensionCount ||
+        tiled.schedule.statementSchedules.size() != scop->statements.size())
+      fail("a tiled schedule lost its exact tile coordinates");
+
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 1));
+  for (const std::uint64_t factor : factors) {
+    auto proposal = llvm::find_if(domain.proposals, [&](const auto &candidate) {
+      return candidate.decision().loop == root &&
+             candidate.decision().kind ==
+                 loom::frontend::StructuredScheduleDecisionKind::
+                     PolyhedralSchedule &&
+             candidate.decision().factor == factor;
+    });
+    if (proposal == domain.proposals.end())
+      fail("enumeration did not propose polyhedral tile factor " +
+           std::to_string(factor));
+    auto encoded = take(
+        loom::frontend::encodeStructuredScheduleDecision(proposal->decision()));
+    if (!(take(loom::frontend::adoptStructuredScheduleDecision(encoded)) ==
+          proposal->decision()))
+      fail("a tiled polyhedral decision did not round-trip canonically");
+    auto child = take(loom::frontend::materializeStructuredScheduleProposal(
+        parent, *proposal, fabric));
+    auto direct = take(loom::frontend::materializeStructuredScheduleDecision(
+        parent, proposal->decision()));
+    if (child.structuredProgram.identity() !=
+        direct.structuredProgram.identity())
+      fail("frozen and replayed tiled materialization differ");
+    if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+            parent, fabric, proposal->decision(), child.structuredProgram))
+      fail("tiled polyhedral lineage replay failed: " +
+           llvm::toString(std::move(error)));
+    mlir::LLVM::LLVMFuncOp function =
+        child.structuredProgram.module().lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+            "entry");
+    if (!function)
+      fail("tiled polyhedral child lost its entry function");
+    std::size_t affineLoops = 0;
+    std::size_t scheduledLoops = 0;
+    std::size_t maximumDepth = 0;
+    std::size_t stores = 0;
+    function.walk([&](mlir::Operation *operation) {
+      affineLoops += llvm::isa<mlir::affine::AffineForOp>(operation);
+      if (llvm::isa<mlir::scf::ForOp>(operation)) {
+        ++scheduledLoops;
+        std::size_t depth = 1;
+        for (mlir::Operation *ancestor = operation->getParentOp();
+             llvm::isa_and_nonnull<mlir::scf::ForOp>(ancestor);
+             ancestor = ancestor->getParentOp())
+          ++depth;
+        maximumDepth = std::max(maximumDepth, depth);
+      }
+      stores += llvm::isa<mlir::memref::StoreOp>(operation);
+    });
+    if (affineLoops != 0 || scheduledLoops < 2 || maximumDepth < 2 ||
+        stores != 2)
+      fail("tiled polyhedral child changed its exact statement realization");
+    requireEquivalentNativeObservations(parent, child.structuredProgram);
+  }
+
+  loom::frontend::StructuredScheduleDecision foreignFactor{
+      root, loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule,
+      3, std::nullopt};
+  auto foreignChild = take(loom::frontend::materializeStructuredScheduleDecision(
+      parent, foreignFactor));
+  llvm::Error foreignError = loom::frontend::verifyStructuredScheduleDerivation(
+      parent, fabric, foreignFactor, foreignChild.structuredProgram);
+  if (!foreignError)
+    fail("lineage accepted a tile factor outside the enumerated domain");
+  llvm::consumeError(std::move(foreignError));
+}
+
 void refusalDispositionPreservesIncompleteProofs() {
   using loom::frontend::StructuredScopRefusalDisposition;
   using loom::frontend::StructuredScopRefusalKind;
@@ -952,6 +1074,7 @@ module {
       }))
     fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
+  tiledPolyhedralSchedulesMaterializeAndReplay(fabric);
   imperfectGeneralScheduleMaterializes(fabric);
   generalAnalysisOwnsVectorDomainFallback(fabric);
   llvm::sys::fs::remove_directories(directory);

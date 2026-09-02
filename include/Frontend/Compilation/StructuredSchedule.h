@@ -160,6 +160,9 @@ struct StructuredScheduleDecisionDomain final {
 };
 
 llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes();
+/// Canonical diagnostic spelling of one decision kind.
+llvm::StringRef
+structuredScheduleDecisionKindSpelling(StructuredScheduleDecisionKind kind);
 llvm::Expected<std::vector<std::uint8_t>>
 encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision);
 llvm::Expected<StructuredScheduleDecision>

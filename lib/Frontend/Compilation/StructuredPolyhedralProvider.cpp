@@ -1545,11 +1545,143 @@ isl_bool summarizeBand(isl_schedule_node *node, void *opaque) {
   return isl_bool_true;
 }
 
+struct FrozenScheduleTreeInputs final {
+  isl_ctx *context = nullptr;
+  isl_union_map *validity = nullptr;
+  bool dependenceFree = false;
+  const std::map<std::string, std::uint64_t> *statementOrdinals = nullptr;
+  const llvm::DenseMap<std::uint64_t, unsigned> *statementDimensions = nullptr;
+  std::uint64_t parameterCount = 0;
+  std::size_t statementCount = 0;
+};
+
+struct FrozenScheduleTree final {
+  BandSummary bands;
+  std::vector<StructuredPolyhedralStatementScheduleView> schedules;
+};
+
+/// The schedule relation orders some exact dependence backwards. The base
+/// provider schedule cannot do so; a derived tiling of a non-permutable band
+/// may, and is then simply not a proposal.
+struct ScheduleDependenceViolation final {};
+
+using FrozenScheduleTreeOutcome =
+    std::variant<FrozenScheduleTree, PolyhedralScheduleProviderRefusalKind,
+                 ScheduleDependenceViolation>;
+
+/// Extracts one schedule tree's relation, proves it against the exact
+/// validity relation, summarizes its bands, and freezes every statement map.
+llvm::Expected<FrozenScheduleTreeOutcome>
+freezeScheduleTree(isl_schedule *schedule,
+                   const FrozenScheduleTreeInputs &inputs) {
+  const auto failure = [&](const llvm::Twine &message)
+      -> llvm::Expected<FrozenScheduleTreeOutcome> {
+    if (isl_ctx_last_error(inputs.context) == isl_error_quota)
+      return PolyhedralScheduleProviderRefusalKind::OperationBudgetExhausted;
+    return providerError(message);
+  };
+  IslUnionMap scheduleMap(isl_schedule_get_map(schedule));
+  if (!scheduleMap)
+    return failure("the ISL schedule has no schedule map");
+  if (!inputs.dependenceFree) {
+    IslUnionMap ordered(
+        isl_union_map_lex_lt_union_map(isl_union_map_copy(scheduleMap.get()),
+                                       isl_union_map_copy(scheduleMap.get())));
+    if (!ordered)
+      return failure("cannot construct the ISL schedule order");
+    const isl_bool respects =
+        isl_union_map_is_subset(inputs.validity, ordered.get());
+    if (respects < 0)
+      return failure("cannot verify the ISL schedule order");
+    if (respects == isl_bool_false)
+      return FrozenScheduleTreeOutcome(ScheduleDependenceViolation{});
+  }
+
+  FrozenScheduleTree result;
+  if (isl_schedule_foreach_schedule_node_top_down(schedule, summarizeBand,
+                                                  &result.bands) < 0 ||
+      result.bands.failed)
+    return failure("cannot inspect the ISL schedule bands");
+  if (result.bands.bands == 0 || result.bands.dimensions == 0)
+    return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
+
+  ScheduleFreezeContext frozen{inputs.statementOrdinals,
+                               inputs.statementDimensions,
+                               inputs.parameterCount,
+                               {},
+                               nullptr,
+                               false,
+                               false,
+                               false};
+  if (isl_union_map_foreach_map(scheduleMap.get(), freezeScheduleMap, &frozen) <
+          0 ||
+      frozen.failed) {
+    if (isl_ctx_last_error(inputs.context) != isl_error_quota &&
+        frozen.scheduleNotEstablished)
+      return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
+    return failure("cannot freeze the exact ISL schedule maps");
+  }
+  llvm::sort(frozen.schedules, [](const auto &lhs, const auto &rhs) {
+    return lhs.statementOrdinal < rhs.statementOrdinal;
+  });
+  if (frozen.schedules.size() != inputs.statementCount)
+    return providerError("the frozen ISL schedule lost a statement map");
+  result.schedules = std::move(frozen.schedules);
+  return FrozenScheduleTreeOutcome(std::move(result));
+}
+
+struct BandTilingContext final {
+  isl_ctx *context = nullptr;
+  std::uint64_t factor = 0;
+  bool failed = false;
+  /// A wider band that ISL did not prove permutable cannot be tiled.
+  bool refused = false;
+};
+
+/// Tiles every band that no other band encloses. Tiling inserts the tile band
+/// above the visited node, so the bottom-up traversal visits each source band
+/// exactly once.
+isl_schedule_node *tileOutermostBand(isl_schedule_node *node, void *opaque) {
+  auto &tiling = *static_cast<BandTilingContext *>(opaque);
+  if (!node || tiling.failed || tiling.refused ||
+      isl_schedule_node_get_type(node) != isl_schedule_node_band)
+    return node;
+  const isl_size depth = isl_schedule_node_get_schedule_depth(node);
+  const isl_size members = isl_schedule_node_band_n_member(node);
+  if (depth < 0 || members < 0) {
+    tiling.failed = true;
+    return node;
+  }
+  if (depth != 0)
+    return node;
+  if (members > 1 &&
+      isl_schedule_node_band_get_permutable(node) != isl_bool_true) {
+    tiling.refused = true;
+    return node;
+  }
+  isl_multi_val *sizes =
+      isl_multi_val_zero(isl_schedule_node_band_get_space(node));
+  for (isl_size index = 0; index != members; ++index)
+    sizes = isl_multi_val_set_val(
+        sizes, index,
+        isl_val_int_from_ui(tiling.context,
+                            static_cast<unsigned long>(tiling.factor)));
+  if (!sizes) {
+    tiling.failed = true;
+    return node;
+  }
+  isl_schedule_node *tiled = isl_schedule_node_band_tile(node, sizes);
+  if (!tiled)
+    tiling.failed = true;
+  return tiled;
+}
+
 } // namespace
 
 llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
     llvm::ArrayRef<PolyhedralStatementDomain> statements,
-    llvm::ArrayRef<PolyhedralDependenceRelation> dependences) {
+    llvm::ArrayRef<PolyhedralDependenceRelation> dependences,
+    llvm::ArrayRef<std::uint64_t> tileFactors) {
   if (statements.empty() || statements.size() > maximumPinnedIslStatementCount)
     return PolyhedralScheduleProviderRefusalKind::DomainNotAdmitted;
   std::uint64_t constraintCount = 0;
@@ -1730,31 +1862,6 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
   if (equal == isl_bool_false)
     return providerError("the ISL schedule changed the exact statement domain");
 
-  IslUnionMap scheduleMap(isl_schedule_get_map(schedule.get()));
-  if (!scheduleMap)
-    return providerFailure("the ISL schedule has no schedule map");
-  if (!dependences.empty()) {
-    IslUnionMap ordered(
-        isl_union_map_lex_lt_union_map(isl_union_map_copy(scheduleMap.get()),
-                                       isl_union_map_copy(scheduleMap.get())));
-    if (!ordered)
-      return providerFailure("cannot construct the ISL schedule order");
-    const isl_bool respects =
-        isl_union_map_is_subset(validity.get(), ordered.get());
-    if (respects < 0)
-      return providerFailure("cannot verify the ISL schedule order");
-    if (respects == isl_bool_false)
-      return providerError("the ISL schedule violates an exact dependence");
-  }
-
-  BandSummary bands;
-  if (isl_schedule_foreach_schedule_node_top_down(schedule.get(), summarizeBand,
-                                                  &bands) < 0 ||
-      bands.failed)
-    return providerFailure("cannot inspect the ISL schedule bands");
-  if (bands.bands == 0 || bands.dimensions == 0)
-    return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
-
   std::map<std::string, std::uint64_t> statementOrdinals;
   llvm::DenseMap<std::uint64_t, unsigned> statementDimensions;
   for (const PolyhedralStatementDomain &statement : statements) {
@@ -1763,34 +1870,66 @@ llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
     statementDimensions.try_emplace(statement.statementOrdinal,
                                     statement.domain->getNumDimVars());
   }
-  ScheduleFreezeContext frozen{&statementOrdinals,
-                               &statementDimensions,
-                               parameters.values.size(),
-                               {},
-                               nullptr,
-                               false,
-                               false,
-                               false};
-  if (isl_union_map_foreach_map(scheduleMap.get(), freezeScheduleMap, &frozen) <
-          0 ||
-      frozen.failed) {
-    if (isl_ctx_last_error(context.get()) != isl_error_quota &&
-        frozen.scheduleNotEstablished)
-      return PolyhedralScheduleProviderRefusalKind::ScheduleNotEstablished;
-    return providerFailure("cannot freeze the exact ISL schedule maps");
-  }
-  llvm::sort(frozen.schedules, [](const auto &lhs, const auto &rhs) {
-    return lhs.statementOrdinal < rhs.statementOrdinal;
-  });
-  if (frozen.schedules.size() != statements.size())
-    return providerError("the frozen ISL schedule lost a statement map");
+  const FrozenScheduleTreeInputs freezeInputs{
+      context.get(),         validity.get(), dependences.empty(),
+      &statementOrdinals,    &statementDimensions,
+      parameters.values.size(), statements.size()};
+  auto frozen = freezeScheduleTree(schedule.get(), freezeInputs);
+  if (!frozen)
+    return frozen.takeError();
+  if (auto *refusal =
+          std::get_if<PolyhedralScheduleProviderRefusalKind>(&*frozen))
+    return *refusal;
+  if (std::holds_alternative<ScheduleDependenceViolation>(*frozen))
+    return providerError("the ISL schedule violates an exact dependence");
+  FrozenScheduleTree &base = std::get<FrozenScheduleTree>(*frozen);
   const StructuredPolyhedralScheduleForm form =
-      classifyFrozenScheduleForm(frozen.schedules);
+      classifyFrozenScheduleForm(base.schedules);
+
+  std::vector<StructuredPolyhedralTiledScheduleView> tiledSchedules;
+  if (!tileFactors.empty()) {
+    // Tile coordinates stay unscaled and point coordinates unshifted, so a
+    // statement keeps its source coordinates and the tile dimension is the
+    // exact floor division of the band coordinate.
+    if (isl_options_set_tile_scale_tile_loops(context.get(), 0) < 0 ||
+        isl_options_set_tile_shift_point_loops(context.get(), 0) < 0)
+      return providerFailure("cannot configure exact ISL band tiling");
+  }
+  for (const std::uint64_t factor : tileFactors) {
+    if (factor < 2 || factor > std::numeric_limits<unsigned long>::max())
+      return providerError("a polyhedral tile factor is outside its domain");
+    BandTilingContext tiling{context.get(), factor, false, false};
+    IslSchedule tiled(isl_schedule_map_schedule_node_bottom_up(
+        isl_schedule_copy(schedule.get()), tileOutermostBand, &tiling));
+    if (!tiled || tiling.failed)
+      return providerFailure("cannot tile the outermost ISL schedule bands");
+    if (tiling.refused)
+      continue;
+    auto frozenTiled = freezeScheduleTree(tiled.get(), freezeInputs);
+    if (!frozenTiled)
+      return frozenTiled.takeError();
+    if (auto *refusal =
+            std::get_if<PolyhedralScheduleProviderRefusalKind>(&*frozenTiled)) {
+      if (*refusal ==
+          PolyhedralScheduleProviderRefusalKind::OperationBudgetExhausted)
+        return *refusal;
+      continue;
+    }
+    if (std::holds_alternative<ScheduleDependenceViolation>(*frozenTiled))
+      continue;
+    FrozenScheduleTree &tree = std::get<FrozenScheduleTree>(*frozenTiled);
+    tiledSchedules.push_back(
+        {factor,
+         {StructuredPolyhedralProviderKind::PinnedPollyIsl,
+          StructuredPolyhedralScheduleForm::General, parameters.values.size(),
+          dependences.size(), tree.bands.bands, tree.bands.dimensions,
+          tree.bands.coincidentDimensions, std::move(tree.schedules)}});
+  }
 
   return PolyhedralScheduleProviderOutcome(PolyhedralScheduleProviderView{
-      parameters.values.size(), form, bands.bands, bands.dimensions,
-      bands.coincidentDimensions, std::move(frozen.schedules),
-      std::move(parameters.values)});
+      parameters.values.size(), form, base.bands.bands, base.bands.dimensions,
+      base.bands.coincidentDimensions, std::move(base.schedules),
+      std::move(parameters.values), std::move(tiledSchedules)});
 }
 
 llvm::Expected<PolyhedralAstBuildOutcome>
