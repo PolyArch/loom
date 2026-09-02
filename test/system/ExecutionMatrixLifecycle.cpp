@@ -26,7 +26,9 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #if !defined(LOOM_TEST_BUILD_JOBS) || !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
@@ -202,6 +204,20 @@ void emitInvocationKey(llvm::raw_ostream &output,
          << " invocation=" << executionMatrixInvocationName(invocation);
 }
 
+void emitRowScopeKey(llvm::raw_ostream &output,
+                     const ExecutionMatrixRowScope &scope) {
+  std::visit(
+      [&](const auto &observer) {
+        using Observer = std::decay_t<decltype(observer)>;
+        if constexpr (std::is_same_v<Observer, ExecutionMatrixInvocation>)
+          emitInvocationKey(output, observer);
+        else
+          output << " cell=" << executionMatrixCellName(observer.cell)
+                 << " scope=attempt_pair";
+      },
+      scope);
+}
+
 llvm::StringRef lifecycleParent(ExecutionMatrixLifecycleOperation operation) {
   switch (operation) {
   case ExecutionMatrixLifecycleOperation::DataflowConstructionAndPublication:
@@ -269,11 +285,10 @@ struct CacheRow final {
   std::uint64_t entryCount = 0;
 };
 
-void emitCacheRow(const ExecutionMatrixInvocation &invocation,
-                  const CacheRow &row) {
+void emitCacheRow(const ExecutionMatrixRowScope &scope, const CacheRow &row) {
   llvm::outs() << "execution-matrix-cache"
-               << " schema=loom.execution_matrix_cache.2";
-  emitInvocationKey(llvm::outs(), invocation);
+               << " schema=loom.execution_matrix_cache.3";
+  emitRowScopeKey(llvm::outs(), scope);
   llvm::outs() << " cache=" << row.cache
                << " hit_validation=" << row.hitValidation
                << " requests=" << row.requests << " hits=" << row.hits
@@ -292,11 +307,11 @@ void emitCacheRow(const ExecutionMatrixInvocation &invocation,
 }
 
 void emitFactsOperationRow(
-    const ExecutionMatrixInvocation &invocation, llvm::StringRef operation,
+    const ExecutionMatrixRowScope &scope, llvm::StringRef operation,
     const runtime::Gem5SystemFactsOperationStatistics &statistics) {
   llvm::outs() << "execution-matrix-facts-operation"
-               << " schema=loom.execution_matrix_facts_operation.2";
-  emitInvocationKey(llvm::outs(), invocation);
+               << " schema=loom.execution_matrix_facts_operation.3";
+  emitRowScopeKey(llvm::outs(), scope);
   llvm::outs() << " interval_kind=inclusive parent="
                << (operation == "derive_facts" ? "none" : "derive_facts")
                << " operation=" << operation
@@ -332,7 +347,7 @@ void addSaturated(std::uint64_t &destination, std::uint64_t value) {
 }
 
 void emitDeploymentOperationRows(
-    const ExecutionMatrixInvocation &invocation,
+    const ExecutionMatrixRowScope &scope,
     llvm::ArrayRef<deployment::DeploymentConstructionOperationStatistics>
         observations) {
   std::vector<DeploymentOperationRow> rows;
@@ -359,8 +374,8 @@ void emitDeploymentOperationRows(
   }
   for (const DeploymentOperationRow &row : rows) {
     llvm::outs() << "execution-matrix-deployment-operation"
-                 << " schema=loom.execution_matrix_deployment_operation.2";
-    emitInvocationKey(llvm::outs(), invocation);
+                 << " schema=loom.execution_matrix_deployment_operation.3";
+    emitRowScopeKey(llvm::outs(), scope);
     llvm::outs() << " interval_kind=exclusive parent=none"
                  << " mode="
                  << deployment::deploymentConstructionModeName(row.mode)
@@ -563,10 +578,9 @@ public:
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-attempt-pair-lifecycle"
-                   << " schema=loom.execution_matrix_attempt_pair_lifecycle.2"
-                   << " cell=" << executionMatrixCellName(cell)
-                   << " scope=attempt_pair"
-                   << " interval_kind=inclusive parent="
+                   << " schema=loom.execution_matrix_attempt_pair_lifecycle.2";
+      emitRowScopeKey(llvm::outs(), ExecutionMatrixAttemptPairScope{cell});
+      llvm::outs() << " interval_kind=inclusive parent="
                    << attemptPairLifecycleParent(record.operation);
       emitObservations(llvm::outs(), record);
     }
@@ -855,8 +869,9 @@ CacheRow externalFileFingerprintRow(
     const runtime::Gem5SystemFactsSessionStatistics *baseline) {
   const runtime::Gem5SystemFactsSessionStatistics zero;
   const auto &prior = baseline ? *baseline : zero;
-  const std::uint64_t misses = counterDelta(
-      current.externalFileFingerprintMisses, prior.externalFileFingerprintMisses);
+  const std::uint64_t misses =
+      counterDelta(current.externalFileFingerprintMisses,
+                   prior.externalFileFingerprintMisses);
   return {"gem5_external_file_fingerprint",
           "observed_file_identity",
           counterDelta(current.externalFileFingerprintRequests,
@@ -1070,7 +1085,7 @@ bool ExecutionMatrixImportSessions::
 }
 
 void ExecutionMatrixImportSessions::emitStatistics(
-    const ExecutionMatrixInvocation &invocation) {
+    const ExecutionMatrixRowScope &scope) {
   ImportStatisticsSnapshot current = impl_->statistics();
   const ImportStatisticsSnapshot *baseline =
       impl_->emittedStatistics ? &*impl_->emittedStatistics : nullptr;
@@ -1079,58 +1094,55 @@ void ExecutionMatrixImportSessions::emitStatistics(
   if (deploymentOffset > current.deployment.size())
     llvm_unreachable("execution-matrix deployment statistics regressed");
   emitDeploymentOperationRows(
-      invocation,
-      llvm::ArrayRef(current.deployment).drop_front(deploymentOffset));
-  emitCacheRow(invocation, cacheRow(current.artifact,
-                                    baseline ? &baseline->artifact : nullptr));
-  emitCacheRow(invocation, cacheRow(current.fabric,
-                                    baseline ? &baseline->fabric : nullptr));
-  emitCacheRow(invocation,
+      scope, llvm::ArrayRef(current.deployment).drop_front(deploymentOffset));
+  emitCacheRow(scope, cacheRow(current.artifact,
+                               baseline ? &baseline->artifact : nullptr));
+  emitCacheRow(
+      scope, cacheRow(current.fabric, baseline ? &baseline->fabric : nullptr));
+  emitCacheRow(scope,
                cacheRow(current.configurationAbi,
                         baseline ? &baseline->configurationAbi : nullptr));
-  emitCacheRow(invocation,
-               cacheRow(current.systemMapping,
-                        baseline ? &baseline->systemMapping : nullptr));
+  emitCacheRow(scope, cacheRow(current.systemMapping,
+                               baseline ? &baseline->systemMapping : nullptr));
   emitCacheRow(
-      invocation,
-      cacheRow(current.configurationProjection,
-               baseline ? &baseline->configurationProjection : nullptr));
-  emitCacheRow(invocation, cacheRow(current.gem5Facts,
-                                    baseline ? &baseline->gem5Facts : nullptr));
-  emitCacheRow(invocation,
-               externalFileFingerprintRow(
-                   current.gem5Facts, baseline ? &baseline->gem5Facts : nullptr));
+      scope, cacheRow(current.configurationProjection,
+                      baseline ? &baseline->configurationProjection : nullptr));
+  emitCacheRow(scope, cacheRow(current.gem5Facts,
+                               baseline ? &baseline->gem5Facts : nullptr));
+  emitCacheRow(scope, externalFileFingerprintRow(current.gem5Facts,
+                                                 baseline ? &baseline->gem5Facts
+                                                          : nullptr));
   const runtime::Gem5SystemFactsConstructionStatistics *priorConstruction =
       baseline ? &baseline->gem5Facts.construction : nullptr;
   emitFactsOperationRow(
-      invocation, "derive_facts",
+      scope, "derive_facts",
       operationDelta(current.gem5Facts.construction.deriveFacts,
                      priorConstruction ? &priorConstruction->deriveFacts
                                        : nullptr));
   emitFactsOperationRow(
-      invocation, "system_inputs_and_deployment_import",
+      scope, "system_inputs_and_deployment_import",
       operationDelta(
           current.gem5Facts.construction.systemInputsAndDeploymentImport,
           priorConstruction
               ? &priorConstruction->systemInputsAndDeploymentImport
               : nullptr));
   emitFactsOperationRow(
-      invocation, "gem5_binding_import",
+      scope, "gem5_binding_import",
       operationDelta(current.gem5Facts.construction.bindingImport,
                      priorConstruction ? &priorConstruction->bindingImport
                                        : nullptr));
   emitFactsOperationRow(
-      invocation, "entire_fabric_root_import",
+      scope, "entire_fabric_root_import",
       operationDelta(current.gem5Facts.construction.fabricImport,
                      priorConstruction ? &priorConstruction->fabricImport
                                        : nullptr));
   emitFactsOperationRow(
-      invocation, "system_mapping_import",
+      scope, "system_mapping_import",
       operationDelta(current.gem5Facts.construction.systemMappingImport,
                      priorConstruction ? &priorConstruction->systemMappingImport
                                        : nullptr));
   emitFactsOperationRow(
-      invocation, "gem5_guest_runtime_image_projection",
+      scope, "gem5_guest_runtime_image_projection",
       operationDelta(current.gem5Facts.construction.guestRuntimeImageProjection,
                      priorConstruction
                          ? &priorConstruction->guestRuntimeImageProjection

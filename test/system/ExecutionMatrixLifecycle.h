@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <variant>
 
 namespace loom {
 class ArtifactStore;
@@ -140,9 +141,22 @@ void emitExecutionMatrixExternalCommands(
     llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>
         commands);
 
+/// The shared setup of one attempt pair: the fixture, the gem5 readiness
+/// record, and the gem5 binding constructed once for both attempts.
+struct ExecutionMatrixAttemptPairScope final {
+  ExecutionMatrixCell cell;
+};
+
+/// The observer of one import-statistics delta: one attempt, or the shared
+/// setup of one attempt pair.
+using ExecutionMatrixRowScope =
+    std::variant<ExecutionMatrixInvocation, ExecutionMatrixAttemptPairScope>;
+
 /// Owns every removable immutable import/projection session for one exact
-/// execution-matrix store domain. Independent replay cells construct isolated
-/// instances and never share session attachments.
+/// execution-matrix store domain. The sessions live for the store's lifetime,
+/// so the fixture construction and every attempt construct each closure once
+/// and reuse it after revalidation. Independent replay cells construct
+/// isolated instances and never share session attachments.
 class ExecutionMatrixImportSessions final {
 public:
   class Impl;
@@ -158,7 +172,9 @@ public:
   ExecutionMatrixImportSummary summary() const;
   bool reusedOneExactGem5FactsClosure() const;
   bool reusedOneExactGem5FactsClosureAcrossAttemptPair() const;
-  void emitStatistics(const ExecutionMatrixInvocation &invocation);
+  /// Emits the counter deltas observed since the previous emission under
+  /// the given scope's key.
+  void emitStatistics(const ExecutionMatrixRowScope &scope);
 
 private:
   std::unique_ptr<Impl> impl_;

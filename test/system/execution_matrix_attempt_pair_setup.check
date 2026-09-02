@@ -1,3 +1,19 @@
+# The store domain is opened before the fixture: the shared setup constructs
+# each Fabric root, ConfigurationABI, SystemMapping, and configuration-image
+# projection once (one construction per miss, no uncached construction) and
+# reuses it, and never touches the gem5 facts session.
+# CHECK: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=artifact_import hit_validation=artifact_revalidation requests=0 hits=0 misses=0
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=fabric_import hit_validation=artifact_revalidation requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#FABRIC:]]
+# CHECK-SAME: construction_attempts=[[#FABRIC]] unique_constructions=[[#FABRIC]] uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count={{[1-9][0-9]*}} revalidated_artifact_bytes={{[1-9][0-9]*}} revalidated_blob_bytes=0 construction_wall_ns={{[1-9][0-9]*}} minimum_retained_bytes={{[1-9][0-9]*}} entries=[[#FABRIC]]
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=configuration_abi_import hit_validation=immutable_session_domain requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#ABI:]]
+# CHECK-SAME: construction_attempts=[[#ABI]] unique_constructions=[[#ABI]] uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count=0 revalidated_artifact_bytes=0 revalidated_blob_bytes=0 construction_wall_ns={{[1-9][0-9]*}} minimum_retained_bytes={{[1-9][0-9]*}} entries=[[#ABI]]
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=system_mapping_import hit_validation=immutable_session_domain requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#MAPPING:]]
+# CHECK-SAME: construction_attempts=[[#MAPPING]] unique_constructions=[[#MAPPING]] uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count=0 revalidated_artifact_bytes=0 revalidated_blob_bytes=0 construction_wall_ns={{[1-9][0-9]*}} minimum_retained_bytes={{[1-9][0-9]*}} entries=[[#MAPPING]]
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=configuration_image_projection hit_validation=immutable_session_domain requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#PROJECTION:]]
+# CHECK-SAME: construction_attempts=[[#PROJECTION]] unique_constructions=[[#PROJECTION]] uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count=0 revalidated_artifact_bytes=0 revalidated_blob_bytes=0 construction_wall_ns={{[1-9][0-9]*}} minimum_retained_bytes={{[1-9][0-9]*}} entries=[[#PROJECTION]]
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=gem5_system_facts hit_validation=complete_closure_revalidation requests=0 hits=0 misses=0 construction_attempts=0 unique_constructions=0
+# CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.3 cell=[[CELL]] scope=attempt_pair cache=gem5_external_file_fingerprint hit_validation=observed_file_identity requests=0 hits=0 misses=0
+# CHECK: execution-matrix-facts-operation schema=loom.execution_matrix_facts_operation.3 cell=[[CELL]] scope=attempt_pair interval_kind=inclusive parent=none operation=derive_facts invocations=0 wall_ns=0
 # CHECK-LABEL: execution-matrix-attempt-pair-lifecycle schema=loom.execution_matrix_attempt_pair_lifecycle.2
 # CHECK-SAME: cell=[[CELL]] scope=attempt_pair interval_kind=inclusive parent=none operation=setup wall_ns={{[1-9][0-9]*}}
 # CHECK-NEXT: execution-matrix-attempt-pair-lifecycle schema=loom.execution_matrix_attempt_pair_lifecycle.2 cell=[[CELL]] scope=attempt_pair interval_kind=inclusive parent=setup operation=dataflow_construction_and_publication
