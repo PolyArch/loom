@@ -71,12 +71,23 @@ struct Gem5SystemFactsSessionStatistics final {
   std::uint64_t minimumRetainedBytes = 0;
   std::uint64_t entryCount = 0;
   Gem5SystemFactsConstructionStatistics construction;
+  /// External-file fingerprint proofs retained by the session: a hit reuses a
+  /// fingerprint whose observed file identity is unchanged; a miss hashes the
+  /// bytes again.
+  std::uint64_t externalFileFingerprintRequests = 0;
+  std::uint64_t externalFileFingerprintHits = 0;
+  std::uint64_t externalFileFingerprintMisses = 0;
+  std::uint64_t externalFileFingerprintedBytes = 0;
+  std::uint64_t externalFileFingerprintNanoseconds = 0;
+  std::uint64_t externalFileFingerprintEntryCount = 0;
 };
 
 /// Bounded immutable facts cache for one exact ArtifactStore/BlobStore
 /// verification domain. Hits revalidate the complete cold-construction
 /// closure. Hits reuse the cold typed result after that revalidation; Request
-/// verification remains owned by the prepare/import facade.
+/// verification remains owned by the prepare/import facade. The session also
+/// retains every external-file fingerprint it proved, reusable only while the
+/// file's observed identity is unchanged.
 class Gem5SystemFactsSession final {
 public:
   class Impl;
@@ -111,6 +122,10 @@ private:
   std::shared_ptr<Impl> active_;
   std::shared_ptr<Impl> previous_;
 };
+
+/// Reports one facts session's reuse as a summary invocation diagnostic.
+void emitGem5SystemFactsSessionStatistics(
+    const Gem5SystemFactsSessionStatistics &statistics);
 
 /// Opens the removable Gem5 facts context retained by Evaluation's live
 /// prepared-invocation owner. The context never enters persistent identity.

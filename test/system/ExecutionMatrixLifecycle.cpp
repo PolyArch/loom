@@ -850,6 +850,34 @@ CacheRow cacheRow(const runtime::Gem5SystemFactsSessionStatistics &current,
       current.entryCount};
 }
 
+CacheRow externalFileFingerprintRow(
+    const runtime::Gem5SystemFactsSessionStatistics &current,
+    const runtime::Gem5SystemFactsSessionStatistics *baseline) {
+  const runtime::Gem5SystemFactsSessionStatistics zero;
+  const auto &prior = baseline ? *baseline : zero;
+  const std::uint64_t misses = counterDelta(
+      current.externalFileFingerprintMisses, prior.externalFileFingerprintMisses);
+  return {"gem5_external_file_fingerprint",
+          "observed_file_identity",
+          counterDelta(current.externalFileFingerprintRequests,
+                       prior.externalFileFingerprintRequests),
+          counterDelta(current.externalFileFingerprintHits,
+                       prior.externalFileFingerprintHits),
+          misses,
+          misses,
+          misses,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          counterDelta(current.externalFileFingerprintNanoseconds,
+                       prior.externalFileFingerprintNanoseconds),
+          current.externalFileFingerprintedBytes,
+          current.externalFileFingerprintEntryCount};
+}
+
 runtime::Gem5SystemFactsOperationStatistics
 operationDelta(const runtime::Gem5SystemFactsOperationStatistics &current,
                const runtime::Gem5SystemFactsOperationStatistics *baseline) {
@@ -955,6 +983,11 @@ bool ExecutionMatrixImportSessions::reusedOneExactGem5FactsClosure() const {
          facts.revalidatedArtifactBytes != 0 &&
          facts.revalidatedBlobBytes != 0 &&
          facts.constructionNanosecondsSaved != 0 && facts.entryCount == 1 &&
+         facts.externalFileFingerprintRequests == 1 &&
+         facts.externalFileFingerprintHits == 0 &&
+         facts.externalFileFingerprintMisses == 1 &&
+         facts.externalFileFingerprintedBytes != 0 &&
+         facts.externalFileFingerprintEntryCount == 1 &&
          exactBoundedCache(statistics.artifact.importRequests,
                            statistics.artifact.cacheHits,
                            statistics.artifact.cacheMisses,
@@ -999,6 +1032,11 @@ bool ExecutionMatrixImportSessions::
          facts.revalidatedArtifactBytes != 0 &&
          facts.revalidatedBlobBytes != 0 &&
          facts.constructionNanosecondsSaved != 0 && facts.entryCount == 1 &&
+         facts.externalFileFingerprintRequests == 2 &&
+         facts.externalFileFingerprintHits == 1 &&
+         facts.externalFileFingerprintMisses == 1 &&
+         facts.externalFileFingerprintedBytes != 0 &&
+         facts.externalFileFingerprintEntryCount == 1 &&
          exactBoundedCache(statistics.artifact.importRequests,
                            statistics.artifact.cacheHits,
                            statistics.artifact.cacheMisses,
@@ -1059,6 +1097,9 @@ void ExecutionMatrixImportSessions::emitStatistics(
                baseline ? &baseline->configurationProjection : nullptr));
   emitCacheRow(invocation, cacheRow(current.gem5Facts,
                                     baseline ? &baseline->gem5Facts : nullptr));
+  emitCacheRow(invocation,
+               externalFileFingerprintRow(
+                   current.gem5Facts, baseline ? &baseline->gem5Facts : nullptr));
   const runtime::Gem5SystemFactsConstructionStatistics *priorConstruction =
       baseline ? &baseline->gem5Facts.construction : nullptr;
   emitFactsOperationRow(

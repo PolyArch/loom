@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,55 @@ struct ResolvedExternalFileTree final {
   std::string absolutePath;
   std::vector<ExternalFileTreeMember> members;
 };
+
+/// The identity under which one ordinary file was observed: device, inode,
+/// mode, link count, size, and modification and change times. Two equal
+/// identities denote one unchanged file object; any difference means the
+/// bytes must be fingerprinted again.
+struct ExternalFileIdentity final {
+  std::uint64_t device = 0;
+  std::uint64_t inode = 0;
+  std::uint64_t mode = 0;
+  std::uint64_t linkCount = 0;
+  std::uint64_t size = 0;
+  std::int64_t modifiedSeconds = 0;
+  std::int64_t modifiedNanoseconds = 0;
+  std::int64_t changedSeconds = 0;
+  std::int64_t changedNanoseconds = 0;
+
+  friend bool operator==(const ExternalFileIdentity &lhs,
+                         const ExternalFileIdentity &rhs) {
+    return lhs.device == rhs.device && lhs.inode == rhs.inode &&
+           lhs.mode == rhs.mode && lhs.linkCount == rhs.linkCount &&
+           lhs.size == rhs.size &&
+           lhs.modifiedSeconds == rhs.modifiedSeconds &&
+           lhs.modifiedNanoseconds == rhs.modifiedNanoseconds &&
+           lhs.changedSeconds == rhs.changedSeconds &&
+           lhs.changedNanoseconds == rhs.changedNanoseconds;
+  }
+  friend bool operator!=(const ExternalFileIdentity &lhs,
+                         const ExternalFileIdentity &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One exact fingerprint together with the identity the file had while its
+/// bytes were read.
+struct ExternalFileObservation final {
+  ExternalFileIdentity identity;
+  ExternalFileFingerprint fingerprint;
+};
+
+/// Observes the identity of one canonical ordinary file without reading its
+/// bytes, rejecting symlinks.
+llvm::Expected<ExternalFileIdentity>
+observeExternalFileIdentity(llvm::StringRef path);
+
+/// Computes the exact SHA-256 of one canonical ordinary file while rejecting
+/// symlinks and concurrent replacement or mutation, and reports the identity
+/// the file held while it was read.
+llvm::Expected<ExternalFileObservation>
+observeExternalFile(llvm::StringRef path);
 
 /// Computes the exact SHA-256 of one canonical ordinary file while rejecting
 /// symlinks and concurrent replacement or mutation.

@@ -1232,7 +1232,12 @@ Gem5Correspondence =
 `binary_fingerprint` is the exact SHA-256 of the executable produced by that
 source and build-configuration identity. It is semantic build identity, not a
 machine-local path. A readiness record proves that one local executable has
-that fingerprint; it cannot supply or replace the binding-owned value.
+that fingerprint; it cannot supply or replace the binding-owned value. The
+provider establishes that proof by hashing the executable's bytes once per
+process-local gem5 facts session and reuses it only while the file's observed
+identity (device, inode, mode, link count, size, modification and change
+times) is unchanged; the invocation launcher still revalidates the bytes
+before every attempt.
 
 The correspondence table is total over every modeled Fabric occurrence and
 boundary and canonically ordered by typed Fabric reference. A SimObject or port

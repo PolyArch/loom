@@ -105,14 +105,20 @@ llvm::Error systemError(const llvm::Twine &message) {
   return invalid(message + ": " + std::strerror(errno));
 }
 
+ExternalFileIdentity observedIdentity(const struct stat &status) {
+  return {static_cast<std::uint64_t>(status.st_dev),
+          static_cast<std::uint64_t>(status.st_ino),
+          static_cast<std::uint64_t>(status.st_mode),
+          static_cast<std::uint64_t>(status.st_nlink),
+          static_cast<std::uint64_t>(status.st_size),
+          static_cast<std::int64_t>(status.st_mtim.tv_sec),
+          static_cast<std::int64_t>(status.st_mtim.tv_nsec),
+          static_cast<std::int64_t>(status.st_ctim.tv_sec),
+          static_cast<std::int64_t>(status.st_ctim.tv_nsec)};
+}
+
 bool sameObservedFile(const struct stat &lhs, const struct stat &rhs) {
-  return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino &&
-         lhs.st_mode == rhs.st_mode && lhs.st_nlink == rhs.st_nlink &&
-         lhs.st_size == rhs.st_size &&
-         lhs.st_mtim.tv_sec == rhs.st_mtim.tv_sec &&
-         lhs.st_mtim.tv_nsec == rhs.st_mtim.tv_nsec &&
-         lhs.st_ctim.tv_sec == rhs.st_ctim.tv_sec &&
-         lhs.st_ctim.tv_nsec == rhs.st_ctim.tv_nsec;
+  return observedIdentity(lhs) == observedIdentity(rhs);
 }
 
 llvm::Expected<FileDescriptor> openAbsolutePath(llvm::StringRef spelling,
@@ -174,8 +180,8 @@ llvm::Expected<FileDescriptor> openOrdinaryDirectory(llvm::StringRef spelling) {
   return openAbsolutePath(spelling, true);
 }
 
-llvm::Expected<ExternalFileFingerprint>
-fingerprintOpenFile(int descriptor, llvm::StringRef context) {
+llvm::Expected<ExternalFileObservation>
+observeOpenFile(int descriptor, llvm::StringRef context) {
   struct stat before{};
   if (::fstat(descriptor, &before) != 0)
     return systemError("could not inspect " + context);
@@ -210,7 +216,18 @@ fingerprintOpenFile(int descriptor, llvm::StringRef context) {
   if (EVP_DigestFinal_ex(hash.get(), digest.data(), &digestSize) != 1 ||
       digestSize != digest.size())
     return invalid("could not finalize the SHA-256 digest");
-  return ExternalFileFingerprint::fromBytes(digest);
+  auto fingerprint = ExternalFileFingerprint::fromBytes(digest);
+  if (!fingerprint)
+    return fingerprint.takeError();
+  return ExternalFileObservation{observedIdentity(after), *fingerprint};
+}
+
+llvm::Expected<ExternalFileFingerprint>
+fingerprintOpenFile(int descriptor, llvm::StringRef context) {
+  auto observation = observeOpenFile(descriptor, context);
+  if (!observation)
+    return observation.takeError();
+  return observation->fingerprint;
 }
 
 llvm::Error readFileTree(int directory, llvm::StringRef prefix,
@@ -345,12 +362,33 @@ llvm::Error validateProviderSlot(llvm::StringRef slot) {
 
 } // namespace
 
-llvm::Expected<ExternalFileFingerprint>
-fingerprintExternalFile(llvm::StringRef path) {
+llvm::Expected<ExternalFileIdentity>
+observeExternalFileIdentity(llvm::StringRef path) {
   auto file = openOrdinaryFile(path);
   if (!file)
     return file.takeError();
-  return fingerprintOpenFile(file->get(), "external file");
+  struct stat status{};
+  if (::fstat(file->get(), &status) != 0)
+    return systemError("could not inspect external file");
+  if (!S_ISREG(status.st_mode))
+    return invalid("external file is not an ordinary file");
+  return observedIdentity(status);
+}
+
+llvm::Expected<ExternalFileObservation>
+observeExternalFile(llvm::StringRef path) {
+  auto file = openOrdinaryFile(path);
+  if (!file)
+    return file.takeError();
+  return observeOpenFile(file->get(), "external file");
+}
+
+llvm::Expected<ExternalFileFingerprint>
+fingerprintExternalFile(llvm::StringRef path) {
+  auto observation = observeExternalFile(path);
+  if (!observation)
+    return observation.takeError();
+  return observation->fingerprint;
 }
 
 llvm::Error validateExternalFileTreeRequirement(

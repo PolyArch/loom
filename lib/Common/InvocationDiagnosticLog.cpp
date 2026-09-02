@@ -76,6 +76,8 @@ llvm::StringRef spelling(InvocationDiagnosticEvent event) {
     return "system_mapping_import_session";
   case InvocationDiagnosticEvent::ArtifactImportSession:
     return "artifact_import_session";
+  case InvocationDiagnosticEvent::Gem5SystemFactsSession:
+    return "gem5_system_facts_session";
   case InvocationDiagnosticEvent::ApplicationBuildStatistics:
     return "application_build_statistics";
   case InvocationDiagnosticEvent::DeploymentConstructionStatistics:

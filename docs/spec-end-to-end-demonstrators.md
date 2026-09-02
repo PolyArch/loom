@@ -284,7 +284,8 @@ An attempt pair runs the ordinary and the diagnostic attempt of one System
 cell against one fixture, one gem5 binding, and one store domain. The
 removable import sessions of that domain (artifact import, Fabric import,
 ConfigurationABI import, SystemMapping import, configuration-image
-projection, and the gem5 System facts session) are reported per attempt as
+projection, the gem5 System facts session, and its external-file fingerprint
+proofs) are reported per attempt as
 counter deltas through `loom.execution_matrix_cache.2` (requests, hits,
 misses, construction attempts, unique, uncached, unsupported, and failed
 constructions, revalidation count and revalidated artifact and blob bytes,
