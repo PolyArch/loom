@@ -26,18 +26,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <cstdlib>
-#include <exception>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
-
-namespace boost {
-BOOST_NORETURN void throw_exception(const std::exception &) { std::abort(); }
-} // namespace boost
 
 namespace loom::hardware {
 namespace detail {

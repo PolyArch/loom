@@ -318,11 +318,12 @@ template <typename Ref>
 void writeDataflowReference(llvm::json::OStream &json,
                             const ArtifactIdentity &artifact,
                             const Ref &reference) {
-  auto local = dataflow::encodeDataflowReference(artifact, reference);
-  assert(local && "validated Dataflow reference must encode");
+  auto local = llvm::cantFail(
+      dataflow::encodeDataflowReference(artifact, reference),
+      "validated Dataflow reference must encode");
   json.object([&] {
     json.attribute("artifact", formatArtifactIdentityHex(artifact));
-    json.attribute("local", formatArtifactLocalPayloadHex(*local));
+    json.attribute("local", formatArtifactLocalPayloadHex(local));
   });
 }
 

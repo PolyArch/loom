@@ -39,6 +39,7 @@ def initialize_repository(repository: Path) -> None:
     git(repository, "init", "-q")
     git(repository, "config", "user.name", "Loom Test")
     git(repository, "config", "user.email", "loom-test@example.com")
+    git(repository, "config", "commit.gpgsign", "false")
 
 
 class Gem5BuildHelperTest(unittest.TestCase):

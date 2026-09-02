@@ -280,8 +280,8 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
             "int main(void) { return 0; }\n");
   git.run({"-C", upstream, "add", "main.c"});
   git.run({"-C", upstream, "-c", "user.name=Loom Test", "-c",
-           "user.email=loom@example.invalid", "commit", "--quiet", "-m",
-           "fixture"});
+           "user.email=loom@example.invalid", "-c", "commit.gpgsign=false",
+           "commit", "--quiet", "-m", "fixture"});
   const std::string upstreamCommit =
       git.capture({"-C", upstream, "rev-parse", "HEAD"});
 

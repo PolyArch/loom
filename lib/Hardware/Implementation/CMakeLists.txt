@@ -45,8 +45,14 @@ if(LOOM_HAVE_CIRCT)
     -fno-exceptions
     -fno-rtti
   )
+  # slang is compiled without exceptions, so Boost requires the program to
+  # define boost::throw_exception. The definition lives in its own archive that
+  # the linker rescans together with slang: whichever slang member is
+  # extracted, including one pulled in for a shared template instantiation,
+  # resolves it regardless of archive order.
+  add_library(LoomSlangExceptionBoundary STATIC SlangExceptionBoundary.cpp)
   target_link_libraries(LoomHardwareImplementation PRIVATE
-    slang
+    "$<LINK_GROUP:RESCAN,slang,LoomSlangExceptionBoundary>"
   )
 
   add_library(LoomHardwareRepresentationIndex INTERFACE)

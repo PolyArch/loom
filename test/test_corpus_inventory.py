@@ -260,6 +260,10 @@ class CorpusInventoryTest(unittest.TestCase):
                 ],
                 check=True,
             )
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "commit.gpgsign", "false"],
+                check=True,
+            )
             source_root = repository / "Source"
             source_root.mkdir()
             committed = source_root / "committed.c"
@@ -325,6 +329,7 @@ class CorpusInventoryTest(unittest.TestCase):
                     "user.email",
                     "inventory@example.com",
                 )
+                git_output(repository, "config", "commit.gpgsign", "false")
 
             source = submodule / "Source" / "kernel.c"
             source.parent.mkdir()
