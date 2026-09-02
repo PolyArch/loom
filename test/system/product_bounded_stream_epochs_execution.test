@@ -1,0 +1,28 @@
+# One application identity launches the same promoted producer/consumer
+# channel pair in two consecutive epochs. The System engines keep one ordered
+# channel session per static channel across both epochs: the second producer
+# appends behind the first consumer's acknowledged messages, so every launch
+# retires through the ordered send/receive/acknowledge sequence and the host
+# observes both epoch results.
+# REQUIRES: gem5-25.1.0.1
+# RUN: rm -rf %t.deployment %t.execution
+# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_bounded_stream_epochs.c -o %t.native
+# RUN: %t.native
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile -std=c11 -O1 -ffp-contract=off \
+# RUN:   -fno-math-errno %S/Inputs/product_bounded_stream_epochs.c -o %t.elf \
+# RUN:   --loom-deploy-output=%t.deployment \
+# RUN:   --loom-operator-protocol-symbol=bounded_stream_chain \
+# RUN:   --loom-operator-protocol-symbol=stream_consumer \
+# RUN:   > %t.build.stdout 2> %t.build.stderr
+# RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
+# RUN:   --deployment-package=%t.deployment --output=%t.execution \
+# RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
+# RUN:   > %t.run.stdout 2> %t.run.stderr
+# RUN: %python %S/verify_product_execution.py \
+# RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
+# RUN:   --spatial-invocations=4 --spatial-search-frontier \
+# RUN:   --required-dataflow-text=stream_inputs \
+# RUN:   --required-dataflow-text=stream_outputs \
+# RUN:   --required-dataflow-text=arith.addi \
+# RUN:   --required-dataflow-text=arith.muli

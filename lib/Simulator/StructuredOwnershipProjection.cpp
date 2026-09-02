@@ -389,7 +389,7 @@ lowerLogicalChannels(mlir::ModuleOp module,
   mlir::Type voidType = mlir::LLVM::LLVMVoidType::get(module.getContext());
   mlir::LLVM::LLVMFuncOp::create(
       declarations, module.getLoc(), names.create,
-      mlir::LLVM::LLVMFunctionType::get(i64, {i64}));
+      mlir::LLVM::LLVMFunctionType::get(i64, {i64, i64}));
   mlir::LLVM::LLVMFuncOp::create(
       declarations, module.getLoc(), names.rate,
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, i64, i64, i64}));
@@ -411,17 +411,20 @@ lowerLogicalChannels(mlir::ModuleOp module,
         consumers == projection.consumerMessageCounts.end() ||
         consumers->second.size() != count->second)
       return invalid("logical channel has no receiver endpoint");
+    // The proven flat producer count of the channel's single generation is
+    // also its bounded message capacity: every send precedes every receive in
+    // the serialized projection, so the bound is exact and never blocks.
     mlir::OpBuilder builder(create);
     mlir::Value countValue = mlir::LLVM::ConstantOp::create(
         builder, create.getLoc(), i64,
         builder.getI64IntegerAttr(count->second));
-    auto call = mlir::LLVM::CallOp::create(
-        builder, create.getLoc(), mlir::TypeRange{i64}, names.create,
-        mlir::ValueRange{countValue});
-    handles.try_emplace(create.getChannel(), call.getResult());
     mlir::Value producerCount = mlir::LLVM::ConstantOp::create(
         builder, create.getLoc(), i64,
         builder.getI64IntegerAttr(producer->second));
+    auto call = mlir::LLVM::CallOp::create(
+        builder, create.getLoc(), mlir::TypeRange{i64}, names.create,
+        mlir::ValueRange{countValue, producerCount});
+    handles.try_emplace(create.getChannel(), call.getResult());
     for (const auto indexed : llvm::enumerate(consumers->second)) {
       mlir::Value consumerOrdinal = mlir::LLVM::ConstantOp::create(
           builder, create.getLoc(), i64,

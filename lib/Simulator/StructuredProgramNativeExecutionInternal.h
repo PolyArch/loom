@@ -55,7 +55,9 @@ struct MemoryTargetPlan final {
 struct NativeExecutionContext final {
   struct LogicalChannel final {
     std::optional<loom::runtime::OrderedChannelABI> abi;
-    std::optional<std::uint64_t> producerMessageCount;
+    /// The proven flat producer count of the one generation; it is also the
+    /// bounded message capacity the ABI instance was created with.
+    std::uint64_t producerMessageCount = 0;
     std::vector<std::optional<std::uint64_t>> consumerMessageCounts;
     bool generationOpened = false;
     bool generationJoined = false;
