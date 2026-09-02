@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-memory-service-address-arithmetic-test %t
+# RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-PINMISSING --Wno-UNSIGNED -CFLAGS '-std=c++20' --top-module memory_address_testbench memory_address_module.sv memory_address_testbench.sv --Mdir obj_memory_address
+# RUN: timeout %loom-timeout-xlong %t/obj_memory_address/Vmemory_address_testbench

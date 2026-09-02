@@ -12,7 +12,8 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
     mlir::MLIRContext &context, fabric::SpatialCoreOccurrenceRef spatialCore,
     const FinalizedConfigurationABI &finalizedAbi,
     const fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections);
+    llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections,
+    llvm::StringRef materializationKey = {});
 
 } // namespace loom::hardware::rtl::hierarchy
 

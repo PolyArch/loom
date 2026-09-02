@@ -216,6 +216,21 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-memory-service-address-arithmetic-test
+    MemoryServiceAddressArithmeticTest.cpp
+  )
+
+  target_link_libraries(loom-memory-service-address-arithmetic-test PRIVATE
+    LoomConfigurationTransportTestSupport
+    LoomHardwareConfigurationTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-memory-hierarchy-test
     ../InternalMemoryEdgeTestSupport.cpp
     MemoryHierarchyTest.cpp
@@ -646,6 +661,21 @@ if(LOOM_HAVE_CIRCT)
     LoomPortableProviderTestSupport
     LoomADGBuilder
     LoomHardwareRTL
+    MLIRIR
+    LLVMSupport
+  )
+
+  add_executable(loom-temporal-dispatch-context-test
+    TemporalDispatchContextTest.cpp
+  )
+
+  target_link_libraries(loom-temporal-dispatch-context-test PRIVATE
+    LoomConfigurationTransportTestSupport
+    LoomHardwareConfigurationTestSupport
+    LoomPortableProviderTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRFabric
     MLIRIR
     LLVMSupport
   )

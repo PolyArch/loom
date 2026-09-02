@@ -232,8 +232,8 @@ derivePortableSpatialCoreMaterialization(
       materializationKey(configurationAbi, subject);
   auto skeleton = [&]() -> llvm::Expected<ModuleRootCirctSkeleton> {
     RtlMaterializationStageTracker stage("skeleton", diagnosticKey);
-    auto result =
-        buildModuleRootCirctSkeleton(context, subject, configurationAbi);
+    auto result = buildModuleRootCirctSkeleton(context, subject,
+                                               configurationAbi, diagnosticKey);
     if (result)
       stage.finish(*result->module);
     return result;
@@ -249,7 +249,7 @@ derivePortableSpatialCoreMaterialization(
         {association.occurrence, BackendRecipeKey::PortableSystemVerilog, {}});
   auto specialization = specializeFabricOperationLeaves(
       *skeleton->module, configurationAbi, skeleton->operationLeaves, recipes,
-      providers, externalContracts);
+      providers, externalContracts, nullptr, diagnosticKey);
   if (!specialization)
     return specialization.takeError();
   if (!specialization->payloads.empty() ||

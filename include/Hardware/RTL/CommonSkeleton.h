@@ -73,7 +73,8 @@ private:
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
                              fabric::SpatialCoreOccurrenceRef spatialCore,
-                             const FinalizedConfigurationABI &configurationAbi);
+                             const FinalizedConfigurationABI &configurationAbi,
+                             llvm::StringRef materializationKey = {});
 
 llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const ConfigurationABI &configurationAbi,

@@ -10,6 +10,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
@@ -354,6 +355,8 @@ struct ProviderObservation final {
 };
 
 std::optional<ProviderObservation> observation;
+std::optional<loom::fabric::FabricPhysicalOccurrenceOwnerRef>
+    foreignActivityOwner;
 unsigned providerInvocationCount = 0;
 
 void materializeConcreteModule(FabricOperationProviderRequest request) {
@@ -434,6 +437,20 @@ failingProvider(FabricOperationProviderRequest request) {
   materializeConcreteModule(request);
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "provider preparation failed");
+}
+
+llvm::Expected<FabricOperationProviderOutput>
+foreignActivityProvider(FabricOperationProviderRequest request) {
+  ++providerInvocationCount;
+  if (!foreignActivityOwner)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "foreign activity owner is absent");
+  const std::string symbol = request.leaf.getSymName().str();
+  materializeConcreteModule(request);
+  FabricOperationProviderOutput output;
+  output.activityPoints.push_back(
+      {{RepresentationObjectKind::Module, symbol}, *foreignActivityOwner});
+  return output;
 }
 
 llvm::Expected<FabricOperationProviderOutput>
@@ -930,6 +947,206 @@ void specializationPreflightIsFailClosed(llvm::StringRef root) {
           "provider helper collision mutated the caller module");
 }
 
+void equalImplementationsShareOneProviderBody(llvm::StringRef root) {
+  const llvm::StringRef test = __func__;
+  ArtifactStore store(root);
+  FabricFixture fabric = makeFabric(test, store, true);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+  std::vector<TestOperationOccurrence> occurrences =
+      findOperationOccurrences(test, fabric, 2);
+  const auto *capability =
+      fabric.module.view().resolvedFabricOpCapability(occurrences[0].local);
+  require(test, capability != nullptr,
+          "operation occurrence has no resolved capability");
+
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error =
+          registry.add({capability->implementationFamily,
+                        BackendRecipeKey::SynopsysDesignWare,
+                        "synopsys.designware@1", vendorProvider}))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog contracts = vendorContractCatalog(test);
+  const auto input = ExternalInputBinding{
+      "implementation",
+      ToolBundledResourceDependency{"synopsys.vcs:Y-2026.03-SP1",
+                                    "designware:arithmetic"}};
+
+  const auto coldMaterialize = [&](bool reverseInputs) {
+    mlir::MLIRContext context;
+    context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                        circt::seq::SeqDialect, circt::sv::SVDialect>();
+    SkeletonFixture skeleton = makeSkeleton(test, context, fabric.module.view(),
+                                            abi.abi(), occurrences);
+    std::vector<FabricOperationLeafAssociation> associations = {
+        {skeleton.leaves[0], occurrences[0].physical},
+        {skeleton.leaves[1], occurrences[1].physical}};
+    std::vector<FabricOperationRecipeBinding> recipes = {
+        {occurrences[0].physical,
+         BackendRecipeKey::SynopsysDesignWare,
+         {input}},
+        {occurrences[1].physical,
+         BackendRecipeKey::SynopsysDesignWare,
+         {input}}};
+    if (reverseInputs) {
+      std::reverse(associations.begin(), associations.end());
+      std::reverse(recipes.begin(), recipes.end());
+    }
+
+    providerInvocationCount = 0;
+    FabricOperationProviderOutput output =
+        take(test, specializeFabricOperationLeaves(*skeleton.module, abi,
+                                                   associations, recipes,
+                                                   registry, contracts));
+    require(test, providerInvocationCount == 1,
+            "equal implementation keys invoked the provider more than once");
+    require(
+        test,
+        output.payloads.size() == 1 && output.activityPoints.size() == 1 &&
+            output.externalImplementationBindings.size() == 1 &&
+            output.externalImplementationBindings.front()
+                    .fabricResourceRefs.size() == 2 &&
+            llvm::is_contained(output.externalImplementationBindings.front()
+                                   .fabricResourceRefs,
+                               occurrences[0].physical) &&
+            llvm::is_contained(output.externalImplementationBindings.front()
+                                   .fabricResourceRefs,
+                               occurrences[1].physical),
+        "shared implementation did not retain separate occurrence ownership");
+
+    unsigned externalModules = 0;
+    unsigned removedLeaves = 0;
+    std::string sharedSymbol;
+    for (unsigned index = 0; index != 2; ++index) {
+      const std::string symbol =
+          "loom_fabric_operation_" + std::to_string(index);
+      if (skeleton.module->lookupSymbol<circt::hw::HWModuleExternOp>(symbol)) {
+        ++externalModules;
+        sharedSymbol = symbol;
+        continue;
+      }
+      require(test, !skeleton.module->lookupSymbol(symbol),
+              "reused provider leaf retained a redundant module");
+      ++removedLeaves;
+    }
+    unsigned sharedInstances = 0;
+    skeleton.module->walk([&](circt::hw::InstanceOp instance) {
+      sharedInstances += instance.getModuleName() == sharedSymbol;
+    });
+    require(test,
+            externalModules == 1 && removedLeaves == 1 && sharedInstances == 0,
+            "equal provider implementations were materialized more than once");
+    require(test, mlir::succeeded(mlir::verify(*skeleton.module)),
+            "shared provider implementation produced invalid CIRCT");
+    return moduleText(*skeleton.module);
+  };
+
+  const std::string first = coldMaterialize(false);
+  const std::string second = coldMaterialize(true);
+  require(test, first == second,
+          "shared provider materialization depends on discovery order");
+}
+
+void distinctImplementationKeysRemainIndependent(llvm::StringRef root) {
+  const llvm::StringRef test = __func__;
+  ArtifactStore store(root);
+  FabricFixture fabric = makeFabric(test, store, true);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+  std::vector<TestOperationOccurrence> occurrences =
+      findOperationOccurrences(test, fabric, 2);
+  const auto *capability =
+      fabric.module.view().resolvedFabricOpCapability(occurrences[0].local);
+  require(test, capability != nullptr,
+          "operation occurrence has no resolved capability");
+
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error = registry.add({capability->implementationFamily,
+                                        BackendRecipeKey::PortableSystemVerilog,
+                                        {},
+                                        materializeProvider}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = registry.add({capability->implementationFamily,
+                                        BackendRecipeKey::SynopsysDesignWare,
+                                        {},
+                                        materializeProvider}))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog contracts;
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  SkeletonFixture skeleton =
+      makeSkeleton(test, context, fabric.module.view(), abi.abi(), occurrences);
+  const std::vector<FabricOperationLeafAssociation> associations = {
+      {skeleton.leaves[0], occurrences[0].physical},
+      {skeleton.leaves[1], occurrences[1].physical}};
+  const std::vector<FabricOperationRecipeBinding> recipes = {
+      {occurrences[0].physical, BackendRecipeKey::PortableSystemVerilog, {}},
+      {occurrences[1].physical, BackendRecipeKey::SynopsysDesignWare, {}}};
+
+  providerInvocationCount = 0;
+  take(test,
+       specializeFabricOperationLeaves(*skeleton.module, abi, associations,
+                                       recipes, registry, contracts));
+  require(test, providerInvocationCount == 2,
+          "distinct implementation keys shared one provider body");
+  for (unsigned index = 0; index != 2; ++index) {
+    auto implementation = skeleton.module->lookupSymbol<circt::hw::HWModuleOp>(
+        "loom_fabric_operation_" + std::to_string(index));
+    require(test,
+            static_cast<bool>(implementation) &&
+                implementation.getOps<circt::hw::InstanceOp>().empty(),
+            "distinct implementation key was replaced by a shared body");
+  }
+}
+
+void foreignActivityOwnershipIsRejected(llvm::StringRef root) {
+  const llvm::StringRef test = __func__;
+  ArtifactStore store(root);
+  FabricFixture fabric = makeFabric(test, store, true);
+  FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
+  std::vector<TestOperationOccurrence> occurrences =
+      findOperationOccurrences(test, fabric, 2);
+  if (loom::fabric::canonicalFabricBytes(occurrences[1].physical) <
+      loom::fabric::canonicalFabricBytes(occurrences[0].physical))
+    std::swap(occurrences[0], occurrences[1]);
+  const auto *capability =
+      fabric.module.view().resolvedFabricOpCapability(occurrences[0].local);
+  require(test, capability != nullptr,
+          "operation occurrence has no resolved capability");
+
+  FabricOperationProviderRegistry registry;
+  if (llvm::Error error = registry.add({capability->implementationFamily,
+                                        BackendRecipeKey::PortableSystemVerilog,
+                                        {},
+                                        foreignActivityProvider}))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog contracts;
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  SkeletonFixture skeleton =
+      makeSkeleton(test, context, fabric.module.view(), abi.abi(), occurrences);
+  const std::vector<FabricOperationLeafAssociation> associations = {
+      {skeleton.leaves[0], occurrences[0].physical},
+      {skeleton.leaves[1], occurrences[1].physical}};
+  const std::vector<FabricOperationRecipeBinding> recipes = {
+      {occurrences[0].physical, BackendRecipeKey::PortableSystemVerilog, {}},
+      {occurrences[1].physical, BackendRecipeKey::PortableSystemVerilog, {}}};
+
+  const std::string before = moduleText(*skeleton.module);
+  foreignActivityOwner = occurrences[1].physical;
+  providerInvocationCount = 0;
+  expectError(test,
+              specializeFabricOperationLeaves(*skeleton.module, abi,
+                                              associations, recipes, registry,
+                                              contracts),
+              "foreign occurrence ownership");
+  foreignActivityOwner.reset();
+  require(test,
+          providerInvocationCount == 1 &&
+              moduleText(*skeleton.module) == before,
+          "foreign activity ownership escaped transactional validation");
+}
+
 void providerFailureIsTransactional(llvm::StringRef root) {
   const llvm::StringRef test = __func__;
   ArtifactStore store(root);
@@ -937,6 +1154,9 @@ void providerFailureIsTransactional(llvm::StringRef root) {
   FinalizedConfigurationABI abi = makeConfigurationAbi(test, store, fabric);
   std::vector<TestOperationOccurrence> occurrences =
       findOperationOccurrences(test, fabric, 2);
+  if (loom::fabric::canonicalFabricBytes(occurrences[1].physical) <
+      loom::fabric::canonicalFabricBytes(occurrences[0].physical))
+    std::swap(occurrences[0], occurrences[1]);
   const auto *firstCapability =
       fabric.module.view().resolvedFabricOpCapability(occurrences[0].local);
   const auto *secondCapability =
@@ -1147,6 +1367,9 @@ int main(int argc, char **argv) {
   connectedLeafKeepsItsInstanceContract(argv[1]);
   providerInputsHaveCanonicalOrder(argv[1]);
   specializationPreflightIsFailClosed(argv[1]);
+  equalImplementationsShareOneProviderBody(argv[1]);
+  distinctImplementationKeysRemainIndependent(argv[1]);
+  foreignActivityOwnershipIsRejected(argv[1]);
   providerFailureIsTransactional(argv[1]);
   vendorBindingIsExplicit(argv[1]);
   return 0;

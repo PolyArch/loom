@@ -479,6 +479,62 @@ Deployment or execution gate cannot be bypassed by the RTL harness. The
 lowerer cannot omit Fabric alternatives, add a backend-local loop-breaking
 rule, or treat one mapped selection as the reusable hardware topology.
 
+Every consumer readiness in the lowered transport network is observable
+before the token's valid arrives, because the atomic fanout equations of
+`docs/spec-fabric-switch.md` assert valid on one selected output only after
+every peer output is ready. A Temporal switch therefore presents a candidate
+input's tag on each output it routes to whenever no valid requester holds that
+output: valid requesters are presented by the exact GrantPolicy, and among
+idle candidates of one arbitration component a free-running rotation presents
+one at a time. An input is ready only while it is presented on every output
+its resident row selects, so readiness reflects that row's downstream state
+and never the port's own valid. The rotation is transient implementation
+state; it never reorders grants among valid requesters.
+
+A Temporal PE presents the context its context-evaluation service grants to
+one FU as that FU's single dispatch context for the clock cycle. The FU and
+each operation shell inside it evaluate the configuration slot, state bank, and
+operand heads of that context alone; no operation shell infers its context from
+the tokens on its inputs. A boundary token presented to the FU belongs to the
+dispatch context by construction, so an operation transition fires exactly when
+the heads consumed by its schema-owned case are valid, whatever its other inputs
+hold: a `dataflow.carry` in its initial state consumes the Init head alone, and
+a running `dataflow.stream` continues with no input at all. An FU-internal
+result names the context that produced it and is deliverable to another
+operation of the same FU only while that context is the dispatch context; its
+producer stays busy until then. Every FU output reports the producing context so
+the PE applies that context's result selectors; an output holding no result
+reports the dispatch context. Result egress follows the same
+readiness-before-valid rule as the switches: a PE output port or register FIFO
+offers valid FU outputs by the canonical round-robin policy, advancing its
+cursor past every offered requester whether the downstream accepted or refused
+the offer (the offer rotation of the per-tag virtual channel discipline), so a
+result whose downstream is not ready for its tag never holds the port against
+the other valid results; the grant is the offer that is accepted. While no
+valid requester holds a port, the port presents readiness to the routed output
+of one idle FU at a time, the same FU on every port of the PE, so an operation
+that publishes several results atomically observes their capacity before it
+asserts any valid. The idle FU follows the context-evaluation service rather than a
+free-running rotation: under a shared service it is the FU granted this cycle,
+and under per-FU services a pointer holds each FU with eligible rows for one
+complete pass of its dispatch rotation, so every resident context of every FU
+is presented on its ports while it is the dispatch context (a rotation whose
+period shares a factor with the FU count would otherwise never align with it).
+Inside a Temporal PE's FU, several
+operations may hold results for one FU boundary output at the same time because
+their resident contexts differ; that output grants exactly one producing route
+per cycle by the canonical round-robin policy over its routes, presents the
+granted result and its context, and hands the boundary's readiness to the
+granted route alone, so a handoff retires exactly one result. Admissibility of
+a route never observes that route's own source valid, which keeps readiness
+observable before a transparent operation publishes. The PE tells each FU
+output whether it is offering that output to a port this cycle, and the FU's
+cursor advances past the granted route on every offered cycle, accepted or
+refused, so the same offer rotation applies among the held results of one FU;
+an output the PE is not presenting keeps its grant. An operation input is driven by at most one active route per
+cycle, because one capability template is active per dispatch context, and
+therefore carries no cursor.
+
 Temporal-PE operand storage is emitted from the exact required
 `operand_buffer_size` and mode-derived allocation units. The base contract has
 one enqueue and one dequeue service per allocation unit per local cycle, with
@@ -487,13 +543,22 @@ must not substitute a default depth, extra port, global arrival-order head, or
 implementation-private priority.
 
 RTL derives the QueueKey and allocation-unit inventories directly from the
-Fabric operand-buffer contract. Its ingress arbiter implements the same
-three-level atomic transaction order: a transaction completing a context/FU
-tuple, then a near-full complementary transaction, then ordinary transactions
-under the existing deterministic requester order. The arbiter gates a whole
-MatchKey fanout before any pool sees an enqueue request; it cannot grant one
-matching queue independently. Queue heads and near-full state are observed at
-cycle start, so priority does not create same-cycle replacement capacity.
+Fabric operand-buffer contract. A boundary input is ready exactly when its
+token matches at least one active selector and every matched logical queue has
+cycle-start capacity in its allocation unit and holds that unit's single
+enqueue service; the whole MatchKey fanout commits together or not at all.
+Readiness observes configuration, the presented tag, cycle-start queue and
+occupancy state, and the competing requesters of a shared unit. It never
+observes the port's own valid, so an atomic upstream fanout that reaches
+several ports of one PE cannot close a combinational loop through this
+boundary. Where several queues of one shared unit request its enqueue service
+in one cycle, the grant follows the Fabric transaction order: a transaction
+completing a context/FU tuple, then a near-full complementary transaction,
+then ordinary transactions under the unit's canonical round-robin requester
+order, whose cursor advances only on a committed enqueue. A dedicated unit has
+at most one requester and carries no policy. Queue heads and near-full state
+are observed at cycle start, so priority does not create same-cycle
+replacement capacity.
 
 Synthesis preserves this semantic hierarchy. Each canonical `fabric.op`
 recipe, switch form, memory form, FIFO, operand queue, and other repeated leaf
@@ -717,33 +782,60 @@ that cannot be represented by the 32-bit address bus. Each entry retains the
 exact `ProgrammingUnitRef`; the local address order does not replace global
 occurrence-qualified identity.
 
-Payload writes update only a shadow bank. `WSTRB` selects the written bytes and
-a per-byte coverage bitmap records which required payload bytes have been
-received since reset or the last commit. A write that sets any ABI-unused high
-bit in the final byte is rejected without changing shadow state. Payload reads
-return the active bank, so readback after commit verifies the configuration
-that the SpatialCore is actually using rather than merely echoing staging
-state.
+The controller stores two structured arrays of 32-bit words and one active-bank
+selector. Payload writes use the dynamic word index and `WSTRB` to update only
+the inactive bank; they do not expand the image into byte registers or a
+linear address mux. One four-lane generation tag per word and one exact covered
+byte count record which required payload bytes have been received since reset
+or the last commit. The one-bit generation is sufficient because a successful
+commit requires every required byte to carry the current generation before it
+toggles the active bank; after the toggle, every retained tag therefore denotes
+the previous generation. A write that sets any ABI-unused high bit in the final
+word is rejected without changing bank or coverage state. Payload reads use a
+dynamic word index into the active bank, so readback after commit verifies the
+configuration that the SpatialCore is actually using rather than merely
+echoing staging state.
 
 Writing bit zero as one at a unit's commit address requests activation. The
 write succeeds only when every required payload byte is covered and all other
-strobed command bits are zero. On the accepting Clock edge, the complete
-shadow image becomes the active image atomically and the coverage bitmap is
-cleared. An incomplete or malformed commit returns `SLVERR` and leaves the
-active image unchanged. The status word is read-only; bit zero reports whether
-the shadow coverage is complete and all other bits are zero.
+strobed command bits are zero. On the accepting Clock edge, the active-bank
+selector toggles atomically and the covered count returns to zero; the
+previously active bank becomes the next shadow bank. An incomplete or malformed
+commit returns `SLVERR` and leaves the active image unchanged. The status word
+is read-only; bit zero reports whether the shadow coverage is complete and all
+other bits are zero.
 
-Reset initializes both banks from the exact ABI inactive image and clears all
-coverage. Valid payload and status accesses return `OKAY`; a write to status, a
-malformed payload or commit write, or another request forbidden by the profile
-returns `SLVERR`; an unallocated or misaligned address returns `DECERR`.
-Responses are deterministic and never partially update active configuration.
+Reset restores the exact ABI inactive image at every observable read and field
+projection and clears all coverage. Physical bank words may remain unreset
+because a reset `initialized` bit selects the ABI inactive word until the first
+complete atomic commit; uninitialized storage can never reach a consumer.
+Valid payload and status accesses return `OKAY`; a write to status, a malformed
+payload or commit write, or another request forbidden by the profile returns
+`SLVERR`; an unallocated or misaligned address returns `DECERR`. Responses are
+deterministic and never partially update active configuration.
 
-Internal hierarchy modules consume parallel active configuration slices
-derived from the same layout and ABI destination slices. Those parallel wires
-are private implementation detail. Only the top-level AXI4-Lite port is a
-programming interface, and no test or provider may bypass its staging,
-readback, and atomic-commit behavior.
+The controller reads each active physical word ordinal once. A
+`ConfigurationBundlePlan` is transient derived metadata containing only unique
+`(transport_unit_ordinal, 32_bit_word_ordinal, used_bit_mask)` entries required
+by one hierarchy subtree, ordered by the first two tuple members. The
+controller masks unused co-resident bits and publishes one packed
+`hw.array<word_count x i32>` bundle for each top-level component. Every
+internal module accepts at most one word-array bundle containing only words it
+consumes directly or forwards to a child; parent-to-child projection selects
+the exact word subset and reapplies the child masks. No child receives the full
+Programming Unit payload unless its exact field closure consumes all of it.
+
+Field decoding reads only the bundle words named by that field's canonical ABI
+destination slices, applies wide extracts at word boundaries, and concatenates
+the fragments in source-bit order. It never expands a contiguous slice into
+per-bit extracts. Interned Switch, FIFO, and Memory cores consume that decoded
+module-local value through one canonical input; the root performs the
+occurrence-specific word-to-field projection. Physical word placement can
+therefore neither split a semantic core definition nor be confused across
+occurrences. Bundle membership, ordering, and masks are caches derived solely
+from ConfigurationABI and never become a schema or independent configuration
+owner. Only the top-level AXI4-Lite port is a programming interface, and no
+test or provider may bypass its staging, readback, and atomic-commit behavior.
 
 ## Activity And Observability
 

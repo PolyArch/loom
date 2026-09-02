@@ -50,17 +50,73 @@ mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
 
 mlir::Value andAll(mlir::OpBuilder &builder, mlir::Location location,
                    llvm::ArrayRef<mlir::Value> values) {
-  mlir::Value result = bitConstant(builder, location, true);
-  for (mlir::Value value : values)
-    result = circt::comb::AndOp::create(builder, location, result, value);
-  return result;
+  if (values.empty())
+    return bitConstant(builder, location, true);
+  std::vector<mlir::Value> level(values.begin(), values.end());
+  while (level.size() != 1) {
+    std::vector<mlir::Value> next;
+    next.reserve((level.size() + 1) / 2);
+    for (std::size_t index = 0; index < level.size(); index += 2) {
+      if (index + 1 == level.size())
+        next.push_back(level[index]);
+      else
+        next.push_back(circt::comb::AndOp::create(
+            builder, location, level[index], level[index + 1]));
+    }
+    level = std::move(next);
+  }
+  return level.front();
 }
 
 mlir::Value orAll(mlir::OpBuilder &builder, mlir::Location location,
                   llvm::ArrayRef<mlir::Value> values) {
-  mlir::Value result = bitConstant(builder, location, false);
-  for (mlir::Value value : values)
-    result = circt::comb::OrOp::create(builder, location, result, value);
+  if (values.empty())
+    return bitConstant(builder, location, false);
+  std::vector<mlir::Value> level(values.begin(), values.end());
+  while (level.size() != 1) {
+    std::vector<mlir::Value> next;
+    next.reserve((level.size() + 1) / 2);
+    for (std::size_t index = 0; index < level.size(); index += 2) {
+      if (index + 1 == level.size())
+        next.push_back(level[index]);
+      else
+        next.push_back(circt::comb::OrOp::create(
+            builder, location, level[index], level[index + 1]));
+    }
+    level = std::move(next);
+  }
+  return level.front();
+}
+
+llvm::SmallVector<mlir::Value>
+exclusiveAnd(mlir::OpBuilder &builder, mlir::Location location,
+             llvm::ArrayRef<mlir::Value> values) {
+  std::vector<mlir::Value> prefix(values.begin(), values.end());
+  for (std::size_t offset = 1; offset < values.size(); offset *= 2) {
+    std::vector<mlir::Value> next(prefix);
+    for (std::size_t index = offset; index != values.size(); ++index)
+      next[index] = circt::comb::AndOp::create(
+          builder, location, prefix[index], prefix[index - offset]);
+    prefix = std::move(next);
+  }
+  std::vector<mlir::Value> suffix(values.begin(), values.end());
+  for (std::size_t offset = 1; offset < values.size(); offset *= 2) {
+    std::vector<mlir::Value> next(suffix);
+    for (std::size_t index = 0; index + offset < values.size(); ++index)
+      next[index] = circt::comb::AndOp::create(
+          builder, location, suffix[index], suffix[index + offset]);
+    suffix = std::move(next);
+  }
+  llvm::SmallVector<mlir::Value> result;
+  result.reserve(values.size());
+  for (std::size_t index = 0; index != values.size(); ++index) {
+    llvm::SmallVector<mlir::Value, 2> terms;
+    if (index != 0)
+      terms.push_back(prefix[index - 1]);
+    if (index + 1 != values.size())
+      terms.push_back(suffix[index + 1]);
+    result.push_back(andAll(builder, location, terms));
+  }
   return result;
 }
 
@@ -134,12 +190,11 @@ deriveAtomicInputReadiness(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<mlir::Value, 4> result;
   result.reserve(inputValids.size());
+  const llvm::SmallVector<mlir::Value> otherValids =
+      exclusiveAnd(builder, location, inputValids);
   for (std::size_t ordinal = 0; ordinal < inputValids.size(); ++ordinal) {
-    llvm::SmallVector<mlir::Value, 4> terms{capacityAvailable};
-    for (std::size_t other = 0; other < inputValids.size(); ++other)
-      if (other != ordinal)
-        terms.push_back(inputValids[other]);
-    result.push_back(andAll(builder, location, terms));
+    result.push_back(circt::comb::AndOp::create(
+        builder, location, capacityAvailable, otherValids[ordinal]));
   }
   return result;
 }
@@ -176,12 +231,11 @@ deriveAtomicResultTupleSignals(mlir::OpBuilder &builder,
 
   llvm::SmallVector<mlir::Value, 4> published;
   published.reserve(heldValids.size());
+  const llvm::SmallVector<mlir::Value> otherCompleted =
+      exclusiveAnd(builder, location, completedTerms);
   for (std::size_t ordinal = 0; ordinal < heldValids.size(); ++ordinal) {
-    llvm::SmallVector<mlir::Value, 4> terms{heldValids[ordinal]};
-    for (std::size_t other = 0; other < heldValids.size(); ++other)
-      if (other != ordinal)
-        terms.push_back(completedTerms[other]);
-    published.push_back(andAll(builder, location, terms));
+    published.push_back(circt::comb::AndOp::create(
+        builder, location, heldValids[ordinal], otherCompleted[ordinal]));
   }
   return AtomicResultTupleSignals{std::move(published), occupied, released,
                                   available};

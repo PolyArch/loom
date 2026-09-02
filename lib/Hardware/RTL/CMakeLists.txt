@@ -2,6 +2,7 @@ add_library(LoomHardwareRTL
   CirctConformance.cpp
   CommonSkeleton.cpp
   ConfigurationTransport.cpp
+  Hierarchy/Arbitration.cpp
   Hierarchy/ConfigurationController.cpp
   Hierarchy/FuPe.cpp
   Hierarchy/Memory.cpp

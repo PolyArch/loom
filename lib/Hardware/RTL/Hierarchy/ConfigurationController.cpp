@@ -1,12 +1,13 @@
 #include "ConfigurationController.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/SV/SVOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
 
-#include <limits>
-#include <optional>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,50 +57,139 @@ mlir::Value extract(mlir::OpBuilder &builder, mlir::Location location,
   return circt::comb::ExtractOp::create(builder, location, value, low, width);
 }
 
-struct ConfigurationByteState final {
-  circt::Backedge shadowNext;
-  circt::Backedge activeNext;
-  circt::Backedge coveredNext;
-  mlir::Value shadow;
-  mlir::Value active;
-  mlir::Value covered;
-};
+mlir::Value createStructuredRegister(mlir::OpBuilder &builder,
+                                     mlir::Location location, mlir::Value next,
+                                     mlir::Value clock, mlir::Value reset,
+                                     mlir::Value resetValue,
+                                     llvm::StringRef name,
+                                     bool asynchronousReset) {
+  if (asynchronousReset)
+    return circt::seq::FirRegOp::create(
+        builder, location, next, clock, builder.getStringAttr(name), reset,
+        resetValue, circt::hw::InnerSymAttr{}, true);
+  return circt::seq::CompRegOp::create(builder, location, next, clock, reset,
+                                       resetValue, name);
+}
+
+mlir::Value createUnresetStructuredRegister(mlir::OpBuilder &builder,
+                                            mlir::Location location,
+                                            mlir::Value next, mlir::Value clock,
+                                            llvm::StringRef name) {
+  return circt::seq::CompRegOp::create(builder, location, next, clock, name);
+}
+
+std::uint32_t inactiveWord(const ConfigurationTransportUnitLayout &layout,
+                           std::uint64_t word) {
+  std::uint32_t result = 0;
+  for (unsigned byte = 0; byte != 4; ++byte) {
+    const std::uint64_t ordinal = word * 4 + byte;
+    if (ordinal < layout.inactiveImage.size())
+      result |= std::uint32_t(layout.inactiveImage[ordinal]) << (byte * 8);
+  }
+  return result;
+}
+
+mlir::Value inactiveWordAt(mlir::OpBuilder &builder, mlir::Location location,
+                           const ConfigurationTransportUnitLayout &layout,
+                           mlir::Value wordIndex) {
+  mlir::Value result = constant(builder, location, 32, 0);
+  for (std::uint64_t word = 0; word != layout.payloadWordCount; ++word) {
+    const std::uint32_t value = inactiveWord(layout, word);
+    if (value == 0)
+      continue;
+    result = mux(builder, location, equals(builder, location, wordIndex, word),
+                 constant(builder, location, 32, value), result);
+  }
+  return result;
+}
+
+mlir::Value zeroArrayConstant(mlir::OpBuilder &builder, mlir::Location location,
+                              circt::hw::ArrayType arrayType) {
+  return circt::sv::VerbatimExprOp::create(builder, location, arrayType, "'0");
+}
+
+mlir::Value strobeMask(mlir::OpBuilder &builder, mlir::Location location,
+                       mlir::Value strobe) {
+  llvm::SmallVector<mlir::Value, 4> highToLow;
+  for (unsigned lane = 4; lane != 0; --lane)
+    highToLow.push_back(mux(builder, location,
+                            extract(builder, location, strobe, lane - 1, 1),
+                            constant(builder, location, 8, 0xff),
+                            constant(builder, location, 8, 0)));
+  return circt::comb::ConcatOp::create(builder, location, highToLow);
+}
+
+mlir::Value adaptUnsignedWidth(mlir::OpBuilder &builder,
+                               mlir::Location location, mlir::Value value,
+                               unsigned width) {
+  const unsigned current =
+      mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
+  if (current == width)
+    return value;
+  if (current > width)
+    return extract(builder, location, value, 0, width);
+  return circt::comb::ConcatOp::create(
+      builder, location,
+      llvm::ArrayRef<mlir::Value>{
+          constant(builder, location, width - current, 0), value});
+}
+
+mlir::Value populationCount4(mlir::OpBuilder &builder, mlir::Location location,
+                             mlir::Value value, unsigned width) {
+  mlir::Value result = constant(builder, location, width, 0);
+  for (unsigned bit = 0; bit != 4; ++bit)
+    result = circt::comb::AddOp::create(
+        builder, location, result,
+        adaptUnsignedWidth(builder, location,
+                           extract(builder, location, value, bit, 1), width),
+        true);
+  return result;
+}
 
 struct ConfigurationUnitState final {
   const ConfigurationTransportUnitLayout *layout = nullptr;
-  std::vector<ConfigurationByteState> bytes;
+  circt::hw::ArrayType wordArrayType;
+  circt::hw::ArrayType tagArrayType;
+  circt::Backedge bankZeroNext;
+  circt::Backedge bankOneNext;
+  circt::Backedge tagsNext;
+  circt::Backedge activeBankNext;
+  circt::Backedge initializedNext;
+  circt::Backedge coveredCountNext;
+  mlir::Value bankZero;
+  mlir::Value bankOne;
+  mlir::Value tags;
+  mlir::Value activeBank;
+  mlir::Value initialized;
+  mlir::Value coveredCount;
+  mlir::Value activeStoredWords;
+  std::vector<mlir::Value> activeWords;
   mlir::Value complete;
   mlir::Value commitSuccess;
 };
 
-mlir::Value assembleWord(mlir::OpBuilder &builder, mlir::Location location,
-                         llvm::ArrayRef<ConfigurationByteState> bytes,
-                         std::uint64_t firstByte) {
-  llvm::SmallVector<mlir::Value, 4> highToLow;
-  for (unsigned slot = 4; slot != 0; --slot) {
-    const std::uint64_t byte = firstByte + slot - 1;
-    highToLow.push_back(byte < bytes.size()
-                            ? bytes[static_cast<std::size_t>(byte)].active
-                            : constant(builder, location, 8, 0));
-  }
-  return circt::comb::ConcatOp::create(builder, location, highToLow);
-}
-
-mlir::Value assemblePayload(mlir::OpBuilder &builder, mlir::Location location,
-                            const ConfigurationUnitState &unit) {
+mlir::Value assembleBundle(mlir::OpBuilder &builder, mlir::Location location,
+                           llvm::ArrayRef<ConfigurationUnitState> units,
+                           const ConfigurationBundlePlan &configuration) {
   llvm::SmallVector<mlir::Value> highToLow;
-  highToLow.reserve(unit.bytes.size());
-  for (auto iterator = unit.bytes.rbegin(); iterator != unit.bytes.rend();
-       ++iterator)
-    highToLow.push_back(iterator->active);
-  mlir::Value bytes =
-      highToLow.size() == 1
-          ? highToLow.front()
-          : circt::comb::ConcatOp::create(builder, location, highToLow);
-  if (unit.layout->payloadBitCount == unit.layout->payloadByteCount * 8)
-    return bytes;
-  return extract(builder, location, bytes, 0,
-                 static_cast<unsigned>(unit.layout->payloadBitCount));
+  highToLow.reserve(configuration.words.size());
+  for (const ConfigurationBundleWord &word :
+       llvm::reverse(configuration.words)) {
+    assert(word.key.transportUnitOrdinal < units.size() &&
+           "configuration bundle references an absent transport unit");
+    const ConfigurationUnitState &unit =
+        units[word.key.transportUnitOrdinal];
+    assert(word.key.wordOrdinal < unit.activeWords.size() &&
+           "configuration bundle references an absent active word");
+    mlir::Value selected = unit.activeWords[word.key.wordOrdinal];
+    if (word.usedBitMask != std::numeric_limits<std::uint32_t>::max())
+      selected = circt::comb::AndOp::create(
+          builder, location, selected,
+          constant(builder, location, 32, word.usedBitMask), true);
+    highToLow.push_back(selected);
+  }
+  assert(!highToLow.empty() && "empty configuration bundle has no value");
+  return circt::hw::ArrayCreateOp::create(builder, location, highToLow);
 }
 
 } // namespace
@@ -129,20 +219,44 @@ void appendAxiLiteConfigurationPorts(
   inputs.push_back(port(builder, "cfg_rready", builder.getI1Type(), input));
 }
 
+std::string
+controllerConfigurationBundlePortName(std::size_t componentOrdinal) {
+  return "configuration_bundle_" + std::to_string(componentOrdinal);
+}
+
 llvm::Expected<ConfigurationControllerModule>
 buildConfigurationControllerModule(
     mlir::OpBuilder &builder, mlir::Location location,
     const ConfigurationABI &configurationAbi,
     const ConfigurationTransportLayout &transportLayout,
-    const ClockResetPlan &clockReset) {
+    const ClockResetPlan &clockReset,
+    llvm::ArrayRef<ConfigurationBundlePlan> componentConfigurations) {
   for (const ConfigurationTransportUnitLayout &layout : transportLayout.units) {
     const ProgrammingUnit *unit =
         configurationAbi.findProgrammingUnit(layout.programmingUnit.unitId);
     if (!unit || unit->payloadBitCount != layout.payloadBitCount ||
+        layout.payloadBitCount == 0 ||
         layout.payloadBitCount > mlir::IntegerType::kMaxWidth ||
-        layout.payloadByteCount != layout.inactiveImage.size())
+        layout.payloadByteCount != layout.inactiveImage.size() ||
+        layout.payloadWordCount == 0 ||
+        layout.payloadWordCount > mlir::IntegerType::kMaxWidth / 32)
       return invalid("configuration transport unit disagrees with its ABI");
   }
+  auto fieldDecoders = prepareFieldDecoders(configurationAbi, transportLayout);
+  if (!fieldDecoders)
+    return fieldDecoders.takeError();
+  auto allFields = deriveConfigurationBundlePlan(*fieldDecoders);
+  if (!allFields)
+    return allFields.takeError();
+  for (const ConfigurationBundlePlan &configuration :
+       componentConfigurations)
+    for (const ConfigurationBundleWord &word : configuration.words) {
+      const ConfigurationBundleWord *canonical = allFields->find(word.key);
+      if (!canonical ||
+          (canonical->usedBitMask & word.usedBitMask) != word.usedBitMask)
+        return invalid(
+            "component configuration bundle disagrees with its ABI word");
+    }
 
   llvm::SmallVector<circt::hw::PortInfo, 24> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 24> outputs;
@@ -152,13 +266,14 @@ buildConfigurationControllerModule(
   inputs.push_back(port(builder, "reset", builder.getI1Type(),
                         circt::hw::ModulePort::Direction::Input));
   appendAxiLiteConfigurationPorts(builder, inputs, outputs);
-  for (auto [ordinal, layout] : llvm::enumerate(transportLayout.units))
-    outputs.push_back(port(
-        builder, configurationPortName(ordinal),
-        builder.getIntegerType(static_cast<unsigned>(layout.payloadBitCount)),
-        circt::hw::ModulePort::Direction::Output));
+  for (auto [ordinal, configuration] :
+       llvm::enumerate(componentConfigurations))
+    if (!configuration.empty())
+      outputs.push_back(port(
+          builder, controllerConfigurationBundlePortName(ordinal),
+          configurationBundleType(builder.getContext(), configuration),
+          circt::hw::ModulePort::Direction::Output));
 
-  std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location, builder.getStringAttr("loom_configuration_controller"),
       circt::hw::ModulePortInfo(inputs, outputs),
@@ -226,144 +341,237 @@ buildConfigurationControllerModule(
             andValues(bodyBuilder, location,
                       {awHeld, wHeld, notValue(bodyBuilder, location, bValid)});
 
+        mlir::Value commandByte = extract(bodyBuilder, location, wData, 0, 8);
+        mlir::Value commandValid =
+            andValues(bodyBuilder, location,
+                      {extract(bodyBuilder, location, wStrobe, 0, 1),
+                       equals(bodyBuilder, location, commandByte, 1)});
+        for (unsigned byte = 1; byte != 4; ++byte) {
+          mlir::Value ignored =
+              notValue(bodyBuilder, location,
+                       extract(bodyBuilder, location, wStrobe, byte, 1));
+          mlir::Value zeroByte =
+              equals(bodyBuilder, location,
+                     extract(bodyBuilder, location, wData, byte * 8, 8), 0);
+          commandValid =
+              andValues(bodyBuilder, location,
+                        {commandValid,
+                         orValues(bodyBuilder, location, {ignored, zeroByte})});
+        }
+        mlir::Value byteWriteMask = strobeMask(bodyBuilder, location, wStrobe);
+
         std::vector<ConfigurationUnitState> units;
         units.reserve(transportLayout.units.size());
         for (auto [unitOrdinal, layout] :
              llvm::enumerate(transportLayout.units)) {
           ConfigurationUnitState state;
           state.layout = &layout;
-          state.bytes.reserve(
-              static_cast<std::size_t>(layout.payloadByteCount));
-          for (std::uint64_t byte = 0; byte < layout.payloadByteCount; ++byte) {
-            ConfigurationByteState item;
-            item.shadowNext = backedges.get(bodyBuilder.getI8Type());
-            item.activeNext = backedges.get(bodyBuilder.getI8Type());
-            item.coveredNext = backedges.get(bodyBuilder.getI1Type());
-            const llvm::APInt resetByte(8, layout.inactiveImage[byte]);
-            const std::string prefix = "cfg_unit_" +
-                                       std::to_string(unitOrdinal) + "_byte_" +
-                                       std::to_string(byte);
-            item.shadow = createRegister(
-                bodyBuilder, location, item.shadowNext, clock, reset, resetByte,
-                prefix + "_shadow", clockReset.asynchronousReset);
-            item.active = createRegister(
-                bodyBuilder, location, item.activeNext, clock, reset, resetByte,
-                prefix + "_active", clockReset.asynchronousReset);
-            item.covered =
-                createRegister(bodyBuilder, location, item.coveredNext, clock,
-                               reset, llvm::APInt(1, 0), prefix + "_covered",
-                               clockReset.asynchronousReset);
-            state.bytes.push_back(std::move(item));
+          state.wordArrayType = circt::hw::ArrayType::get(
+              bodyBuilder.getI32Type(), layout.payloadWordCount);
+          state.tagArrayType = circt::hw::ArrayType::get(
+              bodyBuilder.getI4Type(), layout.payloadWordCount);
+          state.bankZeroNext = backedges.get(state.wordArrayType);
+          state.bankOneNext = backedges.get(state.wordArrayType);
+          state.tagsNext = backedges.get(state.tagArrayType);
+          state.activeBankNext = backedges.get(bodyBuilder.getI1Type());
+          state.initializedNext = backedges.get(bodyBuilder.getI1Type());
+          const unsigned coveredCountWidth =
+              indexWidth(layout.payloadByteCount + 1);
+          state.coveredCountNext =
+              backedges.get(bodyBuilder.getIntegerType(coveredCountWidth));
+
+          mlir::Value emptyTags =
+              zeroArrayConstant(bodyBuilder, location, state.tagArrayType);
+          const std::string prefix = "cfg_unit_" + std::to_string(unitOrdinal);
+          state.bankZero = createUnresetStructuredRegister(
+              bodyBuilder, location, state.bankZeroNext, clock,
+              prefix + "_bank_0");
+          state.bankOne = createUnresetStructuredRegister(
+              bodyBuilder, location, state.bankOneNext, clock,
+              prefix + "_bank_1");
+          state.tags = createStructuredRegister(
+              bodyBuilder, location, state.tagsNext, clock, reset, emptyTags,
+              prefix + "_coverage_tags", clockReset.asynchronousReset);
+          state.activeBank =
+              createRegister(bodyBuilder, location, state.activeBankNext, clock,
+                             reset, llvm::APInt(1, 0), prefix + "_active_bank",
+                             clockReset.asynchronousReset);
+          state.initialized = createRegister(
+              bodyBuilder, location, state.initializedNext, clock, reset,
+              llvm::APInt(1, 0), prefix + "_initialized",
+              clockReset.asynchronousReset);
+          state.coveredCount = createRegister(
+              bodyBuilder, location, state.coveredCountNext, clock, reset,
+              llvm::APInt(coveredCountWidth, 0), prefix + "_covered_count",
+              clockReset.asynchronousReset);
+          state.activeStoredWords = mux(bodyBuilder, location, state.activeBank,
+                                        state.bankOne, state.bankZero);
+          state.activeWords.reserve(layout.payloadWordCount);
+          const unsigned wordIndexWidth = indexWidth(layout.payloadWordCount);
+          for (std::uint64_t word = 0; word != layout.payloadWordCount;
+               ++word) {
+            mlir::Value storedWord = circt::hw::ArrayGetOp::create(
+                bodyBuilder, location, state.activeStoredWords,
+                constant(bodyBuilder, location, wordIndexWidth, word));
+            state.activeWords.push_back(mux(
+                bodyBuilder, location, state.initialized, storedWord,
+                constant(bodyBuilder, location, 32,
+                         inactiveWord(layout, word))));
           }
-          llvm::SmallVector<mlir::Value> covered;
-          for (const ConfigurationByteState &byte : state.bytes)
-            covered.push_back(byte.covered);
-          state.complete = andValues(bodyBuilder, location, covered);
+          state.complete = equals(bodyBuilder, location, state.coveredCount,
+                                  layout.payloadByteCount);
           units.push_back(std::move(state));
         }
 
         mlir::Value writeResponse =
             constant(bodyBuilder, location, 2, axiDecodeError);
         for (ConfigurationUnitState &unit : units) {
-          mlir::Value commandByte = extract(bodyBuilder, location, wData, 0, 8);
-          mlir::Value commandValid =
-              andValues(bodyBuilder, location,
-                        {extract(bodyBuilder, location, wStrobe, 0, 1),
-                         equals(bodyBuilder, location, commandByte, 1)});
-          for (unsigned byte = 1; byte != 4; ++byte) {
-            mlir::Value ignored =
-                notValue(bodyBuilder, location,
-                         extract(bodyBuilder, location, wStrobe, byte, 1));
-            mlir::Value zeroByte =
-                equals(bodyBuilder, location,
-                       extract(bodyBuilder, location, wData, byte * 8, 8), 0);
-            commandValid =
-                andValues(bodyBuilder, location,
-                          {commandValid, orValues(bodyBuilder, location,
-                                                  {ignored, zeroByte})});
-          }
-          mlir::Value commitMatch = equals(bodyBuilder, location, awAddress,
-                                           unit.layout->commitAddress);
+          const auto &layout = *unit.layout;
+          mlir::Value commitMatch =
+              equals(bodyBuilder, location, awAddress, layout.commitAddress);
           mlir::Value commitValid =
               andValues(bodyBuilder, location, {commandValid, unit.complete});
           unit.commitSuccess = andValues(
               bodyBuilder, location, {executeWrite, commitMatch, commitValid});
-          mlir::Value commitResponse =
-              mux(bodyBuilder, location, commitValid,
-                  constant(bodyBuilder, location, 2, axiOkay),
-                  constant(bodyBuilder, location, 2, axiSlaveError));
-          writeResponse = mux(bodyBuilder, location, commitMatch,
-                              commitResponse, writeResponse);
+          writeResponse =
+              mux(bodyBuilder, location, commitMatch,
+                  mux(bodyBuilder, location, commitValid,
+                      constant(bodyBuilder, location, 2, axiOkay),
+                      constant(bodyBuilder, location, 2, axiSlaveError)),
+                  writeResponse);
 
-          mlir::Value statusMatch = equals(bodyBuilder, location, awAddress,
-                                           unit.layout->statusAddress);
+          mlir::Value statusMatch =
+              equals(bodyBuilder, location, awAddress, layout.statusAddress);
           writeResponse = mux(bodyBuilder, location, statusMatch,
                               constant(bodyBuilder, location, 2, axiSlaveError),
                               writeResponse);
 
-          for (std::uint64_t word = 0; word < unit.layout->payloadWordCount;
-               ++word) {
-            const std::uint64_t address = unit.layout->baseAddress + word * 4;
-            mlir::Value addressMatch =
-                equals(bodyBuilder, location, awAddress, address);
-            mlir::Value unusedZero = bitConstant(bodyBuilder, location, true);
-            for (unsigned slot = 0; slot != 4; ++slot) {
-              const std::uint64_t byteIndex = word * 4 + slot;
-              if (byteIndex + 1 < unit.layout->payloadByteCount)
-                continue;
-              const unsigned usedBits =
-                  byteIndex >= unit.layout->payloadByteCount
-                      ? 0
-                      : static_cast<unsigned>(unit.layout->payloadBitCount -
-                                              byteIndex * 8);
-              if (usedBits == 8)
-                continue;
-              const std::uint64_t invalidMask =
-                  usedBits == 0 ? 0xffU : (0xffU << usedBits) & 0xffU;
-              mlir::Value selected =
-                  extract(bodyBuilder, location, wStrobe, slot, 1);
-              mlir::Value byteValue =
-                  extract(bodyBuilder, location, wData, slot * 8, 8);
-              mlir::Value masked = circt::comb::AndOp::create(
-                  bodyBuilder, location, byteValue,
-                  constant(bodyBuilder, location, 8, invalidMask));
-              mlir::Value validByte =
-                  orValues(bodyBuilder, location,
-                           {notValue(bodyBuilder, location, selected),
-                            equals(bodyBuilder, location, masked, 0)});
-              unusedZero =
-                  andValues(bodyBuilder, location, {unusedZero, validByte});
-            }
-            mlir::Value payloadResponse =
-                mux(bodyBuilder, location, unusedZero,
-                    constant(bodyBuilder, location, 2, axiOkay),
-                    constant(bodyBuilder, location, 2, axiSlaveError));
-            writeResponse = mux(bodyBuilder, location, addressMatch,
-                                payloadResponse, writeResponse);
+          mlir::Value atOrAboveBase = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::uge, awAddress,
+              constant(bodyBuilder, location, 32, layout.baseAddress), true);
+          mlir::Value belowCommit = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::ult, awAddress,
+              constant(bodyBuilder, location, 32, layout.commitAddress), true);
+          mlir::Value aligned =
+              equals(bodyBuilder, location,
+                     extract(bodyBuilder, location, awAddress, 0, 2), 0);
+          mlir::Value payloadMatch = andValues(
+              bodyBuilder, location, {atOrAboveBase, belowCommit, aligned});
+          mlir::Value byteOffset = circt::comb::SubOp::create(
+              bodyBuilder, location, awAddress,
+              constant(bodyBuilder, location, 32, layout.baseAddress), true);
+          const unsigned wordIndexWidth = indexWidth(layout.payloadWordCount);
+          mlir::Value wordIndex =
+              extract(bodyBuilder, location, byteOffset, 2, wordIndexWidth);
+          mlir::Value safeWordIndex =
+              mux(bodyBuilder, location, payloadMatch, wordIndex,
+                  constant(bodyBuilder, location, wordIndexWidth, 0));
+          mlir::Value lastWord = equals(bodyBuilder, location, safeWordIndex,
+                                        layout.payloadWordCount - 1);
 
-            for (unsigned slot = 0; slot != 4; ++slot) {
-              const std::uint64_t byteIndex = word * 4 + slot;
-              if (byteIndex >= unit.bytes.size())
-                continue;
-              ConfigurationByteState &byte =
-                  unit.bytes[static_cast<std::size_t>(byteIndex)];
-              mlir::Value writeByte =
-                  andValues(bodyBuilder, location,
-                            {executeWrite, addressMatch, unusedZero,
-                             extract(bodyBuilder, location, wStrobe, slot, 1)});
-              byte.shadowNext.setValue(
-                  mux(bodyBuilder, location, writeByte,
-                      extract(bodyBuilder, location, wData, slot * 8, 8),
-                      byte.shadow));
-              byte.activeNext.setValue(mux(bodyBuilder, location,
-                                           unit.commitSuccess, byte.shadow,
-                                           byte.active));
-              byte.coveredNext.setValue(mux(
-                  bodyBuilder, location, unit.commitSuccess,
-                  bitConstant(bodyBuilder, location, false),
-                  orValues(bodyBuilder, location, {byte.covered, writeByte})));
-            }
-          }
+          const unsigned usedLastWordBits =
+              static_cast<unsigned>(layout.payloadBitCount % 32);
+          const std::uint32_t invalidLastWordMask =
+              usedLastWordBits == 0
+                  ? 0
+                  : static_cast<std::uint32_t>(
+                        ~((std::uint64_t{1} << usedLastWordBits) - 1));
+          mlir::Value invalidMask =
+              mux(bodyBuilder, location, lastWord,
+                  constant(bodyBuilder, location, 32, invalidLastWordMask),
+                  constant(bodyBuilder, location, 32, 0));
+          mlir::Value invalidSelected = circt::comb::AndOp::create(
+              bodyBuilder, location, wData, byteWriteMask, true);
+          invalidSelected = circt::comb::AndOp::create(
+              bodyBuilder, location, invalidSelected, invalidMask, true);
+          mlir::Value unusedZero =
+              equals(bodyBuilder, location, invalidSelected, 0);
+          mlir::Value payloadResponse =
+              mux(bodyBuilder, location, unusedZero,
+                  constant(bodyBuilder, location, 2, axiOkay),
+                  constant(bodyBuilder, location, 2, axiSlaveError));
+          writeResponse = mux(bodyBuilder, location, payloadMatch,
+                              payloadResponse, writeResponse);
+          mlir::Value payloadWrite = andValues(
+              bodyBuilder, location, {executeWrite, payloadMatch, unusedZero});
+
+          mlir::Value inactiveWords =
+              mux(bodyBuilder, location, unit.activeBank, unit.bankZero,
+                  unit.bankOne);
+          mlir::Value oldWord = circt::hw::ArrayGetOp::create(
+              bodyBuilder, location, inactiveWords, safeWordIndex);
+          mlir::Value retainedWord = circt::comb::AndOp::create(
+              bodyBuilder, location, oldWord,
+              notValue(bodyBuilder, location, byteWriteMask), true);
+          mlir::Value selectedWord = circt::comb::AndOp::create(
+              bodyBuilder, location, wData, byteWriteMask, true);
+          mlir::Value updatedWord = circt::comb::OrOp::create(
+              bodyBuilder, location, retainedWord, selectedWord, true);
+          updatedWord = circt::comb::AndOp::create(
+              bodyBuilder, location, updatedWord,
+              notValue(bodyBuilder, location, invalidMask), true);
+          mlir::Value updatedInactive = circt::hw::ArrayInjectOp::create(
+              bodyBuilder, location, inactiveWords, safeWordIndex, updatedWord);
+          mlir::Value writeBankZero =
+              andValues(bodyBuilder, location, {payloadWrite, unit.activeBank});
+          mlir::Value writeBankOne = andValues(
+              bodyBuilder, location,
+              {payloadWrite, notValue(bodyBuilder, location, unit.activeBank)});
+          unit.bankZeroNext.setValue(mux(bodyBuilder, location, writeBankZero,
+                                         updatedInactive, unit.bankZero));
+          unit.bankOneNext.setValue(mux(bodyBuilder, location, writeBankOne,
+                                        updatedInactive, unit.bankOne));
+
+          const unsigned usedLastWordBytes =
+              static_cast<unsigned>(layout.payloadByteCount % 4);
+          const std::uint64_t lastLaneMask =
+              usedLastWordBytes == 0 ? 0xf : (1U << usedLastWordBytes) - 1;
+          mlir::Value validLanes =
+              mux(bodyBuilder, location, lastWord,
+                  constant(bodyBuilder, location, 4, lastLaneMask),
+                  constant(bodyBuilder, location, 4, 0xf));
+          mlir::Value selectedLanes = circt::comb::AndOp::create(
+              bodyBuilder, location, wStrobe, validLanes, true);
+          mlir::Value oldTags = circt::hw::ArrayGetOp::create(
+              bodyBuilder, location, unit.tags, safeWordIndex);
+          mlir::Value generation =
+              notValue(bodyBuilder, location, unit.activeBank);
+          mlir::Value coveredLanes =
+              mux(bodyBuilder, location, generation, oldTags,
+                  notValue(bodyBuilder, location, oldTags));
+          mlir::Value newlyCovered = circt::comb::AndOp::create(
+              bodyBuilder, location, selectedLanes,
+              notValue(bodyBuilder, location, coveredLanes), true);
+          mlir::Value tagsSet = circt::comb::OrOp::create(
+              bodyBuilder, location, oldTags, selectedLanes, true);
+          mlir::Value tagsCleared = circt::comb::AndOp::create(
+              bodyBuilder, location, oldTags,
+              notValue(bodyBuilder, location, selectedLanes), true);
+          mlir::Value updatedTags =
+              mux(bodyBuilder, location, generation, tagsSet, tagsCleared);
+          mlir::Value injectedTags = circt::hw::ArrayInjectOp::create(
+              bodyBuilder, location, unit.tags, safeWordIndex, updatedTags);
+          unit.tagsNext.setValue(mux(bodyBuilder, location, payloadWrite,
+                                     injectedTags, unit.tags));
+
+          const unsigned countWidth =
+              mlir::cast<mlir::IntegerType>(unit.coveredCount.getType())
+                  .getWidth();
+          mlir::Value countAfterWrite = circt::comb::AddOp::create(
+              bodyBuilder, location, unit.coveredCount,
+              populationCount4(bodyBuilder, location, newlyCovered, countWidth),
+              true);
+          countAfterWrite = mux(bodyBuilder, location, payloadWrite,
+                                countAfterWrite, unit.coveredCount);
+          unit.coveredCountNext.setValue(mux(
+              bodyBuilder, location, unit.commitSuccess,
+              constant(bodyBuilder, location, countWidth, 0), countAfterWrite));
+          unit.activeBankNext.setValue(
+              mux(bodyBuilder, location, unit.commitSuccess,
+                  notValue(bodyBuilder, location, unit.activeBank),
+                  unit.activeBank));
+          unit.initializedNext.setValue(orValues(
+              bodyBuilder, location, {unit.initialized, unit.commitSuccess}));
         }
 
         awHeldNext.setValue(
@@ -394,8 +602,9 @@ buildConfigurationControllerModule(
             constant(bodyBuilder, location, 2, axiDecodeError);
         mlir::Value arAddress = accessor.getInput("cfg_araddr");
         for (const ConfigurationUnitState &unit : units) {
-          mlir::Value statusMatch = equals(bodyBuilder, location, arAddress,
-                                           unit.layout->statusAddress);
+          const auto &layout = *unit.layout;
+          mlir::Value statusMatch =
+              equals(bodyBuilder, location, arAddress, layout.statusAddress);
           mlir::Value status = circt::comb::ConcatOp::create(
               bodyBuilder, location,
               llvm::SmallVector<mlir::Value>{
@@ -404,19 +613,36 @@ buildConfigurationControllerModule(
           readResponse =
               mux(bodyBuilder, location, statusMatch,
                   constant(bodyBuilder, location, 2, axiOkay), readResponse);
-          for (std::uint64_t word = 0; word < unit.layout->payloadWordCount;
-               ++word) {
-            const std::uint64_t address = unit.layout->baseAddress + word * 4;
-            mlir::Value addressMatch =
-                equals(bodyBuilder, location, arAddress, address);
-            readData =
-                mux(bodyBuilder, location, addressMatch,
-                    assembleWord(bodyBuilder, location, unit.bytes, word * 4),
-                    readData);
-            readResponse =
-                mux(bodyBuilder, location, addressMatch,
-                    constant(bodyBuilder, location, 2, axiOkay), readResponse);
-          }
+
+          mlir::Value atOrAboveBase = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::uge, arAddress,
+              constant(bodyBuilder, location, 32, layout.baseAddress), true);
+          mlir::Value belowCommit = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::ult, arAddress,
+              constant(bodyBuilder, location, 32, layout.commitAddress), true);
+          mlir::Value aligned =
+              equals(bodyBuilder, location,
+                     extract(bodyBuilder, location, arAddress, 0, 2), 0);
+          mlir::Value payloadMatch = andValues(
+              bodyBuilder, location, {atOrAboveBase, belowCommit, aligned});
+          mlir::Value byteOffset = circt::comb::SubOp::create(
+              bodyBuilder, location, arAddress,
+              constant(bodyBuilder, location, 32, layout.baseAddress), true);
+          mlir::Value wordIndex = extract(bodyBuilder, location, byteOffset, 2,
+                                          indexWidth(layout.payloadWordCount));
+          mlir::Value safeWordIndex =
+              mux(bodyBuilder, location, payloadMatch, wordIndex,
+                  constant(bodyBuilder, location,
+                           indexWidth(layout.payloadWordCount), 0));
+          mlir::Value storedWord = circt::hw::ArrayGetOp::create(
+              bodyBuilder, location, unit.activeStoredWords, safeWordIndex);
+          mlir::Value word =
+              mux(bodyBuilder, location, unit.initialized, storedWord,
+                  inactiveWordAt(bodyBuilder, location, layout, safeWordIndex));
+          readData = mux(bodyBuilder, location, payloadMatch, word, readData);
+          readResponse =
+              mux(bodyBuilder, location, payloadMatch,
+                  constant(bodyBuilder, location, 2, axiOkay), readResponse);
         }
         mlir::Value arReady = notValue(bodyBuilder, location, rValid);
         mlir::Value readAccept = andValues(
@@ -440,12 +666,13 @@ buildConfigurationControllerModule(
         accessor.setOutput("cfg_rdata", rData);
         accessor.setOutput("cfg_rresp", rResponse);
         accessor.setOutput("cfg_rvalid", rValid);
-        for (auto [ordinal, unit] : llvm::enumerate(units))
-          accessor.setOutput(configurationPortName(ordinal),
-                             assemblePayload(bodyBuilder, location, unit));
+        for (auto [ordinal, configuration] :
+             llvm::enumerate(componentConfigurations))
+          if (!configuration.empty())
+            accessor.setOutput(
+                controllerConfigurationBundlePortName(ordinal),
+                assembleBundle(bodyBuilder, location, units, configuration));
       });
-  if (materializationError)
-    return invalid(*materializationError);
   return ConfigurationControllerModule{module};
 }
 

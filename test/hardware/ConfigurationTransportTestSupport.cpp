@@ -128,6 +128,7 @@ std::string portableAxiLiteSignalDeclarations() {
   logic        cfg_rvalid;
   logic        cfg_rready;
   logic [31:0] cfg_readback;
+  logic [31:0] cfg_active_snapshot;
   logic [1:0]  cfg_read_response;
   integer      loom_verbose_level;
   initial begin
@@ -277,6 +278,57 @@ portableAxiLiteProgramAndVerify(const PortableConfigurationTarget &target,
 
   std::string result;
   llvm::raw_string_ostream output(result);
+  if (const unsigned usedLastWordBits =
+          static_cast<unsigned>(target.payloadBitCount % 32);
+      usedLastWordBits != 0) {
+    const std::uint32_t address =
+        target.baseAddress +
+        static_cast<std::uint32_t>((target.payloadWordCount - 1) * 4);
+    const std::uint32_t invalidBit = std::uint32_t{1} << usedLastWordBits;
+    const std::uint32_t invalidStrobe = std::uint32_t{1}
+                                        << (usedLastWordBits / 8);
+    output << indentation << "cfg_write(32'h"
+           << llvm::format_hex_no_prefix(address, 8) << ", 32'h"
+           << llvm::format_hex_no_prefix(invalidBit, 8) << ", 4'h"
+           << llvm::format_hex_no_prefix(invalidStrobe, 1) << ", 2'b10);\n";
+  }
+  if (target.payloadByteCount > 1) {
+    output << indentation << "cfg_read(32'h"
+           << llvm::format_hex_no_prefix(target.baseAddress, 8)
+           << ", cfg_active_snapshot, cfg_read_response);\n"
+           << indentation
+           << "if (cfg_read_response !== 2'b00) "
+              "$fatal(1, \"active configuration snapshot failed\");\n";
+    const std::uint64_t omittedByte = target.payloadByteCount - 1;
+    for (std::uint64_t word = 0; word != target.payloadWordCount; ++word) {
+      std::uint8_t strobe = imageStrobe(image, word);
+      if (omittedByte / 4 == word)
+        strobe &= static_cast<std::uint8_t>(~(1U << (omittedByte % 4)));
+      if (strobe == 0)
+        continue;
+      const std::uint32_t address =
+          target.baseAddress + static_cast<std::uint32_t>(word * 4);
+      output << indentation << "cfg_write(32'h"
+             << llvm::format_hex_no_prefix(address, 8) << ", 32'h"
+             << llvm::format_hex_no_prefix(imageWord(image, word), 8) << ", 4'h"
+             << llvm::format_hex_no_prefix(strobe, 1) << ", 2'b00);\n";
+    }
+    output
+        << indentation << "cfg_write(32'h"
+        << llvm::format_hex_no_prefix(target.baseAddress, 8) << ", 32'h"
+        << llvm::format_hex_no_prefix(imageWord(image, 0), 8)
+        << ", 4'h1, 2'b00);\n"
+        << indentation << "cfg_write(32'h"
+        << llvm::format_hex_no_prefix(target.commitAddress, 8)
+        << ", 32'h00000001, 4'h1, 2'b10);\n"
+        << indentation << "cfg_read(32'h"
+        << llvm::format_hex_no_prefix(target.baseAddress, 8)
+        << ", cfg_readback, cfg_read_response);\n"
+        << indentation
+        << "if (cfg_read_response !== 2'b00 || "
+           "cfg_readback !== cfg_active_snapshot) "
+           "$fatal(1, \"incomplete commit changed active configuration\");\n";
+  }
   for (std::uint64_t word = 0; word != target.payloadWordCount; ++word) {
     const std::uint32_t address =
         target.baseAddress + static_cast<std::uint32_t>(word * 4);

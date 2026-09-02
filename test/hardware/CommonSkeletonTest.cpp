@@ -83,6 +83,41 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+void requirePackedConfigurationHierarchy(llvm::StringRef test,
+                                         mlir::ModuleOp module) {
+  bool sawControllerBundle = false;
+  module.walk([&](circt::hw::HWModuleOp hardwareModule) {
+    std::size_t bundleInputs = 0;
+    for (const circt::hw::PortInfo &port : hardwareModule.getPortList()) {
+      const llvm::StringRef name = port.getName();
+      require(test,
+              !(name.starts_with("configuration_") && name.contains("_field_")),
+              "hierarchy retained one scalar configuration field port");
+      bundleInputs += port.isInput() && name == "configuration_bundle";
+      if (name == "configuration_bundle" ||
+          name.starts_with("configuration_bundle_")) {
+        const auto array = mlir::dyn_cast<circt::hw::ArrayType>(port.type);
+        require(test, array && array.getNumElements() != 0,
+                "configuration bundle is not a nonempty word array");
+        const auto element =
+            mlir::dyn_cast<mlir::IntegerType>(array.getElementType());
+        require(test, element && element.getWidth() == 32,
+                "configuration bundle does not contain 32-bit words");
+      }
+      if (name == "configuration_value")
+        require(test, mlir::isa<mlir::IntegerType>(port.type),
+                "decoded configuration core has a non-integer value port");
+      if (hardwareModule.getSymName() == "loom_configuration_controller" &&
+          port.isOutput() && name.starts_with("configuration_bundle_"))
+        sawControllerBundle = true;
+    }
+    require(test, bundleInputs <= 1,
+            "hierarchy module has more than one configuration bundle input");
+  });
+  require(test, sawControllerBundle,
+          "configuration controller published no component bundle");
+}
+
 void expectError(llvm::StringRef test, llvm::Error error,
                  llvm::StringRef expected) {
   if (!error)
@@ -324,9 +359,9 @@ FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = pe.close())
     fail(test, llvm::toString(std::move(error)));
-  auto fifo = take(test, spatial.addFifo(take(test, pe.output(0)),
-                                         FifoSpec{bits8, 2, true,
-                                                  std::nullopt}));
+  auto fifo =
+      take(test, spatial.addFifo(take(test, pe.output(0)),
+                                 FifoSpec{bits8, 2, true, std::nullopt}));
   auto boundary = take(
       test, spatial.addBoundary({fifo.value(), take(test, spatial.input(2))},
                                 BoundarySpec::s2t(bits8, bits2, tagged8x2)));
@@ -633,6 +668,7 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
                                  context, fabric.spatialCore, fabric.abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "hierarchy skeleton omitted its physical operation");
+  requirePackedConfigurationHierarchy(test, *skeleton.module);
   std::string text;
   llvm::raw_string_ostream(text) << *skeleton.module;
   require(test,
@@ -643,6 +679,18 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
               llvm::StringRef(text).contains("loom_fabric_boundary_") &&
               llvm::StringRef(text).contains("loom_memory_"),
           "hierarchy skeleton flattened or omitted a Fabric resource owner");
+
+  mlir::MLIRContext coldContext;
+  coldContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                          circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto coldSkeleton =
+      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                     coldContext, fabric.spatialCore, fabric.abi));
+  requirePackedConfigurationHierarchy(test, *coldSkeleton.module);
+  std::string coldText;
+  llvm::raw_string_ostream(coldText) << *coldSkeleton.module;
+  require(test, text == coldText,
+          "cold hierarchy rebuild changed configuration bundle packing");
 
   FabricOperationProviderRegistry providers;
   if (llvm::Error error =
@@ -771,9 +819,18 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
       test, loom::hardware::test::specializeAndExportPortableProvider(
                 std::move(skeleton), fabric.abi, providers, externalContracts));
   const llvm::StringRef rtl(conformance.systemVerilog);
+  const auto hasSingleDefinition = [&](llvm::StringRef name) {
+    const std::string marker = ("module " + name + "(").str();
+    const std::size_t first = rtl.find(marker);
+    return first != llvm::StringRef::npos &&
+           rtl.find(marker, first + marker.size()) == llvm::StringRef::npos;
+  };
   require(test,
-          rtl.contains("loom_temporal_pe_") && rtl.contains("operand_pool") &&
-              rtl.contains("register_fifo") &&
+          rtl.contains("loom_temporal_pe_") &&
+              hasSingleDefinition(
+                  "loom_token_pool_q1_d1_w8_single0_replace0_near1_async1") &&
+              hasSingleDefinition(
+                  "loom_token_pool_q1_d2_w10_single0_replace1_near0_async1") &&
               rtl.contains("output_0_context") &&
               rtl.contains("result_context_reg"),
           "temporal hierarchy omitted context-local scheduling or storage");
@@ -1677,6 +1734,9 @@ module temporal_testbench;
     input_1_data = 8'd7;
     input_0_tag = 2'd1;
     input_1_tag = 2'd1;
+    #1;
+    check(input_0_ready && input_1_ready,
+          "Ingress readiness observed its own valid, not cycle-start capacity");
     input_0_valid = 1;
     input_1_valid = 1;
     #1;

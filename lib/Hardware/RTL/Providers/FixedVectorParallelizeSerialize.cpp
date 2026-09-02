@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <array>
@@ -285,8 +286,8 @@ deriveModes(FabricOperationProviderRequest &request,
   const auto &semanticField =
       request.capability.configurationFieldSchema.front();
   const ConfigurationEncodingRelation *field =
-      request.configurationAbi.findOperationEncodingRelation(request.occurrence,
-                                                  semanticField.ordinal);
+      request.configurationAbi.findOperationEncodingRelation(
+          request.occurrence, semanticField.ordinal);
   if (!field)
     return invalid("configured field is absent from the ABI");
   codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
@@ -389,6 +390,32 @@ llvm::APInt lowMask(unsigned width, unsigned count) {
   return result;
 }
 
+mlir::Value encodeOneHotOrdinal(mlir::OpBuilder &builder,
+                                mlir::Location location, mlir::Value oneHot) {
+  const unsigned oneHotWidth =
+      mlir::cast<mlir::IntegerType>(oneHot.getType()).getWidth();
+  const unsigned ordinalWidth = std::max(1U, llvm::Log2_64_Ceil(oneHotWidth));
+  llvm::SmallVector<mlir::Value> highToLow;
+  highToLow.reserve(ordinalWidth);
+  for (unsigned bit = ordinalWidth; bit != 0; --bit) {
+    llvm::APInt mask(oneHotWidth, 0);
+    for (unsigned ordinal = 0; ordinal != oneHotWidth; ++ordinal)
+      if ((ordinal >> (bit - 1)) & 1U)
+        mask.setBit(ordinal);
+    if (mask.isZero()) {
+      highToLow.push_back(bitConstant(builder, location, false));
+      continue;
+    }
+    mlir::Value selected = circt::comb::AndOp::create(
+        builder, location, oneHot, constant(builder, location, mask), true);
+    highToLow.push_back(
+        invert(builder, location, isZero(builder, location, selected)));
+  }
+  if (ordinalWidth == 1)
+    return highToLow.front();
+  return circt::comb::ConcatOp::create(builder, location, highToLow);
+}
+
 ParallelizeModeLogic
 materializeParallelizeMode(mlir::OpBuilder &builder, mlir::Location location,
                            const LoweredMode &mode, mlir::Value inputData,
@@ -405,26 +432,32 @@ materializeParallelizeMode(mlir::OpBuilder &builder, mlir::Location location,
   mlir::Value element = circt::comb::ExtractOp::create(
       builder, location, inputData, 0, mode.elementWidth);
   element = detail::resizeUnsigned(builder, location, element, valueWidth);
-  for (unsigned lane = 0; lane < mode.laneCount; ++lane) {
-    mlir::Value atLane =
-        isEqual(builder, location, stateMask,
-                constant(builder, location, lowMask(maskWidth, lane)));
-    mlir::Value shift = constant(
-        builder, location, llvm::APInt(valueWidth, lane * mode.elementWidth));
-    mlir::Value placed =
-        circt::comb::ShlOp::create(builder, location, element, shift, true);
-    appendedValue = circt::comb::MuxOp::create(
-        builder, location, atLane,
-        circt::comb::OrOp::create(builder, location, stateValue, placed, true),
-        appendedValue, true);
-    llvm::APInt laneBit(maskWidth, 0);
-    laneBit.setBit(lane);
-    appendedMask = circt::comb::MuxOp::create(
-        builder, location, atLane,
-        circt::comb::OrOp::create(builder, location, stateMask,
-                                  constant(builder, location, laneBit), true),
-        appendedMask, true);
-  }
+  mlir::Value one = constant(builder, location, llvm::APInt(maskWidth, 1));
+  mlir::Value nextLane =
+      circt::comb::AddOp::create(builder, location, stateMask, one, true);
+  mlir::Value contiguous = isZero(
+      builder, location,
+      circt::comb::AndOp::create(builder, location, stateMask, nextLane, true));
+  mlir::Value withinMode = circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::ule, stateMask,
+      constant(builder, location, pending), true);
+  mlir::Value recognized = andAll(builder, location, {contiguous, withinMode});
+  mlir::Value lane = encodeOneHotOrdinal(builder, location, nextLane);
+  lane = detail::resizeUnsigned(builder, location, lane, valueWidth);
+  mlir::Value shift = circt::comb::MulOp::create(
+      builder, location, lane,
+      constant(builder, location, llvm::APInt(valueWidth, mode.elementWidth)),
+      true);
+  mlir::Value placed =
+      circt::comb::ShlOp::create(builder, location, element, shift, true);
+  appendedValue = circt::comb::MuxOp::create(
+      builder, location, recognized,
+      circt::comb::OrOp::create(builder, location, stateValue, placed, true),
+      stateValue, true);
+  appendedMask = circt::comb::MuxOp::create(
+      builder, location, recognized,
+      circt::comb::OrOp::create(builder, location, stateMask, nextLane, true),
+      stateMask, true);
   return {hasBuffered, fullAfterAppend, appendedValue, appendedMask};
 }
 
@@ -446,24 +479,30 @@ materializeSerializeMode(mlir::OpBuilder &builder, mlir::Location location,
   mlir::Value hasRemaining =
       invert(builder, location, isZero(builder, location, clearedMask));
 
-  mlir::Value selectedData =
-      constant(builder, location, llvm::APInt(scalarOutputWidth, 0));
-  mlir::Value preceding = bitConstant(builder, location, false);
-  for (unsigned lane = 0; lane < mode.laneCount; ++lane) {
-    mlir::Value active =
-        circt::comb::ExtractOp::create(builder, location, logicalMask, lane, 1);
-    mlir::Value lowest = andAll(builder, location,
-                                {active, invert(builder, location, preceding)});
-    mlir::Value laneValue = circt::comb::ExtractOp::create(
-        builder, location, sourceValue, lane * mode.elementWidth,
-        mode.elementWidth);
-    laneValue =
-        detail::resizeUnsigned(builder, location, laneValue, scalarOutputWidth);
-    selectedData = circt::comb::MuxOp::create(builder, location, lowest,
-                                              laneValue, selectedData, true);
-    preceding =
-        circt::comb::OrOp::create(builder, location, preceding, active, true);
-  }
+  mlir::Value lowest = circt::comb::AndOp::create(
+      builder, location, logicalMask,
+      circt::comb::SubOp::create(
+          builder, location,
+          constant(builder, location, llvm::APInt(maskWidth, 0)), logicalMask,
+          true),
+      true);
+  const unsigned valueWidth =
+      mlir::cast<mlir::IntegerType>(sourceValue.getType()).getWidth();
+  mlir::Value lane = encodeOneHotOrdinal(builder, location, lowest);
+  lane = detail::resizeUnsigned(builder, location, lane, valueWidth);
+  mlir::Value shift = circt::comb::MulOp::create(
+      builder, location, lane,
+      constant(builder, location, llvm::APInt(valueWidth, mode.elementWidth)),
+      true);
+  mlir::Value shifted =
+      circt::comb::ShrUOp::create(builder, location, sourceValue, shift, true);
+  mlir::Value selectedData = circt::comb::ExtractOp::create(
+      builder, location, shifted, 0, mode.elementWidth);
+  selectedData = detail::resizeUnsigned(builder, location, selectedData,
+                                        scalarOutputWidth);
+  selectedData = circt::comb::MuxOp::create(
+      builder, location, hasActive, selectedData,
+      constant(builder, location, llvm::APInt(scalarOutputWidth, 0)), true);
   return {hasActive, hasRemaining, selectedData, clearedMask};
 }
 

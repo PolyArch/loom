@@ -36,31 +36,35 @@ const EndpointPlan *findEndpoint(llvm::ArrayRef<EndpointPlan> endpoints,
   return result;
 }
 
-void appendComponentPorts(mlir::OpBuilder &builder,
-                          const ConfigurationABI &configurationAbi,
-                          const ConfigurationTransportLayout &transportLayout,
-                          llvm::ArrayRef<EndpointPlan> endpoints,
-                          llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
-                          llvm::SmallVectorImpl<circt::hw::PortInfo> &outputs,
-                          bool stateful = false) {
-  if (stateful)
-    appendClockResetAndConfigurationPorts(builder, configurationAbi,
-                                          transportLayout, inputs);
-  else {
-    for (auto [ordinal, transportUnit] :
-         llvm::enumerate(transportLayout.units)) {
-      const ProgrammingUnit *unit = configurationAbi.findProgrammingUnit(
-          transportUnit.programmingUnit.unitId);
-      if (!unit)
-        continue;
-      inputs.push_back(circt::hw::PortInfo{
-          {builder.getStringAttr(configurationPortName(ordinal)),
-           builder.getIntegerType(static_cast<unsigned>(unit->payloadBitCount)),
-           circt::hw::ModulePort::Direction::Input}});
-    }
+llvm::Expected<ConfigurationBundlePlan> appendComponentPorts(
+    mlir::OpBuilder &builder, llvm::ArrayRef<FieldDecoderPlan> decoders,
+    llvm::ArrayRef<EndpointPlan> endpoints,
+    llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
+    llvm::SmallVectorImpl<circt::hw::PortInfo> &outputs,
+    bool stateful = false,
+    const FieldDecoderPlan *decodedConfiguration = nullptr) {
+  auto configuration = deriveConfigurationBundlePlan(decoders);
+  if (!configuration)
+    return configuration.takeError();
+  if (stateful) {
+    const ConfigurationBundlePlan empty;
+    appendClockResetAndConfigurationPorts(
+        builder, decodedConfiguration ? empty : *configuration, inputs);
+  } else if (!configuration->empty() && !decodedConfiguration) {
+    inputs.push_back(circt::hw::PortInfo{
+        {builder.getStringAttr(configurationBundlePortName),
+         configurationBundleType(builder.getContext(), *configuration),
+         circt::hw::ModulePort::Direction::Input}});
   }
+  if (decodedConfiguration)
+    inputs.push_back(circt::hw::PortInfo{
+        {builder.getStringAttr(configurationValuePortName),
+         builder.getIntegerType(
+             static_cast<unsigned>(decodedConfiguration->encodedBitCount)),
+         circt::hw::ModulePort::Direction::Input}});
   for (const EndpointPlan &endpoint : endpoints)
     appendEndpointPorts(inputs, outputs, endpoint);
+  return std::move(*configuration);
 }
 
 struct SwitchRoute final {
@@ -106,6 +110,11 @@ std::vector<unsigned> switchComponents(unsigned inputCount,
 }
 
 unsigned counterWidth(std::uint64_t bound);
+mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
+                            mlir::Value value, std::uint64_t modulus);
+void appendKeyU64(std::vector<std::uint8_t> &key, std::uint64_t value);
+void appendKeyDataPath(std::vector<std::uint8_t> &key,
+                       ::fabric::DataPathType path);
 
 llvm::Expected<SwitchModule>
 buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
@@ -288,8 +297,11 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
-                       inputs, outputs, roundRobin);
+  auto configuration = appendComponentPorts(
+      builder, llvm::ArrayRef<FieldDecoderPlan>(&*decoder, 1), *endpoints,
+      inputs, outputs, roundRobin, &*decoder);
+  if (!configuration)
+    return configuration.takeError();
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
@@ -298,7 +310,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
         mlir::Value fieldSignal =
-            decodeFieldSignal(bodyBuilder, location, accessor, *decoder);
+            accessor.getInput(configurationValuePortName);
         std::vector<std::vector<mlir::Value>> requestedRoute(
             inputCount,
             std::vector<mlir::Value>(
@@ -348,7 +360,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         std::vector<mlir::Value> admissibleInput(
             inputCount, bitConstant(bodyBuilder, location, false));
         std::optional<circt::BackedgeBuilder> backedges;
-        if (roundRobin)
+        if (roundRobin || *schedule == ::fabric::Schedule::Temporal)
           backedges.emplace(bodyBuilder, location);
         for (const SwitchArbitrationComponent &component : components) {
           struct ArbitrationSelection final {
@@ -463,6 +475,89 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
           cursorNext.setValue(nextCursor);
         }
 
+        // A temporal switch presents the tag of one idle candidate per
+        // arbitration component so the downstream readiness of that row is
+        // observable before the token's valid arrives: an atomic upstream
+        // fanout asserts valid on one output only after every peer output is
+        // ready, so readiness must never wait for valid. Valid requesters are
+        // presented by the grant policy; among idle candidates a free-running
+        // rotation presents one and never changes the grant order. An input is
+        // ready only while it is presented on every output it routes to.
+        std::vector<mlir::Value> presentedInput = selectedInput;
+        if (*schedule == ::fabric::Schedule::Temporal) {
+          std::vector<mlir::Value> held(
+              outputCount, bitConstant(bodyBuilder, location, false));
+          for (unsigned input = 0; input != inputCount; ++input)
+            for (unsigned output = 0; output != outputCount; ++output)
+              held[output] = circt::comb::OrOp::create(
+                  bodyBuilder, location, held[output],
+                  andValues(bodyBuilder, location,
+                            {selectedInput[input],
+                             requestedRoute[input][output]}));
+          for (const SwitchArbitrationComponent &component : components) {
+            llvm::SmallVector<mlir::Value> candidates;
+            for (unsigned input : component.inputs) {
+              llvm::SmallVector<mlir::Value> free;
+              for (unsigned output : component.outputs)
+                free.push_back(circt::comb::OrOp::create(
+                    bodyBuilder, location,
+                    circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                 requestedRoute[input][output]),
+                    circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                 held[output])));
+              candidates.push_back(
+                  andValues(bodyBuilder, location,
+                            {configuredRequest[input],
+                             andValues(bodyBuilder, location, free)}));
+            }
+            const unsigned candidateCount =
+                static_cast<unsigned>(component.inputs.size());
+            std::vector<mlir::Value> idleSelected(
+                candidateCount, bitConstant(bodyBuilder, location, false));
+            if (candidateCount == 1) {
+              idleSelected.front() = candidates.front();
+            } else {
+              const unsigned pointerWidth = counterWidth(candidateCount);
+              circt::Backedge pointerNext =
+                  backedges->get(bodyBuilder.getIntegerType(pointerWidth));
+              mlir::Value pointer = createRegister(
+                  bodyBuilder, location, pointerNext,
+                  accessor.getInput("clock"), accessor.getInput("reset"),
+                  llvm::APInt(pointerWidth, 0),
+                  "idle_presentation_" +
+                      std::to_string(component.inputs.front()) + "_reg",
+                  clockReset.asynchronousReset);
+              pointerNext.setValue(incrementModulo(bodyBuilder, location,
+                                                   pointer, candidateCount));
+              for (unsigned start = 0; start != candidateCount; ++start) {
+                mlir::Value pointerIs = circt::comb::ICmpOp::create(
+                    bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                    pointer,
+                    circt::hw::ConstantOp::create(
+                        bodyBuilder, location,
+                        llvm::APInt(pointerWidth, start)),
+                    true);
+                mlir::Value taken = bitConstant(bodyBuilder, location, false);
+                for (unsigned offset = 0; offset != candidateCount; ++offset) {
+                  const unsigned position = (start + offset) % candidateCount;
+                  idleSelected[position] = circt::comb::OrOp::create(
+                      bodyBuilder, location, idleSelected[position],
+                      andValues(bodyBuilder, location,
+                                {pointerIs, candidates[position],
+                                 circt::comb::createOrFoldNot(
+                                     bodyBuilder, location, taken)}));
+                  taken = circt::comb::OrOp::create(bodyBuilder, location,
+                                                    taken, candidates[position]);
+                }
+              }
+            }
+            for (auto [position, input] : llvm::enumerate(component.inputs))
+              presentedInput[input] = circt::comb::OrOp::create(
+                  bodyBuilder, location, selectedInput[input],
+                  idleSelected[position]);
+          }
+        }
+
         for (unsigned input = 0; input != inputCount; ++input) {
           llvm::SmallVector<mlir::Value> allReady;
           for (unsigned output = 0; output != outputCount; ++output)
@@ -474,7 +569,9 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
           accessor.setOutput(
               inputEndpoints[input]->ready.getName(),
               andValues(bodyBuilder, location,
-                        {admissibleInput[input],
+                        {*schedule == ::fabric::Schedule::Temporal
+                             ? presentedInput[input]
+                             : admissibleInput[input],
                          andValues(bodyBuilder, location, allReady)}));
         }
 
@@ -499,6 +596,9 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
             mlir::Value selected = andValues(
                 bodyBuilder, location,
                 {selectedInput[input], requestedRoute[input][output]});
+            mlir::Value presented = andValues(
+                bodyBuilder, location,
+                {presentedInput[input], requestedRoute[input][output]});
             llvm::SmallVector<mlir::Value> peerReady;
             for (unsigned peer = 0; peer != outputCount; ++peer) {
               if (peer == output)
@@ -532,10 +632,11 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
               return;
             }
             if (outputEndpoint.data)
-              data = circt::comb::MuxOp::create(bodyBuilder, location, selected,
-                                                *adapted->payload, data, true);
+              data = circt::comb::MuxOp::create(bodyBuilder, location,
+                                                presented, *adapted->payload,
+                                                data, true);
             if (outputEndpoint.tag)
-              tag = circt::comb::MuxOp::create(bodyBuilder, location, selected,
+              tag = circt::comb::MuxOp::create(bodyBuilder, location, presented,
                                                *adapted->tag, tag, true);
           }
           if (outputEndpoint.data)
@@ -548,11 +649,73 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
       });
   if (materializationError)
     return invalid(*materializationError);
-  return SwitchModule{sw, module, std::move(*endpoints)};
+  std::vector<std::uint8_t> implementationKey;
+  appendKeyU64(implementationKey, 1);
+  appendKeyU64(implementationKey, static_cast<std::uint32_t>(*schedule));
+  appendKeyU64(implementationKey, decoder->encodedBitCount);
+  appendKeyU64(implementationKey, clockReset.asynchronousReset);
+  appendKeyU64(implementationKey, endpoints->size());
+  for (const EndpointPlan &endpoint : *endpoints) {
+    appendKeyU64(implementationKey,
+                 static_cast<std::uint32_t>(endpoint.direction));
+    appendKeyU64(implementationKey, endpoint.localOrdinal);
+    appendKeyDataPath(implementationKey, endpoint.dataPath);
+  }
+  appendKeyU64(implementationKey, routes.size());
+  for (const SwitchRoute &route : routes) {
+    appendKeyU64(implementationKey, route.inputOrdinal);
+    appendKeyU64(implementationKey, route.outputOrdinal);
+    appendKeyU64(implementationKey, route.configurationBit);
+  }
+  appendKeyU64(implementationKey, components.size());
+  for (const SwitchArbitrationComponent &component : components) {
+    appendKeyU64(implementationKey, component.inputs.size());
+    for (unsigned input : component.inputs)
+      appendKeyU64(implementationKey, input);
+    appendKeyU64(implementationKey, component.outputs.size());
+    for (unsigned output : component.outputs)
+      appendKeyU64(implementationKey, output);
+    appendKeyU64(implementationKey, component.requesterOrder.size());
+    for (unsigned requester : component.requesterOrder)
+      appendKeyU64(implementationKey, requester);
+    appendKeyU64(implementationKey,
+                 component.roundRobinResetPosition.has_value());
+    if (component.roundRobinResetPosition)
+      appendKeyU64(implementationKey, *component.roundRobinResetPosition);
+  }
+  appendKeyU64(implementationKey, temporalEntryCount);
+  appendKeyU64(implementationKey, temporalTagWidth);
+  appendKeyU64(implementationKey, temporalEntryWidth);
+  return SwitchModule{sw,
+                      module,
+                      std::move(*endpoints),
+                      std::move(implementationKey),
+                      std::move(*configuration),
+                      std::move(*decoder)};
 }
 
 unsigned counterWidth(std::uint64_t bound) {
   return std::max(1U, llvm::Log2_64_Ceil(bound));
+}
+
+void appendKeyU64(std::vector<std::uint8_t> &key, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    key.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void appendKeyDataPath(std::vector<std::uint8_t> &key,
+                       ::fabric::DataPathType path) {
+  appendKeyU64(key, static_cast<std::uint32_t>(path.kind));
+  appendKeyU64(key, path.payloadWidthBits);
+  appendKeyU64(key, path.tagWidthBits);
+}
+
+void appendKeyApInt(std::vector<std::uint8_t> &key, const llvm::APInt &value) {
+  appendKeyU64(key, value.getBitWidth());
+  for (unsigned bit = 0; bit < value.getBitWidth(); bit += 8)
+    key.push_back(static_cast<std::uint8_t>(
+        value.extractBitsAsZExtValue(std::min(8U, value.getBitWidth() - bit),
+                                     bit)));
 }
 
 mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
@@ -637,8 +800,11 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
-                       inputs, outputs, true);
+  auto configuration = appendComponentPorts(
+      builder, llvm::ArrayRef<FieldDecoderPlan>(&prepared->first, 1),
+      *endpoints, inputs, outputs, true, &prepared->first);
+  if (!configuration)
+    return configuration.takeError();
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
@@ -647,7 +813,7 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
         mlir::Value fieldSignal =
-            decodeFieldSignal(bodyBuilder, location, accessor, prepared->first);
+            accessor.getInput(configurationValuePortName);
         mlir::Value buffered =
             matchesCode(bodyBuilder, location, fieldSignal, *bufferedCode);
         mlir::Value bypass =
@@ -756,37 +922,58 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
         // [0, occupancy), so slot order is arrival order. Minimizing the
         // wrapped distance (tag - cursor) over occupied slots selects the
         // smallest resident tag value at or after the cursor and wraps once
-        // to the lowest resident value; the ascending slot fold keeps the
-        // arrival-oldest slot of that channel on distance ties.
+        // to the lowest resident value. A balanced stable tournament keeps
+        // the arrival-oldest slot of that channel on distance ties.
         mlir::Value selectedSlot;
         if (virtualChannel) {
-          mlir::Value anyOccupied = bitConstant(bodyBuilder, location, false);
-          mlir::Value bestDistance = integerConstant(tagWidthBits, 0);
-          selectedSlot = integerConstant(pointerBits, 0);
+          struct OfferCandidate final {
+            mlir::Value valid;
+            mlir::Value distance;
+            mlir::Value slot;
+          };
+          std::vector<OfferCandidate> level;
+          level.reserve(depth);
           for (std::uint64_t slot = 0; slot != depth; ++slot) {
             mlir::Value occupied = circt::comb::ICmpOp::create(
                 bodyBuilder, location, circt::comb::ICmpPredicate::ult,
                 integerConstant(occupancyBits, slot), occupancy, true);
             mlir::Value distance = circt::comb::SubOp::create(
                 bodyBuilder, location, tagBank.current[slot], offerCursor, true);
-            mlir::Value nearer = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::ult, distance,
-                bestDistance, true);
-            mlir::Value take = andValues(
-                bodyBuilder, location,
-                {occupied, orValues(bodyBuilder, location,
-                                    {circt::comb::createOrFoldNot(
-                                         bodyBuilder, location, anyOccupied),
-                                     nearer})});
-            selectedSlot = circt::comb::MuxOp::create(
-                bodyBuilder, location, take, integerConstant(pointerBits, slot),
-                selectedSlot, true);
-            bestDistance = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                      take, distance,
-                                                      bestDistance, true);
-            anyOccupied = circt::comb::OrOp::create(bodyBuilder, location,
-                                                    anyOccupied, occupied);
+            level.push_back({occupied, distance,
+                             integerConstant(pointerBits, slot)});
           }
+          while (level.size() != 1) {
+            std::vector<OfferCandidate> next;
+            next.reserve((level.size() + 1) / 2);
+            for (std::size_t index = 0; index < level.size(); index += 2) {
+              if (index + 1 == level.size()) {
+                next.push_back(level[index]);
+                continue;
+              }
+              const OfferCandidate &older = level[index];
+              const OfferCandidate &newer = level[index + 1];
+              mlir::Value nearer = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+                  newer.distance, older.distance, true);
+              mlir::Value newerWins = andValues(
+                  bodyBuilder, location,
+                  {newer.valid,
+                   orValues(bodyBuilder, location,
+                            {circt::comb::createOrFoldNot(
+                                 bodyBuilder, location, older.valid),
+                             nearer})});
+              next.push_back(
+                  {orValues(bodyBuilder, location,
+                            {older.valid, newer.valid}),
+                   circt::comb::MuxOp::create(
+                       bodyBuilder, location, newerWins, newer.distance,
+                       older.distance, true),
+                   circt::comb::MuxOp::create(bodyBuilder, location, newerWins,
+                                              newer.slot, older.slot, true)});
+            }
+            level = std::move(next);
+          }
+          selectedSlot = level.front().slot;
         }
         // A grant removes the presented slot. In the virtual-channel
         // discipline the hole closes toward the tail: every slot at or after
@@ -805,7 +992,6 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
           const unsigned positionBits = mlir::cast<mlir::IntegerType>(
                                             appendPosition.getType())
                                             .getWidth();
-          mlir::Value shift = bitConstant(bodyBuilder, location, false);
           for (std::uint64_t slot = 0; slot < depth; ++slot) {
             mlir::Value slotValue =
                 integerConstant(positionBits, slot);
@@ -817,17 +1003,15 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                               slotValue, true)});
             mlir::Value next = bank.current[slot];
             if (grantedSlot) {
-              mlir::Value removed = circt::comb::ICmpOp::create(
-                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+              mlir::Value shifts = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::ule,
                   grantedSlot, integerConstant(pointerBits, slot), true);
-              shift = circt::comb::OrOp::create(bodyBuilder, location, shift,
-                                                removed);
               mlir::Value successor = slot + 1 != depth
                                           ? bank.current[slot + 1]
                                           : bank.current[slot];
               next = circt::comb::MuxOp::create(
                   bodyBuilder, location,
-                  andValues(bodyBuilder, location, {dequeue, shift}), successor,
+                  andValues(bodyBuilder, location, {dequeue, shifts}), successor,
                   next, true);
             }
             bank.next[slot].setValue(circt::comb::MuxOp::create(
@@ -875,18 +1059,15 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                                   mlir::Value pointer) -> mlir::Value {
           if (bank.width == 0)
             return {};
-          mlir::Value value = circt::hw::ConstantOp::create(
-              bodyBuilder, location, llvm::APInt(bank.width, 0));
-          for (std::uint64_t slot = 0; slot < depth; ++slot) {
-            mlir::Value slotValue = circt::hw::ConstantOp::create(
-                bodyBuilder, location, llvm::APInt(pointerBits, slot));
-            mlir::Value selected = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq, pointer,
-                slotValue, true);
-            value = circt::comb::MuxOp::create(bodyBuilder, location, selected,
-                                               bank.current[slot], value, true);
-          }
-          return value;
+          llvm::SmallVector<mlir::Value> highToLow;
+          highToLow.reserve(bank.current.size());
+          for (mlir::Value value : llvm::reverse(bank.current))
+            highToLow.push_back(value);
+          mlir::Value entries =
+              circt::hw::ArrayCreateOp::create(bodyBuilder, location,
+                                               highToLow);
+          return circt::hw::ArrayGetOp::create(bodyBuilder, location, entries,
+                                               pointer);
         };
         mlir::Value bufferedData = readBank(dataBank, readPointer);
         mlir::Value bufferedTag = readBank(tagBank, readPointer);
@@ -967,7 +1148,23 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
       });
   if (materializationError)
     return invalid(*materializationError);
-  return FifoModule{fifo, module, std::move(*endpoints)};
+  std::vector<std::uint8_t> implementationKey;
+  appendKeyU64(implementationKey, depth);
+  appendKeyU64(implementationKey, operation.getBypassable());
+  appendKeyU64(implementationKey, virtualChannel);
+  appendKeyU64(implementationKey, clockReset.asynchronousReset);
+  appendKeyDataPath(implementationKey, input->dataPath);
+  appendKeyDataPath(implementationKey, output->dataPath);
+  appendKeyApInt(implementationKey, *bufferedCode);
+  appendKeyU64(implementationKey, bypassCode.has_value());
+  if (bypassCode)
+    appendKeyApInt(implementationKey, *bypassCode);
+  return FifoModule{fifo,
+                    module,
+                    std::move(*endpoints),
+                    std::move(implementationKey),
+                    std::move(*configuration),
+                    std::move(prepared->first)};
 }
 
 llvm::Expected<BoundaryModule>
@@ -1037,8 +1234,11 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
-                       inputs, outputs);
+  auto configuration = appendComponentPorts(
+      builder, llvm::ArrayRef<FieldDecoderPlan>(&*decoder, 1), *endpoints,
+      inputs, outputs);
+  if (!configuration)
+    return configuration.takeError();
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
       builder.getStringAttr("loom_fabric_boundary_" +
@@ -1046,8 +1246,10 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        mlir::Value fieldSignal =
-            decodeFieldSignal(bodyBuilder, location, accessor, *decoder);
+        ConfigurationBundleSignals configurationValues =
+            configurationBundleSignals(accessor, *configuration);
+        mlir::Value fieldSignal = decodeFieldSignal(
+            bodyBuilder, location, configurationValues, *decoder);
         mlir::Value active =
             finiteActiveCode
                 ? matchesCode(bodyBuilder, location, fieldSignal,
@@ -1189,7 +1391,8 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
         }
         }
       });
-  return BoundaryModule{boundary, module, std::move(*endpoints)};
+  return BoundaryModule{boundary, module, std::move(*endpoints),
+                        std::move(*configuration)};
 }
 
 } // namespace
@@ -1203,12 +1406,26 @@ buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,
                    const ClockResetPlan &clockReset) {
   std::vector<SwitchModule> result;
   result.reserve(fabric.switchOccurrences().size());
+  std::map<std::vector<std::uint8_t>, circt::hw::HWModuleOp> definitions;
   for (fabric::FabricSwitchOccurrenceRef sw : fabric.switchOccurrences()) {
     auto module =
         buildSwitchModule(builder, location, spatialCore, fabric,
                           configurationAbi, transportLayout, clockReset, sw);
     if (!module)
       return module.takeError();
+    if (llvm::Error error = verifyConfigurationValuePort(
+            module->module, module->configurationDecoder))
+      return std::move(error);
+    auto definition = definitions.find(module->implementationKey);
+    if (definition == definitions.end()) {
+      definitions.emplace(module->implementationKey, module->module);
+    } else {
+      module->module.erase();
+      module->module = definition->second;
+      if (llvm::Error error = verifyConfigurationValuePort(
+              module->module, module->configurationDecoder))
+        return std::move(error);
+    }
     result.push_back(std::move(*module));
   }
   return result;
@@ -1223,12 +1440,26 @@ buildFifoModules(mlir::OpBuilder &builder, mlir::Location location,
                  const ClockResetPlan &clockReset) {
   std::vector<FifoModule> result;
   result.reserve(fabric.fifoOccurrences().size());
+  std::map<std::vector<std::uint8_t>, circt::hw::HWModuleOp> definitions;
   for (fabric::FabricFifoOccurrenceRef fifo : fabric.fifoOccurrences()) {
     auto module =
         buildFifoModule(builder, location, spatialCore, fabric,
                         configurationAbi, transportLayout, clockReset, fifo);
     if (!module)
       return module.takeError();
+    if (llvm::Error error = verifyConfigurationValuePort(
+            module->module, module->configurationDecoder))
+      return std::move(error);
+    auto definition = definitions.find(module->implementationKey);
+    if (definition == definitions.end()) {
+      definitions.emplace(module->implementationKey, module->module);
+    } else {
+      module->module.erase();
+      module->module = definition->second;
+      if (llvm::Error error = verifyConfigurationValuePort(
+              module->module, module->configurationDecoder))
+        return std::move(error);
+    }
     result.push_back(std::move(*module));
   }
   return result;

@@ -2,6 +2,7 @@
 #define LOOM_LIB_HARDWARE_RTL_HIERARCHY_OPERATIONSHELL_H
 
 #include "Hardware/RTL/CommonSkeleton.h"
+#include "Support.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 
 #include "circt/Dialect/HW/HWOps.h"
@@ -38,6 +39,7 @@ struct OperationShellModule final {
   ResolvedFabricPhysicalOperation operation;
   circt::hw::HWModuleOp module;
   std::vector<OperationEndpointPlan> endpoints;
+  ConfigurationBundlePlan configuration;
 };
 
 llvm::Expected<std::vector<OperationShellModule>> buildOperationShellModules(

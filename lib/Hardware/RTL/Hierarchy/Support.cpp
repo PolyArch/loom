@@ -11,10 +11,14 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
-#include <climits>
-#include <set>
+#include <algorithm>
+#include <limits>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace loom::hardware::rtl::hierarchy {
 
@@ -28,15 +32,119 @@ llvm::Error unsupported(const llvm::Twine &message) {
       message.str());
 }
 
-std::string configurationPortName(std::size_t transportUnitOrdinal) {
-  return "configuration_" + std::to_string(transportUnitOrdinal);
-}
-
 std::string endpointKey(const fabric::FabricTransportEndpointRef &endpoint) {
   const std::vector<std::uint8_t> bytes =
       fabric::canonicalFabricBytes(endpoint);
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
+}
+
+ConfigurationFieldKey configurationFieldKey(const FieldDecoderPlan &decoder) {
+  return {decoder.transportUnitOrdinal, decoder.fieldOrdinal};
+}
+
+const ConfigurationBundleWord *
+ConfigurationBundlePlan::find(ConfigurationWordKey key) const {
+  const auto found = llvm::lower_bound(
+      words, key, [](const ConfigurationBundleWord &word,
+                     ConfigurationWordKey candidate) {
+        return word.key < candidate;
+      });
+  return found != words.end() && found->key == key ? &*found : nullptr;
+}
+
+mlir::Type configurationBundleType(mlir::MLIRContext *context,
+                                   const ConfigurationBundlePlan &plan) {
+  assert(!plan.empty() && "empty configuration bundle has no type");
+  return circt::hw::ArrayType::get(mlir::IntegerType::get(context, 32),
+                                   plan.words.size());
+}
+
+llvm::Error verifyConfigurationBundlePort(
+    circt::hw::HWModuleOp module, const ConfigurationBundlePlan &plan) {
+  const auto ports = module.getPortList();
+  const auto found = llvm::find_if(ports, [](const circt::hw::PortInfo &port) {
+    return port.isInput() && port.getName() == configurationBundlePortName;
+  });
+  if (plan.empty())
+    return found == ports.end()
+               ? llvm::Error::success()
+               : invalid("configuration-free module has a bundle port");
+  if (found == ports.end())
+    return invalid("configured module has no bundle port");
+  if (found->type != configurationBundleType(module.getContext(), plan))
+    return invalid("configured module bundle port type disagrees with its "
+                   "occurrence plan");
+  return llvm::Error::success();
+}
+
+llvm::Error verifyConfigurationValuePort(circt::hw::HWModuleOp module,
+                                         const FieldDecoderPlan &decoder) {
+  const auto ports = module.getPortList();
+  const auto found = llvm::find_if(ports, [](const circt::hw::PortInfo &port) {
+    return port.isInput() && port.getName() == configurationValuePortName;
+  });
+  if (found == ports.end())
+    return invalid("decoded configuration module has no value port");
+  const mlir::Type expected =
+      mlir::IntegerType::get(module.getContext(), decoder.encodedBitCount);
+  if (found->type != expected)
+    return invalid("decoded configuration value port has the wrong type");
+  return llvm::Error::success();
+}
+
+llvm::Expected<ConfigurationBundlePlan> deriveConfigurationBundlePlan(
+    llvm::ArrayRef<FieldDecoderPlan> decoders,
+    llvm::ArrayRef<ConfigurationBundlePlan> childBundles) {
+  std::map<ConfigurationFieldKey, FieldDecoderPlan> fields;
+  std::map<ConfigurationWordKey, std::uint32_t> words;
+  const auto appendDecoder = [&](const FieldDecoderPlan &decoder)
+      -> llvm::Error {
+    if (decoder.encodedBitCount == 0 ||
+        decoder.encodedBitCount > mlir::IntegerType::kMaxWidth)
+      return unsupported(
+          "configuration field width exceeds the CIRCT support envelope");
+    auto [position, inserted] =
+        fields.emplace(configurationFieldKey(decoder), decoder);
+    if (!inserted &&
+        (position->second.encodedBitCount != decoder.encodedBitCount ||
+         position->second.destinationSlices != decoder.destinationSlices))
+      return invalid("configuration field has inconsistent derived layouts");
+    for (const DestinationSlice &slice : decoder.destinationSlices) {
+      std::uint64_t bit = slice.destinationBitOffset;
+      std::uint64_t remaining = slice.bitCount;
+      while (remaining != 0) {
+        const std::uint64_t wordOrdinal = bit / 32;
+        const unsigned bitInWord = static_cast<unsigned>(bit % 32);
+        const unsigned width = static_cast<unsigned>(
+            std::min<std::uint64_t>(remaining, 32 - bitInWord));
+        const std::uint32_t mask =
+            width == 32
+                ? std::numeric_limits<std::uint32_t>::max()
+                : static_cast<std::uint32_t>(((std::uint64_t{1} << width) - 1)
+                                             << bitInWord);
+        words[{decoder.transportUnitOrdinal, wordOrdinal}] |= mask;
+        bit += width;
+        remaining -= width;
+      }
+    }
+    return llvm::Error::success();
+  };
+  for (const FieldDecoderPlan &decoder : decoders)
+    if (llvm::Error error = appendDecoder(decoder))
+      return std::move(error);
+  for (const ConfigurationBundlePlan &child : childBundles)
+    for (const ConfigurationBundleWord &word : child.words)
+      words[word.key] |= word.usedBitMask;
+
+  ConfigurationBundlePlan result;
+  result.words.reserve(words.size());
+  for (const auto &[key, mask] : words) {
+    if (mask == 0)
+      return invalid("configuration bundle word has an empty used-bit mask");
+    result.words.push_back(ConfigurationBundleWord{key, mask});
+  }
+  return result;
 }
 
 llvm::Expected<fabric::FabricPhysicalConfigurationFieldRef>
@@ -57,13 +165,15 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
                     const ConfigurationABI &configurationAbi,
                     const ConfigurationTransportLayout &transportLayout) {
   const ProgrammingUnit *owner = nullptr;
+  std::size_t fieldOrdinal = 0;
   for (const ProgrammingUnit &unit : configurationAbi.programmingUnits())
-    for (const ConfigurationFieldEncoding &candidate : unit.fields)
+    for (auto [ordinal, candidate] : llvm::enumerate(unit.fields))
       if (&candidate == &encoding) {
         if (owner)
           return invalid(
               "configuration field has duplicate programming owners");
         owner = &unit;
+        fieldOrdinal = ordinal;
       }
   if (!owner)
     return invalid("configuration field has no programming owner");
@@ -83,31 +193,57 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
   if (width == 0 || width > mlir::IntegerType::kMaxWidth)
     return unsupported(
         "configuration field width exceeds the CIRCT support envelope");
-  std::vector<std::uint64_t> destinationBits(static_cast<std::size_t>(width),
-                                             UINT64_MAX);
-  for (const DestinationSlice &slice : encoding.destinationSlices) {
+  std::vector<DestinationSlice> destinationSlices = encoding.destinationSlices;
+  llvm::sort(destinationSlices,
+             [](const DestinationSlice &lhs, const DestinationSlice &rhs) {
+               return std::tie(lhs.sourceBitOffset, lhs.destinationBitOffset,
+                               lhs.bitCount) <
+                      std::tie(rhs.sourceBitOffset, rhs.destinationBitOffset,
+                               rhs.bitCount);
+             });
+  std::uint64_t sourceCursor = 0;
+  for (const DestinationSlice &slice : destinationSlices) {
     if (slice.sourceBitOffset > width || slice.bitCount > width ||
         slice.sourceBitOffset + slice.bitCount > width ||
         slice.destinationBitOffset > owner->payloadBitCount ||
         slice.bitCount > owner->payloadBitCount ||
         slice.destinationBitOffset + slice.bitCount > owner->payloadBitCount)
       return invalid("configuration destination slice is out of range");
-    for (std::uint64_t bit = 0; bit < slice.bitCount; ++bit) {
-      const std::size_t source =
-          static_cast<std::size_t>(slice.sourceBitOffset + bit);
-      if (destinationBits[source] != UINT64_MAX)
-        return invalid(
-            "configuration destination slices overlap one source bit");
-      destinationBits[source] = slice.destinationBitOffset + bit;
-    }
+    if (slice.bitCount == 0 || slice.sourceBitOffset != sourceCursor)
+      return invalid(
+          "configuration destination slices do not exactly partition the "
+          "field source");
+    sourceCursor += slice.bitCount;
   }
-  if (llvm::is_contained(destinationBits, UINT64_MAX))
+  if (sourceCursor != width)
     return invalid("configuration destination slices do not cover the field");
-  return FieldDecoderPlan{owner, transportUnitOrdinal, width,
-                          std::move(destinationBits)};
+  return FieldDecoderPlan{owner, transportUnitOrdinal, fieldOrdinal, width,
+                          std::move(destinationSlices)};
 }
 
 } // namespace
+
+llvm::Expected<std::vector<FieldDecoderPlan>>
+prepareFieldDecoders(const ConfigurationABI &configurationAbi,
+                     const ConfigurationTransportLayout &transportLayout) {
+  std::vector<FieldDecoderPlan> result;
+  for (const ConfigurationTransportUnitLayout &transportUnit :
+       transportLayout.units) {
+    const ProgrammingUnit *unit = configurationAbi.findProgrammingUnit(
+        transportUnit.programmingUnit.unitId);
+    if (!unit)
+      return invalid("configuration transport names an absent ABI unit");
+    result.reserve(result.size() + unit->fields.size());
+    for (const ConfigurationFieldEncoding &field : unit->fields) {
+      auto decoder =
+          prepareFieldDecoder(field, configurationAbi, transportLayout);
+      if (!decoder)
+        return decoder.takeError();
+      result.push_back(std::move(*decoder));
+    }
+  }
+  return result;
+}
 
 llvm::Expected<FieldDecoderPlan>
 prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
@@ -242,8 +378,8 @@ prepareClockReset(const fabric::FabricSystemRootView &system,
       resetContract->deassertion() == fabric::ResetTiming::Synchronous;
   if (!asynchronous && !synchronous)
     return unsupported("mixed Reset timing is unsupported");
-  if (synchronous && resetContract->synchronousTo() !=
-                         fabric::ClockDomainRef(*clockReference))
+  if (synchronous &&
+      resetContract->synchronousTo() != fabric::ClockDomainRef(*clockReference))
     return invalid("synchronous Reset names a different Clock domain");
   return ClockResetPlan{asynchronous, resetContract->polarity() ==
                                           fabric::ResetPolarity::ActiveLow};
@@ -316,8 +452,7 @@ void appendEndpointPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
 }
 
 void appendClockResetAndConfigurationPorts(
-    mlir::OpBuilder &builder, const ConfigurationABI &configurationAbi,
-    const ConfigurationTransportLayout &transportLayout,
+    mlir::OpBuilder &builder, const ConfigurationBundlePlan &configuration,
     llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs) {
   inputs.push_back(
       circt::hw::PortInfo{{builder.getStringAttr("clock"),
@@ -326,15 +461,88 @@ void appendClockResetAndConfigurationPorts(
   inputs.push_back(
       circt::hw::PortInfo{{builder.getStringAttr("reset"), builder.getI1Type(),
                            circt::hw::ModulePort::Direction::Input}});
-  for (auto [ordinal, transportUnit] : llvm::enumerate(transportLayout.units)) {
-    const ProgrammingUnit *unit = configurationAbi.findProgrammingUnit(
-        transportUnit.programmingUnit.unitId);
-    assert(unit && "transport layout must reference an ABI unit");
+  if (!configuration.empty())
     inputs.push_back(circt::hw::PortInfo{
-        {builder.getStringAttr(configurationPortName(ordinal)),
-         builder.getIntegerType(static_cast<unsigned>(unit->payloadBitCount)),
+        {builder.getStringAttr(configurationBundlePortName),
+         configurationBundleType(builder.getContext(), configuration),
          circt::hw::ModulePort::Direction::Input}});
+}
+
+llvm::Expected<mlir::Value> projectConfigurationBundle(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Value parentValue,
+    const ConfigurationBundlePlan &parent,
+    const ConfigurationBundlePlan &child) {
+  if (child.empty())
+    return invalid("empty configuration bundle has no structural value");
+  if (!parentValue || parent.empty() ||
+      parentValue.getType() !=
+          configurationBundleType(builder.getContext(), parent))
+    return invalid("parent configuration bundle has the wrong type");
+  if (parent.words == child.words)
+    return parentValue;
+
+  const unsigned parentIndexWidth =
+      std::max(1U, llvm::Log2_64_Ceil(parent.words.size()));
+  llvm::SmallVector<mlir::Value> highToLow;
+  highToLow.reserve(child.words.size());
+  for (const ConfigurationBundleWord &childWord :
+       llvm::reverse(child.words)) {
+    const ConfigurationBundleWord *parentWord = parent.find(childWord.key);
+    if (!parentWord ||
+        (parentWord->usedBitMask & childWord.usedBitMask) !=
+            childWord.usedBitMask)
+      return invalid("child configuration word is absent from its parent "
+                     "bundle");
+    const std::size_t parentOrdinal =
+        static_cast<std::size_t>(parentWord - parent.words.data());
+    mlir::Value word = circt::hw::ArrayGetOp::create(
+        builder, location, parentValue,
+        circt::hw::ConstantOp::create(
+            builder, location,
+            llvm::APInt(parentIndexWidth, parentOrdinal)));
+    if (childWord.usedBitMask != std::numeric_limits<std::uint32_t>::max())
+      word = circt::comb::AndOp::create(
+          builder, location, word,
+          circt::hw::ConstantOp::create(
+              builder, location, llvm::APInt(32, childWord.usedBitMask)),
+          true);
+    highToLow.push_back(word);
   }
+  return circt::hw::ArrayCreateOp::create(builder, location, highToLow);
+}
+
+llvm::Error addConfigurationInstanceInput(
+    mlir::OpBuilder &builder, mlir::Location location,
+    circt::hw::HWModulePortAccessor &accessor,
+    const ConfigurationBundlePlan &parent,
+    const ConfigurationBundlePlan &child, circt::hw::HWModuleOp childModule,
+    std::map<std::string, mlir::Value> &inputs) {
+  if (llvm::Error error = verifyConfigurationBundlePort(childModule, child))
+    return error;
+  if (child.empty())
+    return llvm::Error::success();
+  auto projected = projectConfigurationBundle(
+      builder, location, accessor.getInput(configurationBundlePortName), parent,
+      child);
+  if (!projected)
+    return projected.takeError();
+  if (!inputs.emplace(configurationBundlePortName.str(), *projected).second)
+    return invalid("configuration bundle instance input is duplicated");
+  return llvm::Error::success();
+}
+
+ConfigurationBundleSignals configurationBundleSignals(
+    circt::hw::HWModulePortAccessor &accessor,
+    const ConfigurationBundlePlan &configuration) {
+  assert(!configuration.empty() &&
+         "empty configuration bundle has no structural signals");
+  return ConfigurationBundleSignals{
+      &configuration, accessor.getInput(configurationBundlePortName),
+      std::vector<mlir::Value>(configuration.words.size())};
+}
+
+unsigned indexWidth(std::uint64_t count) {
+  return std::max(1U, llvm::Log2_64_Ceil(std::max<std::uint64_t>(count, 1)));
 }
 
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
@@ -345,34 +553,93 @@ mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
 
 mlir::Value andValues(mlir::OpBuilder &builder, mlir::Location location,
                       llvm::ArrayRef<mlir::Value> values) {
-  mlir::Value result = bitConstant(builder, location, true);
-  for (mlir::Value value : values)
-    result = circt::comb::AndOp::create(builder, location, result, value);
-  return result;
+  if (values.empty())
+    return bitConstant(builder, location, true);
+  std::vector<mlir::Value> level(values.begin(), values.end());
+  while (level.size() != 1) {
+    std::vector<mlir::Value> next;
+    next.reserve((level.size() + 1) / 2);
+    for (std::size_t index = 0; index < level.size(); index += 2) {
+      if (index + 1 == level.size())
+        next.push_back(level[index]);
+      else
+        next.push_back(circt::comb::AndOp::create(
+            builder, location, level[index], level[index + 1]));
+    }
+    level = std::move(next);
+  }
+  return level.front();
 }
 
 mlir::Value orValues(mlir::OpBuilder &builder, mlir::Location location,
                      llvm::ArrayRef<mlir::Value> values) {
-  mlir::Value result = bitConstant(builder, location, false);
-  for (mlir::Value value : values)
-    result = circt::comb::OrOp::create(builder, location, result, value);
-  return result;
+  if (values.empty())
+    return bitConstant(builder, location, false);
+  std::vector<mlir::Value> level(values.begin(), values.end());
+  while (level.size() != 1) {
+    std::vector<mlir::Value> next;
+    next.reserve((level.size() + 1) / 2);
+    for (std::size_t index = 0; index < level.size(); index += 2) {
+      if (index + 1 == level.size())
+        next.push_back(level[index]);
+      else
+        next.push_back(circt::comb::OrOp::create(
+            builder, location, level[index], level[index + 1]));
+    }
+    level = std::move(next);
+  }
+  return level.front();
 }
 
 mlir::Value decodeFieldSignal(mlir::OpBuilder &builder, mlir::Location location,
-                              circt::hw::HWModulePortAccessor &accessor,
+                              ConfigurationBundleSignals &configuration,
                               const FieldDecoderPlan &decoder) {
-  mlir::Value payload =
-      accessor.getInput(configurationPortName(decoder.transportUnitOrdinal));
-  llvm::SmallVector<mlir::Value> highToLow;
-  highToLow.reserve(static_cast<std::size_t>(decoder.encodedBitCount));
-  for (std::uint64_t source = decoder.encodedBitCount; source > 0; --source)
-    highToLow.push_back(circt::comb::ExtractOp::create(
-        builder, location, payload,
-        decoder.destinationBits[static_cast<std::size_t>(source - 1)], 1));
-  if (highToLow.size() == 1)
-    return highToLow.front();
-  return circt::comb::ConcatOp::create(builder, location, highToLow);
+  assert(configuration.plan && configuration.bundle &&
+         "configuration bundle signals are incomplete");
+  const unsigned indexWidth =
+      std::max(1U, llvm::Log2_64_Ceil(configuration.plan->words.size()));
+  const auto readWord = [&](std::uint64_t wordOrdinal) -> mlir::Value {
+    const ConfigurationBundleWord *word = configuration.plan->find(
+        {decoder.transportUnitOrdinal, wordOrdinal});
+    assert(word && "configuration decoder word is absent from its bundle");
+    const std::size_t ordinal =
+        static_cast<std::size_t>(word - configuration.plan->words.data());
+    if (!configuration.cachedWords[ordinal])
+      configuration.cachedWords[ordinal] = circt::hw::ArrayGetOp::create(
+          builder, location, configuration.bundle,
+          circt::hw::ConstantOp::create(builder, location,
+                                        llvm::APInt(indexWidth, ordinal)));
+    return configuration.cachedWords[ordinal];
+  };
+
+  llvm::SmallVector<mlir::Value> decodedSlices;
+  decodedSlices.reserve(decoder.destinationSlices.size());
+  for (const DestinationSlice &slice : decoder.destinationSlices) {
+    llvm::SmallVector<mlir::Value> lowToHigh;
+    std::uint64_t bit = slice.destinationBitOffset;
+    std::uint64_t remaining = slice.bitCount;
+    while (remaining != 0) {
+      const std::uint64_t wordOrdinal = bit / 32;
+      const unsigned bitInWord = static_cast<unsigned>(bit % 32);
+      const unsigned width = static_cast<unsigned>(
+          std::min<std::uint64_t>(remaining, 32 - bitInWord));
+      lowToHigh.push_back(circt::comb::ExtractOp::create(
+          builder, location, readWord(wordOrdinal), bitInWord, width));
+      bit += width;
+      remaining -= width;
+    }
+    if (lowToHigh.size() == 1)
+      decodedSlices.push_back(lowToHigh.front());
+    else
+      decodedSlices.push_back(circt::comb::ConcatOp::create(
+          builder, location,
+          llvm::SmallVector<mlir::Value>(llvm::reverse(lowToHigh))));
+  }
+  if (decodedSlices.size() == 1)
+    return decodedSlices.front();
+  return circt::comb::ConcatOp::create(
+      builder, location,
+      llvm::SmallVector<mlir::Value>(llvm::reverse(decodedSlices)));
 }
 
 mlir::Value matchesCode(mlir::OpBuilder &builder, mlir::Location location,
@@ -414,17 +681,26 @@ llvm::Expected<std::map<std::string, mlir::Value>>
 instantiateModule(mlir::OpBuilder &builder, mlir::Location location,
                   circt::hw::HWModuleOp module, llvm::StringRef instanceName,
                   const std::map<std::string, mlir::Value> &inputs) {
+  const auto describeType = [](mlir::Type type) {
+    std::string result;
+    llvm::raw_string_ostream stream(result);
+    stream << type;
+    return result;
+  };
   llvm::SmallVector<mlir::Value> operands;
   for (const circt::hw::PortInfo &port : module.getPortList()) {
     if (port.isOutput())
       continue;
     const auto found = inputs.find(port.getName().str());
     if (found == inputs.end())
-      return invalid("module input '" + port.getName().str() +
+      return invalid("module '" + module.getSymName().str() + "' instance '" +
+                     instanceName.str() + "' input '" + port.getName().str() +
                      "' has no structural signal");
     if (found->second.getType() != port.type)
-      return invalid("module input '" + port.getName().str() +
-                     "' has the wrong structural type");
+      return invalid("module '" + module.getSymName().str() + "' instance '" +
+                     instanceName.str() + "' input '" + port.getName().str() +
+                     "' expects " + describeType(port.type) + ", received " +
+                     describeType(found->second.getType()));
     operands.push_back(found->second);
   }
   auto instance = circt::hw::InstanceOp::create(

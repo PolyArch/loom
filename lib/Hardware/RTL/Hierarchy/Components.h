@@ -8,6 +8,8 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "llvm/Support/Error.h"
 
+#include <map>
+#include <string>
 #include <vector>
 
 namespace loom::hardware::rtl::hierarchy {
@@ -16,6 +18,7 @@ template <typename Reference> struct ComponentModule final {
   Reference reference;
   circt::hw::HWModuleOp module;
   std::vector<EndpointPlan> endpoints;
+  ConfigurationBundlePlan configuration;
 };
 
 struct FuModule final {
@@ -23,16 +26,34 @@ struct FuModule final {
   circt::hw::HWModuleOp module;
   std::vector<EndpointPlan> endpoints;
   std::optional<unsigned> contextWidthBits;
+  ConfigurationBundlePlan configuration;
 };
 using PeModule = ComponentModule<fabric::FabricPeOccurrenceRef>;
-using SwitchModule = ComponentModule<fabric::FabricSwitchOccurrenceRef>;
-using FifoModule = ComponentModule<fabric::FabricFifoOccurrenceRef>;
+struct SwitchModule final {
+  fabric::FabricSwitchOccurrenceRef reference;
+  circt::hw::HWModuleOp module;
+  std::vector<EndpointPlan> endpoints;
+  std::vector<std::uint8_t> implementationKey;
+  ConfigurationBundlePlan configuration;
+  FieldDecoderPlan configurationDecoder;
+};
+struct FifoModule final {
+  fabric::FabricFifoOccurrenceRef reference;
+  circt::hw::HWModuleOp module;
+  std::vector<EndpointPlan> endpoints;
+  std::vector<std::uint8_t> implementationKey;
+  ConfigurationBundlePlan configuration;
+  FieldDecoderPlan configurationDecoder;
+};
 using BoundaryModule = ComponentModule<fabric::FabricBoundaryOccurrenceRef>;
 struct MemoryModule final {
   fabric::FabricMemoryOccurrenceRef reference;
   circt::hw::HWModuleOp module;
   std::vector<EndpointPlan> endpoints;
   std::vector<MemoryEndpointPortPlan> memoryEndpoints;
+  std::string implementationKey;
+  ConfigurationBundlePlan configuration;
+  FieldDecoderPlan configurationDecoder;
 };
 
 llvm::Expected<std::vector<FuModule>>
@@ -51,7 +72,8 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                const ConfigurationABI &configurationAbi,
                const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<FuModule> fuModules,
-               const ClockResetPlan &clockReset);
+               const ClockResetPlan &clockReset, mlir::ModuleOp container,
+               llvm::StringRef materializationKey = {});
 
 llvm::Expected<PeModule>
 buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
@@ -61,7 +83,8 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
                       const ConfigurationTransportLayout &transportLayout,
                       llvm::ArrayRef<FuModule> fuModules,
                       const ClockResetPlan &clockReset,
-                      fabric::FabricPeOccurrenceRef pe);
+                      fabric::FabricPeOccurrenceRef pe,
+                      llvm::StringRef materializationKey);
 
 llvm::Expected<std::vector<SwitchModule>>
 buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,
@@ -93,7 +116,8 @@ buildMemoryModules(mlir::OpBuilder &builder, mlir::Location location,
                    const ConfigurationABI &configurationAbi,
                    const ConfigurationTransportLayout &transportLayout,
                    const ClockResetPlan &clockReset,
-                   const PortableMemoryServiceLayout &memoryServiceLayout);
+                   const PortableMemoryServiceLayout &memoryServiceLayout,
+                   llvm::StringRef materializationKey);
 
 } // namespace loom::hardware::rtl::hierarchy
 

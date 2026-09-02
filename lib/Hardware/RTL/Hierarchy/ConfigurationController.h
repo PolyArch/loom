@@ -14,12 +14,16 @@ void appendAxiLiteConfigurationPorts(
     llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
     llvm::SmallVectorImpl<circt::hw::PortInfo> &outputs);
 
+std::string controllerConfigurationBundlePortName(
+    std::size_t componentOrdinal);
+
 llvm::Expected<ConfigurationControllerModule>
 buildConfigurationControllerModule(
     mlir::OpBuilder &builder, mlir::Location location,
     const ConfigurationABI &configurationAbi,
     const ConfigurationTransportLayout &transportLayout,
-    const ClockResetPlan &clockReset);
+    const ClockResetPlan &clockReset,
+    llvm::ArrayRef<ConfigurationBundlePlan> componentConfigurations);
 
 } // namespace loom::hardware::rtl::hierarchy
 

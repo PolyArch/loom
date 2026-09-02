@@ -63,7 +63,7 @@ llvm::Expected<std::vector<OperationEndpointPlan>> deriveOperationEndpoints(
       data = makePort("_data", builder.getIntegerType(port->payloadWidthBits),
                       forward);
     std::optional<circt::hw::PortInfo> context;
-    if (contextWidth)
+    if (contextWidth && !input)
       context =
           makePort("_context", builder.getIntegerType(*contextWidth), forward);
     result.push_back({port->reference.direction, port->reference.ordinal,
@@ -198,8 +198,18 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendClockResetAndConfigurationPorts(builder, configurationAbi,
-                                        transportLayout, inputs);
+  std::vector<FieldDecoderPlan> shellDecoders;
+  for (const ConfigurationFieldPlan &field : configurationFields)
+    shellDecoders.insert(shellDecoders.end(), field.contexts.begin(),
+                         field.contexts.end());
+  auto configuration = deriveConfigurationBundlePlan(shellDecoders);
+  if (!configuration)
+    return configuration.takeError();
+  appendClockResetAndConfigurationPorts(builder, *configuration, inputs);
+  if (contextWidth)
+    inputs.push_back({{builder.getStringAttr(dispatchContextPortName),
+                       builder.getIntegerType(*contextWidth),
+                       circt::hw::ModulePort::Direction::Input}});
   for (const OperationEndpointPlan &endpoint : *endpoints)
     appendOperationPorts(inputs, outputs, endpoint);
 
@@ -210,6 +220,10 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
+        std::optional<ConfigurationBundleSignals> configurationSignals;
+        if (!configuration->empty())
+          configurationSignals.emplace(
+              configurationBundleSignals(accessor, *configuration));
         circt::BackedgeBuilder backedges(bodyBuilder, location);
         std::vector<const OperationEndpointPlan *> inputEndpoints;
         std::vector<const OperationEndpointPlan *> outputEndpoints;
@@ -228,27 +242,22 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         mlir::Value enabled = circt::comb::createOrFoldNot(
             bodyBuilder, location, accessor.getInput("reset"));
 
-        mlir::Value inputContext;
-        mlir::Value contextsAgree = bitConstant(bodyBuilder, location, true);
+        // The enclosing Temporal PE grants one context to this operation's FU
+        // per clock cycle. That dispatch context selects the state bank and
+        // configuration slot; every operand head the FU presents belongs to
+        // it, so a transition fires exactly when the heads its schema case
+        // consumes are valid, whatever the other inputs hold.
+        mlir::Value dispatchContext;
         mlir::Value contextInRange = bitConstant(bodyBuilder, location, true);
         if (temporal) {
-          inputContext =
-              accessor.getInput(inputEndpoints.front()->context->getName());
-          for (const OperationEndpointPlan *endpoint : inputEndpoints) {
-            mlir::Value equal = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                inputContext, accessor.getInput(endpoint->context->getName()),
-                true);
-            contextsAgree =
-                andValues(bodyBuilder, location, {contextsAgree, equal});
-          }
+          dispatchContext = accessor.getInput(dispatchContextPortName);
           if (!llvm::isPowerOf2_64(contextCount)) {
             mlir::Value bound = circt::hw::ConstantOp::create(
                 bodyBuilder, location,
                 llvm::APInt(*contextWidth, contextCount));
             contextInRange = circt::comb::ICmpOp::create(
                 bodyBuilder, location, circt::comb::ICmpPredicate::ult,
-                inputContext, bound, true);
+                dispatchContext, bound, true);
           }
         }
 
@@ -276,13 +285,12 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
               clockReset.asynchronousReset);
         }
 
-        mlir::Value executionContext = inputContext;
+        mlir::Value executionContext = dispatchContext;
         if (temporal && interface->hasOrderedProductionGroups())
           executionContext =
               circt::comb::MuxOp::create(bodyBuilder, location, continuation,
-                                         resultContext, inputContext, true);
-        mlir::Value executionContextValid =
-            andValues(bodyBuilder, location, {contextsAgree, contextInRange});
+                                         resultContext, dispatchContext, true);
+        mlir::Value executionContextValid = contextInRange;
         if (interface->hasOrderedProductionGroups())
           executionContextValid = orValues(
               bodyBuilder, location, {continuation, executionContextValid});
@@ -406,8 +414,8 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         for (const ConfigurationFieldPlan &field : configurationFields) {
           llvm::SmallVector<mlir::Value, 4> values;
           for (const FieldDecoderPlan &decoder : field.contexts)
-            values.push_back(
-                decodeFieldSignal(bodyBuilder, location, accessor, decoder));
+            values.push_back(decodeFieldSignal(
+                bodyBuilder, location, *configurationSignals, decoder));
           leafInput.emplace("config_" + std::to_string(field.ordinal),
                             values.size() == 1
                                 ? values.front()
@@ -590,7 +598,8 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
       });
   if (materializationError)
     return invalid(*materializationError);
-  return OperationShellModule{operation, shell, std::move(*endpoints)};
+  return OperationShellModule{operation, shell, std::move(*endpoints),
+                              std::move(*configuration)};
 }
 
 } // namespace

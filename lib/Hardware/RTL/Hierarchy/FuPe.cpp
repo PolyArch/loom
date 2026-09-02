@@ -1,13 +1,18 @@
+#include "Arbitration.h"
 #include "Components.h"
 
+#include "Common/InvocationDiagnosticLog.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
+#include "Hardware/RTL/MaterializationDiagnostics.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <map>
@@ -89,19 +94,17 @@ std::string fuTemplateEndpointKey(
                      bytes.size());
 }
 
-void addCommonInstanceInputs(
+llvm::Error addCommonInstanceInputs(
+    mlir::OpBuilder &builder, mlir::Location location,
     circt::hw::HWModulePortAccessor &accessor,
-    const ConfigurationABI &configurationAbi,
-    const ConfigurationTransportLayout &transportLayout,
+    const ConfigurationBundlePlan &parent,
+    const ConfigurationBundlePlan &childConfiguration,
+    circt::hw::HWModuleOp child,
     std::map<std::string, mlir::Value> &inputs) {
   inputs.emplace("clock", accessor.getInput("clock"));
   inputs.emplace("reset", accessor.getInput("reset"));
-  (void)configurationAbi;
-  for (auto [ordinal, unit] : llvm::enumerate(transportLayout.units)) {
-    (void)unit;
-    inputs.emplace(configurationPortName(ordinal),
-                   accessor.getInput(configurationPortName(ordinal)));
-  }
+  return addConfigurationInstanceInput(builder, location, accessor, parent,
+                                       childConfiguration, child, inputs);
 }
 
 mlir::Value zeroData(mlir::OpBuilder &builder, mlir::Location location,
@@ -110,11 +113,14 @@ mlir::Value zeroData(mlir::OpBuilder &builder, mlir::Location location,
                                        llvm::APInt(width, 0));
 }
 
-std::string contextPortName(const EndpointPlan &endpoint) {
-  return (endpoint.direction == fabric::FabricPortDirection::Input
-              ? "input_"
-              : "output_") +
-         std::to_string(endpoint.localOrdinal) + "_context";
+std::string outputContextPortName(const EndpointPlan &endpoint) {
+  return "output_" + std::to_string(endpoint.localOrdinal) + "_context";
+}
+
+/// The enclosing Temporal PE asserts this input while it presents the FU
+/// output to one of its ports or register FIFOs, accepted or refused.
+std::string outputOfferedPortName(const EndpointPlan &endpoint) {
+  return "output_" + std::to_string(endpoint.localOrdinal) + "_offered";
 }
 
 mlir::Value contextEquals(mlir::OpBuilder &builder, mlir::Location location,
@@ -147,7 +153,8 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               const ConfigurationABI &configurationAbi,
               const ConfigurationTransportLayout &transportLayout,
               llvm::ArrayRef<OperationShellModule> operationShells,
-              fabric::FabricFuOccurrenceRef fu) {
+              fabric::FabricFuOccurrenceRef fu,
+              const ClockResetPlan &clockReset) {
   auto endpoints = deriveEndpointPlans(
       builder, fabric, fabric::FabricTransportEndpointOwnerRef::of(fu));
   if (!endpoints)
@@ -272,20 +279,36 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendClockResetAndConfigurationPorts(builder, configurationAbi,
-                                        transportLayout, inputs);
+  std::vector<FieldDecoderPlan> fuDecoders;
+  fuDecoders.reserve(prepared.size());
+  for (const auto &entry : prepared)
+    fuDecoders.push_back(entry.first);
+  std::vector<ConfigurationBundlePlan> operationConfigurations;
+  operationConfigurations.reserve(operations.size());
+  for (const OperationShellModule *operation : operations)
+    operationConfigurations.push_back(operation->configuration);
+  auto configuration =
+      deriveConfigurationBundlePlan(fuDecoders, operationConfigurations);
+  if (!configuration)
+    return configuration.takeError();
+  appendClockResetAndConfigurationPorts(builder, *configuration, inputs);
   for (const EndpointPlan &endpoint : *endpoints)
     appendEndpointPorts(inputs, outputs, endpoint);
-  if (contextWidth)
+  if (contextWidth) {
+    inputs.push_back({{builder.getStringAttr(dispatchContextPortName),
+                       builder.getIntegerType(*contextWidth),
+                       circt::hw::ModulePort::Direction::Input}});
     for (const EndpointPlan &endpoint : *endpoints) {
-      circt::hw::PortInfo port{
-          {builder.getStringAttr(contextPortName(endpoint)),
-           builder.getIntegerType(*contextWidth),
-           endpoint.direction == fabric::FabricPortDirection::Input
-               ? circt::hw::ModulePort::Direction::Input
-               : circt::hw::ModulePort::Direction::Output}};
-      (port.isOutput() ? outputs : inputs).push_back(port);
+      if (endpoint.direction != fabric::FabricPortDirection::Output)
+        continue;
+      outputs.push_back({{builder.getStringAttr(outputContextPortName(endpoint)),
+                          builder.getIntegerType(*contextWidth),
+                          circt::hw::ModulePort::Direction::Output}});
+      inputs.push_back({{builder.getStringAttr(outputOfferedPortName(endpoint)),
+                         builder.getI1Type(),
+                         circt::hw::ModulePort::Direction::Input}});
     }
+  }
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
@@ -293,25 +316,43 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
+        ConfigurationBundleSignals configurationValues =
+            configurationBundleSignals(accessor, *configuration);
         std::vector<mlir::Value> fieldSignals;
         fieldSignals.reserve(prepared.size());
         for (const auto &entry : prepared)
-          fieldSignals.push_back(
-              decodeFieldSignal(bodyBuilder, location, accessor, entry.first));
+          fieldSignals.push_back(decodeFieldSignal(
+              bodyBuilder, location, configurationValues, entry.first));
 
         circt::BackedgeBuilder backedges(bodyBuilder, location);
+        // The parent Temporal PE grants one context to this FU per clock
+        // cycle. Boundary tokens belong to that context by construction; an
+        // FU-internal result names the context that produced it and is
+        // deliverable to another operation only while that context is the
+        // granted one.
+        const mlir::Value dispatchContext =
+            contextWidth ? accessor.getInput(dispatchContextPortName)
+                         : mlir::Value{};
         std::map<std::string, circt::Backedge> dataInput;
         std::map<std::string, circt::Backedge> validInput;
         std::map<std::string, circt::Backedge> readyInput;
-        std::map<std::string, circt::Backedge> contextInput;
         std::map<std::string, mlir::Value> dataOutput;
         std::map<std::string, mlir::Value> validOutput;
         std::map<std::string, mlir::Value> readyOutput;
         std::map<std::string, mlir::Value> contextOutput;
         for (const OperationShellModule *operation : operations) {
           std::map<std::string, mlir::Value> instanceInputs;
-          addCommonInstanceInputs(accessor, configurationAbi, transportLayout,
-                                  instanceInputs);
+          if (llvm::Error error = addCommonInstanceInputs(
+                  bodyBuilder, location, accessor, *configuration,
+                  operation->configuration, operation->module,
+                  instanceInputs)) {
+            materializationError = llvm::toString(std::move(error));
+            backedges.abandon();
+            return;
+          }
+          if (contextWidth)
+            instanceInputs.emplace(dispatchContextPortName.str(),
+                                   dispatchContext);
           for (const OperationEndpointPlan &endpoint : operation->endpoints) {
             const fabric::FabricFuNodePortRef nodePort{
                 operation->operation.capability->occurrence, endpoint.direction,
@@ -328,12 +369,6 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               auto edge = backedges.get(bodyBuilder.getI1Type());
               instanceInputs.emplace(endpoint.valid.getName().str(), edge);
               validInput.emplace(key, std::move(edge));
-              if (endpoint.context) {
-                auto contextEdge = backedges.get(endpoint.context->type);
-                instanceInputs.emplace(endpoint.context->getName().str(),
-                                       contextEdge);
-                contextInput.emplace(key, std::move(contextEdge));
-              }
             } else {
               auto edge = backedges.get(bodyBuilder.getI1Type());
               instanceInputs.emplace(endpoint.ready.getName().str(), edge);
@@ -428,8 +463,7 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                         ? std::optional<mlir::Value>{accessor.getInput(
                               endpoint->tag->getName())}
                         : std::nullopt},
-                contextWidth ? std::optional<mlir::Value>{accessor.getInput(
-                                   contextPortName(*endpoint))}
+                contextWidth ? std::optional<mlir::Value>{dispatchContext}
                              : std::nullopt);
           }
           const auto valid = validOutput.find(key);
@@ -502,33 +536,216 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
             if (source->second && contextActives.size() > 1)
               active = selectContextValue(bodyBuilder, location,
                                           *source->second, contextActives);
+            const bool internalToken =
+                edge.source.kind() !=
+                    fabric::FabricFuCapabilityTemplateEndpointKind::
+                        BoundaryPort &&
+                edge.destination.kind() !=
+                    fabric::FabricFuCapabilityTemplateEndpointKind::
+                        BoundaryPort;
+            if (internalToken && source->second)
+              active = andValues(
+                  bodyBuilder, location,
+                  {active, circt::comb::ICmpOp::create(
+                               bodyBuilder, location,
+                               circt::comb::ICmpPredicate::eq, *source->second,
+                               dispatchContext, true)});
             routes.push_back(RouteRuntime{
                 templateOrdinal, &edge, fuTemplateEndpointKey(edge.source),
                 fuTemplateEndpointKey(edge.destination), active,
                 source->first.valid, *ready, adapted->payload, source->second});
           }
 
+        // Several operations of one FU may hold results for one boundary
+        // output at the same time when their resident contexts differ, so
+        // every destination grants exactly one presented route by the
+        // canonical round-robin policy and hands its readiness to that route
+        // alone; a handoff therefore retires exactly the granted result.
+        // Admissibility never observes a route's own source valid, so a
+        // transparent operation observes its readiness before it publishes.
+        // The cursor advances whenever the enclosing PE has offered the
+        // granted result to a port, accepted or refused, so a result whose
+        // destination is not ready cannot hold the output against the other
+        // held results (the offer rotation of the per-tag virtual channel
+        // discipline), while an output the PE is not presenting keeps its
+        // grant. An operation input is driven by at most one active route per
+        // cycle (one capability template per dispatch context), so its grant
+        // carries no cursor. A destination with one route presents that
+        // route's held payload whether or not the result is valid: the
+        // operation's result-holding state supplies the boundary, so a tuple
+        // whose outputs retire one at a time keeps every lane stable until
+        // the slot releases. A contended destination presents the granted
+        // route's payload only, because an ungranted held result must never
+        // appear on the shared output.
+        std::map<std::string, std::vector<std::size_t>> destinationRoutes;
+        for (auto [ordinal, route] : llvm::enumerate(routes))
+          destinationRoutes[route.destinationKey].push_back(ordinal);
+        std::vector<mlir::Value> routeAdmissible(routes.size());
+        std::vector<mlir::Value> routeGrant(routes.size());
+        std::vector<mlir::Value> routePresentsPayload(routes.size());
+        std::vector<mlir::Value> routeReady(routes.size());
+        struct ContendedDestination final {
+          std::vector<std::size_t> routes;
+          circt::Backedge cursorNext;
+          mlir::Value cursor;
+          mlir::Value offered;
+        };
+        std::vector<ContendedDestination> contendedDestinations;
+        const auto grantDestination =
+            [&](const std::string &key, std::optional<std::string> cursorName,
+                std::optional<mlir::Value> offered) {
+              const auto found = destinationRoutes.find(key);
+              if (found == destinationRoutes.end())
+                return;
+              const std::vector<std::size_t> &members = found->second;
+              std::vector<mlir::Value> presented;
+              presented.reserve(members.size());
+              for (std::size_t ordinal : members)
+                presented.push_back(andValues(
+                    bodyBuilder, location,
+                    {routes[ordinal].active, routes[ordinal].sourceValid}));
+              if (members.size() == 1 || !cursorName) {
+                for (auto [member, ordinal] : llvm::enumerate(members)) {
+                  routeAdmissible[ordinal] = routes[ordinal].active;
+                  routeGrant[ordinal] = presented[member];
+                  routePresentsPayload[ordinal] =
+                      members.size() == 1 ? routes[ordinal].active
+                                          : routeGrant[ordinal];
+                }
+                return;
+              }
+              const unsigned width = indexWidth(members.size());
+              circt::Backedge cursorNext =
+                  backedges.get(bodyBuilder.getIntegerType(width));
+              mlir::Value cursor = createRegister(
+                  bodyBuilder, location, cursorNext,
+                  accessor.getInput("clock"), accessor.getInput("reset"),
+                  llvm::APInt(width, 0), *cursorName,
+                  clockReset.asynchronousReset);
+              mlir::Value presentedPacked =
+                  packBits(bodyBuilder, location, presented);
+              for (auto [member, ordinal] : llvm::enumerate(members)) {
+                llvm::APInt forced(members.size(), 0);
+                forced.setBit(member);
+                mlir::Value requests = circt::comb::OrOp::create(
+                    bodyBuilder, location, presentedPacked,
+                    circt::hw::ConstantOp::create(bodyBuilder, location,
+                                                  forced),
+                    true);
+                mlir::Value selected = roundRobinPackedSelection(
+                    bodyBuilder, location, requests,
+                    static_cast<unsigned>(members.size()), cursor);
+                routeAdmissible[ordinal] = andValues(
+                    bodyBuilder, location,
+                    {routes[ordinal].active,
+                     circt::comb::ExtractOp::create(bodyBuilder, location,
+                                                    selected, member, 1)});
+                routeGrant[ordinal] =
+                    andValues(bodyBuilder, location,
+                              {routeAdmissible[ordinal],
+                               routes[ordinal].sourceValid});
+                routePresentsPayload[ordinal] = routeGrant[ordinal];
+              }
+              contendedDestinations.push_back(
+                  {members, std::move(cursorNext), cursor, *offered});
+            };
+        for (const EndpointPlan &endpoint : *endpoints) {
+          if (endpoint.direction != fabric::FabricPortDirection::Output)
+            continue;
+          const fabric::FabricFuTemplatePortRef port{
+              *definition, endpoint.direction, endpoint.localOrdinal};
+          grantDestination(
+              fuTemplateEndpointKey(
+                  fabric::FabricFuCapabilityTemplateEndpointRef::boundaryPort(
+                      port)),
+              contextWidth ? std::optional<std::string>(
+                                 "output_" +
+                                 std::to_string(endpoint.localOrdinal) +
+                                 "_grant_cursor_reg")
+                           : std::nullopt,
+              contextWidth ? std::optional<mlir::Value>(accessor.getInput(
+                                 outputOfferedPortName(endpoint)))
+                           : std::nullopt);
+        }
+        for (const OperationShellModule *operation : operations)
+          for (const OperationEndpointPlan &endpoint : operation->endpoints) {
+            if (endpoint.direction != fabric::FabricPortDirection::Input)
+              continue;
+            const fabric::FabricFuNodePortRef port{
+                operation->operation.capability->occurrence, endpoint.direction,
+                endpoint.ordinal};
+            grantDestination(
+                fuTemplateEndpointKey(
+                    fabric::FabricFuCapabilityTemplateEndpointRef::nodePort(
+                        port)),
+                std::nullopt, std::nullopt);
+          }
+        for (auto [ordinal, route] : llvm::enumerate(routes))
+          routeReady[ordinal] =
+              andValues(bodyBuilder, location,
+                        {routeAdmissible[ordinal], route.destinationReady});
+
         const auto sourceReady = [&](llvm::StringRef sourceKey) {
           llvm::SmallVector<mlir::Value> alternatives;
           for (std::size_t templateOrdinal = 0;
                templateOrdinal < templatePlans.size(); ++templateOrdinal) {
             llvm::SmallVector<mlir::Value> destinations;
-            mlir::Value routeActive;
-            for (const RouteRuntime &route : routes)
+            for (auto [ordinal, route] : llvm::enumerate(routes))
               if (route.templateOrdinal == templateOrdinal &&
-                  route.sourceKey == sourceKey) {
-                destinations.push_back(route.destinationReady);
-                if (!routeActive)
-                  routeActive = route.active;
-              }
+                  route.sourceKey == sourceKey)
+                destinations.push_back(routeReady[ordinal]);
             if (!destinations.empty())
               alternatives.push_back(
-                  andValues(bodyBuilder, location,
-                            {routeActive,
-                             andValues(bodyBuilder, location, destinations)}));
+                  andValues(bodyBuilder, location, destinations));
           }
           return orValues(bodyBuilder, location, alternatives);
         };
+        // A source presents its token to every destination of its selected
+        // template at once; a destination publishes the granted route only
+        // while the route's peers are ready, so an atomic fanout inside the
+        // FU never delivers to a ready subset.
+        const auto peersReady = [&](std::size_t ordinal) {
+          const RouteRuntime &route = routes[ordinal];
+          llvm::SmallVector<mlir::Value> peers;
+          for (auto [peerOrdinal, peer] : llvm::enumerate(routes))
+            if (peer.templateOrdinal == route.templateOrdinal &&
+                peer.sourceKey == route.sourceKey &&
+                peer.destinationKey != route.destinationKey)
+              peers.push_back(routeReady[peerOrdinal]);
+          return andValues(bodyBuilder, location, peers);
+        };
+        struct DestinationSignals final {
+          mlir::Value valid;
+          std::optional<mlir::Value> data;
+          std::optional<mlir::Value> context;
+        };
+        const auto publishDestination =
+            [&](const std::string &key, std::optional<unsigned> dataWidth,
+                std::optional<mlir::Value> idleContext) {
+              DestinationSignals signals;
+              llvm::SmallVector<mlir::Value> validTerms;
+              if (dataWidth)
+                signals.data = zeroData(bodyBuilder, location, *dataWidth);
+              signals.context = idleContext;
+              const auto found = destinationRoutes.find(key);
+              if (found != destinationRoutes.end())
+                for (std::size_t ordinal : found->second) {
+                  const RouteRuntime &route = routes[ordinal];
+                  mlir::Value peers = peersReady(ordinal);
+                  validTerms.push_back(andValues(
+                      bodyBuilder, location, {routeGrant[ordinal], peers}));
+                  if (signals.data && route.data)
+                    signals.data = circt::comb::MuxOp::create(
+                        bodyBuilder, location, routePresentsPayload[ordinal],
+                        *route.data, *signals.data, true);
+                  if (signals.context && route.context)
+                    signals.context = circt::comb::MuxOp::create(
+                        bodyBuilder, location, routeGrant[ordinal],
+                        *route.context, *signals.context, true);
+                }
+              signals.valid = orValues(bodyBuilder, location, validTerms);
+              return signals;
+            };
 
         for (const EndpointPlan &endpoint : *endpoints) {
           const fabric::FabricFuTemplatePortRef port{
@@ -540,47 +757,27 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
             accessor.setOutput(endpoint.ready.getName(), sourceReady(key));
             continue;
           }
-          llvm::SmallVector<mlir::Value> validTerms;
-          mlir::Value data = endpoint.data
-                                 ? zeroData(bodyBuilder, location,
-                                            endpoint.dataPath.payloadWidthBits)
-                                 : mlir::Value{};
-          mlir::Value tag = endpoint.tag
-                                ? zeroData(bodyBuilder, location,
-                                           endpoint.dataPath.tagWidthBits)
-                                : mlir::Value{};
-          mlir::Value context =
-              contextWidth ? zeroData(bodyBuilder, location, *contextWidth)
-                           : mlir::Value{};
-          for (const RouteRuntime &route : routes) {
-            if (route.destinationKey != key)
-              continue;
-            llvm::SmallVector<mlir::Value> peers;
-            for (const RouteRuntime &peer : routes)
-              if (peer.templateOrdinal == route.templateOrdinal &&
-                  peer.sourceKey == route.sourceKey &&
-                  peer.destinationKey != route.destinationKey)
-                peers.push_back(peer.destinationReady);
-            validTerms.push_back(
-                andValues(bodyBuilder, location,
-                          {route.active, route.sourceValid,
-                           andValues(bodyBuilder, location, peers)}));
-            if (endpoint.data && route.data)
-              data = circt::comb::MuxOp::create(
-                  bodyBuilder, location, route.active, *route.data, data, true);
-            if (contextWidth && route.context)
-              context = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                   route.active, *route.context,
-                                                   context, true);
-          }
+          // An output holding no granted result reports the dispatch
+          // context, so the PE evaluates the granted row's result selectors
+          // and presents egress readiness to a transparent operation before
+          // it publishes.
+          DestinationSignals signals = publishDestination(
+              key,
+              endpoint.data
+                  ? std::optional<unsigned>(endpoint.dataPath.payloadWidthBits)
+                  : std::nullopt,
+              contextWidth ? std::optional<mlir::Value>(dispatchContext)
+                           : std::nullopt);
           if (endpoint.data)
-            accessor.setOutput(endpoint.data->getName(), data);
+            accessor.setOutput(endpoint.data->getName(), *signals.data);
           if (endpoint.tag)
-            accessor.setOutput(endpoint.tag->getName(), tag);
+            accessor.setOutput(endpoint.tag->getName(),
+                               zeroData(bodyBuilder, location,
+                                        endpoint.dataPath.tagWidthBits));
           if (contextWidth)
-            accessor.setOutput(contextPortName(endpoint), context);
-          accessor.setOutput(endpoint.valid.getName(),
-                             orValues(bodyBuilder, location, validTerms));
+            accessor.setOutput(outputContextPortName(endpoint),
+                               *signals.context);
+          accessor.setOutput(endpoint.valid.getName(), signals.valid);
         }
 
         for (const OperationShellModule *operation : operations)
@@ -595,48 +792,32 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               readyInput.at(key).setValue(sourceReady(key));
               continue;
             }
-            llvm::SmallVector<mlir::Value> validTerms;
-            mlir::Value data =
+            DestinationSignals signals = publishDestination(
+                key,
                 endpoint.data
-                    ? zeroData(bodyBuilder, location, endpoint.payloadWidthBits)
-                    : mlir::Value{};
-            mlir::Value context =
-                endpoint.context
-                    ? zeroData(bodyBuilder, location, *contextWidth)
-                    : mlir::Value{};
-            for (const RouteRuntime &route : routes) {
-              if (route.destinationKey != key)
-                continue;
-              llvm::SmallVector<mlir::Value> peers;
-              for (const RouteRuntime &peer : routes)
-                if (peer.templateOrdinal == route.templateOrdinal &&
-                    peer.sourceKey == route.sourceKey &&
-                    peer.destinationKey != route.destinationKey)
-                  peers.push_back(peer.destinationReady);
-              validTerms.push_back(
-                  andValues(bodyBuilder, location,
-                            {route.active, route.sourceValid,
-                             andValues(bodyBuilder, location, peers)}));
-              if (endpoint.data && route.data)
-                data = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                  route.active, *route.data,
-                                                  data, true);
-              if (endpoint.context && route.context)
-                context = circt::comb::MuxOp::create(
-                    bodyBuilder, location, route.active, *route.context,
-                    context, true);
-            }
+                    ? std::optional<unsigned>(endpoint.payloadWidthBits)
+                    : std::nullopt,
+                std::nullopt);
             if (endpoint.data)
-              dataInput.at(key).setValue(data);
-            if (endpoint.context)
-              contextInput.at(key).setValue(context);
-            validInput.at(key).setValue(
-                orValues(bodyBuilder, location, validTerms));
+              dataInput.at(key).setValue(*signals.data);
+            validInput.at(key).setValue(signals.valid);
           }
+
+        for (ContendedDestination &destination : contendedDestinations) {
+          llvm::SmallVector<mlir::Value> offered;
+          for (std::size_t ordinal : destination.routes)
+            offered.push_back(andValues(bodyBuilder, location,
+                                        {routeGrant[ordinal],
+                                         destination.offered}));
+          destination.cursorNext.setValue(nextCursorFromPacked(
+              bodyBuilder, location, destination.cursor,
+              packBits(bodyBuilder, location, offered), offered.size()));
+        }
       });
   if (materializationError)
     return invalid(*materializationError);
-  return FuModule{fu, module, std::move(*endpoints), contextWidth};
+  return FuModule{fu, module, std::move(*endpoints), contextWidth,
+                  std::move(*configuration)};
 }
 
 struct InputSelectorRuntime final {
@@ -695,10 +876,36 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
   if (children.empty())
     return invalid("PE has no child FU hierarchy module");
 
+  std::vector<FieldDecoderPlan> peDecoders;
+  peDecoders.push_back(activationPrepared->first);
+  for (const FuModule *child : children)
+    for (const EndpointPlan &fuEndpoint : child->endpoints) {
+      const fabric::FabricFuOccurrencePortRef port{
+          child->reference, fuEndpoint.direction, fuEndpoint.localOrdinal};
+      const auto descriptor =
+          llvm::find_if(schema->fields(), [&](const auto &candidate) {
+            return candidate.port && *candidate.port == port;
+          });
+      if (descriptor == schema->fields().end())
+        return invalid("PE selector field is absent");
+      auto prepared = prepareFiniteField(spatialCore, descriptor->reference,
+                                         configurationAbi, transportLayout);
+      if (!prepared)
+        return prepared.takeError();
+      peDecoders.push_back(std::move(prepared->first));
+    }
+
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendClockResetAndConfigurationPorts(builder, configurationAbi,
-                                        transportLayout, inputs);
+  std::vector<ConfigurationBundlePlan> childConfigurations;
+  childConfigurations.reserve(children.size());
+  for (const FuModule *child : children)
+    childConfigurations.push_back(child->configuration);
+  auto configuration =
+      deriveConfigurationBundlePlan(peDecoders, childConfigurations);
+  if (!configuration)
+    return configuration.takeError();
+  appendClockResetAndConfigurationPorts(builder, *configuration, inputs);
   for (const EndpointPlan &endpoint : *endpoints)
     appendEndpointPorts(inputs, outputs, endpoint);
   std::optional<std::string> materializationError;
@@ -708,8 +915,11 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
+        ConfigurationBundleSignals configurationValues =
+            configurationBundleSignals(accessor, *configuration);
         mlir::Value activation = decodeFieldSignal(
-            bodyBuilder, location, accessor, activationPrepared->first);
+            bodyBuilder, location, configurationValues,
+            activationPrepared->first);
         std::map<std::string, llvm::SmallVector<mlir::Value>> peReadyTerms;
         std::map<std::string, llvm::SmallVector<mlir::Value>> peValidTerms;
         std::map<std::string, mlir::Value> peData;
@@ -744,8 +954,12 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
           mlir::Value active =
               matchesCode(bodyBuilder, location, activation, *activeCode);
           std::map<std::string, mlir::Value> instanceInputs;
-          addCommonInstanceInputs(accessor, configurationAbi, transportLayout,
-                                  instanceInputs);
+          if (llvm::Error error = addCommonInstanceInputs(
+                  bodyBuilder, location, accessor, *configuration,
+                  child->configuration, child->module, instanceInputs)) {
+            materializationError = llvm::toString(std::move(error));
+            return;
+          }
           std::vector<InputSelectorRuntime> inputSelectors;
           std::vector<OutputSelectorRuntime> outputSelectors;
 
@@ -768,8 +982,8 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
               materializationError = llvm::toString(prepared.takeError());
               return;
             }
-            mlir::Value field = decodeFieldSignal(bodyBuilder, location,
-                                                  accessor, prepared->first);
+            mlir::Value field = decodeFieldSignal(
+                bodyBuilder, location, configurationValues, prepared->first);
             const auto attachments = fabric.fuOccurrencePortAttachments(port);
             if (attachments.empty()) {
               materializationError = "PE selector has no attachment domain";
@@ -993,7 +1207,8 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
       });
   if (materializationError)
     return invalid(*materializationError);
-  return PeModule{pe, module, std::move(*endpoints)};
+  return PeModule{pe, module, std::move(*endpoints),
+                  std::move(*configuration)};
 }
 
 } // namespace
@@ -1005,13 +1220,13 @@ buildFuModules(mlir::OpBuilder &builder, mlir::Location location,
                const ConfigurationABI &configurationAbi,
                const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<OperationShellModule> operationShells,
-               const ClockResetPlan &) {
+               const ClockResetPlan &clockReset) {
   std::vector<FuModule> result;
   result.reserve(fabric.fuOccurrences().size());
   for (fabric::FabricFuOccurrenceRef fu : fabric.fuOccurrences()) {
     auto module =
         buildFuModule(builder, location, spatialCore, fabric, configurationAbi,
-                      transportLayout, operationShells, fu);
+                      transportLayout, operationShells, fu, clockReset);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));
@@ -1026,21 +1241,64 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                const ConfigurationABI &configurationAbi,
                const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<FuModule> fuModules,
-               const ClockResetPlan &clockReset) {
+               const ClockResetPlan &clockReset, mlir::ModuleOp container,
+               llvm::StringRef materializationKey) {
   std::vector<PeModule> result;
   result.reserve(fabric.peOccurrences().size());
   for (fabric::FabricPeOccurrenceRef pe : fabric.peOccurrences()) {
+    const std::string peKey =
+        (llvm::Twine(materializationKey) + ":pe:" + llvm::Twine(pe.id())).str();
+    const bool temporal = fabric.peSchedule(pe) == ::fabric::Schedule::Temporal;
+    if (invocationDiagnosticEnabled(DiagnosticVerbosity::Summary)) {
+      std::uint64_t childCount = 0;
+      std::uint64_t childEndpointCount = 0;
+      std::uint64_t attachmentCount = 0;
+      std::uint64_t childConfigurationPortCount = 0;
+      std::uint64_t childConfigurationMemberCount = 0;
+      for (const FuModule &child : fuModules) {
+        if (fabric.parentPeOf(child.reference) != pe)
+          continue;
+        ++childCount;
+        childEndpointCount += child.endpoints.size();
+        childConfigurationPortCount += !child.configuration.empty();
+        childConfigurationMemberCount += child.configuration.words.size();
+        for (const EndpointPlan &endpoint : child.endpoints) {
+          const fabric::FabricFuOccurrencePortRef port{
+              child.reference, endpoint.direction, endpoint.localOrdinal};
+          attachmentCount += fabric.fuOccurrencePortAttachments(port).size();
+        }
+      }
+      emitInvocationDiagnostic(
+          DiagnosticVerbosity::Summary,
+          InvocationDiagnosticStage::HardwareConfiguration,
+          InvocationDiagnosticEvent::Statistics, [&] {
+            return llvm::json::Value(llvm::json::Object{
+                {"statistics_kind", "rtl_pe_materialization_shape"},
+                {"materialization_key", materializationKey.str()},
+                {"pe_ordinal", pe.id()},
+                {"schedule", temporal ? "temporal" : "spatial"},
+                {"child_fu_count", childCount},
+                {"child_fu_endpoint_count", childEndpointCount},
+                {"child_configuration_port_count", childConfigurationPortCount},
+                {"child_configuration_bundle_member_count",
+                 childConfigurationMemberCount},
+                {"fu_port_attachment_count", attachmentCount}});
+          });
+    }
+    RtlMaterializationStageTracker stage(
+        temporal ? "skeleton_temporal_pe_module" : "skeleton_spatial_pe_module",
+        peKey, container);
     auto module =
-        fabric.peSchedule(pe) == ::fabric::Schedule::Temporal
-            ? buildTemporalPeModule(builder, location, spatialCore, fabric,
-                                    configurationAbi, transportLayout,
-                                    fuModules, clockReset, pe)
-            : buildSpatialPeModule(builder, location, spatialCore, fabric,
-                                   configurationAbi, transportLayout, fuModules,
-                                   pe);
+        temporal ? buildTemporalPeModule(builder, location, spatialCore, fabric,
+                                         configurationAbi, transportLayout,
+                                         fuModules, clockReset, pe, peKey)
+                 : buildSpatialPeModule(builder, location, spatialCore, fabric,
+                                        configurationAbi, transportLayout,
+                                        fuModules, pe);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));
+    stage.finish(container);
   }
   return result;
 }

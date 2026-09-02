@@ -604,7 +604,13 @@ A selected FU-to-boundary result traversal is transparent. Its result-valid
 and ready dependencies pass through the PE selector, while the selected
 operation's Fabric-owned result-holding state supplies the registered boundary.
 The PE does not own a second implicit result queue. An explicit register-FIFO
-route remains a stateful break under the register-FIFO contract above.
+route remains a stateful break under the register-FIFO contract above. One FU
+boundary output is a single physical resource shared by the result-holding
+states of every resident context whose configured template drives it; it
+delivers one held result per PE clock cycle under the canonical round-robin
+policy over the templates' routes, and only the granted result retires on that
+handoff. The other held results stay in their operations' result-holding
+states and keep those operations busy.
 
 ## Mapping Ownership
 
@@ -650,11 +656,14 @@ Dataflow actor bound into its resident configured graph eligible. One such
 actor transition may commit when:
 
 1. The PE configuration is `Active` and entry `i` is the `Active` variant.
-2. Every actor input routed from an `InputPortRef` has a head token in its
-   selected logical operand queue. PE-ingress tag dispatch places tokens into
-   that queue.
-3. Every actor input routed from a `RegFifoRef` has a head token in the
-   selected register FIFO under the semantics above.
+2. Every input consumed by the actor's selected transition case that is routed
+   from an `InputPortRef` has a head token in its selected logical operand
+   queue. PE-ingress tag dispatch places tokens into that queue. Inputs the
+   selected case does not consume impose no head requirement; the operation
+   schema alone owns which heads each case consumes.
+3. Every input consumed by the selected case that is routed from a
+   `RegFifoRef` has a head token in the selected register FIFO under the
+   semantics above.
 4. The selected physical operation within the configured FU is ready to
    consume, and finite capacity is reserved for all output obligations.
 

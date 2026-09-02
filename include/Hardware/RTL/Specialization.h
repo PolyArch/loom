@@ -58,6 +58,11 @@ struct FabricOperationProviderOutput final {
 
 /// Every reference, view, StringRef, ArrayRef, operation, and platform pointer
 /// in a request is callback-scoped and must not be retained by a provider.
+/// Provider implementation structure may depend on the exact capability,
+/// recipe, module contract, external inputs, ConfigurationABI relation, and
+/// implementation platform under the registered provider identity. The
+/// occurrence qualifies ownership and ABI lookup only; it must not create
+/// occurrence-specific implementation logic.
 struct FabricOperationProviderRequest final {
   /// Isolated, invocation-owned fragment containing only this abstract leaf
   /// and its generator schema. A provider may mutate this fragment but never
@@ -113,7 +118,7 @@ private:
       llvm::ArrayRef<FabricOperationRecipeBinding>,
       const FabricOperationProviderRegistry &,
       const ExternalImplementationContractCatalog &,
-      const platform::ImplementationPlatform *);
+      const platform::ImplementationPlatform *, llvm::StringRef);
 };
 
 class FabricOperationProviderUnsupportedError final
@@ -139,16 +144,19 @@ private:
   BackendRecipeKey recipe_;
 };
 
-/// Preflights the complete occurrence recipe and provider closure, prepares
-/// every provider in an isolated fragment, and commits only after every
-/// fragment verifies. On error the caller's module is unchanged.
+/// Preflights the complete occurrence recipe and provider closure, then
+/// prepares, validates, applies, and releases each canonical leaf in one
+/// rollback-capable transaction. Equal provider implementation keys share one
+/// implementation body while occurrence ownership remains separate. On error
+/// the caller's module is unchanged.
 llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
     mlir::ModuleOp module, const FinalizedConfigurationABI &configurationAbi,
     llvm::ArrayRef<FabricOperationLeafAssociation> operationLeaves,
     llvm::ArrayRef<FabricOperationRecipeBinding> operationRecipes,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
-    const platform::ImplementationPlatform *implementationPlatform = nullptr);
+    const platform::ImplementationPlatform *implementationPlatform = nullptr,
+    llvm::StringRef materializationKey = {});
 
 } // namespace loom::hardware::rtl
 

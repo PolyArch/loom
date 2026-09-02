@@ -122,7 +122,8 @@ llvm::Error verifyNoUnresolvedStructuralLowering(mlir::ModuleOp module) {
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
                              fabric::SpatialCoreOccurrenceRef spatialCore,
-                             const FinalizedConfigurationABI &finalizedAbi) {
+                             const FinalizedConfigurationABI &finalizedAbi,
+                             llvm::StringRef materializationKey) {
   const ConfigurationABI &configurationAbi = finalizedAbi.abi();
   auto fabricModule = resolveFabricSpatialCoreModule(
       configurationAbi.fabricSystem(), spatialCore);
@@ -139,7 +140,8 @@ buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
   if (!projections)
     return projections.takeError();
   return hierarchy::buildModuleHierarchySkeleton(
-      context, spatialCore, finalizedAbi, fabric, *projections);
+      context, spatialCore, finalizedAbi, fabric, *projections,
+      materializationKey);
 }
 
 llvm::Error verifyCommonCirctSkeleton(

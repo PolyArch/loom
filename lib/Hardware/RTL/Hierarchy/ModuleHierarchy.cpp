@@ -7,6 +7,7 @@
 
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Hardware/RTL/ConfigurationTransport.h"
+#include "Hardware/RTL/MaterializationDiagnostics.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -14,7 +15,6 @@
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/MathExtras.h"
 
 #include <array>
 #include <map>
@@ -32,6 +32,8 @@ struct ComponentView final {
   circt::hw::HWModuleOp module;
   llvm::ArrayRef<EndpointPlan> endpoints;
   llvm::ArrayRef<MemoryEndpointPortPlan> memoryEndpoints;
+  const ConfigurationBundlePlan *configuration = nullptr;
+  const FieldDecoderPlan *configurationDecoder = nullptr;
   std::string instanceName;
 };
 
@@ -133,7 +135,29 @@ void appendComponents(llvm::ArrayRef<Component> components,
          component.module,
          component.endpoints,
          {},
+         &component.configuration,
+         nullptr,
          prefix.str() + std::to_string(component.reference.id())});
+}
+
+void appendFifoComponents(llvm::ArrayRef<FifoModule> components,
+                          std::vector<ComponentView> &result) {
+  for (const FifoModule &component : components)
+    result.push_back(
+        {fabric::FabricTransportEndpointOwnerRef::of(component.reference),
+         component.module, component.endpoints, {}, &component.configuration,
+         &component.configurationDecoder,
+         "fifo_" + std::to_string(component.reference.id())});
+}
+
+void appendSwitchComponents(llvm::ArrayRef<SwitchModule> components,
+                            std::vector<ComponentView> &result) {
+  for (const SwitchModule &component : components)
+    result.push_back(
+        {fabric::FabricTransportEndpointOwnerRef::of(component.reference),
+         component.module, component.endpoints, {}, &component.configuration,
+         &component.configurationDecoder,
+         "switch_" + std::to_string(component.reference.id())});
 }
 
 void appendMemoryComponents(llvm::ArrayRef<MemoryModule> components,
@@ -142,6 +166,7 @@ void appendMemoryComponents(llvm::ArrayRef<MemoryModule> components,
     result.push_back(
         {fabric::FabricTransportEndpointOwnerRef::of(component.reference),
          component.module, component.endpoints, component.memoryEndpoints,
+         &component.configuration, &component.configurationDecoder,
          "memory_" + std::to_string(component.reference.id())});
 }
 
@@ -404,10 +429,6 @@ mlir::Value equals(mlir::OpBuilder &builder, mlir::Location location,
       integerConstant(builder, location, width, expected), true);
 }
 
-unsigned indexWidth(std::uint64_t count) {
-  return std::max(1U, llvm::Log2_64_Ceil(std::max<std::uint64_t>(count, 1)));
-}
-
 std::vector<mlir::Value>
 roundRobinSelection(mlir::OpBuilder &builder, mlir::Location location,
                     llvm::ArrayRef<mlir::Value> requests, mlir::Value cursor) {
@@ -451,7 +472,8 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
     mlir::MLIRContext &context, fabric::SpatialCoreOccurrenceRef spatialCore,
     const FinalizedConfigurationABI &finalizedAbi,
     const fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections) {
+    llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections,
+    llvm::StringRef materializationKey) {
   const ConfigurationABI &configurationAbi = finalizedAbi.abi();
   auto transportLayout =
       derivePortableConfigurationTransportLayout(finalizedAbi, spatialCore);
@@ -467,6 +489,9 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
   auto memoryServiceLayout = derivePortableMemoryServiceLayout(fabric);
   if (!memoryServiceLayout)
     return memoryServiceLayout.takeError();
+  auto memoryRequestContexts = PortableMemoryRequestContextIndex::get(fabric);
+  if (!memoryRequestContexts)
+    return memoryRequestContexts.takeError();
 
   mlir::OpBuilder builder(&context);
   const mlir::Location location = builder.getUnknownLoc();
@@ -481,55 +506,90 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
       fabricOperationGeneratorDescriptor, builder.getArrayAttr({}));
 
   std::vector<FabricOperationLeafAssociation> associations;
+  RtlMaterializationStageTracker operationShellStage(
+      "skeleton_operation_shells", materializationKey, *module);
   auto operationShells = buildOperationShellModules(
       builder, location, spatialCore, fabric, configurationAbi,
       *transportLayout, *operations, associations, *clockReset);
   if (!operationShells)
     return operationShells.takeError();
+  operationShellStage.finish(*module);
+  RtlMaterializationStageTracker fuStage("skeleton_fu_modules",
+                                         materializationKey, *module);
   auto fuModules =
       buildFuModules(builder, location, spatialCore, fabric, configurationAbi,
                      *transportLayout, *operationShells, *clockReset);
   if (!fuModules)
     return fuModules.takeError();
-  auto peModules =
-      buildPeModules(builder, location, spatialCore, fabric, configurationAbi,
-                     *transportLayout, *fuModules, *clockReset);
+  fuStage.finish(*module);
+  RtlMaterializationStageTracker peStage("skeleton_pe_modules",
+                                         materializationKey, *module);
+  auto peModules = buildPeModules(
+      builder, location, spatialCore, fabric, configurationAbi,
+      *transportLayout, *fuModules, *clockReset, *module, materializationKey);
   if (!peModules)
     return peModules.takeError();
+  peStage.finish(*module);
+  RtlMaterializationStageTracker switchStage("skeleton_switch_modules",
+                                             materializationKey, *module);
   auto switchModules =
       buildSwitchModules(builder, location, spatialCore, fabric,
                          configurationAbi, *transportLayout, *clockReset);
   if (!switchModules)
     return switchModules.takeError();
+  switchStage.finish(*module);
+  RtlMaterializationStageTracker fifoStage("skeleton_fifo_modules",
+                                           materializationKey, *module);
   auto fifoModules =
       buildFifoModules(builder, location, spatialCore, fabric, configurationAbi,
                        *transportLayout, *clockReset);
   if (!fifoModules)
     return fifoModules.takeError();
+  fifoStage.finish(*module);
+  RtlMaterializationStageTracker boundaryStage("skeleton_boundary_modules",
+                                               materializationKey, *module);
   auto boundaryModules =
       buildBoundaryModules(builder, location, spatialCore, fabric,
                            configurationAbi, *transportLayout);
   if (!boundaryModules)
     return boundaryModules.takeError();
+  boundaryStage.finish(*module);
+  RtlMaterializationStageTracker memoryStage("skeleton_memory_modules",
+                                             materializationKey, *module);
   auto memoryModules = buildMemoryModules(
       builder, location, spatialCore, fabric, configurationAbi,
-      *transportLayout, *clockReset, *memoryServiceLayout);
+      *transportLayout, *clockReset, *memoryServiceLayout, materializationKey);
   if (!memoryModules)
     return memoryModules.takeError();
-  auto configurationController = buildConfigurationControllerModule(
-      builder, location, configurationAbi, *transportLayout, *clockReset);
-  if (!configurationController)
-    return configurationController.takeError();
-
+  memoryStage.finish(*module);
   std::vector<ComponentView> components;
   components.reserve(peModules->size() + switchModules->size() +
                      fifoModules->size() + boundaryModules->size() +
                      memoryModules->size());
   appendComponents(llvm::ArrayRef(*peModules), "pe_", components);
-  appendComponents(llvm::ArrayRef(*switchModules), "switch_", components);
-  appendComponents(llvm::ArrayRef(*fifoModules), "fifo_", components);
+  appendSwitchComponents(*switchModules, components);
+  appendFifoComponents(*fifoModules, components);
   appendComponents(llvm::ArrayRef(*boundaryModules), "boundary_", components);
   appendMemoryComponents(*memoryModules, components);
+
+  std::vector<ConfigurationBundlePlan> componentConfigurations;
+  componentConfigurations.reserve(components.size());
+  for (const ComponentView &component : components) {
+    if (!component.configuration)
+      return invalid("hierarchy component has no configuration plan");
+    componentConfigurations.push_back(*component.configuration);
+  }
+  RtlMaterializationStageTracker controllerStage(
+      "skeleton_configuration_controller", materializationKey, *module);
+  auto configurationController = buildConfigurationControllerModule(
+      builder, location, configurationAbi, *transportLayout, *clockReset,
+      componentConfigurations);
+  if (!configurationController)
+    return configurationController.takeError();
+  controllerStage.finish(*module);
+
+  RtlMaterializationStageTracker rootStage("skeleton_root_hierarchy",
+                                           materializationKey, *module);
 
   llvm::SmallVector<circt::hw::PortInfo, 32> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 32> outputs;
@@ -657,15 +717,47 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
           }
         }
 
-        for (const ComponentView &component : components) {
+        for (auto [componentOrdinal, component] : llvm::enumerate(components)) {
           std::map<std::string, mlir::Value> instanceInputs;
           instanceInputs.emplace("clock", accessor.getInput("clock"));
           instanceInputs.emplace("reset", reset);
-          for (auto [ordinal, unit] : llvm::enumerate(transportLayout->units)) {
-            (void)unit;
+          if (component.owner.kind() ==
+              fabric::FabricTransportEndpointOwnerKind::
+                  FabricMemoryOccurrence) {
+            const auto memory =
+                std::get<fabric::FabricMemoryOccurrenceRef>(
+                    component.owner.payload);
+            auto contextBase = memoryRequestContexts->first(memory);
+            if (!contextBase) {
+              fail(contextBase.takeError());
+              return;
+            }
             instanceInputs.emplace(
-                configurationPortName(ordinal),
-                controller->at(configurationPortName(ordinal)));
+                "request_context_base",
+                integerConstant(bodyBuilder, location, 64, *contextBase));
+          }
+          if (!component.configuration->empty()) {
+            const std::string outputName =
+                controllerConfigurationBundlePortName(componentOrdinal);
+            const auto signal = controller->find(outputName);
+            if (signal == controller->end()) {
+              fail(invalid("component configuration bundle is absent from the "
+                           "controller"));
+              return;
+            }
+            if (component.configurationDecoder) {
+              ConfigurationBundleSignals configurationValues{
+                  component.configuration, signal->second,
+                  std::vector<mlir::Value>(
+                      component.configuration->words.size())};
+              mlir::Value decoded = decodeFieldSignal(
+                  bodyBuilder, location, configurationValues,
+                  *component.configurationDecoder);
+              instanceInputs.emplace(configurationValuePortName.str(), decoded);
+            } else {
+              instanceInputs.emplace(configurationBundlePortName.str(),
+                                     signal->second);
+            }
           }
 
           std::vector<EndpointRuntime *> pendingRuntime;
@@ -1289,6 +1381,7 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
   if (llvm::Error error = verifyCommonCirctSkeleton(
           *result.module, configurationAbi, result.operationLeaves))
     return std::move(error);
+  rootStage.finish(*result.module);
   return result;
 }
 

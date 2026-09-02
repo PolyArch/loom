@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace loom::hardware::rtl::hierarchy {
@@ -23,9 +24,78 @@ namespace loom::hardware::rtl::hierarchy {
 struct FieldDecoderPlan final {
   const ProgrammingUnit *unit = nullptr;
   std::size_t transportUnitOrdinal = 0;
+  std::size_t fieldOrdinal = 0;
   std::uint64_t encodedBitCount = 0;
-  std::vector<std::uint64_t> destinationBits;
+  std::vector<DestinationSlice> destinationSlices;
 };
+
+struct ConfigurationFieldKey final {
+  std::size_t transportUnitOrdinal = 0;
+  std::size_t fieldOrdinal = 0;
+
+  friend bool operator<(ConfigurationFieldKey lhs,
+                        ConfigurationFieldKey rhs) {
+    return std::tie(lhs.transportUnitOrdinal, lhs.fieldOrdinal) <
+           std::tie(rhs.transportUnitOrdinal, rhs.fieldOrdinal);
+  }
+
+  friend bool operator==(ConfigurationFieldKey lhs,
+                         ConfigurationFieldKey rhs) {
+    return lhs.transportUnitOrdinal == rhs.transportUnitOrdinal &&
+           lhs.fieldOrdinal == rhs.fieldOrdinal;
+  }
+};
+
+struct ConfigurationWordKey final {
+  std::size_t transportUnitOrdinal = 0;
+  std::uint64_t wordOrdinal = 0;
+
+  friend bool operator<(ConfigurationWordKey lhs, ConfigurationWordKey rhs) {
+    return std::tie(lhs.transportUnitOrdinal, lhs.wordOrdinal) <
+           std::tie(rhs.transportUnitOrdinal, rhs.wordOrdinal);
+  }
+
+  friend bool operator==(ConfigurationWordKey lhs, ConfigurationWordKey rhs) {
+    return lhs.transportUnitOrdinal == rhs.transportUnitOrdinal &&
+           lhs.wordOrdinal == rhs.wordOrdinal;
+  }
+};
+
+struct ConfigurationBundleWord final {
+  ConfigurationWordKey key;
+  std::uint32_t usedBitMask = 0;
+
+  friend bool operator==(ConfigurationBundleWord lhs,
+                         ConfigurationBundleWord rhs) {
+    return lhs.key == rhs.key && lhs.usedBitMask == rhs.usedBitMask;
+  }
+};
+
+/// Transient canonical packing of exact ConfigurationABI fields consumed by
+/// one hierarchy subtree. Membership and widths remain derived cache state.
+struct ConfigurationBundlePlan final {
+  std::vector<ConfigurationBundleWord> words;
+
+  const ConfigurationBundleWord *find(ConfigurationWordKey key) const;
+  bool empty() const { return words.empty(); }
+};
+
+struct ConfigurationBundleSignals final {
+  const ConfigurationBundlePlan *plan = nullptr;
+  mlir::Value bundle;
+  std::vector<mlir::Value> cachedWords;
+};
+
+inline constexpr llvm::StringLiteral configurationBundlePortName =
+    "configuration_bundle";
+inline constexpr llvm::StringLiteral configurationValuePortName =
+    "configuration_value";
+/// The InstructionContextRef a Temporal PE grants to one child FU for the
+/// current clock cycle. The FU and its operation shells evaluate that context's
+/// configuration, operand heads, and state bank; a boundary token belongs to it
+/// by construction, while an FU-internal result names its own context.
+inline constexpr llvm::StringLiteral dispatchContextPortName =
+    "dispatch_context";
 
 struct ClockResetPlan final {
   bool asynchronousReset = false;
@@ -53,8 +123,23 @@ struct ChannelSignals final {
 llvm::Error invalid(const llvm::Twine &message);
 llvm::Error unsupported(const llvm::Twine &message);
 
-std::string configurationPortName(std::size_t transportUnitOrdinal);
 std::string endpointKey(const fabric::FabricTransportEndpointRef &endpoint);
+
+ConfigurationFieldKey configurationFieldKey(const FieldDecoderPlan &decoder);
+mlir::Type configurationBundleType(mlir::MLIRContext *context,
+                                   const ConfigurationBundlePlan &plan);
+llvm::Error verifyConfigurationBundlePort(
+    circt::hw::HWModuleOp module, const ConfigurationBundlePlan &plan);
+llvm::Error verifyConfigurationValuePort(circt::hw::HWModuleOp module,
+                                         const FieldDecoderPlan &decoder);
+
+llvm::Expected<ConfigurationBundlePlan> deriveConfigurationBundlePlan(
+    llvm::ArrayRef<FieldDecoderPlan> decoders,
+    llvm::ArrayRef<ConfigurationBundlePlan> childBundles = {});
+
+llvm::Expected<std::vector<FieldDecoderPlan>>
+prepareFieldDecoders(const ConfigurationABI &configurationAbi,
+                     const ConfigurationTransportLayout &transportLayout);
 
 llvm::Expected<fabric::FabricPhysicalConfigurationFieldRef>
 qualifyConfigurationField(fabric::SpatialCoreOccurrenceRef spatialCore,
@@ -104,9 +189,27 @@ void appendEndpointPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
                          const EndpointPlan &endpoint);
 
 void appendClockResetAndConfigurationPorts(
-    mlir::OpBuilder &builder, const ConfigurationABI &configurationAbi,
-    const ConfigurationTransportLayout &transportLayout,
+    mlir::OpBuilder &builder, const ConfigurationBundlePlan &configuration,
     llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs);
+
+llvm::Expected<mlir::Value> projectConfigurationBundle(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Value parentValue,
+    const ConfigurationBundlePlan &parent,
+    const ConfigurationBundlePlan &child);
+
+llvm::Error addConfigurationInstanceInput(
+    mlir::OpBuilder &builder, mlir::Location location,
+    circt::hw::HWModulePortAccessor &accessor,
+    const ConfigurationBundlePlan &parent,
+    const ConfigurationBundlePlan &child, circt::hw::HWModuleOp childModule,
+    std::map<std::string, mlir::Value> &inputs);
+
+ConfigurationBundleSignals configurationBundleSignals(
+    circt::hw::HWModulePortAccessor &accessor,
+    const ConfigurationBundlePlan &configuration);
+
+/// The ordinal width of a closed domain of `count` members (at least one bit).
+unsigned indexWidth(std::uint64_t count);
 
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
                         bool value);
@@ -115,7 +218,7 @@ mlir::Value andValues(mlir::OpBuilder &builder, mlir::Location location,
 mlir::Value orValues(mlir::OpBuilder &builder, mlir::Location location,
                      llvm::ArrayRef<mlir::Value> values);
 mlir::Value decodeFieldSignal(mlir::OpBuilder &builder, mlir::Location location,
-                              circt::hw::HWModulePortAccessor &accessor,
+                              ConfigurationBundleSignals &configuration,
                               const FieldDecoderPlan &decoder);
 mlir::Value matchesCode(mlir::OpBuilder &builder, mlir::Location location,
                         mlir::Value field, const llvm::APInt &code);

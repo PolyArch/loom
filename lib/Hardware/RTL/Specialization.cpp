@@ -1,22 +1,31 @@
 #include "Hardware/RTL/Specialization.h"
 
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/RTL/MaterializationDiagnostics.h"
 #include "Hardware/RTL/PhysicalOperation.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "circt/Dialect/HW/HWOpInterfaces.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -53,15 +62,18 @@ auto registrationKey(const FabricOperationProviderRegistration &registration) {
 }
 
 struct SpecializationJob final {
-  std::vector<std::uint8_t> occurrenceKey;
   circt::hw::HWModuleGeneratedOp leaf;
   std::string leafSymbol;
   fabric::FabricPhysicalOccurrenceOwnerRef occurrence;
-  fabric::FabricFuOccurrenceNodeRef localOccurrence;
   const fabric::ResolvedFabricOpCapabilityView *capability = nullptr;
   const FabricOperationProviderRegistration *provider = nullptr;
   std::vector<ExternalInputBinding> externalInputs;
   BackendRecipeKey recipe = BackendRecipeKey::PortableSystemVerilog;
+};
+
+struct OrderedOperationLeaf final {
+  std::vector<std::uint8_t> occurrenceKey;
+  const FabricOperationLeafAssociation *association = nullptr;
 };
 
 struct PreparedSpecialization final {
@@ -69,6 +81,65 @@ struct PreparedSpecialization final {
   mlir::OwningOpRef<mlir::ModuleOp> fragment;
   FabricOperationProviderOutput output;
 };
+
+struct RetargetedInstance final {
+  circt::hw::InstanceOp instance;
+  mlir::StringAttr moduleName;
+  mlir::ArrayAttr argumentNames;
+  mlir::ArrayAttr resultNames;
+};
+
+struct AppliedSpecialization final {
+  mlir::OwningOpRef<mlir::Operation *> originalLeaf;
+  mlir::Block *originalBlock = nullptr;
+  mlir::Operation *originalSuccessor = nullptr;
+  std::vector<mlir::Operation *> replacements;
+  std::vector<RetargetedInstance> retargetedInstances;
+};
+
+struct SharedProviderImplementation final {
+  std::string symbol;
+  fabric::FabricPhysicalOccurrenceOwnerRef canonicalOccurrence;
+  std::vector<ActivityPoint> activityPoints;
+  std::vector<ExternalImplementationBindingDraft>
+      externalImplementationBindings;
+};
+
+void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void appendBytes(std::vector<std::uint8_t> &bytes,
+                 llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(bytes, value.size());
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+void appendString(std::vector<std::uint8_t> &bytes, llvm::StringRef value) {
+  appendBytes(bytes, llvm::ArrayRef<std::uint8_t>(
+                         reinterpret_cast<const std::uint8_t *>(value.data()),
+                         value.size()));
+}
+
+std::string printed(mlir::Attribute attribute) {
+  std::string result;
+  llvm::raw_string_ostream stream(result);
+  attribute.print(stream);
+  return result;
+}
+
+std::string printed(mlir::Type type) {
+  std::string result;
+  llvm::raw_string_ostream stream(result);
+  type.print(stream);
+  return result;
+}
 
 bool dependencyLess(const ExternalDependencyIdentity &lhs,
                     const ExternalDependencyIdentity &rhs) {
@@ -95,6 +166,141 @@ bool externalInputLess(const ExternalInputBinding &lhs,
   if (lhs.providerInputSlotRef != rhs.providerInputSlotRef)
     return lhs.providerInputSlotRef < rhs.providerInputSlotRef;
   return dependencyLess(lhs.dependencyIdentity, rhs.dependencyIdentity);
+}
+
+void appendExternalInputKey(std::vector<std::uint8_t> &key,
+                            const ExternalInputBinding &input) {
+  appendString(key, input.providerInputSlotRef);
+  appendU32(key, static_cast<std::uint32_t>(input.dependencyIdentity.index()));
+  if (const auto *file =
+          std::get_if<ExplicitFileDependency>(&input.dependencyIdentity)) {
+    const auto digest = file->contentSha256.bytes();
+    appendBytes(key,
+                llvm::ArrayRef<std::uint8_t>(digest.data(), digest.size()));
+    return;
+  }
+  const auto &bundled =
+      std::get<ToolBundledResourceDependency>(input.dependencyIdentity);
+  appendString(key, bundled.stableProviderBuildIdentity);
+  appendString(key, bundled.resourceKey);
+}
+
+void appendEncodingRelationKey(std::vector<std::uint8_t> &key,
+                               const ConfigurationEncodingRelation &relation) {
+  appendU32(key, static_cast<std::uint32_t>(relation.semanticEncoding.index()));
+  std::visit(
+      [&](const auto &encoding) {
+        appendU64(key, encoding.encodedBitCount);
+        using Encoding = std::decay_t<decltype(encoding)>;
+        if constexpr (std::is_same_v<Encoding, FiniteCodebookEncoding>) {
+          appendU64(key, encoding.entries.size());
+          for (const FiniteCodebookEntry &entry : encoding.entries) {
+            appendBytes(key, entry.semanticValue);
+            appendBytes(key, entry.physicalCode);
+          }
+        }
+      },
+      relation.semanticEncoding);
+  appendBytes(key, relation.inactiveValue);
+}
+
+void appendImplementationPlatformKey(
+    std::vector<std::uint8_t> &key,
+    const platform::ImplementationPlatform *implementationPlatform) {
+  appendU32(key, implementationPlatform ? 1 : 0);
+  if (!implementationPlatform)
+    return;
+
+  const platform::ImplementationTarget &target =
+      implementationPlatform->target();
+  appendU32(key, static_cast<std::uint32_t>(target.index()));
+  std::visit(
+      [&](const auto &value) {
+        using Target = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<Target, platform::AsicTarget>) {
+          appendString(key, value.technologyIdentity);
+          appendString(key, value.releaseIdentity);
+        } else {
+          appendU32(key, static_cast<std::uint32_t>(value.vendor));
+          appendString(key, value.deviceOrderingCode);
+        }
+      },
+      target);
+
+  appendU64(key, implementationPlatform->technologyCorners().size());
+  for (const platform::TechnologyCorner &corner :
+       implementationPlatform->technologyCorners()) {
+    appendU64(key, corner.id.value());
+    appendString(key, corner.key);
+  }
+}
+
+llvm::Expected<std::vector<std::uint8_t>> implementationKey(
+    SpecializationJob &job, const ConfigurationABI &configurationAbi,
+    const platform::ImplementationPlatform *implementationPlatform) {
+  std::vector<std::uint8_t> key;
+  const fabric::ResolvedFabricOpCapabilityView &capability = *job.capability;
+
+  // Registration identity is the registry's closed, unique family/recipe key.
+  appendU32(key,
+            static_cast<std::uint32_t>(job.provider->implementationFamily));
+  appendU32(key, static_cast<std::uint32_t>(job.provider->recipe));
+  appendString(key, job.provider->externalImplementationContractRef);
+  appendU32(key, static_cast<std::uint32_t>(job.recipe));
+
+  // Project owner-qualified references out of the immutable capability view.
+  // Occurrence ownership is accumulated separately in provider output.
+  appendU32(key, static_cast<std::uint32_t>(capability.implementationFamily));
+  appendString(key,
+               printed(::fabric::getFamilyCapabilityParamsAttr(
+                   job.leaf.getContext(), capability.parameterizedCapability)));
+  appendU64(key, capability.enabledOperationSchemas.size());
+  for (::dataflow::OperationSchemaId schema :
+       capability.enabledOperationSchemas)
+    appendU32(key, static_cast<std::uint32_t>(schema));
+
+  appendU64(key, capability.physicalPorts.size());
+  for (const fabric::ResolvedFabricOpPhysicalPortView &port :
+       capability.physicalPorts) {
+    appendU32(key, static_cast<std::uint32_t>(port.reference.direction));
+    appendU64(key, port.reference.ordinal);
+    appendU32(key, port.payloadWidthBits);
+    appendBytes(key, port.canonicalType);
+  }
+
+  appendU64(key, capability.configurationFieldSchema.size());
+  for (const fabric::FabricSemanticConfigFieldRef &field :
+       capability.configurationFieldSchema) {
+    appendU64(key, field.ordinal);
+    const ConfigurationEncodingRelation *relation =
+        configurationAbi.findOperationEncodingRelation(job.occurrence,
+                                                       field.ordinal);
+    if (!relation)
+      return invalid("operation configuration relation is unresolved");
+    appendEncodingRelationKey(key, *relation);
+  }
+
+  auto resource = ::fabric::encodeResourceContractRecord(
+      capability.resourceStateAndTimingContract);
+  if (!resource)
+    return resource.takeError();
+  appendBytes(key, *resource);
+  appendU64(key, capability.physicalRefinementDomains.size());
+  for (const fabric::FabricPhysicalRefinementDomainRef &domain :
+       capability.physicalRefinementDomains)
+    appendU64(key, domain.ordinal);
+
+  appendString(key, printed(job.leaf.getHWModuleType()));
+  appendString(key, printed(job.leaf.getParametersAttr()));
+
+  std::vector<ExternalInputBinding> inputs(job.externalInputs.begin(),
+                                           job.externalInputs.end());
+  llvm::sort(inputs, externalInputLess);
+  appendU64(key, inputs.size());
+  for (const ExternalInputBinding &input : inputs)
+    appendExternalInputKey(key, input);
+  appendImplementationPlatformKey(key, implementationPlatform);
+  return key;
 }
 
 bool sameExternalInputs(llvm::ArrayRef<ExternalInputBinding> lhs,
@@ -133,6 +339,11 @@ mlir::ArrayAttr parametersOf(mlir::Operation *operation) {
 llvm::Error
 validateProviderOutput(const SpecializationJob &job,
                        const FabricOperationProviderOutput &output) {
+  for (const ActivityPoint &point : output.activityPoints)
+    if (point.semanticFabricRef && *point.semanticFabricRef != job.occurrence)
+      return invalid("provider activity point has foreign occurrence "
+                     "ownership");
+
   const llvm::StringRef contract =
       job.provider->externalImplementationContractRef;
   if (contract.empty()) {
@@ -151,6 +362,8 @@ validateProviderOutput(const SpecializationJob &job,
     return invalid("external provider produced no implementation binding");
   for (const ExternalImplementationBindingDraft &binding :
        output.externalImplementationBindings) {
+    if (!binding.fabricResourceRefs.empty())
+      return invalid("provider output introduced occurrence ownership");
     if (binding.providerContractRef != contract)
       return invalid("provider output changed the external contract ref");
     if (!sameExternalInputs(binding.externalInputs, job.externalInputs))
@@ -251,9 +464,9 @@ llvm::Expected<PreparedSpecialization> prepareSpecialization(
       job.provider->externalImplementationContractRef, job.externalInputs});
   if (!output)
     return output.takeError();
-  addOccurrenceRelation(job, *output);
   if (llvm::Error error = validateProviderOutput(job, *output))
     return std::move(error);
+  addOccurrenceRelation(job, *output);
   if (llvm::Error error = validatePreparedFragment(job, *fragment, *output))
     return std::move(error);
   return PreparedSpecialization{&job, std::move(fragment), std::move(*output)};
@@ -261,45 +474,253 @@ llvm::Expected<PreparedSpecialization> prepareSpecialization(
 
 llvm::Error
 validateSymbolClosure(mlir::ModuleOp module,
-                      llvm::ArrayRef<PreparedSpecialization> specializations) {
+                      const PreparedSpecialization &specialization) {
   std::map<std::string, std::string> materializedSymbols;
-  for (const PreparedSpecialization &specialization : specializations) {
-    mlir::ModuleOp fragment = specialization.fragment.get();
-    for (mlir::Operation &operation : *fragment.getBody()) {
-      if (llvm::isa<circt::hw::HWGeneratorSchemaOp>(operation))
-        continue;
-      const std::string symbol =
-          mlir::SymbolTable::getSymbolName(&operation).getValue().str();
-      if (!materializedSymbols.emplace(symbol, specialization.job->leafSymbol)
-               .second)
-        return invalid("provider fragments contain a duplicate symbol");
-      mlir::Operation *existing = module.lookupSymbol(symbol);
-      if (existing && existing != specialization.job->leaf.getOperation())
-        return invalid("provider fragment symbol collides with the common "
-                       "skeleton");
-    }
+  mlir::ModuleOp fragment = specialization.fragment.get();
+  for (mlir::Operation &operation : *fragment.getBody()) {
+    if (llvm::isa<circt::hw::HWGeneratorSchemaOp>(operation))
+      continue;
+    const std::string symbol =
+        mlir::SymbolTable::getSymbolName(&operation).getValue().str();
+    if (!materializedSymbols.emplace(symbol, specialization.job->leafSymbol)
+             .second)
+      return invalid("provider fragment contains a duplicate symbol");
+    mlir::Operation *existing = module.lookupSymbol(symbol);
+    if (existing && existing != specialization.job->leaf.getOperation())
+      return invalid("provider fragment symbol collides with the common "
+                     "skeleton");
   }
   return llvm::Error::success();
 }
 
-llvm::Error
-applySpecializations(mlir::ModuleOp module,
-                     llvm::ArrayRef<PreparedSpecialization> specializations) {
-  for (const PreparedSpecialization &specialization : specializations) {
-    auto leaf = module.lookupSymbol<circt::hw::HWModuleGeneratedOp>(
-        specialization.job->leafSymbol);
-    if (!leaf)
-      return invalid("prepared operation leaf is absent from working module");
-    mlir::OpBuilder builder(leaf.getContext());
-    builder.setInsertionPoint(leaf);
-    mlir::ModuleOp fragment = specialization.fragment.get();
-    for (mlir::Operation &operation : *fragment.getBody()) {
-      if (!llvm::isa<circt::hw::HWGeneratorSchemaOp>(operation))
-        builder.clone(operation);
+void rollbackSpecializations(
+    llvm::MutableArrayRef<AppliedSpecialization> specializations) noexcept {
+  for (AppliedSpecialization &specialization : llvm::reverse(specializations)) {
+    assert(specialization.originalLeaf && specialization.originalBlock &&
+           "specialization rollback lost its original leaf");
+    for (RetargetedInstance &retarget : specialization.retargetedInstances) {
+      retarget.instance.setModuleName(retarget.moduleName);
+      retarget.instance.setArgNamesAttr(retarget.argumentNames);
+      retarget.instance.setResultNamesAttr(retarget.resultNames);
     }
-    leaf.erase();
+    mlir::Operation *leaf = specialization.originalLeaf.release();
+    if (!specialization.replacements.empty()) {
+      mlir::Operation *firstReplacement = specialization.replacements.front();
+      firstReplacement->getBlock()->getOperations().insert(
+          firstReplacement->getIterator(), leaf);
+    } else if (specialization.originalSuccessor &&
+               specialization.originalSuccessor->getBlock() ==
+                   specialization.originalBlock) {
+      specialization.originalBlock->getOperations().insert(
+          specialization.originalSuccessor->getIterator(), leaf);
+    } else {
+      specialization.originalBlock->getOperations().push_back(leaf);
+    }
+    for (mlir::Operation *replacement :
+         llvm::reverse(specialization.replacements))
+      replacement->erase();
+  }
+}
+
+llvm::Expected<AppliedSpecialization>
+applySpecialization(mlir::ModuleOp module,
+                    PreparedSpecialization &specialization) {
+  auto leaf = module.lookupSymbol<circt::hw::HWModuleGeneratedOp>(
+      specialization.job->leafSymbol);
+  if (!leaf)
+    return invalid("prepared operation leaf is absent from working module");
+  AppliedSpecialization change;
+  mlir::ModuleOp fragment = specialization.fragment.get();
+  const bool hasConcreteModule =
+      llvm::any_of(*fragment.getBody(), [](mlir::Operation &operation) {
+        return !llvm::isa<circt::hw::HWGeneratorSchemaOp>(operation);
+      });
+  if (!hasConcreteModule)
+    return invalid("prepared provider fragment has no concrete module");
+  mlir::Block *block = leaf->getBlock();
+  mlir::Operation *successor = leaf->getNextNode();
+  change.originalBlock = block;
+  change.originalSuccessor = successor;
+  leaf->remove();
+  change.originalLeaf =
+      mlir::OwningOpRef<mlir::Operation *>(leaf.getOperation());
+  mlir::OpBuilder builder(leaf.getContext());
+  if (successor)
+    builder.setInsertionPoint(successor);
+  else
+    builder.setInsertionPointToEnd(block);
+  for (mlir::Operation &operation : *fragment.getBody()) {
+    if (!llvm::isa<circt::hw::HWGeneratorSchemaOp>(operation))
+      change.replacements.push_back(builder.clone(operation));
+  }
+  specialization.fragment = nullptr;
+  return change;
+}
+
+llvm::Expected<AppliedSpecialization> applySharedImplementationReference(
+    mlir::ModuleOp module, const SpecializationJob &job,
+    llvm::StringRef sharedSymbol,
+    llvm::ArrayRef<circt::hw::InstanceOp> instances) {
+  auto leaf =
+      module.lookupSymbol<circt::hw::HWModuleGeneratedOp>(job.leafSymbol);
+  if (!leaf)
+    return invalid("reused operation leaf is absent from working module");
+  mlir::Operation *sharedOperation = module.lookupSymbol(sharedSymbol);
+  auto shared =
+      llvm::dyn_cast_or_null<circt::hw::HWModuleLike>(sharedOperation);
+  if (!shared)
+    return invalid("shared provider implementation is absent");
+  if (shared.getHWModuleType() != leaf.getHWModuleType() ||
+      parametersOf(sharedOperation) != leaf.getParametersAttr())
+    return invalid("shared provider implementation changed its module "
+                   "contract");
+
+  AppliedSpecialization change;
+  change.originalBlock = leaf->getBlock();
+  change.originalSuccessor = leaf->getNextNode();
+  for (circt::hw::InstanceOp instance : instances) {
+    change.retargetedInstances.push_back({instance, leaf.getSymNameAttr(),
+                                          instance.getArgNamesAttr(),
+                                          instance.getResultNamesAttr()});
+    instance.setModuleName(shared.getModuleNameAttr());
+  }
+  leaf->remove();
+  change.originalLeaf =
+      mlir::OwningOpRef<mlir::Operation *>(leaf.getOperation());
+  return change;
+}
+
+std::string normalizedInternalModuleKey(circt::hw::HWModuleOp shell) {
+  mlir::OwningOpRef<mlir::Operation *> clone(shell->clone());
+  auto normalized = llvm::cast<circt::hw::HWModuleOp>(clone.get());
+  normalized->setAttr(
+      mlir::SymbolTable::getSymbolAttrName(),
+      mlir::StringAttr::get(shell.getContext(), "operation_shell"));
+  llvm::SmallVector<mlir::Attribute> portNames;
+  portNames.reserve(normalized.getNumPorts());
+  for (std::size_t port = 0; port != normalized.getNumPorts(); ++port)
+    portNames.push_back(mlir::StringAttr::get(shell.getContext(),
+                                              "port_" + std::to_string(port)));
+  normalized.setAllPortNames(portNames);
+  std::string key;
+  llvm::raw_string_ostream stream(key);
+  mlir::Type(normalized.getHWModuleType()).print(stream);
+  stream << '\n';
+  mlir::OpPrintingFlags flags;
+  flags.printGenericOpForm();
+  normalized.print(stream, flags);
+  stream.flush();
+  return key;
+}
+
+llvm::Expected<AppliedSpecialization> applySharedInternalModuleReference(
+    circt::hw::HWModuleOp shell, circt::hw::HWModuleOp shared,
+    llvm::ArrayRef<circt::hw::InstanceOp> instances) {
+  const auto shellPorts = shell.getPortList();
+  const auto sharedPortList = shared.getPortList();
+  if (shellPorts.size() != sharedPortList.size() ||
+      shell.getParametersAttr() != shared.getParametersAttr() ||
+      !llvm::all_of(
+          llvm::zip_equal(shellPorts, sharedPortList), [](const auto &ports) {
+            const auto &[lhs, rhs] = ports;
+            return lhs.isOutput() == rhs.isOutput() && lhs.type == rhs.type;
+          }))
+    return invalid("shared internal module changed its contract");
+
+  circt::hw::ModulePortInfo sharedPorts(shared.getPortList());
+  llvm::SmallVector<mlir::Attribute> argumentNames;
+  llvm::SmallVector<mlir::Attribute> resultNames;
+  for (const circt::hw::PortInfo &port : sharedPorts.getInputs())
+    argumentNames.push_back(
+        mlir::StringAttr::get(shell.getContext(), port.getName()));
+  for (const circt::hw::PortInfo &port : sharedPorts.getOutputs())
+    resultNames.push_back(
+        mlir::StringAttr::get(shell.getContext(), port.getName()));
+  const mlir::ArrayAttr sharedArgumentNames =
+      mlir::ArrayAttr::get(shell.getContext(), argumentNames);
+  const mlir::ArrayAttr sharedResultNames =
+      mlir::ArrayAttr::get(shell.getContext(), resultNames);
+
+  AppliedSpecialization change;
+  change.originalBlock = shell->getBlock();
+  change.originalSuccessor = shell->getNextNode();
+  for (circt::hw::InstanceOp instance : instances) {
+    change.retargetedInstances.push_back({instance, shell.getSymNameAttr(),
+                                          instance.getArgNamesAttr(),
+                                          instance.getResultNamesAttr()});
+    instance.setModuleName(shared.getModuleNameAttr());
+    instance.setArgNamesAttr(sharedArgumentNames);
+    instance.setResultNamesAttr(sharedResultNames);
+  }
+  shell->remove();
+  change.originalLeaf =
+      mlir::OwningOpRef<mlir::Operation *>(shell.getOperation());
+  return change;
+}
+
+llvm::Error internInternalModules(
+    llvm::ArrayRef<circt::hw::HWModuleOp> shells,
+    const std::map<std::string, std::vector<circt::hw::InstanceOp>>
+        &instancesByModule,
+    std::vector<AppliedSpecialization> &applied) {
+  std::map<std::string, circt::hw::HWModuleOp> definitions;
+  for (circt::hw::HWModuleOp shell : shells) {
+    const std::string key = normalizedInternalModuleKey(shell);
+    auto [definition, inserted] = definitions.emplace(key, shell);
+    if (inserted)
+      continue;
+    const auto instances = instancesByModule.find(shell.getSymName().str());
+    auto change = applySharedInternalModuleReference(
+        shell, definition->second,
+        instances == instancesByModule.end()
+            ? llvm::ArrayRef<circt::hw::InstanceOp>{}
+            : llvm::ArrayRef(instances->second));
+    if (!change)
+      return change.takeError();
+    applied.push_back(std::move(*change));
   }
   return llvm::Error::success();
+}
+
+std::vector<circt::hw::HWModuleOp>
+parentModulesOf(llvm::ArrayRef<circt::hw::HWModuleOp> modules,
+                const std::map<std::string, std::vector<circt::hw::InstanceOp>>
+                    &instancesByModule) {
+  std::vector<circt::hw::HWModuleOp> result;
+  std::set<mlir::Operation *> seen;
+  for (circt::hw::HWModuleOp module : modules) {
+    const auto instances = instancesByModule.find(module.getSymName().str());
+    if (instances == instancesByModule.end())
+      continue;
+    for (circt::hw::InstanceOp instance : instances->second) {
+      auto parent = instance->getParentOfType<circt::hw::HWModuleOp>();
+      if (parent && seen.insert(parent.getOperation()).second)
+        result.push_back(parent);
+    }
+  }
+  llvm::sort(result, [](circt::hw::HWModuleOp lhs, circt::hw::HWModuleOp rhs) {
+    return lhs.getSymName() < rhs.getSymName();
+  });
+  return result;
+}
+
+FabricOperationProviderOutput occurrenceRelationsForReuse(
+    const SharedProviderImplementation &shared,
+    const fabric::FabricPhysicalOccurrenceOwnerRef &occurrence) {
+  FabricOperationProviderOutput output;
+  for (const ActivityPoint &point : shared.activityPoints) {
+    if (!point.semanticFabricRef ||
+        *point.semanticFabricRef != shared.canonicalOccurrence)
+      continue;
+    ActivityPoint projected = point;
+    projected.semanticFabricRef = occurrence;
+    output.activityPoints.push_back(std::move(projected));
+  }
+  output.externalImplementationBindings = shared.externalImplementationBindings;
+  for (ExternalImplementationBindingDraft &binding :
+       output.externalImplementationBindings)
+    binding.fabricResourceRefs = {occurrence};
+  return output;
 }
 
 bool sameLocatorSet(llvm::ArrayRef<RepresentationLocator> lhs,
@@ -478,10 +899,19 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
     llvm::ArrayRef<FabricOperationRecipeBinding> operationRecipes,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
-    const platform::ImplementationPlatform *implementationPlatform) {
-  if (llvm::Error error = verifyCommonCirctSkeleton(
-          module, configurationAbi.abi(), operationLeaves))
-    return error;
+    const platform::ImplementationPlatform *implementationPlatform,
+    llvm::StringRef materializationKey) {
+  {
+    RtlMaterializationStageTracker inputVerify("specialization_input_verify",
+                                               materializationKey, module);
+    if (llvm::Error error = verifyCommonCirctSkeleton(
+            module, configurationAbi.abi(), operationLeaves))
+      return error;
+    inputVerify.finish(module);
+  }
+
+  RtlMaterializationStageTracker preflight(
+      "specialization_preflight_job_closure", materializationKey, module);
 
   std::map<std::vector<std::uint8_t>, const FabricOperationRecipeBinding *>
       recipes;
@@ -502,13 +932,22 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
   if (recipes.size() != operationLeaves.size())
     return invalid("recipe bindings do not cover every operation leaf");
 
-  std::vector<SpecializationJob> jobs;
-  jobs.reserve(operationLeaves.size());
+  std::vector<OrderedOperationLeaf> orderedLeaves;
+  orderedLeaves.reserve(operationLeaves.size());
   for (const FabricOperationLeafAssociation &association : operationLeaves) {
+    orderedLeaves.push_back(OrderedOperationLeaf{
+        fabric::canonicalFabricBytes(association.occurrence), &association});
+  }
+  llvm::sort(orderedLeaves, [](const OrderedOperationLeaf &lhs,
+                               const OrderedOperationLeaf &rhs) {
+    return lhs.occurrenceKey < rhs.occurrenceKey;
+  });
+
+  const auto resolveJob = [&](const OrderedOperationLeaf &ordered)
+      -> llvm::Expected<SpecializationJob> {
+    const FabricOperationLeafAssociation &association = *ordered.association;
     circt::hw::HWModuleGeneratedOp leaf = association.module;
-    std::vector<std::uint8_t> occurrenceKey =
-        fabric::canonicalFabricBytes(association.occurrence);
-    auto recipe = recipes.find(occurrenceKey);
+    auto recipe = recipes.find(ordered.occurrenceKey);
     if (recipe == recipes.end())
       return invalid("recipe bindings do not match the operation leaves");
     auto operation = resolveFabricPhysicalOperation(
@@ -533,42 +972,150 @@ llvm::Expected<FabricOperationProviderOutput> specializeFabricOperationLeaves(
         return canonicalInputs.takeError();
       externalInputs = std::move(*canonicalInputs);
     }
-    jobs.push_back(SpecializationJob{
-        std::move(occurrenceKey), leaf, leaf.getSymName().str(),
-        association.occurrence, operation->localOccurrence, capability,
-        provider, std::move(externalInputs), recipe->second->recipe});
-  }
+    return SpecializationJob{
+        leaf,     leaf.getSymName().str(),   association.occurrence, capability,
+        provider, std::move(externalInputs), recipe->second->recipe};
+  };
 
-  llvm::sort(jobs,
-             [](const SpecializationJob &lhs, const SpecializationJob &rhs) {
-               return lhs.occurrenceKey < rhs.occurrenceKey;
+  for (const OrderedOperationLeaf &ordered : orderedLeaves) {
+    auto job = resolveJob(ordered);
+    if (!job)
+      return job.takeError();
+    auto key =
+        implementationKey(*job, configurationAbi.abi(), implementationPlatform);
+    if (!key)
+      return key.takeError();
+  }
+  preflight.finish(module);
+
+  FabricOperationProviderOutput output;
+  std::vector<AppliedSpecialization> applied;
+  applied.reserve(orderedLeaves.size());
+  std::map<std::vector<std::uint8_t>, SharedProviderImplementation>
+      implementations;
+  bool committed = false;
+  llvm::scope_exit transactionOutcome([&] {
+    RtlMaterializationStageTracker outcome(
+        committed ? "specialization_commit" : "specialization_rollback",
+        materializationKey, module);
+    if (!committed)
+      rollbackSpecializations(applied);
+    outcome.finish(module);
+  });
+
+  RtlMaterializationStageTracker leafTransactions(
+      "specialization_leaf_prepare_validate_apply_release_intern",
+      materializationKey, module);
+  std::map<std::string, std::vector<circt::hw::InstanceOp>> instancesByModule;
+  module.walk([&](circt::hw::InstanceOp instance) {
+    instancesByModule[instance.getModuleName().str()].push_back(instance);
+  });
+  std::vector<circt::hw::HWModuleOp> operationShells;
+  std::set<mlir::Operation *> seenShells;
+  for (const OrderedOperationLeaf &ordered : orderedLeaves) {
+    circt::hw::HWModuleGeneratedOp leaf = ordered.association->module;
+    const std::string symbol = leaf.getSymName().str();
+    const auto instances = instancesByModule.find(symbol);
+    if (instances == instancesByModule.end())
+      continue;
+    for (circt::hw::InstanceOp instance : instances->second) {
+      auto shell = instance->getParentOfType<circt::hw::HWModuleOp>();
+      if (shell && seenShells.insert(shell.getOperation()).second)
+        operationShells.push_back(shell);
+    }
+  }
+  llvm::sort(operationShells,
+             [](circt::hw::HWModuleOp lhs, circt::hw::HWModuleOp rhs) {
+               return lhs.getSymName() < rhs.getSymName();
              });
-  std::vector<PreparedSpecialization> prepared;
-  prepared.reserve(jobs.size());
-  for (SpecializationJob &job : jobs) {
-    auto specialization = prepareSpecialization(job, configurationAbi.abi(),
+  const std::vector<circt::hw::HWModuleOp> fuModules =
+      parentModulesOf(operationShells, instancesByModule);
+  const std::vector<circt::hw::HWModuleOp> peModules =
+      parentModulesOf(fuModules, instancesByModule);
+  for (const OrderedOperationLeaf &ordered : orderedLeaves) {
+    auto job = resolveJob(ordered);
+    if (!job)
+      return job.takeError();
+    auto key =
+        implementationKey(*job, configurationAbi.abi(), implementationPlatform);
+    if (!key)
+      return key.takeError();
+
+    auto shared = implementations.find(*key);
+    if (shared != implementations.end()) {
+      const auto instances = instancesByModule.find(job->leafSymbol);
+      auto change = applySharedImplementationReference(
+          module, *job, shared->second.symbol,
+          instances == instancesByModule.end()
+              ? llvm::ArrayRef<circt::hw::InstanceOp>{}
+              : llvm::ArrayRef(instances->second));
+      if (!change)
+        return change.takeError();
+      applied.push_back(std::move(*change));
+      FabricOperationProviderOutput relations =
+          occurrenceRelationsForReuse(shared->second, job->occurrence);
+      if (llvm::Error error = appendOutput(output, std::move(relations)))
+        return std::move(error);
+      continue;
+    }
+
+    auto specialization = prepareSpecialization(*job, configurationAbi.abi(),
                                                 implementationPlatform);
     if (!specialization)
       return specialization.takeError();
-    prepared.push_back(std::move(*specialization));
-  }
-  if (llvm::Error error = validateSymbolClosure(module, prepared))
-    return std::move(error);
-
-  FabricOperationProviderOutput output;
-  for (PreparedSpecialization &specialization : prepared)
-    if (llvm::Error error =
-            appendOutput(output, std::move(specialization.output)))
+    if (llvm::Error error = validateSymbolClosure(module, *specialization))
       return std::move(error);
-  mlir::OwningOpRef<mlir::ModuleOp> working(
-      llvm::cast<mlir::ModuleOp>(module->clone()));
-  if (llvm::Error error = applySpecializations(*working, prepared))
-    return std::move(error);
-  if (llvm::Error error = verifySpecializedCirctModule(*working))
-    return std::move(error);
 
-  module->setAttrs((*working)->getAttrs());
-  module.getBodyRegion().takeBody(working->getBodyRegion());
+    SharedProviderImplementation implementation{
+        job->leafSymbol, job->occurrence, specialization->output.activityPoints,
+        specialization->output.externalImplementationBindings};
+    auto change = applySpecialization(module, *specialization);
+    if (!change)
+      return change.takeError();
+    applied.push_back(std::move(*change));
+    if (llvm::Error error =
+            appendOutput(output, std::move(specialization->output)))
+      return std::move(error);
+    implementations.emplace(std::move(*key), std::move(implementation));
+  }
+  leafTransactions.finish(module);
+
+  {
+    RtlMaterializationStageTracker shellIntern(
+        "specialization_operation_shell_intern", materializationKey, module);
+    if (llvm::Error error =
+            internInternalModules(operationShells, instancesByModule, applied))
+      return std::move(error);
+    shellIntern.finish(module);
+  }
+
+  {
+    RtlMaterializationStageTracker fuIntern("specialization_fu_module_intern",
+                                            materializationKey, module);
+    if (llvm::Error error =
+            internInternalModules(fuModules, instancesByModule, applied))
+      return std::move(error);
+    fuIntern.finish(module);
+  }
+
+  {
+    RtlMaterializationStageTracker peIntern("specialization_pe_module_intern",
+                                            materializationKey, module);
+    if (llvm::Error error =
+            internInternalModules(peModules, instancesByModule, applied))
+      return std::move(error);
+    peIntern.finish(module);
+  }
+
+  {
+    RtlMaterializationStageTracker finalVerify(
+        "specialization_symbol_final_verify", materializationKey, module);
+    if (llvm::Error error = verifySpecializedCirctModule(module))
+      return std::move(error);
+    finalVerify.finish(module);
+  }
+  committed = true;
+  applied.clear();
   return output;
 }
 
