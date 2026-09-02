@@ -16,6 +16,7 @@
 #include "llvm/Support/Path.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -436,15 +437,11 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     return llvm::Error::success();
   };
   const auto makeRepairRequest =
-      [&](std::string journalRoot, std::uint64_t planOrdinal,
-          std::optional<std::uint64_t> remainingProbeLimit = std::nullopt)
-      -> dse::JointHardwareReopenRequest {
+      [&](std::string journalRoot,
+          std::uint64_t planOrdinal) -> dse::JointHardwareReopenRequest {
     std::optional<dse::JointBoundedQualityPolicy> boundedQuality =
         detail::rebaseApplicationBoundedQualityPolicy(request.boundedQuality,
                                                       planOrdinal);
-    if (boundedQuality && remainingProbeLimit)
-      boundedQuality->maximumHardwareRepairProbes = std::min(
-          boundedQuality->maximumHardwareRepairProbes, *remainingProbeLimit);
     dse::JointHardwareReopenRequest repairRequest{
         request.producer,
         std::move(journalRoot),
@@ -455,6 +452,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         std::nullopt,
         request.siteCapacity,
         request.executionPolicy};
+    repairRequest.hardwareExplorationScope = request.hardwareExplorationScope;
+    if (request.mappingRepairCandidateLimit)
+      repairRequest.maximumMappingRepairCandidates =
+          *request.mappingRepairCandidateLimit;
     repairRequest.invocationSemanticInputs = invocationSemanticInputs;
     return repairRequest;
   };
@@ -477,6 +478,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::optional<dse::JointDesignExecution> selectedExecution;
   std::size_t firstPlan = 0;
   while (firstPlan < plans.size()) {
+    const auto mappingStart = std::chrono::steady_clock::now();
     auto execution = executeTail(firstPlan);
     if (!execution)
       return execution.takeError();
@@ -574,6 +576,14 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         *runtimeMapping);
     if (!runtime)
       return runtime.takeError();
+    // The parent's own Mapping and runtime validation wall time, measured
+    // from the joint execution start through the replay, is the cost estimate
+    // of one hardware child; the runtime witness repair reserves it per
+    // admitted child before Mapping repair may dispatch.
+    const std::uint64_t parentCostNanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - mappingStart)
+            .count());
     bool joined = false;
     for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
       if (outcome.planOrdinal != selectedPlanOrdinal ||
@@ -607,110 +617,51 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     }
     std::vector<ArtifactRootReference> repairSystems;
     std::vector<dse::JointDesignExecution> repairExecutions;
-    const auto appendRepairExecutions = [&](auto &repaired) -> llvm::Error {
-      if (repaired->childSystems.size() != repaired->executions.size())
-        return invalid("hardware repair lost its child System domain");
-      repairSystems.insert(repairSystems.end(), repaired->childSystems.begin(),
-                           repaired->childSystems.end());
-      for (dse::JointDesignExecution &child : repaired->executions)
-        repairExecutions.push_back(std::move(child));
-      return llvm::Error::success();
-    };
     if (runtime->disposition !=
-            ApplicationMappingRuntimeDisposition::Completed &&
-        remainingSharedHardwareRepairProbes() != 0 &&
-        runtime->spatialTransportFeedback &&
-        runtime->spatialTransportFeedback->disposition ==
-            dse::SpatialTransportRuntimeFeedbackDisposition::Exact) {
-      llvm::SmallString<256> feedbackJournal(request.journalRoot);
-      llvm::sys::path::append(feedbackJournal,
-                              "transport-runtime-feedback-" +
+        ApplicationMappingRuntimeDisposition::Completed) {
+      // One witness set, two separately budgeted repair families: Mapping
+      // repair spends its own candidates inside the window that remains after
+      // the hardware reservation; hardware children spend only the shared
+      // probe ledger of this invocation.
+      llvm::SmallString<256> witnessJournal(request.journalRoot);
+      llvm::sys::path::append(witnessJournal,
+                              "runtime-witness-repair-" +
                                   std::to_string(selectedPlanOrdinal));
-      auto repaired = dse::executeSpatialTransportRuntimeRepair(
+      std::optional<std::uint64_t> remainingHardwareProbes;
+      if (request.boundedQuality)
+        remainingHardwareProbes = remainingSharedHardwareRepairProbes();
+      auto repaired = dse::executeJointRuntimeWitnessRepair(
           prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-          prepared.jointPolicy, *runtime->spatialTransportFeedback,
-          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
-                            remainingSharedHardwareRepairProbes()),
+          prepared.jointPolicy,
+          {runtime->spatialTransportFeedback, runtime->spatialFifoFeedback,
+           runtime->spatialOperandQueueFeedback},
+          parentCostNanoseconds, remainingHardwareProbes,
+          makeRepairRequest(witnessJournal.str().str(), selectedPlanOrdinal),
           artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
+      const dse::JointRepairWorkLedger &mappingRepair =
+          repaired->mappingRepairLedger;
       addSaturated(spatialMappingRepairCandidateLimit,
-                   repaired->candidateLimit);
-      addSaturated(spatialMappingRepairsPlanned, repaired->candidatesPlanned);
-      addSaturated(spatialMappingRepairsReserved, repaired->candidatesReserved);
-      addSaturated(spatialMappingRepairsConsumed, repaired->candidatesConsumed);
-      addSaturated(spatialMappingRepairsRejected, repaired->candidatesRejected);
-      addSaturated(spatialMappingRepairsCancelled,
-                   repaired->candidatesCancelled);
+                   mappingRepair.candidateLimit);
+      addSaturated(spatialMappingRepairsPlanned, mappingRepair.planned);
+      addSaturated(spatialMappingRepairsReserved, mappingRepair.reserved);
+      addSaturated(spatialMappingRepairsConsumed, mappingRepair.consumed);
+      addSaturated(spatialMappingRepairsRejected, mappingRepair.rejected);
+      addSaturated(spatialMappingRepairsCancelled, mappingRepair.cancelled);
+      const dse::JointRepairWorkLedger &hardwareReopen =
+          repaired->hardwareReopenLedger;
+      addSaturated(hardwareRepairProbeLimit, hardwareReopen.candidateLimit);
+      addSaturated(hardwareRepairProbesPlanned, hardwareReopen.planned);
+      addSaturated(hardwareRepairProbesReserved, hardwareReopen.reserved);
+      addSaturated(hardwareRepairProbesConsumed, hardwareReopen.consumed);
+      addSaturated(hardwareRepairProbesRejected, hardwareReopen.rejected);
+      addSaturated(hardwareRepairProbesCancelled, hardwareReopen.cancelled);
       if (llvm::Error error =
-              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
+              reserveSharedHardwareRepairProbes(hardwareReopen.reserved))
         return std::move(error);
-      if (llvm::Error error = appendRepairExecutions(repaired))
-        return std::move(error);
-    }
-    if (runtime->disposition !=
-            ApplicationMappingRuntimeDisposition::Completed &&
-        remainingSharedHardwareRepairProbes() != 0 &&
-        runtime->spatialFifoFeedback &&
-        runtime->spatialFifoFeedback->disposition ==
-            dse::SpatialFifoRuntimeFeedbackDisposition::Exact) {
-      llvm::SmallString<256> feedbackJournal(request.journalRoot);
-      llvm::sys::path::append(feedbackJournal,
-                              "fifo-runtime-feedback-" +
-                                  std::to_string(selectedPlanOrdinal));
-      auto repaired = dse::executeSpatialFifoHardwareFeedbackReopen(
-          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-          prepared.jointPolicy, *runtime->spatialFifoFeedback,
-          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
-                            remainingSharedHardwareRepairProbes()),
-          artifacts, blobs);
-      if (!repaired)
-        return repaired.takeError();
-      addSaturated(hardwareRepairProbeLimit, repaired->candidateLimit);
-      addSaturated(hardwareRepairProbesPlanned, repaired->candidatesPlanned);
-      addSaturated(hardwareRepairProbesReserved, repaired->candidatesReserved);
-      addSaturated(hardwareRepairProbesConsumed, repaired->candidatesConsumed);
-      addSaturated(hardwareRepairProbesRejected, repaired->candidatesRejected);
-      addSaturated(hardwareRepairProbesCancelled,
-                   repaired->candidatesCancelled);
-      if (llvm::Error error =
-              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
-        return std::move(error);
-      if (llvm::Error error = appendRepairExecutions(repaired))
-        return std::move(error);
-    }
-    if (runtime->disposition !=
-            ApplicationMappingRuntimeDisposition::Completed &&
-        remainingSharedHardwareRepairProbes() != 0 &&
-        request.hardwareExplorationScope ==
-            dse::JointHardwareExplorationScope::BoundedHardwareReopen &&
-        runtime->spatialOperandQueueFeedback &&
-        runtime->spatialOperandQueueFeedback->disposition ==
-            dse::SpatialOperandQueueRuntimeFeedbackDisposition::Exact) {
-      llvm::SmallString<256> feedbackJournal(request.journalRoot);
-      llvm::sys::path::append(feedbackJournal,
-                              "operand-buffer-runtime-feedback-" +
-                                  std::to_string(selectedPlanOrdinal));
-      auto repaired = dse::executeSpatialOperandBufferHardwareFeedbackReopen(
-          prepared.mappingAlternatives[selectedPlanOrdinal].plan, *execution,
-          prepared.jointPolicy, *runtime->spatialOperandQueueFeedback,
-          makeRepairRequest(feedbackJournal.str().str(), selectedPlanOrdinal,
-                            remainingSharedHardwareRepairProbes()),
-          artifacts, blobs);
-      if (!repaired)
-        return repaired.takeError();
-      addSaturated(hardwareRepairProbeLimit, repaired->candidateLimit);
-      addSaturated(hardwareRepairProbesPlanned, repaired->candidatesPlanned);
-      addSaturated(hardwareRepairProbesReserved, repaired->candidatesReserved);
-      addSaturated(hardwareRepairProbesConsumed, repaired->candidatesConsumed);
-      addSaturated(hardwareRepairProbesRejected, repaired->candidatesRejected);
-      addSaturated(hardwareRepairProbesCancelled,
-                   repaired->candidatesCancelled);
-      if (llvm::Error error =
-              reserveSharedHardwareRepairProbes(repaired->candidatesReserved))
-        return std::move(error);
-      if (llvm::Error error = appendRepairExecutions(repaired))
-        return std::move(error);
+      repairSystems = std::move(repaired->childSystems);
+      repairExecutions = std::move(repaired->executions);
     }
     if (!repairExecutions.empty()) {
       auto qualityChoice = detail::chooseApplicationRepairByQuality(

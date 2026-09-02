@@ -61,7 +61,13 @@ struct SpatialFifoRuntimeFeedback final {
       SpatialFifoRuntimeFeedbackDisposition::ProofNotEstablished;
   SpatialFifoRuntimeFeedbackReason reason =
       SpatialFifoRuntimeFeedbackReason::MissingWaitCycle;
+  /// The canonical witness FIFO: the full storage of a full-FIFO cycle, or the
+  /// first of `disciplineTargets` for a cross-tag global HOL cycle.
   std::optional<::loom::fabric::FabricFifoOccurrenceRef> fifo;
+  /// Every StrictFifo occurrence the certificate proves cross-tag head-of-line
+  /// blocking on, in canonical order. The discipline candidate applies to all
+  /// of them in one child; the set is empty for every other reason.
+  std::vector<::loom::fabric::FabricFifoOccurrenceRef> disciplineTargets;
   std::uint32_t occupancy = 0;
   std::uint32_t capacity = 0;
   std::optional<std::uint32_t> minimumCandidateDepth;
@@ -79,8 +85,9 @@ struct SpatialFifoRuntimeFeedback final {
     return lhs.parentMapping == rhs.parentMapping &&
            lhs.spatialMapping == rhs.spatialMapping &&
            lhs.disposition == rhs.disposition && lhs.reason == rhs.reason &&
-           lhs.fifo == rhs.fifo && lhs.occupancy == rhs.occupancy &&
-           lhs.capacity == rhs.capacity &&
+           lhs.fifo == rhs.fifo &&
+           lhs.disciplineTargets == rhs.disciplineTargets &&
+           lhs.occupancy == rhs.occupancy && lhs.capacity == rhs.capacity &&
            lhs.minimumCandidateDepth == rhs.minimumCandidateDepth &&
            lhs.currentQueueDiscipline == rhs.currentQueueDiscipline &&
            lhs.candidateQueueDiscipline == rhs.candidateQueueDiscipline &&

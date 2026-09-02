@@ -3,7 +3,9 @@
 #include "../JointHardwareReopenExecution.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
@@ -126,12 +128,13 @@ executeSpatialTransportRuntimeRepair(
   auto timing = normalizedTimingProfiles(parentPair->system, artifacts);
   if (!timing)
     return timing.takeError();
-  const std::uint64_t feedbackProbeLimit =
-      request.boundedQuality
-          ? request.boundedQuality->maximumHardwareRepairProbes
-          : 8;
+  // Mapping repair spends its own admission, never the hardware probe bound:
+  // the two families of one witness are budgeted separately.
   result.candidateLimit = std::min<std::uint64_t>(
-      feedbackProbeLimit, policy.maximumSpatialMappingsPerPair());
+      request.maximumMappingRepairCandidates,
+      policy.maximumSpatialMappingsPerPair());
+  if (result.candidateLimit == 0)
+    return invalid("Mapping repair requires a positive candidate limit");
   if (deadlineReached(request.executionPolicy)) {
     result.candidatesCancelled = result.candidateLimit;
     result.exactRepair = pnr::SpatialExactRepairResult{
@@ -179,7 +182,7 @@ executeSpatialTransportRuntimeRepair(
     return invalid("CEGAR replay did not reproduce the supplied promotion");
   result.candidatesPlanned = cegar->iterations.size();
   result.candidatesReserved = result.candidatesPlanned;
-  for (const SpatialTransportCegarIteration &iteration : cegar->iterations) {
+  for (const auto [ordinal, iteration] : llvm::enumerate(cegar->iterations)) {
     result.constraintSets.push_back(iteration.accumulatedConstraints);
     result.warmSeedAccounting = iteration.warmSeed;
     result.exactRepair = iteration.repair;
@@ -189,25 +192,76 @@ executeSpatialTransportRuntimeRepair(
     } else {
       ++result.candidatesRejected;
     }
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+        mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+          const auto work = [](const ExecutionResourceStatistics &value) {
+            llvm::json::Object object{
+                {"wall_ns", value.activeWallTimeNanoseconds}};
+            if (value.processCpuTimeDeltaNanoseconds)
+              object["process_cpu_ns"] = *value.processCpuTimeDeltaNanoseconds;
+            if (value.peakResidentMemoryBytes)
+              object["peak_resident_bytes"] = *value.peakResidentMemoryBytes;
+            return object;
+          };
+          const auto reference =
+              [](const std::optional<ArtifactRootReference> &value) {
+                return value ? llvm::json::Value(
+                                   formatArtifactIdentityHex(value->artifact))
+                             : llvm::json::Value(nullptr);
+              };
+          fields["operation"] = "spatial_transport_cegar_iteration";
+          fields["iteration"] = ordinal;
+          fields["parent_spatial_mapping"] =
+              formatArtifactIdentityHex(iteration.parentMapping.artifact);
+          fields["runtime_evidence"] =
+              formatArtifactIdentityHex(iteration.runtimeEvidence.artifact);
+          fields["accumulated_constraints"] = formatArtifactIdentityHex(
+              iteration.accumulatedConstraints.artifact);
+          fields["child_spatial_mapping"] = reference(iteration.childMapping);
+          fields["child_evidence"] = reference(iteration.childEvidence);
+          fields["repair_kind"] =
+              static_cast<std::uint64_t>(iteration.repair.kind);
+          fields["solver_calls"] = iteration.repair.solverCalls;
+          fields["retired"] = iteration.retired;
+          fields["promotion"] = work(iteration.work.promotion);
+          fields["problem_freeze"] = work(iteration.work.problemFreeze);
+          fields["warm_seed"] = work(iteration.work.warmSeed);
+          fields["exact_repair"] = work(iteration.work.exactRepair);
+          fields["child_finalization"] =
+              work(iteration.work.childFinalization);
+          fields["runtime_evaluation"] = work(iteration.work.runtimeEvaluation);
+          fields["evidence_verification"] =
+              work(iteration.work.evidenceVerification);
+        });
   }
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "spatial_transport_cegar";
+        fields["termination"] =
+            spatialTransportCegarTerminationSpelling(cegar->termination);
+        fields["iteration_count"] = cegar->iterations.size();
+        fields["candidate_limit"] = result.candidateLimit;
+      });
   result.cegar = std::move(*cegar);
   if (result.cegar->termination != SpatialTransportCegarTermination::Retired ||
       !result.cegar->finalMapping || !result.cegar->finalConstraints)
     return result;
   const ArtifactRootReference childSpatial = *result.cegar->finalMapping;
-  const ArtifactRootReference childConstraints =
-      *result.cegar->finalConstraints;
 
   auto repairPolicy = JointDesignPolicy::get(1, 1, 1, 1, 1);
   if (!repairPolicy)
     return repairPolicy.takeError();
   ResolvedConfig config = parentPlan.resolvedConfig;
   config.dse.planNodes.clear();
+  // The retired child is already the exact SpatialMapping the runtime
+  // oracle accepted, so it enters the handoff plan as an immutable frontier
+  // member and only System PnR runs; its constraint lineage stays sealed in
+  // the CEGAR result rather than reopening Spatial PnR under it.
   JointDesignMappingSeed seed;
   seed.techMappings.push_back(feedback.owners->techMapping);
   seed.spatialMappings.push_back(childSpatial);
-  seed.spatialRepairConstraints.push_back(
-      {feedback.owners->techMapping, childConstraints});
   auto plan = buildJointDesignExplorationPlan(
       {{parentPair->software.workloads}, {parentPair->system}}, *timing,
       *repairPolicy, config, artifacts, &seed,

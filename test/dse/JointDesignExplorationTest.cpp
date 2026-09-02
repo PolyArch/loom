@@ -37,6 +37,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <string>
@@ -140,6 +141,7 @@ void requireMutationDispositionCoverage() {
 /// selector lets them run as parallel processes. Empty disables them;
 /// `allMutationFamilies` (the shared "*" selector) runs all four in order.
 void exerciseJointExploration(bool runFifoHardwareRepair,
+                              bool runRuntimeWitnessBudget,
                               bool runOperandHardwareRepair,
                               bool runTransportRepair,
                               llvm::StringRef qualitySection,
@@ -1539,6 +1541,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           ::fabric::FifoQueueDiscipline::StrictFifo ||
       crossTagFeedback.candidateQueueDiscipline !=
           ::fabric::FifoQueueDiscipline::PerTagVirtualChannel ||
+      crossTagFeedback.disciplineTargets !=
+          std::vector<loom::fabric::FabricFifoOccurrenceRef>{*feedbackFifo} ||
       crossTagFeedback.minimumCandidateDepth)
     fail("cross-tag global HOL did not admit the VC hardware candidate");
   if (qualityRuns("fifo")) {
@@ -1645,7 +1649,119 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           loom::dse::SpatialFifoRuntimeFeedbackReason::MissingWaitCycle ||
       incompleteFifoFeedback.minimumCandidateDepth)
     fail("probe-incomplete FIFO wait synthesized a hardware child");
-  if (runFifoHardwareRepair)
+  if (runRuntimeWitnessBudget) {
+    // The two runtime-witness repair families never share a budget: a fixed
+    // System frontier or an exhausted shared probe ledger withholds the
+    // hardware child, while an admitted FIFO witness with no transport
+    // witness still materializes exactly one child and reserves one parent
+    // cost for it.
+    constexpr std::uint64_t parentCostNanoseconds = 7;
+    const auto witnessRequest =
+        [&](llvm::StringRef journal,
+            loom::dse::JointHardwareExplorationScope scope) {
+          llvm::SmallString<128> root(temporary.path());
+          llvm::sys::path::append(root, journal);
+          loom::dse::JointHardwareReopenRequest request{
+              take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                  "loom.test.runtime_witness_budget.v1")),
+              root.str().str(),
+              {},
+              loom::dse::JointDesignStoppingPolicy::FirstVerified,
+              std::nullopt,
+              std::nullopt,
+              take(loom::dse::SiteCapacity::get(2, 0, 0)),
+              take(loom::dse::PlanExecutionPolicy::get(
+                  2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
+          request.hardwareExplorationScope = scope;
+          return request;
+        };
+    loom::dse::JointRuntimeWitnessSet witnesses;
+    witnesses.fifo = exactFifoFeedback;
+    const auto withheld = [&](const loom::dse::JointRuntimeWitnessRepair &repair,
+                              llvm::StringRef gate) {
+      if (repair.fifoReopen || repair.mappingRepair ||
+          !repair.childSystems.empty() || !repair.executions.empty() ||
+          repair.hardwareReopenReservedNanoseconds != 0 ||
+          repair.hardwareReopenLedger.reserved != 0 ||
+          repair.mappingRepairLedger.candidateLimit != 0)
+        fail(gate + " admitted a runtime-witness hardware child");
+    };
+    withheld(take(loom::dse::executeJointRuntimeWitnessRepair(
+                 plan, parentExecution, policy, witnesses,
+                 parentCostNanoseconds, std::nullopt,
+                 witnessRequest("runtime-witness-fixed",
+                                loom::dse::JointHardwareExplorationScope::
+                                    FixedSystemFrontier),
+                 store, blobs)),
+             "fixed System frontier");
+    withheld(take(loom::dse::executeJointRuntimeWitnessRepair(
+                 plan, parentExecution, policy, witnesses,
+                 parentCostNanoseconds, std::optional<std::uint64_t>(0),
+                 witnessRequest("runtime-witness-exhausted",
+                                loom::dse::JointHardwareExplorationScope::
+                                    BoundedHardwareReopen),
+                 store, blobs)),
+             "exhausted shared probe ledger");
+    const auto admitted = take(loom::dse::executeJointRuntimeWitnessRepair(
+        plan, parentExecution, policy, witnesses, parentCostNanoseconds,
+        std::nullopt,
+        witnessRequest(
+            "runtime-witness-admitted",
+            loom::dse::JointHardwareExplorationScope::BoundedHardwareReopen),
+        store, blobs));
+    const loom::dse::JointRepairWorkLedger &hardware =
+        admitted.hardwareReopenLedger;
+    if (!admitted.fifoReopen || admitted.mappingRepair ||
+        admitted.childSystems.size() != 1 || admitted.executions.size() != 1 ||
+        admitted.childSystems.front() == system ||
+        admitted.hardwareReopenReservedNanoseconds != parentCostNanoseconds ||
+        hardware.candidateLimit != 1 || hardware.planned != 1 ||
+        hardware.reserved != 1 ||
+        hardware.reserved !=
+            hardware.consumed + hardware.rejected + hardware.cancelled ||
+        admitted.mappingRepairLedger.candidateLimit != 0 ||
+        admitted.mappingRepairLedger.reserved != 0)
+      fail("admitted FIFO witness did not materialize exactly one budgeted "
+           "hardware child");
+    bool childMappingVerified = false;
+    for (const auto &pair : admitted.executions.front().mappedPairs)
+      for (const auto &mapping : pair.systemMappings) {
+        auto imported =
+            take(loom::mapping::importSystemMapping(mapping, store));
+        if (imported.view().fabricIdentity() !=
+            admitted.childSystems.front().artifact)
+          fail("runtime-witness child Mapping names the parent System");
+        childMappingVerified = true;
+      }
+    if (!childMappingVerified)
+      fail("admitted FIFO witness produced no verified child SystemMapping");
+
+    const auto unboundedPolicy = take(loom::dse::PlanExecutionPolicy::get(
+        2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))));
+    if (take(loom::dse::reserveDispatchWindow(unboundedPolicy, 1000))
+            .dispatchNotAfterUnixNanoseconds())
+      fail("reserving a window on an unbounded policy invented a deadline");
+    const std::uint64_t nowNanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    const std::uint64_t farDeadline =
+        nowNanoseconds + 3'600'000'000'000ULL;
+    const auto boundedPolicy = take(loom::dse::PlanExecutionPolicy::get(
+        2, take(loom::dse::SiteResourceClaim::get(1, 0, 0)), std::nullopt, {},
+        std::nullopt, farDeadline));
+    if (take(loom::dse::reserveDispatchWindow(boundedPolicy, 1000))
+            .dispatchNotAfterUnixNanoseconds() != farDeadline - 1000)
+      fail("window reservation did not move the deadline earlier by the "
+           "reserved amount");
+    const auto clamped = take(loom::dse::reserveDispatchWindow(
+        boundedPolicy, farDeadline + farDeadline));
+    if (!clamped.dispatchNotAfterUnixNanoseconds() ||
+        *clamped.dispatchNotAfterUnixNanoseconds() < nowNanoseconds ||
+        *clamped.dispatchNotAfterUnixNanoseconds() >= farDeadline)
+      fail("over-reserved window did not clamp its deadline to the present");
+  }
+  if (runFifoHardwareRepair || runRuntimeWitnessBudget)
     return;
   const auto moduleRoot =
       take(loom::fabric::FabricModulePhysicalOwnerRef::create(*feedbackFifo));
@@ -1968,11 +2084,15 @@ int main(int argc, char **argv) {
     fail("unknown quality-promotion section: " + qualitySection);
   if (argc > 2 || (argc == 2 && mutationFamily.empty() &&
                    qualitySection.empty() && mode != "fifo-feedback" &&
+                   mode != "runtime-witness-budget" &&
                    mode != "operand-feedback" && mode != "transport-feedback"))
-    fail("expected no workflow, fifo-feedback, operand-feedback, "
-         "transport-feedback, quality-promotion, quality-promotion=SECTION, "
-         "mutation-matrix, or mutation-matrix=FAMILY");
-  exerciseJointExploration(mode == "fifo-feedback", mode == "operand-feedback",
+    fail("expected no workflow, fifo-feedback, runtime-witness-budget, "
+         "operand-feedback, transport-feedback, quality-promotion, "
+         "quality-promotion=SECTION, mutation-matrix, or "
+         "mutation-matrix=FAMILY");
+  exerciseJointExploration(mode == "fifo-feedback",
+                           mode == "runtime-witness-budget",
+                           mode == "operand-feedback",
                            mode == "transport-feedback", qualitySection,
                            mutationFamily);
   return 0;

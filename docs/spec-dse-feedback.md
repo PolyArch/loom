@@ -3348,7 +3348,16 @@ The candidate set is finite and minimal. When a full depth-one FIFO is the
 exact liveness witness, `ResizeFifo` first proposes depth two. For a deeper
 full FIFO, the first proposal is one additional slot; this is a repair probe,
 not proof that one slot is sufficient. `ChangeFifoBypassCapability` may add one
-alternative only when the existing Fabric admits the bypass traversal. The
+alternative only when the existing Fabric admits the bypass traversal. A
+cross-tag global head-of-line witness names every StrictFifo occurrence whose
+certificate edge waits for one tag behind the head of another. When the
+parent System is the exact output of its resolved builtin recipe, the
+`ChangeFifoQueueDiscipline` alternative changes the recipe variable
+`interconnect_fifo_queue_discipline` and rematerializes the System through
+the ordinary template generator, so parent and child differ in that one
+recipe variable and the child maps cold; a witnessed occurrence set on any
+other System is rewritten occurrence by occurrence as consecutive exact
+Module rewrites with composed lineage into one child. The
 ordinary `SpatialMicroarchitectureCandidateGenerator` and
 `HardwareImpactProjection` own these changes; runtime owns neither a second
 Fabric writer nor a Mapping exception.
@@ -3464,6 +3473,24 @@ probe bound is exhausted, no supported typed feedback remains, execution is
 cancelled, or a verified SystemMapping is published. Exhaustion is incomplete,
 not infeasible. Thus a second hardware dimension becomes eligible only after
 ordinary Mapping proves it necessary.
+
+One failed application replay yields one runtime witness set: the exact
+transport, FIFO, and operand-queue feedback derived for the selected parent
+Mapping. The joint runtime-witness repair owner executes its two families in
+a fixed order with budgets that are never shared. Mapping repair, the
+cumulative runtime CEGAR on the immutable parent System, spends at most the
+request's own `maximumMappingRepairCandidates`; it never reads the
+hardware probe bound. Hardware reopen, the FIFO discipline/depth and
+operand-buffer children the same witness admits, spends only the invocation's
+shared `maximumHardwareRepairProbes` ledger and is never materialized under a
+fixed System frontier. Before Mapping repair dispatches, the owner reserves
+for the hardware family one parent cost per admitted hardware child, where the
+parent cost is the measured wall time of the parent's own Mapping and runtime
+validation; Mapping repair may dispatch only inside the invocation window that
+remains after that reservation. A non-retiring Mapping-repair sequence
+therefore ends as a typed incomplete result and leaves the hardware child both
+its candidate count and its window. Both ledgers, the admitted child count,
+and the reservation are published in the invocation summary.
 
 The invocation declares whether its exact System frontier is fixed or admits
 this bounded reopen chain. A fixed frontier still permits Mapping repair on the

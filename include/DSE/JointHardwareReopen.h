@@ -138,7 +138,19 @@ struct JointHardwareReopenRequest final {
   /// plans are identical and the work is paid twice. Callers that only need the
   /// repaired Mapping must leave this disabled.
   bool coldComparisonBaseline = false;
+  /// Mapping-repair admission: the cumulative CEGAR children one exact runtime
+  /// witness may spend on the immutable parent System. It is a separate owner
+  /// from the bounded-quality hardware probe bound, so a non-retiring repair
+  /// sequence can never consume the hardware reopen the same witness admits.
+  std::uint64_t maximumMappingRepairCandidates = 8;
 };
+
+/// Returns `policy` with its dispatch deadline moved earlier by
+/// `reservedNanoseconds`, never later and never before the present. A policy
+/// without a deadline has no window to reserve and is returned unchanged.
+llvm::Expected<PlanExecutionPolicy>
+reserveDispatchWindow(const PlanExecutionPolicy &policy,
+                      std::uint64_t reservedNanoseconds);
 
 struct JointRepairQualitySelection final {
   std::size_t executionOrdinal = 0;
@@ -330,6 +342,61 @@ executeSpatialTransportRuntimeRepair(
     const JointDesignExecution &parentExecution,
     const JointDesignPolicy &policy,
     const SpatialTransportRuntimeFeedback &feedback,
+    JointHardwareReopenRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
+
+/// The typed runtime witnesses one failed application replay derived for its
+/// selected parent Mapping. A family whose feedback is absent or not Exact
+/// plans no work.
+struct JointRuntimeWitnessSet final {
+  std::optional<SpatialTransportRuntimeFeedback> transport;
+  std::optional<SpatialFifoRuntimeFeedback> fifo;
+  std::optional<SpatialOperandQueueRuntimeFeedback> operandQueue;
+};
+
+/// Additive candidate ledger of one repair family. Reserved work settles as
+/// consumed, rejected, or cancelled, and planned equals reserved.
+struct JointRepairWorkLedger final {
+  std::uint64_t candidateLimit = 0;
+  std::uint64_t planned = 0;
+  std::uint64_t reserved = 0;
+  std::uint64_t consumed = 0;
+  std::uint64_t rejected = 0;
+  std::uint64_t cancelled = 0;
+};
+
+/// The two repair families one witness set admits, each with its own ledger.
+/// Mapping repair rebuilds the Mapping on the immutable parent System;
+/// hardware reopen materializes typed System children. `childSystems` is
+/// aligned with `executions` across both families.
+struct JointRuntimeWitnessRepair final {
+  std::optional<JointSpatialTransportMappingRepair> mappingRepair;
+  std::optional<JointSpatialFifoHardwareRepair> fifoReopen;
+  std::optional<JointSpatialOperandBufferHardwareRepair> operandBufferReopen;
+  std::vector<ArtifactRootReference> childSystems;
+  std::vector<JointDesignExecution> executions;
+  JointRepairWorkLedger mappingRepairLedger;
+  JointRepairWorkLedger hardwareReopenLedger;
+  /// Wall-clock window withheld from Mapping repair for the admitted hardware
+  /// children: the parent's own measured cost per child.
+  std::uint64_t hardwareReopenReservedNanoseconds = 0;
+};
+
+/// Executes the runtime-witness repair families of one failed replay in
+/// order: Mapping repair on the immutable parent System first, then the
+/// hardware reopen the witness admits. The families never share a budget.
+/// Mapping repair spends at most `request.maximumMappingRepairCandidates` and
+/// dispatches only inside the invocation window minus one parent cost
+/// (`parentCostNanoseconds`, the parent's measured Mapping and runtime
+/// validation wall time) per admitted hardware child. Hardware children spend
+/// only `remainingHardwareRepairProbes` (absent means unbounded) and are never
+/// materialized under a fixed System frontier.
+llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
+    const JointDesignExplorationPlan &parentPlan,
+    const JointDesignExecution &parentExecution,
+    const JointDesignPolicy &policy, const JointRuntimeWitnessSet &witnesses,
+    std::uint64_t parentCostNanoseconds,
+    std::optional<std::uint64_t> remainingHardwareRepairProbes,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 

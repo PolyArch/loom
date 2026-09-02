@@ -94,30 +94,33 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
     crossTagOrderWaits.push_back(&edge);
   }
   if (!crossTagOrderWaits.empty()) {
+    // Every distinct FIFO the certificate proves cross-tag head-of-line
+    // blocking on is a discipline target; the witness is exact only when each
+    // of them is a selected StrictFifo occurrence of this Module.
     llvm::sort(crossTagOrderWaits, [](const auto *lhs, const auto *rhs) {
       return fabric::canonicalFabricBytes(*lhs->fifoOccurrence) <
              fabric::canonicalFabricBytes(*rhs->fifoOccurrence);
     });
-    const auto fifo = *crossTagOrderWaits.front()->fifoOccurrence;
-    if (llvm::any_of(crossTagOrderWaits, [&](const auto *edge) {
-          return *edge->fifoOccurrence != fifo;
-        })) {
-      feedback.reason = SpatialFifoRuntimeFeedbackReason::AmbiguousFifo;
-      return feedback;
+    std::vector<fabric::FabricFifoOccurrenceRef> targets;
+    for (const auto *edge : crossTagOrderWaits)
+      if (targets.empty() || targets.back() != *edge->fifoOccurrence)
+        targets.push_back(*edge->fifoOccurrence);
+    for (const fabric::FabricFifoOccurrenceRef &fifo : targets) {
+      if (llvm::Error error = fabric::validateFabricRef(module->view(), fifo))
+        return std::move(error);
+      if (!mapping::spatialMappingUsesFifoOccurrence(spatial->view(), fifo))
+        return invalid("FIFO runtime feedback names an unselected occurrence");
+      const auto discipline = module->view().fifoQueueDiscipline(fifo);
+      if (!discipline)
+        return invalid("FIFO runtime feedback lost its queue discipline");
+      if (*discipline != ::fabric::FifoQueueDiscipline::StrictFifo) {
+        feedback.reason = SpatialFifoRuntimeFeedbackReason::AmbiguousFifo;
+        return feedback;
+      }
     }
-    if (llvm::Error error = fabric::validateFabricRef(module->view(), fifo))
-      return std::move(error);
-    if (!mapping::spatialMappingUsesFifoOccurrence(spatial->view(), fifo))
-      return invalid("FIFO runtime feedback names an unselected occurrence");
-    const auto discipline = module->view().fifoQueueDiscipline(fifo);
-    if (!discipline)
-      return invalid("FIFO runtime feedback lost its queue discipline");
-    if (*discipline != ::fabric::FifoQueueDiscipline::StrictFifo) {
-      feedback.reason = SpatialFifoRuntimeFeedbackReason::AmbiguousFifo;
-      return feedback;
-    }
-    feedback.fifo = fifo;
-    feedback.currentQueueDiscipline = *discipline;
+    feedback.fifo = targets.front();
+    feedback.disciplineTargets = std::move(targets);
+    feedback.currentQueueDiscipline = ::fabric::FifoQueueDiscipline::StrictFifo;
     feedback.candidateQueueDiscipline =
         ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
     feedback.reason =
@@ -268,6 +271,11 @@ void emitSpatialFifoRuntimeFeedback(
               llvm::toHex(fabric::canonicalFabricBytes(*feedback.fifo), true);
         else
           fields["fifo"] = nullptr;
+        llvm::json::Array targets;
+        for (const auto &target : feedback.disciplineTargets)
+          targets.push_back(
+              llvm::toHex(fabric::canonicalFabricBytes(target), true));
+        fields["discipline_targets"] = std::move(targets);
         if (feedback.minimumCandidateDepth)
           fields["minimum_candidate_depth"] = *feedback.minimumCandidateDepth;
         else

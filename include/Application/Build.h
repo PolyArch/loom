@@ -240,6 +240,9 @@ struct ApplicationMappingExecutionRequest final {
   /// PlanExecutionPolicy remains the Mapping-dispatch owner; this view keeps
   /// verifier work inside the same invocation boundary.
   ExecutionControlView executionControl;
+  /// Mapping-repair admission per exact runtime witness. Absent keeps the
+  /// joint repair owner's default.
+  std::optional<std::uint64_t> mappingRepairCandidateLimit;
 };
 
 enum class ApplicationMappingRuntimeDisposition : std::uint8_t {

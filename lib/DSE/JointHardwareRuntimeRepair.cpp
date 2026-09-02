@@ -457,6 +457,48 @@ struct TypedModuleHardwareRepair final {
       JointMappingReuseDisposition::ColdFallback;
 };
 
+/// One hardware alternative is an ordered sequence of exact Module rewrites
+/// materialized into a single child System.
+using SpatialFifoHardwareAlternative =
+    std::vector<SpatialMicroarchitectureDecisionDomain>;
+
+/// The finite hardware alternatives one exact FIFO witness admits: the
+/// discipline change on every witnessed target as one child, then the depth
+/// probe. The reopen and the runtime witness scheduler derive their candidate
+/// counts from this one owner.
+std::vector<SpatialFifoHardwareAlternative>
+spatialFifoHardwareAlternatives(const SpatialFifoRuntimeFeedback &feedback) {
+  std::vector<SpatialFifoHardwareAlternative> alternatives;
+  if (!feedback.fifo)
+    return alternatives;
+  if (feedback.candidateQueueDiscipline &&
+      !feedback.disciplineTargets.empty()) {
+    SpatialFifoHardwareAlternative sequence;
+    for (const auto &target : feedback.disciplineTargets)
+      sequence.push_back(ChangeFifoQueueDisciplineDomain{
+          target, {*feedback.candidateQueueDiscipline}});
+    alternatives.push_back(std::move(sequence));
+  }
+  if (feedback.minimumCandidateDepth)
+    alternatives.push_back({ResizeFifoDomain{
+        *feedback.fifo, {*feedback.minimumCandidateDepth}}});
+  return alternatives;
+}
+
+/// The finite hardware candidate set one exact operand-queue witness admits:
+/// the next separated mode when one exists, then the depth probe.
+std::vector<SpatialMicroarchitectureDecision>
+spatialOperandBufferHardwareDecisions(
+    const SpatialOperandBufferRepairTarget &target) {
+  std::vector<SpatialMicroarchitectureDecision> decisions;
+  if (target.separatedMode)
+    decisions.push_back(
+        ChangeTemporalOperandBufferMode{target.pe, *target.separatedMode});
+  decisions.push_back(ResizeTemporalOperandBuffer{
+      target.pe, target.candidateEntriesPerAllocationUnit});
+  return decisions;
+}
+
 llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
     const JointDesignExplorationPlan &parentPlan,
     const JointDesignExecution &parentExecution,
@@ -916,22 +958,50 @@ executeSpatialFifoHardwareFeedbackReopen(
       (feedback.currentQueueDiscipline &&
        *feedback.currentQueueDiscipline != *currentDiscipline))
     return invalid("FIFO feedback discipline disagrees with its Module");
+  if (feedback.candidateQueueDiscipline &&
+      *feedback.candidateQueueDiscipline == *currentDiscipline)
+    return invalid("FIFO feedback discipline candidate is a no-op");
 
-  std::vector<SpatialMicroarchitectureDecision> decisions;
-  if (feedback.candidateQueueDiscipline) {
-    if (*feedback.candidateQueueDiscipline == *currentDiscipline)
-      return invalid("FIFO feedback discipline candidate is a no-op");
-    decisions.push_back(ChangeFifoQueueDiscipline{
-        *feedback.fifo, *feedback.candidateQueueDiscipline});
-  }
-  if (feedback.minimumCandidateDepth)
-    decisions.push_back(
-        ResizeFifo{*feedback.fifo, *feedback.minimumCandidateDepth});
-  result.candidateLimit = decisions.size();
+  const std::vector<SpatialFifoHardwareAlternative> alternatives =
+      spatialFifoHardwareAlternatives(feedback);
+  result.candidateLimit = alternatives.size();
   if (request.boundedQuality)
     result.candidateLimit = std::min<std::uint64_t>(
         result.candidateLimit,
         request.boundedQuality->maximumHardwareRepairProbes);
+  // A cross-tag global HOL witness on a System that is the exact output of
+  // its resolved recipe repairs the recipe variable itself: the tagged
+  // interconnect FIFO class changes discipline, so parent and child differ in
+  // `interconnect_fifo_queue_discipline` alone. Any other System keeps the
+  // per-occurrence rewrite sequence.
+  std::optional<HardwareRecipeGrowth> recipeChild;
+  if (feedback.candidateQueueDiscipline &&
+      request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::BoundedHardwareReopen &&
+      parentPlan.resolvedConfig.hardwareTarget.parameters
+              .interconnectFifoQueueDiscipline == *currentDiscipline) {
+    auto scheduler = SiteScheduler::create(request.siteCapacity);
+    if (!scheduler)
+      return scheduler.takeError();
+    HardwareRecipeGrowth recipe;
+    recipe.config = parentPlan.resolvedConfig;
+    recipe.config.dse.planNodes.clear();
+    recipe.resultingContexts =
+        recipe.config.hardwareTarget.parameters.temporalResidentContexts;
+    recipe.resultingGateways =
+        recipe.config.hardwareTarget.parameters.gatewayCount;
+    recipe.resultingAccCores =
+        recipe.config.hardwareTarget.parameters.accCoreCount;
+    auto reproduced = materializeHardwareRecipeGrowth(
+        recipe, request.evidence, request, *scheduler, artifacts, blobs);
+    if (!reproduced)
+      return reproduced.takeError();
+    if (reproduced->reference == parentPair.system) {
+      recipe.config.hardwareTarget.parameters.interconnectFifoQueueDiscipline =
+          *feedback.candidateQueueDiscipline;
+      recipeChild = std::move(recipe);
+    }
+  }
   for (std::size_t ordinal = 0; ordinal != result.candidateLimit; ++ordinal) {
     if (dispatchDeadlineReached(request.executionPolicy)) {
       const std::uint64_t remaining = result.candidateLimit - ordinal;
@@ -942,36 +1012,147 @@ executeSpatialFifoHardwareFeedbackReopen(
     }
     ++result.candidatesPlanned;
     ++result.candidatesReserved;
-    HardwareRecipeGrowth growth;
-    growth.config = parentPlan.resolvedConfig;
-    growth.config.dse.planNodes.clear();
-    growth.techModule = parentModule;
-    if (const auto *discipline =
-            std::get_if<ChangeFifoQueueDiscipline>(&decisions[ordinal]))
-      growth.fifoDisciplineChange = *discipline;
-    else
-      growth.fifoResize = std::get<ResizeFifo>(decisions[ordinal]);
-    auto child = materializeTypedModuleSystemGrowth(
-        std::move(growth), parentPair.system, artifacts, blobs);
+    const bool disciplineAlternative =
+        !alternatives[ordinal].empty() &&
+        std::holds_alternative<ChangeFifoQueueDisciplineDomain>(
+            alternatives[ordinal].front());
+    if (disciplineAlternative && recipeChild) {
+      auto scheduler = SiteScheduler::create(request.siteCapacity);
+      if (!scheduler)
+        return scheduler.takeError();
+      auto child = materializeHardwareRecipeGrowth(
+          *recipeChild, request.evidence, request, *scheduler, artifacts,
+          blobs);
+      if (!child)
+        return child.takeError();
+      auto timing = normalizedTimingProfiles(child->reference, artifacts);
+      if (!timing)
+        return timing.takeError();
+      auto repairPolicy = JointDesignPolicy::get(
+          1, 1, 1, policy.maximumTechMappingsPerModule(),
+          policy.maximumSpatialMappingsPerPair());
+      if (!repairPolicy)
+        return repairPolicy.takeError();
+      ResolvedConfig childConfig = std::move(child->config);
+      childConfig.dse.planNodes.clear();
+      childConfig.dse.systemPnr.search.completionGoal =
+          ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+      // The discipline of every tagged FIFO changed, so no parent route or
+      // tag choice survives: the child maps cold on its own frontier.
+      auto childPlan = buildJointDesignExplorationPlan(
+          {{parentPair.software.workloads}, {child->reference}}, *timing,
+          *repairPolicy, childConfig, artifacts, nullptr,
+          parentPlan.systemBindingPartitions);
+      if (!childPlan)
+        return childPlan.takeError();
+      JointHardwareReopenRequest childRequest = request;
+      llvm::SmallString<256> childJournal(request.journalRoot);
+      llvm::sys::path::append(childJournal, "fifo-runtime-feedback-" +
+                                                std::to_string(ordinal));
+      childRequest.journalRoot = childJournal.str().str();
+      loom::pnr::PnrDerivedContextSession derivedContextSession;
+      auto execution = executeJointRepairPlan(*childPlan, *repairPolicy,
+                                              std::move(childRequest),
+                                              artifacts, blobs);
+      if (!execution)
+        return execution.takeError();
+      execution->summary.coldReopenWallTimeNanoseconds =
+          execution->summary.executionWallTimeNanoseconds;
+      const ArtifactRootReference childReference = child->reference;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "spatial_fifo_hardware_repair";
+            fields["alternative"] = ordinal;
+            fields["recipe_variable"] = "interconnect_fifo_queue_discipline";
+            fields["child_system"] =
+                formatArtifactIdentityHex(childReference.artifact);
+            fields["mapping_reuse_disposition"] =
+                jointMappingReuseDispositionSpelling(
+                    JointMappingReuseDisposition::ColdFallback);
+            fields["incremental_mapping_count"] =
+                mappingRoots(*execution).size();
+            fields["incremental_wall_time_ns"] =
+                execution->summary.executionWallTimeNanoseconds;
+            fields["liveness"] = "requires_child_cgra_replay";
+          });
+      ++result.candidatesConsumed;
+      result.childSystems.push_back(childReference);
+      result.reuseDispositions.push_back(
+          JointMappingReuseDisposition::ColdFallback);
+      result.executions.push_back(std::move(*execution));
+      continue;
+    }
+    // One alternative materializes as one child: every rewrite of the
+    // sequence is an exact Module mutation of the previous child, and the
+    // lineages compose so the child keeps the complete typed impact.
+    std::optional<JointHardwareMutationChild> child;
+    ArtifactRootReference currentSystem = parentPair.system;
+    ArtifactRootReference currentModule = parentModule;
+    for (const SpatialMicroarchitectureDecisionDomain &domain :
+         alternatives[ordinal]) {
+      auto step = materializeJointModuleHardwareMutation(
+          parentPlan.resolvedConfig, currentSystem, currentModule, domain,
+          artifacts, blobs);
+      if (!step)
+        return step.takeError();
+      currentSystem = step->system;
+      auto modules = projectJointDesignTargetModules(currentSystem, artifacts);
+      if (!modules)
+        return modules.takeError();
+      if (modules->size() != 1)
+        return invalid("FIFO hardware child has more than one target Module");
+      currentModule = modules->front();
+      if (!child) {
+        child = std::move(*step);
+        continue;
+      }
+      auto composed = composeJointHardwareMutationChildren(
+          std::move(*child), std::move(*step), artifacts);
+      if (!composed)
+        return composed.takeError();
+      child = std::move(*composed);
+    }
     if (!child)
-      return child.takeError();
-    const ArtifactRootReference childReference = child->reference;
+      return invalid("FIFO hardware alternative has no Module rewrite");
+    const ArtifactRootReference childReference = child->system;
+    const std::size_t rewriteCount = alternatives[ordinal].size();
     JointHardwareReopenRequest childRequest = request;
     llvm::SmallString<256> childJournal(request.journalRoot);
     llvm::sys::path::append(childJournal,
                             "fifo-runtime-feedback-" +
                                 std::to_string(ordinal));
     childRequest.journalRoot = childJournal.str().str();
-    auto repaired = executeTypedModuleHardwareReopen(
+    auto repaired = executeJointHardwareMutationRepair(
         parentPlan, parentExecution, policy, feedback.parentMapping,
-        std::move(*child), std::move(childRequest),
-        "spatial_fifo_hardware_repair", artifacts, blobs);
+        std::move(*child), std::move(childRequest), artifacts, blobs);
     if (!repaired)
       return repaired.takeError();
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+        mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+          fields["operation"] = "spatial_fifo_hardware_repair";
+          fields["alternative"] = ordinal;
+          fields["module_rewrite_count"] = rewriteCount;
+          fields["child_system"] =
+              formatArtifactIdentityHex(childReference.artifact);
+          fields["mapping_reuse_disposition"] =
+              jointMappingReuseDispositionSpelling(
+                  repaired->rebase.disposition);
+          fields["system_mapping_reuse_disposition"] =
+              jointSystemMappingReuseDispositionSpelling(
+                  repaired->systemDisposition);
+          fields["incremental_mapping_count"] =
+              repaired->incrementalMappings.size();
+          fields["incremental_wall_time_ns"] =
+              repaired->incrementalExecution.summary
+                  .executionWallTimeNanoseconds;
+          fields["liveness"] = "requires_child_cgra_replay";
+        });
     ++result.candidatesConsumed;
     result.childSystems.push_back(childReference);
-    result.reuseDispositions.push_back(repaired->disposition);
-    result.executions.push_back(std::move(repaired->execution));
+    result.reuseDispositions.push_back(repaired->rebase.disposition);
+    result.executions.push_back(std::move(repaired->incrementalExecution));
   }
   const std::uint64_t settled = result.candidatesConsumed +
                                 result.candidatesRejected +
@@ -1054,12 +1235,8 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
   if (target.separatedMode != expectedSeparatedMode)
     return invalid("operand-buffer mode feedback is not the next separated "
                    "mode");
-  std::vector<SpatialMicroarchitectureDecision> decisions;
-  if (target.separatedMode)
-    decisions.push_back(
-        ChangeTemporalOperandBufferMode{target.pe, *target.separatedMode});
-  decisions.push_back(ResizeTemporalOperandBuffer{
-      target.pe, target.candidateEntriesPerAllocationUnit});
+  const std::vector<SpatialMicroarchitectureDecision> decisions =
+      spatialOperandBufferHardwareDecisions(target);
   result.candidateLimit = decisions.size();
   if (request.boundedQuality)
     result.candidateLimit = std::min<std::uint64_t>(
@@ -1121,6 +1298,239 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
   if (result.candidatesPlanned != result.candidatesReserved)
     return invalid("operand-buffer hardware repair candidate ledger is not "
                    "reserved");
+  return result;
+}
+
+llvm::Expected<PlanExecutionPolicy>
+reserveDispatchWindow(const PlanExecutionPolicy &policy,
+                      std::uint64_t reservedNanoseconds) {
+  const std::optional<std::uint64_t> deadline =
+      policy.dispatchNotAfterUnixNanoseconds();
+  if (!deadline || reservedNanoseconds == 0)
+    return policy;
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const std::uint64_t nowNanoseconds =
+      now.count() < 0
+          ? 0
+          : static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now)
+                    .count());
+  const std::uint64_t reservedDeadline = std::max(
+      nowNanoseconds,
+      *deadline > reservedNanoseconds ? *deadline - reservedNanoseconds : 0);
+  if (reservedDeadline >= *deadline)
+    return policy;
+  return PlanExecutionPolicy::get(policy.workerCount(), policy.inProcessClaim(),
+                                  policy.externalSite(),
+                                  policy.resourceBindings(),
+                                  policy.maximumDispatches(), reservedDeadline);
+}
+
+namespace {
+
+void saturatingAdd(std::uint64_t &target, std::uint64_t value) {
+  target = value > std::numeric_limits<std::uint64_t>::max() - target
+               ? std::numeric_limits<std::uint64_t>::max()
+               : target + value;
+}
+
+template <typename Repair>
+void foldRepairLedger(JointRepairWorkLedger &ledger, const Repair &repair) {
+  saturatingAdd(ledger.candidateLimit, repair.candidateLimit);
+  saturatingAdd(ledger.planned, repair.candidatesPlanned);
+  saturatingAdd(ledger.reserved, repair.candidatesReserved);
+  saturatingAdd(ledger.consumed, repair.candidatesConsumed);
+  saturatingAdd(ledger.rejected, repair.candidatesRejected);
+  saturatingAdd(ledger.cancelled, repair.candidatesCancelled);
+}
+
+template <typename Repair>
+llvm::Error appendRepairChildren(JointRuntimeWitnessRepair &result,
+                                 Repair &repair) {
+  if (repair.childSystems.size() != repair.executions.size())
+    return invalid("runtime witness repair lost its child System domain");
+  result.childSystems.insert(result.childSystems.end(),
+                             repair.childSystems.begin(),
+                             repair.childSystems.end());
+  for (JointDesignExecution &child : repair.executions)
+    result.executions.push_back(std::move(child));
+  repair.executions.clear();
+  return llvm::Error::success();
+}
+
+JointHardwareReopenRequest familyRequest(const JointHardwareReopenRequest &base,
+                                         llvm::StringRef family) {
+  JointHardwareReopenRequest request = base;
+  llvm::SmallString<256> journal(base.journalRoot);
+  llvm::sys::path::append(journal, family);
+  request.journalRoot = journal.str().str();
+  return request;
+}
+
+} // namespace
+
+llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
+    const JointDesignExplorationPlan &parentPlan,
+    const JointDesignExecution &parentExecution,
+    const JointDesignPolicy &policy, const JointRuntimeWitnessSet &witnesses,
+    std::uint64_t parentCostNanoseconds,
+    std::optional<std::uint64_t> remainingHardwareRepairProbes,
+    JointHardwareReopenRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  if (request.journalRoot.empty())
+    return invalid("runtime witness repair requires a journal root");
+  JointRuntimeWitnessRepair result;
+  const bool mappingRepairAdmitted =
+      witnesses.transport &&
+      witnesses.transport->disposition ==
+          SpatialTransportRuntimeFeedbackDisposition::Exact;
+  // A fixed System frontier permits Mapping repair on the immutable parent
+  // but never materializes a child System; an exhausted shared probe ledger
+  // admits none either.
+  const bool hardwareAdmitted =
+      request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::BoundedHardwareReopen &&
+      (!remainingHardwareRepairProbes || *remainingHardwareRepairProbes != 0);
+  const bool fifoAdmitted =
+      hardwareAdmitted && witnesses.fifo &&
+      witnesses.fifo->disposition == SpatialFifoRuntimeFeedbackDisposition::Exact;
+  const bool operandAdmitted =
+      hardwareAdmitted && witnesses.operandQueue &&
+      witnesses.operandQueue->disposition ==
+          SpatialOperandQueueRuntimeFeedbackDisposition::Exact &&
+      witnesses.operandQueue->repairTarget.has_value();
+
+  std::uint64_t hardwareChildCount = 0;
+  if (fifoAdmitted)
+    saturatingAdd(hardwareChildCount,
+                  spatialFifoHardwareAlternatives(*witnesses.fifo).size());
+  if (operandAdmitted)
+    saturatingAdd(hardwareChildCount,
+                  spatialOperandBufferHardwareDecisions(
+                      *witnesses.operandQueue->repairTarget)
+                      .size());
+  if (remainingHardwareRepairProbes)
+    hardwareChildCount =
+        std::min(hardwareChildCount, *remainingHardwareRepairProbes);
+  if (hardwareChildCount != 0 && parentCostNanoseconds != 0)
+    result.hardwareReopenReservedNanoseconds =
+        parentCostNanoseconds >
+                std::numeric_limits<std::uint64_t>::max() / hardwareChildCount
+            ? std::numeric_limits<std::uint64_t>::max()
+            : parentCostNanoseconds * hardwareChildCount;
+
+  std::uint64_t mappingRepairWallNanoseconds = 0;
+  std::uint64_t hardwareReopenWallNanoseconds = 0;
+  const auto elapsedNanoseconds =
+      [](std::chrono::steady_clock::time_point start) -> std::uint64_t {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+  };
+  if (mappingRepairAdmitted) {
+    const auto mappingRepairStart = std::chrono::steady_clock::now();
+    JointHardwareReopenRequest mappingRequest =
+        familyRequest(request, "mapping-repair");
+    auto window = reserveDispatchWindow(
+        request.executionPolicy, result.hardwareReopenReservedNanoseconds);
+    if (!window)
+      return window.takeError();
+    mappingRequest.executionPolicy = std::move(*window);
+    auto repaired = executeSpatialTransportRuntimeRepair(
+        parentPlan, parentExecution, policy, *witnesses.transport,
+        std::move(mappingRequest), artifacts, blobs);
+    if (!repaired)
+      return repaired.takeError();
+    foldRepairLedger(result.mappingRepairLedger, *repaired);
+    if (llvm::Error error = appendRepairChildren(result, *repaired))
+      return error;
+    result.mappingRepair = std::move(*repaired);
+    mappingRepairWallNanoseconds = elapsedNanoseconds(mappingRepairStart);
+  }
+  const auto hardwareReopenStart = std::chrono::steady_clock::now();
+  // A first-verified invocation returns the first verified Mapping: once the
+  // Mapping repair has retired a child on the immutable parent System, no
+  // hardware child can be selected ahead of it, so none is materialized.
+  // Bounded quality keeps every admitted family so the children compete.
+  const bool mappingRepairRetired =
+      result.mappingRepair && result.mappingRepair->cegar &&
+      result.mappingRepair->cegar->termination ==
+          SpatialTransportCegarTermination::Retired &&
+      !result.executions.empty();
+  const bool hardwareWithheldByMappingRepair =
+      mappingRepairRetired &&
+      request.stoppingPolicy == JointDesignStoppingPolicy::FirstVerified;
+
+  std::optional<std::uint64_t> remainingProbes = remainingHardwareRepairProbes;
+  const auto hardwareRequest =
+      [&](llvm::StringRef family) -> JointHardwareReopenRequest {
+    JointHardwareReopenRequest child = familyRequest(request, family);
+    if (child.boundedQuality && remainingProbes)
+      child.boundedQuality->maximumHardwareRepairProbes =
+          std::min(child.boundedQuality->maximumHardwareRepairProbes,
+                   *remainingProbes);
+    return child;
+  };
+  const auto chargeProbes = [&](std::uint64_t reserved) {
+    if (remainingProbes)
+      *remainingProbes = reserved >= *remainingProbes ? 0
+                                                      : *remainingProbes -
+                                                            reserved;
+  };
+  if (fifoAdmitted && !hardwareWithheldByMappingRepair &&
+      (!remainingProbes || *remainingProbes != 0)) {
+    auto repaired = executeSpatialFifoHardwareFeedbackReopen(
+        parentPlan, parentExecution, policy, *witnesses.fifo,
+        hardwareRequest("fifo-reopen"), artifacts, blobs);
+    if (!repaired)
+      return repaired.takeError();
+    foldRepairLedger(result.hardwareReopenLedger, *repaired);
+    chargeProbes(repaired->candidatesReserved);
+    if (llvm::Error error = appendRepairChildren(result, *repaired))
+      return error;
+    result.fifoReopen = std::move(*repaired);
+  }
+  if (operandAdmitted && !hardwareWithheldByMappingRepair &&
+      (!remainingProbes || *remainingProbes != 0)) {
+    auto repaired = executeSpatialOperandBufferHardwareFeedbackReopen(
+        parentPlan, parentExecution, policy, *witnesses.operandQueue,
+        hardwareRequest("operand-buffer-reopen"), artifacts, blobs);
+    if (!repaired)
+      return repaired.takeError();
+    foldRepairLedger(result.hardwareReopenLedger, *repaired);
+    chargeProbes(repaired->candidatesReserved);
+    if (llvm::Error error = appendRepairChildren(result, *repaired))
+      return error;
+    result.operandBufferReopen = std::move(*repaired);
+  }
+  hardwareReopenWallNanoseconds = elapsedNanoseconds(hardwareReopenStart);
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        const auto ledger = [](const JointRepairWorkLedger &value) {
+          return llvm::json::Object{{"candidate_limit", value.candidateLimit},
+                                    {"planned", value.planned},
+                                    {"reserved", value.reserved},
+                                    {"consumed", value.consumed},
+                                    {"rejected", value.rejected},
+                                    {"cancelled", value.cancelled}};
+        };
+        fields["operation"] = "joint_runtime_witness_repair";
+        fields["mapping_repair_admitted"] = mappingRepairAdmitted;
+        fields["hardware_reopen_admitted"] = hardwareAdmitted;
+        fields["hardware_reopen_withheld_by_retired_mapping_repair"] =
+            hardwareWithheldByMappingRepair;
+        fields["hardware_child_count"] = hardwareChildCount;
+        fields["parent_cost_ns"] = parentCostNanoseconds;
+        fields["hardware_reopen_reserved_ns"] =
+            result.hardwareReopenReservedNanoseconds;
+        fields["mapping_repair"] = ledger(result.mappingRepairLedger);
+        fields["mapping_repair_wall_ns"] = mappingRepairWallNanoseconds;
+        fields["hardware_reopen"] = ledger(result.hardwareReopenLedger);
+        fields["hardware_reopen_wall_ns"] = hardwareReopenWallNanoseconds;
+        fields["child_system_count"] = result.childSystems.size();
+      });
   return result;
 }
 

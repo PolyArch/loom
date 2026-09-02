@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,9 @@ struct ProductBuildOptions final {
   std::uint64_t mappingTechCandidateLimit = defaultProductTechCandidateLimit;
   std::uint64_t mappingWallTimeLimitMilliseconds =
       defaultProductMappingWallTimeLimitMilliseconds;
+  /// Mapping-repair admission per exact runtime witness. Absent keeps the
+  /// joint repair owner's default; the hardware reopen budget is separate.
+  std::optional<std::uint64_t> mappingRepairCandidateLimit;
   dse::JointDesignStoppingPolicy mappingStoppingPolicy =
       dse::JointDesignStoppingPolicy::FirstVerified;
   dse::PreMappingSpectrumEndpoint mappingSpectrumEndpoint =

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <optional>
 #include <vector>
 
 namespace {
@@ -121,6 +122,9 @@ llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
                                operatorProtocolSymbols.end()),
       mappingTechCandidateLimit,
       mappingWallTimeLimitMilliseconds,
+      // The Mapping-repair admission keeps the joint repair owner's default;
+      // this driver exposes no option for it.
+      std::nullopt,
       *stoppingPolicy,
       *spectrumEndpoint,
       portfolioManifest,

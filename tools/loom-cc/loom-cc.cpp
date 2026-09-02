@@ -94,6 +94,7 @@ struct LoomDriverOptions final {
   std::string deploymentPath;
   std::string mappingTechCandidateLimit;
   std::string mappingWallTimeLimitMilliseconds;
+  std::string mappingRepairCandidateLimit;
   std::string mappingStoppingPolicy;
   std::string mappingSpectrumEndpoint;
   std::string portfolioManifestPath;
@@ -112,6 +113,7 @@ struct LoomDriverOptions final {
            !localToolConfigPath.empty() || !deploymentPath.empty() ||
            !mappingTechCandidateLimit.empty() ||
            !mappingWallTimeLimitMilliseconds.empty() ||
+           !mappingRepairCandidateLimit.empty() ||
            !mappingStoppingPolicy.empty() || !mappingSpectrumEndpoint.empty() ||
            !portfolioManifestPath.empty() || !portfolioRepositoryRoot.empty() ||
            !portfolioCacheRoot.empty() ||
@@ -206,6 +208,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (!mappingWallTimeLimit)
       return mappingWallTimeLimit.takeError();
     if (*mappingWallTimeLimit)
+      continue;
+    auto mappingRepairCandidateLimit = consumeLoomOption(
+        argument, "--loom-mapping-repair-candidate-limit", index, arguments,
+        seen, options.mappingRepairCandidateLimit);
+    if (!mappingRepairCandidateLimit)
+      return mappingRepairCandidateLimit.takeError();
+    if (*mappingRepairCandidateLimit)
       continue;
     auto mappingStoppingPolicy =
         consumeLoomOption(argument, "--loom-mapping-stopping-policy", index,
@@ -351,6 +360,15 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       return parsed.takeError();
     wallTimeLimit = *parsed;
   }
+  std::optional<std::uint64_t> mappingRepairCandidateLimit;
+  if (!options.mappingRepairCandidateLimit.empty()) {
+    auto parsed =
+        parsePositiveProductLimit(options.mappingRepairCandidateLimit,
+                                  "--loom-mapping-repair-candidate-limit");
+    if (!parsed)
+      return parsed.takeError();
+    mappingRepairCandidateLimit = *parsed;
+  }
   auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
       options.mappingStoppingPolicy.empty() ? "first_verified"
                                             : options.mappingStoppingPolicy);
@@ -372,6 +390,7 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       options.operatorProtocolSymbols,
       techCandidateLimit,
       wallTimeLimit,
+      mappingRepairCandidateLimit,
       *stoppingPolicy,
       *spectrumEndpoint,
       options.portfolioManifestPath,

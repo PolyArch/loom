@@ -20,6 +20,13 @@ joint-plan owner, which records it in the bounded Tech-to-Spatial plan edge;
 the resulting resolved plan identity and typed incompleteness therefore expose
 its effect. Omitting it uses the product owner's declared finite default.
 
+`--loom-mapping-repair-candidate-limit` is the Mapping-repair admission per
+exact runtime witness: the positive number of cumulative CEGAR children the
+joint runtime-witness repair may spend on the immutable parent System before
+its hardware reopen, whose probe bound is a separate owner. Omitting it keeps
+the joint repair owner's declared default. It is invocation search policy and
+never enters ResolvedConfig, candidate identity, or Artifact bytes.
+
 `--loom-mapping-wall-time-limit-ms` is a distinct operational limit. The
 driver converts its positive duration once to an absolute deadline shared by
 pre-Mapping, Evidence acquisition, and Tech/Spatial/System Mapping. Providers

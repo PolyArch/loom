@@ -825,7 +825,8 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
        options.externalHardwarePath.empty()
            ? dse::JointHardwareExplorationScope::BoundedHardwareReopen
            : dse::JointHardwareExplorationScope::FixedSystemFrontier,
-       executionControl},
+       executionControl,
+       options.mappingRepairCandidateLimit},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!execution)
     return execution.takeError();
@@ -1001,6 +1002,10 @@ llvm::Error validateProductOptions(const ProductBuildOptions &options) {
   if (options.mappingWallTimeLimitMilliseconds == 0)
     return productError("loom_product_option_invalid",
                         "Mapping wall-time limit must be positive");
+  if (options.mappingRepairCandidateLimit &&
+      *options.mappingRepairCandidateLimit == 0)
+    return productError("loom_product_option_invalid",
+                        "Mapping repair candidate limit must be positive");
   const unsigned fpaStorageCount =
       static_cast<unsigned>(!options.fpaWeightRootPath.empty()) +
       static_cast<unsigned>(!options.fpaArtifactStorePath.empty()) +
