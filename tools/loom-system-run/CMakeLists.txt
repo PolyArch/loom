@@ -3,6 +3,7 @@ set(LLVM_LINK_COMPONENTS
 )
 
 add_llvm_executable(loom-system-run
+  MappedRtlCell.cpp
   loom-system-run.cpp
 )
 
