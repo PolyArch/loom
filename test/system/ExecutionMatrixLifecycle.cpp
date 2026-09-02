@@ -70,8 +70,25 @@ std::optional<std::uint64_t> timevalNanoseconds(const timeval &value) {
   return seconds * nanosecondsPerSecond + subsecond;
 }
 
+/// The CLOCK_MONOTONIC reading that names an interval's start boundary. It is
+/// the alignment key for external samplers recording on the same clock.
+std::optional<std::uint64_t> monotonicNanoseconds() {
+  timespec current{};
+  if (::clock_gettime(CLOCK_MONOTONIC, &current) != 0 || current.tv_sec < 0 ||
+      current.tv_nsec < 0 || current.tv_nsec >= 1'000'000'000)
+    return std::nullopt;
+  constexpr std::uint64_t nanosecondsPerSecond = 1'000'000'000;
+  const std::uint64_t seconds = current.tv_sec;
+  if (seconds > (std::numeric_limits<std::uint64_t>::max() -
+                 static_cast<std::uint64_t>(current.tv_nsec)) /
+                    nanosecondsPerSecond)
+    return std::nullopt;
+  return seconds * nanosecondsPerSecond + current.tv_nsec;
+}
+
 struct ResourceSnapshot final {
   std::chrono::steady_clock::time_point wall;
+  std::optional<std::uint64_t> monotonicNanoseconds;
   std::optional<std::uint64_t> selfCpuNanoseconds;
   std::optional<std::uint64_t> childCpuNanoseconds;
   std::optional<std::uint64_t> selfProcessLifetimeHighWaterRssKib;
@@ -81,6 +98,7 @@ struct ResourceSnapshot final {
 ResourceSnapshot captureResources() {
   ResourceSnapshot snapshot;
   snapshot.wall = std::chrono::steady_clock::now();
+  snapshot.monotonicNanoseconds = monotonicNanoseconds();
   snapshot.selfCpuNanoseconds = processCpuNanoseconds();
   rusage selfUsage{};
   if (::getrusage(RUSAGE_SELF, &selfUsage) == 0 && selfUsage.ru_maxrss >= 0)
@@ -485,6 +503,7 @@ public:
     std::optional<std::uint64_t> childCpuNanoseconds;
     std::optional<std::uint64_t> selfProcessLifetimeHighWaterRssKib;
     std::optional<std::uint64_t> maximumWaitedDescendantProcessRssKib;
+    std::optional<std::uint64_t> beginMonotonicNanoseconds;
   };
 
   std::uint64_t reserveSequence() { return nextSequence_++; }
@@ -502,8 +521,24 @@ public:
          difference(end.selfCpuNanoseconds, begin.selfCpuNanoseconds),
          difference(end.childCpuNanoseconds, begin.childCpuNanoseconds),
          end.selfProcessLifetimeHighWaterRssKib,
-         end.maximumWaitedDescendantProcessRssKib});
+         end.maximumWaitedDescendantProcessRssKib, begin.monotonicNanoseconds});
     return wallNanoseconds;
+  }
+
+  static void emitObservations(llvm::raw_ostream &output,
+                               const Record &record) {
+    output << " operation=" << spelling(record.operation)
+           << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
+    printOptional(output, record.selfCpuNanoseconds);
+    output << " child_cpu_ns=";
+    printOptional(output, record.childCpuNanoseconds);
+    output << " self_process_lifetime_high_water_rss_kib_snapshot=";
+    printOptional(output, record.selfProcessLifetimeHighWaterRssKib);
+    output << " maximum_waited_descendant_process_rss_kib_snapshot=";
+    printOptional(output, record.maximumWaitedDescendantProcessRssKib);
+    output << " begin_monotonic_ns=";
+    printOptional(output, record.beginMonotonicNanoseconds);
+    output << '\n';
   }
 
   void emit(const ExecutionMatrixInvocation &invocation) const {
@@ -513,20 +548,11 @@ public:
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-lifecycle"
-                   << " schema=loom.execution_matrix_lifecycle.4.0";
+                   << " schema=loom.execution_matrix_lifecycle.4.1";
       emitInvocationKey(llvm::outs(), invocation);
       llvm::outs() << " interval_kind=inclusive parent="
-                   << lifecycleParent(record.operation)
-                   << " operation=" << spelling(record.operation)
-                   << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
-      printOptional(llvm::outs(), record.selfCpuNanoseconds);
-      llvm::outs() << " child_cpu_ns=";
-      printOptional(llvm::outs(), record.childCpuNanoseconds);
-      llvm::outs() << " self_process_lifetime_high_water_rss_kib_snapshot=";
-      printOptional(llvm::outs(), record.selfProcessLifetimeHighWaterRssKib);
-      llvm::outs() << " maximum_waited_descendant_process_rss_kib_snapshot=";
-      printOptional(llvm::outs(), record.maximumWaitedDescendantProcessRssKib);
-      llvm::outs() << '\n';
+                   << lifecycleParent(record.operation);
+      emitObservations(llvm::outs(), record);
     }
   }
 
@@ -537,21 +563,12 @@ public:
     });
     for (const Record &record : ordered) {
       llvm::outs() << "execution-matrix-attempt-pair-lifecycle"
-                   << " schema=loom.execution_matrix_attempt_pair_lifecycle.1"
+                   << " schema=loom.execution_matrix_attempt_pair_lifecycle.2"
                    << " cell=" << executionMatrixCellName(cell)
                    << " scope=attempt_pair"
                    << " interval_kind=inclusive parent="
-                   << attemptPairLifecycleParent(record.operation)
-                   << " operation=" << spelling(record.operation)
-                   << " wall_ns=" << record.wallNanoseconds << " self_cpu_ns=";
-      printOptional(llvm::outs(), record.selfCpuNanoseconds);
-      llvm::outs() << " child_cpu_ns=";
-      printOptional(llvm::outs(), record.childCpuNanoseconds);
-      llvm::outs() << " self_process_lifetime_high_water_rss_kib_snapshot=";
-      printOptional(llvm::outs(), record.selfProcessLifetimeHighWaterRssKib);
-      llvm::outs() << " maximum_waited_descendant_process_rss_kib_snapshot=";
-      printOptional(llvm::outs(), record.maximumWaitedDescendantProcessRssKib);
-      llvm::outs() << '\n';
+                   << attemptPairLifecycleParent(record.operation);
+      emitObservations(llvm::outs(), record);
     }
   }
 
