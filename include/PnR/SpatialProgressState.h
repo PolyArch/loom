@@ -3,6 +3,7 @@
 
 #include "Fabric/Identity/FabricRefs.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "PnR/PhysicalTagKeyedMap.h"
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -12,8 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <map>
-#include <string>
 #include <vector>
 
 namespace loom::pnr {
@@ -235,7 +234,7 @@ private:
   std::vector<std::uint64_t> ownerInitializedFeedbackChannelCounts_;
   std::vector<std::uint64_t> ownerRepeatedChannelNetCounts_;
   std::vector<std::uint64_t> ownerIndeterminateQueueClassNetCounts_;
-  std::vector<std::map<std::string, PnrIndex>> ownerQueueClassRefcounts_;
+  std::vector<PhysicalTagKeyedMap<PnrIndex>> ownerQueueClassRefcounts_;
   std::vector<PnrIndex> traversalSelectionCounts_;
   std::vector<PnrIndex> ownerRouteAnchorCounts_;
   std::vector<std::uint64_t> capacityProofDebtOwnerBits_;

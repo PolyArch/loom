@@ -189,6 +189,12 @@ public:
   std::uint64_t heuristicCacheEvictionCount() const {
     return netRouter_.heuristicCacheEvictionCount();
   }
+  std::uint64_t arcCostValidationScanCount() const {
+    return netRouter_.arcCostValidationScanCount();
+  }
+  std::uint64_t physicalTimingValidationScanCount() const {
+    return netRouter_.physicalTimingValidationScanCount();
+  }
   std::size_t heuristicCacheEntryCount() const {
     return netRouter_.heuristicCacheEntryCount();
   }
