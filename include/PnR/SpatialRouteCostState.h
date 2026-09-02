@@ -159,6 +159,11 @@ private:
   llvm::Error
   synchronizeCandidateSwitchRows(llvm::ArrayRef<PnrIndex> changedLogicalNets);
   llvm::Error recomputeAllArcCosts(bool resetTagHistory);
+  /// Checks the arc cost invariant the endpoint router would otherwise scan
+  /// per query (finite lower bound and current cost, current not below its
+  /// lower bound) on the arcs this owner just wrote, then certifies both
+  /// revisions. An empty range checks every arc.
+  llvm::Error certifyArcCosts(llvm::ArrayRef<PnrIndex> writtenArcs);
   std::uint64_t tagUsageForCost(PnrIndex domain, bool stagedTags) const;
   std::uint64_t encodingPressureRaw(PnrIndex domain, bool stagedTags) const;
   llvm::ArrayRef<std::uint64_t> logicalNetClaimBits(PnrIndex logicalNet) const;

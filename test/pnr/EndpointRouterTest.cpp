@@ -611,6 +611,43 @@ void validatedInputRevisionInvalidation() {
     fail(__func__, "an ownerless revision reused a retained heuristic");
 }
 
+void certifiedInputRevisionSkipsValidation() {
+  Fixture fixture;
+  EndpointRouteSearchScratch scratch;
+  EndpointRouteInputRevisionOwner lowerBoundRevisionOwner;
+  EndpointRouteInputRevisionOwner currentRevisionOwner;
+  requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
+  const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
+
+  requireSuccess(__func__, lowerBoundRevisionOwner.certify());
+  requireSuccess(__func__, currentRevisionOwner.certify());
+  auto certified =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128,
+              &lowerBoundRevisionOwner, &currentRevisionOwner);
+  (void)take(__func__, scratch.search(certified));
+  if (scratch.arcCostValidationScanCount() != 0)
+    fail(__func__, "certified cost revisions were scanned by the search");
+
+  // An advance withdraws the certification: the scan resumes and rejects the
+  // input the owner has not certified since.
+  requireSuccess(__func__, currentRevisionOwner.advance());
+  fixture.currentCosts[0] = routeCostInfinity;
+  certified.currentArcCostRevision = currentRevisionOwner.revision();
+  expectFailure(__func__, scratch.search(certified),
+                EndpointRouteSearchFailureKind::Invalid);
+  if (scratch.arcCostValidationScanCount() != 1)
+    fail(__func__, "an advanced revision kept its certification");
+
+  fixture.currentCosts[0] = fixture.lowerCosts[0];
+  requireSuccess(__func__, currentRevisionOwner.certify());
+  (void)take(__func__, scratch.search(certified));
+  if (scratch.arcCostValidationScanCount() != 1)
+    fail(__func__, "a re-certified revision was scanned again");
+}
+
 } // namespace
 
 int main() {
@@ -623,5 +660,6 @@ int main() {
   exactHeuristicCacheInvalidation();
   exactHeuristicCachePreservesWideCosts();
   validatedInputRevisionInvalidation();
+  certifiedInputRevisionSkipsValidation();
   return 0;
 }

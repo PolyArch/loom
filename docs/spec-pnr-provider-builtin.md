@@ -284,6 +284,13 @@ Equal-cost ties use canonical endpoint and traversal keys. A route failure
 rolls back every route-derived cut and cache whose proof is not valid outside
 that transaction.
 
+The route cost owner validates the arc cost arrays it publishes at every
+write, finite lower-bound and current costs with no current cost below its
+lower bound, and certifies that validation through the input revisions the
+endpoint router receives. The router scans a request's cost arrays itself only
+when a revision is absent, stale, or uncertified, so the validation happens
+once per write instead of once per query without weakening it.
+
 The negotiated router observes the invocation-local `ExecutionControlView`
 between its atomic work units only: before each negotiation iteration and
 between the net routes of one iteration, never inside an endpoint A* search.

@@ -38,6 +38,8 @@ struct EndpointRouteInputRevision::State final {
   explicit State(std::uint64_t ownerIdentity) : generation{ownerIdentity, 0} {}
 
   Generation generation;
+  /// The revision the owner certified, or none; an advance moves past it.
+  std::optional<std::uint64_t> certifiedRevision;
 };
 
 EndpointRouteInputRevisionOwner::EndpointRouteInputRevisionOwner()
@@ -67,6 +69,15 @@ llvm::Error EndpointRouteInputRevisionOwner::advance() {
         "EndpointRouter input revision exceeds uint64_t",
         std::make_error_code(std::errc::result_out_of_range));
   ++state_->generation.revision;
+  return llvm::Error::success();
+}
+
+llvm::Error EndpointRouteInputRevisionOwner::certify() {
+  if (!state_)
+    return llvm::make_error<llvm::StringError>(
+        "cannot certify a moved EndpointRouter input revision owner",
+        std::make_error_code(std::errc::invalid_argument));
+  state_->certifiedRevision = state_->generation.revision;
   return llvm::Error::success();
 }
 
@@ -776,6 +787,23 @@ bool EndpointRouteSearchScratch::revisionIsCurrent(
          state->generation == revision.generation_;
 }
 
+bool EndpointRouteSearchScratch::revisionIsCertified(
+    const EndpointRouteInputRevision &revision) const {
+  const std::shared_ptr<const EndpointRouteInputRevision::State> state =
+      revision.state_.lock();
+  return state && revision.generation_.ownerIdentity != 0 &&
+         state->generation == revision.generation_ &&
+         state->certifiedRevision == revision.generation_.revision;
+}
+
+bool EndpointRouteSearchScratch::arcCostsCertified(
+    const EndpointRouteSearchRequest &request) const {
+  return request.lowerBoundArcCostRevision &&
+         request.currentArcCostRevision &&
+         revisionIsCertified(*request.lowerBoundArcCostRevision) &&
+         revisionIsCertified(*request.currentArcCostRevision);
+}
+
 bool EndpointRouteSearchScratch::arcCostsAlreadyValidated(
     const EndpointRouteSearchRequest &request) const {
   if (!validatedArcCosts_.populated || !request.lowerBoundArcCostRevision ||
@@ -1386,7 +1414,9 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   for (PnrIndex endpoint : request.targetEndpoints)
     if (endpoint >= graph_.endpointCount)
       return invalid("target endpoint is out of range: ", endpoint);
-  if (!arcCostsAlreadyValidated(request)) {
+  // The scan is owed once per revision pair unless both owners certified
+  // their current revisions, in which case the writer already validated it.
+  if (!arcCostsAlreadyValidated(request) && !arcCostsCertified(request)) {
     validatedArcCosts_ = {};
     saturatingIncrement(arcCostValidationScanCount_);
     for (PnrIndex arc = 0; arc < graph_.arcs.size(); ++arc) {

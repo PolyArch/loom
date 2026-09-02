@@ -74,6 +74,11 @@ public:
   EndpointRouteInputRevision revision() const &;
   EndpointRouteInputRevision revision() && = delete;
   llvm::Error advance();
+  /// Records that the owner validated the input it publishes at the current
+  /// revision: every value finite and, for a current-cost input, no value
+  /// below its lower bound. A current certified revision replaces the
+  /// router's own per-query scan of that input; `advance` withdraws it.
+  llvm::Error certify();
 
 private:
   friend class EndpointRouteSearchScratch;
@@ -275,8 +280,10 @@ private:
   bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
   void storeCachedHeuristic(const EndpointRouteSearchRequest &request);
   bool revisionIsCurrent(const EndpointRouteInputRevision &revision) const;
+  bool revisionIsCertified(const EndpointRouteInputRevision &revision) const;
   bool
   arcCostsAlreadyValidated(const EndpointRouteSearchRequest &request) const;
+  bool arcCostsCertified(const EndpointRouteSearchRequest &request) const;
   void rememberValidatedArcCosts(const EndpointRouteSearchRequest &request);
   bool physicalTimingAlreadyValidated(
       const EndpointRouteSearchRequest &request) const;

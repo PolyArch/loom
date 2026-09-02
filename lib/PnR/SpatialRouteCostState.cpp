@@ -258,6 +258,8 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
       return current.takeError();
     state.currentArcCosts_.push_back(*current);
   }
+  if (llvm::Error error = state.certifyArcCosts({}))
+    return std::move(error);
   return state;
 }
 
@@ -663,7 +665,7 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
   }
   for (PnrIndex arc : affectedTagArcs_)
     currentArcCosts_[arc] = stagedArcCosts_[arc];
-  return llvm::Error::success();
+  return certifyArcCosts(affectedTagArcs_);
 }
 
 std::uint64_t
@@ -1540,7 +1542,7 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
     }
     currentArcCosts_[arc] = *current;
   }
-  return llvm::Error::success();
+  return certifyArcCosts({});
 }
 
 llvm::Error SpatialRouteCostState::resetFromCandidate() {
@@ -1610,6 +1612,9 @@ llvm::Error SpatialRouteCostState::resetFromVerifiedCandidate() {
   if (currentArcCostsChanged)
     if (llvm::Error error = currentArcCostRevisionOwner_.advance())
       return error;
+  // The traversal-only reset costs are transient: the tag projection rebuild
+  // below recomputes and certifies every arc cost, so the advanced revision
+  // stays uncertified until then.
   for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
     currentArcCosts_[arc] = resetArcCost(arc);
   presentPressure_ = policy_.presentPressureInitial;
@@ -1752,7 +1757,37 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
     currentTraversalCosts_[traversal] = stagedTraversalCosts_[traversal];
   for (PnrIndex arc : affectedTagArcs_)
     currentArcCosts_[arc] = stagedArcCosts_[arc];
-  return llvm::Error::success();
+  return certifyArcCosts(affectedTagArcs_);
+}
+
+llvm::Error
+SpatialRouteCostState::certifyArcCosts(llvm::ArrayRef<PnrIndex> writtenArcs) {
+  if (lowerBoundArcCosts_.size() != currentArcCosts_.size())
+    return routeCostStateError("arc cost arrays have different domains");
+  const auto check = [&](PnrIndex arc) -> llvm::Error {
+    if (arc >= currentArcCosts_.size())
+      return routeCostStateError("written arc cost index is out of range");
+    const RouteCost lower = lowerBoundArcCosts_[arc];
+    const RouteCost current = currentArcCosts_[arc];
+    if (lower == routeCostInfinity || current == routeCostInfinity)
+      return routeCostStateError("route cost owner wrote an infinite arc cost");
+    if (current < lower)
+      return routeCostStateError(
+          "route cost owner wrote a current arc cost below its lower bound");
+    return llvm::Error::success();
+  };
+  if (writtenArcs.empty()) {
+    for (PnrIndex arc = 0; arc < currentArcCosts_.size(); ++arc)
+      if (llvm::Error error = check(arc))
+        return error;
+  } else {
+    for (PnrIndex arc : writtenArcs)
+      if (llvm::Error error = check(arc))
+        return error;
+  }
+  if (llvm::Error error = lowerBoundArcCostRevisionOwner_.certify())
+    return error;
+  return currentArcCostRevisionOwner_.certify();
 }
 
 std::size_t SpatialRouteCostState::retainedStorageBytes() const {
