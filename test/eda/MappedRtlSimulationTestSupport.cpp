@@ -52,6 +52,7 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <array>
@@ -622,6 +623,29 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   requireSuccess(test, addFu.addCapabilityTemplate(
                            adg::FuCapabilityTemplateSpec{{add}, {}}));
   requireSuccess(test, addFu.close({take(test, add.output(0))}));
+  // A second add FU lets the chained temporal adds pair through a register
+  // FIFO across two FU occurrences. One elastic FU writing and reading the
+  // same FIFO would close a combinational ready cycle, so that pairing is not
+  // an admissible local disposition.
+  auto chainedAddFu =
+      take(test, temporalPe.addFu(addInputs,
+                                  adg::FuSpec{demuxInputPorts, {payload}}));
+  auto chainedAdd =
+      take(test,
+           chainedAddFu.addOperation(
+               {take(test, chainedAddFu.input(0)),
+                take(test, chainedAddFu.input(1))},
+               adg::OperationCapabilitySpec{
+                   ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                   ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
+                       {::fabric::IntegerWidth::I32})},
+                   {::dataflow::OperationSchemaId::ArithAddI},
+                   {payload},
+                   ::fabric::oneCycleElasticOperationResourceContract()}));
+  requireSuccess(test, chainedAddFu.addCapabilityTemplate(
+                           adg::FuCapabilityTemplateSpec{{chainedAdd}, {}}));
+  requireSuccess(test,
+                 chainedAddFu.close({take(test, chainedAdd.output(0))}));
   requireSuccess(test, temporalPe.close());
   std::vector<adg::SpatialValue> temporalPayloadOutputs;
   std::vector<adg::SpatialValue> temporalTagOutputs;
@@ -726,13 +750,31 @@ pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
       ResolvedPnrViolationKind::UnroutedObligation,
       ResolvedPnrViolationKind::CapacityOveruse};
   const auto &selection = config.dse.spatialPnr.objectiveSelection;
+  const auto &catalogs = config.dse.objectiveCatalogs;
+  const auto &ordering =
+      catalogs.totalOrderings[selection.selectedTotalOrdering];
+  const auto repairableEnergy =
+      llvm::find_if(ordering.weightedLevels, [&](std::uint32_t levelOrdinal) {
+        const auto &level = catalogs.weightedLevels[levelOrdinal];
+        return llvm::all_of(
+            config.dse.spatialPnr.temporaryViolations.admitted,
+            [&](ResolvedPnrViolationKind kind) {
+              return llvm::any_of(level.terms, [&](const auto &term) {
+                const auto *source =
+                    std::get_if<ResolvedMappingViolationObjectiveSource>(
+                        &catalogs.dimensions[term.dimension].source);
+                return source && source->kind == kind;
+              });
+            });
+      });
+  deployment::test::require(
+      test, repairableEnergy != ordering.weightedLevels.end(),
+      "builtin ordering has no repairable construction-debt energy");
   config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy =
-      config.dse.objectiveCatalogs
-          .totalOrderings[selection.selectedTotalOrdering]
-          .weightedLevels.front();
+      *repairableEnergy;
   auto &search = config.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
-  search.actionProposal = {1, 0, 0};
+  search.actionProposal = {1, 1, 0};
   search.annealing.calibrationProposalCount = 1;
   search.annealing.fallbackTemperature = 1;
   search.annealing.minimumTemperature = 1;
