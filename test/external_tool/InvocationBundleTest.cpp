@@ -1183,8 +1183,8 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
                              (root / "empty-closure").string(), emptyClosure),
                          "empty owner bytes");
 
-  // Compatible typed-closure manifests have neither extension field and
-  // remain importable under the current reader.
+  // Compatible typed-closure manifests have no extension field and remain
+  // importable under the current reader.
   const std::filesystem::path compatible = root / "compatible-manifest";
   take(__func__,
        finalizeExternalToolInvocationBundle(compatible.string(), spec));
@@ -1208,6 +1208,23 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
       jsonVersionMember(kCompatibleTypedClosureManifestVersion));
   compatibleText.erase(treeFieldOffset, treeField.size());
   compatibleText.erase(producedFieldOffset, producedField.size());
+
+  // A 2.0 manifest that retains the 2.4 auxiliary-tool field is rejected by
+  // the exact version gate; no reader downgrades the field.
+  writeText(compatibleManifest, compatibleText);
+  const PreparedExternalToolInvocation retainedFieldHandle{
+      compatible.string(), blobDigest(compatibleText)};
+  requireFailureContains(
+      __func__,
+      importExternalToolInvocationBundle(retainedFieldHandle,
+                                         importExpectation(spec)),
+      "before 2.4 cannot contain auxiliary tool executables");
+
+  const std::string auxiliaryField = "  \"auxiliary_tool_executables\": [],\n";
+  const std::size_t auxiliaryFieldOffset = compatibleText.find(auxiliaryField);
+  require(__func__, auxiliaryFieldOffset != std::string::npos,
+          "cannot derive the compatible typed-closure manifest fixture");
+  compatibleText.erase(auxiliaryFieldOffset, auxiliaryField.size());
   writeText(compatibleManifest, compatibleText);
   const PreparedExternalToolInvocation compatibleHandle{
       compatible.string(), blobDigest(compatibleText)};

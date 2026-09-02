@@ -35,7 +35,7 @@ llvm::Expected<std::uint64_t> requiredUnsigned(const llvm::json::Object &object,
 llvm::Error validateParallelCommandGroups(
     llvm::ArrayRef<ExternalToolParallelCommandGroup> groups,
     llvm::ArrayRef<std::vector<std::string>> commands,
-    llvm::StringRef toolExecutable,
+    llvm::ArrayRef<std::string> toolExecutables,
     llvm::ArrayRef<std::string> toolProducedExecutables) {
   std::uint64_t previousEnd = 0;
   bool hasPrevious = false;
@@ -59,7 +59,8 @@ llvm::Error validateParallelCommandGroups(
     for (std::uint64_t ordinal = group.beginCommandOrdinal;
          ordinal != group.endCommandOrdinal; ++ordinal) {
       const std::vector<std::string> &command = commands[ordinal];
-      if (command.empty() || command.front() != toolExecutable)
+      if (command.empty() ||
+          !llvm::is_contained(toolExecutables, command.front()))
         return scheduleError(
             "parallel command group contains a generated controller");
       if (llvm::any_of(command, [&](const std::string &argument) {

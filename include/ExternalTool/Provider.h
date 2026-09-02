@@ -38,6 +38,15 @@ llvm::ArrayRef<BackendToolCatalogEntry> backendToolCatalog();
 const BackendToolCatalogEntry *findBackendTool(llvm::StringRef logicalToolKey);
 llvm::Error validateBackendToolCatalog();
 
+/// The catalog-owned qualification relation: the validated release whose
+/// exact version probe accepts one resolved version line, or null when the
+/// tool key is unknown or no validated release accepts that version. Adapters
+/// qualify a resolved binding through this relation, never through a private
+/// version literal.
+const BackendToolReleaseProfile *
+findValidatedRelease(llvm::StringRef logicalToolKey,
+                     llvm::StringRef resolvedVersion);
+
 const ExternalToolProviderDescriptor &polyArchContainerProvider();
 const ExternalToolProviderDescriptor &verilatorProvider();
 const ExternalToolProviderDescriptor &yosysProvider();

@@ -413,6 +413,10 @@ pathTokens(const PreparedExternalToolInvocation &prepared,
   for (const ResolvedExternalFile &file : manifest.externalFiles)
     add(file.absolutePath,
         "${loom.external_file:" + file.providerInputSlot + "}");
+  for (const ResolvedAuxiliaryToolExecutable &tool :
+       manifest.auxiliaryToolExecutables)
+    add(tool.absolutePath,
+        "${loom.auxiliary_tool:" + tool.providerInputSlot + "}");
   for (const ResolvedExternalFileTree &tree : manifest.externalFileTrees)
     add(tree.absolutePath,
         "${loom.external_tree:" + tree.providerInputSlot + "}");
@@ -676,6 +680,15 @@ canonicalToolVersion(const InvocationManifestData &manifest) {
     json.attributeBegin("tool_version_probe");
     writeToolVersionProbeJson(json, manifest.toolVersionProbe);
     json.attributeEnd();
+    json.attributeArray("auxiliary_tools", [&] {
+      for (const ResolvedAuxiliaryToolExecutable &tool :
+           manifest.auxiliaryToolExecutables)
+        json.object([&] {
+          json.attribute("slot", tool.providerInputSlot);
+          json.attribute("content_sha256",
+                         formatExternalFileFingerprint(tool.fingerprint));
+        });
+    });
     json.attribute("runtime",
                    manifest.runtime.kind == InvocationRuntimeKind::Host
                        ? "host"
@@ -1464,7 +1477,8 @@ runScript(const PreparedExternalToolInvocation &prepared, CacheScriptMode mode,
       return std::move(error);
     std::vector<ExternalToolCommandExecutionObservation> observations;
     if (mode == CacheScriptMode::Execute &&
-        manifest->second.version == kParallelCommandGroupManifestVersion) {
+        (manifest->second.version == kParallelCommandGroupManifestVersion ||
+         manifest->second.version == kAuxiliaryToolCommandManifestVersion)) {
       auto loaded = loadCommandExecutionObservations(
           prepared, attemptToken, manifest->second.commands.size(), bundleRoot);
       if (!loaded) {

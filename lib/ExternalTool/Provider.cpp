@@ -369,6 +369,20 @@ llvm::Error validateBackendToolCatalog() {
   return llvm::Error::success();
 }
 
+const BackendToolReleaseProfile *
+findValidatedRelease(llvm::StringRef logicalToolKey,
+                     llvm::StringRef resolvedVersion) {
+  const BackendToolCatalogEntry *entry = findBackendTool(logicalToolKey);
+  if (!entry)
+    return nullptr;
+  const auto found =
+      llvm::find_if(entry->validatedReleases, [&](const auto &release) {
+        const auto &marker = release.exactVersionProbe.requiredOutputSubstring;
+        return marker && resolvedVersion.contains(*marker);
+      });
+  return found == entry->validatedReleases.end() ? nullptr : &*found;
+}
+
 const ExternalToolProviderDescriptor &polyArchContainerProvider() {
   return provider("polyarch_container");
 }

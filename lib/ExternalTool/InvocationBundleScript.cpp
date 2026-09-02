@@ -753,6 +753,15 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   for (const ResolvedExternalFile &file : manifest.externalFiles)
     appendContentDigestCheck(script, file.absolutePath,
                              formatExternalFileFingerprint(file.fingerprint));
+  for (const ResolvedAuxiliaryToolExecutable &tool :
+       manifest.auxiliaryToolExecutables) {
+    appendContentDigestCheck(script, tool.absolutePath,
+                             formatExternalFileFingerprint(tool.fingerprint));
+    script += "if [[ ! -x " + shellQuote(tool.absolutePath) + " ]]; then\n";
+    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                  InvocationLauncherExitCode::BundleContentMismatch);
+    script += "fi\n";
+  }
   for (const ResolvedExternalFileTree &tree : manifest.externalFileTrees)
     appendFileTreeCheck(script, tree);
   if (!manifest.declaredOutputs.empty()) {

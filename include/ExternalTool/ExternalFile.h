@@ -29,6 +29,16 @@ struct ResolvedExternalFile final {
   ExternalFileFingerprint fingerprint;
 };
 
+/// One provider-selected ordinary executable whose exact bytes and local path
+/// are frozen into an invocation. Unlike an external data file, this typed
+/// value may own argv[0] for a structured command.
+struct ResolvedAuxiliaryToolExecutable final {
+  std::string providerInputSlot;
+  std::string localFileKey;
+  std::string absolutePath;
+  ExternalFileFingerprint fingerprint;
+};
+
 struct ExternalFileTreeMember final {
   std::string relativePath;
   ExternalFileFingerprint fingerprint;

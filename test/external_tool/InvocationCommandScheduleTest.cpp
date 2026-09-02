@@ -288,6 +288,38 @@ void completedScriptKillsSurvivingChildren(const std::filesystem::path &root,
           "completed run script left a surviving tool child");
 }
 
+void auxiliaryCommandOwnershipIsTyped(const std::filesystem::path &root,
+                                      const std::filesystem::path &tool,
+                                      const std::filesystem::path &auxiliary) {
+  const ExternalFileFingerprint fingerprint =
+      take(__func__, fingerprintExternalFile(auxiliary.string()));
+  ExternalToolInvocationBundleSpec dataOnly = baseSpec(tool);
+  dataOnly.commands = {{auxiliary.string(), "noop"}};
+  dataOnly.externalFiles.push_back(
+      {"schedule_data", "schedule_data", auxiliary.string(), fingerprint});
+  requireFailureContains(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "data-as-command").string(), dataOnly),
+      "typed auxiliary tool");
+
+  ExternalToolInvocationBundleSpec typed = baseSpec(tool);
+  typed.commands = {{auxiliary.string(), "noop"}};
+  typed.auxiliaryToolExecutables.push_back(
+      {"schedule_auxiliary", "schedule_auxiliary", auxiliary.string(),
+       fingerprint});
+  const std::filesystem::path bundle = root / "typed-auxiliary";
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), typed));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "typed auxiliary command did not execute");
+  require(__func__,
+          readText(bundle / "tool-invocation.json")
+                  .find("\"auxiliary_tool_executables\"") !=
+              std::string::npos,
+          "typed auxiliary command owner is absent from the manifest");
+}
+
 void scheduleValidationAndCacheIdentity(const std::filesystem::path &root,
                                         const std::filesystem::path &tool) {
   ExternalToolInvocationBundleSpec invalid = baseSpec(tool);
@@ -329,12 +361,19 @@ void scheduleValidationAndCacheIdentity(const std::filesystem::path &root,
       take(__func__,
            finalizeExternalToolInvocationBundle(currentRoot.string(), ordered));
   std::string legacyManifest = readText(currentRoot / "tool-invocation.json");
-  const std::string currentVersion = "\"version\": \"2.3\"";
+  const std::string currentVersion = "\"version\": \"2.4\"";
   const std::size_t versionPosition = legacyManifest.find(currentVersion);
   require(__func__, versionPosition != std::string::npos,
           "current manifest version is absent");
   legacyManifest.replace(versionPosition, currentVersion.size(),
-                         "\"version\": \"2.2\"");
+                         "\"version\": \"2.3\"");
+  const std::string emptyAuxiliaryTools =
+      "  \"auxiliary_tool_executables\": [],\n";
+  const std::size_t auxiliaryPosition =
+      legacyManifest.find(emptyAuxiliaryTools);
+  require(__func__, auxiliaryPosition != std::string::npos,
+          "current manifest omits the auxiliary tool domain");
+  legacyManifest.erase(auxiliaryPosition, emptyAuxiliaryTools.size());
   const std::filesystem::path legacyRoot = root / "ordered-legacy";
   std::error_code copyError;
   std::filesystem::copy(currentRoot, legacyRoot,
@@ -350,7 +389,7 @@ void scheduleValidationAndCacheIdentity(const std::filesystem::path &root,
   const ExternalToolResultCacheKey legacyKey =
       take(__func__, deriveExternalToolResultCacheKey(legacy));
   require(__func__, currentKey == legacyKey,
-          "empty 2.3 schedule changed the ordered 2.2 cache identity");
+          "empty 2.4 auxiliary tools changed the ordered 2.3 cache identity");
 }
 
 struct ExecutionDeadline final {
@@ -419,6 +458,8 @@ int main(int argc, char **argv) {
       std::filesystem::absolute(argv[1]).lexically_normal();
   std::filesystem::create_directories(root);
   const std::filesystem::path tool = root / "bin" / "fake-schedule-tool";
+  const std::filesystem::path auxiliary =
+      root / "bin" / "fake-schedule-auxiliary";
   writeExecutable(tool,
                   R"bash(#!/usr/bin/env bash
 set -u
@@ -476,6 +517,7 @@ LOOM_SIMULATOR
     ;;
 esac
 )bash");
+  writeExecutable(auxiliary, readText(tool));
   require("main", ::unsetenv("LOOM_EXTERNAL_TOOL_CACHE_ROOT") == 0,
           "cannot isolate persistent result reuse");
   parallelBuildsJoinBeforeController(root, tool);
@@ -483,6 +525,7 @@ esac
   signaledCommandRetainsTypedExit(root, tool);
   observationStateObstructionFailsBeforeLaunch(root, tool);
   completedScriptKillsSurvivingChildren(root, tool);
+  auxiliaryCommandOwnershipIsTyped(root, tool, auxiliary);
   scheduleValidationAndCacheIdentity(root, tool);
   controlledStopKillsParallelDescendants(root, tool);
   return 0;

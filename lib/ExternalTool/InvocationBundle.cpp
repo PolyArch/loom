@@ -253,12 +253,21 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
     previousProducedExecutable = *path;
     producedExecutables.insert(std::move(*path));
   }
+  std::vector<std::string> frozenToolExecutables{
+      specification.tool.executable};
+  for (const ResolvedAuxiliaryToolExecutable &tool :
+       specification.auxiliaryToolExecutables)
+    frozenToolExecutables.push_back(tool.absolutePath);
+  llvm::sort(frozenToolExecutables);
+  frozenToolExecutables.erase(
+      std::unique(frozenToolExecutables.begin(), frozenToolExecutables.end()),
+      frozenToolExecutables.end());
   bool hasPrecedingToolCommand = false;
   std::set<std::string> referencedProducedExecutables;
   for (const std::vector<std::string> &command : specification.commands) {
     if (command.empty())
       return bundleError("invocation command is empty");
-    if (command.front() == specification.tool.executable) {
+    if (llvm::is_contained(frozenToolExecutables, command.front())) {
       hasPrecedingToolCommand = true;
     } else if (producedExecutables.count(command.front())) {
       if (!hasPrecedingToolCommand)
@@ -270,8 +279,8 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
           referencedProducedExecutables.insert(argument.str());
     } else {
       return bundleError(
-          "each command must begin with the frozen tool executable or one "
-          "manifest-listed tool-produced executable");
+          "each command must begin with the frozen primary tool, a typed "
+          "auxiliary tool, or one manifest-listed tool-produced executable");
     }
     for (const std::string &argument : command)
       if (containsNull(argument))
@@ -283,7 +292,7 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
         "generated controller command");
   if (llvm::Error error = validateParallelCommandGroups(
           specification.parallelCommandGroups, specification.commands,
-          specification.tool.executable, specification.toolProducedExecutables))
+          frozenToolExecutables, specification.toolProducedExecutables))
     return error;
 
   std::set<std::string> environmentNames;
@@ -306,6 +315,28 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
     if (!path.is_absolute() || path.lexically_normal() != path)
       return bundleError(
           "external file path must be an absolute canonical path");
+  }
+  std::string previousAuxiliarySlot;
+  for (const ResolvedAuxiliaryToolExecutable &tool :
+       specification.auxiliaryToolExecutables) {
+    if (tool.providerInputSlot.empty() ||
+        containsNull(tool.providerInputSlot) ||
+        !externalSlots.insert(tool.providerInputSlot).second)
+      return bundleError(
+          "auxiliary tool provider input slot is invalid or duplicated");
+    if (!previousAuxiliarySlot.empty() &&
+        previousAuxiliarySlot >= tool.providerInputSlot)
+      return bundleError(
+          "auxiliary tool records are not canonical sorted-unique");
+    previousAuxiliarySlot = tool.providerInputSlot;
+    if (tool.localFileKey.empty() || containsNull(tool.localFileKey))
+      return bundleError("auxiliary tool local key is invalid");
+    if (tool.absolutePath.empty() || containsNull(tool.absolutePath))
+      return bundleError("auxiliary tool path is empty or contains NUL");
+    const std::filesystem::path path(tool.absolutePath);
+    if (!path.is_absolute() || path.lexically_normal() != path)
+      return bundleError(
+          "auxiliary tool path must be an absolute canonical path");
   }
   for (const ResolvedExternalFileTree &tree : specification.externalFileTrees) {
     if (tree.providerInputSlot.empty() ||
@@ -454,7 +485,8 @@ makeManifest(const ExternalToolInvocationBundleSpec &specification) {
                                   specification.declaredOutputs,
                                   specification.toolProducedExecutables,
                                   specification.parallelCommandGroups,
-                                  kCurrentManifestVersion.str()};
+                                  kCurrentManifestVersion.str(),
+                                  specification.auxiliaryToolExecutables};
   manifest.materializedFiles.reserve(specification.files.size());
   for (const MaterializedBundleFile &file : specification.files)
     manifest.materializedFiles.push_back(ManifestMaterializedFile{
@@ -476,6 +508,8 @@ makeValidationSpecification(const InvocationManifestData &manifest) {
   specification.declaredOutputs = manifest.declaredOutputs;
   specification.externalFiles = manifest.externalFiles;
   specification.externalFileTrees = manifest.externalFileTrees;
+  specification.auxiliaryToolExecutables =
+      manifest.auxiliaryToolExecutables;
   specification.toolProducedExecutables = manifest.toolProducedExecutables;
   specification.parallelCommandGroups = manifest.parallelCommandGroups;
   specification.files.reserve(manifest.materializedFiles.size());
@@ -798,7 +832,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
           {"schema", "version", "provider_identity", "semantic_closure",
            "result_importer_identity", "tool_binding", "tool_version_probe",
            "runtime_binding", "commands", "inherit_environment",
-           "materialized_files", "external_files", "external_file_trees",
+           "materialized_files", "external_files",
+           "auxiliary_tool_executables", "external_file_trees",
            "tool_produced_executables", "parallel_command_groups",
            "declared_outputs", "stdout", "stderr", "completion_record"}))
     return std::move(error);
@@ -816,7 +851,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   if (*version != kTypedClosureManifestVersion &&
       *version != kExternalFileTreeManifestVersion &&
       *version != kToolProducedExecutableManifestVersion &&
-      *version != kParallelCommandGroupManifestVersion)
+      *version != kParallelCommandGroupManifestVersion &&
+      *version != kAuxiliaryToolCommandManifestVersion)
     return bundleError("invocation manifest schema or version is unsupported");
   if (*version == kTypedClosureManifestVersion &&
       root->get("external_file_trees"))
@@ -824,13 +860,19 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
         "invocation manifest 2.0 cannot contain external file trees");
   if (*version != kToolProducedExecutableManifestVersion &&
       *version != kParallelCommandGroupManifestVersion &&
+      *version != kAuxiliaryToolCommandManifestVersion &&
       root->get("tool_produced_executables"))
     return bundleError("invocation manifest before 2.2 cannot contain "
                        "tool-produced executables");
   if (*version != kParallelCommandGroupManifestVersion &&
+      *version != kAuxiliaryToolCommandManifestVersion &&
       root->get("parallel_command_groups"))
     return bundleError("invocation manifest before 2.3 cannot contain "
                        "parallel command groups");
+  if (*version != kAuxiliaryToolCommandManifestVersion &&
+      root->get("auxiliary_tool_executables"))
+    return bundleError("invocation manifest before 2.4 cannot contain "
+                       "auxiliary tool executables");
   auto provider =
       requireString(*root, "provider_identity", "invocation manifest");
   if (!provider)
@@ -873,10 +915,19 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
       requireArray(*root, "external_files", "invocation manifest");
   if (!externalArray)
     return externalArray.takeError();
+  const llvm::json::Array *auxiliaryToolArray = nullptr;
+  if (*version == kAuxiliaryToolCommandManifestVersion) {
+    auto tools = requireArray(*root, "auxiliary_tool_executables",
+                              "invocation manifest");
+    if (!tools)
+      return tools.takeError();
+    auxiliaryToolArray = *tools;
+  }
   const llvm::json::Array *externalTreeArray = nullptr;
   if (*version == kExternalFileTreeManifestVersion ||
       *version == kToolProducedExecutableManifestVersion ||
-      *version == kParallelCommandGroupManifestVersion) {
+      *version == kParallelCommandGroupManifestVersion ||
+      *version == kAuxiliaryToolCommandManifestVersion) {
     auto trees =
         requireArray(*root, "external_file_trees", "invocation manifest");
     if (!trees)
@@ -885,7 +936,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
   }
   std::vector<std::string> toolProducedExecutables;
   if (*version == kToolProducedExecutableManifestVersion ||
-      *version == kParallelCommandGroupManifestVersion) {
+      *version == kParallelCommandGroupManifestVersion ||
+      *version == kAuxiliaryToolCommandManifestVersion) {
     auto produced = parseStringArray(*root, "tool_produced_executables",
                                      "invocation manifest");
     if (!produced)
@@ -1006,6 +1058,40 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
         slot->str(), key->str(), path->str(), std::move(*digest)});
   }
 
+  std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryToolExecutables;
+  if (auxiliaryToolArray) {
+    auxiliaryToolExecutables.reserve(auxiliaryToolArray->size());
+    for (const llvm::json::Value &value : *auxiliaryToolArray) {
+      const llvm::json::Object *tool = value.getAsObject();
+      if (!tool)
+        return bundleError("auxiliary tool record must be an object");
+      if (llvm::Error error = rejectUnknownFields(
+              *tool, "auxiliary tool",
+              {"provider_input_slot", "local_file_key", "path",
+               "content_sha256"}))
+        return std::move(error);
+      auto slot =
+          requireString(*tool, "provider_input_slot", "auxiliary tool");
+      if (!slot)
+        return slot.takeError();
+      auto key = requireString(*tool, "local_file_key", "auxiliary tool");
+      if (!key)
+        return key.takeError();
+      auto path = requireString(*tool, "path", "auxiliary tool");
+      if (!path)
+        return path.takeError();
+      auto digestText =
+          requireString(*tool, "content_sha256", "auxiliary tool");
+      if (!digestText)
+        return digestText.takeError();
+      auto digest = parseExternalFileFingerprint(*digestText);
+      if (!digest)
+        return digest.takeError();
+      auxiliaryToolExecutables.push_back(ResolvedAuxiliaryToolExecutable{
+          slot->str(), key->str(), path->str(), std::move(*digest)});
+    }
+  }
+
   std::vector<ResolvedExternalFileTree> externalFileTrees;
   if (externalTreeArray)
     for (const llvm::json::Value &value : *externalTreeArray) {
@@ -1073,7 +1159,8 @@ llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents) {
       std::move(*declared),
       std::move(toolProducedExecutables),
       std::move(*parallelCommandGroups),
-      version->str()};
+      version->str(),
+      std::move(auxiliaryToolExecutables)};
   ExternalToolInvocationBundleSpec validation =
       makeValidationSpecification(manifest);
   if (llvm::Error error = validateSpecification(validation))
@@ -1538,11 +1625,13 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
       for (const std::vector<std::string> &command : manifest.commands)
         writeStringArray(json, command);
     });
-    if (manifest.version == kParallelCommandGroupManifestVersion &&
+    if ((manifest.version == kParallelCommandGroupManifestVersion ||
+         manifest.version == kAuxiliaryToolCommandManifestVersion) &&
         !manifest.parallelCommandGroups.empty())
       writeParallelCommandGroups(json, manifest.parallelCommandGroups);
     if (manifest.version == kToolProducedExecutableManifestVersion ||
-        manifest.version == kParallelCommandGroupManifestVersion) {
+        manifest.version == kParallelCommandGroupManifestVersion ||
+        manifest.version == kAuxiliaryToolCommandManifestVersion) {
       json.attributeBegin("tool_produced_executables");
       writeStringArray(json, manifest.toolProducedExecutables);
       json.attributeEnd();
@@ -1576,9 +1665,23 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
         });
       }
     });
+    if (manifest.version == kAuxiliaryToolCommandManifestVersion)
+      json.attributeArray("auxiliary_tool_executables", [&] {
+        for (const ResolvedAuxiliaryToolExecutable &tool :
+             manifest.auxiliaryToolExecutables) {
+          json.object([&] {
+            json.attribute("provider_input_slot", tool.providerInputSlot);
+            json.attribute("local_file_key", tool.localFileKey);
+            json.attribute("path", tool.absolutePath);
+            json.attribute("content_sha256",
+                           formatExternalFileFingerprint(tool.fingerprint));
+          });
+        }
+      });
     if (manifest.version == kExternalFileTreeManifestVersion ||
         manifest.version == kToolProducedExecutableManifestVersion ||
-        manifest.version == kParallelCommandGroupManifestVersion)
+        manifest.version == kParallelCommandGroupManifestVersion ||
+        manifest.version == kAuxiliaryToolCommandManifestVersion)
       json.attributeArray("external_file_trees", [&] {
         for (const ResolvedExternalFileTree &tree :
              manifest.externalFileTrees) {

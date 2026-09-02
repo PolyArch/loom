@@ -123,6 +123,7 @@ constexpr llvm::StringLiteral kTypedClosureManifestVersion = "2.0";
 constexpr llvm::StringLiteral kExternalFileTreeManifestVersion = "2.1";
 constexpr llvm::StringLiteral kToolProducedExecutableManifestVersion = "2.2";
 constexpr llvm::StringLiteral kParallelCommandGroupManifestVersion = "2.3";
+constexpr llvm::StringLiteral kAuxiliaryToolCommandManifestVersion = "2.4";
 constexpr llvm::StringLiteral kCurrentManifestVersion =
     externalToolInvocationManifestVersion;
 
@@ -148,12 +149,13 @@ struct InvocationManifestData final {
   std::vector<std::string> toolProducedExecutables;
   std::vector<ExternalToolParallelCommandGroup> parallelCommandGroups;
   std::string version;
+  std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryToolExecutables;
 };
 
 llvm::Error validateParallelCommandGroups(
     llvm::ArrayRef<ExternalToolParallelCommandGroup> groups,
     llvm::ArrayRef<std::vector<std::string>> commands,
-    llvm::StringRef toolExecutable,
+    llvm::ArrayRef<std::string> toolExecutables,
     llvm::ArrayRef<std::string> toolProducedExecutables);
 
 llvm::Expected<std::vector<ExternalToolParallelCommandGroup>>

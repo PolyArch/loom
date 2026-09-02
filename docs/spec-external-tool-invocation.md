@@ -177,6 +177,10 @@ library role, expected fingerprint, tree membership, directory filter, or glob. 
 remain owned by the exact provider descriptor and resolved semantic binding.
 Listing a file never authorizes recursive scanning, PDK import, tool
 installation hashing, or implicit file discovery.
+It also never authorizes the configured path as a command executable. A
+provider may resolve one of its closed auxiliary-tool roles from this local
+map, but only the resulting typed `auxiliary_tool_executables` record grants
+that exact path `argv[0]` authority in a finalized 2.4 bundle.
 
 An `ExternalFileTreeRequirement` is one provider-owned input slot plus a
 nonempty canonical sorted-unique list of `(relative_path, SHA-256)` ordinary
@@ -385,7 +389,7 @@ those services.
 The manifest schema owned by this section is:
 
 ```text
-loom.external_tool_invocation 2.3
+loom.external_tool_invocation 2.4
 
 SemanticInvocationClosure =
     CandidateGenerator {
@@ -442,8 +446,21 @@ importable and denotes an empty tree-input list. A 2.0 manifest cannot contain
 the new field. Manifest 2.2 compatibly adds `tool_produced_executables`; the
 2.0 and 2.1 forms remain importable and denote an empty produced-executable
 list. Manifest 2.3 compatibly adds optional `parallel_command_groups`; its
-absence and all older forms denote fully ordered command execution. An older
-manifest cannot contain a field introduced by a newer form. Bundle
+absence and all older forms denote fully ordered command execution. Manifest
+2.4 compatibly adds the required canonical `auxiliary_tool_executables` array.
+Each record has a provider input slot, machine-local key, canonical absolute
+path, and exact content digest. This typed domain is the only owner for
+auxiliary compiler, linker, archiver, build-tool, and provider-built
+build-time launcher commands, including an executable that a tool-generated
+makefile names through a make variable of a frozen command; ordinary
+`external_files` are data and never acquire `argv[0]` authority. An empty 2.4
+array and every older manifest denote no auxiliary command owners. Such tools
+are not inherited from the execution environment after bundle finalization.
+Their roles and digests participate in tool provenance and cache identity, and
+the launcher revalidates both the bytes and executable permission before each
+attempt. Older manifests permit only the primary frozen tool and listed
+tool-produced executables as command owners. An older manifest cannot contain
+a field or command form introduced by a newer form. Bundle
 finalization is failure-atomic. A complete bundle contains:
 
 ```text
@@ -464,6 +481,8 @@ outputs/...
 - every provider-declared external ordinary-file input slot, its semantic
   fingerprint, and either its materialized relative path or frozen absolute
   local path;
+- every typed auxiliary-tool slot, machine-local key, canonical executable
+  path, and exact content fingerprint;
 - every provider-declared external file-tree input slot, its canonical member
   paths and fingerprints, and its frozen absolute local root;
 - the mechanically derived provider semantic identity and provider-form tag;
@@ -473,10 +492,11 @@ outputs/...
   marker, and stable-line selector used to reproduce that result;
 - the module initialization path, requested activation, and exact loaded
   module closure when used;
-- commands as token arrays, not shell fragments, whose executable is either
-  the frozen tool or one exact listed tool-produced executable; a generated
-  controller command may additionally name other listed produced executables
-  as exact argument tokens;
+- commands as token arrays, not shell fragments, whose executable is the
+  frozen primary tool, an exact `auxiliary_tool_executables` record, or one
+  exact listed tool-produced executable; a generated controller command may
+  additionally name other listed produced executables as exact argument
+  tokens;
 - canonical sorted, nonoverlapping parallel command groups, each an
   end-exclusive range of adjacent frozen-tool commands plus a bounded worker
   limit;
@@ -570,7 +590,7 @@ execute the generated top-level script and wait for its exit, but that launcher
 is a thin script invocation. It does not implement a second environment model,
 process-tree supervisor, cgroup manager, memory controller, container runtime,
 retry engine, dynamic scheduler, or license manager. Its only command-level
-concurrency is the exact bounded fork-join schedule frozen in manifest 2.3.
+concurrency is the exact bounded fork-join schedule frozen in the manifest.
 
 A parallel group contains at least two commands, has at least two and no more
 workers than commands, and may contain only commands whose executable is the
@@ -642,8 +662,10 @@ completion, observations, and declared outputs untouched. Once the executor
 publishes a fresh token, interruption belongs to that new generation and uses
 the sealed stopped or incomplete attempt semantics below.
 
-Every command before a tool-produced executable uses the exact frozen tool
-binding. A listed produced path is canonical, relative, strictly below
+Every command before a tool-produced executable uses either the exact frozen
+primary tool binding or an exact ordinary executable frozen by path and digest
+in `auxiliary_tool_executables`. An `external_files` data record can never own
+a command. A listed produced path is canonical, relative, strictly below
 `work/`, and absent from materialized inputs and declared outputs. The shared
 launcher removes every listed path before entering the tool. Immediately
 before a later command may execute one directly, or before a listed generated

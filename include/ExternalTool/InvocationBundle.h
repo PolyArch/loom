@@ -44,7 +44,7 @@ private:
 inline constexpr llvm::StringLiteral externalToolInvocationManifestSchema =
     "loom.external_tool_invocation";
 inline constexpr llvm::StringLiteral externalToolInvocationManifestVersion =
-    "2.3";
+    "2.4";
 
 /// The CandidateGenerator closure of one semantic invocation: the exact
 /// typed input bindings and the exact resolved binding as owner-codec
@@ -268,6 +268,9 @@ struct ExternalToolInvocationBundleSpec {
   /// verbosity. Finalization mechanically appends the presentation argument.
   /// This invocation-local projection metadata is not serialized.
   std::vector<std::uint64_t> diagnosticCommandOrdinals = {};
+  /// Typed frozen auxiliary command owners. External data inputs never gain
+  /// executable authority merely because their host path is executable.
+  std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryToolExecutables = {};
 };
 
 enum class InvocationCompletionStatus {
