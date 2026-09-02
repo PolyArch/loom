@@ -786,10 +786,14 @@ before any callback can expose an unwritten receive slot.
 
 That proof also derives the finite flat producer and per-branch consumer event
 counts for the complete logical channel invocation. The generated adapter
-opens the `OrderedChannelABI` generation with those counts before the first
-endpoint call and requires producer finish, every consumer terminal, and
-collective join after the selected entry returns. Runtime does not infer these
-counts from queue occupancy or observed execution.
+creates each channel's `OrderedChannelABI` instance with the proven producer
+count as its bounded message capacity, opens the generation with those counts
+before the first endpoint call, and requires producer finish, every consumer
+terminal, and collective join after the selected entry returns. Because every
+send of a channel precedes every receive in the serialized projection, that
+bound is exact: the host path allocates no unbounded storage and never
+observes `WouldBlock`. Runtime does not infer these counts from queue
+occupancy or observed execution.
 
 The adapter transports every rejected ABI outcome as its original typed
 `OrderedChannelABIError`; it does not flatten backpressure, sequence
@@ -826,6 +830,13 @@ reservation and publishes no output.
 
 That sequence owner is scoped to the exact System invocation and spans every
 physical Bridge session used by the selected producer and consumer branches.
+It is a one-shot session over that invocation: repeated launches of the same
+static channel, such as consecutive application epochs of one promoted
+producer/consumer pair, append to the same `SendSeq` stream behind the
+messages earlier consumers acknowledged. The provider does not claim the
+reusable generation profile because its per-launch message counts are runtime
+stream lengths rather than lineage-derived static counts; a non-retired launch
+cancels its reservations and publishes nothing.
 The physical Bridges retain distinct PIO ranges, clocks, launch cursors, and
 result collections, but a provider may multiplex their connections through
 one execution session so that one selected channel service has one mutable

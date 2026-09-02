@@ -173,22 +173,31 @@ void nativeInvalidLogicalThreadExtent() {
   recordExecutionError("logical thread extent is negative");
 }
 
-std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount) {
+std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount,
+                                         std::uint64_t producerMessageCount) {
   if (!activeExecution || receiverCount == 0 ||
       receiverCount > std::numeric_limits<std::uint32_t>::max()) {
     recordExecutionError(
         "logical channel create has an invalid receiver count");
     return 0;
   }
+  if (producerMessageCount == 0) {
+    recordExecutionError(
+        "logical channel create has no proven producer message count");
+    return 0;
+  }
+  // The bounded capacity is the proven flat producer count of the channel's
+  // one generation, derived from the same launch correspondence that opens
+  // the generation below; the adapter never allocates unbounded storage.
   NativeExecutionContext::LogicalChannel channel;
   auto abi = loom::runtime::OrderedChannelABI::create(
-      std::numeric_limits<std::uint64_t>::max(),
-      static_cast<std::uint32_t>(receiverCount));
+      producerMessageCount, static_cast<std::uint32_t>(receiverCount));
   if (!abi) {
     recordExecutionError(abi.takeError());
     return 0;
   }
   channel.abi.emplace(std::move(*abi));
+  channel.producerMessageCount = producerMessageCount;
   channel.consumerMessageCounts.resize(static_cast<std::size_t>(receiverCount));
   activeExecution->logicalChannels.push_back(std::move(channel));
   return activeExecution->logicalChannels.size();
@@ -207,12 +216,10 @@ void nativeLogicalChannelRate(std::uint64_t handle,
   if (!channel.abi || channel.generationOpened ||
       receiverOrdinal >= channel.consumerMessageCounts.size() ||
       channel.consumerMessageCounts[receiverOrdinal] ||
-      (channel.producerMessageCount &&
-       *channel.producerMessageCount != producerMessageCount)) {
+      channel.producerMessageCount != producerMessageCount) {
     recordExecutionError("logical channel rate is inconsistent");
     return;
   }
-  channel.producerMessageCount = producerMessageCount;
   channel.consumerMessageCounts[receiverOrdinal] = receiverMessageCount;
   if (llvm::any_of(channel.consumerMessageCounts,
                    [](const auto &count) { return !count.has_value(); }))
