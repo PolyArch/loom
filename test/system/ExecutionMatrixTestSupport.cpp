@@ -1363,6 +1363,9 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
     deployment::test::TemporaryTree tree(treeName);
     ArtifactStore artifacts(tree.path("artifacts"));
     BlobStore blobs(tree.path("blobs"));
+    // One store domain for the store lifetime: the fixture and the attempt
+    // construct each closure once.
+    ExecutionMatrixImportSessions importSessions(artifacts, blobs);
 
     std::optional<ExecutionMatrixLifecycleTimer> setupTimer;
     setupTimer.emplace(lifecycle, ExecutionMatrixLifecycleOperation::Setup);
@@ -1375,8 +1378,6 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixInvocation invocation,
     traceSpatialFixture(test, fixture, artifacts);
     const std::uint64_t setupWallNanoseconds = setupTimer->finish();
     setupTimer.reset();
-
-    ExecutionMatrixImportSessions importSessions(artifacts, blobs);
 
     rusage after{};
     CompletedRun completed = [&] {
@@ -1537,6 +1538,9 @@ void runSystemExecutionAttemptPair(ExecutionMatrixCell cell,
         "-attempt-pair");
     ArtifactStore artifacts(tree.path("artifacts"));
     BlobStore blobs(tree.path("blobs"));
+    // One store domain for the store lifetime: the fixture, the gem5 binding,
+    // and both attempts construct each closure once.
+    ExecutionMatrixImportSessions importSessions(artifacts, blobs);
 
     std::optional<ExecutionMatrixLifecycleTimer> setupTimer;
     setupTimer.emplace(pairLifecycle, ExecutionMatrixLifecycleOperation::Setup);
@@ -1550,7 +1554,6 @@ void runSystemExecutionAttemptPair(ExecutionMatrixCell cell,
           pairLifecycle, ExecutionMatrixLifecycleOperation::Gem5Readiness);
       return readGem5Readiness(test, gem5ReadinessPath);
     }();
-    ExecutionMatrixImportSessions importSessions(artifacts, blobs);
 
     std::optional<runtime::FinalizedGem5SimulationBinding> gem5Binding;
     {
@@ -1560,6 +1563,7 @@ void runSystemExecutionAttemptPair(ExecutionMatrixCell cell,
                                            fixture.interconnect,
                                            readiness.buildIdentity, artifacts));
     }
+    importSessions.emitStatistics(ExecutionMatrixAttemptPairScope{cell});
     CompletedRun ordinary = [&] {
       ExecutionMatrixLifecycleTimer hostTimer(
           ordinaryLifecycle, ExecutionMatrixLifecycleOperation::HostLifecycle);
@@ -1672,6 +1676,7 @@ void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
   deployment::test::TemporaryTree tree("execution-matrix-paired-spatial-batch");
   ArtifactStore artifacts(tree.path("artifacts"));
   BlobStore blobs(tree.path("blobs"));
+  ExecutionMatrixImportSessions importSessions(artifacts, blobs);
   const auto setupStart = std::chrono::steady_clock::now();
   SharedFixture fixture =
       buildSharedFixture(test, cell, artifacts, blobs, tree);
@@ -1807,6 +1812,7 @@ void verifyHeterogeneousSystemAnchor() {
   deployment::test::TemporaryTree tree(test);
   ArtifactStore artifacts(tree.path("artifacts"));
   BlobStore blobs(tree.path("blobs"));
+  ExecutionMatrixImportSessions importSessions(artifacts, blobs);
   SharedFixture fixture = buildSharedFixture(
       test, ExecutionMatrixCell::SpatialDfg, artifacts, blobs, tree);
 

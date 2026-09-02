@@ -280,17 +280,25 @@ engine-active intervals belong to the diagnostic attempt's
 construction order, cache policy, identity, or evidence. Inclusive rows
 overlap and must not be summed; RSS snapshots are not interval deltas.
 
-An attempt pair runs the ordinary and the diagnostic attempt of one System
-cell against one fixture, one gem5 binding, and one store domain. The
-removable import sessions of that domain (artifact import, Fabric import,
-ConfigurationABI import, SystemMapping import, configuration-image
-projection, the gem5 System facts session, and its external-file fingerprint
-proofs) are reported per attempt as
-counter deltas through `loom.execution_matrix_cache.2` (requests, hits,
+Every harness store domain opens its removable import sessions (artifact
+import, Fabric import, ConfigurationABI import, SystemMapping import,
+configuration-image projection, the gem5 System facts session, and its
+external-file fingerprint proofs) for the store's lifetime, before the
+fixture is constructed, so the fixture, the gem5 binding, and every attempt
+construct each closure once and reuse it after revalidation. Session counters
+are reported as deltas per observer: a single-cell run reports its whole
+lifetime under its invocation key (`cell`, `attempt`, `invocation`); an
+attempt pair, which runs the ordinary and the diagnostic attempt of one
+System cell against one fixture, one gem5 binding, and one store domain,
+first reports the shared setup (fixture, gem5 readiness, gem5 binding) under
+`cell` and `scope=attempt_pair`, then each attempt under its invocation key.
+Each observer reports `loom.execution_matrix_deployment_operation.3` (one row
+per Deployment construction mode and operation with invocation count, wall,
+self CPU, and child CPU), `loom.execution_matrix_cache.3` (requests, hits,
 misses, construction attempts, unique, uncached, unsupported, and failed
 constructions, revalidation count and revalidated artifact and blob bytes,
-construction wall time, retained bytes, entries) and per facts closure class
-through `loom.execution_matrix_facts_operation.2` (`derive_facts`,
+construction wall time, retained bytes, entries), and per facts closure class
+`loom.execution_matrix_facts_operation.3` (`derive_facts`,
 `system_inputs_and_deployment_import`, `gem5_binding_import`,
 `entire_fabric_root_import`, `system_mapping_import`, and
 `gem5_guest_runtime_image_projection`). A gem5 facts hit revalidates every
@@ -298,7 +306,8 @@ artifact and blob dependency of the cold closure before reuse; strict
 validation is never disabled. The pair is admissible only when the ordinary
 attempt constructs exactly one facts closure and reuses it at import, the
 diagnostic attempt reuses that closure at prepare and import without any
-construction, and both attempts publish exactly equal functional
+construction, every bounded session shows one construction per miss and no
+uncached construction, and both attempts publish exactly equal functional
 observations (`loom.execution_matrix_attempt_pair.1`).
 
 ## Hardware-Implementation And Evidence Anchor
