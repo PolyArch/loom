@@ -8,6 +8,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
@@ -112,7 +113,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v24",
+    "loom.mapping.root_complete_spatial_pnr.generator.v25",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -184,6 +185,9 @@ struct PreparedTechCandidate final {
   std::optional<::loom::pnr::SpatialCandidateInitializerPreference> preference;
   std::optional<ActiveRouteRank> routeRank;
   ::loom::pnr::SpatialPathFinderSeedHandoffHandle canonicalSeed;
+  /// Derived once per first-verified invocation; see
+  /// TechPhysicalOccurrenceDemand.
+  std::uint64_t physicalOccurrenceDemand = 0;
 };
 
 void saturatingAdd(std::uint64_t &value, std::uint64_t amount) {
@@ -416,22 +420,95 @@ void addCoveredGraphs(llvm::ArrayRef<::dataflow::GraphRef> candidateGraphs,
   canonicalizeGraphReferences(coveredGraphs);
 }
 
+/// The fewest exact Fabric occurrences a TechMapping can occupy: one FU
+/// capability instance per compute row, one Memory Operation Engine per
+/// memory row on a spatial template, and for each temporal template the
+/// operation count of its rows divided upward by the template's resident
+/// context capacity. This is the target-aware physical projection of the
+/// canonical Tech order's realization demand; it is a preference for the
+/// first-verified prefix, not a placement or legality claim.
+struct TechPhysicalOccurrenceDemand final {
+  std::uint64_t occurrences = 0;
+  std::uint64_t temporalMemoryRows = 0;
+  std::uint64_t spatialMemoryRows = 0;
+  std::uint64_t unresolvedMemoryRows = 0;
+};
+
+TechPhysicalOccurrenceDemand
+deriveTechPhysicalOccurrenceDemand(const ::loom::mapping::TechMappingView &tech,
+                                   const ::loom::fabric::FabricArtifactView &fabric) {
+  struct TemplateSupply final {
+    ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
+    std::uint64_t residentContexts = 1;
+  };
+  std::map<std::vector<std::uint8_t>, TemplateSupply> templates;
+  for (const ::loom::fabric::FabricMemoryOccurrenceRef occurrence :
+       fabric.memoryOccurrences()) {
+    const auto engine = fabric.memoryEngineTemplateOf(occurrence);
+    const auto schedule = fabric.memorySchedule(occurrence);
+    if (!engine || !schedule)
+      continue;
+    const std::uint64_t contexts =
+        std::max<std::uint64_t>(1, fabric.memoryResidentContextCount(occurrence));
+    auto [entry, inserted] = templates.try_emplace(
+        ::loom::fabric::canonicalFabricBytes(*engine),
+        TemplateSupply{*schedule, contexts});
+    if (!inserted)
+      entry->second.residentContexts =
+          std::min(entry->second.residentContexts, contexts);
+  }
+  TechPhysicalOccurrenceDemand demand;
+  demand.occurrences = tech.computeRealizations().size();
+  std::map<std::vector<std::uint8_t>, std::uint64_t> temporalOperations;
+  for (const ::loom::mapping::TechMemoryRealizationView &row :
+       tech.memoryRealizations()) {
+    std::vector<std::uint8_t> key =
+        ::loom::fabric::canonicalFabricBytes(row.engine);
+    const auto supply = templates.find(key);
+    if (supply == templates.end()) {
+      ++demand.unresolvedMemoryRows;
+      ++demand.occurrences;
+    } else if (supply->second.schedule == ::fabric::Schedule::Temporal) {
+      ++demand.temporalMemoryRows;
+      temporalOperations[std::move(key)] += row.actors.size();
+    } else {
+      ++demand.spatialMemoryRows;
+      ++demand.occurrences;
+    }
+  }
+  for (const auto &[key, operations] : temporalOperations) {
+    const std::uint64_t capacity = templates.find(key)->second.residentContexts;
+    demand.occurrences += (operations + capacity - 1) / capacity;
+  }
+  return demand;
+}
+
+/// The first-verified prefix visits the TechMapping covering the most
+/// not-yet-covered graphs first. Equal coverage is ordered by ascending
+/// physical occurrence demand before the canonical Artifact reference, so the
+/// verified prefix follows the exact Fabric rather than identity hashing.
 std::size_t selectCandidateForFirstVerified(
     llvm::ArrayRef<PreparedTechCandidate> candidates, std::size_t begin,
     llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
   assert(begin < candidates.size());
+  const auto rank = [&](std::size_t index) {
+    const PreparedTechCandidate &candidate = candidates[index];
+    return std::make_pair(
+        uncoveredGraphCount(candidate.tech.view().covers(), coveredGraphs),
+        candidate.physicalOccurrenceDemand);
+  };
   std::size_t selected = begin;
-  std::size_t selectedGain = uncoveredGraphCount(
-      candidates[selected].tech.view().covers(), coveredGraphs);
+  auto selectedRank = rank(selected);
   for (std::size_t index = begin + 1; index != candidates.size(); ++index) {
-    const std::size_t gain = uncoveredGraphCount(
-        candidates[index].tech.view().covers(), coveredGraphs);
-    if (gain > selectedGain ||
-        (gain == selectedGain &&
-         artifactRootReferenceLess(candidates[index].reference,
-                                   candidates[selected].reference))) {
+    const auto candidateRank = rank(index);
+    if (candidateRank.first > selectedRank.first ||
+        (candidateRank.first == selectedRank.first &&
+         (candidateRank.second < selectedRank.second ||
+          (candidateRank.second == selectedRank.second &&
+           artifactRootReferenceLess(candidates[index].reference,
+                                     candidates[selected].reference))))) {
       selected = index;
-      selectedGain = gain;
+      selectedRank = candidateRank;
     }
   }
   return selected;
@@ -1099,6 +1176,36 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   if (!firstVerifiedCandidate)
     for (const auto ranked : llvm::enumerate(preparedCandidates))
       emitCandidateOrder(ranked.value(), ranked.index());
+
+  if (firstVerifiedCandidate)
+    for (PreparedTechCandidate &candidate : preparedCandidates) {
+      const TechPhysicalOccurrenceDemand demand =
+          deriveTechPhysicalOccurrenceDemand(candidate.tech.view(),
+                                             fabric->view());
+      candidate.physicalOccurrenceDemand = demand.occurrences;
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Summary,
+          ::loom::mapping_debug::Stage::SpatialPnr,
+          ::loom::mapping_debug::Event::Candidate,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "first_verified_tech_candidate";
+            fields["tech_mapping_input_ordinal"] =
+                static_cast<std::uint64_t>(candidate.inputOrdinal);
+            fields["tech_mapping"] =
+                formatArtifactIdentityHex(candidate.reference.artifact);
+            fields["covered_graph_count"] =
+                static_cast<std::uint64_t>(candidate.tech.view().covers().size());
+            fields["compute_row_count"] = static_cast<std::uint64_t>(
+                candidate.tech.view().computeRealizations().size());
+            fields["memory_row_count"] = static_cast<std::uint64_t>(
+                candidate.tech.view().memoryRealizations().size());
+            fields["temporal_memory_row_count"] = demand.temporalMemoryRows;
+            fields["spatial_memory_row_count"] = demand.spatialMemoryRows;
+            fields["unresolved_memory_row_count"] =
+                demand.unresolvedMemoryRows;
+            fields["physical_occurrence_demand"] = demand.occurrences;
+          });
+    }
 
   std::vector<::dataflow::GraphRef> coveredGraphs;
   std::uint64_t attemptedTechMappings = 0;
