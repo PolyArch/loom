@@ -90,6 +90,12 @@ struct OpenRoadPlacedConfig final {
 llvm::Error validateOpenRoadPlacementParameters(
     const OpenRoadPlacementParameters &parameters);
 
+/// Parses the exact placement object of the placed-state configuration JSON
+/// (`die_area_nm`, `core_area_nm`, `site`, `horizontal_pin_layer`,
+/// `vertical_pin_layer`, `placement_density_ppm`) from standalone text.
+llvm::Expected<OpenRoadPlacementParameters>
+parseOpenRoadPlacementParametersJson(llvm::StringRef json);
+
 std::string openRoadExternalFileInputSlot(const OpenRoadExternalFile &file);
 
 llvm::ArrayRef<std::uint8_t> openRoadPlacedConfigSchemaDescriptorBytes();

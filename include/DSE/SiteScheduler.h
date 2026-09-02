@@ -95,11 +95,15 @@ private:
 
 class SiteCapacity final {
 public:
+  /// `undeclaredExternalToolUnits` is the capacity granted to every external
+  /// tool binding that has no explicit entry in `externalTools`; zero keeps
+  /// such bindings inadmissible. Licenses are never granted implicitly.
   static llvm::Expected<SiteCapacity>
   get(std::uint64_t cpuCores, std::uint64_t memoryBytes,
       std::uint64_t scratchBytes,
       llvm::ArrayRef<CountedSiteResource> externalTools = {},
-      llvm::ArrayRef<CountedSiteResource> licenses = {});
+      llvm::ArrayRef<CountedSiteResource> licenses = {},
+      std::uint64_t undeclaredExternalToolUnits = 0);
 
   std::uint64_t cpuCores() const { return cpuCores_; }
   std::uint64_t memoryBytes() const { return memoryBytes_; }
@@ -108,21 +112,27 @@ public:
     return externalTools_;
   }
   llvm::ArrayRef<CountedSiteResource> licenses() const { return licenses_; }
+  std::uint64_t undeclaredExternalToolUnits() const {
+    return undeclaredExternalToolUnits_;
+  }
 
 private:
   SiteCapacity(std::uint64_t cpuCores, std::uint64_t memoryBytes,
                std::uint64_t scratchBytes,
                std::vector<CountedSiteResource> externalTools,
-               std::vector<CountedSiteResource> licenses)
+               std::vector<CountedSiteResource> licenses,
+               std::uint64_t undeclaredExternalToolUnits)
       : cpuCores_(cpuCores), memoryBytes_(memoryBytes),
         scratchBytes_(scratchBytes), externalTools_(std::move(externalTools)),
-        licenses_(std::move(licenses)) {}
+        licenses_(std::move(licenses)),
+        undeclaredExternalToolUnits_(undeclaredExternalToolUnits) {}
 
   std::uint64_t cpuCores_ = 0;
   std::uint64_t memoryBytes_ = 0;
   std::uint64_t scratchBytes_ = 0;
   std::vector<CountedSiteResource> externalTools_;
   std::vector<CountedSiteResource> licenses_;
+  std::uint64_t undeclaredExternalToolUnits_ = 0;
 };
 
 struct ScheduledWorkUnit final {

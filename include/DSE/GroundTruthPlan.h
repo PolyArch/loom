@@ -115,6 +115,16 @@ assessFpaLeafCharacterizationTarget(const FpaLeafCharacterizationTarget &target,
                                     const ArtifactStore &artifactStore,
                                     const BlobStore &blobStore);
 
+/// Assesses every PE, FU, memory, and switch occurrence and every transport
+/// boundary endpoint of the implementation's subject SpatialCore Module. The
+/// result is the complete provider-independent leaf breadth of one exact
+/// HardwareImplementation in canonical inventory order; each member carries
+/// its typed unavailability reason.
+llvm::Expected<std::vector<FpaCharacterizationUnavailable>>
+assessFpaLeafCharacterizationBreadth(
+    const ArtifactRootReference &hardwareImplementation,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
 /// Exact routed HardwareImplementation members assigned to one calibration
 /// partition. The roots remain ordinary Hardware Artifacts; this record owns
 /// only the finite plan input set.

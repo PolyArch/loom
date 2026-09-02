@@ -48,6 +48,25 @@ add_subdirectory(Generators/Hardware)
 add_subdirectory(Generators/Modeling)
 add_subdirectory(Feedback)
 
+add_library(LoomDSEFpaCampaign
+  FpaCampaign.cpp
+)
+
+target_include_directories(LoomDSEFpaCampaign PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomDSEFpaCampaign PUBLIC
+  LoomDSE
+  LoomDSEHardwareGenerator
+  LoomEDAOpenSource
+  LoomHardwareConfiguration
+  LoomImplementationPlatform
+  MLIRDataflow
+  MLIRFabric
+  LLVMSupport
+)
+
 add_library(LoomDSEProductionOwners
   FuReverseSynthesisWorkflow.cpp
   ProductionOwners.cpp

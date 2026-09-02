@@ -9,9 +9,11 @@ target_link_libraries(loom-dse PRIVATE
   LoomDSEProductionOwners
   LoomDSECompilerGenerator
   LoomDSEFeedback
+  LoomDSEFpaCampaign
   LoomDSEHardwareGenerator
   LoomDSEMappingGenerator
   LoomDSEModelingGenerator
+  LoomEDAOpenSource
   MLIRDataflow
   MLIRIR
   MLIRParser

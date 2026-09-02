@@ -769,6 +769,48 @@ encodeOpenRoadPlacedConfig(const OpenRoadPlacedConfig &config) {
   return std::vector<std::uint8_t>(text.begin(), text.end());
 }
 
+static llvm::Expected<OpenRoadPlacementParameters>
+parsePlacementObject(const llvm::json::Object &placement) {
+  if (llvm::Error error = rejectUnknownFields(
+          placement, "config placement",
+          {"die_area_nm", "core_area_nm", "site", "horizontal_pin_layer",
+           "vertical_pin_layer", "placement_density_ppm"}))
+    return std::move(error);
+  auto dieObject = requireObject(placement, "die_area_nm", "config placement");
+  auto coreObject =
+      requireObject(placement, "core_area_nm", "config placement");
+  if (!dieObject)
+    return dieObject.takeError();
+  if (!coreObject)
+    return coreObject.takeError();
+  auto die = parseRectangle(**dieObject, "config die area");
+  auto core = parseRectangle(**coreObject, "config core area");
+  auto site = requireString(placement, "site", "config placement");
+  auto horizontal =
+      requireString(placement, "horizontal_pin_layer", "config placement");
+  auto vertical =
+      requireString(placement, "vertical_pin_layer", "config placement");
+  auto densityValue =
+      requireUnsigned(placement, "placement_density_ppm", "config placement");
+  if (!die)
+    return die.takeError();
+  if (!core)
+    return core.takeError();
+  if (!site)
+    return site.takeError();
+  if (!horizontal)
+    return horizontal.takeError();
+  if (!vertical)
+    return vertical.takeError();
+  if (!densityValue)
+    return densityValue.takeError();
+  if (*densityValue > std::numeric_limits<std::uint32_t>::max())
+    return invalid("placement density is outside uint32 range");
+  return OpenRoadPlacementParameters{
+      *die, *core, site->str(), horizontal->str(), vertical->str(),
+      static_cast<std::uint32_t>(*densityValue)};
+}
+
 llvm::Expected<OpenRoadPlacedConfig>
 decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   const llvm::StringRef contents(reinterpret_cast<const char *>(bytes.data()),
@@ -817,42 +859,9 @@ decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   auto placementObject = requireObject(*root, "placement", "config JSON");
   if (!placementObject)
     return placementObject.takeError();
-  if (llvm::Error error = rejectUnknownFields(
-          **placementObject, "config placement",
-          {"die_area_nm", "core_area_nm", "site", "horizontal_pin_layer",
-           "vertical_pin_layer", "placement_density_ppm"}))
-    return std::move(error);
-  auto dieObject =
-      requireObject(**placementObject, "die_area_nm", "config placement");
-  auto coreObject =
-      requireObject(**placementObject, "core_area_nm", "config placement");
-  if (!dieObject)
-    return dieObject.takeError();
-  if (!coreObject)
-    return coreObject.takeError();
-  auto die = parseRectangle(**dieObject, "config die area");
-  auto core = parseRectangle(**coreObject, "config core area");
-  auto site = requireString(**placementObject, "site", "config placement");
-  auto horizontal = requireString(**placementObject, "horizontal_pin_layer",
-                                  "config placement");
-  auto vertical = requireString(**placementObject, "vertical_pin_layer",
-                                "config placement");
-  auto densityValue = requireUnsigned(
-      **placementObject, "placement_density_ppm", "config placement");
-  if (!die)
-    return die.takeError();
-  if (!core)
-    return core.takeError();
-  if (!site)
-    return site.takeError();
-  if (!horizontal)
-    return horizontal.takeError();
-  if (!vertical)
-    return vertical.takeError();
-  if (!densityValue)
-    return densityValue.takeError();
-  if (*densityValue > std::numeric_limits<std::uint32_t>::max())
-    return invalid("placement density is outside uint32 range");
+  auto placement = parsePlacementObject(**placementObject);
+  if (!placement)
+    return placement.takeError();
 
   const llvm::json::Array *externalArray = root->getArray("external_files");
   if (!externalArray)
@@ -892,15 +901,30 @@ decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
       providerBuild->str(),
       platform::TechnologyCornerRef{std::move(*artifact),
                                     platform::TechnologyCornerId(*cornerId)},
-      OpenRoadPlacementParameters{*die, *core, site->str(), horizontal->str(),
-                                  vertical->str(),
-                                  static_cast<std::uint32_t>(*densityValue)},
+      *placement,
       std::move(externalFiles)});
   if (!canonical)
     return canonical.takeError();
   if (contents != serializeConfig(*canonical))
     return invalid("config JSON is not canonical");
   return std::move(*canonical);
+}
+
+llvm::Expected<OpenRoadPlacementParameters>
+parseOpenRoadPlacementParametersJson(llvm::StringRef json) {
+  auto parsed = llvm::json::parse(json);
+  if (!parsed)
+    return invalid("placement JSON is malformed: " +
+                   llvm::toString(parsed.takeError()));
+  const llvm::json::Object *root = parsed->getAsObject();
+  if (!root)
+    return invalid("placement JSON root is not an object");
+  auto placement = parsePlacementObject(*root);
+  if (!placement)
+    return placement.takeError();
+  if (llvm::Error error = validatePlacementParameters(*placement))
+    return std::move(error);
+  return placement;
 }
 
 llvm::Error validateCanonicalOpenRoadPlacedConfig(

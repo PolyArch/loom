@@ -6,7 +6,9 @@
 #include "DSE/CampaignRunner.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
+#include "DSE/EvidenceObligation.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/FpaCampaign.h"
 #include "DSE/FuReverseSynthesis.h"
 #include "DSE/FuReverseSynthesisWorkflow.h"
 #include "DSE/GroundTruthPlan.h"
@@ -32,6 +34,14 @@
 #include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
+#include "EDA/Adapters/OpenSource/OpenRoadStaticFpa.h"
+#include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
+#include "Evaluation/Evidence.h"
+#include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/Request.h"
+#include "ExternalTool/ExternalFile.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "ExternalTool/LocalConfig.h"
@@ -48,6 +58,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -216,6 +227,11 @@ llvm::cl::list<std::string> externalBindingCapacities(
     "external-binding-capacity",
     llvm::cl::desc("exact external binding digest and capacity as HEX=UNITS"),
     llvm::cl::value_desc("binding"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::uint64_t> externalBindingDefaultCapacity(
+    "external-binding-default-capacity",
+    llvm::cl::desc("units granted to every external tool binding without an "
+                   "explicit capacity; zero keeps them inadmissible"),
+    llvm::cl::init(0));
 llvm::cl::list<std::string> licenseBindingCapacities(
     "license-binding-capacity",
     llvm::cl::desc("exact license binding digest and capacity as HEX=UNITS"),
@@ -251,6 +267,139 @@ llvm::cl::opt<std::uint64_t> progressIntervalMilliseconds(
     "progress-interval-ms",
     llvm::cl::desc("live projection interval in milliseconds"),
     llvm::cl::init(1000));
+
+llvm::cl::list<std::string> fpaPhysicalSystemFiles(
+    "fpa-physical-system",
+    llvm::cl::desc("Fabric System root lowered to RTL, synthesized, and routed "
+                   "for the offline FPA ground-truth campaign"),
+    llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::list<std::string> fpaPhysicalRtlFiles(
+    "fpa-physical-rtl",
+    llvm::cl::desc("exact portable SpatialCore RTL implementation root "
+                   "synthesized and routed for the campaign"),
+    llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::string> fpaAsicTechnology(
+    "fpa-asic-technology",
+    llvm::cl::desc("ASIC technology identity of the implementation platform"),
+    llvm::cl::value_desc("identity"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaAsicRelease(
+    "fpa-asic-release",
+    llvm::cl::desc("ASIC library release identity of the platform"),
+    llvm::cl::value_desc("identity"), llvm::cl::init(""));
+llvm::cl::list<std::string> fpaTechnologyCorners(
+    "fpa-technology-corner",
+    llvm::cl::desc("technology corner key admitted by the platform"),
+    llvm::cl::value_desc("key"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::string> fpaSelectedCorner(
+    "fpa-selected-corner",
+    llvm::cl::desc("platform corner key bound to synthesis and routing"),
+    llvm::cl::value_desc("key"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaYosysBuild(
+    "fpa-yosys-build",
+    llvm::cl::desc("exact Yosys version probe output bound as the stable "
+                   "synthesis provider build"),
+    llvm::cl::value_desc("identity"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaOpenRoadBuild(
+    "fpa-openroad-build",
+    llvm::cl::desc("exact OpenROAD version probe output bound as the stable "
+                   "routing and static FPA provider build"),
+    llvm::cl::value_desc("identity"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaPlacementPath(
+    "fpa-placement",
+    llvm::cl::desc("placement parameter JSON (die/core area, site, pin layers, "
+                   "density) for the routed implementation"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaTechnologyLefKey(
+    "fpa-technology-lef",
+    llvm::cl::desc("local external-file key of the technology LEF"),
+    llvm::cl::value_desc("key"), llvm::cl::init("technology"));
+llvm::cl::opt<std::string>
+    fpaCellLefKey("fpa-cell-lef",
+                  llvm::cl::desc("local external-file key of the cell LEF"),
+                  llvm::cl::value_desc("key"), llvm::cl::init("cells"));
+llvm::cl::opt<std::string> fpaLibertyKey(
+    "fpa-liberty",
+    llvm::cl::desc("local external-file key of the standard-cell Liberty"),
+    llvm::cl::value_desc("key"), llvm::cl::init("timing"));
+llvm::cl::opt<std::string> fpaPhysicalOutputPath(
+    "fpa-physical-output",
+    llvm::cl::desc("physical implementation report JSON output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+llvm::cl::opt<std::string> fpaCollectionTrainingPath(
+    "fpa-collection-training",
+    llvm::cl::desc("root-set JSON of routed HardwareImplementations in the "
+                   "Training partition"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaCollectionValidationPath(
+    "fpa-collection-validation",
+    llvm::cl::desc("root-set JSON of routed HardwareImplementations in the "
+                   "Validation partition"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaCollectionHeldOutPath(
+    "fpa-collection-held-out",
+    llvm::cl::desc("root-set JSON of routed HardwareImplementations in the "
+                   "HeldOut partition"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaOperatingConditionsPath(
+    "fpa-operating-conditions",
+    llvm::cl::desc("evaluation conditions JSON anchored on the first Training "
+                   "implementation"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaCollectionOutputPath(
+    "fpa-collection-output",
+    llvm::cl::desc("ground-truth collection and leaf characterization report "
+                   "JSON output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+llvm::cl::opt<std::string> fpaModelTrainingPath(
+    "fpa-model-training",
+    llvm::cl::desc("root-set JSON of Training ground-truth Evidence"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaModelValidationPath(
+    "fpa-model-validation",
+    llvm::cl::desc("root-set JSON of Validation ground-truth Evidence"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaModelHeldOutPath(
+    "fpa-model-held-out",
+    llvm::cl::desc("root-set JSON of HeldOut ground-truth Evidence"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::uint64_t>
+    fpaModelSeed("fpa-model-seed",
+                 llvm::cl::desc("deterministic GBDT training seed"),
+                 llvm::cl::init(1));
+llvm::cl::opt<unsigned> fpaModelTrees("fpa-model-trees",
+                                      llvm::cl::desc("GBDT tree count"),
+                                      llvm::cl::init(4));
+llvm::cl::opt<unsigned> fpaModelDepth("fpa-model-depth",
+                                      llvm::cl::desc("GBDT maximum depth"),
+                                      llvm::cl::init(2));
+llvm::cl::opt<unsigned> fpaModelMinimumRows(
+    "fpa-model-minimum-rows",
+    llvm::cl::desc("minimum Training rows per GBDT leaf"), llvm::cl::init(1));
+llvm::cl::opt<unsigned> fpaModelLearningRateNumerator(
+    "fpa-model-learning-rate-numerator",
+    llvm::cl::desc("GBDT learning-rate numerator"), llvm::cl::init(1));
+llvm::cl::opt<unsigned> fpaModelLearningRateDenominator(
+    "fpa-model-learning-rate-denominator",
+    llvm::cl::desc("GBDT learning-rate denominator"), llvm::cl::init(2));
+llvm::cl::opt<std::string> fpaModelMaximumValidationError(
+    "fpa-model-maximum-validation-error",
+    llvm::cl::desc("Validation error gate as decimal COEFFICIENTeEXPONENT"),
+    llvm::cl::value_desc("decimal"), llvm::cl::init("1e0"));
+llvm::cl::opt<std::string> fpaModelMaximumHeldOutError(
+    "fpa-model-maximum-held-out-error",
+    llvm::cl::desc("HeldOut release gate as decimal COEFFICIENTeEXPONENT"),
+    llvm::cl::value_desc("decimal"), llvm::cl::init("1e0"));
+llvm::cl::opt<std::string> fpaModelOutputPath(
+    "fpa-model-output",
+    llvm::cl::desc("model training, calibration, and release report JSON"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaReleasedWeightOutputPath(
+    "fpa-released-weight-output",
+    llvm::cl::desc("root-reference JSON of the released "
+                   "EdaPredictionModelWeight bundle"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 volatile std::sig_atomic_t stopSignal = 0;
 
@@ -726,6 +875,227 @@ void reportJointOutputs(const DsePlanExecutionOutcome &outcome,
   }
 }
 
+llvm::Expected<evaluation::DecimalValue>
+parseDecimalSpelling(llvm::StringRef spelling) {
+  auto [coefficientText, exponentText] = spelling.split('e');
+  std::int64_t coefficient = 0;
+  std::int64_t exponent = 0;
+  if (coefficientText.getAsInteger(10, coefficient) ||
+      (!exponentText.empty() && exponentText.getAsInteger(10, exponent)))
+    return invalid("decimal must be spelled COEFFICIENTeEXPONENT");
+  return evaluation::DecimalValue::get(coefficient, exponent);
+}
+
+llvm::json::Object decimalJson(const evaluation::DecimalValue &value) {
+  return llvm::json::Object{{"coefficient", value.coefficient()},
+                            {"base10_exponent", value.base10Exponent()}};
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+loadRootSet(llvm::StringRef path) {
+  auto roots = loadArtifactRootReferenceSetJsonFile(path);
+  if (!roots)
+    return llvm::joinErrors(
+        invalid(llvm::Twine("cannot load root set '") + path + "'"),
+        roots.takeError());
+  return roots;
+}
+
+llvm::Expected<ExternalFileFingerprint>
+fingerprintLocalExternalFile(const external_tool::LocalToolConfig &local,
+                             llvm::StringRef key) {
+  const auto found = local.externalFiles.find(key.str());
+  if (found == local.externalFiles.end())
+    return invalid(llvm::Twine("local tool configuration has no external file "
+                               "'") +
+                   key + "'");
+  return external_tool::fingerprintExternalFile(found->second);
+}
+
+llvm::json::Array
+availableRoots(const CompletedDsePlanExecution &execution, PlanOutputRef output) {
+  return execution.hasOutput(output) ? rootReferenceArray(execution.resolve(output))
+                                     : llvm::json::Array{};
+}
+
+llvm::StringRef leafReasonSpelling(FpaCharacterizationUnavailableReason reason) {
+  switch (reason) {
+  case FpaCharacterizationUnavailableReason::RoutedAsicImplementationUnavailable:
+    return "routed_asic_implementation_unavailable";
+  case FpaCharacterizationUnavailableReason::IndependentlyRoutedLeafUnavailable:
+    return "independently_routed_leaf_unavailable";
+  }
+  llvm_unreachable("closed FPA characterization unavailability reason");
+}
+
+llvm::Expected<llvm::json::Object>
+leafCharacterizationJson(const FpaCharacterizationUnavailable &leaf) {
+  llvm::json::Object result;
+  const loom::fabric::FabricModuleDomainMemberRef &member = leaf.target.leaf;
+  loom::fabric::FabricByteWriter writer;
+  loom::fabric::encodeFabricRef(writer, member);
+  result["canonical_ref_hex"] = llvm::toHex(writer.take(), true);
+  switch (member.kind()) {
+  case loom::fabric::FabricModuleDomainMemberKind::Boundary: {
+    const auto &boundary =
+        std::get<loom::fabric::FabricModuleBoundaryEndpointRef>(member.payload);
+    result["leaf_kind"] = "transport_boundary";
+    result["direction"] =
+        boundary.direction == loom::fabric::FabricPortDirection::Input
+            ? "input"
+            : "output";
+    result["ordinal"] = boundary.ordinal;
+    break;
+  }
+  case loom::fabric::FabricModuleDomainMemberKind::Internal: {
+    const auto &owner =
+        std::get<loom::fabric::FabricModulePhysicalOwnerRef>(member.payload);
+    switch (owner.kind()) {
+    case loom::fabric::FabricModulePhysicalOwnerKind::PeOccurrence:
+      result["leaf_kind"] = "pe_occurrence";
+      result["entity"] =
+          std::get<loom::fabric::FabricPeOccurrenceRef>(owner.payload()).id();
+      break;
+    case loom::fabric::FabricModulePhysicalOwnerKind::FuOccurrence:
+      result["leaf_kind"] = "fu_occurrence";
+      result["entity"] =
+          std::get<loom::fabric::FabricFuOccurrenceRef>(owner.payload()).id();
+      break;
+    case loom::fabric::FabricModulePhysicalOwnerKind::MemoryOccurrence:
+      result["leaf_kind"] = "memory_occurrence";
+      result["entity"] =
+          std::get<loom::fabric::FabricMemoryOccurrenceRef>(owner.payload())
+              .id();
+      break;
+    case loom::fabric::FabricModulePhysicalOwnerKind::SwitchOccurrence:
+      result["leaf_kind"] = "switch_occurrence";
+      result["entity"] =
+          std::get<loom::fabric::FabricSwitchOccurrenceRef>(owner.payload())
+              .id();
+      break;
+    default:
+      return invalid("leaf breadth admitted a non-leaf physical owner");
+    }
+    break;
+  }
+  }
+  result["reason"] = leafReasonSpelling(leaf.reason);
+  return result;
+}
+
+struct FpaCollectionPartitionInputs final {
+  llvm::StringLiteral name;
+  std::vector<ArtifactRootReference> hardwareImplementations;
+  PlanOutputRef evidence;
+};
+
+llvm::Expected<llvm::json::Object> fpaPartitionReport(
+    const FpaCollectionPartitionInputs &partition,
+    const CompletedDsePlanExecution &execution, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  llvm::json::Object result;
+  result["hardware_implementations"] =
+      rootReferenceArray(partition.hardwareImplementations);
+  llvm::json::Array evidence;
+  if (execution.hasOutput(partition.evidence))
+    for (const ArtifactRootReference &root :
+         execution.resolve(partition.evidence)) {
+      auto sample = evaluation::models::importFpaTrainingEvidenceSample(
+          root, artifacts, blobs);
+      if (!sample)
+        return sample.takeError();
+      evidence.push_back(llvm::json::Object{
+          {"evidence", rootReferenceJson(root)},
+          {"limiting_clock_frequency_hz",
+           decimalJson(sample->observation.limitingClockFrequency)},
+          {"total_area_square_meters", decimalJson(sample->observation.totalArea)},
+          {"dynamic_power_watts", decimalJson(sample->observation.dynamicPower)},
+          {"leakage_power_watts", decimalJson(sample->observation.leakagePower)},
+          {"sample_group_key_hex", llvm::toHex(sample->sampleGroupKey, true)},
+          {"ground_truth_target_key_hex",
+           llvm::toHex(sample->groundTruthTargetKey, true)}});
+    }
+  result["evidence"] = std::move(evidence);
+  llvm::json::Array leafReports;
+  for (const ArtifactRootReference &hardware :
+       partition.hardwareImplementations) {
+    auto breadth =
+        assessFpaLeafCharacterizationBreadth(hardware, artifacts, blobs);
+    if (!breadth)
+      return breadth.takeError();
+    llvm::json::Array leaves;
+    std::map<std::string, std::uint64_t> counts;
+    for (const FpaCharacterizationUnavailable &leaf : *breadth) {
+      auto projected = leafCharacterizationJson(leaf);
+      if (!projected)
+        return projected.takeError();
+      ++counts[(*projected->getString("leaf_kind")).str() + ":" +
+               leafReasonSpelling(leaf.reason).str()];
+      leaves.push_back(std::move(*projected));
+    }
+    llvm::json::Object summary;
+    for (const auto &[key, count] : counts)
+      summary[key] = count;
+    leafReports.push_back(llvm::json::Object{
+        {"hardware_implementation", rootReferenceJson(hardware)},
+        {"leaf_count", static_cast<std::uint64_t>(breadth->size())},
+        {"summary", std::move(summary)},
+        {"leaves", std::move(leaves)}});
+  }
+  result["leaf_characterization"] = std::move(leafReports);
+  return result;
+}
+
+llvm::Expected<llvm::json::Array> calibrationMetricsJson(
+    const ArtifactRootReference &calibrationEvidence,
+    const ArtifactRootReference &bundle,
+    llvm::ArrayRef<ArtifactRootReference> sourceEvidence,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto resolution =
+      evaluation::models::resolveFpaCalibrationCaseArtifactResolution(
+          bundle, sourceEvidence, artifacts, blobs);
+  if (!resolution)
+    return resolution.takeError();
+  auto requestReference = evaluation::importEvaluationEvidenceRequestReference(
+      calibrationEvidence, artifacts);
+  if (!requestReference)
+    return requestReference.takeError();
+  auto request = evaluation::importEvaluationRequest(*requestReference,
+                                                     *resolution, artifacts, blobs);
+  if (!request)
+    return request.takeError();
+  auto evidence = evaluation::importEvaluationEvidence(
+      calibrationEvidence, *resolution, artifacts, blobs);
+  if (!evidence)
+    return evidence.takeError();
+  llvm::json::Array metrics;
+  const auto *completed =
+      std::get_if<evaluation::CompletedEvidence>(&evidence->outcome());
+  if (!completed)
+    return metrics;
+  for (std::size_t ordinal = 0;
+       ordinal != completed->metricResults.size() &&
+       ordinal != request->metricRequests().size();
+       ++ordinal) {
+    const evaluation::MetricRequest &metric = request->metricRequests()[ordinal];
+    llvm::json::Object entry{{"metric", toString(metric.query().metric)}};
+    for (const evaluation::EvaluationCondition &condition : metric.conditions())
+      if (const auto *quantile =
+              std::get_if<evaluation::QuantileCondition>(&condition.payload))
+        entry["quantile"] = llvm::json::Object{
+            {"numerator", quantile->probability.numerator()},
+            {"denominator", quantile->probability.denominator()}};
+    const auto *point = std::get_if<evaluation::PointObservation>(
+        &completed->metricResults[ordinal].observation);
+    const auto *decimal =
+        point ? std::get_if<evaluation::DecimalValue>(&point->value) : nullptr;
+    entry["value"] = decimal ? llvm::json::Value(decimalJson(*decimal))
+                             : llvm::json::Value(nullptr);
+    metrics.push_back(std::move(entry));
+  }
+  return metrics;
+}
+
 llvm::Expected<int> run() {
   loom::fabric::FabricArtifactImportSession fabricImportSession;
   llvm::scope_exit emitFabricImportStatistics([&] {
@@ -754,6 +1124,36 @@ llvm::Expected<int> run() {
       groundTruthCampaign.getValue() != GroundTruthCampaignKind::None)
     return invalid("reverse-FU authoring does not admit a ground-truth "
                    "campaign wrapper");
+  const bool authorFpaPhysical =
+      !fpaPhysicalSystemFiles.empty() || !fpaPhysicalRtlFiles.empty();
+  const bool authorFpaCollection = !fpaCollectionTrainingPath.empty() ||
+                                   !fpaCollectionValidationPath.empty() ||
+                                   !fpaCollectionHeldOutPath.empty();
+  const bool authorFpaModel = !fpaModelTrainingPath.empty() ||
+                              !fpaModelValidationPath.empty() ||
+                              !fpaModelHeldOutPath.empty();
+  if (authorFpaPhysical + authorFpaCollection + authorFpaModel > 1)
+    return invalid("FPA physical, collection, and model authoring are "
+                   "mutually exclusive");
+  if ((authorFpaPhysical || authorFpaCollection || authorFpaModel) &&
+      (authorJointPlan || authorFuReverseSynthesis))
+    return invalid("FPA campaign authoring owns its exact plan");
+  if (authorFpaPhysical && localToolConfigPath.empty())
+    return invalid("FPA physical implementation requires the local tool "
+                   "configuration that names its technology files");
+  if (authorFpaCollection &&
+      (fpaCollectionTrainingPath.empty() || fpaCollectionValidationPath.empty() ||
+       fpaCollectionHeldOutPath.empty() || fpaOperatingConditionsPath.empty()))
+    return invalid("FPA collection requires Training, Validation, and HeldOut "
+                   "root sets and operating conditions");
+  if (authorFpaCollection &&
+      groundTruthCampaign.getValue() != GroundTruthCampaignKind::Fpa)
+    return invalid("FPA collection runs only under the FPA campaign policy");
+  if (authorFpaModel &&
+      (fpaModelTrainingPath.empty() || fpaModelValidationPath.empty() ||
+       fpaModelHeldOutPath.empty()))
+    return invalid("FPA model release requires Training, Validation, and "
+                   "HeldOut Evidence root sets");
   if (jointApplicationScopeFiles.empty() != jointSystemRootFiles.empty())
     return invalid("joint plan authoring requires both application scopes "
                    "and System root frontiers");
@@ -771,9 +1171,29 @@ llvm::Expected<int> run() {
 
   if (llvm::Error error = registerProductionDseOwners())
     return error;
+  // The offline EDA providers are production owners of loom-dse: the plan
+  // executor dispatches them only through the configured external site.
+  if (llvm::Error error =
+          eda::open_source::registerYosysGateNetlistCandidateGenerator())
+    return error;
+  if (llvm::Error error =
+          eda::open_source::registerOpenRoadRoutedCandidateGenerator())
+    return error;
+  if (llvm::Error error =
+          eda::open_source::registerOpenRoadStaticFpaEvaluationProvider())
+    return error;
   auto config = loadResolvedConfig(configPath);
   if (!config)
     return config.takeError();
+  if (!fpaOpenRoadBuild.empty()) {
+    const evaluation::models::OpenRoadStaticFpaProviderBinding binding{
+        fpaOpenRoadBuild};
+    if (config->evaluation.openRoadStaticFpa &&
+        !(*config->evaluation.openRoadStaticFpa == binding))
+      return invalid("resolved configuration binds another OpenROAD static "
+                     "FPA provider build");
+    config->evaluation.openRoadStaticFpa = binding;
+  }
   auto semanticInputs = loadRootReferences(semanticInputFiles);
   if (!semanticInputs)
     return semanticInputs.takeError();
@@ -878,6 +1298,153 @@ llvm::Expected<int> run() {
     jointPairOutputs = plan->pairOutputs;
     *config = std::move(plan->resolvedConfig);
   }
+  std::optional<FpaPhysicalImplementationPlan> fpaPhysical;
+  if (authorFpaPhysical) {
+    auto local = external_tool::loadLocalToolConfig(localToolConfigPath);
+    if (!local)
+      return local.takeError();
+    auto systems = loadRootReferences(fpaPhysicalSystemFiles);
+    if (!systems)
+      return systems.takeError();
+    auto rtlImplementations = loadRootReferences(fpaPhysicalRtlFiles);
+    if (!rtlImplementations)
+      return rtlImplementations.takeError();
+    if (fpaAsicTechnology.empty() || fpaAsicRelease.empty() ||
+        fpaTechnologyCorners.empty())
+      return invalid("FPA physical implementation requires the ASIC target "
+                     "and its corners");
+    if (!rtlImplementations->empty() &&
+        (fpaYosysBuild.empty() || fpaOpenRoadBuild.empty() ||
+         fpaPlacementPath.empty()))
+      return invalid("FPA synthesis and routing require the provider builds "
+                     "and placement parameters");
+    eda::open_source::OpenRoadPlacementParameters placement{};
+    if (!fpaPlacementPath.empty()) {
+      auto placementText = llvm::MemoryBuffer::getFile(fpaPlacementPath);
+      if (!placementText)
+        return llvm::createStringError(placementText.getError(),
+                                       "cannot read %s",
+                                       fpaPlacementPath.c_str());
+      auto parsed = eda::open_source::parseOpenRoadPlacementParametersJson(
+          (*placementText)->getBuffer());
+      if (!parsed)
+        return parsed.takeError();
+      placement = std::move(*parsed);
+    }
+    auto technologyLef = fingerprintLocalExternalFile(*local, fpaTechnologyLefKey);
+    if (!technologyLef)
+      return technologyLef.takeError();
+    auto cellLef = fingerprintLocalExternalFile(*local, fpaCellLefKey);
+    if (!cellLef)
+      return cellLef.takeError();
+    auto liberty = fingerprintLocalExternalFile(*local, fpaLibertyKey);
+    if (!liberty)
+      return liberty.takeError();
+    auto plan = buildFpaPhysicalImplementationPlan(
+        FpaPhysicalImplementationRequest{
+            std::move(*systems),
+            std::move(*rtlImplementations),
+            loom::platform::AsicTarget{fpaAsicTechnology, fpaAsicRelease},
+            std::vector<std::string>(fpaTechnologyCorners.begin(),
+                                     fpaTechnologyCorners.end()),
+            fpaSelectedCorner.empty() ? fpaTechnologyCorners.front()
+                                      : fpaSelectedCorner.getValue(),
+            fpaYosysBuild,
+            fpaOpenRoadBuild,
+            placement,
+            *technologyLef,
+            *cellLef,
+            *liberty},
+        *config, artifacts);
+    if (!plan)
+      return plan.takeError();
+    semanticInputs->insert(semanticInputs->end(), plan->semanticInputs.begin(),
+                           plan->semanticInputs.end());
+    canonicalizeRootUnion(*semanticInputs);
+    *config = plan->resolvedConfig;
+    fpaPhysical.emplace(std::move(*plan));
+  }
+  std::optional<FpaGroundTruthCollectionPlan> fpaCollection;
+  std::vector<FpaCollectionPartitionInputs> fpaCollectionPartitions;
+  if (authorFpaCollection) {
+    auto training = loadRootSet(fpaCollectionTrainingPath);
+    if (!training)
+      return training.takeError();
+    auto validation = loadRootSet(fpaCollectionValidationPath);
+    if (!validation)
+      return validation.takeError();
+    auto heldOut = loadRootSet(fpaCollectionHeldOutPath);
+    if (!heldOut)
+      return heldOut.takeError();
+    auto conditionsText = llvm::MemoryBuffer::getFile(fpaOperatingConditionsPath);
+    if (!conditionsText)
+      return llvm::createStringError(conditionsText.getError(),
+                                     "cannot read %s",
+                                     fpaOperatingConditionsPath.c_str());
+    auto conditions =
+        evaluation::parseEvaluationConditions((*conditionsText)->getBuffer());
+    if (!conditions)
+      return conditions.takeError();
+    auto plan = buildFpaGroundTruthCollectionPlan(
+        FpaGroundTruthPlanInputs{{*training}, {*validation}, {*heldOut},
+                                 std::move(*conditions)},
+        *config, artifacts, blobs);
+    if (!plan)
+      return plan.takeError();
+    for (const auto &partition : {*training, *validation, *heldOut})
+      semanticInputs->insert(semanticInputs->end(), partition.begin(),
+                             partition.end());
+    canonicalizeRootUnion(*semanticInputs);
+    fpaCollectionPartitions = {
+        {"training", std::move(*training), plan->trainingEvidence},
+        {"validation", std::move(*validation), plan->validationEvidence},
+        {"held_out", std::move(*heldOut), plan->heldOutEvidence}};
+    *config = plan->resolvedConfig;
+    fpaCollection.emplace(std::move(*plan));
+  }
+  std::optional<ResolvedGroundTruthPlan> fpaModel;
+  std::array<std::vector<ArtifactRootReference>, 3> fpaModelEvidence;
+  if (authorFpaModel) {
+    auto training = loadRootSet(fpaModelTrainingPath);
+    if (!training)
+      return training.takeError();
+    auto validation = loadRootSet(fpaModelValidationPath);
+    if (!validation)
+      return validation.takeError();
+    auto heldOut = loadRootSet(fpaModelHeldOutPath);
+    if (!heldOut)
+      return heldOut.takeError();
+    auto validationGate = parseDecimalSpelling(fpaModelMaximumValidationError);
+    if (!validationGate)
+      return validationGate.takeError();
+    auto heldOutGate = parseDecimalSpelling(fpaModelMaximumHeldOutError);
+    if (!heldOutGate)
+      return heldOutGate.takeError();
+    fpaModelEvidence = {*training, *validation, *heldOut};
+    GroundTruthPlanInputs inputs;
+    inputs.fpa = GroundTruthModelTrack{
+        GroundTruthEvidencePartitions{std::move(*training),
+                                      std::move(*validation),
+                                      std::move(*heldOut), std::nullopt},
+        DeterministicGbdtTrainingConfig{fpaModelSeed, fpaModelTrees,
+                                        fpaModelDepth, fpaModelMinimumRows,
+                                        fpaModelLearningRateNumerator,
+                                        fpaModelLearningRateDenominator},
+        *validationGate, *heldOutGate};
+    auto plan = buildGroundTruthPlan(*config, std::move(inputs));
+    if (!plan)
+      return plan.takeError();
+    semanticInputs->insert(semanticInputs->end(),
+                           plan->semanticInputs().begin(),
+                           plan->semanticInputs().end());
+    canonicalizeRootUnion(*semanticInputs);
+    preexistingEvidence->insert(preexistingEvidence->end(),
+                                plan->preexistingEvidence().begin(),
+                                plan->preexistingEvidence().end());
+    canonicalizeRootUnion(*preexistingEvidence);
+    *config = plan->resolvedConfig();
+    fpaModel.emplace(std::move(*plan));
+  }
   auto view = projectResolvedDseConfigView(*config);
   if (!view)
     return view.takeError();
@@ -905,8 +1472,9 @@ llvm::Expected<int> run() {
   auto licenseCapacities = parseCapacities(licenseBindingCapacities, true);
   if (!licenseCapacities)
     return licenseCapacities.takeError();
-  auto capacity = SiteCapacity::get(siteCpu, siteMemory, siteScratch,
-                                    *toolCapacities, *licenseCapacities);
+  auto capacity =
+      SiteCapacity::get(siteCpu, siteMemory, siteScratch, *toolCapacities,
+                        *licenseCapacities, externalBindingDefaultCapacity);
   if (!capacity)
     return capacity.takeError();
   auto scheduler = SiteScheduler::create(std::move(*capacity));
@@ -1112,6 +1680,145 @@ llvm::Expected<int> run() {
     if (!jointPairOutputs.empty())
       reportJointOutputs(outcome, jointPairOutputs);
     exitCode = reportPlanOutcome(outcome);
+  }
+
+  const DsePlanExecutionOutcome &finalOutcome =
+      groundTruthCampaign.getValue() != GroundTruthCampaignKind::None
+          ? [&]() -> const DsePlanExecutionOutcome & {
+              const CampaignExecutionResult &campaignOutcome =
+                  std::get<CampaignExecutionResult>(*executionResult);
+              if (const auto *refused =
+                      std::get_if<CampaignAdmissionRefusal>(&campaignOutcome))
+                return refused->outcome;
+              return std::get<CampaignExecution>(campaignOutcome).outcome;
+            }()
+          : std::get<DsePlanExecutionOutcome>(*executionResult);
+  const CompletedDsePlanExecution *availableExecution =
+      std::get_if<CompletedDsePlanExecution>(&finalOutcome);
+  const bool executionComplete = availableExecution != nullptr;
+  if (!availableExecution)
+    availableExecution =
+        &std::get<IncompleteDsePlanExecution>(finalOutcome).availableExecution();
+  const auto planDisposition = [&]() -> llvm::json::Object {
+    llvm::json::Object disposition{{"complete", executionComplete}};
+    if (const auto *incomplete =
+            std::get_if<IncompleteDsePlanExecution>(&finalOutcome)) {
+      disposition["node"] = incomplete->nodeOrdinal();
+      disposition["reason"] = toString(incomplete->reason()).str();
+      disposition["execution_stopped"] = incomplete->executionStopped();
+    }
+    return disposition;
+  };
+  if (fpaPhysical && !fpaPhysicalOutputPath.empty()) {
+    llvm::json::Object report{
+        {"schema", "loom.fpa_physical_implementation_report"},
+        {"version", "1.0"},
+        {"resolved_config", rootReferenceJson(*publishedConfig)},
+        {"implementation_platform",
+         rootReferenceJson(fpaPhysical->implementationPlatform)},
+        {"technology_corner_id", fpaPhysical->technologyCorner.entity.value()},
+        {"yosys_provider_build", fpaYosysBuild.getValue()},
+        {"openroad_provider_build", fpaOpenRoadBuild.getValue()},
+        {"plan", planDisposition()}};
+    llvm::json::Array systems;
+    for (const FpaRtlStageOutputs &outputs : fpaPhysical->rtlStages)
+      systems.push_back(llvm::json::Object{
+          {"system", rootReferenceJson(outputs.system)},
+          {"configuration_abi", rootReferenceJson(outputs.configurationAbi)},
+          {"portable_rtl", availableRoots(*availableExecution, outputs.rtl)}});
+    report["systems"] = std::move(systems);
+    llvm::json::Array implementations;
+    for (const FpaPhysicalStageOutputs &outputs : fpaPhysical->physicalStages)
+      implementations.push_back(llvm::json::Object{
+          {"portable_rtl", rootReferenceJson(outputs.rtlImplementation)},
+          {"gate_netlist",
+           availableRoots(*availableExecution, outputs.gateNetlist)},
+          {"routed", availableRoots(*availableExecution, outputs.routed)}});
+    report["implementations"] = std::move(implementations);
+    if (llvm::Error error =
+            writeJsonObject(fpaPhysicalOutputPath, std::move(report)))
+      return std::move(error);
+  }
+  if (fpaCollection && !fpaCollectionOutputPath.empty()) {
+    llvm::json::Object report{
+        {"schema", "loom.fpa_ground_truth_collection_report"},
+        {"version", "1.0"},
+        {"resolved_config", rootReferenceJson(*publishedConfig)},
+        {"static_fpa_provider_build",
+         config->evaluation.openRoadStaticFpa
+             ? llvm::json::Value(config->evaluation.openRoadStaticFpa
+                                     ->stableProviderBuildIdentity)
+             : llvm::json::Value(nullptr)},
+        {"campaign_active_wall_time_limit_ns",
+         CampaignExecutionPolicy::maximumCampaignActiveWallTimeNanoseconds},
+        {"sample_active_wall_time_limit_ns",
+         CampaignExecutionPolicy::maximumSampleActiveWallTimeNanoseconds},
+        {"plan", planDisposition()}};
+    llvm::json::Object partitions;
+    for (const FpaCollectionPartitionInputs &partition : fpaCollectionPartitions) {
+      auto projected = fpaPartitionReport(partition, *availableExecution,
+                                          artifacts, blobs);
+      if (!projected)
+        return projected.takeError();
+      partitions[partition.name] = std::move(*projected);
+    }
+    report["partitions"] = std::move(partitions);
+    if (llvm::Error error =
+            writeJsonObject(fpaCollectionOutputPath, std::move(report)))
+      return std::move(error);
+  }
+  if (fpaModel && !fpaModelOutputPath.empty()) {
+    const GroundTruthTrackOutputs &outputs = *fpaModel->fpaOutputs();
+    llvm::json::Object report{
+        {"schema", "loom.fpa_model_release_report"},
+        {"version", "1.0"},
+        {"resolved_config", rootReferenceJson(*publishedConfig)},
+        {"training_evidence", rootReferenceArray(fpaModelEvidence[0])},
+        {"validation_evidence", rootReferenceArray(fpaModelEvidence[1])},
+        {"held_out_evidence", rootReferenceArray(fpaModelEvidence[2])},
+        {"trained_bundle",
+         availableRoots(*availableExecution, outputs.trainedBundle)},
+        {"released_bundle",
+         availableRoots(*availableExecution, outputs.releasedBundle)},
+        {"plan", planDisposition()}};
+    llvm::ArrayRef<ArtifactRootReference> released =
+        availableExecution->hasOutput(outputs.releasedBundle)
+            ? availableExecution->resolve(outputs.releasedBundle)
+            : llvm::ArrayRef<ArtifactRootReference>{};
+    llvm::ArrayRef<ArtifactRootReference> trained =
+        availableExecution->hasOutput(outputs.trainedBundle)
+            ? availableExecution->resolve(outputs.trainedBundle)
+            : llvm::ArrayRef<ArtifactRootReference>{};
+    const std::array<std::pair<llvm::StringLiteral, PlanOutputRef>, 2>
+        calibrations = {{{"validation_calibration", outputs.validationEvidence},
+                         {"held_out_calibration", outputs.heldOutEvidence}}};
+    for (std::size_t ordinal = 0; ordinal != calibrations.size(); ++ordinal) {
+      llvm::json::Array entries;
+      const ArtifactRootReference *bundle =
+          !trained.empty() ? &trained.front() : nullptr;
+      if (bundle && availableExecution->hasOutput(calibrations[ordinal].second))
+        for (const ArtifactRootReference &evidence :
+             availableExecution->resolve(calibrations[ordinal].second)) {
+          auto metrics = calibrationMetricsJson(
+              evidence, *bundle, fpaModelEvidence[ordinal + 1], artifacts, blobs);
+          if (!metrics)
+            return metrics.takeError();
+          entries.push_back(llvm::json::Object{
+              {"evidence", rootReferenceJson(evidence)},
+              {"metrics", std::move(*metrics)}});
+        }
+      report[calibrations[ordinal].first] = std::move(entries);
+    }
+    if (llvm::Error error =
+            writeJsonObject(fpaModelOutputPath, std::move(report)))
+      return std::move(error);
+    if (!fpaReleasedWeightOutputPath.empty()) {
+      if (released.size() != 1)
+        return invalid("FPA model release did not publish exactly one bundle");
+      if (llvm::Error error = writeArtifactRootReferenceJsonFile(
+              fpaReleasedWeightOutputPath, released.front()))
+        return std::move(error);
+    }
   }
   return exitCode;
 }
