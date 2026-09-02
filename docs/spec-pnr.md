@@ -434,14 +434,19 @@ Mapping or invoke PnR.
 The admitted completion profile requires `completed_before` plus the one
 active completing root to be a unique subset of the Canonical Dataflow root
 inventory. The completing root is absent after the edge; roots not yet started
-may begin under the child Mapping. No logical memory, channel-typed state, or
-DynamicWork may persist across the edge. Hardware-programming state is
-unchanged and the owner derives exact zero reprogramming and migration time.
-Ordinary completed thread and graph computation is allowed. Explicit safe
-points, changed hardware programming, surviving in-flight work, and composite
-or token boundaries fail closed until typed proof owners are available. These
-restrictions prevent the graph from becoming an online PnR or arbitrary
-in-flight preemption mechanism.
+may begin under the child Mapping. Logical memories may persist across the
+edge only through the derived retained-in-place correspondence: the finalizer
+compares the exact physical memory targets each endpoint binds per memory root
+and records the memory with exact zero migration time when they are equal.
+Relocated or unbound memories, child static images over a retained memory,
+channel-typed state, and DynamicWork are typed `ResourceTimeTransitionRefusal`
+reasons, never silently filtered. Hardware-programming state is unchanged and
+the owner derives exact zero reprogramming time; the migration time is the sum
+of the correspondence records. Ordinary completed thread and graph computation
+is allowed. Explicit safe points, changed hardware programming, surviving
+in-flight work, and composite or token boundaries fail closed until typed
+proof owners are available. These restrictions prevent the graph from becoming
+an online PnR or arbitrary in-flight preemption mechanism.
 
 Hardware-impact reuse reports one closed disposition: `preserved`,
 `local_repair`, or `cold_fallback`. `Unchanged` and `Rebase` Tech/Spatial

@@ -38,7 +38,7 @@ def main() -> int:
     bundle = read_object(arguments.bundle)
     if bundle.get("schema") != "loom.visualization_bundle":
         raise ValueError("visualization bundle has the wrong schema")
-    if bundle.get("version") != "1.2":
+    if bundle.get("version") != "1.3":
         raise ValueError("visualization bundle has the wrong version")
     if bundle.get("fabric") != fabric:
         raise ValueError("visualization bundle names a different Fabric root")
@@ -194,9 +194,7 @@ def main() -> int:
             "before_active",
             "after_active",
             "completed_before",
-            "before_live_work",
-            "after_live_work",
-            "token_live_state_correspondence",
+            "logical_memories",
             "resource_delta",
             "configuration_delta",
             "route_delta",
@@ -225,9 +223,7 @@ def main() -> int:
                     "before_active",
                     "after_active",
                     "completed_before",
-                    "before_live_work",
-                    "after_live_work",
-                    "token_live_state_correspondence",
+                    "logical_memories",
                     "resource_delta",
                     "configuration_delta",
                     "route_delta",

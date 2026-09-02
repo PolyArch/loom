@@ -106,11 +106,7 @@ bool sameTransition(const pnr::ResourceTimeTransition &lhs,
          sameAllocations(lhs.afterActive, rhs.afterActive) &&
          sameUnorderedValues(llvm::ArrayRef(lhs.completedBefore),
                              llvm::ArrayRef(rhs.completedBefore)) &&
-         sameUnorderedValues(llvm::ArrayRef(lhs.beforeLiveWork),
-                             llvm::ArrayRef(rhs.beforeLiveWork)) &&
-         sameUnorderedValues(llvm::ArrayRef(lhs.afterLiveWork),
-                             llvm::ArrayRef(rhs.afterLiveWork)) &&
-         lhs.tokenLiveStateCorrespondence == rhs.tokenLiveStateCorrespondence &&
+         lhs.logicalMemories == rhs.logicalMemories &&
          lhs.resourceDeltaDigest == rhs.resourceDeltaDigest &&
          lhs.configurationDeltaDigest == rhs.configurationDeltaDigest &&
          lhs.routeDeltaDigest == rhs.routeDeltaDigest &&
@@ -897,7 +893,7 @@ llvm::Error writeBundle(llvm::StringRef destination,
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "loom.visualization_bundle");
-      json.attribute("version", "1.2");
+      json.attribute("version", "1.3");
       json.attributeObject("fabric", [&] {
         writeArtifactRootReferenceJsonFields(json, system.reference());
       });
@@ -970,15 +966,27 @@ llvm::Error writeBundle(llvm::StringRef destination,
                 });
               }
             });
-            writeReferenceArray(json, "before_live_work",
-                                transition.beforeLiveWork);
-            writeReferenceArray(json, "after_live_work",
-                                transition.afterLiveWork);
-            if (transition.tokenLiveStateCorrespondence)
-              writeReference(json, "token_live_state_correspondence",
-                             *transition.tokenLiveStateCorrespondence);
-            else
-              json.attribute("token_live_state_correspondence", nullptr);
+            json.attributeArray("logical_memories", [&] {
+              for (const auto &memory : transition.logicalMemories)
+                json.object([&] {
+                  json.attribute(
+                      "memory_artifact",
+                      formatArtifactIdentityHex(memory.memory.artifact));
+                  json.attribute("memory_entity",
+                                 memory.memory.entity.value());
+                  json.attribute(
+                      "parent_binding",
+                      formatComponentViewDigestHex(memory.parentBinding));
+                  json.attribute(
+                      "child_binding",
+                      formatComponentViewDigestHex(memory.childBinding));
+                  json.attribute("migration",
+                                 pnr::resourceTimeLiveStateMigrationSpelling(
+                                     memory.migration));
+                  json.attribute("migration_time_picoseconds",
+                                 memory.migrationTimePicoseconds);
+                });
+            });
             json.attribute(
                 "resource_delta",
                 formatComponentViewDigestHex(*transition.resourceDeltaDigest));

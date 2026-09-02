@@ -381,16 +381,18 @@ validated records one at a time through a prepared session, so a provider
 failure cannot hide or discard the already accepted selector prefix.
 
 The admitted selector profile is narrower than live migration: every edge is
-a verified completion edge with no before/after live work, no token-state
-correspondence, and exact zero reprogramming and migration cost. The selector
-does not reprogram hardware, install or move memory, snapshot a scheduler, or
-move tokens or payloads. Prepared activation replacement does not itself report
-the completion event, start remaining child roots, or resume DynamicWork;
-those actions require their existing execution owners to call the combined
-commit path and continue from the child Mapping. A graph with live state, an
-explicit safe point other than canonical root completion, or nonzero
-transition work remains typed unsupported until those execution and
-persistence owners exist.
+a verified completion edge whose logical-memory correspondence records are all
+`retained_in_place` at exact zero cost, with exact zero reprogramming and
+migration time. The selector does not reprogram hardware, install or move
+memory, snapshot a scheduler, or move tokens or payloads; a retained memory
+stays at its physical targets because both endpoints bind it identically and
+neither activation reloads it. Prepared activation replacement does not itself
+report the completion event, start remaining child roots, or resume
+DynamicWork; those actions require their existing execution owners to call the
+combined commit path and continue from the child Mapping. A graph with
+relocated live state, an explicit safe point other than canonical root
+completion, or nonzero transition work remains typed unsupported until those
+execution and persistence owners exist.
 
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and

@@ -438,8 +438,6 @@ materializeHint(
         {},
         {},
         {},
-        {},
-        std::nullopt,
         std::nullopt,
         std::nullopt,
         std::nullopt,

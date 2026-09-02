@@ -427,9 +427,18 @@ llvm::Expected<ComponentViewDigest> deriveResourceTimeTransitionCacheKey(
   appendAllocations(bytes, transition.beforeActive);
   appendAllocations(bytes, transition.afterActive);
   appendDataflowRoots(bytes, transition.completedBefore);
-  appendRoots(bytes, transition.beforeLiveWork);
-  appendRoots(bytes, transition.afterLiveWork);
-  appendOptionalRoot(bytes, transition.tokenLiveStateCorrespondence);
+  appendU64(bytes, transition.logicalMemories.size());
+  for (const auto &memory : transition.logicalMemories) {
+    auto encoded =
+        dataflow::encodeDataflowReference(memory.memory.artifact, memory.memory);
+    if (!encoded)
+      return encoded.takeError();
+    appendBlob(bytes, *encoded);
+    appendBlob(bytes, memory.parentBinding.bytes());
+    appendBlob(bytes, memory.childBinding.bytes());
+    appendU64(bytes, static_cast<std::uint64_t>(memory.migration));
+    appendU64(bytes, memory.migrationTimePicoseconds);
+  }
   appendBlob(bytes, transition.resourceDeltaDigest->bytes());
   appendBlob(bytes, transition.configurationDeltaDigest->bytes());
   appendBlob(bytes, transition.routeDeltaDigest->bytes());

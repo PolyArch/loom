@@ -320,11 +320,7 @@ bool sameTransition(const pnr::ResourceTimeTransition &lhs,
          sameAllocations(lhs.afterActive, rhs.afterActive) &&
          sameUnorderedValues(llvm::ArrayRef(lhs.completedBefore),
                              llvm::ArrayRef(rhs.completedBefore)) &&
-         sameUnorderedValues(llvm::ArrayRef(lhs.beforeLiveWork),
-                             llvm::ArrayRef(rhs.beforeLiveWork)) &&
-         sameUnorderedValues(llvm::ArrayRef(lhs.afterLiveWork),
-                             llvm::ArrayRef(rhs.afterLiveWork)) &&
-         lhs.tokenLiveStateCorrespondence == rhs.tokenLiveStateCorrespondence &&
+         lhs.logicalMemories == rhs.logicalMemories &&
          lhs.resourceDeltaDigest == rhs.resourceDeltaDigest &&
          lhs.configurationDeltaDigest == rhs.configurationDeltaDigest &&
          lhs.routeDeltaDigest == rhs.routeDeltaDigest &&

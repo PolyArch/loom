@@ -31,9 +31,13 @@ bool isSupportedSelectionProfile(const pnr::ResourceTimeTransition &transition,
              pnr::ResourceTimeSafePointKind::Completion &&
          transition.safePoint->artifact == dataflow &&
          transition.beforeActive.size() == 1 &&
-         transition.beforeLiveWork.empty() &&
-         transition.afterLiveWork.empty() &&
-         !transition.tokenLiveStateCorrespondence &&
+         llvm::all_of(transition.logicalMemories,
+                      [](const auto &memory) {
+                        return memory.migration ==
+                                   pnr::ResourceTimeLiveStateMigration::
+                                       RetainedInPlace &&
+                               memory.migrationTimePicoseconds == 0;
+                      }) &&
          transition.reprogrammingTimePicoseconds ==
              std::optional<std::uint64_t>(0) &&
          transition.migrationTimePicoseconds == std::optional<std::uint64_t>(0);
@@ -108,7 +112,8 @@ ResourceTimeTransitionSelectionSession::create(
       return reject(
           ResourceTimeSelectionErrorReason::UnsupportedTransitionProfile,
           "resource-time selector supports only verified completion edges "
-          "with no live state and zero reprogramming and migration cost");
+          "whose live state is retained in place at zero reprogramming and "
+          "migration cost");
 
   const auto roots = mapping->view().executionBindings().rootThreadLaunches();
   return ResourceTimeTransitionSelectionSession(

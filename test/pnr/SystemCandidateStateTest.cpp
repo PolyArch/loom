@@ -1234,9 +1234,7 @@ void graphBindingWorkflow() {
       {{pressureRoots.front(), {transitionResource}}},
       {{pressureRoots.front(), {transitionResource}}},
       {},
-      {pressureDataflowReference},
-      {pressureDataflowReference},
-      pressureDataflowReference,
+      {},
       std::nullopt,
       std::nullopt,
       std::nullopt,
@@ -2017,11 +2015,6 @@ void graphBindingWorkflow() {
       transition.beforeActive = {allocate(r1, {0}), allocate(r2, {1}),
                                  allocate(r3, {2})};
       transition.afterActive = {allocate(r2, {1}), allocate(r3, {2})};
-      transition.beforeLiveWork = {pressureSpatialMappings[0],
-                                   pressureSpatialMappings[1],
-                                   finalizedParentMapping.reference()};
-      transition.afterLiveWork = transition.beforeLiveWork;
-      transition.tokenLiveStateCorrespondence = pressureDataflowReference;
       transition.reprogrammingTimePicoseconds = migrationCost;
       transition.migrationTimePicoseconds = migrationCost;
       scenario.transitions.transitions.push_back(std::move(transition));
