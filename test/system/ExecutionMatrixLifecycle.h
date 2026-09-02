@@ -124,6 +124,17 @@ struct ExecutionMatrixImportSummary final {
   std::uint64_t configurationProjectionHits = 0;
 };
 
+/// The make job budget one full-budget RTL cell hands to the Verilator
+/// provider: the largest admitted mapped-RTL parallelism count within the
+/// configured host job budget.
+std::uint64_t fullBudgetRtlBuildJobs();
+
+/// The System RTL command schedule: one Verilation and one archive build per
+/// spatial launch, then the gem5 controller.
+inline constexpr std::size_t systemRtlSpatialLaunchCount = 4;
+inline constexpr std::size_t systemRtlCommandCount =
+    2 * systemRtlSpatialLaunchCount + 1;
+
 void emitExecutionMatrixExternalCommands(
     ExecutionMatrixInvocation invocation,
     llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>

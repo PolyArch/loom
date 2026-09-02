@@ -38,7 +38,6 @@ constexpr llvm::StringLiteral kBuildJobsOption = "build_jobs";
 constexpr llvm::StringLiteral kBuildWorkersOption = "build_workers";
 constexpr llvm::StringLiteral kModelThreadsOption = "model_threads";
 constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
-constexpr std::uint64_t kMaximumParallelism = 8;
 constexpr std::uint64_t kMaximumBuildWorkers = 4;
 constexpr std::uint64_t kHierarchyBodyLineThreshold = 10'000;
 constexpr std::uint64_t kHierarchyMinimumReuseMultiplicity = 8;
@@ -71,6 +70,23 @@ positiveOption(const external_tool::LocalToolConfig &config,
     return invalid("verilator.provider_options." + name +
                    " is outside its positive unsigned range");
   return *parsed;
+}
+
+llvm::Error invalidParallelism(const llvm::Twine &name) {
+  return invalid(name + " must be 1, 2, 4, or 8");
+}
+
+/// A provider option from the closed parallelism domain.
+llvm::Expected<std::uint64_t>
+parallelismOption(const external_tool::LocalToolConfig &config,
+                  llvm::StringRef name, std::uint64_t defaultValue) {
+  auto value = positiveOption(config, name, defaultValue,
+                              std::numeric_limits<std::uint64_t>::max());
+  if (!value)
+    return value.takeError();
+  if (!isMappedRtlParallelismCount(*value))
+    return invalidParallelism("verilator.provider_options." + name);
+  return *value;
 }
 
 llvm::Expected<std::string> canonicalPathPrefix(llvm::StringRef prefix) {
@@ -107,16 +123,6 @@ namespacedBundlePath(llvm::StringRef path, llvm::StringRef pathNamespace) {
   if (normalized.is_absolute() || normalized.lexically_normal() != normalized)
     return invalid("namespaced bundle path is not canonical");
   return result;
-}
-
-/// The closed parallelism domain shared by Verilation jobs, make jobs, and
-/// simulation model threads.
-bool isParallelismCount(std::uint64_t value) {
-  return value == 1 || value == 2 || value == 4 || value == 8;
-}
-
-llvm::Error invalidParallelism(const llvm::Twine &name) {
-  return invalid(name + " must be 1, 2, 4, or 8");
 }
 
 /// Verilator joins make flags into one unquoted make command line, so a
@@ -869,29 +875,21 @@ resolveMappedRtlExecutionAttemptOptions(
   auto cycleLimit =
       positiveOption(localConfig, kCycleLimitOption, kDefaultCycleLimit,
                      std::numeric_limits<std::uint64_t>::max());
-  auto buildJobs =
-      positiveOption(localConfig, kBuildJobsOption, mappedRtlDefaultBuildJobs,
-                     kMaximumParallelism);
+  if (!cycleLimit)
+    return cycleLimit.takeError();
+  auto buildJobs = parallelismOption(localConfig, kBuildJobsOption,
+                                     mappedRtlDefaultBuildJobs);
+  if (!buildJobs)
+    return buildJobs.takeError();
   auto buildWorkers =
       positiveOption(localConfig, kBuildWorkersOption,
                      mappedRtlDefaultBuildWorkers, kMaximumBuildWorkers);
-  auto modelThreads =
-      positiveOption(localConfig, kModelThreadsOption,
-                     mappedRtlDefaultModelThreads, kMaximumParallelism);
-  if (!cycleLimit)
-    return cycleLimit.takeError();
-  if (!buildJobs)
-    return buildJobs.takeError();
-  if (!isParallelismCount(*buildJobs))
-    return invalidParallelism("verilator.provider_options." +
-                              kBuildJobsOption);
   if (!buildWorkers)
     return buildWorkers.takeError();
+  auto modelThreads = parallelismOption(localConfig, kModelThreadsOption,
+                                        mappedRtlDefaultModelThreads);
   if (!modelThreads)
     return modelThreads.takeError();
-  if (!isParallelismCount(*modelThreads))
-    return invalidParallelism("verilator.provider_options." +
-                              kModelThreadsOption);
   return MappedRtlExecutionAttemptOptions{
       *cycleLimit, *buildJobs, *buildWorkers, *modelThreads,
       configured == localConfig.tools.end()
@@ -952,9 +950,9 @@ deriveMappedRtlExecutionBundleProjection(
     const BlobStore &blobs, llvm::StringRef pathPrefix) {
   if (plan.cycleLimit == 0)
     return invalid("execution cycle limit must be positive");
-  if (!isParallelismCount(plan.buildJobs))
+  if (!isMappedRtlParallelismCount(plan.buildJobs))
     return invalidParallelism("mapped RTL build jobs");
-  if (!isParallelismCount(plan.modelThreads))
+  if (!isMappedRtlParallelismCount(plan.modelThreads))
     return invalidParallelism("mapped RTL model threads");
   if (plan.verilatorExecutable.empty())
     return invalid("mapped RTL plan has no Verilator executable");

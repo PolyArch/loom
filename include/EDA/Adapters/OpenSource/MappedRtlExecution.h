@@ -120,12 +120,18 @@ inline constexpr std::uint64_t mappedRtlDefaultBuildJobs = 8;
 inline constexpr std::uint64_t mappedRtlDefaultBuildWorkers = 1;
 inline constexpr std::uint64_t mappedRtlDefaultModelThreads = 8;
 
+/// The closed parallelism domain shared by Verilation jobs, make jobs, and
+/// simulation model threads.
+constexpr bool isMappedRtlParallelismCount(std::uint64_t value) {
+  return value == 1 || value == 2 || value == 4 || value == 8;
+}
+
 /// The Verilator parallelism and thread contract of one mapped-RTL attempt.
 /// `buildJobs` is Verilator's `-j`, the Verilation job count and the make job
 /// count of the generated build; `modelThreads` is the simulation thread
 /// count emitted as both `--threads` and `--hierarchical-threads` so the
 /// generated main, the root model, and the hierarchical schedule agree. Both
-/// use the closed domain {1, 2, 4, 8}.
+/// satisfy `isMappedRtlParallelismCount`.
 struct MappedRtlExecutionAttemptOptions final {
   std::uint64_t cycleLimit = 0;
   std::uint64_t buildJobs = 0;

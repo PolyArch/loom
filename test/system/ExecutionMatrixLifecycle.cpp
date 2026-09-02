@@ -4,6 +4,7 @@
 #include "Common/BlobStore.h"
 #include "Deployment/DeploymentDiagnostics.h"
 #include "Deployment/HardwareConfigurationImage.h"
+#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
@@ -40,7 +41,6 @@ inline constexpr std::size_t fabricImportEntryLimit = 64;
 inline constexpr std::size_t systemMappingImportEntryLimit = 64;
 inline constexpr std::size_t configurationProjectionEntryLimit = 64;
 inline constexpr std::size_t gem5FactsEntryLimit = 8;
-inline constexpr std::size_t systemRtlBuildCommandCount = 4;
 
 std::optional<std::uint64_t> processCpuNanoseconds() {
   timespec current{};
@@ -359,8 +359,11 @@ void emitDeploymentOperationRows(
 }
 
 llvm::StringRef systemRtlCommandRole(std::size_t commandOrdinal) {
-  return commandOrdinal < systemRtlBuildCommandCount ? "rtl_compile"
-                                                     : "rtl_controller";
+  if (commandOrdinal < systemRtlSpatialLaunchCount)
+    return "rtl_verilation";
+  if (commandOrdinal < 2 * systemRtlSpatialLaunchCount)
+    return "rtl_build";
+  return "rtl_controller";
 }
 
 ExecutionMatrixLifecycleOperation setupLifecycleOperation(
@@ -597,16 +600,25 @@ std::uint64_t ExecutionMatrixLifecycleRecorder::operationCount(
   return impl_->operationCount(operation);
 }
 
+std::uint64_t fullBudgetRtlBuildJobs() {
+  std::uint64_t jobs = 1;
+  for (std::uint64_t candidate = 1; candidate <= LOOM_TEST_BUILD_JOBS;
+       ++candidate)
+    if (eda::open_source::isMappedRtlParallelismCount(candidate))
+      jobs = candidate;
+  return jobs;
+}
+
 void emitExecutionMatrixExternalCommands(
     ExecutionMatrixInvocation invocation,
     llvm::ArrayRef<external_tool::ExternalToolCommandExecutionObservation>
         commands) {
   if (invocation.cell != ExecutionMatrixCell::SystemRtl)
     return;
-  constexpr std::size_t expectedCommandCount = systemRtlBuildCommandCount + 1;
-  if (commands.size() != expectedCommandCount)
-    llvm::report_fatal_error(
-        "System RTL execution did not report four builds and one controller");
+  if (commands.size() != systemRtlCommandCount)
+    llvm::report_fatal_error("System RTL execution did not report one "
+                             "Verilation and one build per spatial launch "
+                             "and one controller");
   for (const auto indexed : llvm::enumerate(commands)) {
     const external_tool::ExternalToolCommandExecutionObservation &command =
         indexed.value();
@@ -614,13 +626,13 @@ void emitExecutionMatrixExternalCommands(
       llvm::report_fatal_error(
           "System RTL command observations are not canonical successes");
     llvm::outs() << "execution-matrix-external-command"
-                 << " schema=loom.execution_matrix_external_command.2";
+                 << " schema=loom.execution_matrix_external_command.3";
     emitInvocationKey(llvm::outs(), invocation);
     llvm::outs() << " command_ordinal=" << command.commandOrdinal
                  << " command_role=" << systemRtlCommandRole(indexed.index())
                  << " wall_ns=" << command.wallNanoseconds
                  << " exit_code=" << command.exitCode
-                 << " total_build_jobs=" << LOOM_TEST_BUILD_JOBS
+                 << " total_build_jobs=" << fullBudgetRtlBuildJobs()
                  << " build_worker_limit=" << LOOM_TEST_RTL_BUILD_WORKER_LIMIT
                  << '\n';
   }

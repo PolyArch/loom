@@ -1,10 +1,12 @@
-# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.2 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]]{{.*}}command_role=rtl_compile{{.*}}exit_code=0
-# RTL: execution-matrix-external-command schema=loom.execution_matrix_external_command.2 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]] command_ordinal=4 command_role=rtl_controller{{.*}}exit_code=0
+# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]]{{.*}}command_role=rtl_verilation{{.*}}exit_code=0
+# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]]{{.*}}command_role=rtl_build{{.*}}exit_code=0
+# RTL: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]] command_ordinal=8 command_role=rtl_controller{{.*}}exit_code=0
 # CHECK-LABEL: execution-matrix schema=loom.execution_matrix_summary.4
 # CHECK-SAME: cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]]
 # CHECK: execution-matrix-cache schema=loom.execution_matrix_cache.2 cell=[[CELL]] attempt=ordinary invocation=[[ORDINARY]] cache=gem5_system_facts{{.*}}requests=2 hits=1 misses=1 construction_attempts=1 unique_constructions=1
-# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.2 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]]{{.*}}command_role=rtl_compile{{.*}}exit_code=0
-# RTL: execution-matrix-external-command schema=loom.execution_matrix_external_command.2 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]] command_ordinal=4 command_role=rtl_controller{{.*}}exit_code=0
+# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]]{{.*}}command_role=rtl_verilation{{.*}}exit_code=0
+# RTL-COUNT-4: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]]{{.*}}command_role=rtl_build{{.*}}exit_code=0
+# RTL: execution-matrix-external-command schema=loom.execution_matrix_external_command.3 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]] command_ordinal=8 command_role=rtl_controller{{.*}}exit_code=0
 # CHECK-LABEL: execution-matrix schema=loom.execution_matrix_summary.4
 # CHECK-SAME: cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]]
 # CHECK: execution-matrix-cache schema=loom.execution_matrix_cache.2 cell=[[CELL]] attempt=diagnostic invocation=[[DIAGNOSTIC]] cache=gem5_system_facts{{.*}}requests=2 hits=2 misses=0 construction_attempts=0 unique_constructions=0 uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count=2{{.*}}entries=1

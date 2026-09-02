@@ -79,7 +79,7 @@
 namespace loom::system_test {
 namespace {
 
-#if !defined(LOOM_TEST_BUILD_JOBS) || !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
+#if !defined(LOOM_TEST_RTL_BUILD_WORKER_LIMIT)
 #error "Loom test build limits must be defined"
 #endif
 using deployment::test::fail;
@@ -1109,7 +1109,7 @@ CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
       .providerOptions["max_cycles"] = 128;
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
-      .providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
+      .providerOptions["build_jobs"] = fullBudgetRtlBuildJobs();
   return runExternal(test, request, resolution, std::move(verilator.local),
                      tree.path("spatial-rtl-bundle"), artifacts, blobs);
 }
@@ -1167,7 +1167,7 @@ runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
           std::move(verilator->local
                         .tools[external_tool::verilatorProvider().binding.key]);
       verilatorConfig.providerOptions["max_cycles"] = 128;
-      verilatorConfig.providerOptions["build_jobs"] = LOOM_TEST_BUILD_JOBS;
+      verilatorConfig.providerOptions["build_jobs"] = fullBudgetRtlBuildJobs();
       verilatorConfig.providerOptions["build_workers"] =
           LOOM_TEST_RTL_BUILD_WORKER_LIMIT;
     }

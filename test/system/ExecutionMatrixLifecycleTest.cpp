@@ -34,7 +34,7 @@ int main() {
   using namespace loom::system_test;
 
   std::vector<ExternalToolCommandExecutionObservation> commands;
-  for (std::uint64_t ordinal = 0; ordinal != 5; ++ordinal)
+  for (std::uint64_t ordinal = 0; ordinal != systemRtlCommandCount; ++ordinal)
     commands.push_back({ordinal, (ordinal + 1) * 1000, 0});
   emitExecutionMatrixExternalCommands(
       {ExecutionMatrixCell::SystemRtl, ExecutionMatrixAttemptKind::Ordinary},
