@@ -1,6 +1,7 @@
 #include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
 
 #include "Common/ArtifactStore.h"
+#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 #include "Common/BlobStore.h"
 #include "Evaluation/ArtifactImportCache.h"
@@ -790,18 +791,26 @@ void authoredFailure(AuthoredFailureCase selected) {
   llvm_unreachable("closed authored failure case");
 }
 
-void realVerilatorLifecycle() {
+/// One real simulator compiles and runs the shared harness of the small
+/// heterogeneous fixture; the Evidence it imports is the same shape for every
+/// member of the closed simulator set.
+void realSimulatorLifecycle(
+    loom::eda::open_source::MappedRtlHdlSimulator simulator) {
   using namespace loom;
   using namespace loom::evaluation;
   using namespace loom::external_tool;
 
   const llvm::StringRef test = __func__;
-  deployment::test::TemporaryTree tree("mapped-rtl-verilator");
+  deployment::test::TemporaryTree tree(
+      ("mapped-rtl-" +
+       eda::open_source::mappedRtlHdlSimulatorSpelling(simulator))
+          .str());
   const std::filesystem::path probeRoot = tree.path("probe");
   std::filesystem::create_directories(probeRoot);
   LocalToolConfig local;
   local.runtimePolicy = RuntimePolicy::Host;
-  const ExternalToolProviderDescriptor &provider = verilatorProvider();
+  const ExternalToolProviderDescriptor &provider =
+      eda::open_source::mappedRtlHdlSimulatorProvider(simulator);
   ShellToolBindingProbe probe(probeRoot.string(), provider.versionProbe);
   const ResolvedToolBinding binding =
       take(resolveToolBinding(provider.binding, local,
@@ -823,10 +832,10 @@ void realVerilatorLifecycle() {
           fixture.request, fixture.resolution, artifacts, blobs,
           ExternalToolPreparationContext{std::move(local), bundle.string()}));
   const auto *prepared = externalInvocation(preparation);
-  require(prepared, "real Verilator request did not prepare a bundle");
+  require(prepared, "real simulator request did not prepare a bundle");
   const int status = take(executeExternalToolInvocationBundle(*prepared));
   if (status != 0)
-    fail("real Verilator lifecycle failed: " +
+    fail("real simulator lifecycle failed: " +
          readFile(bundle / "outputs/stderr.log"));
   const EvaluationEvidence evidence = take(importEvaluationModelInvocation(
       fixture.request, fixture.resolution, *prepared, artifacts, blobs));
@@ -836,7 +845,7 @@ void realVerilatorLifecycle() {
          readFile(bundle / eda::open_source::mappedRtlResultPath.str()) +
          "\nsimulator stdout:\n" + readFile(bundle / "outputs/stdout.log"));
   require(requireCompletedEvidence(fixture, evidence, artifacts, blobs) > 0,
-          "real Verilator execution retired without elapsed cycles");
+          "real simulator execution retired without elapsed cycles");
 }
 
 } // namespace
@@ -849,7 +858,12 @@ int main(int argc, char **argv) {
     fail(llvm::toString(std::move(error)));
   const llvm::StringRef selector(argv[1]);
   if (selector == "--real-verilator") {
-    realVerilatorLifecycle();
+    realSimulatorLifecycle(
+        loom::eda::open_source::MappedRtlHdlSimulator::Verilator);
+    return EXIT_SUCCESS;
+  }
+  if (selector == "--real-vcs") {
+    realSimulatorLifecycle(loom::eda::open_source::MappedRtlHdlSimulator::Vcs);
     return EXIT_SUCCESS;
   }
   if (selector == "--result-protocol")

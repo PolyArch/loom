@@ -102,9 +102,24 @@ llvm::cl::opt<bool>
               llvm::cl::desc(
                   "Execute each materialized Spatial invocation as mapped RTL"),
               llvm::cl::init(false));
+llvm::cl::opt<loom::eda::open_source::MappedRtlHdlSimulator> mappedRtlSimulator(
+    "mapped-rtl-simulator",
+    llvm::cl::desc("HDL simulator that compiles and runs the mapped RTL"),
+    llvm::cl::values(
+        clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Verilator,
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       loom::eda::open_source::MappedRtlHdlSimulator::Verilator)
+                       .data(),
+                   "Verilator, hierarchical multithreaded model"),
+        clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Vcs,
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       loom::eda::open_source::MappedRtlHdlSimulator::Vcs)
+                       .data(),
+                   "Synopsys VCS, event-driven four-state model")),
+    llvm::cl::init(loom::eda::open_source::MappedRtlHdlSimulator::Verilator));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildJobs(
     "mapped-rtl-build-jobs",
-    llvm::cl::desc("C++ build jobs for mapped RTL hierarchy compilation"),
+    llvm::cl::desc("Parallel compilation jobs of the mapped RTL simulator"),
     llvm::cl::init(loom::eda::open_source::mappedRtlDefaultBuildJobs));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildWorkers(
     "mapped-rtl-build-workers",
@@ -1309,7 +1324,10 @@ executeSpatialRtl(const SpatialInvocationCase &invocation,
   if (!resolution)
     return resolution.takeError();
 
-  const auto &provider = loom::external_tool::verilatorProvider();
+  const loom::eda::open_source::MappedRtlHdlSimulator simulator =
+      mappedRtlSimulator.getValue();
+  const auto &provider =
+      loom::eda::open_source::mappedRtlHdlSimulatorProvider(simulator);
   const std::string probePath =
       child(child(workspace, "bundles"),
             ("spatial-rtl-probe-" + llvm::Twine(invocation.ordinal)).str());
@@ -1330,10 +1348,12 @@ executeSpatialRtl(const SpatialInvocationCase &invocation,
       resolvedTool->executable;
   local.tools[provider.binding.key].providerOptions["build_jobs"] =
       mappedRtlBuildJobs.getValue();
-  local.tools[provider.binding.key].providerOptions["build_workers"] =
-      mappedRtlBuildWorkers.getValue();
-  local.tools[provider.binding.key].providerOptions["model_threads"] =
-      mappedRtlModelThreads.getValue();
+  if (simulator == loom::eda::open_source::MappedRtlHdlSimulator::Verilator) {
+    local.tools[provider.binding.key].providerOptions["build_workers"] =
+        mappedRtlBuildWorkers.getValue();
+    local.tools[provider.binding.key].providerOptions["model_threads"] =
+        mappedRtlModelThreads.getValue();
+  }
 
   auto subjects = loom::evaluation::EvaluationSubjectBindings::get(
       {{loom::evaluation::models::mappedRtlHardwareImplementationSubjectRole(),
@@ -1394,7 +1414,10 @@ executeSpatialRtl(const SpatialInvocationCase &invocation,
     releaseStage.finish();
   }
   loom::hardware::rtl::RtlMaterializationStageTracker executionStage(
-      "verilator_execution", materializationKey);
+      (loom::eda::open_source::mappedRtlHdlSimulatorSpelling(simulator) +
+       "_execution")
+          .str(),
+      materializationKey);
   auto execution =
       loom::external_tool::executeExternalToolInvocationBundleObserved(
           external);

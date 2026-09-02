@@ -1156,12 +1156,15 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       {kProjectionPath.str(), std::move(*projection), std::nullopt, false});
 
   if (facts.engine == Gem5SystemEngine::Rtl) {
+    // The gem5 bridge engine is linked into the Verilated model, so this
+    // engine binds the Verilator member of the mapped-RTL simulator set.
     auto options = eda::open_source::resolveMappedRtlExecutionAttemptOptions(
-        context.localConfig);
+        context.localConfig, eda::open_source::MappedRtlHdlSimulator::Verilator);
     if (!options)
       return options.takeError();
     const ExternalToolProviderDescriptor &verilatorToolProvider =
-        verilatorProvider();
+        eda::open_source::mappedRtlHdlSimulatorProvider(
+            eda::open_source::MappedRtlHdlSimulator::Verilator);
     ShellToolBindingProbe verilatorProbe(probeRoot.string(),
                                          verilatorToolProvider.versionProbe);
     auto verilatorTool = resolveToolBinding(
@@ -1227,6 +1230,11 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       auto closure = mappedRtlClosure(request, facts, launch, *contract);
       if (!closure)
         return closure.takeError();
+      if (eda::open_source::classifyMappedRtlHdlSimulator(
+              closure->simulatorBinding.stableHdlSimulatorBuildIdentity) !=
+          eda::open_source::MappedRtlHdlSimulator::Verilator)
+        return invalid("gem5 RTL execution runs the Verilated bridge engine; "
+                       "the Request binds another HDL simulator");
       if (verilatorTool->version !=
           closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
         return invalid(

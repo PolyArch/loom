@@ -1,0 +1,4 @@
+# The second member of the closed mapped-RTL simulator set compiles and runs
+# the same generated harness and imports the same Evidence shape.
+# REQUIRES: vcs-y-2026.03-sp1
+# RUN: timeout %loom-timeout-xlong %loom-mapped-rtl-simulation-test --real-vcs
