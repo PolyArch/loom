@@ -16,6 +16,7 @@
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -94,11 +95,34 @@ llvm::Error validateStructuredVectorScheduleCoordinate(
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.structured_schedule.decision.5.0";
+    "loom.structured_schedule.decision.6.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "structured_schedule_invalid: " + message);
+}
+
+/// Replication decisions carry a canonical factor; interchange, parallel, and
+/// vector decisions are factorless; a polyhedral decision is factorless for
+/// the provider schedule itself and carries the tile factor of a tiled one.
+bool admitsDecisionFactor(StructuredScheduleDecisionKind kind,
+                          std::uint64_t factor) {
+  const bool canonicalFactor =
+      factor >= 2 && factor <= maximumCanonicalStructuredScheduleFactor;
+  switch (kind) {
+  case StructuredScheduleDecisionKind::Tile:
+  case StructuredScheduleDecisionKind::Unroll:
+  case StructuredScheduleDecisionKind::UnrollAndJam:
+    return canonicalFactor;
+  case StructuredScheduleDecisionKind::Interchange:
+  case StructuredScheduleDecisionKind::Parallelize:
+  case StructuredScheduleDecisionKind::ParallelizeNest:
+  case StructuredScheduleDecisionKind::Vectorize:
+    return factor == 0;
+  case StructuredScheduleDecisionKind::PolyhedralSchedule:
+    return factor == 0 || canonicalFactor;
+  }
+  return false;
 }
 
 std::optional<std::uint64_t> staticTripCount(mlir::scf::ForOp loop) {
@@ -106,6 +130,15 @@ std::optional<std::uint64_t> staticTripCount(mlir::scf::ForOp loop) {
   if (!count || count->getActiveBits() > 64)
     return std::nullopt;
   return count->getZExtValue();
+}
+
+std::optional<std::uint64_t>
+structuredLoopStaticTripCount(mlir::Operation *loop) {
+  if (auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(loop))
+    return staticTripCount(scfLoop);
+  if (auto affineLoop = llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(loop))
+    return mlir::affine::getConstantTripCount(affineLoop);
+  return std::nullopt;
 }
 
 std::vector<std::uint64_t> canonicalProperDivisors(std::uint64_t value) {
@@ -1032,6 +1065,29 @@ llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes() {
           decisionSchema.size()};
 }
 
+llvm::StringRef
+structuredScheduleDecisionKindSpelling(StructuredScheduleDecisionKind kind) {
+  switch (kind) {
+  case StructuredScheduleDecisionKind::Tile:
+    return "tile";
+  case StructuredScheduleDecisionKind::Unroll:
+    return "unroll";
+  case StructuredScheduleDecisionKind::Interchange:
+    return "interchange";
+  case StructuredScheduleDecisionKind::UnrollAndJam:
+    return "unroll_and_jam";
+  case StructuredScheduleDecisionKind::Parallelize:
+    return "parallelize";
+  case StructuredScheduleDecisionKind::ParallelizeNest:
+    return "parallelize_nest";
+  case StructuredScheduleDecisionKind::Vectorize:
+    return "vectorize";
+  case StructuredScheduleDecisionKind::PolyhedralSchedule:
+    return "polyhedral_schedule";
+  }
+  llvm_unreachable("unknown structured schedule decision kind");
+}
+
 llvm::Expected<std::vector<std::uint8_t>>
 encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
   if (decision.loop.kind != StructuredEntityKind::Operation)
@@ -1040,16 +1096,7 @@ encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
       static_cast<std::uint32_t>(
           StructuredScheduleDecisionKind::PolyhedralSchedule))
     return invalid("decision has an unknown kind");
-  const bool factorless =
-      decision.kind == StructuredScheduleDecisionKind::Interchange ||
-      decision.kind == StructuredScheduleDecisionKind::Parallelize ||
-      decision.kind == StructuredScheduleDecisionKind::ParallelizeNest ||
-      decision.kind == StructuredScheduleDecisionKind::Vectorize ||
-      decision.kind == StructuredScheduleDecisionKind::PolyhedralSchedule;
-  if ((factorless && decision.factor != 0) ||
-      (!factorless &&
-       (decision.factor <= 1 ||
-        decision.factor > maximumCanonicalStructuredScheduleFactor)))
+  if (!admitsDecisionFactor(decision.kind, decision.factor))
     return invalid("decision has an invalid factor");
   if (decision.kind == StructuredScheduleDecisionKind::Vectorize) {
     if (!decision.vector)
@@ -1125,13 +1172,7 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
   if (!factor)
     return factor.takeError();
   const auto typedKind = static_cast<StructuredScheduleDecisionKind>(*kind);
-  const bool factorless =
-      typedKind == StructuredScheduleDecisionKind::Interchange ||
-      typedKind == StructuredScheduleDecisionKind::Parallelize ||
-      typedKind == StructuredScheduleDecisionKind::ParallelizeNest ||
-      typedKind == StructuredScheduleDecisionKind::Vectorize ||
-      typedKind == StructuredScheduleDecisionKind::PolyhedralSchedule;
-  if ((factorless && *factor != 0) || (!factorless && *factor <= 1))
+  if (!admitsDecisionFactor(typedKind, *factor))
     return invalid("decision payload has an invalid factor");
   std::optional<StructuredVectorScheduleCoordinate> vector;
   if (typedKind == StructuredScheduleDecisionKind::Vectorize) {
@@ -1241,8 +1282,12 @@ enumerateStructuredScheduleDecisions(
     if (!analysis)
       return analysis.takeError();
     const auto appendGeneralScop = [&]() -> llvm::Expected<bool> {
-      auto polyhedral =
-          analyzeStructuredPolyhedralScop(parent, entity.reference);
+      // Polyhedral tile factors follow the SCF tile rule: the sorted proper
+      // divisors of the root loop's exact static trip count.
+      const std::vector<std::uint64_t> tileFactors = canonicalProperDivisors(
+          structuredLoopStaticTripCount(entity.operation).value_or(0));
+      auto polyhedral = analyzeStructuredPolyhedralScop(
+          parent, entity.reference, tileFactors);
       if (!polyhedral)
         return polyhedral.takeError();
       if (auto *general =
@@ -1253,6 +1298,12 @@ enumerateStructuredScheduleDecisions(
         auto frozen = std::make_shared<const StructuredPolyhedralScopView>(
             std::move(*general));
         polyhedralScops.push_back(*frozen);
+        const auto recordRefusal = [&](StructuredScopRefusalKind kind) {
+          if (llvm::none_of(refusals, [&](const StructuredScopRefusal &known) {
+                return known.loop == entity.reference && known.kind == kind;
+              }))
+            refusals.push_back({entity.reference, kind});
+        };
         auto materializationRefusal = classifyPolyhedralScheduleMaterialization(
             entity.operation, *frozen);
         if (!materializationRefusal)
@@ -1271,7 +1322,35 @@ enumerateStructuredScheduleDecisions(
           }
         }
         if (*materializationRefusal)
-          refusals.push_back({entity.reference, **materializationRefusal});
+          recordRefusal(**materializationRefusal);
+        // Each proven tiled schedule is its own coordinate. The proposal binds
+        // a view whose schedule is the tiled relation so the selected
+        // materializer replays the exact frozen proof.
+        for (const StructuredPolyhedralTiledScheduleView &tiled :
+             frozen->tiledSchedules) {
+          if (llvm::Error error = recordCoordinates(1))
+            return std::move(error);
+          auto tiledScop =
+              std::make_shared<StructuredPolyhedralScopView>(*frozen);
+          tiledScop->schedule = tiled.schedule;
+          tiledScop->tiledSchedules.clear();
+          auto tiledRefusal = classifyPolyhedralScheduleMaterialization(
+              entity.operation, *tiledScop);
+          if (!tiledRefusal)
+            return tiledRefusal.takeError();
+          if (*tiledRefusal) {
+            recordRefusal(**tiledRefusal);
+            continue;
+          }
+          StructuredScheduleDecision decision{
+              entity.reference,
+              StructuredScheduleDecisionKind::PolyhedralSchedule, tiled.factor,
+              std::nullopt};
+          proposals.push_back(StructuredScheduleProposal(
+              decision, nullptr,
+              std::shared_ptr<const StructuredPolyhedralScopView>(tiledScop),
+              fabric.reference()));
+        }
         return true;
       }
       StructuredScopRefusal &polyhedralRefusal =
@@ -1477,8 +1556,14 @@ materializeStructuredScheduleImpl(
   const StructuredPolyhedralScopView *exactPolyhedralSource =
       frozenPolyhedralScop;
   if (decision.kind == StructuredScheduleDecisionKind::PolyhedralSchedule) {
+    if (decision.vector)
+      return invalid("polyhedral decision carries a vector coordinate");
     if (!exactPolyhedralSource) {
-      auto analysis = analyzeStructuredPolyhedralScop(parent, decision.loop);
+      const std::uint64_t tileFactors[] = {decision.factor};
+      auto analysis = analyzeStructuredPolyhedralScop(
+          parent, decision.loop,
+          decision.factor == 0 ? llvm::ArrayRef<std::uint64_t>()
+                               : llvm::ArrayRef<std::uint64_t>(tileFactors));
       if (!analysis)
         return analysis.takeError();
       if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis))
@@ -1487,12 +1572,22 @@ materializeStructuredScheduleImpl(
             llvm::Twine(static_cast<std::uint32_t>(refusal->kind)));
       polyhedralSource.emplace(
           std::get<StructuredPolyhedralScopView>(std::move(*analysis)));
+      if (decision.factor != 0) {
+        auto tiled = llvm::find_if(
+            polyhedralSource->tiledSchedules, [&](const auto &candidate) {
+              return candidate.factor == decision.factor;
+            });
+        if (tiled == polyhedralSource->tiledSchedules.end())
+          return invalid("polyhedral tile factor has no proven tiled schedule");
+        polyhedralSource->schedule = std::move(tiled->schedule);
+        polyhedralSource->tiledSchedules.clear();
+      }
       exactPolyhedralSource = &*polyhedralSource;
     }
     if (exactPolyhedralSource->root != decision.loop)
       return invalid("frozen polyhedral SCoP belongs to another source loop");
-    if (exactPolyhedralSource->schedule.form ==
-        StructuredPolyhedralScheduleForm::SourceOrder)
+    if (decision.factor == 0 && exactPolyhedralSource->schedule.form ==
+                                    StructuredPolyhedralScheduleForm::SourceOrder)
       return invalid("polyhedral decision has no transform schedule form");
   }
 
@@ -1630,8 +1725,6 @@ materializeStructuredScheduleImpl(
   case StructuredScheduleDecisionKind::PolyhedralSchedule:
     if (!exactPolyhedralSource)
       return invalid("polyhedral decision has no exact SCoP schedule");
-    if (decision.factor != 0 || decision.vector)
-      return invalid("polyhedral decision carries a scalar coordinate");
     if (canMaterializeCanonicalPolyhedralSchedule(selectedLoop,
                                                   *exactPolyhedralSource)) {
       if (llvm::Error error =

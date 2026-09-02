@@ -42,6 +42,10 @@ struct PolyhedralScheduleProviderView final {
   std::vector<StructuredPolyhedralStatementScheduleView> statementSchedules;
   /// Exact parameter order used by the invocation-local ISL spaces.
   std::vector<mlir::Value> parameters;
+  /// The same provider schedule with every outermost band tiled by one
+  /// requested factor, in requested factor order. A factor whose tiled
+  /// relation the provider could not prove valid is absent.
+  std::vector<StructuredPolyhedralTiledScheduleView> tiledSchedules;
 };
 
 enum class PolyhedralScheduleProviderRefusalKind : std::uint32_t {
@@ -125,10 +129,12 @@ using PolyhedralAstBuildOutcome =
     std::variant<PolyhedralAstNode, StructuredScopRefusalKind>;
 
 /// Computes one bounded ephemeral ISL schedule from MLIR-owned exact domains
-/// and dependence relations. No ISL object or spelling escapes this call.
+/// and dependence relations, plus one tiled variant per requested factor. No
+/// ISL object or spelling escapes this call.
 llvm::Expected<PolyhedralScheduleProviderOutcome> computePinnedIslSchedule(
     llvm::ArrayRef<PolyhedralStatementDomain> statements,
-    llvm::ArrayRef<PolyhedralDependenceRelation> dependences);
+    llvm::ArrayRef<PolyhedralDependenceRelation> dependences,
+    llvm::ArrayRef<std::uint64_t> tileFactors = {});
 
 /// Reconstructs and independently checks the frozen schedule relation before
 /// deriving the bounded ISL AST consumed by ordinary-MLIR materialization.

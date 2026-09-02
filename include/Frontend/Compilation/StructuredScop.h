@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -149,6 +150,15 @@ struct StructuredPolyhedralScheduleView final {
   std::uint64_t scheduleMapCount() const { return statementSchedules.size(); }
 };
 
+/// The provider schedule with every outermost band tiled by `factor`. A
+/// one-member band is strip-mined; a wider permutable band is rectangularly
+/// tiled. The tiled relation is proved against the exact dependences like any
+/// other frozen schedule and materializes through the same general path.
+struct StructuredPolyhedralTiledScheduleView final {
+  std::uint64_t factor = 0;
+  StructuredPolyhedralScheduleView schedule;
+};
+
 struct StructuredPolyhedralSetView final {
   std::vector<StructuredEntityRef> dimensions;
   std::vector<StructuredEntityRef> parameters;
@@ -216,6 +226,9 @@ struct StructuredPolyhedralScopView final {
   std::vector<StructuredPolyhedralAccessRelationView> accesses;
   std::vector<StructuredPolyhedralDependenceView> dependences;
   StructuredPolyhedralScheduleView schedule;
+  /// Tiled variants of `schedule` for the root loop's canonical tile factors,
+  /// in ascending factor order.
+  std::vector<StructuredPolyhedralTiledScheduleView> tiledSchedules;
 };
 
 struct StructuredScopAccessView final {
@@ -288,9 +301,12 @@ analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
 /// structured loop. Multi-statement, multi-loop, and imperfect nests are
 /// admitted when all statement domains, accesses, aliases, and dependences are
 /// exactly representable by the shared MLIR and pinned Polly/ISL providers.
+/// The caller names the tile factors whose tiled provider schedules the view
+/// must also freeze; the schedule owner defines that finite factor domain.
 llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>
 analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
-                                const StructuredEntityRef &loop);
+                                const StructuredEntityRef &loop,
+                                llvm::ArrayRef<std::uint64_t> tileFactors = {});
 
 /// Mechanically projects one selected SCF loop tree and affine-indexable memref
 /// accesses into the Affine spelling consumed by upstream analysis and the

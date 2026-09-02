@@ -761,6 +761,24 @@ exactly one statement in each clone, while an adjacent exchange additionally
 requires homogeneous SCF or Affine loops and inner bounds that remain
 invariant at the exchanged scope.
 
+Polyhedral tiling is the same decision with a factor. The tile factors of a
+general SCoP follow the SCF tile rule: the sorted proper divisors of the root
+loop's exact static trip count within the canonical range; a root without a
+static trip count has no polyhedral tile coordinate. For each factor the
+provider tiles every band that no other band encloses by that size on every
+member, keeping tile coordinates unscaled and point coordinates unshifted, so
+a one-member band is strip-mined, a wider band is rectangularly tiled, and
+every statement retains its source coordinates below the tile dimensions. A
+wider band that the provider did not prove permutable is not tiled, and a
+tiled relation is proved against the exact frozen dependences like the base
+schedule; an unproved factor is simply absent from the proposal domain. The
+tiled relation is frozen beside the base schedule in the removable SCoP view,
+classified as `General`, and materialized only through the reconstructed AST
+path below, so the tile and point loops appear as ordinary sequential SCF
+loops with floor-division and minimum bounds. Parallel execution of a tile
+loop is not claimed by the tiling decision; a later `Parallelize` decision on
+the tiled child must establish its own independence proof.
+
 A schedule outside those closed forms is reconstructed from its frozen
 Presburger pieces and intersected with the exact frozen statement domains.
 The pinned provider must prove complete domain coverage and a single-valued
@@ -966,9 +984,10 @@ children deduplicate by Artifact identity. No schedule tree, factor table,
 hidden pass state, or persisted analysis view exists.
 
 The canonical lineage-payload schema is
-`loom.structured_schedule.decision.5.0`. The earlier 4.0 schema has no
-`PolyhedralSchedule` decision, while the earlier 3.0 schema also admitted
-unbounded scalar factors; neither can be reinterpreted as this domain.
+`loom.structured_schedule.decision.6.0`. The earlier 5.0 schema admitted only
+a factorless `PolyhedralSchedule` decision, the 4.0 schema has no
+`PolyhedralSchedule` decision, and the 3.0 schema also admitted unbounded
+scalar factors; none can be reinterpreted as this domain.
 
 The exact schedule derivation is the typed edge
 `(parent, child, fabric, decision)`.
@@ -1012,7 +1031,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v12`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v13`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator
