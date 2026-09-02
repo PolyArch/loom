@@ -57,6 +57,11 @@ CANONICAL_QOR_APPLICATIONS = (
 TINYML_APPLICATION = "mlperf-tiny-anomaly-detection"
 PRE_ADMISSION_OWNER = "application_build"
 PRE_ADMISSION_CONTRACT = "pre_mapping_owner_verified_v1"
+# Join-status spellings are owned by ApplicationPairManifestJoinStatus in
+# lib/Application/PairDecision.cpp; the third owner value, "missing", never
+# closes a join.
+MANIFEST_JOIN_COMPLETE = "owner_scoped_planning_closure"
+MANIFEST_JOIN_PRE_ADMISSION = "owner_verified_pre_admission"
 PAIR_DECISION_SCHEMA = "loom.application_pair_decision"
 PAIR_DECISION_VERSION = "1.0"
 PAIR_EVIDENCE_SCHEMA = "loom.application_pair_evidence"
@@ -663,13 +668,9 @@ def validate_portfolio_pair(
     if disposition not in PAIR_DISPOSITIONS:
         typed_reasons.append("invalid_disposition")
     join_status = decision.get("invocation_manifest_join_status")
-    if join_status not in {
-        "exact",
-        "owner_scoped_planning_closure",
-        "owner_verified_pre_admission",
-    }:
+    if join_status not in {MANIFEST_JOIN_COMPLETE, MANIFEST_JOIN_PRE_ADMISSION}:
         typed_reasons.append("manifest_join_unverified")
-    if join_status == "owner_verified_pre_admission":
+    if join_status == MANIFEST_JOIN_PRE_ADMISSION:
         if decision.get("manifest_join_owner_verified") is not True:
             typed_reasons.append("manifest_join_owner_unverified")
         if decision.get("manifest_join_owner") != PRE_ADMISSION_OWNER:
@@ -696,7 +697,7 @@ def validate_portfolio_pair(
         closure_reasons.append("host_baseline_incomplete")
     if decision.get("final_application_qor_complete") is not True:
         closure_reasons.append("application_qor_incomplete")
-    if join_status not in {"exact", "owner_scoped_planning_closure"}:
+    if join_status != MANIFEST_JOIN_COMPLETE:
         closure_reasons.append("invocation_manifest_join_incomplete")
 
     baseline_reasons, _ = _validate_objective_vector(
