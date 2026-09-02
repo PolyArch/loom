@@ -10,6 +10,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
+#include <iterator>
 #include <system_error>
 #include <utility>
 
@@ -160,6 +161,35 @@ LoadedApplicationDeployment::applyResourceTimeEvent(
         ApplicationResourceTimeExecutionErrorReason::TransitionGraphUnavailable,
         "Application Deployment has no resource-time transition graph");
   return resourceTime_->apply(observation, loaded_);
+}
+
+llvm::Expected<runtime::Gem5RootEventDecision>
+LoadedApplicationDeployment::driveGem5RootEvent(
+    const sim::SystemRootLifecycleObservation &observation,
+    const runtime::Gem5RootEventEndpointTable &endpoints) {
+  auto event = applyResourceTimeEvent(observation);
+  if (!event)
+    return event.takeError();
+  if (!event->current.deployment)
+    return invalid("resource-time endpoint has no Deployment");
+  const auto endpoint =
+      llvm::find(endpoints.deployments, *event->current.deployment);
+  if (endpoint == endpoints.deployments.end())
+    return invalid("resource-time endpoint is outside the gem5 endpoint table");
+  const auto ordinal = static_cast<std::uint64_t>(
+      std::distance(endpoints.deployments.begin(), endpoint));
+  switch (event->outcome) {
+  case ApplicationResourceTimeEventOutcome::RootStarted:
+    return runtime::Gem5RootEventDecision{
+        runtime::Gem5RootEventControlDecision::Continue, ordinal};
+  case ApplicationResourceTimeEventOutcome::NoLegalTransition:
+    return runtime::Gem5RootEventDecision{
+        runtime::Gem5RootEventControlDecision::Stay, ordinal};
+  case ApplicationResourceTimeEventOutcome::SelectedChild:
+    return runtime::Gem5RootEventDecision{
+        runtime::Gem5RootEventControlDecision::ActivateEndpoint, ordinal};
+  }
+  llvm_unreachable("unknown Application resource-time event outcome");
 }
 
 llvm::Expected<FinalizedApplicationResourceTimeExecutionTrace>

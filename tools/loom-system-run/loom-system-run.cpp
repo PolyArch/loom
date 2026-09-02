@@ -40,8 +40,9 @@
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/FabricModelRuntimeProvider.h"
 #include "Runtime/Gem5BridgeWire.h"
+#include "Runtime/Gem5RootEventControl.h"
 #include "Runtime/Gem5SimulationBinding.h"
-#include "Runtime/ResourceTimeTransitionSelection.h"
+#include "Runtime/Gem5SystemExecution.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
@@ -347,15 +348,50 @@ createApplicationRuntimeProvider(
       {{std::move(implementations)}});
 }
 
-llvm::Expected<std::optional<
-    loom::application::FinalizedApplicationResourceTimeExecutionTrace>>
-executeResourceTimeLifecycle(
+/// The synchronous resource-time drive of one run: the loaded Application
+/// Deployment with its prepared selector, the gem5 endpoint table derived from
+/// the manifest graph, and the root events the controller acknowledged. The
+/// controlled System DFG cell consults it at every root event before the
+/// device continues; the trace is published from this session only.
+struct ResourceTimeDrive final {
+  loom::application::LoadedApplicationDeployment loaded;
+  loom::runtime::Gem5RootEventEndpointTable endpoints;
+  std::vector<loom::runtime::Gem5RootEventAcknowledgement> acknowledgements;
+};
+
+/// Typed refusal of the synchronous drive. The run still executes the entry
+/// Deployment on both engines but publishes no activation evidence.
+struct ResourceTimeDriveRefusal final {
+  loom::runtime::Gem5RootEventControlErrorReason reason;
+};
+
+using ResourceTimeDriveOutcome =
+    std::variant<std::monostate, ResourceTimeDrive, ResourceTimeDriveRefusal>;
+
+llvm::Expected<ResourceTimeDriveOutcome> prepareResourceTimeDrive(
     const loom::application::FinalizedApplicationRuntimeManifest &manifest,
     const loom::deployment::FinalizedDeployment &deployment,
-    llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> lifecycle,
     const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
   if (!manifest.manifest().transitionGraph())
-    return std::nullopt;
+    return ResourceTimeDriveOutcome{std::monostate{}};
+  auto endpoints = loom::runtime::deriveGem5RootEventEndpointTable(
+      *manifest.manifest().transitionGraph(), artifacts);
+  if (!endpoints) {
+    std::optional<loom::runtime::Gem5RootEventControlErrorReason> refusal;
+    llvm::Error error = llvm::handleErrors(
+        endpoints.takeError(),
+        [&](std::unique_ptr<loom::runtime::Gem5RootEventControlError> typed)
+            -> llvm::Error {
+          if (typed->reason() !=
+              loom::runtime::Gem5RootEventControlErrorReason::NonTerminalEdge)
+            return llvm::Error(std::move(typed));
+          refusal = typed->reason();
+          return llvm::Error::success();
+        });
+    if (error)
+      return std::move(error);
+    return ResourceTimeDriveOutcome{ResourceTimeDriveRefusal{*refusal}};
+  }
   auto provider =
       createApplicationRuntimeProvider(manifest, deployment, artifacts, blobs);
   if (!provider)
@@ -364,20 +400,42 @@ executeResourceTimeLifecycle(
       manifest, deployment, {*provider, 0}, artifacts, blobs);
   if (!loaded)
     return loaded.takeError();
-  for (const loom::sim::SystemRootLifecycleObservation &observation :
-       lifecycle) {
-    auto event = loaded->applyResourceTimeEvent(observation);
-    if (!event)
-      return event.takeError();
+  return ResourceTimeDriveOutcome{
+      ResourceTimeDrive{std::move(*loaded), std::move(*endpoints), {}}};
+}
+
+/// The controlled cell's device-published lifecycle must be exactly the
+/// acknowledged sequence; a divergence means the device continued past an
+/// unacknowledged event.
+llvm::Error validateAcknowledgedRootLifecycle(
+    llvm::ArrayRef<loom::runtime::Gem5RootEventAcknowledgement> acknowledged,
+    llvm::ArrayRef<loom::sim::SystemRootLifecycleObservation> published) {
+  if (acknowledged.size() != published.size())
+    return invalid("controlled System cell published a root lifecycle that "
+                   "differs from the acknowledged events");
+  for (std::size_t index = 0; index != published.size(); ++index) {
+    const loom::sim::SystemRootLifecycleObservation &expected =
+        acknowledged[index].observation;
+    const loom::sim::SystemRootLifecycleObservation &observed =
+        published[index];
+    if (expected.event != observed.event ||
+        expected.occurrence != observed.occurrence ||
+        expected.coordinate.gem5Tick != observed.coordinate.gem5Tick ||
+        expected.coordinate.delta != observed.coordinate.delta)
+      return invalid("controlled System cell root event differs from its "
+                     "acknowledged decision");
   }
-  if (llvm::Error error = loaded->resourceTimeExecution()->joinMappedRoots())
+  return llvm::Error::success();
+}
+
+llvm::Expected<loom::application::FinalizedApplicationResourceTimeExecutionTrace>
+publishResourceTimeDriveTrace(ResourceTimeDrive &drive,
+                              const loom::ArtifactStore &artifacts,
+                              const loom::BlobStore &blobs) {
+  if (llvm::Error error =
+          drive.loaded.resourceTimeExecution()->joinMappedRoots())
     return std::move(error);
-  auto trace = loaded->publishResourceTimeExecutionTrace(artifacts, blobs);
-  if (!trace)
-    return trace.takeError();
-  return std::optional<
-      loom::application::FinalizedApplicationResourceTimeExecutionTrace>(
-      std::move(*trace));
+  return drive.loaded.publishResourceTimeExecutionTrace(artifacts, blobs);
 }
 
 llvm::Expected<loom::evaluation::CaseArtifactResolution>
@@ -613,6 +671,11 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   return invocations;
 }
 
+/// Executes one System cell. A non-null `drive` makes the cell the
+/// completion-controlled invocation: the host controller acknowledges every
+/// root event through the prepared selector before the device continues, the
+/// bundle runs fresh, and the published lifecycle must equal the acknowledged
+/// sequence.
 llvm::Expected<CompletedRun>
 execute(Engine engine, llvm::StringRef workspace,
         const loom::deployment::FinalizedDeployment &deployment,
@@ -620,7 +683,7 @@ execute(Engine engine, llvm::StringRef workspace,
         const PublishedInputs &inputs,
         const loom::evaluation::CaseArtifactResolution &resolution,
         const Readiness &readiness, const loom::ArtifactStore &artifacts,
-        const loom::BlobStore &blobs) {
+        const loom::BlobStore &blobs, ResourceTimeDrive *drive) {
   auto subjects = loom::evaluation::EvaluationSubjectBindings::get(
       {{loom::evaluation::CaseSubjectRoleRef(0), {deployment.reference()}},
        {loom::evaluation::CaseSubjectRoleRef(1), {binding.reference()}}});
@@ -661,11 +724,33 @@ execute(Engine engine, llvm::StringRef workspace,
   gem5.providerOptions["readiness"] = readiness.path;
   const llvm::StringRef engineName =
       engine == Engine::Dfg ? "system-dfg" : "system-cgra";
-  auto preparation = loom::evaluation::prepareEvaluationModelInvocation(
-      *request, resolution, artifacts, blobs,
-      {std::move(local), child(child(workspace, "bundles"), engineName)});
-  if (!preparation)
-    return preparation.takeError();
+  const loom::external_tool::ExternalToolPreparationContext preparationContext{
+      std::move(local), child(child(workspace, "bundles"), engineName)};
+  std::optional<loom::evaluation::EvaluationModelPreparation> preparation;
+  if (drive) {
+    auto controlled =
+        loom::runtime::prepareGem5SystemCompletionControlledInvocation(
+            *request, resolution, artifacts, blobs, preparationContext,
+            drive->endpoints);
+    if (!controlled)
+      return controlled.takeError();
+    auto *external =
+        std::get_if<loom::external_tool::PreparedExternalToolInvocation>(
+            &*controlled);
+    if (!external)
+      return invalid(engineName + " is unsupported for the exact Deployment");
+    auto bound = loom::evaluation::bindPreparedEvaluationModelInvocation(
+        *request, resolution, *external, artifacts, blobs);
+    if (!bound)
+      return bound.takeError();
+    preparation.emplace(std::move(*bound));
+  } else {
+    auto ordinary = loom::evaluation::prepareEvaluationModelInvocation(
+        *request, resolution, artifacts, blobs, preparationContext);
+    if (!ordinary)
+      return ordinary.takeError();
+    preparation.emplace(std::move(*ordinary));
+  }
   const auto *prepared =
       std::get_if<loom::evaluation::EvaluationModelPreparedInvocation>(
           &*preparation);
@@ -673,9 +758,34 @@ execute(Engine engine, llvm::StringRef workspace,
     return invalid(engineName + " is unsupported for the exact Deployment");
   const loom::external_tool::PreparedExternalToolInvocation &external =
       prepared->externalInvocation();
+  std::optional<loom::runtime::Gem5RootEventController> controller;
+  if (drive) {
+    auto listening = loom::runtime::Gem5RootEventController::listen(
+        external.bundleRoot, drive->endpoints.dataflow,
+        [drive](const loom::sim::SystemRootLifecycleObservation &observation) {
+          return drive->loaded.driveGem5RootEvent(observation,
+                                                  drive->endpoints);
+        });
+    if (!listening)
+      return listening.takeError();
+    controller.emplace(std::move(*listening));
+  }
   auto execution =
       loom::external_tool::executeExternalToolInvocationBundleObserved(
-          external);
+          external, {},
+          drive ? loom::external_tool::ExternalToolResultReusePolicy::
+                      RequireFresh
+                : loom::external_tool::ExternalToolResultReusePolicy::
+                      AllowExactReuse);
+  if (controller) {
+    auto acknowledged = controller->finish();
+    if (!acknowledged) {
+      if (!execution)
+        llvm::consumeError(execution.takeError());
+      return acknowledged.takeError();
+    }
+    drive->acknowledgements = std::move(*acknowledged);
+  }
   if (!execution)
     return execution.takeError();
   if (execution->exitCode != 0)
@@ -707,6 +817,11 @@ execute(Engine engine, llvm::StringRef workspace,
           imported->terminal()) ||
       !imported->system())
     return invalid(engineName + " did not retire a System execution");
+  if (drive)
+    if (llvm::Error error = validateAcknowledgedRootLifecycle(
+            drive->acknowledgements,
+            imported->system()->progressObservations.rootLifecycle))
+      return error;
   auto spatialInvocations = readSpatialInvocations(external);
   if (!spatialInvocations)
     return spatialInvocations.takeError();
@@ -1689,6 +1804,7 @@ llvm::Error writeManifest(
     const CompletedRun &cgra,
     llvm::ArrayRef<SpatialInvocationCase> spatialInvocations,
     llvm::ArrayRef<CompletedSpatialRun> spatialRuns,
+    const ResourceTimeDriveOutcome &drive,
     const loom::application::FinalizedApplicationResourceTimeExecutionTrace
         *resourceTimeTrace,
     const loom::deployment::FinalizedDeployment *mappedRtlDeployment) {
@@ -1720,6 +1836,23 @@ llvm::Error writeManifest(
     json.attributeObject("runtime_input", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, inputs.runtimeInput);
     });
+    if (const auto *synchronous = std::get_if<ResourceTimeDrive>(&drive))
+      json.attributeObject("resource_time_drive", [&] {
+        json.attribute("status", "synchronous");
+        json.attribute("engine", engineSpelling(Engine::Dfg));
+        json.attribute("endpoint_count",
+                       synchronous->endpoints.deployments.size());
+        json.attribute("acknowledged_event_count",
+                       synchronous->acknowledgements.size());
+      });
+    else if (const auto *refusal =
+                 std::get_if<ResourceTimeDriveRefusal>(&drive))
+      json.attributeObject("resource_time_drive", [&] {
+        json.attribute("status", "unsupported");
+        json.attribute("reason",
+                       loom::runtime::gem5RootEventControlErrorReasonSpelling(
+                           refusal->reason));
+      });
     if (resourceTimeTrace) {
       json.attributeObject("resource_time_execution_trace", [&] {
         loom::writeArtifactRootReferenceJsonFields(
@@ -1911,22 +2044,34 @@ llvm::Error run() {
         buildResolution(deployment, *binding, *inputs, artifacts, blobs);
     if (!resolution)
       return resolution.takeError();
+    auto drive = prepareResourceTimeDrive(workspace->package.manifest(),
+                                          deployment, artifacts, blobs);
+    if (!drive)
+      return drive.takeError();
+    ResourceTimeDrive *synchronousDrive =
+        std::get_if<ResourceTimeDrive>(&*drive);
     auto dfg = execute(Engine::Dfg, workspacePath, deployment, *binding,
-                       *inputs, *resolution, *readiness, artifacts, blobs);
+                       *inputs, *resolution, *readiness, artifacts, blobs,
+                       synchronousDrive);
     if (!dfg)
       return dfg.takeError();
     auto cgra = execute(Engine::Cgra, workspacePath, deployment, *binding,
-                        *inputs, *resolution, *readiness, artifacts, blobs);
+                        *inputs, *resolution, *readiness, artifacts, blobs,
+                        nullptr);
     if (!cgra)
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
       return error;
-    auto resourceTimeTrace = executeResourceTimeLifecycle(
-        workspace->package.manifest(), deployment,
-        dfg->importedExecution.system()->progressObservations.rootLifecycle,
-        artifacts, blobs);
-    if (!resourceTimeTrace)
-      return resourceTimeTrace.takeError();
+    std::optional<
+        loom::application::FinalizedApplicationResourceTimeExecutionTrace>
+        resourceTimeTrace;
+    if (synchronousDrive) {
+      auto trace =
+          publishResourceTimeDriveTrace(*synchronousDrive, artifacts, blobs);
+      if (!trace)
+        return trace.takeError();
+      resourceTimeTrace.emplace(std::move(*trace));
+    }
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");
     std::vector<SpatialInvocationCase> spatialInvocations;
@@ -2019,11 +2164,10 @@ llvm::Error run() {
       if (spatialRtl)
         spatialRuns.push_back(std::move(*spatialRtl));
     }
-    const auto *resourceTimeTraceView =
-        resourceTimeTrace->has_value() ? &resourceTimeTrace->value() : nullptr;
     if (llvm::Error error = writeManifest(
             workspacePath, deployment, *binding, *inputs, *dfg, *cgra,
-            spatialInvocations, spatialRuns, resourceTimeTraceView,
+            spatialInvocations, spatialRuns, *drive,
+            resourceTimeTrace ? &*resourceTimeTrace : nullptr,
             rtlDeployment ? &*rtlDeployment : nullptr))
       return error;
     if (profileRequested) {

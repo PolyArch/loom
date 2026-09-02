@@ -620,6 +620,29 @@ bundle root. Connect, send, and receive operations have one bounded
 `gem5RootEventControlTimeoutMilliseconds` deadline; a missing or stalled
 controller is an invocation failure, never an unbounded simulation wait.
 
+The endpoint table of a controlled invocation is derived from the
+independently verified transition graph by `deriveGem5RootEventEndpointTable`
+(`Gem5RootEventEndpointTable`): ordinal zero is the entry Deployment and every
+later ordinal is one other graph endpoint in graph order, addressed by its
+exact Deployment reference. Because a nonzero endpoint has no dispatch
+targets, the table admits only terminal edges (every mapped root completed or
+completing, no region active under the child); a non-terminal edge is the
+typed refusal `non_terminal_edge` and a later dispatch after a terminal
+activation is a device protocol failure, never a silent continuation. The
+production driver is the System DFG cell of `loom-system-run`: when the
+package manifest carries a transition graph, the driver loads the Application
+Deployment with its prepared selector before the cell starts, prepares the
+completion-controlled invocation, serves the control socket through
+`Gem5RootEventController`, answers every request from
+`LoadedApplicationDeployment::driveGem5RootEvent` (start continues, a typed
+stay keeps the endpoint, a selected child activates its endpoint ordinal)
+before the device continues, executes the bundle fresh, and requires the
+device-published lifecycle to equal the acknowledged sequence. The trace is
+published only from that synchronous session; the CGRA cell runs uncontrolled
+and its lifecycle is cross-checked against the DFG cell. A graph the drive
+refuses runs the entry Deployment on both cells and records the typed refusal
+in the workspace manifest instead of activation evidence.
+
 Projection 12 requires the Thread Dispatch device to write one transient
 big-endian root-lifecycle stream:
 
