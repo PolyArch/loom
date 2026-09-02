@@ -81,6 +81,13 @@ llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
     const fabric::FinalizedFabricRoot &fabricRoot,
     std::uint64_t activityPartsPer1024);
 
+/// The clock basis shared by every low-confidence estimate over one Fabric:
+/// its structure-derived critical delay. The analytic models report its
+/// reciprocal as LimitingClockFrequency, so a consumer that expresses measured
+/// cycles in the analytic picosecond domain multiplies by exactly this period.
+llvm::Expected<std::uint64_t>
+lowConfidenceClockPeriodPicoseconds(const fabric::FinalizedFabricRoot &fabricRoot);
+
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
 projectCanonicalDataflowWorkload(
     const ::dataflow::CanonicalDataflowProgramView &program,

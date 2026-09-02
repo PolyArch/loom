@@ -259,6 +259,7 @@ void qualityDispositionProjection() {
       root,
       digest,
       0,
+      0,
       {},
       {},
       {},

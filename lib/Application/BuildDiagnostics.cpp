@@ -593,6 +593,10 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
       mapping["physical_model_support"] =
           dse::resourceTimeEstimateSupportSpelling(
               observation.physicalModelSupport);
+      addOptionalUnsigned(mapping, "measured_makespan_picoseconds",
+                          observation.measuredMakespanPicoseconds);
+      addOptionalUnsigned(mapping, "prediction_error_ppm",
+                          observation.predictionErrorPartsPerMillion);
       mappingObservations.push_back(std::move(mapping));
     }
     encoded["mapping_observations"] = std::move(mappingObservations);
@@ -601,7 +605,7 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
   result["candidates"] = std::move(candidates);
   const ApplicationFunnelExactComparison &comparison =
       decision.funnelExactComparison;
-  result["funnel_exact_comparison"] = llvm::json::Object{
+  llvm::json::Object funnelComparison{
       {"mapped_candidates", comparison.mappedCandidates},
       {"predicted_feasible_candidates", comparison.predictedFeasibleCandidates},
       {"verified_candidates", comparison.verifiedCandidates},
@@ -611,7 +615,15 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
       {"best_ranking_match",
        comparison.bestRankingMatch
            ? llvm::json::Value(*comparison.bestRankingMatch)
-           : llvm::json::Value(nullptr)}};
+           : llvm::json::Value(nullptr)},
+      {"analytic_clock_period_picoseconds",
+       comparison.analyticClockPeriodPicoseconds != 0
+           ? llvm::json::Value(comparison.analyticClockPeriodPicoseconds)
+           : llvm::json::Value(nullptr)},
+      {"prediction_error_candidates", comparison.predictionErrorCandidates}};
+  addOptionalUnsigned(funnelComparison, "maximum_prediction_error_ppm",
+                      comparison.maximumPredictionErrorPartsPerMillion);
+  result["funnel_exact_comparison"] = std::move(funnelComparison);
   if (decision.selectedCandidateIdentity)
     result["selected_candidate_identity"] =
         formatComponentViewDigestHex(*decision.selectedCandidateIdentity);

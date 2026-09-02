@@ -106,6 +106,43 @@ def _pair_decision(evidence: Any) -> dict[str, Any] | None:
     return decision if isinstance(decision, dict) else None
 
 
+FUNNEL_COMPARISON_COUNTS = (
+    "mapped_candidates",
+    "predicted_feasible_candidates",
+    "verified_candidates",
+    "measured_candidates",
+    "out_of_distribution_candidates",
+    "prediction_error_candidates",
+)
+
+
+def _funnel_exact_comparison(decision: dict[str, Any]) -> dict[str, Any] | None:
+    """The pair decision's exact funnel comparison, validated field by field.
+
+    Returns None when the object or any count is missing or malformed; the
+    optional members stay None when the decision has no shared time basis.
+    """
+    comparison = decision.get("funnel_exact_comparison")
+    if not isinstance(comparison, dict):
+        return None
+    result: dict[str, Any] = {}
+    for field in FUNNEL_COMPARISON_COUNTS:
+        value = _integer(comparison.get(field))
+        if value is None or value < 0:
+            return None
+        result[field] = value
+    ranking = comparison.get("best_ranking_match")
+    if ranking is not None and not isinstance(ranking, bool):
+        return None
+    result["best_ranking_match"] = ranking
+    for field in ("analytic_clock_period_picoseconds", "maximum_prediction_error_ppm"):
+        value = comparison.get(field)
+        if value is not None and (_integer(value) is None or _integer(value) < 0):
+            return None
+        result[field] = _integer(value) if value is not None else None
+    return result
+
+
 def _selection_key(selection: Any) -> tuple[Any, Any]:
     if not isinstance(selection, dict):
         return (None, None)
@@ -818,6 +855,9 @@ def validate_portfolio_pair(
             if not _artifact_root(decision.get(field)):
                 typed_reasons.append(f"success_{field}_missing")
         typed_reasons.extend(f"success_{reason}" for reason in closure_reasons)
+    funnel_comparison = _funnel_exact_comparison(decision)
+    if funnel_comparison is None:
+        typed_reasons.append("funnel_exact_comparison_invalid")
     typed_reasons = list(dict.fromkeys(typed_reasons))
     closure_reasons = list(dict.fromkeys(closure_reasons))
     return {
@@ -831,6 +871,7 @@ def validate_portfolio_pair(
         and not closure_reasons,
         "closure_residuals": closure_reasons,
         "unsupported_objective_dimensions": unsupported_dimensions,
+        "funnel_exact_comparison": funnel_comparison,
     }
 
 
@@ -908,10 +949,41 @@ def evaluate_portfolio(
                 for pair in pairs
             )
         )
+        funnel_comparisons = [
+            pair["funnel_exact_comparison"]
+            for pair in pairs
+            if isinstance(pair.get("funnel_exact_comparison"), dict)
+        ]
+        ranking_matches = [
+            comparison["best_ranking_match"]
+            for comparison in funnel_comparisons
+            if comparison["best_ranking_match"] is not None
+        ]
+        prediction_errors = [
+            comparison["maximum_prediction_error_ppm"]
+            for comparison in funnel_comparisons
+            if comparison["maximum_prediction_error_ppm"] is not None
+        ]
+        funnel_exact_comparison = {
+            **{
+                field: sum(comparison[field] for comparison in funnel_comparisons)
+                for field in FUNNEL_COMPARISON_COUNTS
+            },
+            "best_ranking_match_holds": bool(ranking_matches)
+            and all(ranking_matches),
+            "maximum_prediction_error_ppm": (
+                max(prediction_errors) if prediction_errors else None
+            ),
+        }
+        funnel_exact_comparison["exact_sample_complete"] = (
+            funnel_exact_comparison["measured_candidates"] >= 1
+            and funnel_exact_comparison["prediction_error_candidates"] >= 1
+        )
         member_evaluations.append(
             {
                 "application_identity": application,
                 "input_name": key[1],
+                "funnel_exact_comparison": funnel_exact_comparison,
                 "execution_selections": row.get("execution_selections", []),
                 "host_run_count": len(hosts),
                 "unscoped_host_run_count": sum(
@@ -1022,11 +1094,22 @@ def evaluate_portfolio(
     all_selection_gates_hold = all(
         row["portfolio_requirement_gate_holds"] for row in selection_evaluations
     )
+    canonical_qor_rows = [
+        row
+        for row in member_evaluations
+        if row["application_identity"] in CANONICAL_QOR_APPLICATIONS
+        and row["canonical_application_qor_complete"]
+    ]
+    funnel_exact_comparison_sample_holds = bool(canonical_qor_rows) and all(
+        row["funnel_exact_comparison"]["exact_sample_complete"]
+        for row in canonical_qor_rows
+    )
     acceptance = {
         "canonical_qor_witnesses": canonical_witnesses,
         "canonical_qor_witnesses_hold": all(canonical_witnesses.values()),
         "tinyml_host_conformance_and_typed_fallback_hold": tinyml_profile_holds,
         "all_execution_selection_gates_hold": all_selection_gates_hold,
+        "funnel_exact_comparison_sample_holds": funnel_exact_comparison_sample_holds,
         "portfolio_acceptance_holds": not manifest_errors
         and all_selection_gates_hold
         and all(canonical_witnesses.values())

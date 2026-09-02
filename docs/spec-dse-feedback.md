@@ -4037,9 +4037,17 @@ timing and physical-model support next to the exact Mapping disposition and
 the measured CGRA cycles, and `funnel_exact_comparison` counts the mapped
 sample, the predicted-feasible, exactly verified, measured, and
 out-of-distribution members, and whether the lowest predicted makespan and the
-lowest measured cycle count name the same Mapping. A prediction is never
-relabeled as an exact result; an out-of-distribution candidate keeps its exact
-outcome and its typed refusal side by side.
+lowest measured cycle count name the same Mapping. The comparison also states
+the funnel's prediction error: measured CGRA cycles of the pre-Mapping Fabric
+are expressed in the funnel's picosecond basis through that Fabric's
+low-confidence clock period (the structure-derived critical delay whose
+reciprocal the analytic models report as `LimitingClockFrequency`), and each
+observation records `|predicted - measured| / measured` in parts per million
+next to the measured makespan; the comparison names that period, the number of
+compared observations, and the maximum error. A Mapping of a hardware-DSE
+alternative System has no shared basis and records no error. A prediction is
+never relabeled as an exact result; an out-of-distribution candidate keeps its
+exact outcome and its typed refusal side by side.
 
 Screening retains two lower-bound components: the maximum per-region critical
 path bound and the aggregate resource-work bound divided by exact capacity.
