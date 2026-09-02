@@ -19,6 +19,12 @@ from loom_evidence_portfolio import (  # noqa: E402
 )
 
 
+# The Fabric FIFO queue-discipline spellings of the product accelerator
+# profiles. The ADG builders apply the selected discipline only to FIFOs whose
+# transport carries a Physical Tag; untagged staging FIFOs always stay strict.
+FIFO_QUEUE_DISCIPLINES = ("strict_fifo", "per_tag_virtual_channel")
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -758,13 +764,33 @@ def validate_manifest(
     dense_coordinate_rank: int | None,
     require_unique_dense_coordinates: bool,
     minimum_unique_acc_cores: int,
+    require_mapped_rtl: bool,
+    expected_fifo_queue_discipline: str | None,
 ) -> None:
+    spatial_engines = {"dfg", "cgra", "rtl"} if require_mapped_rtl else {
+        "dfg",
+        "cgra",
+    }
     require(
-        manifest.get("schema") == "loom.execution_matrix_workspace.1.2",
+        manifest.get("schema")
+        == (
+            "loom.execution_matrix_workspace.1.3"
+            if require_mapped_rtl
+            else "loom.execution_matrix_workspace.1.2"
+        ),
         "execution workspace has the wrong schema",
     )
     for field in ("deployment", "workload", "runtime_input", "gem5_binding"):
         validate_reference(manifest.get(field), field)
+    if require_mapped_rtl:
+        validate_reference(
+            manifest.get("mapped_rtl_deployment"), "mapped RTL deployment"
+        )
+    else:
+        require(
+            "mapped_rtl_deployment" not in manifest,
+            "non-RTL execution unexpectedly names a mapped RTL Deployment",
+        )
     expected_result = format(expected_i32 & 0xFFFFFFFF, "X")
     require(
         manifest.get("value_results") == [[expected_result]],
@@ -801,7 +827,7 @@ def validate_manifest(
     else:
         spatial_invocations = len(observed_invocations)
     require(
-        len(spatial_runs) == spatial_invocations * 2,
+        len(spatial_runs) == spatial_invocations * len(spatial_engines),
         "execution workspace has an incomplete Spatial execution matrix",
     )
     for ordinal in range(spatial_invocations):
@@ -809,13 +835,14 @@ def validate_manifest(
             run for run in spatial_runs if run.get("invocation_ordinal") == ordinal
         ]
         require(
-            len(invocation_runs) == 2
-            and {run.get("engine") for run in invocation_runs} == {"dfg", "cgra"},
-            f"Spatial invocation {ordinal} lacks both execution cells",
+            len(invocation_runs) == len(spatial_engines)
+            and {run.get("engine") for run in invocation_runs} == spatial_engines,
+            f"Spatial invocation {ordinal} has an incomplete execution matrix",
         )
         coordinates = [run.get("dense_coordinates") for run in invocation_runs]
         require(
-            len(coordinates) == 2 and coordinates[0] == coordinates[1],
+            len(coordinates) == len(spatial_engines)
+            and all(value == coordinates[0] for value in coordinates),
             f"Spatial invocation {ordinal} engines disagree on coordinates",
         )
         require(
@@ -837,8 +864,8 @@ def validate_manifest(
         acc_core_references = [run.get("acc_core_ref") for run in invocation_runs]
         context_keys = [run.get("execution_context_key") for run in invocation_runs]
         require(
-            len(target_ordinals) == 2
-            and target_ordinals[0] == target_ordinals[1]
+            len(target_ordinals) == len(spatial_engines)
+            and all(value == target_ordinals[0] for value in target_ordinals)
             and isinstance(target_ordinals[0], int)
             and target_ordinals[0] >= 0,
             f"Spatial invocation {ordinal} engines disagree on dispatch target",
@@ -848,8 +875,8 @@ def validate_manifest(
             (context_keys, "execution-context key"),
         ):
             require(
-                len(values) == 2
-                and values[0] == values[1]
+                len(values) == len(spatial_engines)
+                and all(value == values[0] for value in values)
                 and isinstance(values[0], str)
                 and len(values[0]) > 0
                 and len(values[0]) % 2 == 0
@@ -915,6 +942,7 @@ def validate_manifest(
         or require_register_fifo
         or require_packed_switch_row
         or require_temporal_dispatch
+        or expected_fifo_queue_discipline is not None
     ):
         require(
             mapping_inspector is not None,
@@ -1031,6 +1059,29 @@ def validate_manifest(
                 ),
                 "Spatial Mapping contains no Temporal PE dispatch domain",
             )
+        if expected_fifo_queue_discipline is not None:
+            for report in reports:
+                fifo_count = report.get("fifo_occurrence_count", 0)
+                tagged_count = report.get("tagged_fifo_occurrence_count", 0)
+                strict_count = report.get("strict_fifo_occurrence_count", -1)
+                virtual_channel_count = report.get(
+                    "per_tag_virtual_channel_fifo_occurrence_count", -1
+                )
+                require(
+                    fifo_count > 0 and tagged_count > 0,
+                    "Fabric contains no tag-carrying FIFO occurrence",
+                )
+                if expected_fifo_queue_discipline == "per_tag_virtual_channel":
+                    expected_virtual_channel = tagged_count
+                else:
+                    expected_virtual_channel = 0
+                require(
+                    virtual_channel_count == expected_virtual_channel
+                    and strict_count == fifo_count - expected_virtual_channel,
+                    "Fabric FIFO occurrences do not apply the "
+                    f"{expected_fifo_queue_discipline} queue discipline to "
+                    "exactly the tag-carrying FIFOs",
+                )
 
 
 def main() -> None:
@@ -1057,6 +1108,10 @@ def main() -> None:
     parser.add_argument("--dense-coordinate-rank", type=int)
     parser.add_argument("--require-unique-dense-coordinates", action="store_true")
     parser.add_argument("--minimum-unique-acc-cores", type=int, default=1)
+    parser.add_argument("--require-mapped-rtl", action="store_true")
+    parser.add_argument(
+        "--expected-fifo-queue-discipline", choices=FIFO_QUEUE_DISCIPLINES
+    )
     parser.add_argument("--portfolio-application")
     parser.add_argument("--portfolio-input")
     parser.add_argument("--portfolio-inventory", type=Path)
@@ -1144,6 +1199,8 @@ def main() -> None:
         arguments.dense_coordinate_rank,
         arguments.require_unique_dense_coordinates,
         arguments.minimum_unique_acc_cores,
+        arguments.require_mapped_rtl,
+        arguments.expected_fifo_queue_discipline,
     )
 
 

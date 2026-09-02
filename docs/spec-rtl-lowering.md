@@ -887,7 +887,126 @@ material; Loom does not add a `TestbenchArtifact` or another stimulus schema.
 The bundle manifest references the exact semantic owners rather than copying
 their contracts. The harness must program mapped RTL through the exact
 ConfigurationABI path and use the implementation interface catalog rather than
-private hierarchy guesses.
+private hierarchy guesses. Its configuration driver is clocked and free of
+delay controls: each task is entered and left on a falling edge and drives the
+request channels from that edge, the write task presents the address and data
+channels together and retires them per channel, and every write still
+completes through its own B response before the next begins. Simulation cost
+is one complete model evaluation per event, so the driver uses the fewest
+edges the protocol allows; the programmed words, their order, the readback of
+every active word, and the atomic commit are unchanged by that shape. The
+boundary between the configuration, readback, and kernel stages is announced
+once at the ordinary verbosity level, because those three stages have very
+different cost.
+
+The portable mapped-RTL provider derives a tool-local hierarchical compilation
+plan without making generated SystemVerilog a second hierarchy authority. The
+portable publisher freezes the exact post-`LowerSeqToSV` and `HWMemSimImpl`
+CIRCT/HW definition catalog and direct instance graph rooted at the exact
+HardwareImplementation top. It assigns one CIRCT `OutputFileAttr` to every
+concrete definition and emits the single semantic `RtlSource` through the
+ordinary streaming exporter. CIRCT's own output-file framing gives every
+module an exact byte range and digest inside that source. The publisher
+requires the framed ranges, preamble, and framing bytes to cover the complete
+source digest and byte count, then independently reprojects the post-export HW
+graph and requires the module, port, parameter, dependency-multiplicity, and
+reachability facts to agree.
+
+Bundle preparation cold-rebuilds that same portable implementation and accepts
+the transient graph only when the complete HardwareImplementation and
+`RtlSource` identity are unchanged. It then validates every recorded range
+against the exact stored source before materializing deterministic
+`<module>.sv` library members. Text inspection may locate the header terminator
+inside one already CIRCT-delimited and name-checked definition solely to add a
+Verilator block metacomment; it cannot discover modules, dependencies,
+multiplicity, reachability, or source closure. Missing, overlapping, foreign,
+or digest-mismatched ranges fail closed.
+
+Block selection uses unique transitive module-DAG weight together with exact
+root-instance multiplicity. The HardwareImplementation root, large memory and
+Temporal-PE definitions, and sufficiently reused FIFO or switch definitions
+form bounded coarse blocks; small low-reuse definitions remain in their exact
+parent closure. The HardwareImplementation root is distinct from the generated
+Verilator testbench top and may be a hierarchical block; the testbench top is
+never annotated. The testbench is the only explicit SystemVerilog input, and
+the Hardware root is resolved lazily through the derived `-y` library. The plan
+records the complete CIRCT dependency DAG, per-module source and derived bytes
+and digests, selected blocks, exact unmarked block closures, paths, and policy
+parameters. These generated files and the plan are ordinary
+manifest-digested bundle inputs, not another HardwareImplementation Artifact.
+
+For Verilator 5.050, the first frozen command owns hierarchy planning and all
+child/root Verilation; it does not use `--build` and no later command repeats a
+`hier_verilation` target. Its `-j` value is the Verilation job count and the
+job count of the make that Verilator runs for hierarchical Verilation, and the
+same value is the make `-j` of the generated C++ build. The simulation model
+thread count is a separate option emitted once as both `--threads` and
+`--hierarchical-threads`, so the generated main, the root model, and the
+hierarchical schedule agree. Both counts use the closed domain 1, 2, 4, or 8.
+Verilator propagates every explicit SystemVerilog input of the planning
+command into each child argument file, and the testbench is the only explicit
+input, so each child would otherwise elaborate the complete design through
+the harness. The generated hierarchy makefile therefore launches Verilator
+through the hierarchy launcher, a Loom-built auxiliary tool frozen by path and
+digest in the manifest's typed auxiliary-tool domain and configured through
+make command-line variables that name the frozen Verilator executable and the
+harness path. For a child argument file the launcher publishes an immutable
+filtered sibling beside the Verilator-generated file, never edits that file,
+requires the harness token exactly once and otherwise exits 42, records the
+input and output digests on the Verilation command's captured error stream,
+and executes Verilator on the sibling; root argument files pass through
+unchanged. It never reads SystemVerilog. After that barrier, one typed
+auxiliary build-tool command runs `hier_build` from the generated Mdir using
+the makefile basename. A final tool-produced executable command owns
+simulation. The exact make, C++ compiler, linker, archiver, and hierarchy
+launcher are frozen in the manifest's typed auxiliary-tool domain and passed
+explicitly to the generated build. This compilation plan is operational
+evidence, not a claim that a particular large design meets its wall-time or
+memory budget.
+
+A plan that selects no block is a distinct Verilation style rather than a
+degenerate hierarchical plan. Flat Verilation annotates no module, emits
+neither `--hierarchical` nor `--hierarchical-threads`, carries no hierarchy
+launcher configuration because no child argument file exists, and builds the
+ordinary `V<top>.mk` whose target is the simulator executable; hierarchical
+Verilation keeps `V<top>_hier.mk` and `hier_build`. The plan records its style
+next to the makefile it names, and the same three commands - Verilation, build,
+simulation - describe both styles.
+
+A hierarchical block is opaque to its parent's scheduler: Verilator treats
+every block output as combinationally dependent on every block input, so
+ready/valid coupling across a block boundary reports `UNOPTFLAT` circular
+logic at the parent even where the flat design has no cycle. Such diagnostics
+are classified against the flat module before any performance conclusion is
+drawn from them, and neither class is masked.
+
+The mapped-RTL operating point is frozen from measurement, and the numbers
+below are operational evidence for one design on one host, never a guarantee.
+On the product Matmul bundle - 993 library modules, 49.56 MB of SystemVerilog,
+one 10,784-word configuration image - an A/B over the compiler level, the
+model thread count, the Verilation style, the root-closure byte budget, and
+the shape of the configuration driver selected: hierarchical Verilation with a
+four-megabyte root-closure byte budget, which selects 128 blocks and leaves a
+69-module root closure; eight model threads and eight build jobs; Verilator's
+own `-Os` fast objects and no object cache; and the clocked configuration
+driver described with the harness. Through the canonical driver that
+configuration Verilates in 80.0 s, builds and links in 139.4 s, and simulates
+55,000 testbench cycles in 127.0 s - a 346.3 s cell at 8.2 GiB with no swap,
+against 984.5 s for the same bundle before the A/B. The observations that
+generalize beyond this design are structural: more and smaller hierarchical
+blocks reduce the single-threaded root Verilation tail (25.5 s at 128 blocks
+against 113 s at 64) and also reduce simulation cost, because a smaller opaque
+block re-evaluates less logic per input change; flat Verilation of a design
+this size is not viable at all, because one generated translation unit reaches
+hundreds of megabytes and exceeds the C++ compiler; eight model threads
+simulate three times faster than one; the delay-free clocked configuration
+driver removes one evaluation slot per handshake and one full clock cycle per
+configuration write; and the C++ optimization level buys under ten percent of
+simulation rate for two and a half times the build. Host memory placement
+dominates all of these: confining the model threads to a larger last-level
+cache complex measured 1.9 times the rate of the smaller complex on the same
+executable, which is a property of the host, not of the bundle, and is
+therefore never expressed in a frozen command.
 
 A protocol checker generated from the same provider may verify interface,
 reset, handshake, and ABI invariants. It is not an independent functional

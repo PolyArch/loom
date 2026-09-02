@@ -14,8 +14,12 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
 #include "Hardware/RTL/ConfigurationTransport.h"
+#include "Hardware/RTL/MemoryServiceTransport.h"
+#include "Hardware/RTL/RtlModuleGraph.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
+
+#include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
 #include <memory>
@@ -73,13 +77,18 @@ struct RuntimeMemoryImage final {
   std::vector<sim::SemanticMemoryByte> initialBytes;
 };
 
+struct MemoryBoundaryBinding final {
+  std::uint64_t requestContext = 0;
+  std::uint64_t rootObjectOrdinal = 0;
+  std::uint64_t rootByteOffset = 0;
+};
+
 struct MemoryBoundaryPort final {
   std::string prefix;
   std::uint32_t addressBitWidth = 0;
   std::uint32_t dataBitWidth = 0;
   std::uint32_t maskBitWidth = 0;
-  std::uint64_t rootObjectOrdinal = 0;
-  std::uint64_t rootByteOffset = 0;
+  std::vector<MemoryBoundaryBinding> bindings;
 };
 
 struct MemoryObservationPlan final {
@@ -99,13 +108,18 @@ struct MappedRtlInvocationFacts final {
   external_tool::ExternalToolSemanticContract semanticContract;
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::vector<std::string> rtlPaths;
+  std::vector<std::string> rtlLibraryDirectories;
   std::string top;
+  hardware::rtl::RtlModuleGraphProjection rtlModuleGraph;
   std::vector<RtlPort> rootPorts;
   std::vector<ClockPort> clockPorts;
   std::vector<ResetPort> resetPorts;
   std::string selectedClock;
   std::uint64_t selectedClockPeriodFs = 0;
   std::vector<ConfigurationProgram> configurationPrograms;
+  /// The bundle paths of the rendered configuration program images, one per
+  /// program, materialized among the semantic inputs.
+  std::vector<std::string> configurationProgramPaths;
   std::optional<InputTokenStream> startInput;
   std::vector<InputTokenStream> valueInputs;
   std::vector<InputTokenStream> streamInputs;
@@ -115,6 +129,9 @@ struct MappedRtlInvocationFacts final {
   std::vector<RuntimeMemoryImage> memoryImages;
   std::vector<MemoryBoundaryPort> memoryBoundaryPorts;
   std::vector<MemoryObservationPlan> memoryObservations;
+  /// The portable address arithmetic the harness memory model evaluates,
+  /// derived from the same Fabric layout the RTL consumes.
+  hardware::rtl::PortableMemoryAddressArithmetic addressArithmetic;
   std::uint64_t cycleLimit = 0;
 };
 
@@ -137,17 +154,25 @@ deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &closure,
                                 const BlobStore &blobs);
 
 llvm::Expected<std::string>
+renderMappedRtlConfigurationProgramFile(
+    const ConfigurationProgram &program);
+
+llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
+                         llvm::ArrayRef<std::string> configurationProgramPaths,
                          llvm::StringRef resultPath);
 
+/// Renders the Verilator driver of one bundle. The generated main is selected
+/// when no bridge engine source is given; the bridged driver compiles the
+/// gem5 bridge engine as the C++ main instead. `hierarchyMakeVariables` are
+/// the make command-line variables of the generated hierarchical build and are
+/// empty for the flat style.
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
-    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
-    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath);
-
-llvm::Expected<std::string> renderMappedRtlBridgedVerilatorDriver(
-    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
-    llvm::StringRef testbenchPath, llvm::StringRef bridgeEngineSourcePath,
-    llvm::StringRef simulatorExecutablePath);
+    const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
+    MappedRtlVerilationStyle style,
+    llvm::ArrayRef<std::string> hierarchyMakeVariables,
+    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
+    std::optional<llvm::StringRef> bridgeEngineSourcePath);
 
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(const MappedRtlObservationFacts &facts,

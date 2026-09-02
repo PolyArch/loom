@@ -61,6 +61,26 @@ target_link_libraries(loom-mapped-rtl-simulation-test PRIVATE
   LoomMappedRtlSimulationTestSupport
 )
 
+add_executable(loom-mapped-rtl-hierarchy-launcher-test
+  MappedRtlHierarchyLauncherTest.cpp
+)
+
+target_include_directories(loom-mapped-rtl-hierarchy-launcher-test PRIVATE
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(loom-mapped-rtl-hierarchy-launcher-test PRIVATE
+  LLVMSupport
+)
+
+target_compile_definitions(loom-mapped-rtl-hierarchy-launcher-test PRIVATE
+  LOOM_MAPPED_RTL_HIERARCHY_LAUNCHER_PATH="$<TARGET_FILE:loom-mapped-rtl-hierarchy-verilator>"
+)
+
+add_dependencies(loom-mapped-rtl-hierarchy-launcher-test
+  loom-mapped-rtl-hierarchy-verilator
+)
+
 add_executable(loom-openroad-placed-test
   OpenRoadPlacedTest.cpp
 )

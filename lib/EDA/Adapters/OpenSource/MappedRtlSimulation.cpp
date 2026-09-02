@@ -143,6 +143,9 @@ prepareProvider(const EvaluationRequest &request,
   if (tool->version !=
       closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
     return invalid("resolved Verilator build differs from the model binding");
+  if (!findValidatedRelease(toolProvider.binding.key, tool->version))
+    return EvaluationModelProviderPreparation{
+        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   std::vector<std::string> inheritEnvironment = options->inheritedEnvironment;
   const ExternalToolProviderDescriptor &containerProvider =
@@ -163,8 +166,15 @@ prepareProvider(const EvaluationRequest &request,
   if (!runtime)
     return runtime.takeError();
 
+  auto buildTools = resolveMappedRtlBuildTools(context.localConfig);
+  if (!buildTools)
+    return buildTools.takeError();
   auto projection = deriveMappedRtlExecutionBundleProjection(
-      *closure, options->cycleLimit, options->buildJobs, artifacts, blobs);
+      *closure,
+      MappedRtlVerilationPlan{options->cycleLimit, options->buildJobs,
+                              options->modelThreads, tool->executable,
+                              *buildTools},
+      artifacts, blobs);
   if (!projection)
     return projection.takeError();
   if (const auto *unsupported = std::get_if<UnsupportedEvidence>(&*projection))
@@ -175,6 +185,9 @@ prepareProvider(const EvaluationRequest &request,
       {bundle.testbenchPath, std::move(bundle.testbench), std::nullopt, false},
       {bundle.standaloneVerilatorDriverPath,
        std::move(bundle.standaloneVerilatorDriver), std::nullopt, false}};
+  files.insert(files.end(),
+               std::make_move_iterator(bundle.toolLocalInputs.begin()),
+               std::make_move_iterator(bundle.toolLocalInputs.end()));
   files.insert(files.end(),
                std::make_move_iterator(bundle.semanticInputs.begin()),
                std::make_move_iterator(bundle.semanticInputs.end()));
@@ -187,6 +200,7 @@ prepareProvider(const EvaluationRequest &request,
       std::move(*runtime),
       containerProvider.versionProbe,
       {{executable, "-f", bundle.standaloneVerilatorDriverPath},
+       std::move(bundle.buildCommand),
        {bundle.simulatorExecutablePath}},
       std::move(inheritEnvironment),
       {bundle.resultPath},
@@ -194,7 +208,9 @@ prepareProvider(const EvaluationRequest &request,
       {},
       {},
       {bundle.simulatorExecutablePath}};
-  specification.diagnosticCommandOrdinals = {1};
+  specification.diagnosticCommandOrdinals = {2};
+  specification.auxiliaryToolExecutables =
+      std::move(buildTools->provenance);
   auto prepared = finalizeExternalToolInvocationBundle(
       context.bundleDestination, specification);
   if (!prepared)

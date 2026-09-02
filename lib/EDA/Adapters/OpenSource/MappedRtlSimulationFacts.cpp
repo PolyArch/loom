@@ -8,6 +8,7 @@
 #include "Evaluation/ArtifactImportCache.h"
 #include "Fabric/Artifact/FabricModuleRootView.h"
 #include "Hardware/RTL/MemoryServiceTransport.h"
+#include "Hardware/RTL/SpatialCoreImplementation.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -26,9 +27,6 @@ namespace loom::eda::open_source::detail {
 namespace {
 
 constexpr unsigned kBitsPerByte = 8;
-constexpr std::uint64_t kMaximumHostMemoryAddressWidth =
-    std::numeric_limits<std::uint64_t>::digits;
-
 using namespace evaluation;
 using namespace external_tool;
 using namespace hardware;
@@ -281,7 +279,7 @@ llvm::Expected<MemoryBoundaryPort> deriveMemoryBoundaryPort(
     const fabric::FabricArtifactView &module,
     fabric::SpatialCoreOccurrenceRef spatialCore,
     const fabric::ManagerEndpointRef &manager,
-    const sim::RuntimeMemoryRootBinding &binding) {
+    const hardware::rtl::PortableMemoryServiceLayout &expectedLayout) {
   const fabric::FabricModuleBoundaryMemoryAttachmentView *local = nullptr;
   for (const auto &attachment : module.moduleBoundaryMemoryAttachments()) {
     if (attachment.endpoint != manager.underlying())
@@ -368,11 +366,13 @@ llvm::Expected<MemoryBoundaryPort> deriveMemoryBoundaryPort(
   const auto input = RepresentationSignalDirection::Input;
   if (requestKind->direction != output ||
       requestKind->bitWidth != hardware::rtl::portableMemoryRequestKindWidth ||
-      requestAddress->direction != output || requestAddress->bitWidth == 0 ||
-      requestAddress->bitWidth > kMaximumHostMemoryAddressWidth ||
-      requestData->direction != output || requestData->bitWidth == 0 ||
+      requestAddress->direction != output ||
+      requestAddress->bitWidth != expectedLayout.addressWidthBits ||
+      requestData->direction != output ||
+      requestData->bitWidth != expectedLayout.dataWidthBits ||
       requestData->bitWidth % kBitsPerByte != 0 ||
-      requestMask->direction != output || requestMask->bitWidth == 0 ||
+      requestMask->direction != output ||
+      requestMask->bitWidth != expectedLayout.maskWidthBits ||
       activeLanes->direction != output ||
       activeLanes->bitWidth !=
           hardware::rtl::portableMemoryActiveLanesKindWidth ||
@@ -410,8 +410,7 @@ llvm::Expected<MemoryBoundaryPort> deriveMemoryBoundaryPort(
       static_cast<std::uint32_t>(requestAddress->bitWidth),
       static_cast<std::uint32_t>(requestData->bitWidth),
       static_cast<std::uint32_t>(requestMask->bitWidth),
-      binding.objectOrdinal,
-      binding.byteOffset};
+      {}};
 }
 
 llvm::Expected<TransportPort> projectInternalEndpoint(
@@ -604,6 +603,7 @@ struct MemoryProjection final {
   std::vector<RuntimeMemoryImage> images;
   std::vector<MemoryBoundaryPort> ports;
   std::vector<MemoryObservationPlan> observations;
+  hardware::rtl::PortableMemoryAddressArithmetic addressArithmetic;
 };
 
 llvm::Expected<std::optional<std::vector<RuntimeMemoryImage>>>
@@ -732,6 +732,22 @@ projectRuntimeMemory(const HardwareImplementation &implementation,
     return exactLaunchBindingIds.takeError();
   if (!*exactLaunchBindingIds)
     return std::optional<MemoryProjection>{};
+  auto requestContexts =
+      hardware::rtl::PortableMemoryRequestContextIndex::get(module);
+  if (!requestContexts)
+    return requestContexts.takeError();
+  auto expectedMemoryLayout =
+      hardware::rtl::derivePortableMemoryServiceLayout(module);
+  if (!expectedMemoryLayout)
+    return expectedMemoryLayout.takeError();
+  // The portable profile has no exact address arithmetic for a lane wider
+  // than its byte-address domain; the mapped-RTL engine is then Unsupported.
+  const auto addressArithmetic =
+      hardware::rtl::derivePortableMemoryAddressArithmetic(
+          *expectedMemoryLayout);
+  if (!addressArithmetic)
+    return std::optional<MemoryProjection>{};
+  projection.addressArithmetic = *addressArithmetic;
 
   std::map<std::string, MemoryBoundaryPort> ports;
   for (const mapping::SpatialMemoryEngineBindingView &engine :
@@ -747,6 +763,21 @@ projectRuntimeMemory(const HardwareImplementation &implementation,
 
       const auto &addressed =
           std::get<mapping::SpatialAddressedMemoryOperationView>(operation);
+      const auto *operationContext =
+          std::get_if<fabric::FabricMemoryOperationContextRef>(
+              &addressed.placement);
+      const fabric::FabricMemoryOperationPortRef operationPort =
+          operationContext ? operationContext->port
+                           : std::get<fabric::FabricMemoryOperationPortRef>(
+                                 addressed.placement);
+      const std::uint64_t operationRowOrdinal =
+          operationContext ? operationContext->ordinal : operationPort.ordinal;
+      if (operationPort.memory != engine.occurrence)
+        return invalid("memory operation placement has a foreign occurrence");
+      auto requestContext =
+          requestContexts->code(engine.occurrence, operationRowOrdinal);
+      if (!requestContext)
+        return requestContext.takeError();
       for (const mapping::SpatialAddressedMemoryUseView &use : addressed.uses) {
         if (use.launch != workload.launchRef)
           continue;
@@ -770,22 +801,40 @@ projectRuntimeMemory(const HardwareImplementation &implementation,
           return invalid("mapped memory root has no runtime object binding");
         auto port = deriveMemoryBoundaryPort(implementation, index, system,
                                              moduleTarget, module, spatialCore,
-                                             *manager, runtimeBinding->binding);
+                                             *manager, *expectedMemoryLayout);
         if (!port)
           return port.takeError();
         auto [entry, inserted] = ports.emplace(port->prefix, *port);
         if (!inserted &&
-            (entry->second.rootObjectOrdinal != port->rootObjectOrdinal ||
-             entry->second.rootByteOffset != port->rootByteOffset ||
-             entry->second.addressBitWidth != port->addressBitWidth ||
+            (entry->second.addressBitWidth != port->addressBitWidth ||
              entry->second.dataBitWidth != port->dataBitWidth ||
              entry->second.maskBitWidth != port->maskBitWidth))
-          return std::optional<MemoryProjection>{};
+          return invalid("one memory boundary prefix has conflicting RTL "
+                         "geometry");
+        const MemoryBoundaryBinding projected{
+            *requestContext, runtimeBinding->binding.objectOrdinal,
+            runtimeBinding->binding.byteOffset};
+        auto selected = llvm::find_if(
+            entry->second.bindings, [&](const MemoryBoundaryBinding &binding) {
+              return binding.requestContext == projected.requestContext;
+            });
+        if (selected != entry->second.bindings.end()) {
+          if (selected->rootObjectOrdinal != projected.rootObjectOrdinal ||
+              selected->rootByteOffset != projected.rootByteOffset)
+            return invalid("one memory request context selects multiple "
+                           "runtime roots");
+        } else {
+          entry->second.bindings.push_back(projected);
+        }
       }
     }
   }
   for (auto &[prefix, port] : ports) {
     (void)prefix;
+    llvm::sort(port.bindings, [](const MemoryBoundaryBinding &lhs,
+                                 const MemoryBoundaryBinding &rhs) {
+      return lhs.requestContext < rhs.requestContext;
+    });
     projection.ports.push_back(std::move(port));
   }
 
@@ -975,6 +1024,16 @@ llvm::Expected<std::vector<ConfigurationProgram>> projectConfigurationPrograms(
   return result;
 }
 
+std::string configurationProgramPath(std::size_t ordinal) {
+  return "inputs/configuration/program-" + std::to_string(ordinal) + ".hex";
+}
+
+/// The semantic inputs of one mapped-RTL invocation in their canonical bundle
+/// order: the rendered configuration program images (derived from the
+/// Deployment's configuration images through the ABI transport layout), the
+/// canonical artifact bytes, and the RTL source payloads. Bundle preparation
+/// and the import expectation both derive this list, so an executed bundle is
+/// validated against exactly the files it was prepared from.
 llvm::Expected<std::vector<MaterializedBundleFile>>
 materializeMappedRtlSemanticInputs(
     const ArtifactRootReference &workloadReference,
@@ -986,8 +1045,18 @@ materializeMappedRtlSemanticInputs(
     const mapping::FinalizedSpatialMapping &mapping,
     const FinalizedConfigurationABI &abi,
     const fabric::FinalizedFabricRoot &fabricSystem,
+    llvm::ArrayRef<ConfigurationProgram> configurationPrograms,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   std::vector<MaterializedBundleFile> semanticInputs;
+  for (const auto indexedProgram : llvm::enumerate(configurationPrograms)) {
+    auto contents =
+        renderMappedRtlConfigurationProgramFile(indexedProgram.value());
+    if (!contents)
+      return contents.takeError();
+    semanticInputs.push_back({configurationProgramPath(indexedProgram.index()),
+                              std::move(*contents), deployment.reference(),
+                              false});
+  }
   if (llvm::Error error = addSemanticInput(
           semanticInputs, "inputs/semantic/hardware-implementation.json",
           implementation.reference(), implementation.canonicalBytes().bytes()))
@@ -1173,6 +1242,12 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
       });
   if (!abi)
     return abi.takeError();
+  auto rtlModuleGraph = hardware::rtl::projectPortableSpatialCoreRtlModuleGraph(
+      **abi, **implementation);
+  if (!rtlModuleGraph)
+    return rtlModuleGraph.takeError();
+  if (!*rtlModuleGraph)
+    return unsupported();
 
   auto dataflow = (*inputs)->dataflow.view();
   if (!dataflow)
@@ -1195,6 +1270,27 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   std::vector<std::optional<OutputTokenStream>> streamPorts(
       shapes->streamOutputs.size());
   std::map<std::uint64_t, TransportPort> completionPorts;
+
+  std::vector<bool> requiredValues(values.size(), false);
+  for (std::uint64_t ordinal = 0; ordinal != values.size(); ++ordinal) {
+    auto consumers =
+        dataflow->graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
+            dataflow::GraphIngressTokenRef{
+                dataflow::GraphValueInputTokenRef{*selectedGraph, ordinal}}});
+    if (!consumers)
+      return consumers.takeError();
+    requiredValues[ordinal] = !consumers->empty();
+  }
+  std::vector<bool> requiredStreams(streams.size(), false);
+  for (std::uint64_t ordinal = 0; ordinal != streams.size(); ++ordinal) {
+    auto consumers =
+        dataflow->graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
+            dataflow::GraphIngressTokenRef{
+                dataflow::GraphStreamInputTokenRef{*selectedGraph, ordinal}}});
+    if (!consumers)
+      return consumers.takeError();
+    requiredStreams[ordinal] = !consumers->empty();
+  }
 
   for (const auto indexedRoute :
        llvm::enumerate((*mapping)->view().routeTrees())) {
@@ -1311,11 +1407,22 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
       }
     }
   }
-  if (!start ||
-      llvm::any_of(values, [](const auto &entry) { return !entry; }) ||
-      llvm::any_of(streams, [](const auto &entry) { return !entry; }) ||
+  std::size_t missingValues = 0;
+  for (std::size_t ordinal = 0; ordinal != values.size(); ++ordinal)
+    missingValues += requiredValues[ordinal] && !values[ordinal];
+  std::size_t missingStreams = 0;
+  for (std::size_t ordinal = 0; ordinal != streams.size(); ++ordinal)
+    missingStreams += requiredStreams[ordinal] && !streams[ordinal];
+  if (!start || missingValues != 0 || missingStreams != 0 ||
       completionPorts.empty())
-    return invalid("SpatialMapping omits a required graph boundary");
+    return invalid("SpatialMapping omits required graph boundaries "
+                   "(start=" +
+                   llvm::Twine(start.has_value() ? 1 : 0) +
+                   ", missing_value_inputs=" + llvm::Twine(missingValues) +
+                   "/" + llvm::Twine(values.size()) +
+                   ", missing_stream_inputs=" + llvm::Twine(missingStreams) +
+                   "/" + llvm::Twine(streams.size()) + ", completion_ports=" +
+                   llvm::Twine(completionPorts.size()) + ")");
   for (const auto &[ordinal, port] : completionPorts)
     if (ordinal >= completionPorts.size())
       return invalid("graph completion ordinals are not dense");
@@ -1358,9 +1465,14 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
 
   auto semanticInputs = materializeMappedRtlSemanticInputs(
       closure.workload, closure.runtimeInput, **implementation, **deployment,
-      **inputs, *selection, **mapping, **abi, **fabricSystem, artifacts, blobs);
+      **inputs, *selection, **mapping, **abi, **fabricSystem,
+      *configurationPrograms, artifacts, blobs);
   if (!semanticInputs)
     return semanticInputs.takeError();
+  std::vector<std::string> configurationProgramPaths;
+  for (std::size_t ordinal = 0; ordinal != configurationPrograms->size();
+       ++ordinal)
+    configurationProgramPaths.push_back(configurationProgramPath(ordinal));
   std::vector<std::string> rtlPaths;
   for (const MaterializedBundleFile &file : *semanticInputs)
     if (llvm::StringRef(file.relativePath)
@@ -1370,10 +1482,12 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
 
   std::vector<InputTokenStream> denseValues;
   for (auto &entry : values)
-    denseValues.push_back(std::move(*entry));
+    if (entry)
+      denseValues.push_back(std::move(*entry));
   std::vector<InputTokenStream> denseStreams;
   for (auto &entry : streams)
-    denseStreams.push_back(std::move(*entry));
+    if (entry)
+      denseStreams.push_back(std::move(*entry));
   std::vector<TransportPort> denseCompletions;
   for (auto &[ordinal, port] : completionPorts) {
     (void)ordinal;
@@ -1385,13 +1499,16 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
                                closure.semanticContract,
                                std::move(*semanticInputs),
                                std::move(rtlPaths),
+                               {},
                                std::move(top),
+                               std::move(**rtlModuleGraph),
                                std::move(*rootPorts),
                                std::move(clockReset->first),
                                std::move(clockReset->second),
                                std::move(*selectedClock),
                                selectedPeriod,
                                std::move(*configurationPrograms),
+                               std::move(configurationProgramPaths),
                                std::move(start),
                                std::move(denseValues),
                                std::move(denseStreams),
@@ -1401,6 +1518,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
                                std::move((*memoryProjection)->images),
                                std::move((*memoryProjection)->ports),
                                std::move((*memoryProjection)->observations),
+                               (*memoryProjection)->addressArithmetic,
                                0}};
 }
 
@@ -1484,10 +1602,17 @@ deriveMappedRtlImportExpectation(
       });
   if (!fabricSystem)
     return fabricSystem.takeError();
+  auto configurationPrograms = projectConfigurationPrograms(
+      closure->selection, *closure->deployment, hardware, **abi,
+      fabric::SpatialCoreOccurrenceRef{closure->selection.context.accCore},
+      artifacts);
+  if (!configurationPrograms)
+    return configurationPrograms.takeError();
   auto semanticInputs = materializeMappedRtlSemanticInputs(
       requestClosure.workload, requestClosure.runtimeInput, **implementation,
       *closure->deployment, *closure->inputs, closure->selection,
-      *closure->mapping, **abi, **fabricSystem, artifacts, blobs);
+      *closure->mapping, **abi, **fabricSystem, *configurationPrograms,
+      artifacts, blobs);
   if (!semanticInputs)
     return semanticInputs.takeError();
   return makeMappedRtlImportExpectation(requestClosure.semanticContract,

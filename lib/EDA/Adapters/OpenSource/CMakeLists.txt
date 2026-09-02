@@ -1,3 +1,16 @@
+add_executable(loom-mapped-rtl-hierarchy-verilator
+  MappedRtlHierarchyVerilatorLauncher.cpp
+)
+
+target_include_directories(loom-mapped-rtl-hierarchy-verilator PRIVATE
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(loom-mapped-rtl-hierarchy-verilator PRIVATE
+  LoomCommon
+  LLVMSupport
+)
+
 add_library(LoomMappedRtlExecution
   MappedRtlExecution.cpp
   MappedRtlSimulationFacts.cpp
@@ -7,6 +20,14 @@ add_library(LoomMappedRtlExecution
 
 target_include_directories(LoomMappedRtlExecution PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+# The launcher is frozen into every mapped-RTL bundle as an auxiliary tool, so
+# any consumer of the adapters must have it built.
+add_dependencies(LoomMappedRtlExecution loom-mapped-rtl-hierarchy-verilator)
+
+target_compile_definitions(LoomMappedRtlExecution PRIVATE
+  LOOM_MAPPED_RTL_HIERARCHY_LAUNCHER_PATH="$<TARGET_FILE:loom-mapped-rtl-hierarchy-verilator>"
 )
 
 target_link_libraries(LoomMappedRtlExecution PUBLIC
@@ -24,6 +45,7 @@ target_link_libraries(LoomMappedRtlExecution PUBLIC
 )
 
 add_library(LoomEDAOpenSource
+  MappedRtlRuntimePlatform.cpp
   MappedRtlSimulation.cpp
   OpenRoad.cpp
   OpenRoadRouted.cpp

@@ -1169,6 +1169,14 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         captureToolEnvironment(verilatorToolProvider.binding), verilatorProbe);
     if (!verilatorTool)
       return verilatorTool.takeError();
+    if (!findValidatedRelease(verilatorToolProvider.binding.key,
+                              verilatorTool->version))
+      return EvaluationModelProviderPreparation{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    auto buildTools = eda::open_source::resolveMappedRtlBuildTools(
+        context.localConfig);
+    if (!buildTools)
+      return buildTools.takeError();
     const std::string verilatorExecutable = verilatorTool->executable;
     auto runtime = resolveInvocationRuntime(
         *verilatorTool, context.localConfig, container.binding,
@@ -1198,6 +1206,8 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       return invocationWireHeader.takeError();
 
     std::vector<std::vector<std::string>> commands;
+    std::vector<std::vector<std::string>> verilationCommands;
+    std::vector<std::vector<std::string>> archiveBuildCommands;
     std::vector<std::string> executables;
     std::vector<std::vector<std::string>> engineCommands;
     const std::uint64_t buildWorkerCount =
@@ -1207,7 +1217,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
     std::set<std::string> uniqueExecutables;
     std::set<std::string> uniqueResultPaths;
     std::set<std::filesystem::path> uniqueWorkDirectories;
-    commands.reserve(facts.spatialLaunches.size() + 1);
+    commands.reserve(facts.spatialLaunches.size() * 2 + 1);
+    verilationCommands.reserve(facts.spatialLaunches.size());
+    archiveBuildCommands.reserve(facts.spatialLaunches.size());
     executables.reserve(facts.spatialLaunches.size());
     engineCommands.reserve(facts.spatialLaunches.size());
     for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
@@ -1222,9 +1234,13 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       const std::string prefix = mappedRtlLaunchPrefix(indexed.index());
       auto projection =
           eda::open_source::deriveMappedRtlExecutionBundleProjection(
-              *closure, options->cycleLimit,
-              mappedRtlBuildJobs(*options, buildWorkerCount,
-                                 facts.spatialLaunches.size(), indexed.index()),
+              *closure,
+              eda::open_source::MappedRtlVerilationPlan{
+                  options->cycleLimit,
+                  mappedRtlBuildJobs(*options, buildWorkerCount,
+                                     facts.spatialLaunches.size(),
+                                     indexed.index()),
+                  options->modelThreads, verilatorExecutable, *buildTools},
               artifacts, blobs, prefix);
       if (!projection)
         return projection.takeError();
@@ -1238,7 +1254,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
           !uniqueWorkDirectories
                .insert(std::filesystem::path(rtl.simulatorExecutablePath)
                            .parent_path())
-               .second)
+           .second)
         return invalid("gem5 RTL build worksets are not independent");
       files.push_back(
           {rtl.testbenchPath, std::move(rtl.testbench), std::nullopt, false});
@@ -1267,8 +1283,12 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       files.insert(files.end(),
                    std::make_move_iterator(rtl.semanticInputs.begin()),
                    std::make_move_iterator(rtl.semanticInputs.end()));
-      commands.push_back(
+      files.insert(files.end(),
+                   std::make_move_iterator(rtl.toolLocalInputs.begin()),
+                   std::make_move_iterator(rtl.toolLocalInputs.end()));
+      verilationCommands.push_back(
           {verilatorExecutable, "-f", rtl.bridgedVerilatorDriverPath});
+      archiveBuildCommands.push_back(std::move(rtl.buildCommand));
       executables.push_back(rtl.simulatorExecutablePath);
       std::vector<std::string> engineCommand{
           rtl.simulatorExecutablePath,
@@ -1286,6 +1306,13 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         engineCommand.push_back("--peer");
       engineCommands.push_back(std::move(engineCommand));
     }
+
+    commands.insert(commands.end(),
+                    std::make_move_iterator(verilationCommands.begin()),
+                    std::make_move_iterator(verilationCommands.end()));
+    commands.insert(commands.end(),
+                    std::make_move_iterator(archiveBuildCommands.begin()),
+                    std::make_move_iterator(archiveBuildCommands.end()));
 
     std::string peerManifest = "loom.gem5_rtl_peers 1.0\n";
     for (std::size_t ordinal = 1; ordinal != engineCommands.size(); ++ordinal) {
@@ -1328,12 +1355,20 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
         std::move(options->inheritedEnvironment),
         std::move(declaredOutputs),
         std::move(files),
-        {gem5ExternalFile},
+        {},
         {},
         std::move(executables)};
-    if (buildWorkerCount > 1)
-      specification.parallelCommandGroups.push_back(
-          {0, facts.spatialLaunches.size(), buildWorkerCount});
+    specification.externalFiles.push_back(gem5ExternalFile);
+    specification.auxiliaryToolExecutables.insert(
+        specification.auxiliaryToolExecutables.end(),
+        std::make_move_iterator(buildTools->provenance.begin()),
+        std::make_move_iterator(buildTools->provenance.end()));
+    if (facts.spatialLaunches.size() > 1 && buildWorkerCount > 1) {
+      const std::uint64_t count = facts.spatialLaunches.size();
+      specification.parallelCommandGroups = {
+          {0, count, buildWorkerCount},
+          {count, count * 2, buildWorkerCount}};
+    }
     specification.diagnosticCommandOrdinals = {specification.commands.size() -
                                                1};
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {

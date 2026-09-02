@@ -1,6 +1,7 @@
 #include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
 
 #include "Common/ArtifactStore.h"
+#include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 #include "Common/BlobStore.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelProvider.h"
@@ -122,27 +123,38 @@ testbench_path=')sh";
 simulator_path=')sh";
   script += mappedRtlSimulatorExecutablePath.str();
   script += R"sh('
-if [[ "$#" -ne 2 || "$1" != "-f" || "$2" != "$driver_path" ]]; then
-  exit )sh";
+plan_path='drivers/verilator-hierarchy-plan.json'
+work_directory='work/verilator')sh";
+  // The fixture closure selects no hierarchical block, so the bundle is the
+  // flat Verilation style: the ordinary generated makefile, the simulator
+  // executable as its target, and no child-Verilation configuration.
+  script += "\nmakefile_name='V" + mappedRtlHarnessTop.str() + ".mk'\n";
+  script += R"sh(makefile="$work_directory/$makefile_name"
+build_target=')sh";
+  script += std::filesystem::path(mappedRtlSimulatorExecutablePath.str())
+                .filename()
+                .generic_string();
+  script += R"sh('
+schedule_log="$work_directory/verilation-schedule.log"
+if [[ "$#" -ge 6 && "$1" == "-C" && "$2" == "$work_directory" &&
+      "$3" == "-f" && "$4" == "$makefile_name" && "$6" == "$build_target" ]]; then
+    [[ "$5" == '-j1' || "$5" == '-j2' || "$5" == '-j4' || "$5" == '-j8' ]] || exit )sh";
+  script += std::to_string(kFakeToolUsageExitCode);
+  script += "\n    if printf '%s\\n' \"$@\" | grep -E -- '^(";
+  script += verilatorHierarchyLauncherVariable.str();
+  script += "|";
+  script += mappedRtlHierarchyVerilatorVariable.str();
+  script += "|";
+  script += mappedRtlHierarchyTestbenchVariable.str();
+  script += ")=' >/dev/null; then exit ";
+  script += std::to_string(kFakeToolUsageExitCode);
+  script += R"sh(; fi
+    [[ "$(cat "$schedule_log")" == 'verilation' ]] || exit )sh";
   script += std::to_string(kFakeToolUsageExitCode);
   script += R"sh(
-fi
-grep -Fx -- '--binary' "$driver_path" >/dev/null
-grep -Fx -- '--build-jobs' "$driver_path" >/dev/null
-grep -Fx -- '--top-module' "$driver_path" >/dev/null
-)sh";
-  script += "grep -Fx -- '" + mappedRtlHarnessTop.str() +
-            "' \"$driver_path\" >/dev/null\n";
-  script += "grep -F 'module " + mappedRtlHarnessTop.str() +
-            "(' \"$testbench_path\" >/dev/null\n";
-  if (behavior.compileExitCode != 0) {
-    script += "exit " + std::to_string(behavior.compileExitCode) + "\n";
-    return script;
-  }
-  script +=
-      R"sh(grep -F 'task automatic loom_cfg_write_' "$testbench_path" >/dev/null
-mkdir -p "$(dirname -- "$simulator_path")"
-cat > "$simulator_path" <<'LOOM_SIMULATOR'
+    printf '%s\n' build >> "$schedule_log"
+    mkdir -p "$(dirname -- "$simulator_path")"
+    cat > "$simulator_path" <<'LOOM_SIMULATOR'
 #!/usr/bin/env bash
 set -euo pipefail
 )sh";
@@ -156,9 +168,61 @@ set -euo pipefail
   }
   script += R"sh(
 LOOM_SIMULATOR
-chmod u+x "$simulator_path"
+    chmod u+x "$simulator_path"
+    exit 0
+fi
+if [[ "$#" -ne 2 || "$1" != "-f" || "$2" != "$driver_path" ]]; then
+  exit )sh";
+  script += std::to_string(kFakeToolUsageExitCode);
+  script += R"sh(
+fi
+grep -Fx -- '--cc' "$driver_path" >/dev/null
+grep -Fx -- '-j' "$driver_path" >/dev/null
+grep -Fx -- '--threads' "$driver_path" >/dev/null
+grep -Fx -- '--top-module' "$driver_path" >/dev/null
+grep -Fx -- '-y' "$driver_path" >/dev/null
+grep -Fx -- 'drivers/verilator-library' "$driver_path" >/dev/null
+grep -Fx -- '+libext+.sv' "$driver_path" >/dev/null
+if grep -E -x -- '--hierarchical(-threads)?' "$driver_path" >/dev/null; then
+  exit )sh";
+  script += std::to_string(kFakeToolUsageExitCode);
+  script += R"sh(
+fi
+)sh";
+  script += "grep -Fx -- '" + mappedRtlHarnessTop.str() +
+            "' \"$driver_path\" >/dev/null\n";
+  script += "grep -F 'module " + mappedRtlHarnessTop.str() +
+            "(' \"$testbench_path\" >/dev/null\n";
+  script += R"sh(test -f "$plan_path"
+grep -F '"transitive_body_lines"' "$plan_path" >/dev/null
+grep -F '"source_closure_modules"' "$plan_path" >/dev/null
+grep -F "\"verilation_style\": \"flat\"" "$plan_path" >/dev/null
+grep -F "\"verilation_makefile\": \"$makefile_name\"" "$plan_path" >/dev/null
+if grep -R -F '/*verilator hier_block*/' drivers/verilator-library inputs/implementation >/dev/null; then
+  exit )sh";
+  script += std::to_string(kFakeToolUsageExitCode);
+  script += R"sh(
+fi
+)sh";
+  if (behavior.compileExitCode != 0) {
+    script += "exit " + std::to_string(behavior.compileExitCode) + "\n";
+    return script;
+  }
+  script += R"sh(grep -F 'task automatic loom_cfg_write_' "$testbench_path" >/dev/null
+mkdir -p "$work_directory"
+: > "$makefile"
+printf '%s\n' verilation > "$schedule_log"
 )sh";
   return script;
+}
+
+void configureFakeMappedRtlBuildTools(
+    loom::external_tool::LocalToolConfig &local,
+    const std::filesystem::path &tool) {
+  local.externalFiles["mapped_rtl_make"] = tool.string();
+  local.externalFiles["mapped_rtl_cxx"] = tool.string();
+  local.externalFiles["mapped_rtl_linker"] = tool.string();
+  local.externalFiles["mapped_rtl_archiver"] = tool.string();
 }
 
 loom::eda::open_source::MappedRtlSimulationResult expectedMappedResult() {
@@ -461,6 +525,7 @@ void authoredLifecycleImportsExactEvidence() {
     local.runtimePolicy = RuntimePolicy::Host;
     local.tools[verilatorProvider().binding.key].binding.executable =
         tool.string();
+    configureFakeMappedRtlBuildTools(local, tool);
     const std::filesystem::path bundle = tree.path("bundle");
     EvaluationModelPreparation preparation =
         take(prepareEvaluationModelInvocation(
@@ -507,6 +572,7 @@ void authoredResultTamperIsRejected() {
   local.runtimePolicy = RuntimePolicy::Host;
   local.tools[verilatorProvider().binding.key].binding.executable =
       tool.string();
+  configureFakeMappedRtlBuildTools(local, tool);
   const std::filesystem::path bundle = tree.path("bundle");
   EvaluationModelPreparation preparation =
       take(prepareEvaluationModelInvocation(
@@ -550,6 +616,7 @@ enum class AuthoredFailureCase : std::uint8_t {
   MappingTamper,
   ConfigurationImageTamper,
   VersionMismatch,
+  UnvalidatedRelease,
 };
 
 void authoredFailure(AuthoredFailureCase selected) {
@@ -577,6 +644,7 @@ void authoredFailure(AuthoredFailureCase selected) {
     local.runtimePolicy = RuntimePolicy::Host;
     local.tools[verilatorProvider().binding.key].binding.executable =
         tool.string();
+    configureFakeMappedRtlBuildTools(local, tool);
     const std::filesystem::path bundle = tree.path((name + "-bundle").str());
     EvaluationModelPreparation preparation =
         take(prepareEvaluationModelInvocation(
@@ -687,6 +755,37 @@ void authoredFailure(AuthoredFailureCase selected) {
         "resolved Verilator build differs");
     return;
   }
+  case AuthoredFailureCase::UnvalidatedRelease: {
+    // The binding and the tool agree on a build that the backend catalog
+    // does not qualify: the provider terminates as Unsupported through the
+    // catalog relation rather than a private version literal.
+    constexpr llvm::StringLiteral unvalidated = "Verilator 5.051";
+    const auto unvalidatedFixture = eda::test::buildMappedRtlRequestFixture(
+        "unvalidatedRelease", unvalidated, artifacts, blobs, tree);
+    const std::filesystem::path tool = tree.path("unvalidated-verilator");
+    writeExecutable(tool, fakeVerilator(validResult, FakeVerilatorBehavior{
+                                                         unvalidated.str()}));
+    LocalToolConfig local;
+    local.runtimePolicy = RuntimePolicy::Host;
+    local.tools[verilatorProvider().binding.key].binding.executable =
+        tool.string();
+    configureFakeMappedRtlBuildTools(local, tool);
+    EvaluationModelPreparation preparation =
+        take(prepareEvaluationModelInvocation(
+            unvalidatedFixture.request, unvalidatedFixture.resolution,
+            artifacts, blobs,
+            ExternalToolPreparationContext{std::move(local),
+                                           tree.path("unvalidated-bundle")}));
+    const auto *evidence = std::get_if<EvaluationEvidence>(&preparation);
+    const auto *unsupported =
+        evidence ? std::get_if<UnsupportedEvidence>(&evidence->outcome())
+                 : nullptr;
+    require(unsupported &&
+                unsupported->reason ==
+                    OutcomeReason::RuntimeCapabilityUnavailable,
+            "unvalidated Verilator release did not terminate as Unsupported");
+    return;
+  }
   }
   llvm_unreachable("closed authored failure case");
 }
@@ -777,6 +876,8 @@ int main(int argc, char **argv) {
     authoredFailure(AuthoredFailureCase::ConfigurationImageTamper);
   else if (selector == "--version-mismatch")
     authoredFailure(AuthoredFailureCase::VersionMismatch);
+  else if (selector == "--unvalidated-release")
+    authoredFailure(AuthoredFailureCase::UnvalidatedRelease);
   else
     fail("unknown test selector");
   return EXIT_SUCCESS;

@@ -228,7 +228,9 @@ renderMappedRtlSimulationResult(const MappedRtlSimulationResult &result) {
       output << " ";
       switch (byte.state) {
       case sim::SemanticState::Defined:
-        output << "d" << llvm::format_hex_no_prefix(byte.value, 2, true);
+        // Lowercase, as SystemVerilog's %h renders it: the format letters of
+        // $fwrite are case-insensitive, so the harness cannot emit uppercase.
+        output << "d" << llvm::format_hex_no_prefix(byte.value, 2);
         break;
       case sim::SemanticState::Undef:
         output << "u";

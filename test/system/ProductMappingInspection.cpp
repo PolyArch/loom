@@ -349,6 +349,43 @@ int main(int argc, char **argv) {
     sharedPackedSwitchRowCount += row.signatures.size() > 1;
   }
 
+  // The ADG builders apply the selected queue discipline only to FIFOs whose
+  // transport carries a Physical Tag; untagged staging FIFOs stay strict. The
+  // tagged count is the denominator the discipline assertion needs.
+  std::uint64_t fifoOccurrenceCount = 0;
+  std::uint64_t taggedFifoOccurrenceCount = 0;
+  std::uint64_t strictFifoOccurrenceCount = 0;
+  std::uint64_t virtualChannelFifoOccurrenceCount = 0;
+  for (const loom::fabric::FabricFifoOccurrenceRef fifo :
+       fabric.view().fifoOccurrences()) {
+    const auto discipline = fabric.view().fifoQueueDiscipline(fifo);
+    if (!discipline) {
+      llvm::errs() << "product mapping inspection: FIFO has no queue "
+                      "discipline\n";
+      return 1;
+    }
+    ++fifoOccurrenceCount;
+    const loom::fabric::FabricTransportEndpointOwnerRef owner{fifo};
+    const std::uint64_t endpointCount =
+        fabric.view().transportEndpointCount(owner);
+    bool tagged = false;
+    for (std::uint64_t ordinal = 0; ordinal != endpointCount; ++ordinal) {
+      const auto path = fabric.view().transportEndpointDataPath(
+          loom::fabric::FabricTransportEndpointRef{owner, ordinal});
+      tagged |= path && path->kind == ::fabric::DataPathKind::BitsTag;
+    }
+    taggedFifoOccurrenceCount += tagged;
+    if (*discipline == ::fabric::FifoQueueDiscipline::StrictFifo)
+      ++strictFifoOccurrenceCount;
+    else if (*discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+      ++virtualChannelFifoOccurrenceCount;
+    else {
+      llvm::errs() << "product mapping inspection: FIFO has an unknown queue "
+                      "discipline\n";
+      return 1;
+    }
+  }
+
   llvm::json::Object report{
       {"schema", "loom.test.product_mapping_inspection.1"},
       {"route_tree_count", inspection.summary.routeTreeCount},
@@ -406,6 +443,11 @@ int main(int argc, char **argv) {
       {"shared_packed_switch_row_count", sharedPackedSwitchRowCount},
       {"maximum_packed_switch_row_signatures",
        maximumPackedSwitchRowSignatures},
+      {"fifo_occurrence_count", fifoOccurrenceCount},
+      {"tagged_fifo_occurrence_count", taggedFifoOccurrenceCount},
+      {"strict_fifo_occurrence_count", strictFifoOccurrenceCount},
+      {"per_tag_virtual_channel_fifo_occurrence_count",
+       virtualChannelFifoOccurrenceCount},
       {"actor_multicast_route_count", actorMulticastRouteCount},
       {"maximum_actor_multicast_sinks", maximumActorMulticastSinks},
   };

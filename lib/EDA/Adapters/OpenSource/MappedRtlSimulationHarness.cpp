@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -21,11 +22,15 @@ namespace {
 constexpr unsigned kBitsPerByte = 8;
 constexpr unsigned kBitsPerHexDigit = 4;
 constexpr unsigned kAxiResponseWidth = 2;
+constexpr unsigned kConfigurationProgramWordWidth = 36;
 constexpr unsigned kConfigurationHandshakeCycleLimit = 64;
 constexpr unsigned kResetReleaseCycleCount = 4;
 constexpr std::uint64_t kMinimumClockPeriodFs = 2;
-constexpr std::uint64_t kMaximumMemoryAddressWidth =
-    std::numeric_limits<std::uint64_t>::digits;
+/// The harness carries byte addresses as `longint unsigned`; that type is the
+/// portable byte-address domain, so the two must agree.
+static_assert(hardware::rtl::portableMemoryByteAddressWidthBits == 64);
+static_assert(hardware::rtl::portableConfigurationDataWidth == 32);
+static_assert(hardware::rtl::portableConfigurationByteCount == 4);
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -181,7 +186,12 @@ void renderMemoryDeclarations(llvm::raw_ostream &output,
            << "  longint unsigned loom_memory_lane_" << ordinal << ";\n"
            << "  longint unsigned loom_memory_byte_in_lane_" << ordinal << ";\n"
            << "  longint unsigned loom_memory_lane_address_" << ordinal << ";\n"
+           << "  longint unsigned loom_memory_lane_offset_" << ordinal << ";\n"
+           << "  logic [" << facts.addressArithmetic.calculationWidthBits - 1
+           << ":0] loom_memory_wide_address_" << ordinal << ";\n"
            << "  longint unsigned loom_memory_byte_address_" << ordinal << ";\n"
+           << "  longint unsigned loom_memory_root_base_" << ordinal << ";\n"
+           << "  logic loom_memory_context_matched_" << ordinal << ";\n"
            << "  integer loom_memory_byte_ordinal_" << ordinal << ";\n";
   }
 }
@@ -207,6 +217,24 @@ void renderMemoryService(llvm::raw_ostream &output,
   for (const auto &[ordinal, port] :
        llvm::enumerate(facts.memoryBoundaryPorts)) {
     output << "  always_comb begin\n"
+           << "    loom_memory_root_base_" << ordinal << " = 0;\n"
+           << "    loom_memory_context_matched_" << ordinal << " = 0;\n"
+           << "    case (" << port.prefix << "_request_context)\n";
+    for (const MemoryBoundaryBinding &binding : port.bindings) {
+      const RuntimeMemoryImage &root =
+          facts.memoryImages[binding.rootObjectOrdinal];
+      output << "      64'h"
+             << llvm::format_hex_no_prefix(binding.requestContext, 16, true)
+             << ": begin\n"
+             << "        loom_memory_root_base_" << ordinal << " = "
+             << root.canonicalBaseAddress + binding.rootByteOffset << ";\n"
+             << "        loom_memory_context_matched_" << ordinal << " = 1;\n"
+             << "      end\n";
+    }
+    output << "      default: begin end\n"
+           << "    endcase\n"
+           << "  end\n"
+           << "  always_comb begin\n"
            << "    " << port.prefix
            << "_request_ready = !loom_memory_response_pending_" << ordinal
            << " || " << port.prefix << "_response_ready;\n"
@@ -229,11 +257,10 @@ void renderMemoryService(llvm::raw_ostream &output,
            << "      loom_memory_response_data_" << ordinal << " <= '0;\n";
   }
   output << "    end else begin\n";
+  const std::string wideCast =
+      std::to_string(facts.addressArithmetic.calculationWidthBits) + "'";
   for (const auto &[ordinal, port] :
        llvm::enumerate(facts.memoryBoundaryPorts)) {
-    const RuntimeMemoryImage &root = facts.memoryImages[port.rootObjectOrdinal];
-    const std::uint64_t rootBase =
-        root.canonicalBaseAddress + port.rootByteOffset;
     const std::uint64_t dataBytes = port.dataBitWidth / kBitsPerByte;
     output << "      if (loom_memory_response_pending_" << ordinal << " && "
            << port.prefix << "_response_ready) "
@@ -241,13 +268,16 @@ void renderMemoryService(llvm::raw_ostream &output,
            << "      if (" << port.prefix << "_request_valid && " << port.prefix
            << "_request_ready) begin\n"
            << "        loom_memory_response_next_" << ordinal << " = '0;\n"
+           << "        if (!loom_memory_context_matched_" << ordinal
+           << ") $fatal(1, \"unknown external memory request context\");\n"
            << "        if (" << port.prefix << "_request_element_width == 0 || "
            << port.prefix << "_request_element_width[2:0] != 0 || "
            << port.prefix << "_request_element_width > " << port.dataBitWidth
            << ") $fatal(1, \"unsupported external memory element width\");\n"
            << "        if (" << port.prefix
            << "_request_address_lane_width == 0 || " << port.prefix
-           << "_request_address_lane_width > " << kMaximumMemoryAddressWidth
+           << "_request_address_lane_width > "
+           << facts.addressArithmetic.byteAddressWidthBits
            << ") $fatal(1, "
               "\"unsupported external memory address width\");\n"
            << "        loom_memory_element_bytes_" << ordinal << " = "
@@ -282,24 +312,39 @@ void renderMemoryService(llvm::raw_ostream &output,
            << "_request_access_form == 2) ? (loom_memory_lane_" << ordinal
            << " * " << port.prefix << "_request_address_lane_width) : 0);\n"
            << "            if (" << port.prefix
-           << "_request_address_lane_width < " << kMaximumMemoryAddressWidth
+           << "_request_address_lane_width < "
+           << facts.addressArithmetic.byteAddressWidthBits
            << ") loom_memory_lane_address_" << ordinal
            << " = loom_memory_lane_address_" << ordinal << " & (("
-           << kMaximumMemoryAddressWidth << "'h1 << " << port.prefix
-           << "_request_address_lane_width) - 1);\n"
+           << facts.addressArithmetic.byteAddressWidthBits << "'h1 << "
+           << port.prefix << "_request_address_lane_width) - 1);\n"
+           << "            loom_memory_lane_offset_" << ordinal << " = ("
+           << port.prefix << "_request_access_form == 2) ? "
+           << "loom_memory_byte_in_lane_" << ordinal << " : "
+           << "loom_memory_byte_ordinal_" << ordinal << ";\n"
+           // The complete byte-address expression is evaluated in the
+           // portable calculation width; a request whose exact address
+           // leaves the byte-address domain is a typed failure, never an
+           // alias of the wrapped low bits.
            << "            if (" << port.prefix
-           << "_request_address_form == 0) loom_memory_byte_address_" << ordinal
-           << " = " << rootBase << " + " << port.prefix
-           << "_request_base_address + loom_memory_lane_address_" << ordinal
-           << " * loom_memory_element_bytes_" << ordinal << " + (("
-           << port.prefix << "_request_access_form == 2) ? "
-           << "loom_memory_byte_in_lane_" << ordinal << " : "
-           << "loom_memory_byte_ordinal_" << ordinal << ");\n"
-           << "            else loom_memory_byte_address_" << ordinal
-           << " = loom_memory_lane_address_" << ordinal << " + (("
-           << port.prefix << "_request_access_form == 2) ? "
-           << "loom_memory_byte_in_lane_" << ordinal << " : "
-           << "loom_memory_byte_ordinal_" << ordinal << ");\n"
+           << "_request_address_form == 0) loom_memory_wide_address_"
+           << ordinal << " = " << wideCast << "(loom_memory_root_base_"
+           << ordinal << ") + " << wideCast << "(" << port.prefix
+           << "_request_base_address) + " << wideCast
+           << "(loom_memory_lane_address_" << ordinal << ") * " << wideCast
+           << "(loom_memory_element_bytes_" << ordinal << ") + " << wideCast
+           << "(loom_memory_lane_offset_" << ordinal << ");\n"
+           << "            else loom_memory_wide_address_" << ordinal << " = "
+           << wideCast << "(loom_memory_lane_address_" << ordinal << ") + "
+           << wideCast << "(loom_memory_lane_offset_" << ordinal << ");\n"
+           << "            if (|loom_memory_wide_address_" << ordinal << "["
+           << facts.addressArithmetic.calculationWidthBits - 1 << ':'
+           << facts.addressArithmetic.byteAddressWidthBits
+           << "]) $fatal(1, \"external memory address overflows the portable "
+              "byte-address domain\");\n"
+           << "            loom_memory_byte_address_" << ordinal
+           << " = loom_memory_wide_address_" << ordinal << "["
+           << facts.addressArithmetic.byteAddressWidthBits - 1 << ":0];\n"
            << "            if (!loom_memory_address_valid("
            << "loom_memory_byte_address_" << ordinal
            << ")) $fatal(1, \"external memory address is out of range\");\n"
@@ -362,6 +407,16 @@ void renderInputCounters(llvm::raw_ostream &output,
          << "  end\n";
 }
 
+/// Renders the AXI4-Lite configuration tasks of one configuration port. Both
+/// tasks are entered and left on a falling clock edge and drive the request
+/// channels from that edge, so no delay control is needed to keep a request
+/// off the sampling edge. The write task presents the address and data
+/// channels together, which AXI4-Lite permits and the configuration
+/// controller accepts independently, and retires them per channel; the write
+/// still completes only through its own B response and the readback and the
+/// atomic commit write are unchanged. Every additional evaluation slot costs
+/// one complete model evaluation, which dominates the mapped-RTL simulation
+/// wall, so the driver uses the fewest edges the protocol allows.
 void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
                              std::size_t ordinal, llvm::StringRef clock) {
   output << "  task automatic loom_cfg_write_" << ordinal << "(input logic ["
@@ -372,40 +427,41 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << hardware::rtl::portableConfigurationByteCount - 1
          << ":0] strobe);\n"
          << "    integer wait_cycles;\n"
+         << "    logic address_accepted;\n"
+         << "    logic data_accepted;\n"
          << "    begin\n"
          << "      if (loom_verbose_level >= 1) $display(\"[loom][rtl][cfg] "
             "write address=%h data=%h strobe=%h\", address, data, strobe);\n"
          << "      " << prefix << "_awaddr = address;\n"
          << "      " << prefix << "_awvalid = 1;\n"
-         << "      wait_cycles = 0;\n"
-         << "      do begin\n"
-         << "        @(posedge " << clock << ");\n"
-         << "        wait_cycles = wait_cycles + 1;\n"
-         << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
-         << " && !" << prefix
-         << "_awready) $fatal(1, \"AXI4-Lite AW handshake timed out\");\n"
-         << "      end while (!" << prefix << "_awready);\n"
-         << "      #1 " << prefix << "_awvalid = 0;\n"
          << "      " << prefix << "_wdata = data;\n"
          << "      " << prefix << "_wstrb = strobe;\n"
          << "      " << prefix << "_wvalid = 1;\n"
+         << "      address_accepted = 0;\n"
+         << "      data_accepted = 0;\n"
          << "      wait_cycles = 0;\n"
          << "      do begin\n"
          << "        @(posedge " << clock << ");\n"
+         << "        address_accepted = address_accepted | " << prefix
+         << "_awready;\n"
+         << "        data_accepted = data_accepted | " << prefix
+         << "_wready;\n"
+         << "        @(negedge " << clock << ");\n"
+         << "        if (address_accepted) " << prefix << "_awvalid = 0;\n"
+         << "        if (data_accepted) " << prefix << "_wvalid = 0;\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
-         << " && !" << prefix
-         << "_wready) $fatal(1, \"AXI4-Lite W handshake timed out\");\n"
-         << "      end while (!" << prefix << "_wready);\n"
-         << "      #1 " << prefix << "_wvalid = 0;\n"
+         << " && (!address_accepted || !data_accepted)) $fatal(1, "
+            "\"AXI4-Lite write handshake timed out\");\n"
+         << "      end while (!address_accepted || !data_accepted);\n"
          << "      wait_cycles = 0;\n"
-         << "      do begin\n"
+         << "      while (!" << prefix << "_bvalid) begin\n"
          << "        @(negedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
          << "_bvalid) $fatal(1, \"AXI4-Lite B response timed out\");\n"
-         << "      end while (!" << prefix << "_bvalid);\n"
+         << "      end\n"
          << "      if (" << prefix
          << "_bresp !== 2'b00) $fatal(1, \"AXI4-Lite write failed\");\n"
          << "    end\n"
@@ -428,15 +484,16 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << " && !" << prefix
          << "_arready) $fatal(1, \"AXI4-Lite AR handshake timed out\");\n"
          << "      end while (!" << prefix << "_arready);\n"
-         << "      #1 " << prefix << "_arvalid = 0;\n"
+         << "      @(negedge " << clock << ");\n"
+         << "      " << prefix << "_arvalid = 0;\n"
          << "      wait_cycles = 0;\n"
-         << "      do begin\n"
+         << "      while (!" << prefix << "_rvalid) begin\n"
          << "        @(negedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
          << "_rvalid) $fatal(1, \"AXI4-Lite R response timed out\");\n"
-         << "      end while (!" << prefix << "_rvalid);\n"
+         << "      end\n"
          << "      data = " << prefix << "_rdata;\n"
          << "      response = " << prefix << "_rresp;\n"
          << "    end\n"
@@ -446,26 +503,23 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
 void renderConfigurationProgram(llvm::raw_ostream &output,
                                 const ConfigurationProgram &program,
                                 std::size_t taskOrdinal) {
-  for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
-       ++word) {
-    const std::uint32_t address =
-        program.layout.baseAddress +
-        static_cast<std::uint32_t>(
-            word * hardware::rtl::portableConfigurationByteCount);
-    output << "    loom_cfg_write_" << taskOrdinal << "("
-           << hardware::rtl::portableConfigurationAddressWidth << "'h"
-           << llvm::format_hex_no_prefix(
-                  address, hardware::rtl::portableConfigurationAddressWidth /
-                               kBitsPerHexDigit)
-           << ", " << hardware::rtl::portableConfigurationDataWidth << "'h"
-           << llvm::format_hex_no_prefix(
-                  imageWord(program.image, word),
-                  hardware::rtl::portableConfigurationDataWidth /
-                      kBitsPerHexDigit)
-           << ", " << hardware::rtl::portableConfigurationByteCount << "'h"
-           << llvm::format_hex_no_prefix(imageStrobe(program.image, word), 1)
-           << ");\n";
-  }
+  const std::string wordIndex =
+      "loom_cfg_program_word_" + std::to_string(taskOrdinal);
+  const std::string words =
+      "loom_cfg_program_" + std::to_string(taskOrdinal);
+  output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
+         << program.layout.payloadWordCount << "; " << wordIndex << " = "
+         << wordIndex << " + 1)\n"
+         << "      loom_cfg_write_" << taskOrdinal << "("
+         << hardware::rtl::portableConfigurationAddressWidth << "'h"
+         << llvm::format_hex_no_prefix(
+                program.layout.baseAddress,
+                hardware::rtl::portableConfigurationAddressWidth /
+                    kBitsPerHexDigit)
+         << " + " << wordIndex << " * "
+         << hardware::rtl::portableConfigurationByteCount << ", " << words
+         << "[" << wordIndex << "][31:0], " << words << "[" << wordIndex
+         << "][35:32]);\n";
   output << "    loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -475,27 +529,28 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << ", " << hardware::rtl::portableConfigurationDataWidth
          << "'h00000001, " << hardware::rtl::portableConfigurationByteCount
          << "'h1);\n";
-  for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
-       ++word) {
-    const std::uint32_t address =
-        program.layout.baseAddress +
-        static_cast<std::uint32_t>(
-            word * hardware::rtl::portableConfigurationByteCount);
-    output << "    loom_cfg_read_" << taskOrdinal << "("
-           << hardware::rtl::portableConfigurationAddressWidth << "'h"
-           << llvm::format_hex_no_prefix(
-                  address, hardware::rtl::portableConfigurationAddressWidth /
-                               kBitsPerHexDigit)
-           << ", loom_cfg_readback, loom_cfg_response);\n"
-           << "    if (loom_cfg_response !== 2'b00 || "
-              "loom_cfg_readback !== "
-           << hardware::rtl::portableConfigurationDataWidth << "'h"
-           << llvm::format_hex_no_prefix(
-                  imageWord(program.image, word),
-                  hardware::rtl::portableConfigurationDataWidth /
-                      kBitsPerHexDigit)
-           << ") $fatal(1, \"active configuration readback mismatch\");\n";
-  }
+  // The three configuration stages have very different simulation cost, so
+  // each boundary is announced once at the ordinary verbosity level.
+  output << "    if (loom_verbose_level >= 1) $display(\"[loom][rtl][stage] "
+            "readback_begin program="
+         << taskOrdinal << "\");\n";
+  output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
+         << program.layout.payloadWordCount << "; " << wordIndex << " = "
+         << wordIndex << " + 1) begin\n"
+         << "      loom_cfg_read_" << taskOrdinal << "("
+         << hardware::rtl::portableConfigurationAddressWidth << "'h"
+         << llvm::format_hex_no_prefix(
+                program.layout.baseAddress,
+                hardware::rtl::portableConfigurationAddressWidth /
+                    kBitsPerHexDigit)
+         << " + " << wordIndex << " * "
+         << hardware::rtl::portableConfigurationByteCount
+         << ", loom_cfg_readback, loom_cfg_response);\n"
+         << "      if (loom_cfg_response !== 2'b00 || "
+            "loom_cfg_readback !== "
+         << words << "[" << wordIndex
+         << "][31:0]) $fatal(1, \"active configuration readback mismatch\");\n"
+         << "    end\n";
   output << "    loom_cfg_read_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -595,7 +650,23 @@ void renderResultWriter(llvm::raw_ostream &output,
 } // namespace
 
 llvm::Expected<std::string>
+renderMappedRtlConfigurationProgramFile(
+    const ConfigurationProgram &program) {
+  if (llvm::Error error = validateProgram(program))
+    return std::move(error);
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
+       ++word)
+    output << llvm::format_hex_no_prefix(imageStrobe(program.image, word), 1)
+           << llvm::format_hex_no_prefix(imageWord(program.image, word), 8)
+           << '\n';
+  return text;
+}
+
+llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
+                         llvm::ArrayRef<std::string> configurationProgramPaths,
                          llvm::StringRef resultPath) {
   if (facts.top.empty())
     return invalid("RTL top name is absent");
@@ -616,18 +687,33 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const ConfigurationProgram &program : facts.configurationPrograms)
     if (llvm::Error error = validateProgram(program))
       return std::move(error);
+  if (configurationProgramPaths.size() != facts.configurationPrograms.size())
+    return invalid("configuration program path count is inconsistent");
+  for (llvm::StringRef path : configurationProgramPaths) {
+    const std::filesystem::path parsed(path.str());
+    if (path.empty() || path.contains('\\') || path.contains('\0') ||
+        path.contains('"') || parsed.is_absolute() ||
+        parsed.lexically_normal() != parsed)
+      return invalid("configuration program path is not canonical");
+  }
   auto projectedMemoryExtent = memoryExtent(facts);
   if (!projectedMemoryExtent)
     return projectedMemoryExtent.takeError();
   for (const MemoryBoundaryPort &port : facts.memoryBoundaryPorts) {
-    if (port.addressBitWidth == 0 ||
-        port.addressBitWidth > kMaximumMemoryAddressWidth ||
-        port.dataBitWidth == 0 || port.dataBitWidth % kBitsPerByte != 0 ||
-        port.maskBitWidth == 0 ||
-        port.rootObjectOrdinal >= facts.memoryImages.size() ||
-        port.rootByteOffset >=
-            facts.memoryImages[port.rootObjectOrdinal].initialBytes.size())
+    if (port.addressBitWidth == 0 || port.dataBitWidth == 0 ||
+        port.dataBitWidth % kBitsPerByte != 0 || port.maskBitWidth == 0 ||
+        port.bindings.empty())
       return invalid("memory boundary plan is incomplete");
+    for (std::size_t ordinal = 0; ordinal != port.bindings.size(); ++ordinal) {
+      const MemoryBoundaryBinding &binding = port.bindings[ordinal];
+      if (binding.rootObjectOrdinal >= facts.memoryImages.size() ||
+          binding.rootByteOffset >=
+              facts.memoryImages[binding.rootObjectOrdinal]
+                  .initialBytes.size() ||
+          (ordinal != 0 &&
+           port.bindings[ordinal - 1].requestContext >= binding.requestContext))
+        return invalid("memory boundary binding plan is not canonical");
+    }
   }
   for (const MemoryObservationPlan &observation : facts.memoryObservations)
     if (observation.objectOrdinal >= facts.memoryImages.size() ||
@@ -662,6 +748,12 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << ":0] loom_cfg_readback;\n"
          << "  logic [" << kAxiResponseWidth - 1 << ":0] loom_cfg_response;\n"
          << "  integer loom_verbose_level;\n";
+  for (const auto &[ordinal, program] :
+       llvm::enumerate(facts.configurationPrograms))
+    output << "  logic [" << kConfigurationProgramWordWidth - 1
+           << ":0] loom_cfg_program_" << ordinal << " [0:"
+           << program.layout.payloadWordCount - 1 << "];\n"
+           << "  integer loom_cfg_program_word_" << ordinal << ";\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
          << "  assign loom_engine_retirement_cycle = "
@@ -700,6 +792,10 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "    loom_resets_released = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
             "loom_verbose_level)) loom_verbose_level = 0;\n";
+  for (const auto &[ordinal, path] :
+       llvm::enumerate(configurationProgramPaths))
+    output << "    $readmemh(\"" << path << "\", loom_cfg_program_"
+           << ordinal << ");\n";
   for (const InputTokenStream &input : facts.streamInputs) {
     const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
     output << "    loom_runtime_stream_enabled_" << ordinal << " = 0;\n"
@@ -755,7 +851,9 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationProgram(output, program, ordinal);
-  output << "    loom_inputs_enabled = 1;\n"
+  output << "    if (loom_verbose_level >= 1) $display(\"[loom][rtl][stage] "
+            "kernel_begin\");\n"
+         << "    loom_inputs_enabled = 1;\n"
          << "    while (!loom_retired && loom_cycle < " << facts.cycleLimit
          << ") @(posedge " << facts.selectedClock << ");\n"
          << "    if (loom_retired) begin\n"
@@ -900,55 +998,52 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
 }
 
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
-    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
-    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath) {
-  if (facts.rtlPaths.empty())
+    const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
+    MappedRtlVerilationStyle style,
+    llvm::ArrayRef<std::string> hierarchyMakeVariables,
+    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
+    std::optional<llvm::StringRef> bridgeEngineSourcePath) {
+  if (facts.rtlPaths.empty() && facts.rtlLibraryDirectories.empty())
     return invalid("Verilator driver has no RTL sources");
-  if (buildJobs == 0)
-    return invalid("Verilator build parallelism must be positive");
+  if (plan.buildJobs == 0 || plan.modelThreads == 0)
+    return invalid("Verilator parallelism must be positive");
+  if (style == MappedRtlVerilationStyle::Flat &&
+      !hierarchyMakeVariables.empty())
+    return invalid("flat Verilation has no hierarchical make variables");
   std::string text;
   llvm::raw_string_ostream output(text);
   const std::filesystem::path simulatorExecutable(
       simulatorExecutablePath.str());
-  output << "--binary\n--build-jobs\n"
-         << buildJobs
-         << "\n--timing\n--Wall\n--Wno-fatal\n"
+  // `-j` is the Verilation job count and the job count of the make that
+  // Verilator runs for hierarchical Verilation. `--threads` and
+  // `--hierarchical-threads` carry one model thread count so the generated
+  // main, the root model, and the hierarchical schedule agree; the flat style
+  // has no hierarchical schedule.
+  output << "--cc\n--exe\n";
+  if (!bridgeEngineSourcePath)
+    output << "--main\n";
+  if (style == MappedRtlVerilationStyle::Hierarchical)
+    output << "--hierarchical\n";
+  output << "-j\n"
+         << plan.buildJobs << "\n--threads\n" << plan.modelThreads << "\n";
+  if (style == MappedRtlVerilationStyle::Hierarchical)
+    output << "--hierarchical-threads\n" << plan.modelThreads << "\n";
+  output << "--timing\n--Wall\n--Wno-fatal\n"
             "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
             "--Wno-TIMESCALEMOD\n"
-            "-CFLAGS\n-std=c++20\n--top-module\n"
+            "--compiler\nclang\n-CFLAGS\n-std=c++20\n--top-module\n"
          << mappedRtlHarnessTop << "\n--Mdir\n"
          << simulatorExecutable.parent_path().generic_string() << "\n-o\n"
          << simulatorExecutable.filename().generic_string() << "\n";
+  for (const std::string &variable : hierarchyMakeVariables)
+    output << "-MAKEFLAGS\n" << variable << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
+  for (const std::string &path : facts.rtlLibraryDirectories)
+    output << "-y\n" << path << "\n+libext+.sv\n";
   output << testbenchPath << "\n";
-  return text;
-}
-
-llvm::Expected<std::string> renderMappedRtlBridgedVerilatorDriver(
-    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
-    llvm::StringRef testbenchPath, llvm::StringRef bridgeEngineSourcePath,
-    llvm::StringRef simulatorExecutablePath) {
-  if (facts.rtlPaths.empty())
-    return invalid("Verilator driver has no RTL sources");
-  if (buildJobs == 0)
-    return invalid("Verilator build parallelism must be positive");
-  std::string text;
-  llvm::raw_string_ostream output(text);
-  const std::filesystem::path simulatorExecutable(
-      simulatorExecutablePath.str());
-  output << "--cc\n--exe\n--build\n--build-jobs\n"
-         << buildJobs
-         << "\n--timing\n--Wall\n--Wno-fatal\n"
-            "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
-            "--Wno-TIMESCALEMOD\n"
-            "-CFLAGS\n-std=c++20\n--top-module\n"
-         << mappedRtlHarnessTop << "\n--Mdir\n"
-         << simulatorExecutable.parent_path().generic_string() << "\n-o\n"
-         << simulatorExecutable.filename().generic_string() << "\n";
-  for (const std::string &path : facts.rtlPaths)
-    output << path << "\n";
-  output << testbenchPath << "\n" << bridgeEngineSourcePath << "\n";
+  if (bridgeEngineSourcePath)
+    output << *bridgeEngineSourcePath << "\n";
   return text;
 }
 
