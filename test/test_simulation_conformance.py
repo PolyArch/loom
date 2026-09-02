@@ -188,7 +188,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     ),
                     "resolved_config": {
                         "schema": "loom.config.resolved",
-                        "schema_version": "11.2",
+                        "schema_version": "11.3",
                         "artifact": f"{300:064x}",
                     },
                     "fabric": reference(301, "loom.fabric", "7.1"),

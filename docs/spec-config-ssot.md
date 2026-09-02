@@ -75,13 +75,24 @@ Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
 is recorded only as invocation provenance and is excluded from canonical
 ResolvedConfig bytes. All builtin presets resolve to
-`loom.adg.builtin.general_purpose` version `8.0`; only their default parameter
+`loom.adg.builtin.general_purpose` version `8.1`; only their default parameter
 values differ. Omitting hardware selection resolves the `Coverage` scale; it
 does not produce a target-less configuration. The production `Coverage` and
 `Large` scales select `PerTagVirtualChannel` on tag-carrying interconnect
-FIFOs; the compact `Small` reference remains `StrictFifo`. Queue discipline and
-depth are ordinary typed target parameters, so a custom profile must state any
-different selection explicitly and receives a distinct resolved identity.
+FIFOs; the compact `Small` reference remains `StrictFifo`. All three current
+presets select `PortableProviderClosed` as their typed
+`special_math_capability_profile`. Queue discipline, depth, and special-math
+capability profile are ordinary typed target parameters, so a custom profile
+must state every different selection explicitly and receives a distinct
+resolved identity. `FullCatalog` remains the explicit relation that preserves
+the version 8.0 elementary-math capabilities.
+
+The hardware template projection uses
+`loom.fabric_template_generator.config.7.2`. Its canonical view includes the
+exact template descriptor and complete `BuiltinTargetScale`, including the
+special-math profile. A 7.2 adopter rejects a 7.1 view; regeneration projects
+the current view from the exact ResolvedConfig rather than inserting a
+compatibility value into old bytes.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
 an explicitly selected builtin target. Import and Fabric finalization produce
@@ -134,7 +145,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.2`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.3`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -277,6 +288,31 @@ builtin temporary-violation policy excludes it, while closure and total
 ordering place it before ordinary QoR. Re-finalization produces new
 ResolvedConfig, component-view, and PnR identities; earlier references are not
 silently adopted as 11.2.
+
+Version 11.3 adds the required typed
+`hardware_target.parameters.special_math_capability_profile`. Its closed
+values are `full_catalog` and `portable_provider_closed`; their exact Fabric
+capability relations are owned by the version 8.1 builtin template in
+[ADG Builder](spec-adg-builder.md#specialmathfu-resource-inventory). The field
+is present even when both special-math occurrence counts are zero, because the
+ResolvedConfig owns the complete target choice rather than only the generated
+resources that happen to exist.
+
+The 11.2 to 11.3 transition is an explicit authoring-source
+re-finalization. To preserve an 8.0 target's semantics, the owner adds
+`special_math_capability_profile: full_catalog`, changes the target descriptor
+to 8.1, and resolves a new 11.3 Artifact. Ordinary parsing and Artifact import
+remain strict: neither accepts an old reference as current or silently fills a
+missing field. This is a compatible minor transition only because
+`full_catalog` uniquely reconstructs the old target relation; schema
+references and Artifact identities remain distinct. Re-selecting a current
+builtin preset instead chooses
+`portable_provider_closed` and is a semantic target change, not migration.
+The corresponding 7.2 Fabric-template view and Fabric are regenerated, and
+every dependent Mapping, ConfigurationABI, Deployment,
+HardwareImplementation, and EDA Evidence or provenance record is regenerated
+against the new exact identities. Paths, cached projections, and prior
+provider availability never authorize retaining an older reference.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.
 Feedback remains invocation-local until the Mapping owner verifies replayed

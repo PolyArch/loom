@@ -355,14 +355,85 @@ SelectableResource scalarFloat(ImplementationFamilyId family,
       std::move(inputs)};
 }
 
-SelectableResource scalarSpecialMath(ImplementationFamilyId family,
-                                     std::vector<std::uint32_t> inputs) {
-  return {family,
-          ::fabric::ScalarSpecialMathParams{
-              detail::catalogFloatFormats(),
-              ::fabric::FloatBehaviorProfile::strictIEEE(),
-              SpecialMathAccuracyTier::CorrectlyRounded},
-          std::move(inputs)};
+::fabric::FloatFormatSet portableHalfFormats() {
+  return ::fabric::FloatFormatSet::get(
+      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16});
+}
+
+::fabric::FloatFormatSet portableSingleFormats() {
+  return ::fabric::FloatFormatSet::get(
+      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
+       ::fabric::FloatFormat::F32});
+}
+
+::fabric::FloatBehaviorProfile approximateSpecialMathBehavior() {
+  auto behavior = ::fabric::FloatBehaviorProfile::strictIEEE();
+  behavior.requiredFastMath = mlir::arith::FastMathFlags::afn;
+  return behavior;
+}
+
+llvm::Expected<::fabric::ScalarSpecialMathParams> specialMathParameters(
+    BuiltinSpecialMathCapabilityProfile profile,
+    ImplementationFamilyId family) {
+  if (profile == BuiltinSpecialMathCapabilityProfile::FullCatalog)
+    return ::fabric::ScalarSpecialMathParams{
+        detail::catalogFloatFormats(),
+        ::fabric::FloatBehaviorProfile::strictIEEE(),
+        SpecialMathAccuracyTier::CorrectlyRounded};
+  if (profile !=
+      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed)
+    return invalid("unknown builtin special-math capability profile");
+
+  switch (family) {
+  case ImplementationFamilyId::ScalarMathSin:
+  case ImplementationFamilyId::ScalarMathCos:
+  case ImplementationFamilyId::ScalarMathTan:
+    return ::fabric::ScalarSpecialMathParams{
+        portableHalfFormats(), ::fabric::FloatBehaviorProfile::strictIEEE(),
+        SpecialMathAccuracyTier::CorrectlyRounded};
+  case ImplementationFamilyId::ScalarMathSinh:
+  case ImplementationFamilyId::ScalarMathCosh:
+  case ImplementationFamilyId::ScalarMathTanh:
+  case ImplementationFamilyId::ScalarMathLog:
+  case ImplementationFamilyId::ScalarMathLog2:
+  case ImplementationFamilyId::ScalarMathLog10:
+  case ImplementationFamilyId::ScalarMathLog1p:
+    return ::fabric::ScalarSpecialMathParams{
+        portableSingleFormats(), approximateSpecialMathBehavior(),
+        SpecialMathAccuracyTier::Max4Ulp};
+  case ImplementationFamilyId::ScalarMathExp:
+  case ImplementationFamilyId::ScalarMathExp2:
+  case ImplementationFamilyId::ScalarMathExpM1:
+  case ImplementationFamilyId::ScalarMathErf:
+  case ImplementationFamilyId::ScalarMathPow:
+    return ::fabric::ScalarSpecialMathParams{
+        portableHalfFormats(), approximateSpecialMathBehavior(),
+        SpecialMathAccuracyTier::Max4Ulp};
+  case ImplementationFamilyId::ScalarMathFloor:
+  case ImplementationFamilyId::ScalarMathCeil:
+  case ImplementationFamilyId::ScalarMathRound:
+  case ImplementationFamilyId::ScalarMathTrunc:
+  case ImplementationFamilyId::ScalarMathRoundEven:
+  case ImplementationFamilyId::ScalarMathSqrt:
+  case ImplementationFamilyId::ScalarMathRsqrt:
+    return ::fabric::ScalarSpecialMathParams{
+        detail::catalogFloatFormats(),
+        ::fabric::FloatBehaviorProfile::strictIEEE(),
+        SpecialMathAccuracyTier::CorrectlyRounded};
+  default:
+    return invalid(
+        "non-special-math implementation family requested a capability");
+  }
+}
+
+llvm::Expected<SelectableResource>
+scalarSpecialMath(ImplementationFamilyId family,
+                  std::vector<std::uint32_t> inputs,
+                  BuiltinSpecialMathCapabilityProfile profile) {
+  auto parameters = specialMathParameters(profile, family);
+  if (!parameters)
+    return parameters.takeError();
+  return SelectableResource{family, std::move(*parameters), std::move(inputs)};
 }
 
 } // namespace
@@ -1215,7 +1286,8 @@ llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                      resources);
 }
 
-llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
+llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                             BuiltinSpecialMathCapabilityProfile profile) {
   if (inputs.size() != 2)
     return invalid("SpecialMathFu requires two data inputs");
   auto bits64 = PortType::bits(64);
@@ -1234,8 +1306,11 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
       scalarFloat(ImplementationFamilyId::ScalarFloatDivide, {0, 1}));
   resources.push_back(
       scalarFloat(ImplementationFamilyId::ScalarFloatRemainder, {0, 1}));
-  resources.push_back(
-      scalarSpecialMath(ImplementationFamilyId::ScalarMathPow, {0, 1}));
+  auto power = scalarSpecialMath(ImplementationFamilyId::ScalarMathPow,
+                                 {0, 1}, profile);
+  if (!power)
+    return power.takeError();
+  resources.push_back(std::move(*power));
   constexpr std::array<ImplementationFamilyId, 21> unaryFamilies = {
       ImplementationFamilyId::ScalarMathSin,
       ImplementationFamilyId::ScalarMathCos,
@@ -1258,8 +1333,12 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
       ImplementationFamilyId::ScalarMathSqrt,
       ImplementationFamilyId::ScalarMathRsqrt,
       ImplementationFamilyId::ScalarMathErf};
-  for (ImplementationFamilyId family : unaryFamilies)
-    resources.push_back(scalarSpecialMath(family, {0}));
+  for (ImplementationFamilyId family : unaryFamilies) {
+    auto resource = scalarSpecialMath(family, {0}, profile);
+    if (!resource)
+      return resource.takeError();
+    resources.push_back(std::move(*resource));
+  }
   return addSelectableFu(pe, inputs, {*bits64, *bits64}, *bits64, *bits128,
                          resources);
 }

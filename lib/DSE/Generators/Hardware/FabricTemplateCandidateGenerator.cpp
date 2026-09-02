@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.7.1";
+    "loom.fabric_template_generator.config.7.2";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -44,6 +44,30 @@ void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
 void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+std::uint32_t specialMathCapabilityProfileWireTag(
+    loom::adg::BuiltinSpecialMathCapabilityProfile profile) {
+  switch (profile) {
+  case loom::adg::BuiltinSpecialMathCapabilityProfile::FullCatalog:
+    return 0;
+  case loom::adg::BuiltinSpecialMathCapabilityProfile::PortableProviderClosed:
+    return 1;
+  }
+  llvm_unreachable("invalid builtin special-math capability profile");
+}
+
+std::optional<loom::adg::BuiltinSpecialMathCapabilityProfile>
+specialMathCapabilityProfileFromWireTag(std::uint32_t tag) {
+  switch (tag) {
+  case 0:
+    return loom::adg::BuiltinSpecialMathCapabilityProfile::FullCatalog;
+  case 1:
+    return loom::adg::BuiltinSpecialMathCapabilityProfile::
+        PortableProviderClosed;
+  default:
+    return std::nullopt;
+  }
 }
 
 std::vector<std::uint8_t>
@@ -84,6 +108,8 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.interconnectFifoDepth);
   appendU32(bytes,
             static_cast<std::uint32_t>(scale.interconnectFifoQueueDiscipline));
+  appendU32(bytes, specialMathCapabilityProfileWireTag(
+                       scale.specialMathCapabilityProfile));
   return bytes;
 }
 
@@ -102,7 +128,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 136)
+  if (bytes.size() != 140)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -145,6 +171,11 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   scale.interconnectFifoDepth = readU32();
   scale.interconnectFifoQueueDiscipline =
       static_cast<::fabric::FifoQueueDiscipline>(readU32());
+  auto specialMathProfile =
+      specialMathCapabilityProfileFromWireTag(readU32());
+  if (!specialMathProfile)
+    return invalid("template special-math capability profile is invalid");
+  scale.specialMathCapabilityProfile = *specialMathProfile;
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");

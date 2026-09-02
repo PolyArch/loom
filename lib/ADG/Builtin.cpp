@@ -275,7 +275,9 @@ llvm::Expected<MemoryInterfaceParameters> builtinMemoryInterface() {
 }
 
 llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
-                         const FuDistribution &distribution) {
+                         const FuDistribution &distribution,
+                         BuiltinSpecialMathCapabilityProfile
+                             specialMathCapabilityProfile) {
   std::vector<PeValue> inputs;
   inputs.reserve(5);
   for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
@@ -331,7 +333,8 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
             pe, inputs, builtinVectorStructuralParameters()))
       return error;
   if (distribution.specialMath[site])
-    if (llvm::Error error = addSpecialMathFu(pe, {inputs[0], inputs[1]}))
+    if (llvm::Error error = addSpecialMathFu(
+            pe, {inputs[0], inputs[1]}, specialMathCapabilityProfile))
       return error;
   return pe.close();
 }
@@ -571,7 +574,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                        PeSpec::spatial(spatialPeInputs, spatialPeOutputs));
     if (!pe)
       return pe.takeError();
-    if (llvm::Error error = addFuCatalog(*pe, site, spatialDistribution))
+    if (llvm::Error error =
+            addFuCatalog(*pe, site, spatialDistribution,
+                         scale.specialMathCapabilityProfile))
       return std::move(error);
     std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != peOutputPortCount; ++output) {
@@ -639,7 +644,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                                         temporalParameters));
     if (!pe)
       return pe.takeError();
-    if (llvm::Error error = addFuCatalog(*pe, site, temporalDistribution))
+    if (llvm::Error error =
+            addFuCatalog(*pe, site, temporalDistribution,
+                         scale.specialMathCapabilityProfile))
       return std::move(error);
     std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != peOutputPortCount; ++output) {

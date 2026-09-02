@@ -361,6 +361,9 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"spatial_memory_count", scale.spatialMemoryCount},
                 {"temporal_memory_count", scale.temporalMemoryCount},
                 {"temporal_resident_contexts", scale.temporalResidentContexts},
+                {"special_math_capability_profile",
+                 loom::adg::builtinSpecialMathCapabilityProfileSpelling(
+                     scale.specialMathCapabilityProfile)},
                 {"local_memory_port_variant",
                  loom::adg::localMemoryPortVariantSpelling(
                      scale.localMemoryPortVariant)},

@@ -2,6 +2,7 @@
 #define LOOM_ADG_BUILTINDESCRIPTOR_H
 
 #include "ADG/MemoryLibrary.h"
+#include "ADG/SpecialMathCapabilityProfile.h"
 
 #include "Fabric/IR/FabricEnums.h"
 
@@ -82,6 +83,9 @@ struct BuiltinTargetScale final {
   /// Dequeue scheduling discipline of tag-carrying interconnect FIFOs.
   /// Untagged interconnect FIFOs remain strict regardless of this value.
   ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline;
+  /// Elementary-math formats, behavior, and accuracy exposed by every
+  /// SpecialMathFu occurrence. Divide and remainder resources are invariant.
+  BuiltinSpecialMathCapabilityProfile specialMathCapabilityProfile;
   LocalMemoryPortVariant localMemoryPortVariant;
   std::uint32_t crossScheduleBoundaryLanesPerTemporalPe;
   std::uint32_t gatewayCount;
@@ -106,6 +110,8 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
               ::fabric::FifoQueueDiscipline::StrictFifo ||
           scale.interconnectFifoQueueDiscipline ==
               ::fabric::FifoQueueDiscipline::PerTagVirtualChannel) &&
+         isValidBuiltinSpecialMathCapabilityProfile(
+             scale.specialMathCapabilityProfile) &&
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
          scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0;
@@ -125,10 +131,11 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     "small",
     "loom.adg.builtin.general_purpose",
     8,
-    0,
+    1,
     {4, 4, 2, 2, 12, 4, builtinBalancedFuOccurrences(12),
      builtinBalancedFuOccurrences(4), 1, 1, 2, 2,
      ::fabric::FifoQueueDiscipline::StrictFifo,
+     BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
@@ -136,10 +143,11 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     "coverage",
     "loom.adg.builtin.general_purpose",
     8,
-    0,
+    1,
     {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
      builtinBalancedFuOccurrences(9), 4, 4, 4, 4,
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
+     BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
@@ -147,10 +155,11 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     "large",
     "loom.adg.builtin.general_purpose",
     8,
-    0,
+    1,
     {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
      builtinBalancedFuOccurrences(16), 4, 4, 8, 16,
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
+     BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>

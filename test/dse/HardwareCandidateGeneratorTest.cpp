@@ -309,6 +309,51 @@ void localMemoryPortVariantRoundTrip() {
       "template base scale is invalid");
 }
 
+void specialMathCapabilityProfileRoundTrip() {
+  std::vector<std::vector<std::uint8_t>> canonicalViews;
+  std::vector<loom::ComponentViewDigest> digests;
+  for (const auto profile :
+       {loom::adg::BuiltinSpecialMathCapabilityProfile::FullCatalog,
+        loom::adg::BuiltinSpecialMathCapabilityProfile::
+            PortableProviderClosed}) {
+    loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+    resolved.hardwareTarget.parameters.specialMathCapabilityProfile = profile;
+    auto projected =
+        take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
+    canonicalViews.emplace_back(projected.canonicalViewBytes().begin(),
+                                projected.canonicalViewBytes().end());
+    digests.push_back(projected.digest());
+    auto adopted = take(loom::dse::adoptResolvedFabricTemplateConfigView(
+        loom::dse::resolvedFabricTemplateConfigSchemaBytes(),
+        projected.canonicalViewBytes(), projected.digest()));
+    require(adopted.scale().specialMathCapabilityProfile == profile,
+            "template config changed the special-math capability profile");
+  }
+  require(canonicalViews.size() == 2 &&
+              canonicalViews.front() != canonicalViews.back() &&
+              digests.front() != digests.back(),
+          "special-math profiles produced the same template config");
+
+  std::vector<std::uint8_t> invalidWireTag = canonicalViews.back();
+  require(invalidWireTag.size() >= 4,
+          "template config omitted the special-math profile wire tag");
+  std::fill(invalidWireTag.end() - 4, invalidWireTag.end(), 0xff);
+  const auto invalidDigest = take(loom::computeComponentViewDigest(
+      loom::dse::resolvedFabricTemplateConfigSchemaBytes(), invalidWireTag));
+  requireError(loom::dse::adoptResolvedFabricTemplateConfigView(
+                   loom::dse::resolvedFabricTemplateConfigSchemaBytes(),
+                   invalidWireTag, invalidDigest)
+                   .takeError(),
+               "special-math capability profile is invalid");
+
+  loom::ResolvedConfig invalid = loom::defaultResolvedConfig();
+  invalid.hardwareTarget.parameters.specialMathCapabilityProfile =
+      static_cast<loom::adg::BuiltinSpecialMathCapabilityProfile>(255);
+  requireError(
+      loom::dse::projectResolvedFabricTemplateConfigView(invalid).takeError(),
+      "template base scale is invalid");
+}
+
 void strictConfigAdmission() {
   requireError(
       loom::dse::resolveSpatialTopologyRewriteConfig({}, 1).takeError(),
@@ -1708,6 +1753,7 @@ int main() {
   strictConfigAdmission();
   staticCapacityHardwareDomain();
   localMemoryPortVariantRoundTrip();
+  specialMathCapabilityProfileRoundTrip();
   Fixture fixture;
   boundedFuReverseSynthesis(fixture);
   auto system = generateBuiltinSystem(fixture);

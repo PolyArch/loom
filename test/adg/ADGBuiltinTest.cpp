@@ -104,7 +104,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 8 && descriptor.schemaMinor == 0,
+    require(test, descriptor.schemaMajor == 8 && descriptor.schemaMinor == 1,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =
@@ -689,7 +689,8 @@ void publicFuLibraryBuildsTypedGraphs() {
           loom::adg::addVectorComputeFu(pe, fourInputs, {128, 128}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addSpecialMathFu(
-          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(2)))
+          pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(2),
+          loom::adg::BuiltinSpecialMathCapabilityProfile::FullCatalog))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = pe.close())
     fail(test, llvm::toString(std::move(error)));
@@ -835,6 +836,165 @@ void publicFuLibraryBuildsTypedGraphs() {
               llvm::StringRef(text).contains("ScalarMathSqrt") &&
               llvm::StringRef(text).contains("ScalarMathPow"),
           "public FU helpers lost generated implementation-family bindings");
+}
+
+void specialMathCapabilityProfilesProjectIntoFabric() {
+  const llvm::StringRef test = __func__;
+  require(test,
+          builtinSpecialMathCapabilityProfileSpelling(
+              BuiltinSpecialMathCapabilityProfile::FullCatalog) ==
+                  "full_catalog" &&
+              builtinSpecialMathCapabilityProfileSpelling(
+                  BuiltinSpecialMathCapabilityProfile::
+                      PortableProviderClosed) ==
+                  "portable_provider_closed" &&
+              parseBuiltinSpecialMathCapabilityProfile("full_catalog") ==
+                  BuiltinSpecialMathCapabilityProfile::FullCatalog &&
+              parseBuiltinSpecialMathCapabilityProfile(
+                  "portable_provider_closed") ==
+                  BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
+          "special-math capability profile codec is not canonical");
+  require(test,
+          !parseBuiltinSpecialMathCapabilityProfile("approximate") &&
+              builtinSpecialMathCapabilityProfileSpelling(
+                  static_cast<BuiltinSpecialMathCapabilityProfile>(255))
+                  .empty(),
+          "special-math capability profile codec accepted an unknown value");
+
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  BuiltinTargetScale fullScale = builtinSmallTarget.scale;
+  fullScale.specialMathCapabilityProfile =
+      BuiltinSpecialMathCapabilityProfile::FullCatalog;
+  BuiltinTargetScale portableScale = fullScale;
+  portableScale.specialMathCapabilityProfile =
+      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed;
+  auto full = take(test, buildBuiltinTarget(store, fullScale));
+  auto portable = take(test, buildBuiltinTarget(store, portableScale));
+  require(test,
+          full.roots().size() == 1 && portable.roots().size() == 1 &&
+              full.roots().front().reference() !=
+                  portable.roots().front().reference(),
+          "distinct special-math profiles did not change Fabric identity");
+  const auto modules = portable.roots().front().view().importedModules();
+  require(test, modules.size() == 1,
+          "portable builtin target has no unique SpatialCore module");
+  const auto &module = modules.front();
+
+  enum class FormatDomain : std::uint8_t { Half, Single, Catalog };
+  struct ExpectedCapability final {
+    ::fabric::ImplementationFamilyId family;
+    FormatDomain formats;
+    SpecialMathAccuracyTier accuracy;
+    mlir::arith::FastMathFlags requiredFastMath;
+    bool seen = false;
+  };
+  std::vector<ExpectedCapability> expected = {
+      {::fabric::ImplementationFamilyId::ScalarMathSin, FormatDomain::Half,
+       SpecialMathAccuracyTier::CorrectlyRounded,
+       mlir::arith::FastMathFlags::none},
+      {::fabric::ImplementationFamilyId::ScalarMathSinh, FormatDomain::Single,
+       SpecialMathAccuracyTier::Max4Ulp, mlir::arith::FastMathFlags::afn},
+      {::fabric::ImplementationFamilyId::ScalarMathExp, FormatDomain::Half,
+       SpecialMathAccuracyTier::Max4Ulp, mlir::arith::FastMathFlags::afn},
+      {::fabric::ImplementationFamilyId::ScalarMathLog, FormatDomain::Single,
+       SpecialMathAccuracyTier::Max4Ulp, mlir::arith::FastMathFlags::afn},
+      {::fabric::ImplementationFamilyId::ScalarMathFloor,
+       FormatDomain::Catalog, SpecialMathAccuracyTier::CorrectlyRounded,
+       mlir::arith::FastMathFlags::none},
+      {::fabric::ImplementationFamilyId::ScalarMathSqrt,
+       FormatDomain::Catalog, SpecialMathAccuracyTier::CorrectlyRounded,
+       mlir::arith::FastMathFlags::none},
+      {::fabric::ImplementationFamilyId::ScalarMathErf, FormatDomain::Half,
+       SpecialMathAccuracyTier::Max4Ulp, mlir::arith::FastMathFlags::afn},
+      {::fabric::ImplementationFamilyId::ScalarMathPow, FormatDomain::Half,
+       SpecialMathAccuracyTier::Max4Ulp, mlir::arith::FastMathFlags::afn},
+  };
+  const auto exactBehavior = [](const ::fabric::FloatBehaviorProfile &behavior,
+                                mlir::arith::FastMathFlags requiredFastMath) {
+    return behavior.roundingModes.size() == 1 &&
+           behavior.roundingModes.contains(
+               mlir::arith::RoundingMode::to_nearest_even) &&
+           behavior.nanBehaviors.size() == 1 &&
+           behavior.nanBehaviors.contains(::fabric::FloatNaNBehavior::IEEE) &&
+           behavior.subnormalBehaviors.size() == 1 &&
+           behavior.subnormalBehaviors.contains(
+               ::fabric::FloatSubnormalBehavior::Preserve) &&
+           behavior.signedZeroBehaviors.size() == 1 &&
+           behavior.signedZeroBehaviors.contains(
+               ::fabric::FloatSignedZeroBehavior::Preserve) &&
+           behavior.requiredFastMath == requiredFastMath;
+  };
+  const auto exactFormats = [](const ::fabric::FloatFormatSet &formats,
+                               FormatDomain domain) {
+    const std::size_t expectedSize =
+        domain == FormatDomain::Half ? 2
+        : domain == FormatDomain::Single ? 3
+                                          : 4;
+    return formats.size() == expectedSize &&
+           formats.contains(::fabric::FloatFormat::F16) &&
+           formats.contains(::fabric::FloatFormat::BF16) &&
+           (domain == FormatDomain::Half ||
+            formats.contains(::fabric::FloatFormat::F32)) &&
+           (domain != FormatDomain::Catalog ||
+            formats.contains(::fabric::FloatFormat::F64));
+  };
+
+  bool signedDivRem = false;
+  bool unsignedDivRem = false;
+  bool floatDivide = false;
+  bool floatRemainder = false;
+  std::vector<::fabric::ImplementationFamilyId> specialMathFamilies;
+  for (std::uint64_t id = 0;; ++id) {
+    const auto kind = module.entityKind(id);
+    if (!kind)
+      break;
+    if (*kind != ::loom::fabric::FabricEntityKind::FabricFuTemplate)
+      continue;
+    for (const auto &capability : module.resolvedFabricOpCapabilities(
+             ::loom::fabric::FabricFuTemplateRef(id))) {
+      signedDivRem |= capability.implementationFamily ==
+                      ::fabric::ImplementationFamilyId::
+                          ScalarSignedIntegerDivRem;
+      unsignedDivRem |= capability.implementationFamily ==
+                        ::fabric::ImplementationFamilyId::
+                            ScalarUnsignedIntegerDivRem;
+      floatDivide |= capability.implementationFamily ==
+                     ::fabric::ImplementationFamilyId::ScalarFloatDivide;
+      floatRemainder |= capability.implementationFamily ==
+                        ::fabric::ImplementationFamilyId::ScalarFloatRemainder;
+      if (std::holds_alternative<::fabric::ScalarSpecialMathParams>(
+              capability.parameterizedCapability) &&
+          !llvm::is_contained(specialMathFamilies,
+                              capability.implementationFamily))
+        specialMathFamilies.push_back(capability.implementationFamily);
+      for (ExpectedCapability &entry : expected) {
+        if (capability.implementationFamily != entry.family)
+          continue;
+        const auto *parameters =
+            std::get_if<::fabric::ScalarSpecialMathParams>(
+                &capability.parameterizedCapability);
+        require(test,
+                parameters && exactFormats(parameters->formats, entry.formats) &&
+                    exactBehavior(parameters->behavior,
+                                  entry.requiredFastMath) &&
+                    parameters->accuracyGuarantee == entry.accuracy,
+                "portable profile projected the wrong representative "
+                "special-math capability");
+        entry.seen = true;
+      }
+    }
+  }
+  require(test,
+          llvm::all_of(expected,
+                       [](const ExpectedCapability &entry) {
+                         return entry.seen;
+                       }),
+          "portable special-math profile omitted a representative category");
+  require(test, specialMathFamilies.size() == 22,
+          "portable special-math profile changed the family inventory");
+  require(test, signedDivRem && unsignedDivRem && floatDivide && floatRemainder,
+          "special-math profile changed divide or remainder inventory");
 }
 
 void vectorStructuralFuUsesTypedRecipeWidths() {
@@ -1399,6 +1559,7 @@ module attributes {
 void runBuiltinTests() {
   builtinPresetsExpandThroughPublicBuilder();
   publicFuLibraryBuildsTypedGraphs();
+  specialMathCapabilityProfilesProjectIntoFabric();
   vectorStructuralFuUsesTypedRecipeWidths();
   resolvedCapabilityPreservesTypedVectorGeometry();
   builtinCoreCapabilitiesCoverTypedDomains();

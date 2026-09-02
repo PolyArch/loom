@@ -2967,7 +2967,8 @@ configuration roots:
 ```text
 FabricTemplateConfig {
   template_descriptor_ref
-  owner_typed_parameters including builtin mesh dimension
+  owner_typed_parameters including builtin mesh dimension,
+      FIFO depth and discipline, and special-math capability profile
 }
 
 SpatialTopologyRewriteConfig {
@@ -3086,10 +3087,30 @@ equal-gain tie breaking, arithmetic, and multi-head fitting algorithm. Changing
 those semantics requires another exact descriptor reference; central DSE does
 not gain a trainer-algorithm enum.
 
+The current Fabric-template configuration descriptor is
+`loom.fabric_template_generator.config.7.2`. It appends the stable typed
+`BuiltinSpecialMathCapabilityProfile` tag to the complete version 8.1 builtin
+scale. `FullCatalog` preserves the version 8.0 elementary-math relation;
+`PortableProviderClosed` selects the target-owned provider-closed relation.
+All current builtin presets select `PortableProviderClosed`. The profile is a
+Fabric authoring fact, not a generator algorithm or an implementation-provider
+selector.
+
+The 7.1 and 7.2 views are not interchangeable. Adoption validates the exact
+descriptor, fixed canonical payload, enum tag, digest, and re-encoding. There
+is no read-time default or compatibility branch. An 8.0 authoring source is
+explicitly re-finalized as template 8.1 with `FullCatalog`, after which the
+7.2 view is re-projected from the new ResolvedConfig. Its generator binding,
+plan-node configuration identity, and lineage are new. The generated Fabric
+and every dependent Mapping, ConfigurationABI, Deployment,
+HardwareImplementation, and EDA provenance record are regenerated against the
+new exact identities.
+
 The template descriptor registry owns each parameter schema and expansion
 function. `FabricTemplateConfig` invokes that exact public ADG Builder path and
-produces a Fabric Artifact. A user Fabric remains an ordinary static plan input
-and does not acquire a synthetic template identity.
+produces a Fabric Artifact. It never inspects a runtime provider registry to
+derive the special-math profile. A user Fabric remains an ordinary static plan
+input and does not acquire a synthetic template identity.
 
 Each decision-domain type below is a descriptor-owned closed union parallel to
 its decision union. One domain member fixes the exact target selector plus a

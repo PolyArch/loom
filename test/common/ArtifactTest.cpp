@@ -638,7 +638,7 @@ void resolvedConfigUsesArtifactFinalization() {
               llvm::StringRef("loom.config.resolved"),
           "ResolvedConfig schema identity changed");
   require(__func__,
-          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 2},
+          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 3},
           "ResolvedConfig schema version changed");
 
   const ResolvedConfig config = defaultResolvedConfig();
@@ -657,6 +657,13 @@ void resolvedConfigUsesArtifactFinalization() {
   require(__func__,
           resolvedConfigIdentity(config) != resolvedConfigIdentity(changed),
           "ResolvedConfig semantic change did not affect identity");
+
+  changed = config;
+  changed.hardwareTarget.parameters.specialMathCapabilityProfile =
+      adg::BuiltinSpecialMathCapabilityProfile::FullCatalog;
+  require(__func__,
+          resolvedConfigIdentity(config) != resolvedConfigIdentity(changed),
+          "special-math capability profile did not affect config identity");
 }
 
 // Opaque component-view fixture bytes. The descriptor is never parsed, so it

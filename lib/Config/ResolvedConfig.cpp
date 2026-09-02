@@ -443,6 +443,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
        "temporal_pe_count", "spatial_fu_occurrences", "temporal_fu_occurrences",
        "spatial_memory_count", "temporal_memory_count",
        "temporal_resident_contexts", "local_memory_port_variant",
+       "special_math_capability_profile",
        "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
        "memory_capacity_bytes", "interconnect_fifo_depth",
        "interconnect_fifo_queue_discipline"});
@@ -483,6 +484,18 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return diagnostic("config_unknown_enum",
                       "hardware_target.parameters.local_memory_port_variant",
                       *memoryPortVariantSpelling);
+  auto specialMathProfileSpelling = requireScalarString(
+      parametersOrErr->at("special_math_capability_profile"),
+      "hardware_target.parameters.special_math_capability_profile");
+  if (!specialMathProfileSpelling)
+    return specialMathProfileSpelling.takeError();
+  auto specialMathProfile = loom::adg::parseBuiltinSpecialMathCapabilityProfile(
+      *specialMathProfileSpelling);
+  if (!specialMathProfile)
+    return diagnostic(
+        "config_unknown_enum",
+        "hardware_target.parameters.special_math_capability_profile",
+        *specialMathProfileSpelling);
   auto crossScheduleBoundaryLanes =
       positiveU32("cross_schedule_boundary_lanes_per_temporal_pe");
   auto gateways = positiveU32("gateway_count");
@@ -539,7 +552,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
       {*accCores, *meshDimension, *spatialMeshLanes, *temporalMeshLanes,
        *spatialPes, *temporalPes, *spatialFuOccurrences, *temporalFuOccurrences,
        *spatialMemories, *temporalMemories, *residentContexts,
-       *interconnectFifoDepth, *fifoDiscipline, *memoryPortVariant,
+       *interconnectFifoDepth, *fifoDiscipline, *specialMathProfile,
+       *memoryPortVariant,
        *crossScheduleBoundaryLanes, *gateways, *memoryCapacity}};
 }
 

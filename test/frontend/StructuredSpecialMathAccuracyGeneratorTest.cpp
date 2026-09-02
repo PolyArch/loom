@@ -383,8 +383,14 @@ void recursiveGeneratorPublishesOnlyCompleteLeaves() {
   if (std::error_code create = llvm::sys::fs::create_directories(blobPath))
     fail("cannot create BlobStore directory: " + create.message());
   const loom::BlobStore blobs(blobPath);
-  auto design = take(loom::adg::buildBuiltinTarget(
-      store, loom::adg::BuiltinTargetPreset::Small));
+  // The recursive enumeration needs a Fabric that admits every accuracy tier
+  // of the fixture's f32 operations. The builtin presets select the narrower
+  // PortableProviderClosed relation, so the fixture selects FullCatalog
+  // explicitly instead of weakening the product profile.
+  loom::adg::BuiltinTargetScale scale = loom::adg::builtinSmallTarget.scale;
+  scale.specialMathCapabilityProfile =
+      loom::adg::BuiltinSpecialMathCapabilityProfile::FullCatalog;
+  auto design = take(loom::adg::buildBuiltinTarget(store, scale));
 
   auto parent = parseProgram();
   auto parentReference =

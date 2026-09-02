@@ -2,6 +2,7 @@
 #define LOOM_ADG_FULIBRARY_H
 
 #include "ADG/Builder.h"
+#include "ADG/SpecialMathCapabilityProfile.h"
 #include "Dataflow/IR/DataflowEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -74,7 +75,8 @@ llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
 
 /// Adds the low-density scalar divide, remainder, and elementary math FU.
 /// Inputs are data0 and data1, in that order.
-llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs);
+llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+                             BuiltinSpecialMathCapabilityProfile profile);
 
 } // namespace loom::adg
 
