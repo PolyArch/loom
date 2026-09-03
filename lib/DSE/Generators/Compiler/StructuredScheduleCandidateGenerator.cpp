@@ -360,8 +360,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           std::optional<frontend::StructuredEntityRef> spatialRegion,
           llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
               provenance)
-      -> llvm::Expected<std::optional<
-          frontend::MaterializedStructuredScheduleCandidate>> {
+      -> llvm::Expected<
+          std::optional<frontend::MaterializedStructuredScheduleCandidate>> {
     const frontend::StructuredScheduleDecision &decision = proposal.decision();
     const bool logical = producesLogicalThreadDomain(decision);
     auto child = frontend::materializeStructuredScheduleProposal(
@@ -402,16 +402,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       if (!rejected)
         return invalid(
             "schedule candidate failed without a classified outcome");
-      return std::optional<
-          frontend::MaterializedStructuredScheduleCandidate>{};
+      return std::optional<frontend::MaterializedStructuredScheduleCandidate>{};
     }
     if (child->structuredProgram.identity() == parent.identity()) {
       if (child->structuredProgram.canonicalBytes().bytes() !=
           parent.canonicalBytes().bytes())
         return invalid("schedule materialization produced an identity "
                        "collision with changed canonical bytes");
-      return std::optional<
-          frontend::MaterializedStructuredScheduleCandidate>{};
+      return std::optional<frontend::MaterializedStructuredScheduleCandidate>{};
     }
     return std::optional<frontend::MaterializedStructuredScheduleCandidate>(
         std::move(*child));
@@ -440,8 +438,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     if (!ownerPayload)
       return ownerPayload.takeError();
     mapping_debug::emit(
-        mapping_debug::Level::Summary,
-        mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "structured_schedule_candidate";
           fields["decision_kind"] =
@@ -454,8 +451,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         });
     lineageEdges.push_back(CandidateGeneratorLineageEdge{
         CandidateGeneratorLineageEdgeKind::CandidateDecision,
-        CandidateGeneratorOutputSlotRef(0), *published,
-        {parentReference, exactFabric->reference()}, std::move(*ownerPayload)});
+        CandidateGeneratorOutputSlotRef(0),
+        *published,
+        {parentReference, exactFabric->reference()},
+        std::move(*ownerPayload)});
     return *published;
   };
   for (const ArtifactRootReference &reference :
@@ -550,8 +549,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       if (!consumeMaterializationAttempt())
         break;
       auto materialized = materializeProposal(
-          reference, *parent, proposal, trackedSpatialRegion,
-          sourceProvenance);
+          reference, *parent, proposal, trackedSpatialRegion, sourceProvenance);
       if (!materialized)
         return materialized.takeError();
       if (!*materialized)
@@ -562,8 +560,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           (*materialized)->structuredProgram.identity()};
       if (seenOutputs.find(childReference) != seenOutputs.end())
         continue;
-      auto published = publishDecision(reference, decision,
-                                       std::move(**materialized));
+      auto published =
+          publishDecision(reference, decision, std::move(**materialized));
       if (!published)
         return published.takeError();
       seenOutputs.insert(*published);
@@ -597,9 +595,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         return std::move(error);
       if (!consumeMaterializationAttempt())
         break;
-      auto materializedPrefix = materializeProposal(
-          reference, *parent, prefixProposal, trackedSpatialRegion,
-          sourceProvenance);
+      auto materializedPrefix =
+          materializeProposal(reference, *parent, prefixProposal,
+                              trackedSpatialRegion, sourceProvenance);
       if (!materializedPrefix)
         return materializedPrefix.takeError();
       if (!*materializedPrefix)
@@ -665,17 +663,17 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             auto prefixClone = cloneMaterializedScheduleCandidate(prefix);
             if (!prefixClone)
               return prefixClone.takeError();
-            auto publishedPrefix = publishDecision(
-                reference, prefixDecision, std::move(*prefixClone));
+            auto publishedPrefix = publishDecision(reference, prefixDecision,
+                                                   std::move(*prefixClone));
             if (!publishedPrefix)
               return publishedPrefix.takeError();
             if (*publishedPrefix != prefixReference)
               return invalid("published tiled prefix changed identity");
             prefixPublished = true;
           }
-          auto publishedTerminal = publishDecision(
-              prefixReference, terminalDecision,
-              std::move(**materializedTerminal));
+          auto publishedTerminal =
+              publishDecision(prefixReference, terminalDecision,
+                              std::move(**materializedTerminal));
           if (!publishedTerminal)
             return publishedTerminal.takeError();
           seenOutputs.insert(*publishedTerminal);

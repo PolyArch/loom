@@ -107,9 +107,9 @@ enum class ExactPointerPointAccessPairKind {
   AliasNotEstablished,
 };
 
-ExactPointerPointAccessPairKind classifyExactPointerPointAccessPair(
-    const ExactPointerPointAccess &lhs,
-    const ExactPointerPointAccess &rhs);
+ExactPointerPointAccessPairKind
+classifyExactPointerPointAccessPair(const ExactPointerPointAccess &lhs,
+                                    const ExactPointerPointAccess &rhs);
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,

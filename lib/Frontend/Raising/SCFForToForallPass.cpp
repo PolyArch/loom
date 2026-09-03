@@ -52,9 +52,9 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <limits>
@@ -118,8 +118,7 @@ std::optional<unsigned> fixedIntegerWidth(::mlir::Type type,
   return std::nullopt;
 }
 
-bool isInjectiveCast(::mlir::Operation *operation,
-                     ::mlir::scf::ForOp loop) {
+bool isInjectiveCast(::mlir::Operation *operation, ::mlir::scf::ForOp loop) {
   if (!operation || operation->getNumOperands() != 1 ||
       operation->getNumResults() != 1)
     return false;
@@ -134,8 +133,8 @@ bool isInjectiveCast(::mlir::Operation *operation,
   if (::mlir::isa<::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
                   ::mlir::LLVM::SExtOp, ::mlir::LLVM::ZExtOp>(operation))
     return *resultWidth >= *sourceWidth;
-  if (::mlir::isa<::mlir::arith::IndexCastOp,
-                  ::mlir::arith::IndexCastUIOp>(operation))
+  if (::mlir::isa<::mlir::arith::IndexCastOp, ::mlir::arith::IndexCastUIOp>(
+          operation))
     return *resultWidth >= *sourceWidth;
   return false;
 }
@@ -715,13 +714,13 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
           if (isVol)
             return ::mlir::WalkResult::interrupt();
           if (::mlir::isa<::mlir::LLVM::LoadOp>(op)) {
-            auto projected =
-                ::loom::lowering::projectExactPointerPointAccess(
-                    op, loop.getOperation(), [&](::mlir::Value coordinate) {
-                      return isSameSignedCoordinate(coordinate, iv, loop);
-                    });
-            auto *access = std::get_if<
-                ::loom::lowering::ExactPointerPointAccess>(&projected);
+            auto projected = ::loom::lowering::projectExactPointerPointAccess(
+                op, loop.getOperation(), [&](::mlir::Value coordinate) {
+                  return isSameSignedCoordinate(coordinate, iv, loop);
+                });
+            auto *access =
+                std::get_if<::loom::lowering::ExactPointerPointAccess>(
+                    &projected);
             if (!access)
               return ::mlir::WalkResult::interrupt();
             exactPointerAccesses.push_back(*access);
@@ -739,13 +738,13 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
           if (isVol)
             return ::mlir::WalkResult::interrupt();
           if (::mlir::isa<::mlir::LLVM::StoreOp>(op)) {
-            auto projected =
-                ::loom::lowering::projectExactPointerPointAccess(
-                    op, loop.getOperation(), [&](::mlir::Value coordinate) {
-                      return isSameSignedCoordinate(coordinate, iv, loop);
-                    });
-            auto *access = std::get_if<
-                ::loom::lowering::ExactPointerPointAccess>(&projected);
+            auto projected = ::loom::lowering::projectExactPointerPointAccess(
+                op, loop.getOperation(), [&](::mlir::Value coordinate) {
+                  return isSameSignedCoordinate(coordinate, iv, loop);
+                });
+            auto *access =
+                std::get_if<::loom::lowering::ExactPointerPointAccess>(
+                    &projected);
             if (!access)
               return ::mlir::WalkResult::interrupt();
             exactPointerAccesses.push_back(*access);
@@ -773,9 +772,8 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
 
   for (std::size_t lhs = 0; lhs != exactPointerAccesses.size(); ++lhs) {
     for (std::size_t rhs = lhs + 1; rhs != exactPointerAccesses.size(); ++rhs) {
-      const auto pair =
-          ::loom::lowering::classifyExactPointerPointAccessPair(
-              exactPointerAccesses[lhs], exactPointerAccesses[rhs]);
+      const auto pair = ::loom::lowering::classifyExactPointerPointAccessPair(
+          exactPointerAccesses[lhs], exactPointerAccesses[rhs]);
       if (pair == ::loom::lowering::ExactPointerPointAccessPairKind::
                       ByteRelationNotEstablished ||
           pair == ::loom::lowering::ExactPointerPointAccessPairKind::
@@ -863,10 +861,8 @@ bool hasLosslessIndexDomain(::mlir::scf::ForOp loop) {
     if (!lower || !upper || !step || *indexWidth == 0)
       return false;
     if (*indexWidth < 64) {
-      const std::int64_t minimum =
-          -(std::int64_t{1} << (*indexWidth - 1));
-      const std::int64_t maximum =
-          (std::int64_t{1} << (*indexWidth - 1)) - 1;
+      const std::int64_t minimum = -(std::int64_t{1} << (*indexWidth - 1));
+      const std::int64_t maximum = (std::int64_t{1} << (*indexWidth - 1)) - 1;
       if (*lower < minimum || *lower > maximum || *upper < minimum ||
           *upper > maximum || *step < minimum || *step > maximum)
         return false;
@@ -934,15 +930,15 @@ bool isExactLinearExpression(::mlir::Value value, ::mlir::Value induction,
   ::mlir::Operation *definition = value.getDefiningOp();
   if (!definition)
     return false;
-  const bool cast = ::mlir::isa<::mlir::arith::IndexCastOp,
-                                ::mlir::arith::ExtSIOp,
-                                ::mlir::LLVM::SExtOp>(definition);
-  const bool arithmetic = ::mlir::isa<
-      ::mlir::arith::AddIOp, ::mlir::arith::SubIOp, ::mlir::arith::MulIOp,
-      ::mlir::arith::ShLIOp, ::mlir::LLVM::AddOp, ::mlir::LLVM::SubOp,
-      ::mlir::LLVM::MulOp, ::mlir::LLVM::ShlOp>(definition);
-  if ((!cast && !arithmetic) ||
-      (cast && !isInjectiveCast(definition, loop)))
+  const bool cast =
+      ::mlir::isa<::mlir::arith::IndexCastOp, ::mlir::arith::ExtSIOp,
+                  ::mlir::LLVM::SExtOp>(definition);
+  const bool arithmetic =
+      ::mlir::isa<::mlir::arith::AddIOp, ::mlir::arith::SubIOp,
+                  ::mlir::arith::MulIOp, ::mlir::arith::ShLIOp,
+                  ::mlir::LLVM::AddOp, ::mlir::LLVM::SubOp, ::mlir::LLVM::MulOp,
+                  ::mlir::LLVM::ShlOp>(definition);
+  if ((!cast && !arithmetic) || (cast && !isInjectiveCast(definition, loop)))
     return false;
   for (::mlir::Value operand : definition->getOperands())
     if (!isExactLinearExpression(operand, induction, loop, domain, visited))
@@ -959,13 +955,12 @@ bool isExactLinearExpression(::mlir::Value value, ::mlir::Value induction,
   return isExactLinearExpression(value, induction, loop, domain, visited);
 }
 
-void collectGuaranteedLowerBounds(
-    ::mlir::Value value, ::mlir::Value induction, ::mlir::scf::ForOp loop,
-    const ConstantLoopDomain &domain,
-    ::llvm::SmallVectorImpl<LinearExpr> &bounds) {
+void collectGuaranteedLowerBounds(::mlir::Value value, ::mlir::Value induction,
+                                  ::mlir::scf::ForOp loop,
+                                  const ConstantLoopDomain &domain,
+                                  ::llvm::SmallVectorImpl<LinearExpr> &bounds) {
   auto expression = linearExpr(value, induction, loop);
-  if (expression &&
-      isExactLinearExpression(value, induction, loop, domain)) {
+  if (expression && isExactLinearExpression(value, induction, loop, domain)) {
     bounds.push_back(*expression);
     return;
   }
@@ -977,13 +972,12 @@ void collectGuaranteedLowerBounds(
   }
 }
 
-void collectGuaranteedUpperBounds(
-    ::mlir::Value value, ::mlir::Value induction, ::mlir::scf::ForOp loop,
-    const ConstantLoopDomain &domain,
-    ::llvm::SmallVectorImpl<LinearExpr> &bounds) {
+void collectGuaranteedUpperBounds(::mlir::Value value, ::mlir::Value induction,
+                                  ::mlir::scf::ForOp loop,
+                                  const ConstantLoopDomain &domain,
+                                  ::llvm::SmallVectorImpl<LinearExpr> &bounds) {
   auto expression = linearExpr(value, induction, loop);
-  if (expression &&
-      isExactLinearExpression(value, induction, loop, domain)) {
+  if (expression && isExactLinearExpression(value, induction, loop, domain)) {
     bounds.push_back(*expression);
     return;
   }
@@ -1008,8 +1002,7 @@ void collectGuaranteedUpperBounds(
   if (!offset || *offset < 0)
     return;
   ::llvm::SmallVector<LinearExpr, 4> operandBounds;
-  collectGuaranteedUpperBounds(operand, induction, loop, domain,
-                               operandBounds);
+  collectGuaranteedUpperBounds(operand, induction, loop, domain, operandBounds);
   auto width = fixedIntegerWidth(value.getType(), loop);
   if (!width)
     return;
@@ -1055,11 +1048,11 @@ bool hasExactPartitionedPointMemoryGeometry(::mlir::scf::ForOp outer,
           return ::mlir::WalkResult::advance();
         auto projected = ::loom::lowering::projectExactPointerPointAccess(
             operation, outer.getOperation(), [&](::mlir::Value coordinate) {
-              return isSameSignedCoordinate(
-                  coordinate, pointLoop.getInductionVar(), outer);
+              return isSameSignedCoordinate(coordinate,
+                                            pointLoop.getInductionVar(), outer);
             });
-        auto *access = std::get_if<
-            ::loom::lowering::ExactPointerPointAccess>(&projected);
+        auto *access =
+            std::get_if<::loom::lowering::ExactPointerPointAccess>(&projected);
         if (!access) {
           rejected = true;
           return ::mlir::WalkResult::interrupt();
@@ -1069,15 +1062,12 @@ bool hasExactPartitionedPointMemoryGeometry(::mlir::scf::ForOp outer,
       });
   if (rejected || walked.wasInterrupted() || accesses.empty() ||
       ::llvm::none_of(accesses,
-                      [](const auto &access) {
-                        return access.writes;
-                      }))
+                      [](const auto &access) { return access.writes; }))
     return false;
   for (std::size_t lhs = 0; lhs != accesses.size(); ++lhs) {
     for (std::size_t rhs = lhs + 1; rhs != accesses.size(); ++rhs) {
-      const auto pair =
-          ::loom::lowering::classifyExactPointerPointAccessPair(
-              accesses[lhs], accesses[rhs]);
+      const auto pair = ::loom::lowering::classifyExactPointerPointAccessPair(
+          accesses[lhs], accesses[rhs]);
       if (pair == ::loom::lowering::ExactPointerPointAccessPairKind::
                       ByteRelationNotEstablished ||
           pair == ::loom::lowering::ExactPointerPointAccessPairKind::
@@ -1100,8 +1090,7 @@ checkPartitionedNestedBodyParallel(::mlir::scf::ForOp outer) {
     return ::mlir::failure();
 
   ::mlir::scf::ForOp pointLoop;
-  for (::mlir::Operation &operation :
-       outer.getBody()->without_terminator()) {
+  for (::mlir::Operation &operation : outer.getBody()->without_terminator()) {
     if (auto nested = ::mlir::dyn_cast<::mlir::scf::ForOp>(&operation)) {
       if (pointLoop)
         return ::mlir::failure();
@@ -1126,8 +1115,8 @@ checkPartitionedNestedBodyParallel(::mlir::scf::ForOp outer) {
                                outer.getInductionVar(), outer, *domain, starts);
   collectGuaranteedUpperBounds(pointLoop.getUpperBound(),
                                outer.getInductionVar(), outer, *domain, ends);
-  auto pointWidth = fixedIntegerWidth(pointLoop.getInductionVar().getType(),
-                                      pointLoop);
+  auto pointWidth =
+      fixedIntegerWidth(pointLoop.getInductionVar().getType(), pointLoop);
   if (!pointWidth)
     return ::mlir::failure();
   for (const LinearExpr &start : starts) {
@@ -1221,9 +1210,8 @@ bool hasIndependentDenseStores(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
     upperBounds.push_back(loop.getUpperBound());
   }
   for (::mlir::Operation *store : stores)
-    if (!::loom::frontend::analysis::
-            hasExactDenseCoordinateStoreProjection(
-                store, coordinates, upperBounds, *indexWidth))
+    if (!::loom::frontend::analysis::hasExactDenseCoordinateStoreProjection(
+            store, coordinates, upperBounds, *indexWidth))
       return false;
   return true;
 }
@@ -1372,8 +1360,7 @@ bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
          loom::raising::ParallelDependenceResult::ProvenIndependent;
 }
 
-ParallelDependenceResult
-proveIndependentIterations(::mlir::scf::ForOp loop) {
+ParallelDependenceResult proveIndependentIterations(::mlir::scf::ForOp loop) {
   if (loop.getInitArgs().empty() == false)
     return ParallelDependenceResult::ProvenDependent;
   if (!hasLosslessIndexDomain(loop))
@@ -1384,8 +1371,8 @@ proveIndependentIterations(::mlir::scf::ForOp loop) {
              : ParallelDependenceResult::ProofNotEstablished;
 }
 
-ParallelDependenceResult proveIndependentIterations(
-    ::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
+ParallelDependenceResult
+proveIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
   if (!isPerfectRectangularNest(nest))
     return ParallelDependenceResult::ProofNotEstablished;
   for (::mlir::scf::ForOp loop : nest)

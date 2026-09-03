@@ -237,8 +237,8 @@ loom::frontend::StructuredProgramCandidate materializeRootRelativeOwnership(
     llvm::StringRef functionName) {
   const loom::frontend::StructuredEntityRef scope =
       llvmFunctionReference(parent, functionName);
-  auto domain = take(loom::frontend::enumerateSpatialOwnershipDecisionDomain(
-      parent, scope));
+  auto domain = take(
+      loom::frontend::enumerateSpatialOwnershipDecisionDomain(parent, scope));
   auto selected = llvm::find_if(
       domain, [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
         return point.rootRelativeIndexWidth() == 64 &&
@@ -895,8 +895,9 @@ module attributes {dlti.dl_spec = #layout} {
   loom::frontend::StructuredScheduleDecision foreignFactor{
       root, loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule,
       3, std::nullopt};
-  auto foreignChild = take(loom::frontend::materializeStructuredScheduleDecision(
-      parent, foreignFactor));
+  auto foreignChild =
+      take(loom::frontend::materializeStructuredScheduleDecision(
+          parent, foreignFactor));
   llvm::Error foreignError = loom::frontend::verifyStructuredScheduleDerivation(
       parent, fabric, foreignFactor, foreignChild.structuredProgram);
   if (!foreignError)
@@ -936,8 +937,8 @@ module {
   }
 }
 )mlir";
-  auto parent = materializeRootRelativeOwnership(parseProgram(source),
-                                                 "kernel");
+  auto parent =
+      materializeRootRelativeOwnership(parseProgram(source), "kernel");
   const loom::frontend::StructuredEntityRef root =
       singleScfRootReference(parent);
   const std::vector<std::uint64_t> factors = {2, 4};
@@ -975,9 +976,8 @@ module {
   });
   if (tiled == domain.proposals.end())
     fail("the raised-pointer SCoP published no factor-two tiled proposal");
-  auto tiledChild = take(
-      loom::frontend::materializeStructuredScheduleProposal(parent, *tiled,
-                                                            fabric));
+  auto tiledChild = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *tiled, fabric));
   if (tiledChild.transformedScheduleRoots.empty())
     fail("the tiled child lost its transformed root projection");
   if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
@@ -985,19 +985,19 @@ module {
     fail("the raised-pointer tiled edge did not replay: " +
          llvm::toString(std::move(error)));
 
-  auto parallelDomain = take(
-      loom::frontend::enumerateStructuredScheduleDecisions(
+  auto parallelDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
           tiledChild.structuredProgram, fabric, 1,
           tiledChild.transformedScheduleRoots.front()));
-  auto parallel = llvm::find_if(
-      parallelDomain.proposals, [](const auto &proposal) {
+  auto parallel =
+      llvm::find_if(parallelDomain.proposals, [](const auto &proposal) {
         return proposal.decision().kind ==
                loom::frontend::StructuredScheduleDecisionKind::Parallelize;
       });
   if (parallel == parallelDomain.proposals.end())
     fail("the tiled child did not independently prove its outer tile loop");
-  auto parallelChild = take(
-      loom::frontend::materializeStructuredScheduleProposal(
+  auto parallelChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
           tiledChild.structuredProgram, *parallel, fabric));
   if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
           tiledChild.structuredProgram, fabric, parallel->decision(),
@@ -1010,8 +1010,9 @@ module {
       [&](mlir::Operation *operation) {
         forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
         if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation))
-          i64GepCount += llvm::hasSingleElement(gep.getDynamicIndices()) &&
-                         gep.getDynamicIndices().front().getType().isInteger(64);
+          i64GepCount +=
+              llvm::hasSingleElement(gep.getDynamicIndices()) &&
+              gep.getDynamicIndices().front().getType().isInteger(64);
       });
   if (forallCount != 1 || i64GepCount != 2)
     fail("tiled parallel materialization lost its i64 pointer coordinates");
@@ -1045,7 +1046,8 @@ module {
 }
 )mlir",
                  loom::frontend::StructuredScopRefusalKind::UnsupportedEffect);
-  requireRefusal(R"mlir(
+  requireRefusal(
+      R"mlir(
 module {
   llvm.func @not_inbounds(%output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
@@ -1061,9 +1063,9 @@ module {
   }
 }
 )mlir",
-                 loom::frontend::StructuredScopRefusalKind::
-                     NonContiguousAccess);
-  requireRefusal(R"mlir(
+      loom::frontend::StructuredScopRefusalKind::NonContiguousAccess);
+  requireRefusal(
+      R"mlir(
 module {
   llvm.func @unknown_alias(%input: !llvm.ptr, %output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
@@ -1081,8 +1083,7 @@ module {
   }
 }
 )mlir",
-                 loom::frontend::StructuredScopRefusalKind::
-                     AliasProofNotEstablished);
+      loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished);
   requireRefusal(R"mlir(
 module {
   llvm.func @overlapping_bytes(%output: !llvm.ptr) {
@@ -1191,9 +1192,8 @@ module {
   });
   if (tiled == domain.proposals.end())
     fail("reduction composition fixture lost its polyhedral prefix");
-  auto tiledChild = take(
-      loom::frontend::materializeStructuredScheduleProposal(parent, *tiled,
-                                                            fabric));
+  auto tiledChild = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *tiled, fabric));
   if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
           parent, fabric, tiled->decision(), tiledChild.structuredProgram))
     fail("reduction composition tile edge did not replay: " +
@@ -1201,19 +1201,19 @@ module {
   if (tiledChild.transformedScheduleRoots.size() != 1)
     fail("reduction composition tile has no unique transformed root");
 
-  auto parallelDomain = take(
-      loom::frontend::enumerateStructuredScheduleDecisions(
+  auto parallelDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
           tiledChild.structuredProgram, fabric, 1,
           tiledChild.transformedScheduleRoots.front()));
-  auto parallel = llvm::find_if(
-      parallelDomain.proposals, [](const auto &proposal) {
+  auto parallel =
+      llvm::find_if(parallelDomain.proposals, [](const auto &proposal) {
         return proposal.decision().kind ==
                loom::frontend::StructuredScheduleDecisionKind::Parallelize;
       });
   if (parallel == parallelDomain.proposals.end())
     fail("reduction composition fixture lost its independent tile proof");
-  auto parallelChild = take(
-      loom::frontend::materializeStructuredScheduleProposal(
+  auto parallelChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
           tiledChild.structuredProgram, *parallel, fabric));
   if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
           tiledChild.structuredProgram, fabric, parallel->decision(),
@@ -1223,26 +1223,25 @@ module {
 
   const loom::frontend::StructuredEntityRef reductionRoot =
       scfRootByReductionState(parallelChild.structuredProgram, true);
-  auto reductionDomain = take(
-      loom::frontend::enumerateStructuredScheduleDecisions(
+  auto reductionDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
           parallelChild.structuredProgram, fabric, 8));
-  auto reduction = llvm::find_if(
-      reductionDomain.proposals, [&](const auto &proposal) {
-        const auto &decision = proposal.decision();
-        return decision.loop == reductionRoot && decision.vector &&
-               decision.kind ==
-                   loom::frontend::StructuredScheduleDecisionKind::Vectorize &&
-               decision.vector->shape == std::vector<std::uint64_t>{2} &&
-               decision.vector->tailPolicy ==
-                   loom::frontend::StructuredVectorTailPolicy::Exact &&
-               decision.vector->reductionSchedule ==
-                   loom::frontend::StructuredReductionSchedule::
-                       IntegerAssociative;
-      });
+  auto reduction = llvm::find_if(reductionDomain.proposals, [&](const auto
+                                                                    &proposal) {
+    const auto &decision = proposal.decision();
+    return decision.loop == reductionRoot && decision.vector &&
+           decision.kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Vectorize &&
+           decision.vector->shape == std::vector<std::uint64_t>{2} &&
+           decision.vector->tailPolicy ==
+               loom::frontend::StructuredVectorTailPolicy::Exact &&
+           decision.vector->reductionSchedule ==
+               loom::frontend::StructuredReductionSchedule::IntegerAssociative;
+  });
   if (reduction == reductionDomain.proposals.end())
     fail("tiled parallel frontier lost its exact reduction coordinate");
-  auto reductionChild = take(
-      loom::frontend::materializeStructuredScheduleProposal(
+  auto reductionChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
           parallelChild.structuredProgram, *reduction, fabric));
   if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
           parallelChild.structuredProgram, fabric, reduction->decision(),

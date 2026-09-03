@@ -683,8 +683,7 @@ ExactPointerPointAccessOutcome projectExactPointerPointAccess(
   auto address = pointer.getDefiningOp<mlir::LLVM::GEPOp>();
   if (!address ||
       !mlir::LLVM::bitEnumContainsAny(
-          address.getNoWrapFlags(),
-          mlir::LLVM::GEPNoWrapFlags::inboundsFlag) ||
+          address.getNoWrapFlags(), mlir::LLVM::GEPNoWrapFlags::inboundsFlag) ||
       address.getRawConstantIndices().size() != 1 ||
       address.getRawConstantIndices().front() !=
           mlir::LLVM::GEPOp::kDynamicIndex ||
@@ -715,9 +714,9 @@ ExactPointerPointAccessOutcome projectExactPointerPointAccess(
                                  resolved->elementAllocByteCount};
 }
 
-ExactPointerPointAccessPairKind classifyExactPointerPointAccessPair(
-    const ExactPointerPointAccess &lhs,
-    const ExactPointerPointAccess &rhs) {
+ExactPointerPointAccessPairKind
+classifyExactPointerPointAccessPair(const ExactPointerPointAccess &lhs,
+                                    const ExactPointerPointAccess &rhs) {
   if (!lhs.writes && !rhs.writes)
     return ExactPointerPointAccessPairKind::NoDependence;
   if (lhs.root == rhs.root)

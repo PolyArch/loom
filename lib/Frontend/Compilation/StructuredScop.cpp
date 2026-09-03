@@ -1051,9 +1051,8 @@ bool valueDefinedInside(mlir::Value value, mlir::Operation *root) {
 }
 
 std::vector<std::pair<std::uint64_t, std::uint64_t>>
-appendScalarDependences(
-    llvm::ArrayRef<mlir::Operation *> statements,
-    StructuredPolyhedralScopView &result) {
+appendScalarDependences(llvm::ArrayRef<mlir::Operation *> statements,
+                        StructuredPolyhedralScopView &result) {
   std::vector<std::pair<std::uint64_t, std::uint64_t>> dependences;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> statementOrdinals;
   for (auto [ordinal, statement] : llvm::enumerate(statements))
@@ -1079,8 +1078,7 @@ appendScalarDependences(
   return dependences;
 }
 
-llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>
-finishPolyhedralScop(
+llvm::Expected<StructuredPolyhedralScopAnalysisOutcome> finishPolyhedralScop(
     const StructuredEntityRef &loopReference,
     StructuredPolyhedralScopView result,
     llvm::ArrayRef<mlir::affine::FlatAffineValueConstraints> statementDomains,
@@ -1104,9 +1102,8 @@ finishPolyhedralScop(
     if (*providerRefusal ==
         detail::PolyhedralScheduleProviderRefusalKind::DomainNotAdmitted)
       refusal = StructuredScopRefusalKind::ProviderDomainNotAdmitted;
-    else if (*providerRefusal ==
-             detail::PolyhedralScheduleProviderRefusalKind::
-                 OperationBudgetExhausted)
+    else if (*providerRefusal == detail::PolyhedralScheduleProviderRefusalKind::
+                                     OperationBudgetExhausted)
       refusal = StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
     return refusePolyhedral(loopReference, refusal,
                             result.dependenceQueryCount);
@@ -1151,8 +1148,7 @@ struct RaisedPointerAccess final {
 };
 
 std::optional<StructuredScopRefusalKind>
-classifyRaisedPointerAccess(mlir::Operation *operation,
-                            mlir::scf::ForOp loop,
+classifyRaisedPointerAccess(mlir::Operation *operation, mlir::scf::ForOp loop,
                             std::uint64_t statementOrdinal,
                             RaisedPointerAccess &result) {
   auto outcome = lowering::projectExactPointerPointAccess(
@@ -1203,8 +1199,8 @@ analyzeRaisedPointerScop(
       loop.getUnsignedCmp())
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
-  auto inductionType = llvm::dyn_cast<mlir::IntegerType>(
-      loop.getInductionVar().getType());
+  auto inductionType =
+      llvm::dyn_cast<mlir::IntegerType>(loop.getInductionVar().getType());
   auto indexWidth = getIndexBitWidth(loop);
   if (!indexWidth)
     return indexWidth.takeError();
@@ -1224,13 +1220,12 @@ analyzeRaisedPointerScop(
   const __int128 tripCount =
       static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
   if (tripCount <= 0 ||
-      tripCount > static_cast<__int128>(
-                      std::numeric_limits<std::uint64_t>::max()))
+      tripCount >
+          static_cast<__int128>(std::numeric_limits<std::uint64_t>::max()))
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
 
-  llvm::SmallVector<mlir::Value, 1> domainValues{
-      loop.getInductionVar()};
+  llvm::SmallVector<mlir::Value, 1> domainValues{loop.getInductionVar()};
   mlir::affine::FlatAffineValueConstraints domain(
       1, 0, 0, llvm::ArrayRef<mlir::Value>(domainValues));
   domain.addBound(mlir::presburger::BoundType::LB, 0, *lower);
@@ -1240,16 +1235,16 @@ analyzeRaisedPointerScop(
   llvm::DenseSet<mlir::Operation *> admittedAddresses;
   for (auto [ordinal, statement] : llvm::enumerate(structure.statements)) {
     if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
-                  mlir::affine::AffineLoadOp,
-                  mlir::affine::AffineStoreOp>(statement.operation))
+                  mlir::affine::AffineLoadOp, mlir::affine::AffineStoreOp>(
+            statement.operation))
       return refusePolyhedral(loopReference,
                               StructuredScopRefusalKind::UnsupportedEffect);
     if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(
             statement.operation))
       continue;
     RaisedPointerAccess access;
-    if (auto refusal = classifyRaisedPointerAccess(
-            statement.operation, loop, ordinal, access))
+    if (auto refusal = classifyRaisedPointerAccess(statement.operation, loop,
+                                                   ordinal, access))
       return refusePolyhedral(loopReference, *refusal);
     admittedAddresses.insert(access.projection.address.getOperation());
     accesses.push_back(std::move(access));
@@ -1302,8 +1297,7 @@ analyzeRaisedPointerScop(
     if (!memoryReference)
       return memoryReference.takeError();
     result.accesses.push_back(
-        {operationReference->second, *memoryReference,
-         access.statementOrdinal,
+        {operationReference->second, *memoryReference, access.statementOrdinal,
          access.projection.writes ? StructuredPolyhedralAccessKind::Write
                                   : StructuredPolyhedralAccessKind::Read,
          access.projection.elementBytes, identityRelation(),
@@ -1320,8 +1314,7 @@ analyzeRaisedPointerScop(
   std::vector<DependenceProof> memoryDependences;
   for (std::size_t lhs = 0; lhs != accesses.size(); ++lhs) {
     for (std::size_t rhs = lhs + 1; rhs != accesses.size(); ++rhs) {
-      if (!accesses[lhs].projection.writes &&
-          !accesses[rhs].projection.writes)
+      if (!accesses[lhs].projection.writes && !accesses[rhs].projection.writes)
         continue;
       if (result.dependenceQueryCount == maximumDependenceQueries)
         return refusePolyhedral(
@@ -1334,31 +1327,30 @@ analyzeRaisedPointerScop(
               accesses[lhs].projection, accesses[rhs].projection);
       if (pair == lowering::ExactPointerPointAccessPairKind::NoDependence)
         continue;
-      if (pair == lowering::ExactPointerPointAccessPairKind::
-                      ByteRelationNotEstablished)
+      if (pair ==
+          lowering::ExactPointerPointAccessPairKind::ByteRelationNotEstablished)
         return refusePolyhedral(
             loopReference,
             StructuredScopRefusalKind::AccessRelationProofNotEstablished,
             result.dependenceQueryCount);
-      if (pair == lowering::ExactPointerPointAccessPairKind::
-                      AliasNotEstablished)
+      if (pair ==
+          lowering::ExactPointerPointAccessPairKind::AliasNotEstablished)
         return refusePolyhedral(
             loopReference, StructuredScopRefusalKind::AliasProofNotEstablished,
             result.dependenceQueryCount);
       DependenceProof dependence;
-      dependence.kind =
-          dependenceKind(accesses[lhs].projection.writes,
-                         accesses[rhs].projection.writes);
+      dependence.kind = dependenceKind(accesses[lhs].projection.writes,
+                                       accesses[rhs].projection.writes);
       dependence.source = accesses[lhs].statementOrdinal;
       dependence.destination = accesses[rhs].statementOrdinal;
       dependence.relation.addEquality({1, -1, 0});
-      auto frozen = freezeRelation(dependence.relation, 1, 1,
-                                   sourceValueReferences);
+      auto frozen =
+          freezeRelation(dependence.relation, 1, 1, sourceValueReferences);
       if (!frozen)
         return frozen.takeError();
-      result.dependences.push_back(
-          {dependence.kind, dependence.source, dependence.destination,
-           std::move(*frozen)});
+      result.dependences.push_back({dependence.kind, dependence.source,
+                                    dependence.destination,
+                                    std::move(*frozen)});
       memoryDependences.push_back(std::move(dependence));
     }
   }
@@ -1367,14 +1359,13 @@ analyzeRaisedPointerScop(
   statementOperations.reserve(structure.statements.size());
   for (const PolyhedralStatementRecord &statement : structure.statements)
     statementOperations.push_back(statement.operation);
-  auto scalarDependences =
-      appendScalarDependences(statementOperations, result);
+  auto scalarDependences = appendScalarDependences(statementOperations, result);
   std::vector<detail::PolyhedralDependenceRelation> providerDependences;
   providerDependences.reserve(memoryDependences.size() +
                               scalarDependences.size());
   for (const DependenceProof &dependence : memoryDependences)
-    providerDependences.push_back({dependence.source, dependence.destination,
-                                   1, 1, &dependence.relation});
+    providerDependences.push_back({dependence.source, dependence.destination, 1,
+                                   1, &dependence.relation});
   for (const auto &[source, destination] : scalarDependences)
     providerDependences.push_back({source, destination, 1, 1, nullptr});
   return finishPolyhedralScop(loopReference, std::move(result),
@@ -1476,8 +1467,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
        sourceStructure.statements) {
     if (!isAccessOperation(statement.operation))
       continue;
-    if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(
-            statement.operation))
+    if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(statement.operation))
       continue;
     if (hasRaisedPointerAccess)
       return refusePolyhedral(loopReference,
@@ -1504,9 +1494,9 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     if (!scfLoop)
       return refusePolyhedral(
           loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
-    return analyzeRaisedPointerScop(
-        loopReference, scfLoop, sourceStructure, operationReferences,
-        sourceValueReferences, tileFactors);
+    return analyzeRaisedPointerScop(loopReference, scfLoop, sourceStructure,
+                                    operationReferences, sourceValueReferences,
+                                    tileFactors);
   }
 
   mlir::IRMapping mapping;
@@ -1744,8 +1734,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     statementOperations.push_back(statement.projected);
     providerDomains.push_back(statement.domain);
   }
-  auto scalarDependences =
-      appendScalarDependences(statementOperations, result);
+  auto scalarDependences = appendScalarDependences(statementOperations, result);
   std::vector<detail::PolyhedralDependenceRelation> providerDependences;
   providerDependences.reserve(memoryDependences.size() +
                               scalarDependences.size());

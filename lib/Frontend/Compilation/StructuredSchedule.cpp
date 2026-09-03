@@ -1598,10 +1598,10 @@ materializeStructuredScheduleImpl(
       polyhedralSource.emplace(
           std::get<StructuredPolyhedralScopView>(std::move(*analysis)));
       if (decision.factor != 0) {
-        auto tiled = llvm::find_if(
-            polyhedralSource->tiledSchedules, [&](const auto &candidate) {
-              return candidate.factor == decision.factor;
-            });
+        auto tiled = llvm::find_if(polyhedralSource->tiledSchedules,
+                                   [&](const auto &candidate) {
+                                     return candidate.factor == decision.factor;
+                                   });
         if (tiled == polyhedralSource->tiledSchedules.end())
           return invalid("polyhedral tile factor has no proven tiled schedule");
         polyhedralSource->schedule = std::move(tiled->schedule);
@@ -1611,8 +1611,9 @@ materializeStructuredScheduleImpl(
     }
     if (exactPolyhedralSource->root != decision.loop)
       return invalid("frozen polyhedral SCoP belongs to another source loop");
-    if (decision.factor == 0 && exactPolyhedralSource->schedule.form ==
-                                    StructuredPolyhedralScheduleForm::SourceOrder)
+    if (decision.factor == 0 &&
+        exactPolyhedralSource->schedule.form ==
+            StructuredPolyhedralScheduleForm::SourceOrder)
       return invalid("polyhedral decision has no transform schedule form");
   }
 
