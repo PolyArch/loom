@@ -6,6 +6,7 @@
 #include "Deployment/HardwareConfigurationImage.h"
 #include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "Evaluation/ArtifactImportCache.h"
+#include "ExternalTool/ExternalFile.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -283,11 +284,12 @@ struct CacheRow final {
   std::uint64_t constructionNanoseconds = 0;
   std::uint64_t minimumRetainedBytes = 0;
   std::uint64_t entryCount = 0;
+  std::uint64_t fingerprintedBytes = 0;
 };
 
 void emitCacheRow(const ExecutionMatrixRowScope &scope, const CacheRow &row) {
   llvm::outs() << "execution-matrix-cache"
-               << " schema=loom.execution_matrix_cache.3";
+               << " schema=loom.execution_matrix_cache.4";
   emitRowScopeKey(llvm::outs(), scope);
   llvm::outs() << " cache=" << row.cache
                << " hit_validation=" << row.hitValidation
@@ -303,7 +305,8 @@ void emitCacheRow(const ExecutionMatrixRowScope &scope, const CacheRow &row) {
                << " revalidated_blob_bytes=" << row.revalidatedBlobBytes
                << " construction_wall_ns=" << row.constructionNanoseconds
                << " minimum_retained_bytes=" << row.minimumRetainedBytes
-               << " entries=" << row.entryCount << '\n';
+               << " entries=" << row.entryCount
+               << " fingerprinted_bytes=" << row.fingerprintedBytes << '\n';
 }
 
 void emitFactsOperationRow(
@@ -872,6 +875,16 @@ CacheRow externalFileFingerprintRow(
   const std::uint64_t misses =
       counterDelta(current.externalFileFingerprintMisses,
                    prior.externalFileFingerprintMisses);
+  constexpr std::uint64_t minimumRetainedBytesPerEntry =
+      sizeof(external_tool::ExternalFileIdentity) +
+      external_tool::ExternalFileFingerprint::byteSize;
+  const std::uint64_t minimumRetainedBytes =
+      current.externalFileFingerprintEntryCount >
+              std::numeric_limits<std::uint64_t>::max() /
+                  minimumRetainedBytesPerEntry
+          ? std::numeric_limits<std::uint64_t>::max()
+          : current.externalFileFingerprintEntryCount *
+                minimumRetainedBytesPerEntry;
   return {"gem5_external_file_fingerprint",
           "observed_file_identity",
           counterDelta(current.externalFileFingerprintRequests,
@@ -889,8 +902,10 @@ CacheRow externalFileFingerprintRow(
           0,
           counterDelta(current.externalFileFingerprintNanoseconds,
                        prior.externalFileFingerprintNanoseconds),
-          current.externalFileFingerprintedBytes,
-          current.externalFileFingerprintEntryCount};
+          minimumRetainedBytes,
+          current.externalFileFingerprintEntryCount,
+          counterDelta(current.externalFileFingerprintedBytes,
+                       prior.externalFileFingerprintedBytes)};
 }
 
 runtime::Gem5SystemFactsOperationStatistics

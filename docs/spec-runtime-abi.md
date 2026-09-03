@@ -1099,15 +1099,16 @@ the FabricModel operational provider neither executes a graph nor manufactures
 simulation evidence.
 
 The payload-free mapped-RTL operational descriptor is `loom.runtime.mapped_rtl`
-version 1.0 with implementation semantic identity
-`loom.hardware.mapped_rtl.verilator.v1`. It binds an RTL
+version 2.0 with implementation semantic identity
+`loom.hardware.mapped_rtl.simulation_transport.v1`. It binds an RTL
 HardwareImplementation to the same portable AXI4-Lite configuration runtime
 ABI through identity, programming, memory, and completion endpoints, reports
 hardware identity, and supports neither trusted immutable identity, atomic
-programming multicast, nor prepared activation replacement. The frozen
-hierarchical Verilator build of [RTL Lowering](spec-rtl-lowering.md) owns
-computation and functional observations; the descriptor only names the runtime
-boundary that `loom-system-run --mapped-rtl` drives.
+programming multicast, nor prepared activation replacement. The mapped-RTL
+Evaluation model separately binds either Verilator or VCS as the typed HDL
+simulator that owns compilation, computation, and functional observations;
+the operational descriptor names only their shared simulation-transport
+boundary driven by `loom-system-run --mapped-rtl`.
 
 The generated loader protocol is mechanical:
 

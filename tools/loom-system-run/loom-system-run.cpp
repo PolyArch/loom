@@ -38,7 +38,6 @@
 #include "Runtime/Gem5RootEventControl.h"
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/Gem5SystemExecution.h"
-#include "Runtime/ResourceTimeTransitionSelection.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"

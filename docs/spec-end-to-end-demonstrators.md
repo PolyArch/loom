@@ -294,10 +294,14 @@ first reports the shared setup (fixture, gem5 readiness, gem5 binding) under
 `cell` and `scope=attempt_pair`, then each attempt under its invocation key.
 Each observer reports `loom.execution_matrix_deployment_operation.3` (one row
 per Deployment construction mode and operation with invocation count, wall,
-self CPU, and child CPU), `loom.execution_matrix_cache.3` (requests, hits,
+self CPU, and child CPU), `loom.execution_matrix_cache.4` (requests, hits,
 misses, construction attempts, unique, uncached, unsupported, and failed
 constructions, revalidation count and revalidated artifact and blob bytes,
-construction wall time, retained bytes, entries), and per facts closure class
+construction wall time, minimum retained bytes, entries, and bytes
+fingerprinted). Fingerprinted bytes measure source bytes read and are not
+retained bytes; an external-file fingerprint entry retains only its path key,
+observed file identity, and digest metadata rather than the source contents.
+Each observer also reports per facts closure class
 `loom.execution_matrix_facts_operation.3` (`derive_facts`,
 `system_inputs_and_deployment_import`, `gem5_binding_import`,
 `entire_fabric_root_import`, `system_mapping_import`, and

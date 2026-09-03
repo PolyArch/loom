@@ -80,8 +80,8 @@ const runtime::RuntimeProviderEndpointKindDescriptor endpointKinds[] = {
 };
 
 const runtime::RuntimeProviderDescriptor descriptor{
-    {"loom.runtime.mapped_rtl", SchemaVersion{1, 0}},
-    "loom.hardware.mapped_rtl.verilator.v1",
+    {"loom.runtime.mapped_rtl", SchemaVersion{2, 0}},
+    "loom.hardware.mapped_rtl.simulation_transport.v1",
     hardware::rtl::portableConfigurationRuntimeAbiIdentity,
     endpointKinds,
     true,
