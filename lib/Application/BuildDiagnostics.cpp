@@ -123,6 +123,12 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
       {"raw_measures", std::move(rawMeasures)},
       {"supporting_evidence", std::move(supportingEvidence)},
       {"verification_evidence", std::move(verificationEvidence)},
+      {"runtime_completion",
+       dse::jointDesignQualityRuntimeCompletionSpelling(
+           provenance.runtimeCompletion)},
+      {"calibrated_model_support",
+       dse::jointDesignCalibratedModelSupportSpelling(
+           provenance.calibratedModelSupport)},
       {"resource_core_cost",
        provenance.resourceCoreCost
            ? llvm::json::Value(*provenance.resourceCoreCost)
@@ -204,6 +210,8 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
 
 using diagnostics_detail::addOptionalRoot;
 using diagnostics_detail::addOptionalUnsigned;
+using diagnostics_detail::applicationPairEvidenceSchemaIdentity;
+using diagnostics_detail::applicationPairEvidenceSchemaVersion;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -900,8 +908,8 @@ void emitApplicationMappingDiagnostics(
         const dse::JointDesignExecutionSummary &summary =
             execution.execution.summary;
         llvm::json::Object payload;
-        payload["schema"] = "loom.application_pair_evidence";
-        payload["version"] = "1.0";
+        payload["schema"] = applicationPairEvidenceSchemaIdentity;
+        payload["version"] = applicationPairEvidenceSchemaVersion;
         payload["domain"] = "application_mapping_join";
         if (execution.provenance.pairDecision)
           payload["pair_decision"] =
@@ -1390,6 +1398,30 @@ void emitApplicationMappingDiagnostics(
         }
         payload["hardware_promotion_observations"] =
             std::move(hardwarePromotionObservations);
+        llvm::json::Array jointDesignAttempts;
+        for (const dse::JointDesignAttemptRecord &attempt : summary.attempts) {
+          llvm::json::Array mappings;
+          for (const ArtifactRootReference &mapping : attempt.systemMappings)
+            mappings.push_back(encodeRoot(mapping));
+          llvm::json::Object entry{
+              {"plan_ordinal", attempt.planOrdinal},
+              {"system", encodeRoot(attempt.system)},
+              {"disposition", spelling(attempt.disposition)},
+              {"system_mappings", std::move(mappings)}};
+          if (attempt.incompleteNodeOrdinal)
+            entry["incomplete_node_ordinal"] = *attempt.incompleteNodeOrdinal;
+          else
+            entry["incomplete_node_ordinal"] = nullptr;
+          if (attempt.incompleteReason)
+            entry["incomplete_reason"] =
+                dse::toString(*attempt.incompleteReason);
+          else
+            entry["incomplete_reason"] = nullptr;
+          addOptionalRoot(entry, "hardware_promotion_parent_system",
+                          attempt.hardwarePromotionParentSystem);
+          jointDesignAttempts.push_back(std::move(entry));
+        }
+        payload["joint_design_attempts"] = std::move(jointDesignAttempts);
         std::uint64_t completeQualityObservations = 0;
         std::uint64_t incompleteQualityObservations = 0;
         for (const dse::JointDesignQualityObservation &observation :

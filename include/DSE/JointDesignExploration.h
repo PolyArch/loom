@@ -115,6 +115,30 @@ JointDesignQualityDisposition jointDesignQualityDisposition(
 llvm::StringRef jointDesignQualityIncompleteReasonSpelling(
     JointDesignQualityIncompleteReason reason);
 
+/// Runtime completion is an acquisition-owner fact, independent of whether a
+/// later quality stage can publish a complete objective. In particular, an
+/// FPA refusal must not erase an already completed Application replay.
+enum class JointDesignQualityRuntimeCompletion : std::uint8_t {
+  NotEstablished,
+  Completed,
+};
+
+llvm::StringRef jointDesignQualityRuntimeCompletionSpelling(
+    JointDesignQualityRuntimeCompletion completion);
+
+/// Support of the calibrated model evaluated by the acquisition owner. This
+/// is distinct from analytic Mapping support and from the quality outcome: an
+/// out-of-domain model produces typed incomplete quality after runtime may
+/// already have completed.
+enum class JointDesignCalibratedModelSupport : std::uint8_t {
+  NotEvaluated,
+  InDomain,
+  OutOfDomain,
+};
+
+llvm::StringRef jointDesignCalibratedModelSupportSpelling(
+    JointDesignCalibratedModelSupport support);
+
 /// Exact reusable facts returned by a quality acquisition before Objective
 /// quantization. Supporting Evidence establishes the measures; verification
 /// Evidence independently checks the candidate and may be a typed subset.
@@ -129,14 +153,20 @@ struct JointDesignQualityProvenance final {
           spatialOperandQueueFeedback = {},
       std::optional<SpatialTransportRuntimeFeedback>
           spatialTransportFeedback = {},
-      std::optional<std::uint64_t> resourceCoreCost = {})
+      std::optional<std::uint64_t> resourceCoreCost = {},
+      JointDesignQualityRuntimeCompletion runtimeCompletion =
+          JointDesignQualityRuntimeCompletion::NotEstablished,
+      JointDesignCalibratedModelSupport calibratedModelSupport =
+          JointDesignCalibratedModelSupport::NotEvaluated)
       : rawMeasures(std::move(rawMeasures)),
         supportingEvidence(std::move(supportingEvidence)),
         verificationEvidence(std::move(verificationEvidence)),
         spatialFifoFeedback(std::move(spatialFifoFeedback)),
         spatialOperandQueueFeedback(std::move(spatialOperandQueueFeedback)),
         spatialTransportFeedback(std::move(spatialTransportFeedback)),
-        resourceCoreCost(resourceCoreCost) {}
+        resourceCoreCost(resourceCoreCost),
+        runtimeCompletion(runtimeCompletion),
+        calibratedModelSupport(calibratedModelSupport) {}
 
   /// Exact pre-quantization measures returned by the acquisition owner. An
   /// empty vector means that the policy did not publish reusable measures;
@@ -154,6 +184,10 @@ struct JointDesignQualityProvenance final {
   /// It remains available when runtime or FPA acquisition is incomplete and
   /// therefore cannot publish a complete raw Objective vector.
   std::optional<std::uint64_t> resourceCoreCost;
+  JointDesignQualityRuntimeCompletion runtimeCompletion =
+      JointDesignQualityRuntimeCompletion::NotEstablished;
+  JointDesignCalibratedModelSupport calibratedModelSupport =
+      JointDesignCalibratedModelSupport::NotEvaluated;
 
   friend bool operator==(const JointDesignQualityProvenance &lhs,
                          const JointDesignQualityProvenance &rhs) {
@@ -164,7 +198,9 @@ struct JointDesignQualityProvenance final {
            lhs.spatialOperandQueueFeedback ==
                rhs.spatialOperandQueueFeedback &&
            lhs.spatialTransportFeedback == rhs.spatialTransportFeedback &&
-           lhs.resourceCoreCost == rhs.resourceCoreCost;
+           lhs.resourceCoreCost == rhs.resourceCoreCost &&
+           lhs.runtimeCompletion == rhs.runtimeCompletion &&
+           lhs.calibratedModelSupport == rhs.calibratedModelSupport;
   }
   friend bool operator!=(const JointDesignQualityProvenance &lhs,
                          const JointDesignQualityProvenance &rhs) {
@@ -207,6 +243,10 @@ struct JointDesignAttemptRecord final {
   std::optional<std::uint64_t> incompleteNodeOrdinal;
   std::optional<DsePlanIncompleteReason> incompleteReason;
   std::vector<ArtifactRootReference> systemMappings;
+  /// Exact pre-Mapping parent whose bounded promotion caused this hardware
+  /// attempt. Base Mapping attempts leave it absent; the attempt's System and
+  /// Mapping roots remain the actual child outcome.
+  std::optional<ArtifactRootReference> hardwarePromotionParentSystem;
 };
 
 /// The bounded analytic observations for retained pairs. These observations

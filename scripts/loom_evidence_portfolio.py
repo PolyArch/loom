@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+from fractions import Fraction
+from pathlib import Path
 from typing import Any
 
 
@@ -62,11 +64,85 @@ PRE_ADMISSION_CONTRACT = "pre_mapping_owner_verified_v1"
 # closes a join.
 MANIFEST_JOIN_COMPLETE = "owner_scoped_planning_closure"
 MANIFEST_JOIN_PRE_ADMISSION = "owner_verified_pre_admission"
-PAIR_DECISION_SCHEMA = "loom.application_pair_decision"
-PAIR_DECISION_VERSION = "1.0"
-PAIR_EVIDENCE_SCHEMA = "loom.application_pair_evidence"
-PAIR_DISPOSITION_SCHEMA = "loom.application_pair_disposition"
-PAIR_EVIDENCE_VERSION = "1.0"
+
+_ROOT = Path(__file__).resolve().parents[1]
+_PAIR_DIAGNOSTIC_OWNER = (
+    _ROOT / "lib/Application/BuildDiagnosticsInternal.h"
+).read_text(encoding="utf-8")
+
+
+def _owned_projection_literal(name: str) -> str:
+    value = re.search(
+        rf"\b{re.escape(name)}\s*=\s*\"([^\"]+)\"",
+        _PAIR_DIAGNOSTIC_OWNER,
+    )
+    if value is None:
+        raise RuntimeError("application pair diagnostic ABI owner is malformed")
+    return value.group(1)
+
+
+def _owned_artifact_schema(relative_path: str, name: str) -> tuple[str, str]:
+    source = (_ROOT / relative_path).read_text(encoding="utf-8")
+    anchor = source.find(f'"{name}"')
+    if anchor < 0:
+        raise RuntimeError(f"artifact schema owner does not define {name}")
+    version = re.search(r"\{\s*(\d+)\s*,\s*(\d+)\s*\}", source[anchor:])
+    if version is None:
+        raise RuntimeError(f"artifact schema owner has no version for {name}")
+    return name, f"{version.group(1)}.{version.group(2)}"
+
+
+def _owned_fpa_quantum_exponents() -> tuple[int, int, int, int]:
+    source = (_ROOT / "lib/Modeling/AnalyticModelSupport.cpp").read_text(
+        encoding="utf-8"
+    )
+    owner = re.search(
+        r"lowConfidenceMetricQuantumBase10Exponent\(MetricKind metric\)\s*\{",
+        source,
+    )
+    if owner is None:
+        raise RuntimeError("FPA objective quantum owner is unavailable")
+    body = source[owner.end() :]
+    result: list[int] = []
+    for metric in (
+        "LimitingClockFrequency",
+        "TotalArea",
+        "DynamicPower",
+        "LeakagePower",
+    ):
+        value = re.search(
+            rf"case MetricKind::{metric}:\s*"
+            r"(?:case MetricKind::[A-Za-z]+:\s*)*return\s+(-?\d+)\s*;",
+            body,
+        )
+        if value is None:
+            raise RuntimeError("FPA objective quantum owner is malformed")
+        result.append(int(value.group(1)))
+    return result[0], result[1], result[2], result[3]
+
+
+PAIR_DECISION_SCHEMA = _owned_projection_literal(
+    "applicationPairDecisionSchemaIdentity"
+)
+PAIR_DECISION_VERSION = _owned_projection_literal(
+    "applicationPairDecisionSchemaVersion"
+)
+PAIR_EVIDENCE_SCHEMA = _owned_projection_literal(
+    "applicationPairEvidenceSchemaIdentity"
+)
+PAIR_EVIDENCE_VERSION = _owned_projection_literal(
+    "applicationPairEvidenceSchemaVersion"
+)
+PAIR_DISPOSITION_SCHEMA = _owned_projection_literal(
+    "applicationPairDispositionSchemaIdentity"
+)
+PAIR_DISPOSITION_VERSION = _owned_projection_literal(
+    "applicationPairDispositionSchemaVersion"
+)
+EVALUATION_EVIDENCE_SCHEMA = _owned_artifact_schema(
+    "lib/Evaluation/Evidence.cpp", "evaluation.evidence"
+)
+FPA_OBJECTIVE_QUANTUM_EXPONENTS = _owned_fpa_quantum_exponents()
 
 
 def _integer(value: Any) -> int | None:
@@ -94,6 +170,30 @@ def _artifact_root(value: Any) -> bool:
         return False
     schema = encoded[4 : 4 + schema_length]
     return all(0x21 <= byte <= 0x7E for byte in schema)
+
+
+def _decode_artifact_root(value: Any) -> dict[str, str] | None:
+    if not _artifact_root(value):
+        return None
+    encoded = bytes.fromhex(value)
+    schema_length = int.from_bytes(encoded[:4], "big")
+    schema_end = 4 + schema_length
+    major = int.from_bytes(encoded[schema_end : schema_end + 4], "big")
+    minor = int.from_bytes(encoded[schema_end + 4 : schema_end + 8], "big")
+    return {
+        "schema": encoded[4:schema_end].decode("ascii"),
+        "schema_version": f"{major}.{minor}",
+        "artifact": encoded[schema_end + 8 :].hex(),
+    }
+
+
+def _artifact_root_has_schema(value: Any, schema: str, version: str) -> bool:
+    decoded = _decode_artifact_root(value)
+    return (
+        decoded is not None
+        and decoded["schema"] == schema
+        and decoded["schema_version"] == version
+    )
 
 
 def _artifact_root_list(value: Any) -> bool:
@@ -146,6 +246,505 @@ def _funnel_exact_comparison(decision: dict[str, Any]) -> dict[str, Any] | None:
             return None
         result[field] = _integer(value) if value is not None else None
     return result
+
+
+def _objective_integer(value: Any) -> int | None:
+    if (
+        not isinstance(value, dict)
+        or value.get("kind") != "integer"
+        or value.get("negative") is not False
+    ):
+        return None
+    magnitude = _integer(value.get("magnitude"))
+    return magnitude if magnitude is not None and magnitude >= 0 else None
+
+
+def _objective_decimal(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, dict) or value.get("kind") != "decimal":
+        return None
+    coefficient = _integer(value.get("coefficient"))
+    exponent = _integer(value.get("base10_exponent"))
+    if coefficient is None or exponent is None:
+        return None
+    return coefficient, exponent
+
+
+_U64_MAX = (1 << 64) - 1
+
+
+def _decimal_quantization_index(value: Any, quantum_exponent: int) -> int | None:
+    decimal = _objective_decimal(value)
+    if decimal is None:
+        return None
+    coefficient, exponent = decimal
+    if coefficient < 0:
+        return None
+    if coefficient == 0:
+        return 0
+    shift = exponent - quantum_exponent
+    if shift >= 0:
+        if shift > 19:
+            return None
+        index = coefficient * (10**shift)
+    else:
+        divisor_digits = -shift
+        if divisor_digits > len(str(coefficient)):
+            return 0
+        index = coefficient // (10**divisor_digits)
+    return index if index <= _U64_MAX else None
+
+
+def _fpa_objective_codes(raw_measures: Any) -> list[int] | None:
+    if not isinstance(raw_measures, list) or len(raw_measures) != 4:
+        return None
+    indices = [
+        _decimal_quantization_index(measure, exponent)
+        for measure, exponent in zip(
+            raw_measures, FPA_OBJECTIVE_QUANTUM_EXPONENTS, strict=True
+        )
+    ]
+    if any(index is None for index in indices):
+        return None
+    frequency, area, dynamic, leakage = indices
+    return [_U64_MAX - frequency, area, dynamic, leakage]
+
+
+def _application_quality_objective_codes(raw_measures: Any) -> list[int] | None:
+    if not isinstance(raw_measures, list) or len(raw_measures) != 7:
+        return None
+    runtime = [_objective_integer(value) for value in raw_measures[:3]]
+    physical = _fpa_objective_codes(raw_measures[3:])
+    if any(value is None for value in runtime) or physical is None:
+        return None
+    return [runtime[0], runtime[1], runtime[2], *physical]
+
+
+def _decimal_fraction(value: Any) -> Fraction | None:
+    decimal = _objective_decimal(value)
+    if decimal is None:
+        return None
+    coefficient, exponent = decimal
+    if coefficient < 0 or exponent < -100 or exponent > 100:
+        return None
+    if exponent >= 0:
+        return Fraction(coefficient * (10**exponent), 1)
+    return Fraction(coefficient, 10 ** (-exponent))
+
+
+def _round_nonnegative(value: Fraction) -> int | None:
+    if value < 0:
+        return None
+    rounded = (2 * value.numerator + value.denominator) // (
+        2 * value.denominator
+    )
+    return rounded if rounded <= _U64_MAX else None
+
+
+def _calibrated_selected_physical_objective(
+    raw_measures: Any, cgra_cycles: int | None
+) -> dict[str, int] | None:
+    if not isinstance(raw_measures, list) or len(raw_measures) != 7:
+        return None
+    frequency, area, dynamic, leakage = [
+        _decimal_fraction(value) for value in raw_measures[3:]
+    ]
+    if (
+        frequency is None
+        or frequency <= 0
+        or area is None
+        or dynamic is None
+        or leakage is None
+        or cgra_cycles is None
+        or cgra_cycles <= 0
+    ):
+        return None
+    power = dynamic + leakage
+    scaled_area = _round_nonnegative(area * 10**12)
+    scaled_power = _round_nonnegative(power * 10**6)
+    scaled_energy = _round_nonnegative(
+        power * cgra_cycles * 10**12 / frequency
+    )
+    if scaled_area is None or scaled_power is None or scaled_energy is None:
+        return None
+    return {"area": scaled_area, "power": scaled_power, "energy": scaled_energy}
+
+
+FPA_OBJECTIVE_DIMENSIONS = (
+    "limiting_clock_frequency",
+    "total_area",
+    "dynamic_power",
+    "leakage_power",
+)
+
+
+def validate_hardware_promotion_witnesses(
+    evidence: dict[str, Any], decision: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    observations = decision.get("hardware_promotion_observations")
+    if not isinstance(observations, list) or not observations:
+        return [], []
+    reasons: list[str] = []
+    if evidence.get("stopping_policy") != "bounded_quality":
+        reasons.append("hardware_promotion_stopping_policy_invalid")
+    if decision.get("hardware_promotion_objective_dimension_labels") != list(
+        FPA_OBJECTIVE_DIMENSIONS
+    ):
+        reasons.append("hardware_promotion_dimensions_invalid")
+    if evidence.get("hardware_promotion_observations") != observations:
+        reasons.append("hardware_promotion_envelope_mismatch")
+    promotions = _integer(evidence.get("hardware_parent_promotions"))
+    if promotions is None or promotions <= 0:
+        reasons.append("hardware_promotion_count_missing")
+
+    promoted = [
+        observation
+        for observation in observations
+        if isinstance(observation, dict)
+        and observation.get("promoted_to_exact_mapping") is True
+    ]
+    if promotions is not None and len(promoted) != promotions:
+        reasons.append("hardware_promotion_count_mismatch")
+    promotion_keys = [
+        (observation.get("plan_ordinal"), observation.get("system"))
+        for observation in promoted
+    ]
+    if any(
+        key in promotion_keys[:ordinal]
+        for ordinal, key in enumerate(promotion_keys)
+    ):
+        reasons.append("hardware_promotion_duplicate_parent")
+
+    selected_system = decision.get("selected_system")
+    selected_mapping = decision.get("selected_system_mapping")
+    selected_plan = _integer(evidence.get("selected_plan_ordinal"))
+    selected_hint = decision.get("selected_schedule_hint_digest")
+    candidates = decision.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+        reasons.append("hardware_promotion_candidate_inventory_invalid")
+    selected_mapping_observations = [
+        mapping
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("selected") is True
+        for mapping in (
+            candidate.get("mapping_observations")
+            if isinstance(candidate.get("mapping_observations"), list)
+            else []
+        )
+        if isinstance(mapping, dict)
+        and mapping.get("plan_ordinal") == selected_plan
+        and mapping.get("schedule_hint_digest") == selected_hint
+        and mapping.get("system") == selected_system
+        and mapping.get("mapping_disposition") == "verified"
+        and isinstance(mapping.get("system_mappings"), list)
+        and selected_mapping in mapping["system_mappings"]
+    ]
+    if (
+        not _artifact_root(selected_system)
+        or not _artifact_root(selected_mapping)
+        or not _digest(selected_hint)
+        or len(selected_mapping_observations) != 1
+    ):
+        reasons.append("hardware_promotion_selected_mapping_join_invalid")
+
+    quality_observations = decision.get("quality_observations")
+    selected_quality_observations = (
+        [
+            observation
+            for observation in quality_observations
+            if isinstance(observation, dict)
+            and observation.get("system_mapping") == selected_mapping
+            and observation.get("incomplete_reason") is None
+        ]
+        if isinstance(quality_observations, list)
+        else []
+    )
+    reproduced_physical: dict[str, int] | None = None
+    if (
+        len(selected_quality_observations) != 1
+        or len(selected_mapping_observations) != 1
+    ):
+        reasons.append("hardware_promotion_selected_quality_join_invalid")
+    else:
+        selected_quality = selected_quality_observations[0]
+        selected_provenance = selected_quality.get("provenance")
+        selected_raw = (
+            selected_provenance.get("raw_measures")
+            if isinstance(selected_provenance, dict)
+            else None
+        )
+        mapping_observation = selected_mapping_observations[0]
+        runtime_measures = (
+            [_objective_integer(value) for value in selected_raw[:3]]
+            if isinstance(selected_raw, list) and len(selected_raw) == 7
+            else []
+        )
+        mapping_runtime_measures = [
+            _integer(mapping_observation.get("dfg_cycles")),
+            _integer(mapping_observation.get("cgra_cycles")),
+            _integer(mapping_observation.get("resource_core_cost")),
+        ]
+        selected_quality_complete = (
+            isinstance(selected_provenance, dict)
+            and selected_provenance.get("runtime_completion") == "completed"
+            and selected_provenance.get("calibrated_model_support") == "in_domain"
+            and all(
+                value is not None and value > 0
+                for value in mapping_runtime_measures
+            )
+            and runtime_measures == mapping_runtime_measures
+            and selected_quality.get("objective_codes")
+            == _application_quality_objective_codes(selected_raw)
+            and _artifact_root_has_schema(
+                selected_quality.get("evidence"), *EVALUATION_EVIDENCE_SCHEMA
+            )
+        )
+        if selected_quality_complete:
+            reproduced_physical = _calibrated_selected_physical_objective(
+                selected_raw, mapping_runtime_measures[1]
+            )
+        if reproduced_physical is None:
+            reasons.append("hardware_promotion_selected_quality_invalid")
+
+    selected_objective_items = decision.get("selected_objective")
+    if not isinstance(selected_objective_items, list):
+        selected_objective_items = []
+        reasons.append("hardware_promotion_selected_objective_invalid")
+    selected_objective_complete = reproduced_physical is not None
+    for dimension in ("area", "power", "energy"):
+        matching_items = [
+            item
+            for item in selected_objective_items
+            if isinstance(item, dict) and item.get("dimension") == dimension
+        ]
+        item = matching_items[0] if len(matching_items) == 1 else None
+        if (
+            not isinstance(item, dict)
+            or _integer(item.get("value")) is None
+            or item["value"] <= 0
+            or reproduced_physical is None
+            or item["value"] != reproduced_physical.get(dimension)
+            or item.get("evidence") != "calibrated"
+            or item.get("out_of_distribution") is not False
+        ):
+            reasons.append("hardware_promotion_selected_" + dimension + "_invalid")
+            selected_objective_complete = False
+
+    attempts = evidence.get("joint_design_attempts")
+    if not isinstance(attempts, list):
+        attempts = []
+        reasons.append("hardware_promotion_attempt_inventory_invalid")
+
+    witnesses: list[dict[str, Any]] = []
+    for observation in promoted:
+        provenance = observation.get("provenance")
+        raw = provenance.get("raw_measures") if isinstance(provenance, dict) else None
+        measures = (
+            [_objective_decimal(value) for value in raw]
+            if isinstance(raw, list) and len(raw) == len(FPA_OBJECTIVE_DIMENSIONS)
+            else []
+        )
+        reproduced_codes = _fpa_objective_codes(raw)
+        complete = (
+            _integer(observation.get("plan_ordinal")) is not None
+            and _artifact_root(observation.get("system"))
+            and observation.get("incomplete_reason") is None
+            and _artifact_root_has_schema(
+                observation.get("evidence"), *EVALUATION_EVIDENCE_SCHEMA
+            )
+            and isinstance(observation.get("objective_codes"), list)
+            and len(observation["objective_codes"])
+            == len(FPA_OBJECTIVE_DIMENSIONS)
+            and all(
+                _integer(code) is not None and code >= 0
+                for code in observation["objective_codes"]
+            )
+            and observation["objective_codes"] == reproduced_codes
+            and len(measures) == len(FPA_OBJECTIVE_DIMENSIONS)
+            and all(measure is not None for measure in measures)
+            and measures[0][0] > 0
+            and measures[1][0] > 0
+            and provenance.get("runtime_completion") == "not_established"
+            and provenance.get("calibrated_model_support") == "in_domain"
+        )
+        if not complete:
+            reasons.append("hardware_promotion_observation_invalid")
+            continue
+        selected_lineage = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, dict)
+            and attempt.get("plan_ordinal") == selected_plan
+            and attempt.get("plan_ordinal") == observation.get("plan_ordinal")
+            and attempt.get("hardware_promotion_parent_system")
+            == observation.get("system")
+            and attempt.get("system") == selected_system
+            and attempt.get("system") != observation.get("system")
+            and attempt.get("disposition") == "verified"
+            and isinstance(attempt.get("system_mappings"), list)
+            and selected_mapping in attempt["system_mappings"]
+        ]
+        if (
+            len(selected_lineage) != 1
+            or len(selected_mapping_observations) != 1
+            or not selected_objective_complete
+        ):
+            continue
+        witnesses.append(
+            {
+                "plan_ordinal": observation["plan_ordinal"],
+                "parent_system": observation["system"],
+                "selected_system": selected_system,
+                "selected_mapping": selected_mapping,
+                "evidence": observation["evidence"],
+                "objective_codes": observation["objective_codes"],
+            }
+        )
+    if len(witnesses) != 1:
+        reasons.append("hardware_promotion_not_observed")
+    return witnesses, list(dict.fromkeys(reasons))
+
+
+def _weighted_ood_observations(
+    decision: dict[str, Any], comparison: dict[str, Any] | None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Validate exact runtime comparisons for FPA out-of-domain candidates."""
+    if comparison is None:
+        return [], []
+    candidates = decision.get("candidates")
+    quality = decision.get("quality_observations")
+    if not isinstance(candidates, list) or not isinstance(quality, list):
+        return [], ["weighted_ood_inventory_invalid"]
+
+    observed_ood = 0
+    witnesses: list[dict[str, Any]] = []
+    invalid = False
+    clock = _integer(comparison.get("analytic_clock_period_picoseconds"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        observations = candidate.get("mapping_observations")
+        if not isinstance(observations, list):
+            continue
+        for observation in observations:
+            if (
+                not isinstance(observation, dict)
+                or observation.get("physical_model_support") != "out_of_domain"
+            ):
+                continue
+            observed_ood += 1
+            system_mappings = observation.get("system_mappings")
+            matching_quality = [
+                item
+                for item in quality
+                if isinstance(item, dict)
+                and isinstance(system_mappings, list)
+                and item.get("system_mapping") in system_mappings
+                and item.get("incomplete_reason") == "unsupported"
+            ]
+            provenance = (
+                matching_quality[0].get("provenance")
+                if len(matching_quality) == 1
+                else None
+            )
+            raw = (
+                provenance.get("raw_measures")
+                if isinstance(provenance, dict)
+                else None
+            )
+            runtime_measures = (
+                [_objective_integer(value) for value in raw[:3]]
+                if isinstance(raw, list) and len(raw) == 3
+                else []
+            )
+            dfg = _integer(observation.get("dfg_cycles"))
+            cgra = _integer(observation.get("cgra_cycles"))
+            cores = _integer(observation.get("resource_core_cost"))
+            predicted = _integer(observation.get("predicted_makespan_picoseconds"))
+            measured = _integer(observation.get("measured_makespan_picoseconds"))
+            error = _integer(observation.get("prediction_error_ppm"))
+            exact_measured = (
+                cgra * clock if cgra is not None and clock is not None else None
+            )
+            exact_error = (
+                abs(predicted - measured) * 1_000_000 // measured
+                if predicted is not None and measured is not None and measured > 0
+                else None
+            )
+            complete = (
+                _digest(candidate.get("candidate_identity"))
+                and observation.get("mapping_disposition") == "verified"
+                and observation.get("runtime_disposition") == "completed"
+                and _artifact_root(observation.get("system"))
+                and _digest(observation.get("schedule_hint_digest"))
+                and _artifact_root_list(system_mappings)
+                and _artifact_root_list(observation.get("runtime_evidence"))
+                and _artifact_root_list(observation.get("oracle_evidence"))
+                and dfg is not None
+                and dfg > 0
+                and cgra is not None
+                and cgra > 0
+                and cores is not None
+                and cores > 0
+                and runtime_measures == [dfg, cgra, cores]
+                and provenance.get("runtime_completion") == "completed"
+                and provenance.get("calibrated_model_support")
+                == "out_of_domain"
+                and clock is not None
+                and clock > 0
+                and predicted is not None
+                and predicted > 0
+                and observation.get("predicted_support")
+                in {"exact", "analytic", "calibrated", "out_of_domain"}
+                and measured == exact_measured
+                and error == exact_error
+                and _artifact_root_has_schema(
+                    matching_quality[0].get("evidence"),
+                    *EVALUATION_EVIDENCE_SCHEMA,
+                )
+            )
+            if not complete:
+                invalid = True
+                continue
+            witnesses.append(
+                {
+                    "candidate_identity": candidate.get("candidate_identity"),
+                    "system": observation["system"],
+                    "system_mappings": system_mappings,
+                    "schedule_hint_digest": observation["schedule_hint_digest"],
+                    "predicted_makespan_picoseconds": predicted,
+                    "measured_makespan_picoseconds": measured,
+                    "prediction_error_ppm": error,
+                    "fpa_evidence": matching_quality[0]["evidence"],
+                    "runtime_evidence": observation["runtime_evidence"],
+                    "oracle_evidence": observation["oracle_evidence"],
+                }
+            )
+    reasons: list[str] = []
+    if observed_ood != comparison["out_of_distribution_candidates"]:
+        reasons.append("weighted_ood_count_mismatch")
+    if invalid:
+        reasons.append("weighted_ood_observation_invalid")
+    return witnesses, reasons
+
+
+def validate_weighted_ood_witnesses(
+    evidence: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    decision = _pair_decision(evidence)
+    if decision is None:
+        return [], ["weighted_ood_pair_decision_missing"]
+    if (
+        evidence.get("schema") != PAIR_EVIDENCE_SCHEMA
+        or evidence.get("version") != PAIR_EVIDENCE_VERSION
+        or decision.get("schema") != PAIR_DECISION_SCHEMA
+        or decision.get("version") != PAIR_DECISION_VERSION
+    ):
+        return [], ["weighted_ood_schema_invalid"]
+    comparison = _funnel_exact_comparison(decision)
+    if comparison is None:
+        return [], ["weighted_ood_funnel_comparison_invalid"]
+    return _weighted_ood_observations(decision, comparison)
 
 
 def _selection_key(selection: Any) -> tuple[Any, Any]:
@@ -496,12 +1095,14 @@ def _validate_pair_evidence_envelope(
     reasons: list[str] = []
     schema = evidence.get("schema")
     version = evidence.get("version")
-    if version != PAIR_EVIDENCE_VERSION:
-        reasons.append("pair_evidence_version_invalid")
     if schema == PAIR_DISPOSITION_SCHEMA:
+        if version != PAIR_DISPOSITION_VERSION:
+            reasons.append("pair_disposition_version_invalid")
         if evidence.get("domain") != "application_pair_decision":
             reasons.append("pair_disposition_domain_invalid")
         return reasons, False
+    if version != PAIR_EVIDENCE_VERSION:
+        reasons.append("pair_evidence_version_invalid")
     if schema != PAIR_EVIDENCE_SCHEMA:
         reasons.append("pair_evidence_schema_invalid")
         return reasons, False
@@ -859,6 +1460,18 @@ def validate_portfolio_pair(
     funnel_comparison = _funnel_exact_comparison(decision)
     if funnel_comparison is None:
         typed_reasons.append("funnel_exact_comparison_invalid")
+    weighted_ood_witnesses, weighted_ood_reasons = _weighted_ood_observations(
+        decision, funnel_comparison
+    )
+    typed_reasons.extend(weighted_ood_reasons)
+    hardware_promotion_witnesses, hardware_promotion_reasons = (
+        validate_hardware_promotion_witnesses(evidence, decision)
+    )
+    typed_reasons.extend(hardware_promotion_reasons)
+    if funnel_comparison is not None:
+        funnel_comparison["weighted_ood_sample_complete"] = bool(
+            weighted_ood_witnesses
+        )
     typed_reasons = list(dict.fromkeys(typed_reasons))
     closure_reasons = list(dict.fromkeys(closure_reasons))
     return {
@@ -873,6 +1486,10 @@ def validate_portfolio_pair(
         "closure_residuals": closure_reasons,
         "unsupported_objective_dimensions": unsupported_dimensions,
         "funnel_exact_comparison": funnel_comparison,
+        "weighted_ood_witnesses": weighted_ood_witnesses,
+        "hardware_promotion_witnesses": hardware_promotion_witnesses,
+        "hardware_promotion_complete": bool(hardware_promotion_witnesses)
+        and not hardware_promotion_reasons,
     }
 
 
@@ -980,6 +1597,19 @@ def evaluate_portfolio(
             funnel_exact_comparison["measured_candidates"] >= 1
             and funnel_exact_comparison["prediction_error_candidates"] >= 1
         )
+        weighted_ood_witnesses = [
+            witness
+            for pair in pairs
+            for witness in pair.get("weighted_ood_witnesses", [])
+        ]
+        hardware_promotion_witnesses = [
+            witness
+            for pair in pairs
+            for witness in pair.get("hardware_promotion_witnesses", [])
+        ]
+        funnel_exact_comparison["weighted_ood_sample_complete"] = bool(
+            weighted_ood_witnesses
+        )
         member_evaluations.append(
             {
                 "application_identity": application,
@@ -1005,6 +1635,11 @@ def evaluate_portfolio(
                     canonical_application_qor_complete
                 ),
                 "tinyml_typed_fallback_complete": (tinyml_typed_fallback_complete),
+                "weighted_ood_witnesses": weighted_ood_witnesses,
+                "hardware_promotion_witnesses": hardware_promotion_witnesses,
+                "hardware_promotion_complete": any(
+                    pair.get("hardware_promotion_complete") is True for pair in pairs
+                ),
                 "typed_residuals": sorted(
                     {
                         residual
@@ -1105,16 +1740,37 @@ def evaluate_portfolio(
         row["funnel_exact_comparison"]["exact_sample_complete"]
         for row in canonical_qor_rows
     )
+    weighted_ood_sample_holds = any(
+        row["funnel_exact_comparison"]["weighted_ood_sample_complete"]
+        for row in member_evaluations
+    )
+    fpa_finalist_hardware_promotion_witnesses = {
+        application: any(
+            row["hardware_promotion_complete"]
+            for row in members_by_application.get(application, [])
+        )
+        for application in ("loom-multisensor-attention", "gapbs-pagerank")
+    }
     acceptance = {
         "canonical_qor_witnesses": canonical_witnesses,
         "canonical_qor_witnesses_hold": all(canonical_witnesses.values()),
         "tinyml_host_conformance_and_typed_fallback_hold": tinyml_profile_holds,
         "all_execution_selection_gates_hold": all_selection_gates_hold,
         "funnel_exact_comparison_sample_holds": funnel_exact_comparison_sample_holds,
+        "weighted_ood_sample_holds": weighted_ood_sample_holds,
+        "fpa_finalist_hardware_promotion_witnesses": (
+            fpa_finalist_hardware_promotion_witnesses
+        ),
+        "fpa_finalist_hardware_promotion_holds": all(
+            fpa_finalist_hardware_promotion_witnesses.values()
+        ),
         "portfolio_acceptance_holds": not manifest_errors
         and all_selection_gates_hold
         and all(canonical_witnesses.values())
-        and tinyml_profile_holds,
+        and tinyml_profile_holds
+        and funnel_exact_comparison_sample_holds
+        and weighted_ood_sample_holds
+        and all(fpa_finalist_hardware_promotion_witnesses.values()),
     }
     return {
         "manifest_errors": manifest_errors,

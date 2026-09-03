@@ -132,7 +132,10 @@ void setCalibratedPhysicalDimensions(
   const std::vector<std::string> &labels = summary.qualityObjectiveDimensionLabels;
   for (const dse::JointDesignQualityObservation &observation :
        summary.qualityObservations) {
-    if (observation.candidate != selectedMapping || observation.incompleteReason)
+    if (observation.candidate != selectedMapping ||
+        observation.incompleteReason ||
+        observation.provenance.calibratedModelSupport !=
+            dse::JointDesignCalibratedModelSupport::InDomain)
       continue;
     const std::vector<ResolvedObjectiveScalar> &measures =
         observation.provenance.rawMeasures;

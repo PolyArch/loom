@@ -225,6 +225,7 @@ tryHardwareFeedbackReopen(
     llvm::ArrayRef<ArtifactRootReference> evidence,
     const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
     const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<ArtifactRootReference> hardwarePromotionParentSystem,
     const PlanExecutionPolicy *executionPolicy = nullptr) {
   const auto saturatingAdd = [](std::uint64_t &target, std::uint64_t value) {
     if (value > std::numeric_limits<std::uint64_t>::max() - target)
@@ -538,7 +539,8 @@ tryHardwareFeedbackReopen(
       if (!gate->coversRequiredGraphs) {
         if (llvm::Error error =
                 recordJointAttempt(attemptRecords, planOrdinal,
-                                   system->reference, gate->execution))
+                                   system->reference, gate->execution,
+                                   hardwarePromotionParentSystem))
           return std::move(error);
         ++accounting.hardwareRepairProbesConsumed;
         if (const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(
@@ -777,7 +779,8 @@ tryHardwareFeedbackReopen(
     saturatingAdd(accounting.reopenedServiceRealizationCount,
                   execution->summary.reopenedServiceRealizationCount);
     if (llvm::Error error = recordJointAttempt(attemptRecords, planOrdinal,
-                                               system->reference, *execution))
+                                               system->reference, *execution,
+                                               hardwarePromotionParentSystem))
       return std::move(error);
     const std::size_t systemMappingCount = mappingCount(*execution);
     mapping_debug::emit(
@@ -962,6 +965,11 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return error;
     if (llvm::Error error = validateQualityEvidenceSet(verificationEvidence))
       return error;
+    if (provenance.calibratedModelSupport !=
+            JointDesignCalibratedModelSupport::NotEvaluated &&
+        !evidence)
+      return invalid("calibrated quality provenance has no primary "
+                     "Evaluation Evidence");
     for (const ArtifactRootReference &verification : verificationEvidence)
       if (!llvm::is_contained(supportingEvidence, verification))
         return invalid("quality verification Evidence is outside its "
@@ -1009,6 +1017,12 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
               incomplete->provenance.verificationEvidence,
               incomplete->provenance))
         return std::move(error);
+      if (incomplete->provenance.calibratedModelSupport ==
+              JointDesignCalibratedModelSupport::OutOfDomain &&
+          incomplete->reason !=
+              JointDesignQualityIncompleteReason::Unsupported)
+        return invalid("out-of-domain hardware-promotion quality has a "
+                       "foreign incomplete disposition");
       assessment.incomplete = std::move(*incomplete);
       hardwarePromotionObservations.push_back({planOrdinal,
                                                system,
@@ -1033,6 +1047,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             objectives.front().provenance.verificationEvidence,
             objectives.front().provenance))
       return std::move(error);
+    if (objectives.front().provenance.calibratedModelSupport ==
+        JointDesignCalibratedModelSupport::OutOfDomain)
+      return invalid("complete hardware-promotion quality claimed an "
+                     "out-of-domain calibrated model");
     if (llvm::Error error = validateJointDesignQualityObjective(
             *request.boundedQuality->hardwarePromotion->objectiveProgram,
             objectives.front().provenance,
@@ -1048,13 +1066,20 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     assessment.objective = std::move(objectives.front().objective);
     return &*assessment.objective;
   };
-  const auto markHardwarePromotion = [&](std::uint64_t planOrdinal) {
+  const auto markHardwarePromotion =
+      [&](std::uint64_t planOrdinal)
+      -> llvm::Expected<ArtifactRootReference> {
     auto observation = llvm::find_if(
         hardwarePromotionObservations, [&](const auto &candidate) {
           return candidate.planOrdinal == planOrdinal;
         });
-    if (observation != hardwarePromotionObservations.end())
-      observation->promotedToExactMapping = true;
+    if (observation == hardwarePromotionObservations.end() ||
+        observation->incompleteReason || observation->objectiveCodes.empty())
+      return invalid("hardware promotion has no completed quality owner");
+    if (observation->promotedToExactMapping)
+      return invalid("hardware quality owner promoted one parent twice");
+    observation->promotedToExactMapping = true;
+    return observation->system;
   };
   const auto finish =
       [&](JointDesignExecution execution,
@@ -1063,6 +1088,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           JointDesignQualityDisposition qualityDisposition,
           std::optional<ArtifactRootReference> qualityIncompleteCandidate,
           bool declaredWorkExhausted) -> llvm::Expected<JointDesignExecution> {
+    if (request.boundedQuality && request.boundedQuality->hardwarePromotion &&
+        llvm::count_if(hardwarePromotionObservations,
+                       [](const auto &observation) {
+                         return observation.promotedToExactMapping;
+                       }) != hardwareParentPromotions)
+      return invalid("hardware-promotion observations disagree with the exact "
+                     "promotion count");
     if (llvm::Error error = attachJointDesignSupportingInvocationManifests(
             execution, encounteredInvocations))
       return std::move(error);
@@ -1633,6 +1665,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       break;
     }
     std::optional<PlanExecutionPolicy> feedbackExecutionPolicy;
+    std::optional<ArtifactRootReference> promotedParentSystem;
     if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
       auto fair = fairBoundedQualityPlanPolicy(request.executionPolicy,
                                                hardwareFeedbackFrontier.size() -
@@ -1640,8 +1673,17 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       if (!fair)
         return fair.takeError();
       feedbackExecutionPolicy.emplace(std::move(*fair));
+      if (request.boundedQuality->hardwarePromotion) {
+        auto promoted = markHardwarePromotion(attempt.planOrdinal);
+        if (!promoted)
+          return promoted.takeError();
+        if (attempt.plan->frontier.systemFrontier.size() != 1 ||
+            *promoted != attempt.plan->frontier.systemFrontier.front())
+          return invalid("hardware promotion quality owner names a foreign "
+                         "parent System");
+        promotedParentSystem = std::move(*promoted);
+      }
       ++hardwareParentPromotions;
-      markHardwarePromotion(attempt.planOrdinal);
     }
     ++hardwareReopenSearches;
     mapping_debug::emit(
@@ -1660,6 +1702,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         policy, *attempt.plan, attempt.execution, lastReopenedFailure,
         attempt.planOrdinal, attemptRecords, accounting, encounteredInvocations,
         request.evidence, request, *scheduler, artifacts, blobs,
+        promotedParentSystem,
         feedbackExecutionPolicy ? &*feedbackExecutionPolicy : nullptr);
     if (!reopened)
       return reopened.takeError();
@@ -1790,8 +1833,19 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       if (parent.planOrdinal >= plans.size() || !plans[parent.planOrdinal])
         return invalid("bounded-quality hardware parent lost its plan");
       const std::uint64_t parentPlanOrdinal = parent.planOrdinal;
+      std::optional<ArtifactRootReference> promotedParentSystem;
+      if (request.boundedQuality->hardwarePromotion) {
+        auto promoted = markHardwarePromotion(parentPlanOrdinal);
+        if (!promoted)
+          return promoted.takeError();
+        if (plans[parentPlanOrdinal]->frontier.systemFrontier.size() != 1 ||
+            *promoted !=
+                plans[parentPlanOrdinal]->frontier.systemFrontier.front())
+          return invalid("hardware promotion quality owner names a foreign "
+                         "parent System");
+        promotedParentSystem = std::move(*promoted);
+      }
       ++hardwareParentPromotions;
-      markHardwarePromotion(parentPlanOrdinal);
       auto spectrumPolicy = fairBoundedQualityPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal);
       if (!spectrumPolicy)
@@ -1812,7 +1866,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         if (llvm::Error error = recordJointAttempt(
                 attemptRecords, parentPlanOrdinal,
                 plans[parentPlanOrdinal]->frontier.systemFrontier.front(),
-                execution))
+                execution, promotedParentSystem))
           return std::move(error);
         verifiedMappingCount += mappingCount(execution);
         saturatingAdd(accounting.techMappingInvocationCount,

@@ -1119,22 +1119,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   }
   if (!selectedExecution)
     return invalid("joint Mapping execution produced no bounded outcome");
-  const auto qualityRuntimeDisposition =
-      [](const std::optional<dse::JointDesignQualityIncompleteReason> &reason) {
-        if (!reason)
-          return ApplicationMappingRuntimeDisposition::Completed;
-        switch (*reason) {
-        case dse::JointDesignQualityIncompleteReason::Unsupported:
-          return ApplicationMappingRuntimeDisposition::Unsupported;
-        case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
-          return ApplicationMappingRuntimeDisposition::ProofNotEstablished;
-        case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
-          return ApplicationMappingRuntimeDisposition::ExecutionFailed;
-        case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
-          return ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-        }
-        llvm_unreachable("unknown application quality disposition");
-      };
   for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
     const dse::JointDesignQualityObservation *projected = nullptr;
     std::size_t matchingObservationCount = 0;
@@ -1158,9 +1142,17 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       continue;
     outcome.qualityObjectiveCodes = projected->objectiveCodes;
     if (outcome.runtimeDisposition ==
-        ApplicationMappingRuntimeDisposition::NotRequested)
-      outcome.runtimeDisposition =
-          qualityRuntimeDisposition(projected->incompleteReason);
+            ApplicationMappingRuntimeDisposition::NotRequested &&
+        request.boundedQuality &&
+        request.boundedQuality->provenanceDomain ==
+            dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+      auto runtimeDisposition =
+          detail::classifyApplicationQualityRuntime(*request.boundedQuality,
+                                                    *projected);
+      if (!runtimeDisposition)
+        return runtimeDisposition.takeError();
+      outcome.runtimeDisposition = *runtimeDisposition;
+    }
   }
   selectedExecution->summary.attemptedSoftwarePlans = attemptedSoftwarePlans;
   selectedExecution->summary.hardwareReopenSearches = hardwareReopenSearches;

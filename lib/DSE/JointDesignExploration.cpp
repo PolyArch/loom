@@ -246,11 +246,44 @@ llvm::StringRef jointDesignQualityIncompleteReasonSpelling(
   llvm_unreachable("unknown bounded-quality incomplete reason");
 }
 
+llvm::StringRef jointDesignQualityRuntimeCompletionSpelling(
+    JointDesignQualityRuntimeCompletion completion) {
+  switch (completion) {
+  case JointDesignQualityRuntimeCompletion::NotEstablished:
+    return "not_established";
+  case JointDesignQualityRuntimeCompletion::Completed:
+    return "completed";
+  }
+  llvm_unreachable("unknown bounded-quality runtime completion");
+}
+
+llvm::StringRef jointDesignCalibratedModelSupportSpelling(
+    JointDesignCalibratedModelSupport support) {
+  switch (support) {
+  case JointDesignCalibratedModelSupport::NotEvaluated:
+    return "not_evaluated";
+  case JointDesignCalibratedModelSupport::InDomain:
+    return "in_domain";
+  case JointDesignCalibratedModelSupport::OutOfDomain:
+    return "out_of_domain";
+  }
+  llvm_unreachable("unknown bounded-quality calibrated-model support");
+}
+
 llvm::Error validateJointDesignQualityProvenanceDomain(
     const JointBoundedQualityPolicy &policy,
     const JointDesignQualityProvenance &provenance, bool objectiveComplete) {
+  if (objectiveComplete &&
+      provenance.calibratedModelSupport ==
+          JointDesignCalibratedModelSupport::OutOfDomain)
+    return invalid("complete quality provenance claimed an out-of-domain "
+                   "calibrated model");
   switch (policy.provenanceDomain) {
   case JointDesignQualityProvenanceDomain::ObjectiveOnly:
+    if (provenance.runtimeCompletion !=
+        JointDesignQualityRuntimeCompletion::NotEstablished)
+      return invalid("ObjectiveOnly provenance claimed Application runtime "
+                     "completion");
     return llvm::Error::success();
   case JointDesignQualityProvenanceDomain::ApplicationRuntime:
     break;
@@ -264,11 +297,36 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
   if (!provenance.resourceCoreCost)
     return invalid("ApplicationRuntime provenance lost its exact resource "
                    "count");
+  if (provenance.calibratedModelSupport ==
+          JointDesignCalibratedModelSupport::OutOfDomain &&
+      provenance.runtimeCompletion !=
+          JointDesignQualityRuntimeCompletion::Completed)
+    return invalid("ApplicationRuntime out-of-domain provenance has no "
+                   "completed runtime owner");
+  if (provenance.calibratedModelSupport ==
+          JointDesignCalibratedModelSupport::OutOfDomain &&
+      provenance.rawMeasures.size() != 3)
+    return invalid("ApplicationRuntime out-of-domain provenance did not "
+                   "retain exactly its runtime measures");
+  if (objectiveComplete &&
+      provenance.runtimeCompletion !=
+          JointDesignQualityRuntimeCompletion::Completed)
+    return invalid("complete ApplicationRuntime provenance did not establish "
+                   "runtime completion");
+  if (provenance.runtimeCompletion ==
+          JointDesignQualityRuntimeCompletion::Completed &&
+      provenance.rawMeasures.size() < 3)
+    return invalid("completed ApplicationRuntime provenance lost its runtime "
+                   "measures");
   if (provenance.rawMeasures.empty() && objectiveComplete)
     return invalid("complete ApplicationRuntime provenance lost its raw "
                    "measures");
   if (provenance.rawMeasures.empty())
     return llvm::Error::success();
+  if (provenance.runtimeCompletion !=
+      JointDesignQualityRuntimeCompletion::Completed)
+    return invalid("ApplicationRuntime raw measures have no completed runtime "
+                   "owner");
   if (provenance.rawMeasures.size() < 3)
     return invalid("ApplicationRuntime provenance has incomplete raw "
                    "measures");

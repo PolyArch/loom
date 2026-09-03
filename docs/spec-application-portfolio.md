@@ -208,11 +208,11 @@ TinyML member's smoke and validation profiles are directly executable by its
 bounded host runner but each returns `loom_portfolio_profile_unsupported` from
 the current product source-binding path.
 
-The versioned `loom.application_pair_decision` projection records the resolved
-application identity, input name, source/build selection, input-specific
-compiler options, declared workload and runtime-input names, declared oracle
-and bounded profile, and referenced cache digests. Its typed execution binding
-is `declared_only`, `canonical_simulation`, or
+The `loom.application_pair_decision` version `1.1` projection records the
+resolved application identity, input name, source/build selection,
+input-specific compiler options, declared workload and runtime-input names,
+declared oracle and bounded profile, and referenced cache digests. Its typed
+execution binding is `declared_only`, `canonical_simulation`, or
 `canonical_simulation_and_oracle`. The last state is reached only after the
 existing Mapping runtime owner completes source-backed DFG and CGRA
 Simulation and a native `SimulationComparison` reports no finding. Its exact
@@ -254,11 +254,12 @@ activation runtime input is verifiably bound to the pair decision's exact
 identities without decoding the package.
 
 A successful decision is published inside
-`loom.application_pair_evidence` version `1.0`. That envelope is the canonical
+`loom.application_pair_evidence` version `1.1`. That envelope is the canonical
 join of candidate and analytic-gate inventories, actual Tech/Spatial/System
 work, selected Mapping checkpoint, failure-cone counters, work ledgers,
-Mapping outcome inventory, and the pair decision. A pre-admission or causal
-failure uses `loom.application_pair_disposition` version `1.0` and retains the
+Mapping outcome inventory, exact promoted-parent hardware attempt lineage,
+and the pair decision. A pre-admission or causal
+failure uses `loom.application_pair_disposition` version `1.1` and retains the
 same typed decision without fabricating Mapping work.
 
 Every objective dimension is a non-negative integer in a fixed unit owned by

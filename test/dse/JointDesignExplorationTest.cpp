@@ -17,6 +17,7 @@
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/Models/CalibratedFpa.h"
 #include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/FpaParameterContract.h"
@@ -301,7 +302,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     quality.objectiveDimensionLabels = {"mapping_quality"};
     quality.paretoDimensions = {0};
     quality.finalTotalOrdering = 0;
-    quality.acquire = [sharedObjectiveProgram,
+    quality.acquire = [sharedObjectiveProgram, system,
                        count = qualityAcquisitionCount](
                           const loom::dse::JointDesignExecution &result,
                           std::uint64_t planOrdinal)
@@ -312,8 +313,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                                        "quality fixture has no Mapping");
       loom::dse::ObjectiveVector objective =
           sharedObjectiveProgram->makeVector();
+      const bool hardwareChild = llvm::any_of(
+          result.mappedPairs,
+          [&](const loom::dse::JointMappedPair &pair) {
+            return pair.pair.system != system;
+          });
       const std::array<std::uint64_t, 1> measures = {
-          planOrdinal == 1 ? UINT64_C(0) : UINT64_C(1)};
+          hardwareChild ? UINT64_C(0)
+                        : planOrdinal == 1 ? UINT64_C(1) : UINT64_C(2)};
       if (llvm::Error error = sharedObjectiveProgram->evaluateCandidateMeasures(
               measures, objective))
         return std::move(error);
@@ -391,6 +398,27 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
     auto alternatePlan = take(loom::dse::buildJointDesignExplorationPlan(
         {{{secondWorkload}}, {alternateSystem}}, alternateTimingRoots,
+        promotionPolicy, config, store));
+    auto outside = take(loom::adg::buildBuiltinTarget(
+        store, loom::adg::BuiltinTargetPreset::Large));
+    if (outside.roots().size() != 1)
+      fail("out-of-domain FPA fixture did not publish one System");
+    const loom::ArtifactRootReference outsideSystem =
+        outside.roots().front().reference();
+    auto outsideRoot =
+        take(loom::fabric::importEntireFabricRoot(outsideSystem, store));
+    auto outsideView =
+        take(loom::fabric::requireSystemRoot(outsideRoot.view()));
+    auto outsideTiming =
+        take(loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(
+            outsideView));
+    std::vector<loom::ArtifactRootReference> outsideTimingRoots;
+    for (const auto &profile : outsideTiming)
+      outsideTimingRoots.push_back(
+          take(loom::fabric::publishFabricPhysicalTimingProfile(profile,
+                                                                 store)));
+    auto outsidePlan = take(loom::dse::buildJointDesignExplorationPlan(
+        {{{secondWorkload}}, {outsideSystem}}, outsideTimingRoots,
         promotionPolicy, config, store));
 
     const auto firstFeatures = joint_fixture::projectFpaFeatures(
@@ -523,8 +551,42 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           evidence.schemaVersion !=
               loom::evaluation::EvaluationEvidence::artifactSchema.version)
         fail("application FPA promotion returned a foreign Evidence root");
+      if (objectives->front().provenance.runtimeCompletion !=
+              loom::dse::JointDesignQualityRuntimeCompletion::NotEstablished ||
+          objectives->front().provenance.calibratedModelSupport !=
+              loom::dse::JointDesignCalibratedModelSupport::InDomain)
+        fail("application FPA promotion lost its typed model support");
       take(store.get(evidence));
     }
+    auto outsidePhysical =
+        take(applicationQuality.hardwarePromotion->acquire(outsidePlan, 2));
+    const auto *outsideIncomplete =
+        std::get_if<loom::dse::IncompleteJointDesignQuality>(&outsidePhysical);
+    if (!outsideIncomplete ||
+        outsideIncomplete->reason !=
+            loom::dse::JointDesignQualityIncompleteReason::Unsupported ||
+        !outsideIncomplete->evidence ||
+        outsideIncomplete->provenance.runtimeCompletion !=
+            loom::dse::JointDesignQualityRuntimeCompletion::NotEstablished ||
+        outsideIncomplete->provenance.calibratedModelSupport !=
+            loom::dse::JointDesignCalibratedModelSupport::OutOfDomain)
+      fail("application FPA out-of-domain refusal lost its typed provenance");
+    auto weight = take(
+        loom::evaluation::models::importEdaPredictionModelWeight(
+            bundle.reference(), store, blobs));
+    auto outsideRequest = take(loom::evaluation::models::
+        prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
+            outsidePlan.frontier.softwareFrontier.front().dataflow,
+            outsideSystem, weight, {}, outsidePlan.resolvedConfig, store,
+            blobs));
+    auto strictOutsideEvidence = take(loom::evaluation::importEvaluationEvidence(
+        *outsideIncomplete->evidence, outsideRequest.resolution, store, blobs));
+    if (strictOutsideEvidence.requestRef() !=
+            loom::evaluation::evaluationRequestReference(
+                outsideRequest.request) ||
+        strictOutsideEvidence.outcomeKind() !=
+            loom::evaluation::EvidenceOutcomeKind::Unsupported)
+      fail("application FPA out-of-domain Evidence failed strict import");
     auto physicalOrder =
         take(applicationQuality.hardwarePromotion->objectiveProgram
                  ->compareTotalOrdering(
@@ -591,6 +653,29 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       fail("bounded hardware promotion produced no selected Mapping");
     const loom::ArtifactRootReference promotedMapping =
         *promoted.summary.selectedMapping;
+    if (!promoted.summary.selectedPlanOrdinal)
+      fail("bounded hardware promotion lost its selected plan");
+    const auto promotedParent = llvm::find_if(
+        promoted.summary.hardwarePromotionObservations,
+        [](const loom::dse::JointHardwarePromotionObservation &observation) {
+          return observation.promotedToExactMapping;
+        });
+    if (promotedParent ==
+        promoted.summary.hardwarePromotionObservations.end())
+      fail("bounded hardware promotion lost its selected parent");
+    const std::size_t selectedChildAttempts = llvm::count_if(
+        promoted.summary.attempts,
+        [&](const loom::dse::JointDesignAttemptRecord &attempt) {
+          return attempt.planOrdinal == *promoted.summary.selectedPlanOrdinal &&
+                 attempt.hardwarePromotionParentSystem ==
+                     promotedParent->system &&
+                 attempt.system != promotedParent->system &&
+                 attempt.disposition ==
+                     loom::dse::JointDesignAttemptDisposition::Verified &&
+                 llvm::is_contained(attempt.systemMappings, promotedMapping);
+        });
+    if (selectedChildAttempts != 1)
+      fail("selected Mapping lost its exact promoted-parent child lineage");
     llvm::SmallString<128> repairJournal(temporary.path());
     llvm::sys::path::append(repairJournal, "repair-quality-selection");
     const loom::dse::JointDesignExplorationPlan *firstRepairPlan = &firstPlan;
@@ -691,6 +776,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
             loom::resolvedObjectiveInteger(2),
             loom::resolvedObjectiveInteger(3)};
         observation.provenance.resourceCoreCost = 3;
+        observation.provenance.runtimeCompletion =
+            loom::dse::JointDesignQualityRuntimeCompletion::Completed;
         loom::dse::ObjectiveVector objective = runtimeProgram->makeVector();
         if (llvm::Error error = runtimeProgram->evaluateCandidateMeasures(
                 observation.provenance.rawMeasures, objective))
@@ -712,6 +799,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         observation.incompleteReason =
             loom::dse::JointDesignQualityIncompleteReason::Unsupported;
         observation.provenance.rawMeasures.clear();
+        observation.provenance.runtimeCompletion =
+            loom::dse::JointDesignQualityRuntimeCompletion::NotEstablished;
       }
     repairExecutions[1]
         .summary.qualityObservations.front()

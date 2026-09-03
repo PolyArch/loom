@@ -41,6 +41,15 @@ projectApplicationQualityRuntime(
     const dse::JointBoundedQualityPolicy &quality,
     const ArtifactStore &artifacts);
 
+/// A quality observation may be incomplete after application runtime has
+/// already completed, for example when the FPA model refuses an
+/// out-of-distribution query. Preserve that distinction when projecting the
+/// observation back to the Mapping runtime domain.
+llvm::Expected<ApplicationMappingRuntimeDisposition>
+classifyApplicationQualityRuntime(
+    const dse::JointBoundedQualityPolicy &quality,
+    const dse::JointDesignQualityObservation &observation);
+
 } // namespace loom::application::detail
 
 #endif // LOOM_LIB_APPLICATION_QUALITYINTERNAL_H

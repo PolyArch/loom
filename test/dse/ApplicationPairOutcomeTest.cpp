@@ -1,4 +1,5 @@
 #include "BuildInternal.h"
+#include "QualityInternal.h"
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
@@ -303,6 +304,84 @@ void qualityDispositionProjection() {
           "summary quality disposition overrode its invocation owner");
 }
 
+void qualityRuntimeCompletionProjection() {
+  using loom::application::ApplicationMappingRuntimeDisposition;
+  using loom::application::detail::classifyApplicationQualityRuntime;
+  using loom::dse::JointDesignQualityIncompleteReason;
+  using loom::dse::JointDesignQualityProvenanceDomain;
+  using loom::dse::JointDesignQualityRuntimeCompletion;
+
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> rootBytes{};
+  rootBytes.back() = 3;
+  const loom::ArtifactRootReference mapping{
+      "loom.test.application_runtime_quality",
+      {1, 0},
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+
+  loom::dse::JointBoundedQualityPolicy runtimeQuality;
+  runtimeQuality.provenanceDomain =
+      JointDesignQualityProvenanceDomain::ApplicationRuntime;
+  runtimeQuality.objectiveDimensionLabels = {
+      "dfg_cycles", "cgra_cycles", "acc_core_count"};
+
+  loom::dse::JointDesignQualityObservation fpaRefusal{
+      mapping,
+      {},
+      JointDesignQualityIncompleteReason::Unsupported,
+      std::nullopt,
+      {{loom::resolvedObjectiveInteger(7),
+        loom::resolvedObjectiveInteger(11),
+        loom::resolvedObjectiveInteger(2)},
+       {},
+       {},
+       {},
+       {},
+       {},
+       2,
+       JointDesignQualityRuntimeCompletion::Completed,
+       loom::dse::JointDesignCalibratedModelSupport::OutOfDomain}};
+  require(take(classifyApplicationQualityRuntime(runtimeQuality, fpaRefusal)) ==
+              ApplicationMappingRuntimeDisposition::Completed,
+          "FPA refusal erased completed Application runtime");
+
+  loom::dse::JointDesignQualityObservation runtimeRefusal{
+      mapping,
+      {},
+      JointDesignQualityIncompleteReason::Unsupported,
+      std::nullopt,
+      {{}, {}, {}, {}, {}, {}, 2}};
+  require(
+      take(classifyApplicationQualityRuntime(runtimeQuality, runtimeRefusal)) ==
+          ApplicationMappingRuntimeDisposition::Unsupported,
+      "runtime refusal was not retained independently of quality");
+
+  auto missingMeasures = fpaRefusal;
+  missingMeasures.provenance.rawMeasures.clear();
+  auto missingMeasuresResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingMeasures);
+  require(!missingMeasuresResult,
+          "completed runtime accepted missing runtime measures");
+  llvm::consumeError(missingMeasuresResult.takeError());
+
+  auto ownerlessMeasures = fpaRefusal;
+  ownerlessMeasures.provenance.runtimeCompletion =
+      JointDesignQualityRuntimeCompletion::NotEstablished;
+  auto ownerlessMeasuresResult =
+      classifyApplicationQualityRuntime(runtimeQuality, ownerlessMeasures);
+  require(!ownerlessMeasuresResult,
+          "runtime measures established completion without their owner");
+  llvm::consumeError(ownerlessMeasuresResult.takeError());
+
+  auto objectiveOnly = runtimeQuality;
+  objectiveOnly.provenanceDomain =
+      JointDesignQualityProvenanceDomain::ObjectiveOnly;
+  auto foreignDomain =
+      classifyApplicationQualityRuntime(objectiveOnly, fpaRefusal);
+  require(!foreignDomain,
+          "ObjectiveOnly quality manufactured an Application runtime result");
+  llvm::consumeError(foreignDomain.takeError());
+}
+
 } // namespace
 
 int main() {
@@ -311,5 +390,6 @@ int main() {
   incompleteCausePriority();
   noFeasibleOutcomePreservesTypedCause();
   qualityDispositionProjection();
+  qualityRuntimeCompletionProjection();
   return 0;
 }

@@ -233,7 +233,9 @@ llvm::Error
 recordJointAttempt(std::vector<dse::JointDesignAttemptRecord> &records,
                    std::uint64_t planOrdinal,
                    const ArtifactRootReference &fallbackSystem,
-                   const dse::JointDesignExecution &execution) {
+                   const dse::JointDesignExecution &execution,
+                   std::optional<ArtifactRootReference>
+                       hardwarePromotionParentSystem) {
   ArtifactRootReference system = fallbackSystem;
   for (const dse::JointMappedPair &pair : execution.mappedPairs) {
     if (system != fallbackSystem && pair.pair.system != system)
@@ -254,8 +256,13 @@ recordJointAttempt(std::vector<dse::JointDesignAttemptRecord> &records,
     incompleteNodeOrdinal = incomplete->nodeOrdinal();
     incompleteReason = incomplete->reason();
   }
+  if (hardwarePromotionParentSystem &&
+      system == *hardwarePromotionParentSystem)
+    return invalid("hardware-promotion attempt did not materialize a child "
+                   "System");
   records.push_back({planOrdinal, system, disposition, incompleteNodeOrdinal,
-                     std::move(incompleteReason), std::move(mappings)});
+                     std::move(incompleteReason), std::move(mappings),
+                     std::move(hardwarePromotionParentSystem)});
   return llvm::Error::success();
 }
 

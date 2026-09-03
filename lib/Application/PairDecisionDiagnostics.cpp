@@ -15,6 +15,10 @@
 namespace loom::application {
 using diagnostics_detail::addOptionalRoot;
 using diagnostics_detail::addOptionalUnsigned;
+using diagnostics_detail::applicationPairDecisionSchemaIdentity;
+using diagnostics_detail::applicationPairDecisionSchemaVersion;
+using diagnostics_detail::applicationPairDispositionSchemaIdentity;
+using diagnostics_detail::applicationPairDispositionSchemaVersion;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -188,8 +192,8 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
     addOptionalRoot(result, "evidence", observation.evidence);
     return result;
   };
-  llvm::json::Object result{{"schema", "loom.application_pair_decision"},
-                            {"version", "1.0"}};
+  llvm::json::Object result{{"schema", applicationPairDecisionSchemaIdentity},
+                            {"version", applicationPairDecisionSchemaVersion}};
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
         *decision.portfolioInput, decision.portfolioExecutionBinding);
@@ -462,8 +466,8 @@ void emitApplicationPairDecisionDiagnostics(
       DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
-        payload["schema"] = "loom.application_pair_disposition";
-        payload["version"] = "1.0";
+        payload["schema"] = applicationPairDispositionSchemaIdentity;
+        payload["version"] = applicationPairDispositionSchemaVersion;
         payload["domain"] = "application_pair_decision";
         payload["pair_decision"] = encodePairDecision(decision);
         return llvm::json::Value(std::move(payload));

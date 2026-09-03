@@ -43,6 +43,8 @@ struct ApplicationFpaCompletedObservation final {
 struct ApplicationFpaIncompleteObservation final {
   dse::JointDesignQualityIncompleteReason reason;
   ArtifactRootReference evidence;
+  dse::JointDesignCalibratedModelSupport modelSupport =
+      dse::JointDesignCalibratedModelSupport::NotEvaluated;
 };
 
 using ApplicationFpaObservation =
@@ -93,24 +95,46 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
   if (!evidence)
     return evidence.takeError();
 
+  auto imported = evaluation::importEvaluationEvidence(
+      *evidence, prepared->resolution, artifacts, blobs);
+  if (!imported)
+    return invalid("published calibrated FPA Evidence failed strict import: " +
+                   llvm::toString(imported.takeError()));
+  if (imported->requestRef() !=
+          evaluation::evaluationRequestReference(prepared->request) ||
+      imported->outcomeKind() != evaluated->outcomeKind())
+    return invalid("strict calibrated FPA Evidence changed its Request or "
+                   "outcome");
+
   if (std::holds_alternative<evaluation::UnsupportedEvidence>(
-          evaluated->outcome()))
+          imported->outcome())) {
+    auto inference = evaluation::models::inferCanonicalDataflowFabricFpa(
+        dataflow, system, weight, conditions, artifacts, blobs);
+    if (!inference)
+      return inference.takeError();
+    if (!std::holds_alternative<
+            evaluation::OutOfDomainModelParameterInference>(
+            inference->outcome))
+      return invalid("unsupported calibrated FPA Evidence was not produced "
+                     "by typed out-of-domain inference");
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::Unsupported,
-        std::move(*evidence)};
+        std::move(*evidence),
+        dse::JointDesignCalibratedModelSupport::OutOfDomain};
+  }
   if (std::holds_alternative<evaluation::ExecutionFailedEvidence>(
-          evaluated->outcome()))
+          imported->outcome()))
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::ExecutionFailed,
         std::move(*evidence)};
   if (std::holds_alternative<evaluation::CancelledOrTimeoutEvidence>(
-          evaluated->outcome()))
+          imported->outcome()))
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::CancelledOrTimeout,
         std::move(*evidence)};
 
   const auto *completed =
-      std::get_if<evaluation::CompletedEvidence>(&evaluated->outcome());
+      std::get_if<evaluation::CompletedEvidence>(&imported->outcome());
   if (!completed || completed->metricResults.size() != 4 ||
       prepared->request.metricRequests().size() != 4)
     return invalid("calibrated FPA Evidence has a foreign metric shape");
@@ -132,7 +156,8 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
     if (zeroComparison < 0 || (zeroComparison == 0 && ordinal < 2))
       return ApplicationFpaIncompleteObservation{
           dse::JointDesignQualityIncompleteReason::ProofNotEstablished,
-          std::move(*evidence)};
+          std::move(*evidence),
+          dse::JointDesignCalibratedModelSupport::InDomain};
     values[ordinal] = resolvedObjectiveDecimal(decimal->coefficient(),
                                                decimal->base10Exponent());
   }
@@ -275,10 +300,10 @@ detail::projectApplicationQualityRuntime(
                      }) != 1)
     return invalid("application runtime projection has duplicate Mapping "
                    "observations");
-  if (llvm::Error error = dse::validateJointDesignQualityProvenanceDomain(
-          quality, matching->provenance,
-          !matching->incompleteReason.has_value()))
-    return std::move(error);
+  auto runtimeDisposition =
+      classifyApplicationQualityRuntime(quality, *matching);
+  if (!runtimeDisposition)
+    return runtimeDisposition.takeError();
   if (matching->incompleteReason) {
     if (execution.summary.selectedMapping ||
         execution.summary.qualityIncompleteCandidate != mapping)
@@ -318,26 +343,10 @@ detail::projectApplicationQualityRuntime(
       return invalid("application runtime complete observation disagrees with "
                      "its summary");
   }
-  ApplicationMappingRuntimeDisposition disposition =
-      ApplicationMappingRuntimeDisposition::Completed;
   if (matching->incompleteReason) {
     if (!matching->objectiveCodes.empty())
       return invalid("application runtime incomplete observation retained an "
                      "objective");
-    switch (*matching->incompleteReason) {
-    case dse::JointDesignQualityIncompleteReason::Unsupported:
-      disposition = ApplicationMappingRuntimeDisposition::Unsupported;
-      break;
-    case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
-      disposition = ApplicationMappingRuntimeDisposition::ProofNotEstablished;
-      break;
-    case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
-      disposition = ApplicationMappingRuntimeDisposition::ExecutionFailed;
-      break;
-    case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
-      disposition = ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-      break;
-    }
   } else {
     if (matching->provenance.rawMeasures.size() !=
         quality.objectiveDimensionLabels.size())
@@ -400,7 +409,7 @@ detail::projectApplicationQualityRuntime(
       *matching->provenance.spatialTransportFeedback->parentMapping != mapping)
     return invalid("application transport feedback names a foreign Mapping");
   return ApplicationRuntimeValidation{
-      disposition,
+      *runtimeDisposition,
       matching->provenance.supportingEvidence,
       dfgCycles,
       cgraCycles,
@@ -410,6 +419,43 @@ detail::projectApplicationQualityRuntime(
       matching->provenance.verificationEvidence,
       resourceCoreCost,
       std::nullopt};
+}
+
+llvm::Expected<ApplicationMappingRuntimeDisposition>
+detail::classifyApplicationQualityRuntime(
+    const dse::JointBoundedQualityPolicy &quality,
+    const dse::JointDesignQualityObservation &observation) {
+  if (quality.provenanceDomain !=
+      dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
+    return invalid("application runtime classification has a foreign quality "
+                   "domain");
+  if (llvm::Error error = dse::validateJointDesignQualityProvenanceDomain(
+          quality, observation.provenance,
+          !observation.incompleteReason.has_value()))
+    return std::move(error);
+  if (observation.provenance.calibratedModelSupport ==
+          dse::JointDesignCalibratedModelSupport::OutOfDomain &&
+      observation.incompleteReason !=
+          dse::JointDesignQualityIncompleteReason::Unsupported)
+    return invalid("out-of-domain application quality has a foreign "
+                   "incomplete disposition");
+  if (observation.provenance.runtimeCompletion ==
+      dse::JointDesignQualityRuntimeCompletion::Completed)
+    return ApplicationMappingRuntimeDisposition::Completed;
+  if (!observation.incompleteReason)
+    return invalid("application quality observation has neither completed "
+                   "runtime nor an incomplete disposition");
+  switch (*observation.incompleteReason) {
+  case dse::JointDesignQualityIncompleteReason::Unsupported:
+    return ApplicationMappingRuntimeDisposition::Unsupported;
+  case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
+    return ApplicationMappingRuntimeDisposition::ProofNotEstablished;
+  case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
+    return ApplicationMappingRuntimeDisposition::ExecutionFailed;
+  case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
+    return ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
+  }
+  llvm_unreachable("unknown application quality disposition");
 }
 
 llvm::Expected<dse::JointBoundedQualityPolicy>
@@ -503,13 +549,20 @@ makeApplicationBoundedQualityPolicy(
                     runtimeVerificationEvidence.end()),
         runtimeVerificationEvidence.end());
     const auto runtimeProvenance =
-        [&](std::vector<ResolvedObjectiveScalar> measures = {}) {
+        [&](std::vector<ResolvedObjectiveScalar> measures = {},
+            dse::JointDesignCalibratedModelSupport modelSupport =
+                dse::JointDesignCalibratedModelSupport::NotEvaluated) {
           return dse::JointDesignQualityProvenance{
               std::move(measures), runtimeEvidence,
               runtimeVerificationEvidence, runtime->spatialFifoFeedback,
               runtime->spatialOperandQueueFeedback,
               runtime->spatialTransportFeedback,
-              runtime->resourceCoreCost};
+              runtime->resourceCoreCost,
+              runtime->disposition ==
+                      ApplicationMappingRuntimeDisposition::Completed
+                  ? dse::JointDesignQualityRuntimeCompletion::Completed
+                  : dse::JointDesignQualityRuntimeCompletion::NotEstablished,
+              modelSupport};
         };
     switch (runtime->disposition) {
     case ApplicationMappingRuntimeDisposition::Completed:
@@ -552,6 +605,8 @@ makeApplicationBoundedQualityPolicy(
         resolvedObjectiveInteger(static_cast<std::uint64_t>(
             imported->system.view().accCoreOccurrences().size()))};
     std::optional<ArtifactRootReference> fpaEvidence;
+    dse::JointDesignCalibratedModelSupport modelSupport =
+        dse::JointDesignCalibratedModelSupport::NotEvaluated;
     if (fpaWeight) {
       if (dispatchDeadlineReached(executionPolicy))
         return dse::JointDesignQualityAcquisition{
@@ -573,12 +628,15 @@ makeApplicationBoundedQualityPolicy(
             dse::IncompleteJointDesignQuality{incomplete->reason,
                                               execution.summary.selectedMapping,
                                               incomplete->evidence,
-                                              runtimeProvenance(measures)}};
+                                              runtimeProvenance(
+                                                  std::move(measures),
+                                                  incomplete->modelSupport)}};
       auto completed =
           std::get<ApplicationFpaCompletedObservation>(std::move(*fpa));
       measures.insert(measures.end(), completed.values.begin(),
                       completed.values.end());
       fpaEvidence = std::move(completed.evidence);
+      modelSupport = dse::JointDesignCalibratedModelSupport::InDomain;
     }
     dse::ObjectiveVector objective = sharedProgram->makeVector();
     if (llvm::Error error =
@@ -590,7 +648,7 @@ makeApplicationBoundedQualityPolicy(
         std::vector<dse::JointDesignQualityCandidate>{
             {{*execution.summary.selectedMapping, std::move(objective)},
              std::move(fpaEvidence),
-             runtimeProvenance(std::move(measures))}}};
+             runtimeProvenance(std::move(measures), modelSupport)}}};
   };
 
   if (fpaWeight) {
@@ -641,7 +699,12 @@ makeApplicationBoundedQualityPolicy(
                   std::get_if<ApplicationFpaIncompleteObservation>(&*fpa))
             return dse::JointDesignQualityAcquisition{
                 dse::IncompleteJointDesignQuality{incomplete->reason, system,
-                                                  incomplete->evidence}};
+                                                  incomplete->evidence,
+                                                  dse::JointDesignQualityProvenance{
+                                                      {}, {}, {}, {}, {}, {}, {},
+                                                      dse::JointDesignQualityRuntimeCompletion::
+                                                          NotEstablished,
+                                                      incomplete->modelSupport}}};
           auto completed =
               std::get<ApplicationFpaCompletedObservation>(std::move(*fpa));
           dse::ObjectiveVector objective = sharedPromotionProgram->makeVector();
@@ -654,7 +717,9 @@ makeApplicationBoundedQualityPolicy(
                   {{system, std::move(objective)}, completed.evidence,
                    {std::vector<ResolvedObjectiveScalar>(
                         completed.values.begin(), completed.values.end()),
-                    {}, {}}}}};
+                    {}, {}, {}, {}, {}, {},
+                    dse::JointDesignQualityRuntimeCompletion::NotEstablished,
+                    dse::JointDesignCalibratedModelSupport::InDomain}}}};
         }};
 
     result.semanticInputs.push_back(fpaWeight->reference());

@@ -121,7 +121,9 @@ firstMapping(const JointDesignExecution &execution);
 llvm::Error recordJointAttempt(std::vector<JointDesignAttemptRecord> &records,
                                std::uint64_t planOrdinal,
                                const ArtifactRootReference &fallbackSystem,
-                               const JointDesignExecution &execution);
+                               const JointDesignExecution &execution,
+                               std::optional<ArtifactRootReference>
+                                   hardwarePromotionParentSystem = {});
 
 llvm::Error bindImmutableSpatialMappingFrontier(
     JointDesignExplorationPlan &plan,
