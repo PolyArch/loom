@@ -1727,11 +1727,15 @@ finalizeExternalToolInvocationBundle(
           "diagnostic command ordinals are not canonical sorted-unique");
     previousDiagnosticOrdinal = ordinal;
     hasPreviousDiagnosticOrdinal = true;
+    // The presentation argument reaches the simulation, which is either a
+    // tool-produced program or the frozen tool running its own snapshot.
     if (specification.commands[ordinal].empty() ||
-        !llvm::is_contained(specification.toolProducedExecutables,
-                            specification.commands[ordinal].front()))
-      return bundleError(
-          "diagnostic command is not a tool-produced executable");
+        (specification.commands[ordinal].front() !=
+             specification.tool.executable &&
+         !llvm::is_contained(specification.toolProducedExecutables,
+                             specification.commands[ordinal].front())))
+      return bundleError("diagnostic command is not the frozen tool or a "
+                         "tool-produced executable");
   }
   for (const std::vector<std::string> &command : specification.commands)
     for (const std::string &argument : command)
@@ -1763,6 +1767,10 @@ finalizeExternalToolInvocationBundle(
   std::filesystem::create_directories(*staging / "drivers", directoryError);
   std::filesystem::create_directories(*staging / "inputs", directoryError);
   std::filesystem::create_directories(*staging / "outputs", directoryError);
+  // The tool scratch root exists before the first command, so a compiler
+  // that creates its library or program one level below it needs no
+  // pre-existing product.
+  std::filesystem::create_directories(*staging / "work", directoryError);
   if (directoryError)
     return bundleError("could not create bundle layout: " +
                        directoryError.message());

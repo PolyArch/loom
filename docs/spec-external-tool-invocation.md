@@ -493,7 +493,13 @@ run.sh
 drivers/...
 inputs/...
 outputs/...
+work/
 ```
+
+`work/` is the tool scratch root, empty at finalization: every tool-produced
+executable, library, and compile product lies strictly below it, and a
+launcher that creates its library or program one level below the root finds
+the root present without a materialized placeholder.
 
 `tool-invocation.json` is the sole bundle manifest. It records:
 
