@@ -602,8 +602,6 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         evaluation::EvidenceOutcomeKind::Completed) {
       emitRuntimeEvidenceFailure("cgra_simulation", cgraEvidence);
       validation.disposition = runtimeDisposition(cgraEvidence.outcomeKind());
-      validation.cgraMemoryContractRefusal =
-          cgraEvaluation->unsupportedMemoryContract;
       return validation;
     }
     auto cgraTerminal =
