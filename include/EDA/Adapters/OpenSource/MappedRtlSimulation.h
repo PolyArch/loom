@@ -40,6 +40,12 @@ inline constexpr llvm::StringLiteral mappedRtlVcsWorkDirectoryPath =
     "work/vcs";
 inline constexpr llvm::StringLiteral mappedRtlVcsSimulatorExecutablePath =
     "work/vcs/simulation";
+inline constexpr llvm::StringLiteral mappedRtlXceliumDriverPath =
+    "drivers/xrun.args";
+/// The Xcelium library directory that holds the elaborated snapshot. xrun
+/// creates one directory level below the bundle's existing `work/` root.
+inline constexpr llvm::StringLiteral mappedRtlXceliumLibraryDirectoryPath =
+    "work/xcelium";
 inline constexpr llvm::StringLiteral mappedRtlResultPath =
     "outputs/mapped-rtl-result.txt";
 inline constexpr llvm::StringLiteral mappedRtlConfigurationTransportReceiptPath =

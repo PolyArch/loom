@@ -897,13 +897,14 @@ int main(int argc, char **argv) {
           loom::eda::open_source::registerMappedRtlSimulationProvider())
     fail(llvm::toString(std::move(error)));
   const llvm::StringRef selector(argv[1]);
-  if (selector == "--real-verilator") {
-    realSimulatorLifecycle(
-        loom::eda::open_source::MappedRtlHdlSimulator::Verilator);
-    return EXIT_SUCCESS;
-  }
-  if (selector == "--real-vcs") {
-    realSimulatorLifecycle(loom::eda::open_source::MappedRtlHdlSimulator::Vcs);
+  for (loom::eda::open_source::MappedRtlHdlSimulator simulator :
+       loom::eda::open_source::mappedRtlHdlSimulators) {
+    if (selector !=
+        ("--real-" +
+         loom::eda::open_source::mappedRtlHdlSimulatorSpelling(simulator))
+            .str())
+      continue;
+    realSimulatorLifecycle(simulator);
     return EXIT_SUCCESS;
   }
   if (selector == "--result-protocol")

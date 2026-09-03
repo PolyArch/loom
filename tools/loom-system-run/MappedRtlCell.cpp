@@ -196,7 +196,12 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
       loom::eda::open_source::mappedRtlHdlSimulatorProvider(options.simulator);
   loom::external_tool::LocalToolConfig local = options.localToolConfig;
   const auto configured = local.tools.find(provider.binding.key);
-  configured->second.providerOptions["build_jobs"] = options.buildJobs;
+  // Each member admits its own parallelism options: Xcelium elaborates and
+  // simulates single-threaded, VCS takes the parallel compilation count, and
+  // Verilator additionally owns the hierarchy workers and model threads.
+  if (options.simulator !=
+      loom::eda::open_source::MappedRtlHdlSimulator::Xcelium)
+    configured->second.providerOptions["build_jobs"] = options.buildJobs;
   if (options.simulator ==
       loom::eda::open_source::MappedRtlHdlSimulator::Verilator) {
     configured->second.providerOptions["build_workers"] = options.buildWorkers;

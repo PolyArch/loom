@@ -187,6 +187,15 @@ renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
                          llvm::StringRef workDirectoryPath,
                          llvm::StringRef simulatorExecutablePath);
 
+/// Renders the xrun argument file of one bundle: the SystemVerilog and
+/// timescale mode, the harness top, the snapshot library directory, the
+/// suppressed log, key, and history files, and the exact source list. The
+/// mandatory `-64bit` token and the elaborate-only mode are command tokens.
+llvm::Expected<std::string>
+renderMappedRtlXceliumDriver(const MappedRtlInvocationFacts &facts,
+                             llvm::StringRef testbenchPath,
+                             llvm::StringRef libraryDirectoryPath);
+
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(const MappedRtlObservationFacts &facts,
                                        const MappedRtlSimulationResult &result);

@@ -315,19 +315,19 @@ configuration-image set for the exact Spatial workload. Its resolved config
 view owns the stable HDL simulator build identity; executable paths, module
 activation, scratch location, and wall-time limits remain invocation bindings.
 The identity names one member of the provider's closed HDL simulator set,
-Verilator or Synopsys VCS, through the catalog version-probe marker of that
-member's backend tool, and the member's exact release is qualified through the
-catalog's validated-release relation; an identity that names no member or a
-release the catalog has not validated is a typed refusal, never a fallback to
-another simulator. Every member compiles the same generated harness, runs the
-same frozen result protocol, and imports through the same importer, so two
-members that retire the same Request publish byte-identical result files and
-functional observations; they differ only in the frozen command schedule and
-tool-local material of the bundle. The provider accepts an `Rtl`
-representation root and publishes the ordinary Spatial `SimulationExecution`
-plus exact integral CycleCount. Gate-netlist execution requires another exact
-model descriptor rather than an implicit fidelity switch or fallback under
-kind 21.
+Verilator, Synopsys VCS, or Cadence Xcelium, through the catalog version-probe
+marker of that member's backend tool, and the member's exact release is
+qualified through the catalog's validated-release relation; an identity that
+names no member or a release the catalog has not validated is a typed refusal,
+never a fallback to another simulator. Every member compiles the same
+generated harness, runs the same frozen result protocol, and imports through
+the same importer, so two members that retire the same Request publish
+byte-identical result files and functional observations; they differ only in
+the frozen command schedule and tool-local material of the bundle. The
+provider accepts an `Rtl` representation root and publishes the ordinary
+Spatial `SimulationExecution` plus exact integral CycleCount. Gate-netlist
+execution requires another exact model descriptor rather than an implicit
+fidelity switch or fallback under kind 21.
 
 Rail analysis reports the provider-neutral whole-case
 `MaximumVoltageDrop` MetricKind in volts. Voltus and any other static or

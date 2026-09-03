@@ -179,12 +179,13 @@ prepareProvider(const EvaluationRequest &request,
   if (!runtime)
     return runtime.takeError();
 
-  // Both simulators share the harness, the result protocol, and the import;
-  // they differ in the frozen command schedule and the tool-local material.
+  // Every member shares the harness, the result protocol, and the import;
+  // the members differ in the frozen command schedule and the tool-local
+  // material.
   std::vector<MaterializedBundleFile> files;
   std::vector<std::vector<std::string>> commands;
   std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryTools;
-  std::string simulatorExecutablePath;
+  std::vector<std::string> toolProducedExecutables;
   std::string resultPath;
   std::string configurationTransportReceiptPath;
   switch (*simulator) {
@@ -220,24 +221,33 @@ prepareProvider(const EvaluationRequest &request,
                 std::move(bundle.buildCommand),
                 {bundle.simulatorExecutablePath}};
     auxiliaryTools = std::move(buildTools->provenance);
-    simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
+    toolProducedExecutables = {std::move(bundle.simulatorExecutablePath)};
     resultPath = std::move(bundle.resultPath);
     configurationTransportReceiptPath =
         std::move(bundle.configurationTransportReceiptPath);
     break;
   }
-  case MappedRtlHdlSimulator::Vcs: {
-    auto projection = deriveMappedRtlVcsBundleProjection(
-        *closure,
-        MappedRtlVcsCompilationPlan{options->cycleLimit, options->buildJobs,
-                                    tool->executable},
-        artifacts, blobs);
+  case MappedRtlHdlSimulator::Vcs:
+  case MappedRtlHdlSimulator::Xcelium: {
+    auto projection = *simulator == MappedRtlHdlSimulator::Vcs
+                          ? deriveMappedRtlVcsBundleProjection(
+                                *closure,
+                                MappedRtlVcsCompilationPlan{options->cycleLimit,
+                                                            options->buildJobs,
+                                                            tool->executable},
+                                artifacts, blobs)
+                          : deriveMappedRtlXceliumBundleProjection(
+                                *closure,
+                                MappedRtlXceliumElaborationPlan{
+                                    options->cycleLimit, tool->executable},
+                                artifacts, blobs);
     if (!projection)
       return projection.takeError();
     if (const auto *unsupported =
             std::get_if<UnsupportedEvidence>(&*projection))
       return EvaluationModelProviderPreparation{*unsupported};
-    auto bundle = std::get<MappedRtlVcsBundleProjection>(std::move(*projection));
+    auto bundle =
+        std::get<MappedRtlEventDrivenBundleProjection>(std::move(*projection));
     files = {{bundle.testbenchPath, std::move(bundle.testbench), std::nullopt,
               false},
              {bundle.driverPath, std::move(bundle.driver), std::nullopt,
@@ -247,7 +257,7 @@ prepareProvider(const EvaluationRequest &request,
                  std::make_move_iterator(bundle.semanticInputs.end()));
     commands = {std::move(bundle.compileCommand),
                 std::move(bundle.simulationCommand)};
-    simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
+    toolProducedExecutables = std::move(bundle.toolProducedExecutables);
     resultPath = std::move(bundle.resultPath);
     configurationTransportReceiptPath =
         std::move(bundle.configurationTransportReceiptPath);
@@ -267,7 +277,7 @@ prepareProvider(const EvaluationRequest &request,
       std::move(files),
       {},
       {},
-      {simulatorExecutablePath}};
+      std::move(toolProducedExecutables)};
   specification.diagnosticCommandOrdinals = {simulationCommandOrdinal};
   specification.auxiliaryToolExecutables = std::move(auxiliaryTools);
   auto prepared = finalizeExternalToolInvocationBundle(

@@ -1025,9 +1025,29 @@ lists the exact semantic RTL source before the harness. VCS elaborates the
 semantic source directly: no hierarchy plan, derived library, block
 metacomment, or auxiliary build tool exists for this member, because VCS
 compiles and links the simulator itself. The generated harness is legal for
-both members: a variable that the initialization block and a clocked process
+every member: a variable that the initialization block and a clocked process
 both write is driven by a general clocked process, not an `always_ff`, which
 SystemVerilog forbids to share drivers and which VCS rejects.
+
+Cadence Xcelium is the third member of the mapped-RTL simulator set. Its
+bundle materializes the same semantic inputs and the same generated harness,
+one xrun argument file, and two frozen commands: the elaboration, whose
+executable is the catalog-frozen xrun launcher followed by the mandatory
+`-64bit` token, the elaborate-only mode, and the argument file, and the
+simulation, which runs the last elaborated snapshot of the bundle's library
+directory through the same launcher with the same `-64bit` token. The
+argument file selects SystemVerilog, applies the harness's femtosecond
+timescale to every module, names the harness top and the snapshot library
+directory one level below the bundle's `work/` root, turns off the launcher's
+log, key, and history files, and lists the exact semantic RTL source before
+the harness; the simulation command repeats the library directory and the
+three suppressions because the snapshot run reads no argument file. Xcelium
+elaborates the semantic source directly into a snapshot library, not a
+program, so this member lists no tool-produced executable, admits the cycle
+limit as its only provider option, and elaborates and simulates
+single-threaded. The two event-driven members share one bundle projection:
+the harness, the argument file, the compile command, the tool-produced
+executables of that command, and the simulation command.
 
 A plan that selects no block is a distinct Verilation style rather than a
 degenerate hierarchical plan. Flat Verilation annotates no module, emits

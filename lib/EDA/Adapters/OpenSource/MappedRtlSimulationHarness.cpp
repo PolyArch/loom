@@ -1183,6 +1183,26 @@ renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
   return text;
 }
 
+llvm::Expected<std::string>
+renderMappedRtlXceliumDriver(const MappedRtlInvocationFacts &facts,
+                             llvm::StringRef testbenchPath,
+                             llvm::StringRef libraryDirectoryPath) {
+  if (facts.rtlPaths.empty())
+    return invalid("Xcelium driver has no RTL sources");
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  // SystemVerilog and the harness's own 1 fs timescale for every RTL module,
+  // as for VCS; the snapshot library lies one level below the bundle's
+  // `work/` root, and no log, key, or history file is written beside it.
+  output << "-sv\n-timescale\n1fs/1fs\n-top\n"
+         << mappedRtlHarnessTop << "\n-xmlibdirname\n"
+         << libraryDirectoryPath << "\n-nolog\n-nokey\n-nohistory\n";
+  for (const std::string &path : facts.rtlPaths)
+    output << path << "\n";
+  output << testbenchPath << "\n";
+  return text;
+}
+
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(
     const MappedRtlObservationFacts &facts,

@@ -1,0 +1,5 @@
+# The third member of the closed mapped-RTL simulator set elaborates the same
+# generated harness into a snapshot, simulates it through its own launcher,
+# and imports the same Evidence shape.
+# REQUIRES: xcelium-26.03-s005
+# RUN: timeout %loom-timeout-xlong %loom-mapped-rtl-simulation-test --real-xcelium

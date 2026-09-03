@@ -93,7 +93,8 @@ parallelismOption(const external_tool::LocalToolConfig &config,
 
 /// The provider option names each simulator admits. Verilator owns the model
 /// thread count and the gem5 build worker share; VCS compiles and simulates
-/// without either.
+/// without either; Xcelium elaborates and simulates single-threaded and
+/// admits the cycle limit alone.
 llvm::ArrayRef<llvm::StringLiteral>
 admittedProviderOptions(MappedRtlHdlSimulator simulator) {
   static constexpr llvm::StringLiteral verilatorOptions[]{
@@ -101,11 +102,14 @@ admittedProviderOptions(MappedRtlHdlSimulator simulator) {
       kModelThreadsOption};
   static constexpr llvm::StringLiteral vcsOptions[]{kCycleLimitOption,
                                                     kBuildJobsOption};
+  static constexpr llvm::StringLiteral xceliumOptions[]{kCycleLimitOption};
   switch (simulator) {
   case MappedRtlHdlSimulator::Verilator:
     return verilatorOptions;
   case MappedRtlHdlSimulator::Vcs:
     return vcsOptions;
+  case MappedRtlHdlSimulator::Xcelium:
+    return xceliumOptions;
   }
   llvm_unreachable("closed HDL simulator set");
 }
@@ -884,14 +888,15 @@ llvm::StringRef mappedRtlHdlSimulatorSpelling(MappedRtlHdlSimulator simulator) {
     return "verilator";
   case MappedRtlHdlSimulator::Vcs:
     return "vcs";
+  case MappedRtlHdlSimulator::Xcelium:
+    return "xcelium";
   }
   llvm_unreachable("closed HDL simulator set");
 }
 
 std::optional<MappedRtlHdlSimulator>
 parseMappedRtlHdlSimulator(llvm::StringRef spelling) {
-  for (MappedRtlHdlSimulator simulator :
-       {MappedRtlHdlSimulator::Verilator, MappedRtlHdlSimulator::Vcs})
+  for (MappedRtlHdlSimulator simulator : mappedRtlHdlSimulators)
     if (spelling == mappedRtlHdlSimulatorSpelling(simulator))
       return simulator;
   return std::nullopt;
@@ -904,6 +909,8 @@ mappedRtlHdlSimulatorProvider(MappedRtlHdlSimulator simulator) {
     return external_tool::verilatorProvider();
   case MappedRtlHdlSimulator::Vcs:
     return external_tool::vcsProvider();
+  case MappedRtlHdlSimulator::Xcelium:
+    return external_tool::xceliumProvider();
   }
   llvm_unreachable("closed HDL simulator set");
 }
@@ -911,8 +918,7 @@ mappedRtlHdlSimulatorProvider(MappedRtlHdlSimulator simulator) {
 std::optional<MappedRtlHdlSimulator>
 classifyMappedRtlHdlSimulator(llvm::StringRef stableHdlSimulatorBuildIdentity) {
   std::optional<MappedRtlHdlSimulator> classified;
-  for (MappedRtlHdlSimulator simulator :
-       {MappedRtlHdlSimulator::Verilator, MappedRtlHdlSimulator::Vcs}) {
+  for (MappedRtlHdlSimulator simulator : mappedRtlHdlSimulators) {
     const auto &marker =
         mappedRtlHdlSimulatorProvider(simulator).versionProbe
             .requiredOutputSubstring;
@@ -1172,61 +1178,131 @@ deriveMappedRtlExecutionBundleProjection(
   return MappedRtlExecutionProjectionOrUnsupported{std::move(result)};
 }
 
-llvm::Expected<MappedRtlVcsProjectionOrUnsupported>
-deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
-                                   const MappedRtlVcsCompilationPlan &plan,
-                                   const ArtifactStore &artifacts,
-                                   const BlobStore &blobs) {
-  if (plan.cycleLimit == 0)
+namespace {
+
+/// The shared derivation of an event-driven member's bundle: the invocation
+/// facts, the harness, and the member's argument file rendered from those
+/// facts. The caller adds the member's command schedule.
+llvm::Expected<MappedRtlEventDrivenProjectionOrUnsupported>
+deriveEventDrivenBundleProjection(
+    const MappedRtlExecutionClosure &closure, std::uint64_t cycleLimit,
+    llvm::StringRef driverPath, const ArtifactStore &artifacts,
+    const BlobStore &blobs,
+    llvm::function_ref<
+        llvm::Expected<std::string>(const detail::MappedRtlInvocationFacts &)>
+        renderDriver) {
+  if (cycleLimit == 0)
     return invalid("execution cycle limit must be positive");
-  if (!isMappedRtlParallelismCount(plan.buildJobs))
-    return invalidParallelism("mapped RTL build jobs");
-  if (plan.vcsExecutable.empty())
-    return invalid("mapped RTL plan has no VCS executable");
   auto factsOrUnsupported =
       detail::deriveMappedRtlInvocationFacts(closure, artifacts, blobs);
   if (!factsOrUnsupported)
     return factsOrUnsupported.takeError();
   if (const auto *unsupported =
           std::get_if<evaluation::UnsupportedEvidence>(&*factsOrUnsupported))
-    return MappedRtlVcsProjectionOrUnsupported{*unsupported};
+    return MappedRtlEventDrivenProjectionOrUnsupported{*unsupported};
   detail::MappedRtlInvocationFacts facts =
       std::get<detail::MappedRtlInvocationFacts>(
           std::move(*factsOrUnsupported));
-  facts.cycleLimit = plan.cycleLimit;
+  facts.cycleLimit = cycleLimit;
   auto testbench = detail::renderMappedRtlTestbench(
       facts, facts.configurationProgramPaths, mappedRtlResultPath,
       ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath);
   if (!testbench)
     return testbench.takeError();
-  auto driver = detail::renderMappedRtlVcsDriver(
-      facts, plan, mappedRtlTestbenchPath, mappedRtlVcsWorkDirectoryPath,
-      mappedRtlVcsSimulatorExecutablePath);
+  auto driver = renderDriver(facts);
   if (!driver)
     return driver.takeError();
-  MappedRtlVcsBundleProjection result;
+  MappedRtlEventDrivenBundleProjection result;
   result.semanticInputs = std::move(facts.semanticInputs);
   result.testbenchPath = mappedRtlTestbenchPath.str();
-  result.driverPath = mappedRtlVcsDriverPath.str();
-  result.simulatorExecutablePath = mappedRtlVcsSimulatorExecutablePath.str();
+  result.driverPath = driverPath.str();
   result.resultPath = mappedRtlResultPath.str();
   result.configurationTransportReceiptPath =
       ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath.str();
   result.testbench = std::move(*testbench);
   result.driver = std::move(*driver);
+  return MappedRtlEventDrivenProjectionOrUnsupported{std::move(result)};
+}
+
+} // namespace
+
+llvm::Expected<MappedRtlEventDrivenProjectionOrUnsupported>
+deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
+                                   const MappedRtlVcsCompilationPlan &plan,
+                                   const ArtifactStore &artifacts,
+                                   const BlobStore &blobs) {
+  if (!isMappedRtlParallelismCount(plan.buildJobs))
+    return invalidParallelism("mapped RTL build jobs");
+  if (plan.vcsExecutable.empty())
+    return invalid("mapped RTL plan has no VCS executable");
+  auto projection = deriveEventDrivenBundleProjection(
+      closure, plan.cycleLimit, mappedRtlVcsDriverPath, artifacts, blobs,
+      [&](const detail::MappedRtlInvocationFacts &facts) {
+        return detail::renderMappedRtlVcsDriver(
+            facts, plan, mappedRtlTestbenchPath, mappedRtlVcsWorkDirectoryPath,
+            mappedRtlVcsSimulatorExecutablePath);
+      });
+  if (!projection)
+    return projection.takeError();
+  auto *result =
+      std::get_if<MappedRtlEventDrivenBundleProjection>(&*projection);
+  if (!result)
+    return projection;
+  result->toolProducedExecutables = {mappedRtlVcsSimulatorExecutablePath.str()};
   // The mandatory 64-bit architecture token is projected into the structured
   // command by the provider descriptor's contract, never left to the
   // argument file. `-file` admits every option in the file; `-f` admits only
   // sources and a subset of options.
-  result.compileCommand = {plan.vcsExecutable, "-full64", "-file",
-                           result.driverPath};
+  result->compileCommand = {plan.vcsExecutable, "-full64", "-file",
+                            result->driverPath};
   // The simulator records interactive commands in a key file in its working
   // directory unless told not to, and re-executes itself to disable address
   // space randomization for save/restore unless that feature is off; the
   // bundle root admits no undeclared product and the harness saves nothing.
-  result.simulationCommand = {result.simulatorExecutablePath, "-k", "off",
-                              "-no_save"};
-  return MappedRtlVcsProjectionOrUnsupported{std::move(result)};
+  result->simulationCommand = {mappedRtlVcsSimulatorExecutablePath.str(), "-k",
+                               "off", "-no_save"};
+  return projection;
+}
+
+llvm::Expected<MappedRtlEventDrivenProjectionOrUnsupported>
+deriveMappedRtlXceliumBundleProjection(
+    const MappedRtlExecutionClosure &closure,
+    const MappedRtlXceliumElaborationPlan &plan, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  if (plan.xrunExecutable.empty())
+    return invalid("mapped RTL plan has no Xcelium executable");
+  auto projection = deriveEventDrivenBundleProjection(
+      closure, plan.cycleLimit, mappedRtlXceliumDriverPath, artifacts, blobs,
+      [&](const detail::MappedRtlInvocationFacts &facts) {
+        return detail::renderMappedRtlXceliumDriver(
+            facts, mappedRtlTestbenchPath,
+            mappedRtlXceliumLibraryDirectoryPath);
+      });
+  if (!projection)
+    return projection.takeError();
+  auto *result =
+      std::get_if<MappedRtlEventDrivenBundleProjection>(&*projection);
+  if (!result)
+    return projection;
+  // The mandatory 64-bit token is a command token like VCS's `-full64`. The
+  // elaboration command parses and elaborates the argument file's sources
+  // into a snapshot inside the library directory and does not simulate; the
+  // simulation command runs the last elaborated snapshot of that library
+  // through the same launcher, so the bundle lists no tool-produced
+  // executable. The launcher writes a log, a key file, and a history file
+  // into its working directory unless each is turned off; the bundle root
+  // admits no undeclared product, and stdout is already captured.
+  result->compileCommand = {plan.xrunExecutable, "-64bit", "-elaborate", "-f",
+                            result->driverPath};
+  result->simulationCommand = {plan.xrunExecutable,
+                               "-64bit",
+                               "-R",
+                               "-xmlibdirname",
+                               mappedRtlXceliumLibraryDirectoryPath.str(),
+                               "-nolog",
+                               "-nokey",
+                               "-nohistory"};
+  return projection;
 }
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>

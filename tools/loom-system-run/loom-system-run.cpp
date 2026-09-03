@@ -111,7 +111,12 @@ llvm::cl::opt<loom::eda::open_source::MappedRtlHdlSimulator> mappedRtlSimulator(
                    loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
                        loom::eda::open_source::MappedRtlHdlSimulator::Vcs)
                        .data(),
-                   "Synopsys VCS, event-driven four-state model")),
+                   "Synopsys VCS, event-driven four-state model"),
+        clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Xcelium,
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       loom::eda::open_source::MappedRtlHdlSimulator::Xcelium)
+                       .data(),
+                   "Cadence Xcelium, event-driven four-state model")),
     llvm::cl::init(loom::eda::open_source::MappedRtlHdlSimulator::Verilator));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildJobs(
     "mapped-rtl-build-jobs",

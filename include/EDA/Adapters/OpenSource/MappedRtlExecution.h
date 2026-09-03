@@ -31,7 +31,13 @@ namespace loom::eda::open_source {
 /// catalog-owned backend tool that compiles the same generated harness and
 /// writes the same result protocol; the Request's stable HDL simulator build
 /// identity names exactly one member through that tool's version-probe marker.
-enum class MappedRtlHdlSimulator : std::uint8_t { Verilator, Vcs };
+enum class MappedRtlHdlSimulator : std::uint8_t { Verilator, Vcs, Xcelium };
+
+/// Every member in declaration order, for the closed-set iterations of the
+/// spelling, classification, and option owners.
+inline constexpr MappedRtlHdlSimulator mappedRtlHdlSimulators[]{
+    MappedRtlHdlSimulator::Verilator, MappedRtlHdlSimulator::Vcs,
+    MappedRtlHdlSimulator::Xcelium};
 
 /// The canonical command-line spelling of one simulator and its inverse.
 llvm::StringRef mappedRtlHdlSimulatorSpelling(MappedRtlHdlSimulator simulator);
@@ -161,7 +167,8 @@ constexpr bool isMappedRtlParallelismCount(std::uint64_t value) {
 /// Verilator's simulation thread count emitted as both `--threads` and
 /// `--hierarchical-threads` so the generated main, the root model, and the
 /// hierarchical schedule agree; VCS simulates single-threaded and admits no
-/// thread option. Both counts satisfy `isMappedRtlParallelismCount`.
+/// thread option; Xcelium elaborates and simulates single-threaded and admits
+/// the cycle limit alone. Both counts satisfy `isMappedRtlParallelismCount`.
 struct MappedRtlExecutionAttemptOptions final {
   std::uint64_t cycleLimit = 0;
   std::uint64_t buildJobs = 0;
@@ -190,15 +197,27 @@ struct MappedRtlVcsCompilationPlan final {
   std::string vcsExecutable;
 };
 
-/// The VCS bundle: the semantic inputs, the shared harness, the VCS argument
-/// file, the frozen compile command, and the simulation command that runs the
-/// tool-produced simulator. The harness compiles the semantic RTL source
-/// directly; no hierarchy plan or derived library exists for this simulator.
-struct MappedRtlVcsBundleProjection final {
+/// The elaboration inputs of one Xcelium bundle: the attempt limit and the
+/// frozen xrun launcher. Xcelium elaborates the harness into a snapshot inside
+/// its library directory and simulates that snapshot through the same
+/// launcher, so the bundle freezes no auxiliary build tool and lists no
+/// tool-produced executable.
+struct MappedRtlXceliumElaborationPlan final {
+  std::uint64_t cycleLimit = 0;
+  std::string xrunExecutable;
+};
+
+/// The bundle of an event-driven member (VCS or Xcelium): the semantic
+/// inputs, the shared harness, the member's argument file, the frozen compile
+/// command, the tool-produced executables that command creates (the VCS
+/// simulator; none for Xcelium, whose snapshot is a library), and the
+/// simulation command. The harness compiles the semantic RTL source directly;
+/// no hierarchy plan or derived library exists for these members.
+struct MappedRtlEventDrivenBundleProjection final {
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::string testbenchPath;
   std::string driverPath;
-  std::string simulatorExecutablePath;
+  std::vector<std::string> toolProducedExecutables;
   std::string resultPath;
   std::string configurationTransportReceiptPath;
   std::string testbench;
@@ -211,8 +230,9 @@ using MappedRtlExecutionProjectionOrUnsupported =
     std::variant<MappedRtlExecutionBundleProjection,
                  evaluation::UnsupportedEvidence>;
 
-using MappedRtlVcsProjectionOrUnsupported =
-    std::variant<MappedRtlVcsBundleProjection, evaluation::UnsupportedEvidence>;
+using MappedRtlEventDrivenProjectionOrUnsupported =
+    std::variant<MappedRtlEventDrivenBundleProjection,
+                 evaluation::UnsupportedEvidence>;
 
 llvm::Expected<MappedRtlExecutionAttemptOptions>
 resolveMappedRtlExecutionAttemptOptions(
@@ -234,11 +254,19 @@ deriveMappedRtlExecutionBundleProjection(
 
 /// Derives the VCS materialization of one closure. The generated harness is
 /// the same source the Verilator projection compiles.
-llvm::Expected<MappedRtlVcsProjectionOrUnsupported>
+llvm::Expected<MappedRtlEventDrivenProjectionOrUnsupported>
 deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
                                    const MappedRtlVcsCompilationPlan &plan,
                                    const ArtifactStore &artifacts,
                                    const BlobStore &blobs);
+
+/// Derives the Xcelium materialization of one closure: the same harness, one
+/// xrun argument file, the elaboration command, and the snapshot simulation.
+llvm::Expected<MappedRtlEventDrivenProjectionOrUnsupported>
+deriveMappedRtlXceliumBundleProjection(
+    const MappedRtlExecutionClosure &closure,
+    const MappedRtlXceliumElaborationPlan &plan, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
 deriveMappedRtlExecutionImportExpectation(
