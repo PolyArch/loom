@@ -660,9 +660,15 @@ buildConfigurationControllerModule(
                            indexWidth(layout.payloadWordCount), 0));
           mlir::Value storedWord =
               activeWordAt(bodyBuilder, location, unit, safeWordIndex);
+          mlir::Value inactiveWordIndex = mux(
+              bodyBuilder, location, unit.initialized,
+              constant(bodyBuilder, location,
+                       indexWidth(layout.payloadWordCount), 0),
+              safeWordIndex);
           mlir::Value word =
               mux(bodyBuilder, location, unit.initialized, storedWord,
-                  inactiveWordAt(bodyBuilder, location, layout, safeWordIndex));
+                  inactiveWordAt(bodyBuilder, location, layout,
+                                 inactiveWordIndex));
           readData = mux(bodyBuilder, location, payloadMatch, word, readData);
           readResponse =
               mux(bodyBuilder, location, payloadMatch,
