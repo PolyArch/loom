@@ -514,11 +514,12 @@ buildConfigurationControllerModule(
           mlir::Value payloadWrite = andValues(
               bodyBuilder, location, {executeWrite, payloadMatch, unusedZero});
 
-          mlir::Value inactiveWords =
-              mux(bodyBuilder, location, unit.activeBank, unit.bankZero,
-                  unit.bankOne);
-          mlir::Value oldWord = circt::hw::ArrayGetOp::create(
-              bodyBuilder, location, inactiveWords, safeWordIndex);
+          mlir::Value bankZeroWord = circt::hw::ArrayGetOp::create(
+              bodyBuilder, location, unit.bankZero, safeWordIndex);
+          mlir::Value bankOneWord = circt::hw::ArrayGetOp::create(
+              bodyBuilder, location, unit.bankOne, safeWordIndex);
+          mlir::Value oldWord = mux(bodyBuilder, location, unit.activeBank,
+                                    bankZeroWord, bankOneWord);
           mlir::Value retainedWord = circt::comb::AndOp::create(
               bodyBuilder, location, oldWord,
               notValue(bodyBuilder, location, byteWriteMask), true);
@@ -529,16 +530,18 @@ buildConfigurationControllerModule(
           updatedWord = circt::comb::AndOp::create(
               bodyBuilder, location, updatedWord,
               notValue(bodyBuilder, location, invalidMask), true);
-          mlir::Value updatedInactive = circt::hw::ArrayInjectOp::create(
-              bodyBuilder, location, inactiveWords, safeWordIndex, updatedWord);
+          mlir::Value updatedBankZero = circt::hw::ArrayInjectOp::create(
+              bodyBuilder, location, unit.bankZero, safeWordIndex, updatedWord);
+          mlir::Value updatedBankOne = circt::hw::ArrayInjectOp::create(
+              bodyBuilder, location, unit.bankOne, safeWordIndex, updatedWord);
           mlir::Value writeBankZero =
               andValues(bodyBuilder, location, {payloadWrite, unit.activeBank});
           mlir::Value writeBankOne = andValues(
               bodyBuilder, location,
               {payloadWrite, notValue(bodyBuilder, location, unit.activeBank)});
-          unit.bankZeroNext.setValue(updatedInactive);
+          unit.bankZeroNext.setValue(updatedBankZero);
           unit.bankZeroEnable.setValue(writeBankZero);
-          unit.bankOneNext.setValue(updatedInactive);
+          unit.bankOneNext.setValue(updatedBankOne);
           unit.bankOneEnable.setValue(writeBankOne);
 
           const unsigned usedLastWordBytes =
