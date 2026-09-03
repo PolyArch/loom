@@ -71,11 +71,11 @@ mlir::Value createStructuredRegister(mlir::OpBuilder &builder,
                                        resetValue, name);
 }
 
-mlir::Value createUnresetStructuredRegister(mlir::OpBuilder &builder,
-                                            mlir::Location location,
-                                            mlir::Value next, mlir::Value clock,
-                                            llvm::StringRef name) {
-  return circt::seq::CompRegOp::create(builder, location, next, clock, name);
+mlir::Value createUnresetClockEnabledStructuredRegister(
+    mlir::OpBuilder &builder, mlir::Location location, mlir::Value next,
+    mlir::Value clock, mlir::Value clockEnable, llvm::StringRef name) {
+  return circt::seq::CompRegClockEnabledOp::create(
+      builder, location, next, clock, clockEnable, name);
 }
 
 std::uint32_t inactiveWord(const ConfigurationTransportUnitLayout &layout,
@@ -151,8 +151,11 @@ struct ConfigurationUnitState final {
   circt::hw::ArrayType wordArrayType;
   circt::hw::ArrayType tagArrayType;
   circt::Backedge bankZeroNext;
+  circt::Backedge bankZeroEnable;
   circt::Backedge bankOneNext;
+  circt::Backedge bankOneEnable;
   circt::Backedge tagsNext;
+  circt::Backedge tagsEnable;
   circt::Backedge activeBankNext;
   circt::Backedge initializedNext;
   circt::Backedge coveredCountNext;
@@ -380,8 +383,12 @@ buildConfigurationControllerModule(
           state.tagArrayType = circt::hw::ArrayType::get(
               bodyBuilder.getI4Type(), layout.payloadWordCount);
           state.bankZeroNext = backedges.get(state.wordArrayType);
+          state.bankZeroEnable = backedges.get(bodyBuilder.getI1Type());
           state.bankOneNext = backedges.get(state.wordArrayType);
+          state.bankOneEnable = backedges.get(bodyBuilder.getI1Type());
           state.tagsNext = backedges.get(state.tagArrayType);
+          if (!clockReset.asynchronousReset)
+            state.tagsEnable = backedges.get(bodyBuilder.getI1Type());
           state.activeBankNext = backedges.get(bodyBuilder.getI1Type());
           state.initializedNext = backedges.get(bodyBuilder.getI1Type());
           const unsigned coveredCountWidth =
@@ -392,15 +399,20 @@ buildConfigurationControllerModule(
           mlir::Value emptyTags =
               zeroArrayConstant(bodyBuilder, location, state.tagArrayType);
           const std::string prefix = "cfg_unit_" + std::to_string(unitOrdinal);
-          state.bankZero = createUnresetStructuredRegister(
+          state.bankZero = createUnresetClockEnabledStructuredRegister(
               bodyBuilder, location, state.bankZeroNext, clock,
-              prefix + "_bank_0");
-          state.bankOne = createUnresetStructuredRegister(
+              state.bankZeroEnable, prefix + "_bank_0");
+          state.bankOne = createUnresetClockEnabledStructuredRegister(
               bodyBuilder, location, state.bankOneNext, clock,
-              prefix + "_bank_1");
-          state.tags = createStructuredRegister(
-              bodyBuilder, location, state.tagsNext, clock, reset, emptyTags,
-              prefix + "_coverage_tags", clockReset.asynchronousReset);
+              state.bankOneEnable, prefix + "_bank_1");
+          if (clockReset.asynchronousReset)
+            state.tags = createStructuredRegister(
+                bodyBuilder, location, state.tagsNext, clock, reset, emptyTags,
+                prefix + "_coverage_tags", true);
+          else
+            state.tags = circt::seq::CompRegClockEnabledOp::create(
+                bodyBuilder, location, state.tagsNext, clock, state.tagsEnable,
+                reset, emptyTags, prefix + "_coverage_tags");
           state.activeBank =
               createRegister(bodyBuilder, location, state.activeBankNext, clock,
                              reset, llvm::APInt(1, 0), prefix + "_active_bank",
@@ -524,10 +536,10 @@ buildConfigurationControllerModule(
           mlir::Value writeBankOne = andValues(
               bodyBuilder, location,
               {payloadWrite, notValue(bodyBuilder, location, unit.activeBank)});
-          unit.bankZeroNext.setValue(mux(bodyBuilder, location, writeBankZero,
-                                         updatedInactive, unit.bankZero));
-          unit.bankOneNext.setValue(mux(bodyBuilder, location, writeBankOne,
-                                        updatedInactive, unit.bankOne));
+          unit.bankZeroNext.setValue(updatedInactive);
+          unit.bankZeroEnable.setValue(writeBankZero);
+          unit.bankOneNext.setValue(updatedInactive);
+          unit.bankOneEnable.setValue(writeBankOne);
 
           const unsigned usedLastWordBytes =
               static_cast<unsigned>(layout.payloadByteCount % 4);
@@ -558,8 +570,13 @@ buildConfigurationControllerModule(
               mux(bodyBuilder, location, generation, tagsSet, tagsCleared);
           mlir::Value injectedTags = circt::hw::ArrayInjectOp::create(
               bodyBuilder, location, unit.tags, safeWordIndex, updatedTags);
-          unit.tagsNext.setValue(mux(bodyBuilder, location, payloadWrite,
-                                     injectedTags, unit.tags));
+          if (clockReset.asynchronousReset)
+            unit.tagsNext.setValue(mux(bodyBuilder, location, payloadWrite,
+                                       injectedTags, unit.tags));
+          else {
+            unit.tagsNext.setValue(injectedTags);
+            unit.tagsEnable.setValue(payloadWrite);
+          }
 
           const unsigned countWidth =
               mlir::cast<mlir::IntegerType>(unit.coveredCount.getType())
