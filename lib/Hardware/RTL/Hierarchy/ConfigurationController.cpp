@@ -74,8 +74,8 @@ mlir::Value createStructuredRegister(mlir::OpBuilder &builder,
 mlir::Value createUnresetClockEnabledStructuredRegister(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Value next,
     mlir::Value clock, mlir::Value clockEnable, llvm::StringRef name) {
-  return circt::seq::CompRegClockEnabledOp::create(
-      builder, location, next, clock, clockEnable, name);
+  return circt::seq::CompRegClockEnabledOp::create(builder, location, next,
+                                                   clock, clockEnable, name);
 }
 
 std::uint32_t inactiveWord(const ConfigurationTransportUnitLayout &layout,
@@ -175,8 +175,8 @@ mlir::Value activeWordAt(mlir::OpBuilder &builder, mlir::Location location,
                          mlir::Value wordIndex) {
   mlir::Value bankZeroWord = circt::hw::ArrayGetOp::create(
       builder, location, unit.bankZero, wordIndex);
-  mlir::Value bankOneWord = circt::hw::ArrayGetOp::create(
-      builder, location, unit.bankOne, wordIndex);
+  mlir::Value bankOneWord =
+      circt::hw::ArrayGetOp::create(builder, location, unit.bankOne, wordIndex);
   return mux(builder, location, unit.activeBank, bankOneWord, bankZeroWord);
 }
 
@@ -189,8 +189,7 @@ mlir::Value assembleBundle(mlir::OpBuilder &builder, mlir::Location location,
        llvm::reverse(configuration.words)) {
     assert(word.key.transportUnitOrdinal < units.size() &&
            "configuration bundle references an absent transport unit");
-    const ConfigurationUnitState &unit =
-        units[word.key.transportUnitOrdinal];
+    const ConfigurationUnitState &unit = units[word.key.transportUnitOrdinal];
     assert(word.key.wordOrdinal < unit.activeWords.size() &&
            "configuration bundle references an absent active word");
     mlir::Value selected = unit.activeWords[word.key.wordOrdinal];
@@ -260,8 +259,7 @@ buildConfigurationControllerModule(
   auto allFields = deriveConfigurationBundlePlan(*fieldDecoders);
   if (!allFields)
     return allFields.takeError();
-  for (const ConfigurationBundlePlan &configuration :
-       componentConfigurations)
+  for (const ConfigurationBundlePlan &configuration : componentConfigurations)
     for (const ConfigurationBundleWord &word : configuration.words) {
       const ConfigurationBundleWord *canonical = allFields->find(word.key);
       if (!canonical ||
@@ -278,13 +276,12 @@ buildConfigurationControllerModule(
   inputs.push_back(port(builder, "reset", builder.getI1Type(),
                         circt::hw::ModulePort::Direction::Input));
   appendAxiLiteConfigurationPorts(builder, inputs, outputs);
-  for (auto [ordinal, configuration] :
-       llvm::enumerate(componentConfigurations))
+  for (auto [ordinal, configuration] : llvm::enumerate(componentConfigurations))
     if (!configuration.empty())
-      outputs.push_back(port(
-          builder, controllerConfigurationBundlePortName(ordinal),
-          configurationBundleType(builder.getContext(), configuration),
-          circt::hw::ModulePort::Direction::Output));
+      outputs.push_back(
+          port(builder, controllerConfigurationBundlePortName(ordinal),
+               configurationBundleType(builder.getContext(), configuration),
+               circt::hw::ModulePort::Direction::Output));
 
   auto module = circt::hw::HWModuleOp::create(
       builder, location, builder.getStringAttr("loom_configuration_controller"),
@@ -432,10 +429,10 @@ buildConfigurationControllerModule(
             mlir::Value storedWord = activeWordAt(
                 bodyBuilder, location, state,
                 constant(bodyBuilder, location, wordIndexWidth, word));
-            state.activeWords.push_back(mux(
-                bodyBuilder, location, state.initialized, storedWord,
-                constant(bodyBuilder, location, 32,
-                         inactiveWord(layout, word))));
+            state.activeWords.push_back(
+                mux(bodyBuilder, location, state.initialized, storedWord,
+                    constant(bodyBuilder, location, 32,
+                             inactiveWord(layout, word))));
           }
           state.complete = equals(bodyBuilder, location, state.coveredCount,
                                   layout.payloadByteCount);
@@ -663,15 +660,14 @@ buildConfigurationControllerModule(
                            indexWidth(layout.payloadWordCount), 0));
           mlir::Value storedWord =
               activeWordAt(bodyBuilder, location, unit, safeWordIndex);
-          mlir::Value inactiveWordIndex = mux(
-              bodyBuilder, location, unit.initialized,
-              constant(bodyBuilder, location,
-                       indexWidth(layout.payloadWordCount), 0),
-              safeWordIndex);
-          mlir::Value word =
-              mux(bodyBuilder, location, unit.initialized, storedWord,
-                  inactiveWordAt(bodyBuilder, location, layout,
-                                 inactiveWordIndex));
+          mlir::Value inactiveWordIndex =
+              mux(bodyBuilder, location, unit.initialized,
+                  constant(bodyBuilder, location,
+                           indexWidth(layout.payloadWordCount), 0),
+                  safeWordIndex);
+          mlir::Value word = mux(
+              bodyBuilder, location, unit.initialized, storedWord,
+              inactiveWordAt(bodyBuilder, location, layout, inactiveWordIndex));
           readData = mux(bodyBuilder, location, payloadMatch, word, readData);
           readResponse =
               mux(bodyBuilder, location, payloadMatch,

@@ -324,15 +324,16 @@ void renderMemoryService(llvm::raw_ostream &output,
            << "            loom_memory_lane_offset_" << ordinal << " = ("
            << port.prefix << "_request_access_form == 2) ? "
            << "loom_memory_byte_in_lane_" << ordinal << " : "
-           << "loom_memory_byte_ordinal_" << ordinal << ";\n"
+           << "loom_memory_byte_ordinal_" << ordinal
+           << ";\n"
            // The complete byte-address expression is evaluated in the
            // portable calculation width; a request whose exact address
            // leaves the byte-address domain is a typed failure, never an
            // alias of the wrapped low bits.
            << "            if (" << port.prefix
-           << "_request_address_form == 0) loom_memory_wide_address_"
-           << ordinal << " = " << wideCast << "(loom_memory_root_base_"
-           << ordinal << ") + " << wideCast << "(" << port.prefix
+           << "_request_address_form == 0) loom_memory_wide_address_" << ordinal
+           << " = " << wideCast << "(loom_memory_root_base_" << ordinal
+           << ") + " << wideCast << "(" << port.prefix
            << "_request_base_address) + " << wideCast
            << "(loom_memory_lane_address_" << ordinal << ") * " << wideCast
            << "(loom_memory_element_bytes_" << ordinal << ") + " << wideCast
@@ -456,8 +457,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "        @(posedge " << clock << ");\n"
          << "        address_accepted = address_accepted | " << prefix
          << "_awready;\n"
-         << "        data_accepted = data_accepted | " << prefix
-         << "_wready;\n"
+         << "        data_accepted = data_accepted | " << prefix << "_wready;\n"
          << "        if (address_accepted) " << prefix << "_awvalid <= 0;\n"
          << "        if (data_accepted) " << prefix << "_wvalid <= 0;\n"
          << "        wait_cycles = wait_cycles + 1;\n"
@@ -517,8 +517,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                                 std::size_t taskOrdinal) {
   const std::string wordIndex =
       "loom_cfg_program_word_" + std::to_string(taskOrdinal);
-  const std::string words =
-      "loom_cfg_program_" + std::to_string(taskOrdinal);
+  const std::string words = "loom_cfg_program_" + std::to_string(taskOrdinal);
   // The configuration stages have very different simulation cost, so each
   // boundary is announced once at the ordinary verbosity level with its
   // simulation time and flushed. A host-side timestamp of the announcement is
@@ -673,14 +672,12 @@ void renderResultWriter(llvm::raw_ostream &output,
 } // namespace
 
 llvm::Expected<std::string>
-renderMappedRtlConfigurationProgramFile(
-    const ConfigurationProgram &program) {
+renderMappedRtlConfigurationProgramFile(const ConfigurationProgram &program) {
   if (llvm::Error error = validateProgram(program))
     return std::move(error);
   std::string text;
   llvm::raw_string_ostream output(text);
-  for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
-       ++word)
+  for (std::uint64_t word = 0; word != program.layout.payloadWordCount; ++word)
     output << llvm::format_hex_no_prefix(imageStrobe(program.image, word), 1)
            << llvm::format_hex_no_prefix(imageWord(program.image, word), 8)
            << '\n';
@@ -774,8 +771,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     output << "  logic [" << kConfigurationProgramWordWidth - 1
-           << ":0] loom_cfg_program_" << ordinal << " [0:"
-           << program.layout.payloadWordCount - 1 << "];\n"
+           << ":0] loom_cfg_program_" << ordinal
+           << " [0:" << program.layout.payloadWordCount - 1 << "];\n"
            << "  integer loom_cfg_program_word_" << ordinal << ";\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
@@ -815,10 +812,9 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "    loom_resets_released = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
             "loom_verbose_level)) loom_verbose_level = 0;\n";
-  for (const auto &[ordinal, path] :
-       llvm::enumerate(configurationProgramPaths))
-    output << "    $readmemh(\"" << path << "\", loom_cfg_program_"
-           << ordinal << ");\n";
+  for (const auto &[ordinal, path] : llvm::enumerate(configurationProgramPaths))
+    output << "    $readmemh(\"" << path << "\", loom_cfg_program_" << ordinal
+           << ");\n";
   for (const InputTokenStream &input : facts.streamInputs) {
     const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
     output << "    loom_runtime_stream_enabled_" << ordinal << " = 0;\n"
@@ -1058,7 +1054,8 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
   if (style == MappedRtlVerilationStyle::Hierarchical)
     output << "--hierarchical\n";
   output << "-j\n"
-         << plan.buildJobs << "\n--threads\n" << plan.modelThreads << "\n";
+         << plan.buildJobs << "\n--threads\n"
+         << plan.modelThreads << "\n";
   if (style == MappedRtlVerilationStyle::Hierarchical)
     output << "--hierarchical-threads\n" << plan.modelThreads << "\n";
   output << "--timing\n--Wall\n--Wno-fatal\n"
@@ -1095,9 +1092,9 @@ renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
   // The harness declares its own 1 fs timescale; the same scale is applied to
   // every RTL module so the clock periods of the harness are exact.
   output << "-sverilog\n-timescale=1fs/1fs\n-top\n"
-         << mappedRtlHarnessTop << "\n-j" << plan.buildJobs << "\n-Mdir="
-         << workDirectoryPath << "/csrc\n-o\n" << simulatorExecutablePath
-         << "\n";
+         << mappedRtlHarnessTop << "\n-j" << plan.buildJobs
+         << "\n-Mdir=" << workDirectoryPath << "/csrc\n-o\n"
+         << simulatorExecutablePath << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   output << testbenchPath << "\n";
