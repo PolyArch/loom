@@ -414,8 +414,8 @@ struct ApplicationFunnelExactComparison final {
 
 /// Quality facts from one exact joint-design invocation. Application runtime
 /// retries may execute distinct tail plans, so their facts retain their own
-/// InvocationManifest key and local plan-ordinal base instead of being folded
-/// into the final JointDesignExecutionSummary.
+/// InvocationManifest key, promotion counter, attempts, and local plan-ordinal
+/// base instead of being folded into the final JointDesignExecutionSummary.
 struct ApplicationPairQualityInvocationRecord final {
   std::uint64_t planOrdinalBase = 0;
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
@@ -427,6 +427,8 @@ struct ApplicationPairQualityInvocationRecord final {
   std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
   std::vector<dse::JointHardwarePromotionObservation>
       hardwarePromotionObservations;
+  std::uint64_t hardwareParentPromotions = 0;
+  std::vector<dse::JointDesignAttemptRecord> attempts;
   std::optional<std::uint64_t> selectedPlanOrdinal;
   std::optional<ArtifactRootReference> selectedMapping;
 };

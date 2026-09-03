@@ -20,15 +20,15 @@ namespace loom::application::diagnostics_detail {
 inline constexpr llvm::StringLiteral applicationPairDecisionSchemaIdentity =
     "loom.application_pair_decision";
 inline constexpr llvm::StringLiteral applicationPairDecisionSchemaVersion =
-    "1.1";
+    "1.2";
 inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaIdentity =
     "loom.application_pair_evidence";
 inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaVersion =
-    "1.1";
+    "1.2";
 inline constexpr llvm::StringLiteral applicationPairDispositionSchemaIdentity =
     "loom.application_pair_disposition";
 inline constexpr llvm::StringLiteral applicationPairDispositionSchemaVersion =
-    "1.1";
+    "1.2";
 
 llvm::StringRef spelling(dse::JointDesignAttemptDisposition value);
 llvm::StringRef spelling(dse::JointDesignQualityDisposition value);
@@ -41,6 +41,8 @@ void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
                          std::optional<std::uint64_t> value);
 void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
                      const std::optional<ArtifactRootReference> &value);
+llvm::json::Object
+encodeJointDesignAttempt(const dse::JointDesignAttemptRecord &attempt);
 llvm::json::Object
 encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance);
 llvm::json::Object

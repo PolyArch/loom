@@ -6,6 +6,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
+#include "Evaluation/Evidence.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
@@ -278,7 +279,8 @@ void qualityDispositionProjection() {
     loom::dse::JointDesignExecutionSummary summary;
     summary.qualityDisposition = quality;
     loom::dse::JointDesignExecution execution{
-        take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+        take(loom::dse::executeDsePlan(view, artifacts, blobs)),
+        {},
         std::move(summary)};
     const ApplicationPairDecisionRecord decision =
         build_detail::deriveApplicationPairDecision(prepared, {}, execution,
@@ -291,7 +293,8 @@ void qualityDispositionProjection() {
   conflictingSummary.qualityDisposition =
       QualityDisposition::CancelledOrTimeout;
   loom::dse::JointDesignExecution conflictingExecution{
-      take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+      take(loom::dse::executeDsePlan(view, artifacts, blobs)),
+      {},
       std::move(conflictingSummary)};
   ApplicationPairQualityInvocationRecord invocation;
   invocation.qualityDisposition = QualityDisposition::Unsupported;
@@ -317,23 +320,32 @@ void qualityRuntimeCompletionProjection() {
       "loom.test.application_runtime_quality",
       {1, 0},
       take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+  rootBytes.back() = 4;
+  const loom::ArtifactRootReference runtimeEvidence{
+      loom::evaluation::EvaluationEvidence::artifactSchema.identity.str(),
+      loom::evaluation::EvaluationEvidence::artifactSchema.version,
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+  rootBytes.back() = 5;
+  const loom::ArtifactRootReference verificationEvidence{
+      loom::evaluation::EvaluationEvidence::artifactSchema.identity.str(),
+      loom::evaluation::EvaluationEvidence::artifactSchema.version,
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
 
   loom::dse::JointBoundedQualityPolicy runtimeQuality;
   runtimeQuality.provenanceDomain =
       JointDesignQualityProvenanceDomain::ApplicationRuntime;
-  runtimeQuality.objectiveDimensionLabels = {
-      "dfg_cycles", "cgra_cycles", "acc_core_count"};
+  runtimeQuality.objectiveDimensionLabels = {"dfg_cycles", "cgra_cycles",
+                                             "acc_core_count"};
 
   loom::dse::JointDesignQualityObservation fpaRefusal{
       mapping,
       {},
       JointDesignQualityIncompleteReason::Unsupported,
       std::nullopt,
-      {{loom::resolvedObjectiveInteger(7),
-        loom::resolvedObjectiveInteger(11),
+      {{loom::resolvedObjectiveInteger(7), loom::resolvedObjectiveInteger(11),
         loom::resolvedObjectiveInteger(2)},
-       {},
-       {},
+       {runtimeEvidence, verificationEvidence},
+       {verificationEvidence},
        {},
        {},
        {},
@@ -362,6 +374,40 @@ void qualityRuntimeCompletionProjection() {
   require(!missingMeasuresResult,
           "completed runtime accepted missing runtime measures");
   llvm::consumeError(missingMeasuresResult.takeError());
+
+  auto missingResource = fpaRefusal;
+  missingResource.provenance.resourceCoreCost.reset();
+  auto missingResourceResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingResource);
+  require(!missingResourceResult,
+          "completed runtime accepted missing resource ownership");
+  llvm::consumeError(missingResourceResult.takeError());
+
+  auto missingEvidence = fpaRefusal;
+  missingEvidence.provenance.supportingEvidence.clear();
+  missingEvidence.provenance.verificationEvidence.clear();
+  auto missingEvidenceResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingEvidence);
+  require(!missingEvidenceResult,
+          "completed runtime accepted missing supporting Evidence");
+  llvm::consumeError(missingEvidenceResult.takeError());
+
+  auto missingOracle = fpaRefusal;
+  missingOracle.provenance.verificationEvidence.clear();
+  auto missingOracleResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingOracle);
+  require(!missingOracleResult,
+          "completed runtime accepted missing verification Evidence");
+  llvm::consumeError(missingOracleResult.takeError());
+
+  auto oracleOnly = fpaRefusal;
+  oracleOnly.provenance.supportingEvidence = {verificationEvidence};
+  auto oracleOnlyResult =
+      classifyApplicationQualityRuntime(runtimeQuality, oracleOnly);
+  require(!oracleOnlyResult,
+          "completed runtime accepted verification Evidence without an "
+          "independent runtime witness");
+  llvm::consumeError(oracleOnlyResult.takeError());
 
   auto ownerlessMeasures = fpaRefusal;
   ownerlessMeasures.provenance.runtimeCompletion =

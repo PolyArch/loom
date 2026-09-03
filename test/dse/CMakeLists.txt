@@ -64,6 +64,7 @@ target_include_directories(loom-dse-fpa-ground-truth-collection-test PRIVATE
 add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationFixture.cpp
   JointDesignExplorationTest.cpp
+  JointDesignMutationTest.cpp
 )
 
 target_include_directories(loom-dse-joint-design-exploration-test PRIVATE

@@ -19,6 +19,7 @@ using diagnostics_detail::applicationPairDecisionSchemaIdentity;
 using diagnostics_detail::applicationPairDecisionSchemaVersion;
 using diagnostics_detail::applicationPairDispositionSchemaIdentity;
 using diagnostics_detail::applicationPairDispositionSchemaVersion;
+using diagnostics_detail::encodeJointDesignAttempt;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -29,6 +30,7 @@ namespace {
 
 using diagnostics_detail::addOptionalRoot;
 using diagnostics_detail::addOptionalUnsigned;
+using diagnostics_detail::encodeJointDesignAttempt;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -294,6 +296,11 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
           encodeHardwarePromotion(observation));
     encoded["hardware_promotion_observations"] =
         std::move(invocationHardwareObservations);
+    encoded["hardware_parent_promotions"] = invocation.hardwareParentPromotions;
+    llvm::json::Array invocationAttempts;
+    for (const dse::JointDesignAttemptRecord &attempt : invocation.attempts)
+      invocationAttempts.push_back(encodeJointDesignAttempt(attempt));
+    encoded["joint_design_attempts"] = std::move(invocationAttempts);
     qualityInvocations.push_back(std::move(encoded));
   }
   result["quality_invocations"] = std::move(qualityInvocations);
@@ -492,9 +499,9 @@ void emitApplicationRuntimeManifestDiagnostics(
         payload["runtime_manifest"] = encodeRoot(manifest.reference());
         payload["pair_identity"] =
             formatComponentViewDigestHex(record.pairIdentity());
-        payload["invocation_manifest_run_key"] = llvm::toHex(
-            llvm::ArrayRef<std::uint8_t>(record.invocationRunKey()),
-            /*LowerCase=*/true);
+        payload["invocation_manifest_run_key"] =
+            llvm::toHex(llvm::ArrayRef<std::uint8_t>(record.invocationRunKey()),
+                        /*LowerCase=*/true);
         payload["disposition"] = toString(record.pairDisposition());
         payload["selected_candidate_identity"] =
             formatComponentViewDigestHex(record.selectedCandidateIdentity());

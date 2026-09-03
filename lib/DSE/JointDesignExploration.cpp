@@ -216,8 +216,8 @@ llvm::Expected<InvocationManifest> importJointDesignInvocationManifest(
   return importInvocationManifest(reference, artifacts, blobs);
 }
 
-JointDesignQualityDisposition jointDesignQualityDisposition(
-    JointDesignQualityIncompleteReason reason) {
+JointDesignQualityDisposition
+jointDesignQualityDisposition(JointDesignQualityIncompleteReason reason) {
   switch (reason) {
   case JointDesignQualityIncompleteReason::Unsupported:
     return JointDesignQualityDisposition::Unsupported;
@@ -273,9 +273,8 @@ llvm::StringRef jointDesignCalibratedModelSupportSpelling(
 llvm::Error validateJointDesignQualityProvenanceDomain(
     const JointBoundedQualityPolicy &policy,
     const JointDesignQualityProvenance &provenance, bool objectiveComplete) {
-  if (objectiveComplete &&
-      provenance.calibratedModelSupport ==
-          JointDesignCalibratedModelSupport::OutOfDomain)
+  if (objectiveComplete && provenance.calibratedModelSupport ==
+                               JointDesignCalibratedModelSupport::OutOfDomain)
     return invalid("complete quality provenance claimed an out-of-domain "
                    "calibrated model");
   switch (policy.provenanceDomain) {
@@ -308,9 +307,8 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
       provenance.rawMeasures.size() != 3)
     return invalid("ApplicationRuntime out-of-domain provenance did not "
                    "retain exactly its runtime measures");
-  if (objectiveComplete &&
-      provenance.runtimeCompletion !=
-          JointDesignQualityRuntimeCompletion::Completed)
+  if (objectiveComplete && provenance.runtimeCompletion !=
+                               JointDesignQualityRuntimeCompletion::Completed)
     return invalid("complete ApplicationRuntime provenance did not establish "
                    "runtime completion");
   if (provenance.runtimeCompletion ==
@@ -318,6 +316,51 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
       provenance.rawMeasures.size() < 3)
     return invalid("completed ApplicationRuntime provenance lost its runtime "
                    "measures");
+  if (provenance.runtimeCompletion ==
+          JointDesignQualityRuntimeCompletion::Completed &&
+      provenance.supportingEvidence.empty())
+    return invalid("completed ApplicationRuntime provenance has no supporting "
+                   "runtime Evidence");
+  if (provenance.runtimeCompletion ==
+          JointDesignQualityRuntimeCompletion::Completed &&
+      provenance.verificationEvidence.empty())
+    return invalid("completed ApplicationRuntime provenance has no independent "
+                   "verification Evidence");
+  for (const ArtifactRootReference &reference : provenance.supportingEvidence) {
+    if (reference.schemaIdentity !=
+            evaluation::EvaluationEvidence::artifactSchema.identity ||
+        reference.schemaVersion !=
+            evaluation::EvaluationEvidence::artifactSchema.version)
+      return invalid("ApplicationRuntime provenance has foreign supporting "
+                     "Evidence");
+    if (llvm::count(provenance.supportingEvidence, reference) != 1)
+      return invalid("ApplicationRuntime provenance has duplicate supporting "
+                     "Evidence");
+  }
+  for (const ArtifactRootReference &reference :
+       provenance.verificationEvidence) {
+    if (reference.schemaIdentity !=
+            evaluation::EvaluationEvidence::artifactSchema.identity ||
+        reference.schemaVersion !=
+            evaluation::EvaluationEvidence::artifactSchema.version)
+      return invalid("ApplicationRuntime provenance has foreign verification "
+                     "Evidence");
+    if (llvm::count(provenance.verificationEvidence, reference) != 1)
+      return invalid("ApplicationRuntime provenance has duplicate verification "
+                     "Evidence");
+    if (!llvm::is_contained(provenance.supportingEvidence, reference))
+      return invalid("ApplicationRuntime verification Evidence is outside its "
+                     "supporting runtime Evidence");
+  }
+  if (provenance.runtimeCompletion ==
+          JointDesignQualityRuntimeCompletion::Completed &&
+      llvm::all_of(provenance.supportingEvidence,
+                   [&](const ArtifactRootReference &reference) {
+                     return llvm::is_contained(provenance.verificationEvidence,
+                                               reference);
+                   }))
+    return invalid("completed ApplicationRuntime provenance has no runtime "
+                   "Evidence independent of its verification Evidence");
   if (provenance.rawMeasures.empty() && objectiveComplete)
     return invalid("complete ApplicationRuntime provenance lost its raw "
                    "measures");

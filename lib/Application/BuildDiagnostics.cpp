@@ -109,6 +109,28 @@ void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
 }
 
 llvm::json::Object
+encodeJointDesignAttempt(const dse::JointDesignAttemptRecord &attempt) {
+  llvm::json::Array mappings;
+  for (const ArtifactRootReference &mapping : attempt.systemMappings)
+    mappings.push_back(encodeRoot(mapping));
+  llvm::json::Object result{{"plan_ordinal", attempt.planOrdinal},
+                            {"system", encodeRoot(attempt.system)},
+                            {"disposition", spelling(attempt.disposition)},
+                            {"system_mappings", std::move(mappings)}};
+  if (attempt.incompleteNodeOrdinal)
+    result["incomplete_node_ordinal"] = *attempt.incompleteNodeOrdinal;
+  else
+    result["incomplete_node_ordinal"] = nullptr;
+  if (attempt.incompleteReason)
+    result["incomplete_reason"] = dse::toString(*attempt.incompleteReason);
+  else
+    result["incomplete_reason"] = nullptr;
+  addOptionalRoot(result, "hardware_promotion_parent_system",
+                  attempt.hardwarePromotionParentSystem);
+  return result;
+}
+
+llvm::json::Object
 encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
   llvm::json::Array rawMeasures;
   for (const ResolvedObjectiveScalar &measure : provenance.rawMeasures)
@@ -123,9 +145,8 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
       {"raw_measures", std::move(rawMeasures)},
       {"supporting_evidence", std::move(supportingEvidence)},
       {"verification_evidence", std::move(verificationEvidence)},
-      {"runtime_completion",
-       dse::jointDesignQualityRuntimeCompletionSpelling(
-           provenance.runtimeCompletion)},
+      {"runtime_completion", dse::jointDesignQualityRuntimeCompletionSpelling(
+                                 provenance.runtimeCompletion)},
       {"calibrated_model_support",
        dse::jointDesignCalibratedModelSupportSpelling(
            provenance.calibratedModelSupport)},
@@ -455,7 +476,6 @@ void addCandidateInventorySummary(
 }
 
 } // namespace
-
 
 void emitApplicationBuildOperationStatistics(
     const ApplicationBuildOperationStatistics &statistics) {
@@ -1399,28 +1419,9 @@ void emitApplicationMappingDiagnostics(
         payload["hardware_promotion_observations"] =
             std::move(hardwarePromotionObservations);
         llvm::json::Array jointDesignAttempts;
-        for (const dse::JointDesignAttemptRecord &attempt : summary.attempts) {
-          llvm::json::Array mappings;
-          for (const ArtifactRootReference &mapping : attempt.systemMappings)
-            mappings.push_back(encodeRoot(mapping));
-          llvm::json::Object entry{
-              {"plan_ordinal", attempt.planOrdinal},
-              {"system", encodeRoot(attempt.system)},
-              {"disposition", spelling(attempt.disposition)},
-              {"system_mappings", std::move(mappings)}};
-          if (attempt.incompleteNodeOrdinal)
-            entry["incomplete_node_ordinal"] = *attempt.incompleteNodeOrdinal;
-          else
-            entry["incomplete_node_ordinal"] = nullptr;
-          if (attempt.incompleteReason)
-            entry["incomplete_reason"] =
-                dse::toString(*attempt.incompleteReason);
-          else
-            entry["incomplete_reason"] = nullptr;
-          addOptionalRoot(entry, "hardware_promotion_parent_system",
-                          attempt.hardwarePromotionParentSystem);
-          jointDesignAttempts.push_back(std::move(entry));
-        }
+        for (const dse::JointDesignAttemptRecord &attempt : summary.attempts)
+          jointDesignAttempts.push_back(
+              diagnostics_detail::encodeJointDesignAttempt(attempt));
         payload["joint_design_attempts"] = std::move(jointDesignAttempts);
         std::uint64_t completeQualityObservations = 0;
         std::uint64_t incompleteQualityObservations = 0;
