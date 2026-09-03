@@ -40,6 +40,10 @@ llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
   const std::set<std::string> expected{
       "completion.json",
       std::filesystem::path(mappedRtlResultPath.str()).filename().string(),
+      std::filesystem::path(
+          mappedRtlConfigurationTransportReceiptPath.str())
+          .filename()
+          .string(),
       "stderr.log", "stdout.log"};
   std::set<std::string> found;
   std::error_code error;
@@ -182,6 +186,7 @@ prepareProvider(const EvaluationRequest &request,
   std::vector<ResolvedAuxiliaryToolExecutable> auxiliaryTools;
   std::string simulatorExecutablePath;
   std::string resultPath;
+  std::string configurationTransportReceiptPath;
   switch (*simulator) {
   case MappedRtlHdlSimulator::Verilator: {
     auto buildTools = resolveMappedRtlBuildTools(context.localConfig);
@@ -217,6 +222,8 @@ prepareProvider(const EvaluationRequest &request,
     auxiliaryTools = std::move(buildTools->provenance);
     simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
     resultPath = std::move(bundle.resultPath);
+    configurationTransportReceiptPath =
+        std::move(bundle.configurationTransportReceiptPath);
     break;
   }
   case MappedRtlHdlSimulator::Vcs: {
@@ -242,6 +249,8 @@ prepareProvider(const EvaluationRequest &request,
                 std::move(bundle.simulationCommand)};
     simulatorExecutablePath = std::move(bundle.simulatorExecutablePath);
     resultPath = std::move(bundle.resultPath);
+    configurationTransportReceiptPath =
+        std::move(bundle.configurationTransportReceiptPath);
     break;
   }
   }
@@ -254,7 +263,7 @@ prepareProvider(const EvaluationRequest &request,
       containerProvider.versionProbe,
       std::move(commands),
       std::move(inheritEnvironment),
-      {resultPath},
+      {resultPath, configurationTransportReceiptPath},
       std::move(files),
       {},
       {},
@@ -302,6 +311,17 @@ llvm::Expected<EvaluationModelResult> importProviderImpl(
       readExternalToolInvocationDeclaredOutput(imported, mappedRtlResultPath);
   if (!resultBytes)
     return resultBytes.takeError();
+  auto receiptBytes = readExternalToolInvocationDeclaredOutput(
+      imported, mappedRtlConfigurationTransportReceiptPath);
+  if (!receiptBytes)
+    return receiptBytes.takeError();
+  auto receipt =
+      parseMappedRtlConfigurationTransportReceipt(*receiptBytes);
+  if (!receipt)
+    return receipt.takeError();
+  if (llvm::Error error = validateMappedRtlConfigurationTransportReceipt(
+          *closure, *receipt, artifacts, blobs))
+    return std::move(error);
   auto result = parseMappedRtlSimulationResult(*resultBytes);
   if (!result)
     return result.takeError();

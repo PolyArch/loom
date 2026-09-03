@@ -521,7 +521,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
       "loom_cfg_program_" + std::to_string(taskOrdinal);
   output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
          << program.layout.payloadWordCount << "; " << wordIndex << " = "
-         << wordIndex << " + 1)\n"
+         << wordIndex << " + 1) begin\n"
          << "      loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -531,7 +531,10 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount << ", " << words
          << "[" << wordIndex << "][31:0], " << words << "[" << wordIndex
-         << "][35:32], 0);\n";
+         << "][35:32], 0);\n"
+         << "      loom_cfg_payload_writes_" << taskOrdinal << " = "
+         << "loom_cfg_payload_writes_" << taskOrdinal << " + 1;\n"
+         << "    end\n";
   output << "    loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -540,7 +543,9 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << ", " << hardware::rtl::portableConfigurationDataWidth
          << "'h00000001, " << hardware::rtl::portableConfigurationByteCount
-         << "'h1, 1);\n";
+         << "'h1, 1);\n"
+         << "    loom_cfg_atomic_commits_" << taskOrdinal << " = "
+         << "loom_cfg_atomic_commits_" << taskOrdinal << " + 1;\n";
   // The three configuration stages have very different simulation cost, so
   // each boundary is announced once at the ordinary verbosity level with its
   // simulation time and flushed, so a host-side timestamp of the announcement
@@ -569,6 +574,8 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
             "loom_cfg_readback !== "
          << words << "[" << wordIndex
          << "][31:0]) $fatal(1, \"active configuration readback mismatch\");\n"
+         << "      loom_cfg_active_word_comparisons_" << taskOrdinal << " = "
+         << "loom_cfg_active_word_comparisons_" << taskOrdinal << " + 1;\n"
          << "    end\n";
   output << "    loom_cfg_read_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
@@ -581,7 +588,59 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
             "loom_cfg_readback !== "
          << hardware::rtl::portableConfigurationDataWidth
          << "'h00000000) $fatal(1, "
-            "\"configuration status did not clear\");\n";
+            "\"configuration status did not clear\");\n"
+         << "    loom_cfg_passing_status_reads_" << taskOrdinal << " = "
+         << "loom_cfg_passing_status_reads_" << taskOrdinal << " + 1;\n";
+}
+
+void renderConfigurationTransportReceiptWriter(
+    llvm::raw_ostream &output, const MappedRtlInvocationFacts &facts,
+    llvm::StringRef receiptPath) {
+  output << "  task automatic loom_write_configuration_transport_receipt;\n"
+         << "    integer receipt_file;\n"
+         << "    begin\n"
+         << "      if (loom_cfg_receipt_written) $fatal(1, \"configuration "
+            "transport receipt was written more than once\");\n";
+  for (const auto &[ordinal, program] :
+       llvm::enumerate(facts.configurationPrograms)) {
+    output << "      if (loom_cfg_payload_writes_" << ordinal << " != "
+           << program.layout.payloadWordCount
+           << ") $fatal(1, \"configuration payload write count is "
+              "incomplete\");\n"
+           << "      if (loom_cfg_atomic_commits_" << ordinal
+           << " != 1) $fatal(1, \"configuration atomic commit count is "
+              "not one\");\n"
+           << "      if (loom_cfg_active_word_comparisons_" << ordinal
+           << " != " << program.layout.payloadWordCount
+           << ") $fatal(1, \"configuration active-word comparison count is "
+              "incomplete\");\n"
+           << "      if (loom_cfg_passing_status_reads_" << ordinal
+           << " != 1) $fatal(1, \"configuration passing status read count "
+              "is not one\");\n";
+  }
+  output << "      receipt_file = $fopen(\"" << receiptPath << "\", \"w\");\n"
+         << "      if (receipt_file == 0) $fatal(1, \"could not open "
+            "configuration transport receipt\");\n"
+         << "      $fwrite(receipt_file, \""
+         << mappedRtlConfigurationTransportReceiptSchema << " "
+         << mappedRtlConfigurationTransportReceiptVersion << "\\n\");\n"
+         << "      $fwrite(receipt_file, \"programs "
+         << facts.configurationPrograms.size() << "\\n\");\n";
+  for (std::size_t ordinal = 0;
+       ordinal != facts.configurationPrograms.size(); ++ordinal)
+    output << "      $fwrite(receipt_file, \"program " << ordinal
+           << " payload_writes %0d atomic_commits %0d "
+              "active_word_comparisons %0d passing_status_reads %0d\\n\", "
+           << "loom_cfg_payload_writes_" << ordinal << ", "
+           << "loom_cfg_atomic_commits_" << ordinal << ", "
+           << "loom_cfg_active_word_comparisons_" << ordinal << ", "
+           << "loom_cfg_passing_status_reads_" << ordinal << ");\n";
+  output << "      $fwrite(receipt_file, \"end\\n\");\n"
+         << "      $fflush(receipt_file);\n"
+         << "      $fclose(receipt_file);\n"
+         << "      loom_cfg_receipt_written = 1;\n"
+         << "    end\n"
+         << "  endtask\n";
 }
 
 void renderResultWriter(llvm::raw_ostream &output,
@@ -686,7 +745,8 @@ renderMappedRtlConfigurationProgramFile(
 llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
                          llvm::ArrayRef<std::string> configurationProgramPaths,
-                         llvm::StringRef resultPath) {
+                         llvm::StringRef resultPath,
+                         llvm::StringRef configurationTransportReceiptPath) {
   if (facts.top.empty())
     return invalid("RTL top name is absent");
   if (facts.selectedClock.empty())
@@ -760,6 +820,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   output << "  logic loom_inputs_enabled;\n"
          << "  logic loom_resets_released;\n"
          << "  logic loom_retired;\n"
+         << "  logic loom_cfg_receipt_written;\n"
          << "  longint unsigned loom_cycle;\n"
          << "  longint unsigned loom_launch_cycle;\n"
          << "  longint unsigned loom_retirement_cycle;\n"
@@ -772,7 +833,15 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
     output << "  logic [" << kConfigurationProgramWordWidth - 1
            << ":0] loom_cfg_program_" << ordinal << " [0:"
            << program.layout.payloadWordCount - 1 << "];\n"
-           << "  integer loom_cfg_program_word_" << ordinal << ";\n";
+           << "  integer loom_cfg_program_word_" << ordinal << ";\n"
+           << "  longint unsigned loom_cfg_payload_writes_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_atomic_commits_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_active_word_comparisons_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_passing_status_reads_" << ordinal
+           << ";\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
          << "  assign loom_engine_retirement_cycle = "
@@ -809,8 +878,15 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   output << "  initial begin\n"
          << "    loom_inputs_enabled = 0;\n"
          << "    loom_resets_released = 0;\n"
+         << "    loom_cfg_receipt_written = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
             "loom_verbose_level)) loom_verbose_level = 0;\n";
+  for (std::size_t ordinal = 0;
+       ordinal != facts.configurationPrograms.size(); ++ordinal)
+    output << "    loom_cfg_payload_writes_" << ordinal << " = 0;\n"
+           << "    loom_cfg_atomic_commits_" << ordinal << " = 0;\n"
+           << "    loom_cfg_active_word_comparisons_" << ordinal << " = 0;\n"
+           << "    loom_cfg_passing_status_reads_" << ordinal << " = 0;\n";
   for (const auto &[ordinal, path] :
        llvm::enumerate(configurationProgramPaths))
     output << "    $readmemh(\"" << path << "\", loom_cfg_program_"
@@ -877,7 +953,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationProgram(output, program, ordinal);
-  output << "    if (loom_verbose_level >= 1) begin\n"
+  output << "    loom_write_configuration_transport_receipt();\n"
+         << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] kernel_begin time_fs=%0d\", "
             "$time);\n"
          << "      $fflush();\n"
@@ -956,6 +1033,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationTask(output, program.portPrefix, ordinal,
                             facts.selectedClock);
+  renderConfigurationTransportReceiptWriter(
+      output, facts, configurationTransportReceiptPath);
   renderMemoryService(output, facts);
 
   for (const auto &[ordinal, value] : llvm::enumerate(facts.valueResults))

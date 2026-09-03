@@ -194,6 +194,8 @@ std::string spatialBridgeSocketPath(std::size_t ordinal);
 std::string spatialBridgeResultPath(std::size_t ordinal);
 std::string mappedRtlLaunchPrefix(std::size_t ordinal);
 std::string mappedRtlLaunchResultPath(std::size_t ordinal);
+std::string mappedRtlLaunchConfigurationTransportReceiptPath(
+    std::size_t ordinal);
 
 llvm::Expected<std::shared_ptr<const sim::ImportedSystemSimulationInputs>>
 importCachedSystemInputs(const ArtifactRootReference &workload,

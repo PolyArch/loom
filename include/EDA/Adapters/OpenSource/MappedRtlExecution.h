@@ -129,6 +129,7 @@ struct MappedRtlExecutionBundleProjection final {
   std::string bridgeEngineSourcePath;
   std::string simulatorExecutablePath;
   std::string resultPath;
+  std::string configurationTransportReceiptPath;
   std::string testbench;
   std::string standaloneVerilatorDriver;
   std::string bridgedVerilatorDriver;
@@ -199,6 +200,7 @@ struct MappedRtlVcsBundleProjection final {
   std::string driverPath;
   std::string simulatorExecutablePath;
   std::string resultPath;
+  std::string configurationTransportReceiptPath;
   std::string testbench;
   std::string driver;
   std::vector<std::string> compileCommand;
@@ -242,6 +244,15 @@ llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
 deriveMappedRtlExecutionImportExpectation(
     const MappedRtlExecutionClosure &closure, const ArtifactStore &artifacts,
     const BlobStore &blobs, llvm::StringRef pathPrefix = {});
+
+/// Validates one strictly parsed completion receipt against the exact
+/// ConfigurationABI transport layouts selected by this execution closure.
+/// Each program must account for every payload write and active-word
+/// comparison and exactly one atomic commit and passing status read.
+llvm::Error validateMappedRtlConfigurationTransportReceipt(
+    const MappedRtlExecutionClosure &closure,
+    const MappedRtlConfigurationTransportReceipt &receipt,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 /// Projects a strict retired RTL result into the shared Spatial engine
 /// boundary. Stopped-by-limit classification remains with the descriptor.

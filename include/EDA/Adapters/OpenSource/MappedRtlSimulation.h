@@ -17,6 +17,11 @@ namespace loom::eda::open_source {
 inline constexpr llvm::StringLiteral mappedRtlResultSchema =
     "loom.mapped_rtl_result";
 inline constexpr llvm::StringLiteral mappedRtlResultVersion = "1.0";
+inline constexpr llvm::StringLiteral
+    mappedRtlConfigurationTransportReceiptSchema =
+        "loom.mapped_rtl_configuration_transport_receipt";
+inline constexpr llvm::StringLiteral
+    mappedRtlConfigurationTransportReceiptVersion = "1.0";
 inline constexpr llvm::StringLiteral mappedRtlHarnessTop =
     "loom_mapped_rtl_testbench";
 inline constexpr llvm::StringLiteral mappedRtlTestbenchPath =
@@ -37,6 +42,8 @@ inline constexpr llvm::StringLiteral mappedRtlVcsSimulatorExecutablePath =
     "work/vcs/simulation";
 inline constexpr llvm::StringLiteral mappedRtlResultPath =
     "outputs/mapped-rtl-result.txt";
+inline constexpr llvm::StringLiteral mappedRtlConfigurationTransportReceiptPath =
+    "outputs/mapped-rtl-configuration-transport-receipt.txt";
 
 enum class MappedRtlTerminalStatus : std::uint8_t {
   Retired,
@@ -55,6 +62,29 @@ struct MappedRtlStreamObservation final {
 
 struct MappedRtlMemoryObservation final {
   std::vector<sim::SemanticMemoryByte> bytes;
+};
+
+/// The completed configuration-transport operations observed by the generated
+/// harness for one ConfigurationABI-derived program. The dense program ordinal
+/// is the vector position; the exact import closure owns its identity and
+/// expected cardinalities.
+struct MappedRtlConfigurationProgramReceipt final {
+  std::uint64_t payloadWrites = 0;
+  std::uint64_t atomicCommits = 0;
+  std::uint64_t activeWordComparisons = 0;
+  std::uint64_t passingStatusReads = 0;
+
+  friend bool operator==(const MappedRtlConfigurationProgramReceipt &lhs,
+                         const MappedRtlConfigurationProgramReceipt &rhs) {
+    return lhs.payloadWrites == rhs.payloadWrites &&
+           lhs.atomicCommits == rhs.atomicCommits &&
+           lhs.activeWordComparisons == rhs.activeWordComparisons &&
+           lhs.passingStatusReads == rhs.passingStatusReads;
+  }
+};
+
+struct MappedRtlConfigurationTransportReceipt final {
+  std::vector<MappedRtlConfigurationProgramReceipt> programs;
 };
 
 /// The provider-neutral output of one independently executed RTL harness.
@@ -85,6 +115,14 @@ llvm::Expected<std::string>
 renderMappedRtlSimulationResult(const MappedRtlSimulationResult &result);
 llvm::Expected<MappedRtlSimulationResult>
 parseMappedRtlSimulationResult(llvm::StringRef contents);
+
+/// Canonical host-side codec for the separately completion-digested record of
+/// configuration transport completion. Layout-dependent validation remains
+/// with the mapped-RTL execution owner.
+llvm::Expected<std::string> renderMappedRtlConfigurationTransportReceipt(
+    const MappedRtlConfigurationTransportReceipt &receipt);
+llvm::Expected<MappedRtlConfigurationTransportReceipt>
+parseMappedRtlConfigurationTransportReceipt(llvm::StringRef contents);
 
 /// Registers the exact ExternalPrepareImport provider for the production
 /// mapped-RTL Evaluation descriptor. Repeated registration is idempotent.
