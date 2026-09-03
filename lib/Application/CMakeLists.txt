@@ -29,6 +29,7 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
 
 add_library(LoomApplicationRuntimeManifest
   ActivationDecision.cpp
+  ActivationRepairLineage.cpp
   Package.cpp
   RuntimeManifest.cpp
 )
