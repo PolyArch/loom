@@ -353,7 +353,7 @@ proc
 opt
 check -assert -nolatches
 write_json outputs/rtl-structure.json
-synth -flatten -top top
+synth -flatten -noshare -top top
 dfflibmap -liberty inputs/library.lib
 abc -liberty inputs/library.lib
 read_liberty -lib inputs/library.lib
