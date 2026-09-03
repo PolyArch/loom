@@ -1229,4 +1229,25 @@ writeCanonicalSystemMappingAssembly(::mapping::SystemOp root) {
   return std::move(prepared->bytes);
 }
 
+llvm::Expected<FinalizedLowerMapping>
+importLowerMapping(const ArtifactRootReference &reference,
+                   const ArtifactStore &store) {
+  auto spatial = importSpatialMapping(reference, store);
+  if (spatial)
+    return FinalizedLowerMapping(std::in_place_type<FinalizedSpatialMapping>,
+                                 std::move(*spatial));
+  llvm::Error spatialError = spatial.takeError();
+
+  auto tech = importTechMapping(reference, store);
+  if (tech) {
+    llvm::consumeError(std::move(spatialError));
+    return FinalizedLowerMapping(std::in_place_type<FinalizedTechMapping>,
+                                 std::move(*tech));
+  }
+  return llvm::joinErrors(
+      llvm::createStringError(llvm::inconvertibleErrorCode(),
+                              "Mapping root is neither Tech nor Spatial"),
+      llvm::joinErrors(std::move(spatialError), tech.takeError()));
+}
+
 } // namespace loom::mapping

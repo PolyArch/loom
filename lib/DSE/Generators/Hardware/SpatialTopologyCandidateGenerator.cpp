@@ -165,7 +165,7 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
 }
 
 llvm::Error validateLineagePayload(
-    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
     llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto decision = adoptSpatialTopologyDecision(bytes);
   if (!decision)
@@ -175,7 +175,28 @@ llvm::Error validateLineagePayload(
   auto parent = loom::fabric::importEntireFabricRoot(decision->parent, store);
   if (!parent)
     return parent.takeError();
-  return validateDecisionAgainstParent(decision->decision, parent->view());
+  if (llvm::Error error =
+          validateDecisionAgainstParent(decision->decision, parent->view()))
+    return error;
+  loom::adg::DesignBuilder design(store);
+  auto builder = design.deriveSpatialCore(*parent);
+  if (!builder)
+    return builder.takeError();
+  if (llvm::Error error = applyDecision(*builder, decision->decision))
+    return error;
+  if (llvm::Error error = builder->closeDerived())
+    return error;
+  auto expected = std::move(design).deriveRootIdentities();
+  if (!expected)
+    return expected.takeError();
+  if (expected->size() != 1 || expected->front() != output.artifact)
+    return invalid("topology decision does not reproduce its exact output");
+  auto child = loom::fabric::importEntireFabricRoot(output, store);
+  if (!child)
+    return child.takeError();
+  if (llvm::Error error = validateHardwareTopologyQuality(child->view()))
+    return error;
+  return llvm::Error::success();
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{

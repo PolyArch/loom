@@ -189,7 +189,7 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
     return result;
   };
   llvm::json::Object result{{"schema", "loom.application_pair_decision"},
-                            {"version", "1.0"}};
+                            {"version", "1.1"}};
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
         *decision.portfolioInput, decision.portfolioExecutionBinding);
@@ -392,6 +392,8 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
       for (const ArtifactRootReference &reference : observation.systemMappings)
         mappings.push_back(encodeRoot(reference));
       mapping["system_mappings"] = std::move(mappings);
+      addOptionalRoot(mapping, "hardware_mutation_repair_record",
+                      observation.hardwareMutationRepairRecord);
       llvm::json::Array runtimeEvidence;
       for (const ArtifactRootReference &reference : observation.runtimeEvidence)
         runtimeEvidence.push_back(encodeRoot(reference));
@@ -483,14 +485,14 @@ void emitApplicationRuntimeManifestDiagnostics(
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
         payload["schema"] = "loom.application_runtime_manifest_binding";
-        payload["version"] = "1.0";
+        payload["version"] = "1.1";
         payload["domain"] = "application_runtime_manifest";
         payload["runtime_manifest"] = encodeRoot(manifest.reference());
         payload["pair_identity"] =
             formatComponentViewDigestHex(record.pairIdentity());
-        payload["invocation_manifest_run_key"] = llvm::toHex(
-            llvm::ArrayRef<std::uint8_t>(record.invocationRunKey()),
-            /*LowerCase=*/true);
+        payload["invocation_manifest_run_key"] =
+            llvm::toHex(llvm::ArrayRef<std::uint8_t>(record.invocationRunKey()),
+                        /*LowerCase=*/true);
         payload["disposition"] = toString(record.pairDisposition());
         payload["selected_candidate_identity"] =
             formatComponentViewDigestHex(record.selectedCandidateIdentity());
@@ -506,6 +508,13 @@ void emitApplicationRuntimeManifestDiagnostics(
             encodeRoot(record.activationWorkload());
         payload["activation_runtime_input"] =
             encodeRoot(record.activationRuntimeInput());
+        addOptionalRoot(payload, "selected_hardware_mutation_repair_record",
+                        record.selectedHardwareMutationRepairRecord());
+        llvm::json::Array repairRecords;
+        for (const ArtifactRootReference &reference :
+             record.hardwareMutationRepairRecords())
+          repairRecords.push_back(encodeRoot(reference));
+        payload["hardware_mutation_repair_records"] = std::move(repairRecords);
         return llvm::json::Value(std::move(payload));
       });
 }

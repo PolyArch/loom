@@ -5,6 +5,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "DSE/HardwareMutationRepairRecord.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
@@ -199,6 +200,33 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
       addBlob(result.blobs, digest);
   }
 
+  const auto addSystemMappingClosure =
+      [&](const ArtifactRootReference &mapping) -> llvm::Error {
+    auto closure = deployment::deriveSystemMappingPackageClosure(
+        mapping, artifacts, blobs);
+    if (!closure)
+      return closure.takeError();
+    for (const ArtifactRootReference &root : closure->artifacts())
+      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+        return error;
+    for (const BlobDigest &digest : closure->blobs())
+      addBlob(result.blobs, digest);
+    return llvm::Error::success();
+  };
+  const auto addLowerMappingClosure =
+      [&](const ArtifactRootReference &mapping) -> llvm::Error {
+    auto closure =
+        deployment::deriveLowerMappingPackageClosure(mapping, artifacts, blobs);
+    if (!closure)
+      return closure.takeError();
+    for (const ArtifactRootReference &root : closure->artifacts())
+      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+        return error;
+    for (const BlobDigest &digest : closure->blobs())
+      addBlob(result.blobs, digest);
+    return llvm::Error::success();
+  };
+
   const ApplicationRuntimeManifest &runtime = manifest.manifest();
   for (const ArtifactRootReference *root :
        {&manifest.reference(), &runtime.sourceProgram(), &runtime.fabric(),
@@ -235,6 +263,56 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
                                            runtime.selectedSystem(), artifacts))
     return std::move(error);
+  for (const ArtifactRootReference &reference :
+       runtime.hardwareMutationRepairRecords()) {
+    if (llvm::Error error = addArtifact(result.artifacts, reference, artifacts))
+      return std::move(error);
+    auto imported =
+        dse::importHardwareMutationRepairRecord(reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    const dse::HardwareMutationRepairRecord &record = imported->record();
+    for (const dse::HardwareMutationDecisionLineage &lineage :
+         record.decisionLineage) {
+      for (const ArtifactRootReference &parent : lineage.parents)
+        if (llvm::Error error = addFabricClosure(
+                result.artifacts, expandedFabrics, parent, artifacts))
+          return std::move(error);
+      if (llvm::Error error = addFabricClosure(
+              result.artifacts, expandedFabrics, lineage.output, artifacts))
+        return std::move(error);
+    }
+    if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+                                             record.parentSystem, artifacts))
+      return std::move(error);
+    if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+                                             record.childSystem, artifacts))
+      return std::move(error);
+    for (const dse::HardwareMutationImpactRecord &impact : record.impacts)
+      if (impact.child)
+        if (llvm::Error error = addFabricClosure(
+                result.artifacts, expandedFabrics, *impact.child, artifacts))
+          return std::move(error);
+    std::vector<ArtifactRootReference> mappings = {record.parentMapping};
+    if (record.cold)
+      mappings.insert(mappings.end(), record.cold->mappings.begin(),
+                      record.cold->mappings.end());
+    mappings.insert(mappings.end(), record.incremental.mappings.begin(),
+                    record.incremental.mappings.end());
+    for (const dse::HardwareMutationRepairQualityObservation &observation :
+         record.qualityObservations)
+      mappings.push_back(observation.candidate);
+    llvm::sort(mappings, artifactRootReferenceLess);
+    mappings.erase(std::unique(mappings.begin(), mappings.end()),
+                   mappings.end());
+    for (const ArtifactRootReference &mapping : mappings)
+      if (llvm::Error error = addSystemMappingClosure(mapping))
+        return std::move(error);
+    for (const dse::JointMappingRebaseFailure &failure : record.rebaseFailures)
+      if (failure.parent)
+        if (llvm::Error error = addLowerMappingClosure(*failure.parent))
+          return std::move(error);
+  }
   if (runtime.transitionGraph())
     for (const pnr::ResourceTimeTransition &transition :
          runtime.transitionGraph()->transitions) {

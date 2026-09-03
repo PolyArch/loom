@@ -5,6 +5,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Deployment/Deployment.h"
@@ -12,6 +13,7 @@
 #include "Fabric/Artifact/FabricSystemReferenceRemapper.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "PnR/System/SystemPnrProblem.h"
@@ -36,6 +38,12 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 bool rootLess(::dataflow::RootThreadLaunchRef lhs,
               ::dataflow::RootThreadLaunchRef rhs) {
+  if (lhs.artifact != rhs.artifact)
+    return lhs.artifact.bytes() < rhs.artifact.bytes();
+  return lhs.entity.value() < rhs.entity.value();
+}
+
+bool graphLess(::dataflow::GraphRef lhs, ::dataflow::GraphRef rhs) {
   if (lhs.artifact != rhs.artifact)
     return lhs.artifact.bytes() < rhs.artifact.bytes();
   return lhs.entity.value() < rhs.entity.value();
@@ -1267,6 +1275,159 @@ llvm::Error validateResourceTimeScheduleWitness(
   return llvm::Error::success();
 }
 
+llvm::Expected<SystemMappingMigrationConePartition>
+projectSystemMappingMigrationConePartition(
+    const ::loom::mapping::SystemMappingView &mapping,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const ArtifactStore &store) {
+  SystemMappingMigrationConePartition result;
+  result.reopenedRoots.assign(reopenedRoots.begin(), reopenedRoots.end());
+  llvm::sort(result.reopenedRoots, rootLess);
+  if (std::adjacent_find(result.reopenedRoots.begin(),
+                         result.reopenedRoots.end()) !=
+      result.reopenedRoots.end())
+    return invalid("Mapping cone repeats a reopened root");
+
+  const ::loom::mapping::SystemExecutionBindingView &execution =
+      mapping.executionBindings();
+  for (const ::dataflow::RootThreadLaunchRef root : result.reopenedRoots) {
+    if (root.artifact != mapping.dataflowIdentity() ||
+        !llvm::is_contained(execution.rootThreadLaunches(), root))
+      return invalid("Mapping cone names a foreign reopened root");
+  }
+
+  auto dataflowArtifact = ::dataflow::importCanonicalDataflow(
+      {::dataflow::canonicalDataflowSchema.identity.str(),
+       ::dataflow::canonicalDataflowSchema.version, mapping.dataflowIdentity()},
+      store);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  std::vector<::dataflow::GraphRef> reopenedGraphCandidates;
+  llvm::Error graphError = llvm::Error::success();
+  dataflow->forEachRootedGraphLaunch(
+      [&](::dataflow::RootedGraphLaunchRef launch) {
+        if (graphError)
+          return;
+        auto graph = dataflow->resolve(launch);
+        if (!graph) {
+          graphError = graph.takeError();
+          return;
+        }
+        std::vector<::dataflow::GraphRef> &partition =
+            llvm::is_contained(result.reopenedRoots, launch.rootThreadLaunch)
+                ? reopenedGraphCandidates
+                : result.preservedGraphs;
+        if (!llvm::is_contained(partition, *graph))
+          partition.push_back(*graph);
+      });
+  if (graphError)
+    return std::move(graphError);
+  llvm::sort(result.preservedGraphs, graphLess);
+  llvm::sort(reopenedGraphCandidates, graphLess);
+  for (const ::dataflow::GraphRef graph : reopenedGraphCandidates)
+    if (!llvm::is_contained(result.preservedGraphs, graph))
+      result.reopenedGraphs.push_back(graph);
+
+  for (const ::loom::mapping::SystemThreadExecutionBindingView &binding :
+       execution.threadBindings()) {
+    if (llvm::is_contained(result.reopenedRoots, binding.key))
+      ++result.reopenedThreadBindings;
+    else
+      ++result.preservedThreadBindings;
+  }
+
+  std::vector<ArtifactRootReference> preservedSpatialTargets;
+  std::vector<ArtifactRootReference> reopenedSpatialTargets;
+  const auto appendTargets = [](const auto &binding,
+                                std::vector<ArtifactRootReference> &targets) {
+    for (const auto &clause : binding.clauses)
+      targets.push_back(clause.target);
+    if (binding.defaultTarget)
+      targets.push_back(*binding.defaultTarget);
+    for (const auto &entry : binding.stableKeyEntries)
+      targets.push_back(entry.target);
+  };
+  for (const ::loom::mapping::SystemGraphExecutionBindingView &binding :
+       execution.graphBindings()) {
+    if (llvm::is_contained(result.reopenedRoots,
+                           binding.key.rootThreadLaunch)) {
+      ++result.reopenedGraphBindings;
+      appendTargets(binding, reopenedSpatialTargets);
+    } else {
+      ++result.preservedGraphBindings;
+      appendTargets(binding, preservedSpatialTargets);
+    }
+  }
+  const auto canonicalize = [](std::vector<ArtifactRootReference> &roots) {
+    llvm::sort(roots, artifactRootReferenceLess);
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  };
+  canonicalize(preservedSpatialTargets);
+  canonicalize(reopenedSpatialTargets);
+
+  std::vector<ArtifactRootReference> selectedSpatialMappings =
+      preservedSpatialTargets;
+  selectedSpatialMappings.insert(selectedSpatialMappings.end(),
+                                 reopenedSpatialTargets.begin(),
+                                 reopenedSpatialTargets.end());
+  canonicalize(selectedSpatialMappings);
+  std::vector<ArtifactRootReference> importedSpatialMappings(
+      execution.spatialMappingImports().begin(),
+      execution.spatialMappingImports().end());
+  canonicalize(importedSpatialMappings);
+  if (selectedSpatialMappings != importedSpatialMappings)
+    return invalid("Mapping cone does not cover the exact SpatialMapping "
+                   "import range");
+
+  result.preservedSpatialMappings = std::move(preservedSpatialTargets);
+  for (const ArtifactRootReference &mappingReference : reopenedSpatialTargets)
+    if (!llvm::is_contained(result.preservedSpatialMappings,
+                            mappingReference))
+      result.reopenedSpatialMappings.push_back(mappingReference);
+
+  const auto appendTechMappings =
+      [&](llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+          std::vector<ArtifactRootReference> &techMappings) -> llvm::Error {
+    for (const ArtifactRootReference &spatialReference : spatialMappings) {
+      auto spatial =
+          ::loom::mapping::importSpatialMapping(spatialReference, store);
+      if (!spatial)
+        return spatial.takeError();
+      if (spatial->view().dataflowIdentity() != mapping.dataflowIdentity())
+        return invalid("Mapping cone contains a foreign SpatialMapping");
+      techMappings.push_back(
+          {::loom::mapping::mappingArtifactSchema.identity.str(),
+           ::loom::mapping::mappingArtifactSchema.version,
+           spatial->view().techMappingIdentity()});
+    }
+    canonicalize(techMappings);
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          appendTechMappings(result.preservedSpatialMappings,
+                             result.preservedTechMappings))
+    return std::move(error);
+  std::vector<ArtifactRootReference> reopenedTechMappings;
+  if (llvm::Error error = appendTechMappings(result.reopenedSpatialMappings,
+                                             reopenedTechMappings))
+    return std::move(error);
+  for (const ArtifactRootReference &techMapping : reopenedTechMappings)
+    if (!llvm::is_contained(result.preservedTechMappings, techMapping))
+      result.reopenedTechMappings.push_back(techMapping);
+  return result;
+}
+
+bool SystemMappingMigrationConePartition::admitsReplacementGraphs(
+    llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) const {
+  return !coveredGraphs.empty() &&
+         llvm::all_of(coveredGraphs, [&](::dataflow::GraphRef graph) {
+           return llvm::is_contained(reopenedGraphs, graph);
+         });
+}
+
 llvm::Expected<SystemMappingMigrationContext>
 SystemMappingMigrationContext::get(
     ArtifactRootReference childConstraints,
@@ -1530,14 +1691,16 @@ finalizeSystemMappingMigrationSeed(
         !llvm::is_contained(constraints->view().rootThreadLaunches(), root))
       return invalid("schedule migration names a foreign invalidation root");
   }
-  std::vector<ArtifactRootReference> parentSpatialMappings(
-      parentMapping->view().executionBindings().spatialMappingImports().begin(),
-      parentMapping->view().executionBindings().spatialMappingImports().end());
-  llvm::sort(parentSpatialMappings, artifactRootReferenceLess);
-  if (!llvm::all_of(parentSpatialMappings, [&](const auto &mapping) {
+  auto cone = projectSystemMappingMigrationConePartition(
+      parentMapping->view(), canonicalReopenedRoots, store);
+  if (!cone)
+    return cone.takeError();
+  if (!llvm::all_of(cone->preservedSpatialMappings, [&](const auto &mapping) {
         return llvm::is_contained(context.spatialMappings(), mapping);
       }))
-    return invalid("migration context omits a finalized SpatialMapping");
+    return invalid(
+        "migration context omits a preserved-cone SpatialMapping");
+
   for (const ArtifactRootReference &mappingReference :
        context.spatialMappings()) {
     auto mapping =
@@ -1547,6 +1710,18 @@ finalizeSystemMappingMigrationSeed(
     if (mapping->view().dataflowIdentity() !=
         parentMapping->view().dataflowIdentity())
       return invalid("migration SpatialMapping binds a foreign Dataflow");
+    if (llvm::is_contained(cone->preservedSpatialMappings, mappingReference))
+      continue;
+    auto tech = ::loom::mapping::importTechMapping(
+        {::loom::mapping::mappingArtifactSchema.identity.str(),
+         ::loom::mapping::mappingArtifactSchema.version,
+         mapping->view().techMappingIdentity()},
+        store);
+    if (!tech)
+      return tech.takeError();
+    if (!cone->admitsReplacementGraphs(tech->view().covers()))
+      return invalid("migration context replaces a SpatialMapping outside "
+                     "the reopened graph cone");
   }
   auto canonicalBytes = canonicalFinalizedSeedBytes(
       parentMappingReference, correspondence, context, canonicalReopenedRoots);

@@ -28,7 +28,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{4, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{5, 0}};
 
 enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   ForeignSchema,
@@ -40,6 +40,7 @@ enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   MappingMismatch,
   DeploymentMismatch,
   RuntimeEvidenceMismatch,
+  HardwareMutationRepairMismatch,
   TransitionGraphMismatch,
 };
 
@@ -82,6 +83,8 @@ struct ApplicationRuntimeManifestDraft final {
   std::vector<ArtifactRootReference> runtimeRequestDependencies;
   std::vector<ArtifactRootReference> runtimeEvidence;
   std::vector<ArtifactRootReference> oracleEvidence;
+  std::optional<ArtifactRootReference> selectedHardwareMutationRepairRecord;
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords;
   std::optional<pnr::ResourceTimeTransitionGraph> transitionGraph;
 };
 
@@ -138,6 +141,13 @@ public:
   llvm::ArrayRef<ArtifactRootReference> oracleEvidence() const {
     return oracleEvidence_;
   }
+  const std::optional<ArtifactRootReference> &
+  selectedHardwareMutationRepairRecord() const {
+    return selectedHardwareMutationRepairRecord_;
+  }
+  llvm::ArrayRef<ArtifactRootReference> hardwareMutationRepairRecords() const {
+    return hardwareMutationRepairRecords_;
+  }
   const std::optional<pnr::ResourceTimeTransitionGraph> &
   transitionGraph() const {
     return transitionGraph_;
@@ -170,6 +180,10 @@ private:
             std::move(draft.runtimeRequestDependencies)),
         runtimeEvidence_(std::move(draft.runtimeEvidence)),
         oracleEvidence_(std::move(draft.oracleEvidence)),
+        selectedHardwareMutationRepairRecord_(
+            std::move(draft.selectedHardwareMutationRepairRecord)),
+        hardwareMutationRepairRecords_(
+            std::move(draft.hardwareMutationRepairRecords)),
         transitionGraph_(std::move(draft.transitionGraph)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
@@ -193,6 +207,9 @@ private:
   std::vector<ArtifactRootReference> runtimeRequestDependencies_;
   std::vector<ArtifactRootReference> runtimeEvidence_;
   std::vector<ArtifactRootReference> oracleEvidence_;
+  std::optional<ArtifactRootReference>
+      selectedHardwareMutationRepairRecord_;
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords_;
   std::optional<pnr::ResourceTimeTransitionGraph> transitionGraph_;
   CanonicalSemanticBytes canonicalBytes_;
 };

@@ -42,6 +42,7 @@ target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
   LoomDeployment
   LoomDSE
   LoomDSECompilerGenerator
+  LoomDSEFeedback
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation

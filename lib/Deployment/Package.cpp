@@ -40,6 +40,7 @@
 #include <string>
 #include <sys/syscall.h>
 #include <system_error>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <variant>
@@ -74,11 +75,12 @@ std::uint64_t elapsedNanoseconds(MonotonicClock::time_point begin) {
       .count();
 }
 
-DeploymentPackageOperationStatistics operationStatistics(
-    DeploymentPackageOperation operation, MonotonicClock::time_point begin,
-    const fabric::FabricArtifactImportSessionStatistics &before,
-    const fabric::FabricArtifactImportSessionStatistics &after,
-    std::uint64_t artifactCount, std::uint64_t blobCount) {
+DeploymentPackageOperationStatistics
+operationStatistics(DeploymentPackageOperation operation,
+                    MonotonicClock::time_point begin,
+                    const fabric::FabricArtifactImportSessionStatistics &before,
+                    const fabric::FabricArtifactImportSessionStatistics &after,
+                    std::uint64_t artifactCount, std::uint64_t blobCount) {
   return {operation,
           elapsedNanoseconds(begin),
           artifactCount,
@@ -158,9 +160,28 @@ public:
                                  std::move(blobsInClosure_)};
   }
 
+  llvm::Expected<DerivedPackageClosure>
+  deriveSystemMapping(const ArtifactRootReference &mapping) {
+    if (llvm::Error error = addSystemMapping(mapping))
+      return error;
+    llvm::sort(artifactsInClosure_, artifactRootReferenceLess);
+    llvm::sort(blobsInClosure_, blobLess);
+    return DerivedPackageClosure{std::move(artifactsInClosure_),
+                                 std::move(blobsInClosure_)};
+  }
+
+  llvm::Expected<DerivedPackageClosure>
+  deriveLowerMapping(const ArtifactRootReference &mapping) {
+    if (llvm::Error error = addLowerMapping(mapping))
+      return error;
+    llvm::sort(artifactsInClosure_, artifactRootReferenceLess);
+    llvm::sort(blobsInClosure_, blobLess);
+    return DerivedPackageClosure{std::move(artifactsInClosure_),
+                                 std::move(blobsInClosure_)};
+  }
+
 private:
-  llvm::Expected<bool>
-  addArtifact(const ArtifactRootReference &reference) {
+  llvm::Expected<bool> addArtifact(const ArtifactRootReference &reference) {
     auto exact = llvm::find(artifactsInClosure_, reference);
     if (exact != artifactsInClosure_.end())
       return false;
@@ -210,6 +231,79 @@ private:
     return llvm::Error::success();
   }
 
+  llvm::Error addTechMapping(const ArtifactRootReference &reference) {
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
+    auto tech = mapping::importTechMapping(reference, artifacts_);
+    if (!tech)
+      return tech.takeError();
+    return addTechMappingDependencies(tech->view());
+  }
+
+  llvm::Error addTechMappingDependencies(const mapping::TechMappingView &tech) {
+    const ArtifactRootReference dataflowReference{
+        dataflow::canonicalDataflowSchema.identity.str(),
+        dataflow::canonicalDataflowSchema.version, tech.dataflowIdentity()};
+    const ArtifactRootReference fabricReference{
+        fabric::fabricArtifactSchema.identity.str(),
+        fabric::fabricArtifactSchema.version, tech.fabricIdentity()};
+    if (llvm::Error error = addArtifactLeaf(dataflowReference))
+      return error;
+    return addFabric(fabricReference);
+  }
+
+  llvm::Error addSpatialMapping(const ArtifactRootReference &reference) {
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
+    auto spatial = mapping::importSpatialMapping(reference, artifacts_);
+    if (!spatial)
+      return spatial.takeError();
+    return addSpatialMappingDependencies(spatial->view());
+  }
+
+  llvm::Error
+  addSpatialMappingDependencies(const mapping::SpatialMappingView &spatial) {
+    const ArtifactRootReference dataflowReference{
+        dataflow::canonicalDataflowSchema.identity.str(),
+        dataflow::canonicalDataflowSchema.version, spatial.dataflowIdentity()};
+    const ArtifactRootReference fabricReference{
+        fabric::fabricArtifactSchema.identity.str(),
+        fabric::fabricArtifactSchema.version, spatial.fabricIdentity()};
+    if (llvm::Error error = addArtifactLeaf(dataflowReference))
+      return error;
+    if (llvm::Error error = addFabric(fabricReference))
+      return error;
+    return addTechMapping({mapping::mappingArtifactSchema.identity.str(),
+                           mapping::mappingArtifactSchema.version,
+                           spatial.techMappingIdentity()});
+  }
+
+  llvm::Error addLowerMapping(const ArtifactRootReference &reference) {
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
+    auto imported = mapping::importLowerMapping(reference, artifacts_);
+    if (!imported)
+      return imported.takeError();
+    return std::visit(
+        [&](const auto &finalized) -> llvm::Error {
+          using Mapping = std::decay_t<decltype(finalized)>;
+          if constexpr (std::is_same_v<Mapping, mapping::FinalizedTechMapping>)
+            return addTechMappingDependencies(finalized.view());
+          else
+            return addSpatialMappingDependencies(finalized.view());
+        },
+        *imported);
+  }
+
   llvm::Error addSystemMapping(const ArtifactRootReference &reference) {
     auto added = addArtifact(reference);
     if (!added)
@@ -232,27 +326,8 @@ private:
       return error;
     for (const ArtifactRootReference &spatialReference :
          system->view().executionBindings().spatialMappingImports()) {
-      auto spatialAdded = addArtifact(spatialReference);
-      if (!spatialAdded)
-        return spatialAdded.takeError();
-      if (!*spatialAdded)
-        continue;
-      auto spatial =
-          mapping::importSpatialMapping(spatialReference, artifacts_);
-      if (!spatial)
-        return spatial.takeError();
-      const ArtifactRootReference techReference{
-          mapping::mappingArtifactSchema.identity.str(),
-          mapping::mappingArtifactSchema.version,
-          spatial->view().techMappingIdentity()};
-      auto techAdded = addArtifact(techReference);
-      if (!techAdded)
-        return techAdded.takeError();
-      if (!*techAdded)
-        continue;
-      auto tech = mapping::importTechMapping(techReference, artifacts_);
-      if (!tech)
-        return tech.takeError();
+      if (llvm::Error error = addSpatialMapping(spatialReference))
+        return error;
     }
     return llvm::Error::success();
   }
@@ -469,17 +544,17 @@ llvm::Error validateStaging(llvm::StringRef staging,
   before = importSession.statistics();
   begin = MonotonicClock::now();
   ClosureBuilder builder(artifactStore, blobStore);
-  auto actual = deriveDeploymentPackageClosure(*deployment, artifactStore,
-                                                blobStore);
+  auto actual =
+      deriveDeploymentPackageClosure(*deployment, artifactStore, blobStore);
   if (!actual)
     return actual.takeError();
   if (actual->artifacts() != expected.artifacts() ||
       actual->blobs() != expected.blobs())
     return invalid("staging package closure differs after empty-store import");
-  emitDeploymentPackageOperationStatistics(operationStatistics(
-      DeploymentPackageOperation::IndependentClosure, begin, before,
-      importSession.statistics(), actual->artifacts().size(),
-      actual->blobs().size()));
+  emitDeploymentPackageOperationStatistics(
+      operationStatistics(DeploymentPackageOperation::IndependentClosure, begin,
+                          before, importSession.statistics(),
+                          actual->artifacts().size(), actual->blobs().size()));
 
   begin = MonotonicClock::now();
   std::vector<std::string> artifactNames;
@@ -540,8 +615,7 @@ void emitDeploymentPackageOperationStatistics(
         payload["duration_ns"] = statistics.durationNanoseconds;
         payload["artifact_count"] = statistics.artifactCount;
         payload["blob_count"] = statistics.blobCount;
-        payload["fabric_import_cache_hits"] =
-            statistics.fabricImportCacheHits;
+        payload["fabric_import_cache_hits"] = statistics.fabricImportCacheHits;
         payload["fabric_import_cache_misses"] =
             statistics.fabricImportCacheMisses;
         payload["fabric_import_construction_time_ns"] =
@@ -566,6 +640,30 @@ deriveDeploymentPackageClosure(const FinalizedDeployment &deployment,
                                   std::move(closure->blobs));
 }
 
+llvm::Expected<DeploymentPackageClosure>
+deriveSystemMappingPackageClosure(const ArtifactRootReference &mapping,
+                                  const ArtifactStore &artifacts,
+                                  const BlobStore &blobs) {
+  ClosureBuilder builder(artifacts, blobs);
+  auto closure = builder.deriveSystemMapping(mapping);
+  if (!closure)
+    return closure.takeError();
+  return DeploymentPackageClosure(std::move(closure->artifacts),
+                                  std::move(closure->blobs));
+}
+
+llvm::Expected<DeploymentPackageClosure>
+deriveLowerMappingPackageClosure(const ArtifactRootReference &mapping,
+                                 const ArtifactStore &artifacts,
+                                 const BlobStore &blobs) {
+  ClosureBuilder builder(artifacts, blobs);
+  auto closure = builder.deriveLowerMapping(mapping);
+  if (!closure)
+    return closure.takeError();
+  return DeploymentPackageClosure(std::move(closure->artifacts),
+                                  std::move(closure->blobs));
+}
+
 llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
                                      llvm::StringRef outputPath,
                                      const ArtifactStore &artifacts,
@@ -576,8 +674,7 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
     return invalid("deployment package output path is empty");
   auto before = importSession.statistics();
   auto begin = MonotonicClock::now();
-  auto closure =
-      deriveDeploymentPackageClosure(deployment, artifacts, blobs);
+  auto closure = deriveDeploymentPackageClosure(deployment, artifacts, blobs);
   if (!closure)
     return closure.takeError();
   emitDeploymentPackageOperationStatistics(operationStatistics(

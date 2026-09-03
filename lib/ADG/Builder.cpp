@@ -1630,6 +1630,23 @@ DesignBuilder::deriveRootIdentities() && {
   return identities;
 }
 
+llvm::Expected<loom::fabric::DerivedFabricModuleIdentityProjection>
+DesignBuilder::deriveSpatialCoreIdentityWithCorrespondence() && {
+  if (!state_ || state_->consumed)
+    return invalid("DesignBuilder is already consumed");
+  if (state_->spatialRoots.size() != 1 || !state_->systemRoots.empty())
+    return invalid(
+        "correspondence derivation requires one sole derived Module");
+  const detail::SpatialRootState &root = state_->spatialRoots.front();
+  if (!root.closed)
+    return invalid("derived Module is not closed");
+  if (!root.derivedParent)
+    return invalid("correspondence derivation requires a derived Module");
+  state_->consumed = true;
+  return loom::fabric::deriveFabricModuleIdentityWithCorrespondence(
+      root.operation, root.domainRelation, state_->store);
+}
+
 llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>
 DesignBuilder::finalizeDerivedSpatialCoreWithCorrespondence() && {
   if (!state_ || state_->consumed)
@@ -1666,6 +1683,28 @@ DesignBuilder::finalizeDerivedSystemWithCorrespondence() && {
     importedModules.push_back(module.reference);
   state_->consumed = true;
   return loom::fabric::finalizeFabricSystemWithCorrespondence(
+      root.operation, importedModules, state_->store);
+}
+
+llvm::Expected<loom::fabric::DerivedFabricSystemIdentityProjection>
+DesignBuilder::deriveSystemIdentityWithCorrespondence() && {
+  if (!state_ || state_->consumed)
+    return invalid("DesignBuilder is already consumed");
+  if (!state_->spatialRoots.empty() || state_->systemRoots.size() != 1)
+    return invalid(
+        "correspondence derivation requires one sole derived System");
+  const detail::SystemRootState &root = state_->systemRoots.front();
+  if (!root.closed)
+    return invalid("derived System is not closed");
+  if (!root.derivedParent)
+    return invalid("correspondence derivation requires a derived System");
+
+  llvm::SmallVector<ArtifactRootReference, 4> importedModules;
+  importedModules.reserve(root.importedModules.size());
+  for (const detail::ImportedModuleState &module : root.importedModules)
+    importedModules.push_back(module.reference);
+  state_->consumed = true;
+  return loom::fabric::deriveFabricSystemIdentityWithCorrespondence(
       root.operation, importedModules, state_->store);
 }
 

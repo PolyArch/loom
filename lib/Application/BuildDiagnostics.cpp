@@ -448,7 +448,6 @@ void addCandidateInventorySummary(
 
 } // namespace
 
-
 void emitApplicationBuildOperationStatistics(
     const ApplicationBuildOperationStatistics &statistics) {
   emitInvocationDiagnostic(
@@ -901,7 +900,7 @@ void emitApplicationMappingDiagnostics(
             execution.execution.summary;
         llvm::json::Object payload;
         payload["schema"] = "loom.application_pair_evidence";
-        payload["version"] = "1.0";
+        payload["version"] = "1.1";
         payload["domain"] = "application_mapping_join";
         if (execution.provenance.pairDecision)
           payload["pair_decision"] =
@@ -1293,6 +1292,11 @@ void emitApplicationMappingDiagnostics(
         addOptionalUnsigned(payload, "selected_plan_ordinal",
                             summary.selectedPlanOrdinal);
         addOptionalRoot(payload, "selected_mapping", summary.selectedMapping);
+        llvm::json::Array repairRecords;
+        for (const ArtifactRootReference &record :
+             execution.provenance.hardwareMutationRepairRecords)
+          repairRecords.push_back(encodeRoot(record));
+        payload["hardware_mutation_repair_records"] = std::move(repairRecords);
         payload["outcome_count"] = execution.candidateOutcomes.size();
         std::uint64_t joinedIdentityCount = 0;
         std::uint64_t mappingTemporalCount = 0;
@@ -1429,6 +1433,8 @@ void emitApplicationMappingDiagnostics(
           payload["system"] = encodeRoot(outcome.system);
           payload["disposition"] = spelling(outcome.disposition);
           payload["runtime_disposition"] = spelling(outcome.runtimeDisposition);
+          addOptionalRoot(payload, "hardware_mutation_repair_record",
+                          outcome.hardwareMutationRepairRecord);
           addOptionalUnsigned(payload, "dfg_cycles", outcome.dfgCycles);
           addOptionalUnsigned(payload, "cgra_cycles", outcome.cgraCycles);
           addOptionalUnsigned(payload, "resource_core_cost",

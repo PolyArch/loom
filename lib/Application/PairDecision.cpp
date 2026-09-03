@@ -68,7 +68,8 @@ void setFunnelExactMeasurement(ApplicationPairMappingObservation &observation,
       analyticClockPeriodPicoseconds;
   if (measured > std::numeric_limits<std::uint64_t>::max())
     return;
-  observation.measuredMakespanPicoseconds = static_cast<std::uint64_t>(measured);
+  observation.measuredMakespanPicoseconds =
+      static_cast<std::uint64_t>(measured);
   if (!observation.predictedMakespanPicoseconds || measured == 0)
     return;
   const unsigned __int128 predicted = *observation.predictedMakespanPicoseconds;
@@ -103,7 +104,8 @@ void setProjectedObjectiveDimensions(
                analyticConfidencePermille, true);
 }
 
-std::optional<long double> decimalMeasure(const ResolvedObjectiveScalar &value) {
+std::optional<long double>
+decimalMeasure(const ResolvedObjectiveScalar &value) {
   const auto *decimal = std::get_if<ResolvedObjectiveDecimal>(&value);
   if (!decimal)
     return std::nullopt;
@@ -115,7 +117,8 @@ std::optional<std::uint64_t> scaledUnit(long double value,
                                         long double unitsPerBase) {
   const long double scaled = std::round(value * unitsPerBase);
   if (!(scaled >= 0.0L) ||
-      scaled > static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
+      scaled >
+          static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
     return std::nullopt;
   return static_cast<std::uint64_t>(scaled);
 }
@@ -129,16 +132,19 @@ void setCalibratedPhysicalDimensions(
     const dse::JointDesignExecutionSummary &summary,
     const ArtifactRootReference &selectedMapping,
     std::optional<std::uint64_t> cgraCycles) {
-  const std::vector<std::string> &labels = summary.qualityObjectiveDimensionLabels;
+  const std::vector<std::string> &labels =
+      summary.qualityObjectiveDimensionLabels;
   for (const dse::JointDesignQualityObservation &observation :
        summary.qualityObservations) {
-    if (observation.candidate != selectedMapping || observation.incompleteReason)
+    if (observation.candidate != selectedMapping ||
+        observation.incompleteReason)
       continue;
     const std::vector<ResolvedObjectiveScalar> &measures =
         observation.provenance.rawMeasures;
     if (measures.size() != labels.size())
       continue;
-    const auto measure = [&](llvm::StringRef label) -> std::optional<long double> {
+    const auto measure =
+        [&](llvm::StringRef label) -> std::optional<long double> {
       for (std::size_t ordinal = 0; ordinal != labels.size(); ++ordinal)
         if (labels[ordinal] == label)
           return decimalMeasure(measures[ordinal]);
@@ -580,6 +586,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.resourceCoreCost,
           std::nullopt,
           std::nullopt};
+      mappingObservation.hardwareMutationRepairRecord =
+          outcome.hardwareMutationRepairRecord;
       for (const dse::ResourceTimeCandidateFunnelEvaluation &evaluation :
            prepared.resourceTimeFunnel.evaluations) {
         if (evaluation.candidateIdentity != *planning.candidateIdentity)

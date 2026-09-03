@@ -132,7 +132,9 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
                    selectedOutcome->runtimeDisposition ||
                outcome.systemMappings != selectedOutcome->systemMappings ||
                outcome.runtimeEvidence != selectedOutcome->runtimeEvidence ||
-               outcome.oracleEvidence != selectedOutcome->oracleEvidence) {
+               outcome.oracleEvidence != selectedOutcome->oracleEvidence ||
+               outcome.hardwareMutationRepairRecord !=
+                   selectedOutcome->hardwareMutationRepairRecord) {
       return invalid(
           "equivalent selected Mapping outcomes have different evidence");
     }
@@ -156,6 +158,16 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
     return invalid("Deployment selection differs from its planning record");
   if (selectedOutcome->system != *pair.selectedSystem)
     return invalid("Deployment selection differs from the pair System");
+  if (selectedOutcome->hardwareMutationRepairRecord) {
+    if (pair.disposition !=
+        ApplicationPairDecisionDisposition::HardwareDseAlternative)
+      return invalid(
+          "non-hardware Deployment selection names a hardware repair record");
+    if (!llvm::is_contained(
+            mappingExecution.provenance.hardwareMutationRepairRecords,
+            *selectedOutcome->hardwareMutationRepairRecord))
+      return invalid("Deployment selection lost its hardware mutation record");
+  }
 
   const ApplicationPairCandidateRecord *selectedCandidate = nullptr;
   for (const ApplicationPairCandidateRecord &candidate : pair.candidates) {
@@ -187,7 +199,9 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
         observation.mappingDisposition != selectedOutcome->disposition ||
         observation.runtimeDisposition != selectedOutcome->runtimeDisposition ||
         observation.runtimeEvidence != selectedOutcome->runtimeEvidence ||
-        observation.oracleEvidence != selectedOutcome->oracleEvidence)
+        observation.oracleEvidence != selectedOutcome->oracleEvidence ||
+        observation.hardwareMutationRepairRecord !=
+            selectedOutcome->hardwareMutationRepairRecord)
       return invalid("Deployment selection differs from its pair observation");
     observedScheduleHints.push_back(observation.scheduleHintDigest);
   }
@@ -264,29 +278,31 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   if (!finalizedActivationDecision)
     return finalizedActivationDecision.takeError();
 
-  auto manifest =
-      ApplicationRuntimeManifest::get({*pair.sourceProgram,
-                                       *pair.fabric,
-                                       *pair.workload,
-                                       *pair.runtimeInput,
-                                       software.replayCases,
-                                       finalizedActivationDecision->reference(),
-                                       *pair.pairIdentity,
-                                       *pair.invocationRunKey,
-                                       pair.disposition,
-                                       *pair.selectedCandidateIdentity,
-                                       selectedPlan,
-                                       selectedScheduleHints,
-                                       *pair.selectedSystem,
-                                       selectedMapping,
-                                       deployment.reference(),
-                                       activationInputs.workload,
-                                       activationInputs.runtimeInput,
-                                       {},
-                                       selectedOutcome->runtimeEvidence,
-                                       selectedOutcome->oracleEvidence,
-                                       transitionGraph},
-                                      artifacts, blobs);
+  auto manifest = ApplicationRuntimeManifest::get(
+      {*pair.sourceProgram,
+       *pair.fabric,
+       *pair.workload,
+       *pair.runtimeInput,
+       software.replayCases,
+       finalizedActivationDecision->reference(),
+       *pair.pairIdentity,
+       *pair.invocationRunKey,
+       pair.disposition,
+       *pair.selectedCandidateIdentity,
+       selectedPlan,
+       selectedScheduleHints,
+       *pair.selectedSystem,
+       selectedMapping,
+       deployment.reference(),
+       activationInputs.workload,
+       activationInputs.runtimeInput,
+       {},
+       selectedOutcome->runtimeEvidence,
+       selectedOutcome->oracleEvidence,
+       selectedOutcome->hardwareMutationRepairRecord,
+       mappingExecution.provenance.hardwareMutationRepairRecords,
+       transitionGraph},
+      artifacts, blobs);
   if (!manifest)
     return manifest.takeError();
   auto published =
@@ -688,8 +704,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       return invalid("resource-time Mapping path has a foreign schedule owner");
     const PreparedApplicationMappingAlternative &scheduleOwner =
         prepared.mappingAlternatives[path.scheduleOwnerPlanOrdinal];
-    if (path.scheduleHintDigest !=
-        scheduleOwner.resourceTimeScheduleHintDigest)
+    if (path.scheduleHintDigest != scheduleOwner.resourceTimeScheduleHintDigest)
       return invalid("resource-time Mapping path lost its schedule digest");
     std::uint64_t parentPlanOrdinal = path.scheduleOwnerPlanOrdinal;
     ArtifactRootReference parentMapping = imported->mapping.reference();
@@ -705,8 +720,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
           observation.parentPlanOrdinal != parentPlanOrdinal ||
           observation.parentPlanOrdinal >=
               prepared.mappingAlternatives.size() ||
-          observation.childPlanOrdinal >=
-              prepared.mappingAlternatives.size() ||
+          observation.childPlanOrdinal >= prepared.mappingAlternatives.size() ||
           observation.parentScheduleHintDigest !=
               prepared.mappingAlternatives[observation.parentPlanOrdinal]
                   .resourceTimeScheduleHintDigest ||
@@ -808,9 +822,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
         continue;
       if (!longestIncomplete)
         longestIncomplete = **verified;
-      const auto *spectrum =
-          std::get_if<dse::VerifiedResourceTimeSpectrum>(
-              &(*verified)->verification);
+      const auto *spectrum = std::get_if<dse::VerifiedResourceTimeSpectrum>(
+          &(*verified)->verification);
       if (!spectrum)
         continue;
       const dse::VerifiedResourceTimeSpectrumScenario *pathScenario = nullptr;
@@ -858,8 +871,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
             !candidate.childMapping ||
             edge.child.mapping != *candidate.childMapping ||
             edge.status != pnr::ResourceTimeTransitionStatus::Verified)
-          return invalid("resource-time Mapping path edge lost its exact repair "
-                         "observation");
+          return invalid(
+              "resource-time Mapping path edge lost its exact repair "
+              "observation");
         const PreparedApplicationMappingAlternative &childAlternative =
             prepared.mappingAlternatives[candidate.childPlanOrdinal];
         auto childVerified = verifyResourceTimeAlternative(
@@ -877,7 +891,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
             {edge,
              **verified,
              std::move(**childVerified),
-             {candidate.reopenedRoots, candidate.reuseDisposition,
+             {candidate.reopenedRoots,
+              candidate.reuseDisposition,
               candidate.preservedTechMappings,
               candidate.preservedSpatialMappings,
               candidate.repairedTechMappings,
@@ -888,10 +903,12 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
               candidate.incrementalWallTimeNanoseconds,
               candidate.coldVerifierRetainedBytes,
               candidate.incrementalVerifierRetainedBytes,
-              candidate.coldVerifierWork, candidate.incrementalVerifierWork,
+              candidate.coldVerifierWork,
+              candidate.incrementalVerifierWork,
               candidate.coldProviderWork,
               candidate.incrementalProviderWork,
-              candidate.coldDfgCycles, candidate.coldCgraCycles,
+              candidate.coldDfgCycles,
+              candidate.coldCgraCycles,
               candidate.incrementalDfgCycles,
               candidate.incrementalCgraCycles}});
       }

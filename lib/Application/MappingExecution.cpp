@@ -186,16 +186,16 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       invocationSemanticInputs.insert(invocationSemanticInputs.end(),
                                       {replay.workload, replay.runtimeInput});
   llvm::sort(invocationSemanticInputs, artifactRootReferenceLess);
-  invocationSemanticInputs.erase(
-      std::unique(invocationSemanticInputs.begin(),
-                  invocationSemanticInputs.end()),
-      invocationSemanticInputs.end());
+  invocationSemanticInputs.erase(std::unique(invocationSemanticInputs.begin(),
+                                             invocationSemanticInputs.end()),
+                                 invocationSemanticInputs.end());
   std::vector<const dse::JointDesignExplorationPlan *> plans;
   plans.reserve(prepared.mappingAlternatives.size());
   for (const PreparedApplicationMappingAlternative &alternative :
        prepared.mappingAlternatives)
     plans.push_back(&alternative.plan);
   std::vector<ApplicationMappingCandidateOutcome> outcomes;
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords;
   std::vector<dse::JointDesignAttemptRecord> attempts;
   std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::uint64_t attemptedSoftwarePlans = 0;
@@ -248,18 +248,19 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::uint64_t techMappingJournalReplays = 0;
   std::uint64_t spatialPnrJournalReplays = 0;
   std::uint64_t systemPnrJournalReplays = 0;
-  const auto providerWork = [](const dse::JointDesignExecutionSummary &summary) {
-    return ApplicationMappingProviderWorkObservation{
-        summary.techMappingInvocationCount,
-        summary.spatialPnrInvocationCount,
-        summary.systemPnrInvocationCount,
-        summary.techMappingDispatchCount,
-        summary.spatialPnrDispatchCount,
-        summary.systemPnrDispatchCount,
-        summary.techMappingJournalReplayCount,
-        summary.spatialPnrJournalReplayCount,
-        summary.systemPnrJournalReplayCount};
-  };
+  const auto providerWork =
+      [](const dse::JointDesignExecutionSummary &summary) {
+        return ApplicationMappingProviderWorkObservation{
+            summary.techMappingInvocationCount,
+            summary.spatialPnrInvocationCount,
+            summary.systemPnrInvocationCount,
+            summary.techMappingDispatchCount,
+            summary.spatialPnrDispatchCount,
+            summary.systemPnrDispatchCount,
+            summary.techMappingJournalReplayCount,
+            summary.spatialPnrJournalReplayCount,
+            summary.systemPnrJournalReplayCount};
+      };
   const auto accumulateProviderWork =
       [&](const dse::JointDesignExecutionSummary &summary) {
         techMappingInvocations += summary.techMappingInvocationCount;
@@ -369,6 +370,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::nullopt,
             std::nullopt,
             {},
+            std::nullopt,
             std::nullopt});
       }
       dse::JointDesignAttemptRecord adjusted = attempt;
@@ -568,13 +570,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     if (*mappingPlanOrdinal >
         std::numeric_limits<std::uint64_t>::max() - firstPlan)
       return invalid("selected Mapping plan ordinal overflowed");
-    const std::uint64_t selectedPlanOrdinal =
-        *mappingPlanOrdinal + firstPlan;
+    const std::uint64_t selectedPlanOrdinal = *mappingPlanOrdinal + firstPlan;
     if (selectedPlanOrdinal >= prepared.mappingAlternatives.size())
       return invalid("selected Mapping has a foreign plan ordinal");
-    auto runtime = resolveRuntime(
-        prepared.mappingAlternatives[selectedPlanOrdinal], *execution,
-        *runtimeMapping);
+    auto runtime =
+        resolveRuntime(prepared.mappingAlternatives[selectedPlanOrdinal],
+                       *execution, *runtimeMapping);
     if (!runtime)
       return runtime.takeError();
     // The parent's own Mapping and runtime validation wall time, measured
@@ -588,13 +589,11 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     bool joined = false;
     for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
       if (outcome.planOrdinal != selectedPlanOrdinal ||
-          !llvm::is_contained(outcome.systemMappings,
-                              *runtimeMapping))
+          !llvm::is_contained(outcome.systemMappings, *runtimeMapping))
         continue;
       outcome.runtimeDisposition = runtime->disposition;
       outcome.runtimeEvidence = runtime->evidence;
-      outcome.runtimeMemoryContractRefusal =
-          runtime->cgraMemoryContractRefusal;
+      outcome.runtimeMemoryContractRefusal = runtime->cgraMemoryContractRefusal;
       outcome.oracleEvidence = runtime->oracleEvidence;
       outcome.dfgCycles = runtime->dfgCycles;
       outcome.cgraCycles = runtime->cgraCycles;
@@ -619,6 +618,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       continue;
     }
     std::vector<ArtifactRootReference> repairSystems;
+    std::vector<std::optional<ArtifactRootReference>> repairRecords;
     std::vector<dse::JointDesignExecution> repairExecutions;
     if (runtime->disposition !=
         ApplicationMappingRuntimeDisposition::Completed) {
@@ -664,7 +664,15 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               reserveSharedHardwareRepairProbes(hardwareReopen.reserved))
         return std::move(error);
       repairSystems = std::move(repaired->childSystems);
+      repairRecords = std::move(repaired->hardwareMutationRepairRecords);
       repairExecutions = std::move(repaired->executions);
+      if (repairSystems.size() != repairRecords.size() ||
+          repairSystems.size() != repairExecutions.size())
+        return invalid("runtime witness repair lost aligned child lineage");
+      for (const auto &record : repairRecords)
+        if (record &&
+            !llvm::is_contained(hardwareMutationRepairRecords, *record))
+          hardwareMutationRepairRecords.push_back(*record);
     }
     if (!repairExecutions.empty()) {
       auto qualityChoice = detail::chooseApplicationRepairByQuality(
@@ -713,7 +721,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               childRuntime.cgraCycles,
               childRuntime.resourceCoreCost,
               childRuntime.oracleEvidence,
-              childRuntime.cgraMemoryContractRefusal});
+              childRuntime.cgraMemoryContractRefusal,
+              repairRecords[childOrdinal]});
         }
         return llvm::Error::success();
       };
@@ -734,8 +743,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::unique(childMappings.begin(), childMappings.end()),
             childMappings.end());
         repairMappings.push_back(childMappings);
-        attempts.push_back({selectedPlanOrdinal,
-                            repairSystems[childOrdinal],
+        attempts.push_back({selectedPlanOrdinal, repairSystems[childOrdinal],
                             childMappings.empty()
                                 ? dse::JointDesignAttemptDisposition::Incomplete
                                 : dse::JointDesignAttemptDisposition::Verified,
@@ -784,8 +792,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         if (qualityIncomplete->incomplete.candidate) {
           const std::vector<ArtifactRootReference> &ownerMappings =
               repairMappings[qualityIncomplete->executionOrdinal];
-          if (!llvm::is_contained(
-                  ownerMappings, *qualityIncomplete->incomplete.candidate))
+          if (!llvm::is_contained(ownerMappings,
+                                  *qualityIncomplete->incomplete.candidate))
             return invalid("repair quality incomplete candidate is outside "
                            "its execution owner");
           detail::ApplicationRuntimeValidation projected;
@@ -801,9 +809,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               return runtime.takeError();
             projected = std::move(*runtime);
           }
-          if (llvm::Error error = appendRepairOutcome(
-                  qualityIncomplete->executionOrdinal, ownerMappings,
-                  projected))
+          if (llvm::Error error =
+                  appendRepairOutcome(qualityIncomplete->executionOrdinal,
+                                      ownerMappings, projected))
             return std::move(error);
         }
         selectedExecution.emplace(std::move(owner));
@@ -835,7 +843,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       const dse::JointDesignExecution *parentExecution = &*execution;
       std::size_t parentPlanOrdinal = selectedPlanOrdinal;
       ApplicationResourceTimeMappingPath candidatePath{
-          selectedPlanOrdinal, scheduleOwner.resourceTimeScheduleHintDigest,
+          selectedPlanOrdinal,
+          scheduleOwner.resourceTimeScheduleHintDigest,
           {}};
       std::vector<ArtifactRootReference> pathMappings = {
           *execution->summary.selectedMapping};
@@ -850,8 +859,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childAlternative.plan.pairOutputs.front().pair.system !=
                 scheduleOwner.plan.pairOutputs.front().pair.system)
           continue;
-        auto reopenedRoots = deriveApplicationPartitionDelta(
-            *parentPlan, childAlternative.plan);
+        auto reopenedRoots =
+            deriveApplicationPartitionDelta(*parentPlan, childAlternative.plan);
         if (!reopenedRoots)
           return reopenedRoots.takeError();
         if (reopenedRoots->empty())
@@ -989,14 +998,15 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 childRuntime->cgraCycles,
                 std::nullopt,
                 childRuntime->oracleEvidence,
-                childRuntime->cgraMemoryContractRefusal});
+                childRuntime->cgraMemoryContractRefusal,
+                std::nullopt});
           }
           bool coldVerified = false;
           if (adjacent->coldMapping) {
             adjacent->coldExecution.summary.selectedPlanOrdinal = childOrdinal;
-            auto coldRuntime =
-                resolveRuntime(childAlternative, adjacent->coldExecution,
-                               *adjacent->coldExecution.summary.selectedMapping);
+            auto coldRuntime = resolveRuntime(
+                childAlternative, adjacent->coldExecution,
+                *adjacent->coldExecution.summary.selectedMapping);
             if (!coldRuntime)
               return coldRuntime.takeError();
             std::vector<ArtifactRootReference> coldMappings;
@@ -1056,6 +1066,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                 std::nullopt,
                 std::nullopt,
                 {},
+                std::nullopt,
                 std::nullopt});
         }
         const std::uint64_t observationOrdinal =
@@ -1249,6 +1260,13 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.preMappingCompleteness = prepared.preMappingCompleteness;
   provenance.requestedPlannerMode = prepared.preMappingRequestedPlannerMode;
   provenance.resolvedPlannerMode = prepared.preMappingResolvedPlannerMode;
+  llvm::sort(hardwareMutationRepairRecords, artifactRootReferenceLess);
+  hardwareMutationRepairRecords.erase(
+      std::unique(hardwareMutationRepairRecords.begin(),
+                  hardwareMutationRepairRecords.end()),
+      hardwareMutationRepairRecords.end());
+  provenance.hardwareMutationRepairRecords =
+      std::move(hardwareMutationRepairRecords);
   provenance.incrementalMappingObservations =
       std::move(incrementalMappingObservations);
   provenance.resourceTimeMappingPath = std::move(resourceTimeMappingPath);

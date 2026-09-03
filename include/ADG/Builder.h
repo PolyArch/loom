@@ -1730,6 +1730,11 @@ public:
   /// exact identities without publishing the derived objects.
   llvm::Expected<std::vector<ArtifactIdentity>> deriveRootIdentities() &&;
 
+  /// Canonicalizes the sole derived Module and returns its exact identity and
+  /// occurrence correspondence without publishing it.
+  llvm::Expected<loom::fabric::DerivedFabricModuleIdentityProjection>
+  deriveSpatialCoreIdentityWithCorrespondence() &&;
+
   /// Finalizes the sole derived Module and returns the exact transient
   /// occurrence correspondence produced by Fabric canonical relabeling.
   llvm::Expected<loom::fabric::FinalizedFabricModuleProjection>
@@ -1739,6 +1744,11 @@ public:
   /// reference correspondence produced by Fabric canonical relabeling.
   llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>
   finalizeDerivedSystemWithCorrespondence() &&;
+
+  /// Canonicalizes the sole derived System and returns its exact identity and
+  /// reference correspondence without publishing it.
+  llvm::Expected<loom::fabric::DerivedFabricSystemIdentityProjection>
+  deriveSystemIdentityWithCorrespondence() &&;
 
 private:
   std::shared_ptr<detail::DesignState> state_;

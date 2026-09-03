@@ -243,6 +243,31 @@ preservedParentAccCores(const loom::fabric::FabricSystemRootView &parent,
   return result;
 }
 
+std::vector<loom::fabric::FabricSystemEntityCorrespondence>
+preservedSystemEntities(
+    const loom::fabric::FabricSystemRootView &parent,
+    llvm::ArrayRef<loom::fabric::FabricSystemEntityCorrespondence> entities) {
+  std::vector<loom::fabric::FabricSystemEntityCorrespondence> result;
+  for (const auto &entry : entities) {
+    const auto parentKind = parent.artifact().entityKind(entry.source.id);
+    if (parentKind && *parentKind == entry.source.kind)
+      result.push_back(entry);
+  }
+  return result;
+}
+
+std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>
+preservedSystemTransferPatterns(
+    const loom::fabric::FabricSystemRootView &parent,
+    llvm::ArrayRef<loom::fabric::FabricSystemTransferPatternCorrespondence>
+        transferPatterns) {
+  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence> result;
+  for (const auto &entry : transferPatterns)
+    if (parent.transferPattern(entry.source))
+      result.push_back(entry);
+  return result;
+}
+
 llvm::Expected<std::optional<MaterializedSystemChild>>
 materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
                  const SystemCompositionDecision &decision,
@@ -279,17 +304,9 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
           validateHardwareTopologyQuality(finalized->root.view()))
     return std::move(error);
 
-  std::vector<loom::fabric::FabricSystemEntityCorrespondence> entities;
-  for (const auto &entry : finalized->entities) {
-    const auto parentKind = parentView->artifact().entityKind(entry.source.id);
-    if (parentKind && *parentKind == entry.source.kind)
-      entities.push_back(entry);
-  }
-  std::vector<loom::fabric::FabricSystemTransferPatternCorrespondence>
-      transferPatterns;
-  for (const auto &entry : finalized->transferPatterns)
-    if (parentView->transferPattern(entry.source))
-      transferPatterns.push_back(entry);
+  auto entities = preservedSystemEntities(*parentView, finalized->entities);
+  auto transferPatterns = preservedSystemTransferPatterns(
+      *parentView, finalized->transferPatterns);
   return std::optional<MaterializedSystemChild>(MaterializedSystemChild{
       std::move(finalized->root), std::move(entities),
       std::move(transferPatterns)});
@@ -335,6 +352,29 @@ llvm::Error validateLineagePayload(
   }
   if (llvm::Error error = validateDecisionAgainstParent(
           decision->decision, parent->view(), selectedModules))
+    return error;
+  loom::adg::DesignBuilder design(store);
+  auto builder = design.deriveSystem(*parent, selectedModules);
+  if (!builder)
+    return builder.takeError();
+  if (llvm::Error error =
+          applyDecision(*builder, decision->decision, selectedModules))
+    return error;
+  if (llvm::Error error = builder->close())
+    return error;
+  auto expectedChild =
+      std::move(design).deriveSystemIdentityWithCorrespondence();
+  if (!expectedChild)
+    return expectedChild.takeError();
+  auto derivedEntities =
+      preservedSystemEntities(*parentView, expectedChild->entities);
+  auto derivedPatterns = preservedSystemTransferPatterns(
+      *parentView, expectedChild->transferPatterns);
+  if (expectedChild->identity != output.artifact ||
+      derivedEntities != decision->entities ||
+      derivedPatterns != decision->transferPatterns)
+    return invalid("System decision does not reproduce its exact output");
+  if (llvm::Error error = validateHardwareTopologyQuality(child->view()))
     return error;
   std::vector<loom::fabric::FabricSystemEntityReference> removedEntities;
   if (const auto *remove =

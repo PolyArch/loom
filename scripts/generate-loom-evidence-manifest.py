@@ -786,6 +786,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                             "system",
                             "disposition",
                             "runtime_disposition",
+                            "hardware_mutation_repair_record",
                             "runtime_evidence",
                             "dfg_cycles",
                             "cgra_cycles",

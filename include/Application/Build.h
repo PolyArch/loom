@@ -391,6 +391,7 @@ struct ApplicationPairMappingObservation final {
   /// cycles; a prediction is never rewritten by its measurement.
   std::optional<std::uint64_t> measuredMakespanPicoseconds;
   std::optional<std::uint64_t> predictionErrorPartsPerMillion;
+  std::optional<ArtifactRootReference> hardwareMutationRepairRecord;
 };
 
 /// Exact comparison of the analytic funnel against the real Mapping/PnR
@@ -562,6 +563,9 @@ struct ApplicationMappingCandidateOutcome final {
   /// refused when the runtime disposition is Unsupported for that reason.
   std::optional<sim::CgraUnsupportedMemoryContract>
       runtimeMemoryContractRefusal;
+  /// Durable hardware-mutation repair record for this exact child System.
+  /// Mapping-only repairs and immutable-System attempts carry no record.
+  std::optional<ArtifactRootReference> hardwareMutationRepairRecord;
 };
 
 /// Evidence for one application-level resource-time transition attempt. The
@@ -631,6 +635,9 @@ struct ApplicationMappingProvenance final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   dse::StructuredOwnershipSelectionMode resolvedPlannerMode =
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  /// Canonical inventory of every durable hardware-mutation repair record
+  /// produced while evaluating this application pair.
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords;
   std::vector<ApplicationIncrementalMappingObservation>
       incrementalMappingObservations;
   std::optional<ApplicationResourceTimeMappingPath> resourceTimeMappingPath;
