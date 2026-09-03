@@ -1915,8 +1915,12 @@ and traverse the resulting complete quality order. Under
 part of the requested result. The adapter therefore performs no speculative
 routing for ordering. It repeatedly selects the prepared `T` covering the
 greatest number of not-yet-covered graph references, breaks ties by ascending
-physical occurrence demand and then by canonical Artifact reference, and
-invokes ordinary Spatial PnR. Physical occurrence demand is the target-aware
+physical occurrence demand, then by descending absorbed dependences, and then
+by canonical Artifact reference, and invokes ordinary Spatial PnR. Absorbed
+dependences are the dependences `T` realizes inside a Memory Operation
+Engine's internal connection; each one is a logical net the interconnect
+need not route, so among equal occupancy the candidate that leaves less
+interconnect work is verified first. Physical occurrence demand is the target-aware
 projection of the canonical Tech order's realization demand: the fewest exact
 Fabric occurrences `T` can occupy, counting one FU capability instance per
 compute row, one Memory Operation Engine per memory row on a spatial template,

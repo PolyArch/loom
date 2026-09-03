@@ -188,6 +188,10 @@ struct PreparedTechCandidate final {
   /// Derived once per first-verified invocation; see
   /// TechPhysicalOccurrenceDemand.
   std::uint64_t physicalOccurrenceDemand = 0;
+  /// Dependences T realizes inside a Memory Operation Engine's internal
+  /// connection; each one is a logical net the interconnect need not route,
+  /// so more absorbed dependences rank first among equal occurrence demand.
+  std::uint64_t absorbedDependenceCount = 0;
 };
 
 void saturatingAdd(std::uint64_t &value, std::uint64_t amount) {
@@ -432,6 +436,7 @@ struct TechPhysicalOccurrenceDemand final {
   std::uint64_t temporalMemoryRows = 0;
   std::uint64_t spatialMemoryRows = 0;
   std::uint64_t unresolvedMemoryRows = 0;
+  std::uint64_t absorbedDependences = 0;
 };
 
 TechPhysicalOccurrenceDemand
@@ -462,6 +467,7 @@ deriveTechPhysicalOccurrenceDemand(const ::loom::mapping::TechMappingView &tech,
   std::map<std::vector<std::uint8_t>, std::uint64_t> temporalOperations;
   for (const ::loom::mapping::TechMemoryRealizationView &row :
        tech.memoryRealizations()) {
+    demand.absorbedDependences += row.internalEdges.size();
     std::vector<std::uint8_t> key =
         ::loom::fabric::canonicalFabricBytes(row.engine);
     const auto supply = templates.find(key);
@@ -485,32 +491,36 @@ deriveTechPhysicalOccurrenceDemand(const ::loom::mapping::TechMappingView &tech,
 
 /// The first-verified prefix visits the TechMapping covering the most
 /// not-yet-covered graphs first. Equal coverage is ordered by ascending
-/// physical occurrence demand before the canonical Artifact reference, so the
-/// verified prefix follows the exact Fabric rather than identity hashing.
+/// physical occurrence demand, then by descending absorbed dependences,
+/// before the canonical Artifact reference, so the verified prefix follows
+/// the exact Fabric and the interconnect work the candidate leaves to routing
+/// rather than identity hashing.
 std::size_t selectCandidateForFirstVerified(
     llvm::ArrayRef<PreparedTechCandidate> candidates, std::size_t begin,
     llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
   assert(begin < candidates.size());
   const auto rank = [&](std::size_t index) {
     const PreparedTechCandidate &candidate = candidates[index];
-    return std::make_pair(
+    return std::make_tuple(
         uncoveredGraphCount(candidate.tech.view().covers(), coveredGraphs),
-        candidate.physicalOccurrenceDemand);
+        candidate.physicalOccurrenceDemand, candidate.absorbedDependenceCount);
+  };
+  const auto precedes = [&](std::size_t lhs, std::size_t rhs) {
+    const auto lhsRank = rank(lhs);
+    const auto rhsRank = rank(rhs);
+    if (std::get<0>(lhsRank) != std::get<0>(rhsRank))
+      return std::get<0>(lhsRank) > std::get<0>(rhsRank);
+    if (std::get<1>(lhsRank) != std::get<1>(rhsRank))
+      return std::get<1>(lhsRank) < std::get<1>(rhsRank);
+    if (std::get<2>(lhsRank) != std::get<2>(rhsRank))
+      return std::get<2>(lhsRank) > std::get<2>(rhsRank);
+    return artifactRootReferenceLess(candidates[lhs].reference,
+                                     candidates[rhs].reference);
   };
   std::size_t selected = begin;
-  auto selectedRank = rank(selected);
-  for (std::size_t index = begin + 1; index != candidates.size(); ++index) {
-    const auto candidateRank = rank(index);
-    if (candidateRank.first > selectedRank.first ||
-        (candidateRank.first == selectedRank.first &&
-         (candidateRank.second < selectedRank.second ||
-          (candidateRank.second == selectedRank.second &&
-           artifactRootReferenceLess(candidates[index].reference,
-                                     candidates[selected].reference))))) {
+  for (std::size_t index = begin + 1; index != candidates.size(); ++index)
+    if (precedes(index, selected))
       selected = index;
-      selectedRank = candidateRank;
-    }
-  }
   return selected;
 }
 
@@ -1184,6 +1194,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           deriveTechPhysicalOccurrenceDemand(candidate.tech.view(),
                                              fabric->view());
       candidate.physicalOccurrenceDemand = demand.occurrences;
+      candidate.absorbedDependenceCount = demand.absorbedDependences;
       ::loom::mapping_debug::emit(
           ::loom::mapping_debug::Level::Summary,
           ::loom::mapping_debug::Stage::SpatialPnr,
@@ -1205,6 +1216,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
             fields["unresolved_memory_row_count"] =
                 demand.unresolvedMemoryRows;
             fields["physical_occurrence_demand"] = demand.occurrences;
+            fields["absorbed_dependence_count"] = demand.absorbedDependences;
           });
     }
 
