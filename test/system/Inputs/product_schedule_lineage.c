@@ -6,7 +6,7 @@ enum { lineage_extent = 8 };
 
 __attribute__((noinline)) static void
 schedule_lineage(const int *first, const int *second, int *sum, int *scaled) {
-  for (int index = 0; index < lineage_extent; ++index) {
+  for (long index = 0; index < lineage_extent; ++index) {
     sum[index] = first[index] + second[index];
     scaled[index] = first[index] * 3;
   }

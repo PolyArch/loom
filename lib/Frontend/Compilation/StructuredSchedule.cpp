@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -1011,6 +1012,30 @@ admittingStructuredActorResources(mlir::Operation *operation,
   return fabric.admittingOperationResourceCount(*projection, *indexBits);
 }
 
+bool isSelectedRootRelativeAddressSupport(mlir::Operation *operation) {
+  auto address = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
+  if (!address || address->use_empty())
+    return false;
+  return llvm::all_of(address->getUsers(), [&](mlir::Operation *user) {
+    if (!llvm::isa_and_nonnull<mlir::UnitAttr>(
+            user->getAttr(loom::rootRelativeAddressAttrName)))
+      return false;
+    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(user)) {
+      if (load.getVolatile_() ||
+          load.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
+        return false;
+      return load.getAddr() == address.getResult();
+    }
+    if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(user)) {
+      if (store.getVolatile_() ||
+          store.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
+        return false;
+      return store.getAddr() == address.getResult();
+    }
+    return false;
+  });
+}
+
 llvm::Expected<bool>
 fabricAdmitsVectorizedClosure(mlir::Operation *root,
                               const FabricCapabilityIndex &fabric) {
@@ -1602,6 +1627,7 @@ materializeStructuredScheduleImpl(
   auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(selectedLoop);
   const bool insideSpatialRegion =
       static_cast<bool>(selectedLoop->getParentOfType<loom::SpatialRegionOp>());
+  llvm::SmallVector<mlir::Operation *, 2> transformedScheduleRoots;
 
   switch (decision.kind) {
   case StructuredScheduleDecisionKind::Tile:
@@ -1746,9 +1772,33 @@ materializeStructuredScheduleImpl(
               decision.loop, **materialized);
         return invalid("polyhedral schedule materialization was refused");
       }
+      if (decision.factor != 0) {
+        llvm::SmallPtrSet<mlir::Operation *, 32> materializedSet(
+            materializedOperations.begin(), materializedOperations.end());
+        for (mlir::Operation *operation : materializedOperations) {
+          if (!llvm::isa<mlir::scf::ForOp>(operation))
+            continue;
+          bool nestedInMaterializedLoop = false;
+          for (mlir::Operation *ancestor = operation->getParentOp(); ancestor;
+               ancestor = ancestor->getParentOp()) {
+            if (!materializedSet.contains(ancestor))
+              continue;
+            if (llvm::isa<mlir::scf::ForOp>(ancestor)) {
+              nestedInMaterializedLoop = true;
+              break;
+            }
+          }
+          if (!nestedInMaterializedLoop)
+            transformedScheduleRoots.push_back(operation);
+        }
+        if (transformedScheduleRoots.empty())
+          return invalid("tiled polyhedral schedule has no transformed root");
+      }
       if (fabric) {
         for (mlir::Operation *operation : materializedOperations) {
           if (!dataflow::operationSchemaOf(operation))
+            continue;
+          if (isSelectedRootRelativeAddressSupport(operation))
             continue;
           auto resourceCount =
               admittingStructuredActorResources(operation, *fabric);
@@ -1775,9 +1825,10 @@ materializeStructuredScheduleImpl(
         std::move(*parallelRejection));
   if (mlir::failed(mlir::verify(**clone)))
     return invalid("materialized schedule candidate does not verify");
-  llvm::SmallVector<mlir::Operation *, 1> trackedOperations;
+  llvm::SmallVector<mlir::Operation *, 3> trackedOperations;
   if (clonedSpatialRegion)
     trackedOperations.push_back(clonedSpatialRegion);
+  llvm::append_range(trackedOperations, transformedScheduleRoots);
   auto finalized = finalizeStructuredProgramWithTrackedEntities(
       clone->get(), {}, trackedOperations);
   if (!finalized)
@@ -1785,10 +1836,15 @@ materializeStructuredScheduleImpl(
   if (finalized->trackedOperations.size() != trackedOperations.size())
     return invalid("tracked schedule projection changed cardinality");
   std::optional<StructuredEntityRef> projectedSpatial;
+  std::size_t scheduleRootOffset = 0;
   if (clonedSpatialRegion)
-    projectedSpatial = finalized->trackedOperations.front();
+    projectedSpatial = finalized->trackedOperations[scheduleRootOffset++];
+  std::vector<StructuredEntityRef> projectedScheduleRoots(
+      finalized->trackedOperations.begin() + scheduleRootOffset,
+      finalized->trackedOperations.end());
   return MaterializedStructuredScheduleCandidate{
       std::move(finalized->artifact), std::move(projectedSpatial),
+      std::move(projectedScheduleRoots),
       std::move(finalized->sourceProvenance)};
 }
 

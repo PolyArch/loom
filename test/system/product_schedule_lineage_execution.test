@@ -15,6 +15,7 @@
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
-# RUN:   --require-schedule-decision=parallelize \
+# RUN:   --require-schedule-edge=polyhedral_schedule:2 \
+# RUN:   --require-schedule-edge=parallelize:0 \
 # RUN:   --required-dataflow-text=dataflow.load \
 # RUN:   --required-dataflow-text=dataflow.store

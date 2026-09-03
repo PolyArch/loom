@@ -947,6 +947,15 @@ private:
       // AST calls are inverse points in the exact source statement domain.
       mlir::Value sourceCoordinate = mlir::arith::IndexCastOp::create(
           builder_, location_, builder_.getIndexType(), *coordinate);
+      if (!llvm::isa<mlir::IndexType>(sourceDimension.getType())) {
+        auto integer =
+            llvm::dyn_cast<mlir::IntegerType>(sourceDimension.getType());
+        if (!integer || !integer.isSignless() || integer.getWidth() != 64)
+          return materializerError(
+              "a source dimension has no lossless schedule coordinate type");
+        sourceCoordinate = mlir::arith::IndexCastOp::create(
+            builder_, location_, integer, sourceCoordinate);
+      }
       mapping.map(sourceDimension, sourceCoordinate);
       coordinates.push_back(expression);
     }

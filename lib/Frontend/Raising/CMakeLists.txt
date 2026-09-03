@@ -22,6 +22,7 @@ add_mlir_library(LoomFrontendRaising
 
 target_link_libraries(LoomFrontendRaising PUBLIC
   LoomFrontendAnalysis
+  LoomFrontendLowering
   MLIRLoom
 )
 mlir_target_link_libraries(LoomFrontendRaising PUBLIC

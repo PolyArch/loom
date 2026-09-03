@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <variant>
 
 namespace loom::lowering {
 
@@ -66,6 +67,49 @@ std::optional<ResolvedLinearMemoryAddress> resolveLinearMemoryAddress(
 /// synthetic canonical element-index representation.
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType);
+
+/// One direct scalar LLVM access whose complete byte geometry is exactly one
+/// point-coordinate partition of an enclosing loop domain. The projection is
+/// shared by SCoP admission and independent-iteration proofs so neither owner
+/// can silently interpret a GEP as an unscaled element index.
+struct ExactPointerPointAccess {
+  mlir::Operation *operation = nullptr;
+  mlir::Value root;
+  mlir::LLVM::GEPOp address;
+  bool writes = false;
+  std::uint64_t elementBytes = 0;
+};
+
+enum class ExactPointerPointAccessRefusal {
+  NotMemoryAccess,
+  UnsupportedEffect,
+  UnsupportedElementType,
+  NonDirectInboundsAddress,
+  AddressRelationNotEstablished,
+  NonLocalRoot,
+};
+
+using ExactPointerPointAccessOutcome =
+    std::variant<ExactPointerPointAccess, ExactPointerPointAccessRefusal>;
+
+ExactPointerPointAccessOutcome projectExactPointerPointAccess(
+    mlir::Operation *operation, mlir::Operation *enclosingRoot,
+    llvm::function_ref<bool(mlir::Value)> isPointCoordinate);
+
+/// The complete write-bearing pair result for exact point accesses. A
+/// same-root pair is iteration-local only when both byte partitions are
+/// identical; different element widths can overlap across point coordinates
+/// and therefore never acquire an identity dependence or independence proof.
+enum class ExactPointerPointAccessPairKind {
+  NoDependence,
+  SameRootIterationLocal,
+  ByteRelationNotEstablished,
+  AliasNotEstablished,
+};
+
+ExactPointerPointAccessPairKind classifyExactPointerPointAccessPair(
+    const ExactPointerPointAccess &lhs,
+    const ExactPointerPointAccess &rhs);
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
