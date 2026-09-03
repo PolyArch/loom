@@ -165,7 +165,33 @@ set -euo pipefail
     script += "mkdir -p outputs\ncat > " + mappedRtlResultPath.str() +
               " <<'LOOM_RESULT'\n";
     script += result.str();
-    script += "LOOM_RESULT\n";
+    script += "LOOM_RESULT\n"
+              "testbench_path='";
+    script += mappedRtlTestbenchPath.str();
+    script += "'\n"
+              "max_program_ordinal=-1\n"
+              "while read -r ordinal; do\n"
+              "  if [[ \"$ordinal\" -gt \"$max_program_ordinal\" ]]; then\n"
+              "    max_program_ordinal=\"$ordinal\"\n"
+              "  fi\n"
+              "done < <(grep -oE 'loom_cfg_payload_writes_[0-9]+' \"$testbench_path\" | sed 's/.*_//' | sort -nu)\n"
+              "program_count=$((max_program_ordinal + 1))\n"
+              "printf '%s %s\\n' '";
+    script += mappedRtlConfigurationTransportReceiptSchema.str();
+    script += "' '";
+    script += mappedRtlConfigurationTransportReceiptVersion.str();
+    script += "' > ";
+    script += mappedRtlConfigurationTransportReceiptPath.str();
+    script += "\nprintf 'programs %s\\n' \"$program_count\" >> ";
+    script += mappedRtlConfigurationTransportReceiptPath.str();
+    script += "\nfor ((ordinal=0; ordinal<program_count; ordinal++)); do\n"
+              "  payload_words=$(grep \"loom_cfg_payload_writes_${ordinal} !=\" \"$testbench_path\" | sed -E 's/.*!= ([0-9]+).*/\\1/' | head -1)\n"
+              "  [[ -n \"$payload_words\" ]] || exit 66\n"
+              "  printf 'program %s payload_writes %s atomic_commits 1 active_word_comparisons %s passing_status_reads 1\\n' \"$ordinal\" \"$payload_words\" \"$payload_words\" >> ";
+    script += mappedRtlConfigurationTransportReceiptPath.str();
+    script += "\ndone\nprintf 'end\\n' >> ";
+    script += mappedRtlConfigurationTransportReceiptPath.str();
+    script += "\n";
   }
   script += R"sh(
 LOOM_SIMULATOR
@@ -295,6 +321,20 @@ void resultProtocolIsCanonical() {
                    take(renderMappedRtlSimulationResult(stopped))))
                   .terminal == MappedRtlTerminalStatus::StoppedByLimit,
           "stopped result did not round trip");
+
+  MappedRtlConfigurationTransportReceipt receipt;
+  receipt.programs = {{5, 1, 5, 1}, {9, 1, 9, 1}};
+  const std::string receiptBytes =
+      take(renderMappedRtlConfigurationTransportReceipt(receipt));
+  const auto decodedReceipt =
+      take(parseMappedRtlConfigurationTransportReceipt(receiptBytes));
+  require(decodedReceipt.programs == receipt.programs,
+          "configuration transport receipt changed during round trip");
+  auto noncanonicalReceipt = parseMappedRtlConfigurationTransportReceipt(
+      receiptBytes + "unknown\n");
+  require(!noncanonicalReceipt,
+          "configuration transport receipt accepted trailing data");
+  llvm::consumeError(noncanonicalReceipt.takeError());
 }
 
 void requestFixtureClosesExactOwners() {

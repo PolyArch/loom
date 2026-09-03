@@ -160,7 +160,8 @@ renderMappedRtlConfigurationProgramFile(
 llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
                          llvm::ArrayRef<std::string> configurationProgramPaths,
-                         llvm::StringRef resultPath);
+                         llvm::StringRef resultPath,
+                         llvm::StringRef configurationTransportReceiptPath);
 
 /// Renders the Verilator driver of one bundle. The generated main is selected
 /// when no bridge engine source is given; the bridged driver compiles the

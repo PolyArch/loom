@@ -522,8 +522,11 @@ std::vector<std::string> gem5AttemptOutputPaths(const Gem5SystemFacts &facts,
     outputs.push_back(spatialBridgeResultPath(ordinal));
   if (facts.engine == Gem5SystemEngine::Rtl)
     for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
-         ++ordinal)
+         ++ordinal) {
       outputs.push_back(mappedRtlLaunchResultPath(ordinal));
+      outputs.push_back(
+          mappedRtlLaunchConfigurationTransportReceiptPath(ordinal));
+    }
   if (diagnostics) {
     outputs.push_back(kGem5PerformanceProfilePath.str());
     if (facts.engine == Gem5SystemEngine::Cgra)
@@ -1683,6 +1686,20 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
             eda::open_source::parseMappedRtlSimulationResult(*mappedText);
         if (!mappedResult)
           return mappedResult.takeError();
+        auto receiptText = readExternalToolInvocationDeclaredOutput(
+            imported,
+            mappedRtlLaunchConfigurationTransportReceiptPath(launchOrdinal));
+        if (!receiptText)
+          return receiptText.takeError();
+        auto receipt =
+            eda::open_source::parseMappedRtlConfigurationTransportReceipt(
+                *receiptText);
+        if (!receipt)
+          return receipt.takeError();
+        if (llvm::Error error =
+                eda::open_source::validateMappedRtlConfigurationTransportReceipt(
+                    rtlClosures[launchOrdinal], *receipt, artifacts, blobs))
+          return std::move(error);
         if (mappedResult->terminal ==
             eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
           if (bridgeResult.status != 1)
