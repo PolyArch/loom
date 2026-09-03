@@ -1,0 +1,1 @@
+# RUN: %python %S/../test_product_execution_lineage.py

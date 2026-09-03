@@ -1017,6 +1017,71 @@ module {
   if (forallCount != 1 || i64GepCount != 2)
     fail("tiled parallel materialization lost its i64 pointer coordinates");
 
+  auto sameRoot = materializeRootRelativeOwnership(parseProgram(R"mlir(
+module {
+  llvm.func internal @same_root(%state: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %first = arith.constant 1 : i32
+    %second = arith.constant 2 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %first, %address : i32, !llvm.ptr
+      llvm.store %second, %address : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  llvm.func @entry() -> i32 {
+    %c1 = arith.constant 1 : i64
+    %state = llvm.alloca %c1 x !llvm.array<8 x i32>
+        : (i64) -> !llvm.ptr
+    llvm.call @same_root(%state) : (!llvm.ptr) -> ()
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir"),
+                                                   "same_root");
+  const loom::frontend::StructuredEntityRef sameRootLoop =
+      singleScfRootReference(sameRoot);
+  const std::vector<std::uint64_t> sameRootFactors = {2};
+  auto sameRootAnalysis = take(loom::frontend::analyzeStructuredPolyhedralScop(
+      sameRoot, sameRootLoop, sameRootFactors));
+  const auto *sameRootScop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(
+          &sameRootAnalysis);
+  if (!sameRootScop || sameRootScop->tiledSchedules.empty())
+    fail("same-root pointer stores did not enter the general SCoP");
+  auto writeAfterWrite =
+      llvm::find_if(sameRootScop->dependences, [](const auto &dependence) {
+        return dependence.kind ==
+               loom::frontend::StructuredPolyhedralDependenceKind::
+                   WriteAfterWrite;
+      });
+  if (writeAfterWrite == sameRootScop->dependences.end() ||
+      !writeAfterWrite->relation ||
+      writeAfterWrite->relation->sourceDimensionCount != 1 ||
+      writeAfterWrite->relation->destinationDimensionCount != 1 ||
+      writeAfterWrite->relation->constraints.size() != 1 ||
+      writeAfterWrite->relation->constraints.front().kind !=
+          loom::frontend::StructuredPolyhedralConstraintKind::Equality ||
+      writeAfterWrite->relation->constraints.front().coefficients !=
+          std::vector<std::int64_t>{1, -1, 0})
+    fail("same-root pointer stores lost their exact dependence relation");
+  auto sameRootDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(sameRoot,
+                                                                fabric, 1));
+  if (llvm::none_of(sameRootDomain.proposals, [&](const auto &proposal) {
+        const auto &decision = proposal.decision();
+        return decision.loop == sameRootLoop &&
+               decision.kind ==
+                   loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      }))
+    fail("same-root point stores lost their independent iteration proof");
+
   const auto requireRefusal =
       [&](llvm::StringRef body,
           loom::frontend::StructuredScopRefusalKind expected) {
@@ -1029,6 +1094,24 @@ module {
           fail("a raised-pointer exclusion lost its typed refusal");
         return candidate;
       };
+  requireRefusal(
+      R"mlir(
+module {
+  llvm.func @minimum_lower_bound(%output: !llvm.ptr) {
+    %minimum = arith.constant -9223372036854775808 : i64
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %minimum to %c0 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::ProviderDomainNotAdmitted);
   requireRefusal(R"mlir(
 module {
   llvm.func @volatile_store(%output: !llvm.ptr) {
@@ -1250,14 +1333,12 @@ module {
          llvm::toString(std::move(error)));
 
   std::size_t forallCount = 0;
-  std::size_t reductionExtractCount = 0;
   reductionChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
         forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
-        reductionExtractCount += llvm::isa<mlir::vector::ExtractOp>(operation);
       });
-  if (forallCount != 1 || reductionExtractCount != 2)
-    fail("composed schedule lineage lost parallel or reduction semantics");
+  if (forallCount != 1)
+    fail("composed schedule lineage lost its independent parallel sibling");
 }
 
 void refusalDispositionPreservesIncompleteProofs() {

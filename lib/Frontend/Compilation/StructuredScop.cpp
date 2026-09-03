@@ -1217,6 +1217,9 @@ analyzeRaisedPointerScop(
   if (!lower || !upper || !step || *step != 1 || *upper <= *lower)
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
+  if (*lower == std::numeric_limits<std::int64_t>::min())
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
   const __int128 tripCount =
       static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
   if (tripCount <= 0 ||
@@ -1343,6 +1346,8 @@ analyzeRaisedPointerScop(
                                        accesses[rhs].projection.writes);
       dependence.source = accesses[lhs].statementOrdinal;
       dependence.destination = accesses[rhs].statementOrdinal;
+      dependence.relation.setValue(0, loop.getInductionVar());
+      dependence.relation.setValue(1, loop.getInductionVar());
       dependence.relation.addEquality({1, -1, 0});
       auto frozen =
           freezeRelation(dependence.relation, 1, 1, sourceValueReferences);

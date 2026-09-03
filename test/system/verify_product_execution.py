@@ -230,6 +230,37 @@ def validate_schedule_lineage(
 ) -> dict[str, Any]:
     """Joins one ordered Structured schedule path to verified Mapping work."""
     require(required_edges, "the required Schedule lineage path is empty")
+    candidates = pair_decision.get("candidates")
+    require(isinstance(candidates, list), "the pair decision inventory is absent")
+    selected_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("selected") is True
+    ]
+    require(
+        len(selected_candidates) == 1,
+        "the pair decision has no unique selected candidate",
+    )
+    selected_candidate = selected_candidates[0]
+    require(
+        selected_candidate.get("candidate_identity")
+        == pair_decision.get("selected_candidate_identity"),
+        "the candidate inventory selection disagrees with the pair decision",
+    )
+    selected_program = selected_candidate.get("structured_program")
+    selected_dataflow = selected_candidate.get("canonical_dataflow")
+    selected_planning_record = selected_candidate.get("planning_record_ordinal")
+    require(
+        isinstance(selected_program, str)
+        and isinstance(selected_dataflow, str)
+        and isinstance(selected_planning_record, int)
+        and not isinstance(selected_planning_record, bool)
+        and selected_planning_record >= 0,
+        "the selected candidate lacks its exact planning lineage",
+    )
+    selected_program_identity = root_identity(selected_program)
+    selected_dataflow_identity = root_identity(selected_dataflow)
+
     frontend_rows = matching_payloads(
         events, stage="dataflow_lowering", event="candidate"
     )
@@ -249,7 +280,12 @@ def validate_schedule_lineage(
     }
     matched_rows: list[dict[str, Any]] = []
     for row in frontend_rows:
-        if row.get("operation") != "selected_candidate_lineage":
+        if (
+            row.get("operation") != "selected_candidate_lineage"
+            or row.get("planning_record_ordinal") != selected_planning_record
+            or row.get("structured_program") != selected_program_identity
+            or row.get("canonical_dataflow") != selected_dataflow_identity
+        ):
             continue
         decisions = row.get("schedule_decisions", [])
         if not isinstance(decisions, list):
@@ -287,33 +323,6 @@ def validate_schedule_lineage(
     require(
         matched_rows,
         f"no selected compilation carries published Schedule path {expected_path}",
-    )
-    programs = {row.get("structured_program") for row in matched_rows}
-    schedule_candidates = [
-        candidate
-        for candidate in pair_decision.get("candidates", [])
-        if isinstance(candidate, dict)
-        and isinstance(candidate.get("structured_program"), str)
-        and root_identity(candidate["structured_program"]) in programs
-    ]
-    require(
-        schedule_candidates,
-        "the pair decision inventory lost the schedule-derived candidate",
-    )
-    selected_candidates = [
-        candidate
-        for candidate in schedule_candidates
-        if candidate.get("selected") is True
-    ]
-    require(
-        len(selected_candidates) == 1,
-        "the selected candidate is not uniquely schedule-derived",
-    )
-    selected_candidate = selected_candidates[0]
-    require(
-        selected_candidate.get("candidate_identity")
-        == pair_decision.get("selected_candidate_identity"),
-        "the schedule-derived candidate is not the pair decision selection",
     )
     require(
         selected_candidate.get("entered_mapping") is True,

@@ -805,7 +805,11 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
   // classes are provably disjoint. LLVM pointer stores already passed the
   // shared byte-aware point proof above. Anything else remains serial.
   for (auto &entry : storesByBase) {
-    if (!sameBaseStoresAreLaneDisjoint(entry.second, loop))
+    ::llvm::SmallVector<::mlir::Operation *, 4> memrefStores;
+    for (::mlir::Operation *store : entry.second)
+      if (::mlir::isa<::mlir::memref::StoreOp>(store))
+        memrefStores.push_back(store);
+    if (!sameBaseStoresAreLaneDisjoint(memrefStores, loop))
       return ::mlir::failure();
   }
 

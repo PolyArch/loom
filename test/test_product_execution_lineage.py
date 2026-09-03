@@ -19,19 +19,23 @@ SPEC.loader.exec_module(verify_product_execution)
 
 
 SCHEDULE_PROGRAM = "a" * 64
-OTHER_PROGRAM = "b" * 64
-SCHEDULE_CANDIDATE = "c" * 64
-OTHER_CANDIDATE = "d" * 64
-SCHEDULE_HINT = "e" * 64
+SCHEDULE_DATAFLOW = "c" * 64
+OTHER_DATAFLOW = "d" * 64
+SCHEDULE_CANDIDATE = "e" * 64
+SCHEDULE_HINT = "1" * 64
+PLANNING_RECORD = 5
 SYSTEM = "system"
 MAPPING = "mapping"
 
 
-def _events(*, with_reduction: bool = False) -> list[dict[str, Any]]:
+def _events(
+    *,
+    dataflow: str = SCHEDULE_DATAFLOW,
+    planning_record: int = PLANNING_RECORD,
+) -> list[dict[str, Any]]:
     first_parent = "schedule-parent"
     first_child = "schedule-child"
     second_child = "parallel-child"
-    reduction_child = "reduction-child"
     decisions: list[dict[str, Any]] = [
         {
             "kind": "polyhedral_schedule",
@@ -70,35 +74,15 @@ def _events(*, with_reduction: bool = False) -> list[dict[str, Any]]:
             },
         },
     ]
-    if with_reduction:
-        decisions.append(
-            {
-                "kind": "vectorize",
-                "factor": 0,
-                "parent": second_child,
-                "child": reduction_child,
-            }
-        )
-        proposals.append(
-            {
-                "stage": "dataflow_lowering",
-                "event": "candidate",
-                "payload": {
-                    "operation": "structured_schedule_candidate",
-                    "decision_kind": "vectorize",
-                    "factor": 0,
-                    "parent": second_child,
-                    "child": reduction_child,
-                },
-            }
-        )
     proposals.append(
         {
             "stage": "dataflow_lowering",
             "event": "candidate",
             "payload": {
                 "operation": "selected_candidate_lineage",
+                "planning_record_ordinal": planning_record,
                 "structured_program": SCHEDULE_PROGRAM,
+                "canonical_dataflow": dataflow,
                 "schedule_decisions": decisions,
             },
         }
@@ -106,15 +90,15 @@ def _events(*, with_reduction: bool = False) -> list[dict[str, Any]]:
     return proposals
 
 
-def _candidate(
-    program: str, identity: str, *, selected: bool
-) -> dict[str, Any]:
+def _candidate() -> dict[str, Any]:
     return {
-        "structured_program": program,
-        "candidate_identity": identity,
+        "structured_program": SCHEDULE_PROGRAM,
+        "canonical_dataflow": SCHEDULE_DATAFLOW,
+        "planning_record_ordinal": PLANNING_RECORD,
+        "candidate_identity": SCHEDULE_CANDIDATE,
         "plan_ordinal": 7,
         "entered_mapping": True,
-        "selected": selected,
+        "selected": True,
         "mapping_observations": [
             {
                 "plan_ordinal": 7,
@@ -130,11 +114,10 @@ def _candidate(
     }
 
 
-def _decision(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    selected = next(candidate for candidate in candidates if candidate["selected"])
+def _decision(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
-        "candidates": candidates,
-        "selected_candidate_identity": selected["candidate_identity"],
+        "candidates": [candidate],
+        "selected_candidate_identity": candidate["candidate_identity"],
         "selected_schedule_hint_digest": SCHEDULE_HINT,
         "selected_system": SYSTEM,
         "selected_system_mapping": MAPPING,
@@ -142,52 +125,44 @@ def _decision(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class ProductScheduleLineageTest(unittest.TestCase):
-    def test_selected_lineage_can_join_the_existing_reduction_coordinate(
-        self,
-    ) -> None:
-        candidate = _candidate(
-            SCHEDULE_PROGRAM, SCHEDULE_CANDIDATE, selected=True
-        )
+    def test_selected_lineage_joins_the_exact_planning_record(self) -> None:
+        candidate = _candidate()
         result = verify_product_execution.validate_schedule_lineage(
-            _events(with_reduction=True),
-            _decision([candidate]),
-            [
-                ("polyhedral_schedule", 2),
-                ("parallelize", 0),
-                ("vectorize", 0),
-            ],
+            _events(),
+            _decision(candidate),
+            [("polyhedral_schedule", 2), ("parallelize", 0)],
         )
         self.assertTrue(result["selected"])
         self.assertEqual(result["verified_observation_count"], 1)
 
-    def test_schedule_path_must_belong_to_the_selected_candidate(self) -> None:
-        decision = _decision(
-            [
-                _candidate(
-                    SCHEDULE_PROGRAM, SCHEDULE_CANDIDATE, selected=False
-                ),
-                _candidate(OTHER_PROGRAM, OTHER_CANDIDATE, selected=True),
-            ]
-        )
-        with self.assertRaisesRegex(ValueError, "uniquely schedule-derived"):
+    def test_schedule_path_rejects_a_foreign_planning_record(self) -> None:
+        candidate = _candidate()
+        with self.assertRaisesRegex(ValueError, "no selected compilation"):
             verify_product_execution.validate_schedule_lineage(
-                _events(),
-                decision,
+                _events(planning_record=PLANNING_RECORD + 1),
+                _decision(candidate),
+                [("polyhedral_schedule", 2), ("parallelize", 0)],
+            )
+
+    def test_schedule_path_rejects_a_foreign_dataflow(self) -> None:
+        candidate = _candidate()
+        with self.assertRaisesRegex(ValueError, "no selected compilation"):
+            verify_product_execution.validate_schedule_lineage(
+                _events(dataflow=OTHER_DATAFLOW),
+                _decision(candidate),
                 [("polyhedral_schedule", 2), ("parallelize", 0)],
             )
 
     def test_selected_path_requires_completed_runtime_and_oracle_evidence(
         self,
     ) -> None:
-        candidate = _candidate(
-            SCHEDULE_PROGRAM, SCHEDULE_CANDIDATE, selected=True
-        )
+        candidate = _candidate()
         observation = candidate["mapping_observations"][0]
         observation["runtime_evidence"] = []
         with self.assertRaisesRegex(ValueError, "completed runtime and oracle"):
             verify_product_execution.validate_schedule_lineage(
                 _events(),
-                _decision([candidate]),
+                _decision(candidate),
                 [("polyhedral_schedule", 2), ("parallelize", 0)],
             )
 
