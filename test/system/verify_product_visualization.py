@@ -38,7 +38,7 @@ def main() -> int:
     bundle = read_object(arguments.bundle)
     if bundle.get("schema") != "loom.visualization_bundle":
         raise ValueError("visualization bundle has the wrong schema")
-    if bundle.get("version") != "1.4":
+    if bundle.get("version") != "1.5":
         raise ValueError("visualization bundle has the wrong version")
     if bundle.get("fabric") != fabric:
         raise ValueError("visualization bundle names a different Fabric root")

@@ -147,6 +147,12 @@ enum class InProcessMachineLeaseOwnership : std::uint8_t {
 };
 
 struct InProcessMachineDevice final {
+  struct PreparedActivation final {
+    ArtifactRootReference deployment;
+    std::vector<RuntimeConfigurationDeltaTarget> configuration;
+    std::vector<pnr::ResourceTimeLogicalMemoryCopyPlan> logicalMemories;
+  };
+
   InProcessMachineDevice(std::vector<ArtifactIdentity> implementations,
                          std::optional<BlobDigest> attestation)
       : hardwareImplementations(std::move(implementations)),
@@ -162,9 +168,10 @@ struct InProcessMachineDevice final {
   bool activated = false;
   std::optional<ArtifactRootReference> activeDeployment;
   std::uint64_t nextPreparedActivation = 1;
-  std::map<std::uint64_t, ArtifactRootReference> preparedActivations;
+  std::map<std::uint64_t, PreparedActivation> preparedActivations;
   std::map<std::string, std::map<std::uint32_t, std::uint32_t>> shadow;
   std::map<std::string, std::map<std::uint32_t, std::uint32_t>> active;
+  std::map<std::vector<std::uint8_t>, std::vector<std::uint8_t>> liveMemory;
   std::vector<RuntimeStaticMemoryInstall> staticMemory;
 };
 
@@ -206,14 +213,18 @@ const RuntimeProviderEndpointKindDescriptor endpointKinds[] = {
 };
 
 const RuntimeProviderDescriptor descriptor{
-    {"loom.runtime.in_process", SchemaVersion{2, 0}},
-    "loom.runtime.in_process.implementation.v2",
+    {"loom.runtime.in_process", SchemaVersion{3, 0}},
+    "loom.runtime.in_process.implementation.v3",
     hardware::rtl::portableConfigurationRuntimeAbiIdentity,
     endpointKinds,
     true,
     true,
     true,
-    true};
+    true,
+    RuntimeResourceTimeCostModel{/*memoryCopySetupPicoseconds=*/5000,
+                                 /*memoryCopyBytePicoseconds=*/20,
+                                 /*configurationWordPicoseconds=*/40,
+                                 /*configurationCommitPicoseconds=*/1000}};
 
 } // namespace
 
@@ -403,6 +414,7 @@ InProcessRuntimeProvider::quiesceAndReset(const RuntimeLeaseHandle &lease) {
   machine.preparedActivations.clear();
   machine.shadow.clear();
   machine.active.clear();
+  machine.liveMemory.clear();
   machine.staticMemory.clear();
   ++device->second->resetCount;
   ++state_->statistics.resetCount;
@@ -590,8 +602,73 @@ InProcessRuntimeProvider::prepareActivation(
   if (machine.nextPreparedActivation == 0)
     return invalid("prepared activation handle space is exhausted");
   const std::uint64_t ordinal = machine.nextPreparedActivation++;
-  machine.preparedActivations.emplace(ordinal, activation.deployment);
+  machine.preparedActivations.emplace(
+      ordinal, InProcessMachineDevice::PreparedActivation{
+                   activation.deployment, {}, {}});
   ++state_->statistics.activationPreparationCount;
+  return RuntimePreparedActivationHandle{encodeU64(ordinal)};
+}
+
+llvm::Expected<RuntimePreparedActivationHandle>
+InProcessRuntimeProvider::prepareResourceTimeTransition(
+    const RuntimeLeaseHandle &lease,
+    const RuntimeExecutableRegistrationView &registration,
+    const RuntimeActivationView &activation,
+    llvm::ArrayRef<RuntimeConfigurationDeltaTarget> configuration,
+    llvm::ArrayRef<pnr::ResourceTimeLogicalMemoryCopyPlan> logicalMemories) {
+  if (llvm::Error error = validateExecutableRegistration(registration))
+    return std::move(error);
+  for (const RuntimeConfigurationDeltaTarget &target : configuration) {
+    if (target.changedWords.empty())
+      return invalid("prepared configuration target has no changed words");
+    if (llvm::Error error = validateRuntimeProviderEndpoint(
+            descriptor(), target.endpoint, RuntimeEndpointClass::Programming,
+            RuntimeEndpointFlow::RuntimeToImplementation))
+      return std::move(error);
+  }
+  std::set<std::vector<std::uint8_t>> destinations;
+  for (const pnr::ResourceTimeLogicalMemoryCopyPlan &copy : logicalMemories) {
+    if (copy.byteCount == 0)
+      return invalid("prepared logical-memory copy has zero extent");
+    auto source = pnr::canonicalResourceTimeMemoryTargetBytes(copy.source);
+    if (!source)
+      return source.takeError();
+    auto destination =
+        pnr::canonicalResourceTimeMemoryTargetBytes(copy.destination);
+    if (!destination)
+      return destination.takeError();
+    if (*source == *destination)
+      return invalid("prepared logical-memory copy retains one target");
+    if (!destinations.insert(*destination).second)
+      return invalid("prepared logical-memory copies alias one destination");
+  }
+
+  std::lock_guard<std::mutex> lock(state_->registry.mutex);
+  auto device = state_->leasedDevice(lease);
+  if (!device)
+    return device.takeError();
+  State::Device &binding = *device->second;
+  InProcessMachineDevice &machine = *binding.machine;
+  if (!machine.activated || !machine.activeDeployment)
+    return invalid("device has no active Deployment during preparation");
+  const std::uint64_t preparationOrdinal = binding.preparationCount++;
+  if (binding.failures.activationPreparationOrdinal == preparationOrdinal)
+    return failed("injected activation preparation failure");
+  if (machine.nextPreparedActivation == 0)
+    return invalid("prepared activation handle space is exhausted");
+  const std::uint64_t ordinal = machine.nextPreparedActivation++;
+  machine.preparedActivations.emplace(
+      ordinal, InProcessMachineDevice::PreparedActivation{
+                   activation.deployment,
+                   std::vector<RuntimeConfigurationDeltaTarget>(
+                       configuration.begin(), configuration.end()),
+                   std::vector<pnr::ResourceTimeLogicalMemoryCopyPlan>(
+                       logicalMemories.begin(), logicalMemories.end())});
+  ++state_->statistics.activationPreparationCount;
+  for (const RuntimeConfigurationDeltaTarget &target : configuration)
+    state_->statistics.preparedConfigurationWordCount +=
+        target.changedWords.size();
+  state_->statistics.preparedLogicalMemoryCopyCount += logicalMemories.size();
   return RuntimePreparedActivationHandle{encodeU64(ordinal)};
 }
 
@@ -616,7 +693,55 @@ llvm::Error InProcessRuntimeProvider::replaceActivationAtomically(
     --binding.failures.activationReplacementFailures;
     return failed("injected atomic activation replacement failure");
   }
-  machine.activeDeployment = activation->second;
+  std::map<std::string, std::map<std::uint32_t, std::uint32_t>> nextActive =
+      machine.active;
+  for (const RuntimeConfigurationDeltaTarget &target :
+       activation->second.configuration) {
+    auto &words = nextActive[endpointKey(target.endpoint)];
+    for (const RuntimeConfigurationWord &word : target.changedWords) {
+      const std::uint64_t writeOrdinal = binding.writeCount++;
+      ++state_->statistics.configurationWriteCount;
+      if (binding.failures.configurationWriteOrdinal == writeOrdinal)
+        return failed("injected atomic transition configuration failure");
+      std::uint32_t &stored = words[word.address];
+      for (unsigned byte = 0; byte != 4; ++byte)
+        if ((word.byteStrobe & (1U << byte)) != 0) {
+          const std::uint32_t mask = std::uint32_t{0xff} << (byte * 8);
+          stored = (stored & ~mask) | (word.value & mask);
+        }
+    }
+  }
+  auto nextMemory = machine.liveMemory;
+  std::uint64_t copiedBytes = 0;
+  for (const pnr::ResourceTimeLogicalMemoryCopyPlan &copy :
+       activation->second.logicalMemories) {
+    auto source = pnr::canonicalResourceTimeMemoryTargetBytes(copy.source);
+    if (!source)
+      return source.takeError();
+    auto destination =
+        pnr::canonicalResourceTimeMemoryTargetBytes(copy.destination);
+    if (!destination)
+      return destination.takeError();
+    const auto sourceState = machine.liveMemory.find(*source);
+    if (sourceState == machine.liveMemory.end() ||
+        sourceState->second.size() != copy.byteCount)
+      return invalid("prepared logical-memory source state is unavailable or "
+                     "has the wrong extent");
+    nextMemory[*destination] = sourceState->second;
+    if (copiedBytes >
+        std::numeric_limits<std::uint64_t>::max() - copy.byteCount)
+      return invalid("copied logical-memory byte count exceeds u64");
+    copiedBytes += copy.byteCount;
+  }
+  if (state_->statistics.copiedLogicalMemoryByteCount >
+      std::numeric_limits<std::uint64_t>::max() - copiedBytes)
+    return invalid("cumulative copied logical-memory byte count exceeds u64");
+  machine.active = std::move(nextActive);
+  machine.liveMemory = std::move(nextMemory);
+  machine.activeDeployment = activation->second.deployment;
+  state_->statistics.configurationCommitCount +=
+      activation->second.configuration.size();
+  state_->statistics.copiedLogicalMemoryByteCount += copiedBytes;
   ++state_->statistics.activationReplacementCount;
   return llvm::Error::success();
 }
@@ -727,6 +852,41 @@ std::size_t InProcessRuntimeProvider::preparedActivationCount(
     return 0;
   return state_->devices[static_cast<std::size_t>(deviceOrdinal)]
       .machine->preparedActivations.size();
+}
+
+llvm::Error InProcessRuntimeProvider::setLiveMemoryTarget(
+    std::uint64_t deviceOrdinal, const pnr::ResourceTimeMemoryTarget &target,
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes.empty())
+    return invalid("live logical-memory state is empty");
+  auto key = pnr::canonicalResourceTimeMemoryTargetBytes(target);
+  if (!key)
+    return key.takeError();
+  std::lock_guard<std::mutex> lock(state_->registry.mutex);
+  if (deviceOrdinal >= state_->devices.size())
+    return invalid("live logical-memory device ordinal is absent");
+  state_->devices[static_cast<std::size_t>(deviceOrdinal)]
+      .machine->liveMemory[*key] =
+      std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+InProcessRuntimeProvider::readLiveMemoryTarget(
+    std::uint64_t deviceOrdinal,
+    const pnr::ResourceTimeMemoryTarget &target) const {
+  auto key = pnr::canonicalResourceTimeMemoryTargetBytes(target);
+  if (!key)
+    return key.takeError();
+  std::lock_guard<std::mutex> lock(state_->registry.mutex);
+  if (deviceOrdinal >= state_->devices.size())
+    return invalid("live logical-memory device ordinal is absent");
+  const auto &memory = state_->devices[static_cast<std::size_t>(deviceOrdinal)]
+                           .machine->liveMemory;
+  const auto found = memory.find(*key);
+  if (found == memory.end())
+    return invalid("live logical-memory target has no state");
+  return found->second;
 }
 
 const RuntimeProviderDescriptor &inProcessRuntimeProviderDescriptor() {

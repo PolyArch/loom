@@ -265,7 +265,7 @@ Mapping outcome inventory, and the pair decision. A pre-admission or causal
 failure uses `loom.application_pair_disposition` version `1.0` and retains the
 same typed decision without fabricating Mapping work.
 The successful envelope's repair-record inventory is the same canonical set
-carried by runtime manifest 5.0. When the selected
+carried by runtime manifest 6.0. When the selected
 `hardware_dse_alternative` observation names a mutation repair, the runtime
 manifest names the same unique record; a general hardware-frontier selection
 and every non-hardware disposition name no selected repair record.

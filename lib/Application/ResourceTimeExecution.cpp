@@ -26,7 +26,7 @@ namespace loom::application {
 namespace {
 
 constexpr llvm::StringLiteral kTraceEncoding{
-    "loom.application.resource_time_execution_trace.1"};
+    "loom.application.resource_time_execution_trace.2"};
 
 llvm::Error reject(ApplicationResourceTimeExecutionErrorReason reason,
                    const llvm::Twine &message) {

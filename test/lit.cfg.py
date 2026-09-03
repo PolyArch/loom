@@ -186,6 +186,7 @@ tools = [
     "loom-deployment-closure-test",
     "loom-deployment-executable-leaves-test",
     "loom-deployment-package-test",
+    "loom-runtime-resource-time-live-state-test",
     "loom-dataflow-canonical-artifact-test",
     "loom-dataflow-channel-create-test",
     "loom-dataflow-canonical-reference-test",

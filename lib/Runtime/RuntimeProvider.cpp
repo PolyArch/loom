@@ -44,6 +44,17 @@ llvm::Error registerRuntimeProvider(const RuntimeProviderDescriptor &provider) {
     return invalid("implementation semantic identity is empty");
   if (provider.runtimeAbiIdentity.empty())
     return invalid("runtime ABI identity is empty");
+  if (provider.resourceTimeCostModel) {
+    const RuntimeResourceTimeCostModel &cost = *provider.resourceTimeCostModel;
+    if (cost.memoryCopySetupPicoseconds == 0 ||
+        cost.memoryCopyBytePicoseconds == 0 ||
+        cost.configurationWordPicoseconds == 0 ||
+        cost.configurationCommitPicoseconds == 0)
+      return invalid("resource-time cost model contains a zero component");
+    if (!provider.supportsPreparedActivationReplacement)
+      return invalid("resource-time cost model requires prepared activation "
+                     "replacement");
+  }
 
   std::set<std::uint32_t> kinds;
   std::set<std::string> names;

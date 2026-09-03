@@ -434,19 +434,22 @@ Mapping or invoke PnR.
 The admitted completion profile requires `completed_before` plus the one
 active completing root to be a unique subset of the Canonical Dataflow root
 inventory. The completing root is absent after the edge; roots not yet started
-may begin under the child Mapping. Logical memories may persist across the
-edge only through the derived retained-in-place correspondence: the finalizer
-compares the exact physical memory targets each endpoint binds per memory root
-and records the memory with exact zero migration time when they are equal.
-Relocated or unbound memories, child static images over a retained memory,
-channel-typed state, and DynamicWork are typed `ResourceTimeTransitionRefusal`
-reasons, never silently filtered. Hardware-programming state is unchanged and
-the owner derives exact zero reprogramming time; the migration time is the sum
-of the correspondence records. Ordinary completed thread and graph computation
-is allowed. Explicit safe points, changed hardware programming, surviving
-in-flight work, and composite or token boundaries fail closed until typed
-proof owners are available. These restrictions prevent the graph from becoming
-an online PnR or arbitrary in-flight preemption mechanism.
+may begin under the child Mapping. Logical memories persist through a
+finalizer-derived correspondence. Equal occurrence-qualified physical target
+digests are `retained_in_place` at exact zero cost. Different digests are
+`copied` only when the source and destination each contain one complete,
+statically known equal-extent target and the exact runtime provider owns a
+strictly positive copy-cost model. The migration time is the sum of copy setup
+plus per-byte costs over those records. Unbound, unknown-extent, split, or
+child-reinitialized memory, channel-typed state, and DynamicWork are typed
+`ResourceTimeTransitionRefusal` reasons, never silently filtered. Changed
+child configuration images are reduced to exact word ordinals; the same
+provider model supplies per-word and per-commit costs. `HardwareImplementation`
+and `RuntimePlatformBinding` roots cannot change across the edge. Ordinary
+completed thread and graph computation is allowed. Explicit safe points,
+surviving in-flight work, and composite or token boundaries fail closed until
+typed proof owners are available. These restrictions prevent the graph from
+becoming an online PnR or arbitrary in-flight preemption mechanism.
 
 Hardware-impact reuse reports one closed disposition: `preserved`,
 `local_repair`, or `cold_fallback`. `Unchanged` and `Rebase` Tech/Spatial

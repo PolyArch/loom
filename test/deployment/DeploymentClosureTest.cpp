@@ -1088,8 +1088,14 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       "changed-programming fixture selected another child Mapping");
   auto changedProgrammingDraft = draft;
   changedProgrammingDraft.child.deployment = changedProgramming.reference();
-  requireFinalizationFailure(std::move(changedProgrammingDraft),
-                             "reprogramming-time owner");
+  const auto changedProgrammingTransition =
+      take(test, pnr::finalizeResourceTimeTransition(
+                     std::move(changedProgrammingDraft), artifacts, blobs));
+  deployment::test::require(
+      test,
+      changedProgrammingTransition.reprogrammingTimePicoseconds.value_or(0) !=
+          0,
+      "changed configuration words have no provider-derived cost");
 
   auto wrongTrigger = transition;
   wrongTrigger.trigger = dataflow::rootThreadStartEventFamily(root);
@@ -1107,7 +1113,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto wrongReprogrammingCost = transition;
   wrongReprogrammingCost.reprogrammingTimePicoseconds = 1;
   requireClosureFailure(std::move(wrongReprogrammingCost),
-                        "nonzero reprogramming time");
+                        "changed-word projection");
   auto wrongMigrationCost = transition;
   wrongMigrationCost.migrationTimePicoseconds = 1;
   requireClosureFailure(std::move(wrongMigrationCost),

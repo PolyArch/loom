@@ -519,6 +519,18 @@ parseSafePointKind(llvm::StringRef spelling) {
   return malformed("unknown resource-time safe-point kind '" + spelling + "'");
 }
 
+llvm::Expected<pnr::ResourceTimeLiveStateMigration>
+parseLiveStateMigration(llvm::StringRef spelling) {
+  for (std::uint8_t ordinal = 0; ordinal != 2; ++ordinal) {
+    const auto candidate =
+        static_cast<pnr::ResourceTimeLiveStateMigration>(ordinal);
+    if (spelling == pnr::resourceTimeLiveStateMigrationSpelling(candidate))
+      return candidate;
+  }
+  return malformed("unknown resource-time live-state migration '" + spelling +
+                   "'");
+}
+
 void writeTransition(llvm::json::OStream &json,
                      const pnr::ResourceTimeTransition &transition) {
   assert(transition.safePoint &&
@@ -681,18 +693,15 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
         requireString(*memoryObject, "migration", memoryContext);
     if (!migrationSpelling)
       return migrationSpelling.takeError();
-    if (*migrationSpelling !=
-        pnr::resourceTimeLiveStateMigrationSpelling(
-            pnr::ResourceTimeLiveStateMigration::RetainedInPlace))
-      return malformed(memoryContext + " has an unknown migration '" +
-                       *migrationSpelling + "'");
+    auto migration = parseLiveStateMigration(*migrationSpelling);
+    if (!migration)
+      return migration.takeError();
     auto migrationTime =
         requireUnsigned(*memoryObject, "migration_time_ps", memoryContext);
     if (!migrationTime)
       return migrationTime.takeError();
-    logicalMemories.push_back(
-        {std::move(memory->reference), **parentBinding, **childBinding,
-         pnr::ResourceTimeLiveStateMigration::RetainedInPlace, *migrationTime});
+    logicalMemories.push_back({std::move(memory->reference), **parentBinding,
+                               **childBinding, *migration, *migrationTime});
   }
   auto resourceDelta = parseOptionalDigest(*object, "resource_delta", context);
   if (!resourceDelta)

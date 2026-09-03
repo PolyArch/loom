@@ -182,12 +182,13 @@ enum class ResourceTimeLiveStateClass : std::uint8_t {
 llvm::StringRef
 resourceTimeLiveStateClassSpelling(ResourceTimeLiveStateClass stateClass);
 
-/// How one retained live-state owner crosses the edge. `RetainedInPlace` is
-/// the only executable disposition: both endpoints bind the owner to the same
-/// physical memory targets, so no byte moves and the migration cost is exactly
-/// zero. A relocated owner has no migration executor and is refused.
+/// How one retained live-state owner crosses the edge. `RetainedInPlace`
+/// names identical physical targets at exact zero cost. `Copied` names one
+/// complete, statically bounded logical-memory object moved between distinct
+/// equal-extent targets by the selected runtime provider.
 enum class ResourceTimeLiveStateMigration : std::uint8_t {
   RetainedInPlace,
+  Copied,
 };
 
 llvm::StringRef
@@ -219,6 +220,43 @@ struct ResourceTimeLogicalMemoryCorrespondence final {
   }
 };
 
+/// One occurrence-qualified local-memory target selected for a logical
+/// memory. The Module-local service region and offset are qualified by the
+/// concrete System AccCore occurrence; SpatialMapping identity is deliberately
+/// absent because changing a Mapping does not move physical memory.
+struct ResourceTimeSpatialMemoryTarget final {
+  ::loom::fabric::AccCoreOccurrenceRef accCore;
+  ::loom::mapping::SpatialMemoryIntervalView interval;
+  ::loom::mapping::SpatialMemoryLocalRegionView region;
+};
+
+/// Exact physical target used by the live-state copy executor. System memory
+/// targets already carry their complete service-region and transform path;
+/// local targets require the occurrence-qualified context above.
+using ResourceTimeMemoryTarget =
+    std::variant<ResourceTimeSpatialMemoryTarget,
+                 ::loom::mapping::SystemMemoryRegionElementView>;
+
+/// Removable projection from one verified SystemMapping for a particular
+/// logical memory and root subset. The digest is the value retained by the
+/// transition record; the target list is rederived for runtime preparation.
+struct ResourceTimeLogicalMemoryBindingProjection final {
+  ::dataflow::LogicalMemoryRootRef memory;
+  std::optional<std::uint64_t> byteCount;
+  std::vector<ResourceTimeMemoryTarget> targets;
+  ComponentViewDigest digest;
+};
+
+llvm::Expected<ResourceTimeLogicalMemoryBindingProjection>
+projectResourceTimeLogicalMemoryBinding(
+    const ::loom::mapping::FinalizedSystemMapping &mapping,
+    ::dataflow::LogicalMemoryRootRef memory,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    const ArtifactStore &artifacts);
+
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalResourceTimeMemoryTargetBytes(const ResourceTimeMemoryTarget &target);
+
 /// Typed refusal of a transition proof. Every reason is an auditable
 /// negative: the edge stays `ProofNotEstablished` and the reason names the
 /// missing owner rather than a generic unsupported state.
@@ -226,9 +264,11 @@ enum class ResourceTimeTransitionRefusalReason : std::uint8_t {
   OrderedChannelState,
   DynamicWorkState,
   LogicalMemoryUnbound,
-  LogicalMemoryRelocated,
+  LogicalMemoryExtentUnknown,
+  LogicalMemoryCopyShapeUnsupported,
   LogicalMemoryReinitialized,
-  HardwareProgrammingChanged,
+  HardwareBindingChanged,
+  RuntimeTransitionCapabilityUnavailable,
   CompletionFrontierInadmissible,
 };
 
@@ -286,16 +326,51 @@ struct ResourceTimeTransition final {
   std::optional<ComponentViewDigest> resourceDeltaDigest;
   std::optional<ComponentViewDigest> configurationDeltaDigest;
   std::optional<ComponentViewDigest> routeDeltaDigest;
-  /// Exact compiler-owned cost of programming the changed Deployment
-  /// configuration. This remains distinct from live-state migration.
+  /// Exact cost of programming the changed Deployment configuration, derived
+  /// from exact changed words and the bound runtime provider's cost model.
+  /// This remains distinct from live-state migration.
   std::optional<std::uint64_t> reprogrammingTimePicoseconds;
-  /// Exact compiler-owned live-state migration cost: the sum over
-  /// `logicalMemories`. A retained-in-place edge establishes the exact value
-  /// zero without fabricating live work.
+  /// Exact live-state migration cost: the sum over `logicalMemories`, using
+  /// the bound runtime provider's copy model for `Copied` records. A
+  /// retained-in-place edge establishes exact zero without fabricating work.
   std::optional<std::uint64_t> migrationTimePicoseconds;
   ResourceTimeTransitionStatus status =
       ResourceTimeTransitionStatus::ProofNotEstablished;
 };
+
+/// One exact child configuration image and the payload words that differ
+/// from the same ConfigurationABI unit at the parent endpoint. Word ordinals
+/// are interpreted only through the child image's ConfigurationABI layout.
+struct ResourceTimeConfigurationImageDelta final {
+  ArtifactRootReference childImage;
+  std::vector<std::uint64_t> changedWordOrdinals;
+};
+
+/// One executable logical-memory copy rederived from a verified edge. The
+/// provider reads the complete source object at commit time, so preparation
+/// does not snapshot producer state before the safe point.
+struct ResourceTimeLogicalMemoryCopyPlan final {
+  ::dataflow::LogicalMemoryRootRef memory;
+  std::uint64_t byteCount = 0;
+  ResourceTimeMemoryTarget source;
+  ResourceTimeMemoryTarget destination;
+};
+
+/// Removable execution projection for one exact preverified transition. The
+/// persistent edge retains only correspondence digests and exact costs; the
+/// provider target and changed-word lists are independently rederived from
+/// its Mapping and Deployment endpoints.
+struct ResourceTimeTransitionExecutionPlan final {
+  std::vector<ResourceTimeConfigurationImageDelta> configurationImages;
+  std::vector<ResourceTimeLogicalMemoryCopyPlan> logicalMemoryCopies;
+  std::uint64_t reprogrammingTimePicoseconds = 0;
+  std::uint64_t migrationTimePicoseconds = 0;
+};
+
+llvm::Expected<ResourceTimeTransitionExecutionPlan>
+deriveResourceTimeTransitionExecutionPlan(
+    const ResourceTimeTransition &transition, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
 
 struct ResourceTimeTransitionSequence final {
   std::vector<ResourceTimeTransition> transitions;

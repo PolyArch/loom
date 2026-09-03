@@ -187,6 +187,11 @@ cone-external parent mappings must remain exact and every replacement mapping
 must be confined to a reopened root. Visualization does not independently
 redefine that partition.
 
+Version 1.5 admits the `copied` logical-memory migration spelling and its
+provider-derived nonzero migration and reprogramming costs. The bundle remains
+a projection of the verified edge and does not copy target or changed-word
+execution plans into a second owner.
+
 Scripts, stdout, stderr, vendor warnings, tool-native reports, diagnostic
 traces, and other raw execution material remain attempt or scratch material
 associated with the exact Request. No current raw-bundle Artifact or trace

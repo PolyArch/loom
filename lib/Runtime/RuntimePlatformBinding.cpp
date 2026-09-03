@@ -382,6 +382,61 @@ parseInterfaceBinding(const llvm::json::Object &object,
   return RuntimeInterfaceBinding{std::move(*interface), std::move(*endpoint)};
 }
 
+void writeResourceTimeCostModel(llvm::json::OStream &json,
+                                const RuntimeResourceTimeCostModel &cost) {
+  json.object([&] {
+    json.attribute("memory_copy_setup_picoseconds",
+                   cost.memoryCopySetupPicoseconds);
+    json.attribute("memory_copy_byte_picoseconds",
+                   cost.memoryCopyBytePicoseconds);
+    json.attribute("configuration_word_picoseconds",
+                   cost.configurationWordPicoseconds);
+    json.attribute("configuration_commit_picoseconds",
+                   cost.configurationCommitPicoseconds);
+  });
+}
+
+llvm::Expected<std::optional<RuntimeResourceTimeCostModel>>
+parseResourceTimeCostModel(const llvm::json::Object &provider) {
+  constexpr llvm::StringLiteral field{"resource_time_cost_model"};
+  const llvm::json::Value *value = provider.get(field);
+  if (!value)
+    return invalid("provider_binding is missing field '" + field + "'");
+  if (value->getAsNull())
+    return std::optional<RuntimeResourceTimeCostModel>{};
+  const llvm::json::Object *object = value->getAsObject();
+  if (!object)
+    return invalid("provider_binding field '" + field +
+                   "' must be null or an object");
+  constexpr llvm::StringLiteral context{
+      "provider_binding.resource_time_cost_model"};
+  if (llvm::Error error = rejectUnknownFields(
+          *object, context,
+          {"memory_copy_setup_picoseconds", "memory_copy_byte_picoseconds",
+           "configuration_word_picoseconds",
+           "configuration_commit_picoseconds"}))
+    return std::move(error);
+  auto copySetup =
+      requireUnsigned(*object, "memory_copy_setup_picoseconds", context);
+  auto copyByte =
+      requireUnsigned(*object, "memory_copy_byte_picoseconds", context);
+  auto configurationWord =
+      requireUnsigned(*object, "configuration_word_picoseconds", context);
+  auto configurationCommit =
+      requireUnsigned(*object, "configuration_commit_picoseconds", context);
+  if (!copySetup)
+    return copySetup.takeError();
+  if (!copyByte)
+    return copyByte.takeError();
+  if (!configurationWord)
+    return configurationWord.takeError();
+  if (!configurationCommit)
+    return configurationCommit.takeError();
+  return std::optional<RuntimeResourceTimeCostModel>{
+      RuntimeResourceTimeCostModel{*copySetup, *copyByte, *configurationWord,
+                                   *configurationCommit}};
+}
+
 std::string serialize(const RuntimePlatformBinding &binding) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
@@ -404,6 +459,13 @@ std::string serialize(const RuntimePlatformBinding &binding) {
                      binding.providerBinding().implementationSemanticIdentity);
       json.attribute("runtime_abi_identity",
                      binding.providerBinding().runtimeAbiIdentity);
+      json.attributeBegin("resource_time_cost_model");
+      if (binding.providerBinding().resourceTimeCostModel)
+        writeResourceTimeCostModel(
+            json, *binding.providerBinding().resourceTimeCostModel);
+      else
+        json.value(nullptr);
+      json.attributeEnd();
     });
     json.attributeEnd();
     json.attributeBegin("identity_verification");
@@ -482,7 +544,8 @@ llvm::Expected<ParsedBinding> parse(llvm::StringRef canonicalJson) {
   if (llvm::Error error = rejectUnknownFields(
           **providerObject, "provider_binding",
           {"descriptor_identity", "descriptor_version",
-           "implementation_semantic_identity", "runtime_abi_identity"}))
+           "implementation_semantic_identity", "runtime_abi_identity",
+           "resource_time_cost_model"}))
     return std::move(error);
   auto descriptorIdentity = requireString(
       **providerObject, "descriptor_identity", "provider_binding");
@@ -492,6 +555,7 @@ llvm::Expected<ParsedBinding> parse(llvm::StringRef canonicalJson) {
       **providerObject, "implementation_semantic_identity", "provider_binding");
   auto runtimeAbiIdentity = requireString(
       **providerObject, "runtime_abi_identity", "provider_binding");
+  auto resourceTimeCostModel = parseResourceTimeCostModel(**providerObject);
   if (!descriptorIdentity)
     return descriptorIdentity.takeError();
   if (!descriptorVersion)
@@ -500,13 +564,16 @@ llvm::Expected<ParsedBinding> parse(llvm::StringRef canonicalJson) {
     return implementationIdentity.takeError();
   if (!runtimeAbiIdentity)
     return runtimeAbiIdentity.takeError();
+  if (!resourceTimeCostModel)
+    return resourceTimeCostModel.takeError();
   auto parsedDescriptorVersion = parseSchemaVersion(*descriptorVersion);
   if (!parsedDescriptorVersion)
     return parsedDescriptorVersion.takeError();
   RuntimeProviderBinding providerBinding{
       {descriptorIdentity->str(), *parsedDescriptorVersion},
       implementationIdentity->str(),
-      runtimeAbiIdentity->str()};
+      runtimeAbiIdentity->str(),
+      std::move(*resourceTimeCostModel)};
   auto identity = parseIdentityVerification(**identityObject);
   if (!identity)
     return identity.takeError();
@@ -632,7 +699,7 @@ canonicalize(RuntimePlatformBindingDraft draft, const ArtifactStore &artifacts,
   RuntimeProviderBinding providerBinding{
       runtimeProviderDescriptorRef(*provider),
       provider->implementationSemanticIdentity.str(),
-      provider->runtimeAbiIdentity.str()};
+      provider->runtimeAbiIdentity.str(), provider->resourceTimeCostModel};
 
   if (auto *reported =
           std::get_if<HardwareReportedIdentity>(&draft.identityVerification)) {

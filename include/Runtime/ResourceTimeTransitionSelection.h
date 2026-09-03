@@ -85,7 +85,8 @@ class LoadedDeployment;
 /// Invocation-local selector for one immutable compiler-preverified graph.
 /// It tracks the exact started, active, and completed root sets and can
 /// coordinate an atomic child activation replacement for the admitted
-/// completion-only profile. It does not snapshot or move live runtime state.
+/// completion-only profile. The provider, not the selector, owns any exact
+/// configuration update and complete logical-memory copy at that safe point.
 class ResourceTimeTransitionSelectionSession final {
 public:
   static llvm::Expected<ResourceTimeTransitionSelectionSession>
@@ -93,7 +94,7 @@ public:
          const ::loom::deployment::FinalizedDeployment &entryDeployment,
          const ArtifactStore &artifacts, const BlobStore &blobs);
 
-  /// Verifies the graph and prepares every selectable child endpoint before
+  /// Verifies the graph and prepares every selectable edge before
   /// returning a session that may commit selected edges to the loaded
   /// Deployment. An entry-only graph needs no provider preparation.
   static llvm::Expected<ResourceTimeTransitionSelectionSession>

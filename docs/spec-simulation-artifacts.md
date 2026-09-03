@@ -149,6 +149,15 @@ SimulationRuntimeInput. Fixed or runtime value selection follows the same
 single-token rule as the spatial root. This schema does not copy Deployment
 entry or interface fields.
 
+`loom.simulation_workload 1.1` and `loom.simulation_runtime_input 2.0` remain
+unchanged when Deployment moves from 5.1 to 6.0. Their System catalog
+references encode only the contextual Deployment `ArtifactIdentity`; neither
+wire admits or parses a Deployment schema descriptor. The caller supplies an
+already strict-imported current Deployment, and catalog-owner equality rejects
+an identity published under any other descriptor. The workload and input
+therefore cannot reinterpret a 5.1 Deployment as 6.0, and their accepted wire
+language does not change.
+
 The Structured Program root supplies the source-program workload used by
 pre-Mapping Evaluation and compilation DSE:
 

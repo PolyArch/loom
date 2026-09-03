@@ -3440,13 +3440,13 @@ generator), `instruction_capacity` (Temporal instruction-store resize), and
 same executor and record as the FU, memory, FIFO, operand-buffer, switch,
 SpatialCore, AccCore, transport, service, and combined families.
 Application mapping provenance retains the canonical set of these record
-roots. Runtime manifest 5.0 and Application package closure carry that set and
+roots. Runtime manifest 6.0 and Application package closure carry that set and
 the complete parent/child System and SystemMapping closures, so removing the
 DSE journal or build store cannot erase the mutation evidence selected or
 rejected while the pair was evaluated.
 
 The mutation record does not name a `FinalizedDeployment` or a
-`ResourceTimeTransition`. Runtime manifest 5.0 joins only the selected repair
+`ResourceTimeTransition`. Runtime manifest 6.0 joins only the selected repair
 record to its selected Mapping and Deployment. The current resource-time
 transition owner requires both endpoint SystemMappings to name the same
 immutable Fabric, so a parent-to-hardware-child transition is rejected rather
@@ -3777,20 +3777,22 @@ start under the child Mapping, so the edge need not be an application-terminal
 event. Persistent live state is classified by the closed set
 `ResourceTimeLiveStateClass = {LogicalMemory, OrderedChannel, DynamicWork}`.
 Only `LogicalMemory` has a correspondence owner: the finalizer derives, for
-every logical memory root, the digest of the exact physical memory targets
-(view, byte interval, memory service region, transform path) each endpoint
-binds; equal digests mean the memory is `retained_in_place` at exact zero
-migration cost, and the migration time is the sum over those records. A
-memory bound at only one endpoint, bound to different targets (no migration
-executor exists), or reinitialized by a child static memory image is a typed
-`ResourceTimeTransitionRefusal` (`logical_memory_unbound`,
-`logical_memory_relocated`, `logical_memory_reinitialized`); channel-typed
-state and DynamicWork are refused as `ordered_channel_state` and
-`dynamic_work_state` because no owner can prove their correspondence. An
-authored correspondence record, like an authored digest or cost, cannot earn
-`Verified`. Unchanged hardware-programming state has exact zero reprogramming
-time; a changed programming state is refused as
-`hardware_programming_changed` until an exact programming-time owner exists.
+every live logical memory root, the digest of the exact occurrence-qualified
+physical memory targets each endpoint binds. Equal digests mean the memory is
+`retained_in_place` at exact zero migration cost. Different digests produce a
+`copied` record only for one complete, statically known equal-extent source and
+destination; the exact runtime provider supplies a strictly positive copy
+setup and per-byte cost. Unbound, unknown-extent, split, or child-reinitialized
+memory is a typed `ResourceTimeTransitionRefusal`; channel-typed state and
+DynamicWork remain `ordered_channel_state` and `dynamic_work_state` refusals
+because no owner can prove their correspondence. An authored correspondence
+record, like an authored digest or cost, cannot earn `Verified`. Changed child
+configuration images are reduced to exact word ordinals, and the same provider
+supplies strictly positive per-word and per-commit costs. The resulting
+reprogramming and migration times are independently rederived during closure
+verification. Endpoint `HardwareImplementation` and `RuntimePlatformBinding`
+roots remain immutable; a change is the typed `hardware_binding_changed`
+refusal.
 Surviving work, token publication, composite completion, and explicit safe
 points likewise remain typed incomplete until their respective proof
 artifacts exist.

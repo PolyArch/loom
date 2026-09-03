@@ -31,16 +31,18 @@ bool isSupportedSelectionProfile(const pnr::ResourceTimeTransition &transition,
              pnr::ResourceTimeSafePointKind::Completion &&
          transition.safePoint->artifact == dataflow &&
          transition.beforeActive.size() == 1 &&
-         llvm::all_of(transition.logicalMemories,
-                      [](const auto &memory) {
-                        return memory.migration ==
-                                   pnr::ResourceTimeLiveStateMigration::
-                                       RetainedInPlace &&
-                               memory.migrationTimePicoseconds == 0;
-                      }) &&
-         transition.reprogrammingTimePicoseconds ==
-             std::optional<std::uint64_t>(0) &&
-         transition.migrationTimePicoseconds == std::optional<std::uint64_t>(0);
+         llvm::all_of(
+             transition.logicalMemories,
+             [](const auto &memory) {
+               return (memory.migration == pnr::ResourceTimeLiveStateMigration::
+                                               RetainedInPlace &&
+                       memory.migrationTimePicoseconds == 0) ||
+                      (memory.migration ==
+                           pnr::ResourceTimeLiveStateMigration::Copied &&
+                       memory.migrationTimePicoseconds != 0);
+             }) &&
+         transition.reprogrammingTimePicoseconds.has_value() &&
+         transition.migrationTimePicoseconds.has_value();
 }
 
 bool sameRootSet(llvm::ArrayRef<dataflow::RootThreadLaunchRef> lhs,
@@ -112,8 +114,7 @@ ResourceTimeTransitionSelectionSession::create(
       return reject(
           ResourceTimeSelectionErrorReason::UnsupportedTransitionProfile,
           "resource-time selector supports only verified completion edges "
-          "whose live state is retained in place at zero reprogramming and "
-          "migration cost");
+          "with an executable typed live-state disposition and exact costs");
 
   const auto roots = mapping->view().executionBindings().rootThreadLaunches();
   return ResourceTimeTransitionSelectionSession(

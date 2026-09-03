@@ -28,7 +28,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{5, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{6, 0}};
 
 enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   ForeignSchema,

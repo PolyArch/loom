@@ -72,6 +72,9 @@ struct InProcessRuntimeStatistics final {
   std::uint64_t executableRegistrationCount = 0;
   std::uint64_t activationCount = 0;
   std::uint64_t activationPreparationCount = 0;
+  std::uint64_t preparedConfigurationWordCount = 0;
+  std::uint64_t preparedLogicalMemoryCopyCount = 0;
+  std::uint64_t copiedLogicalMemoryByteCount = 0;
   std::uint64_t activationDiscardCount = 0;
   std::uint64_t activationReplacementCount = 0;
   std::uint64_t leaseReleaseCount = 0;
@@ -119,6 +122,13 @@ public:
   prepareActivation(const RuntimeLeaseHandle &lease,
                     const RuntimeExecutableRegistrationView &registration,
                     const RuntimeActivationView &activation) override;
+  llvm::Expected<RuntimePreparedActivationHandle> prepareResourceTimeTransition(
+      const RuntimeLeaseHandle &lease,
+      const RuntimeExecutableRegistrationView &registration,
+      const RuntimeActivationView &activation,
+      llvm::ArrayRef<RuntimeConfigurationDeltaTarget> configuration,
+      llvm::ArrayRef<pnr::ResourceTimeLogicalMemoryCopyPlan> logicalMemories)
+      override;
   llvm::Error replaceActivationAtomically(
       const RuntimeLeaseHandle &lease,
       const RuntimePreparedActivationHandle &prepared) override;
@@ -134,6 +144,14 @@ public:
   std::optional<ArtifactRootReference>
   activeDeployment(std::uint64_t deviceOrdinal) const;
   std::size_t preparedActivationCount(std::uint64_t deviceOrdinal) const;
+  /// Test-oriented live target access. The target identity is the same
+  /// canonical projection consumed by prepared transition execution.
+  llvm::Error setLiveMemoryTarget(std::uint64_t deviceOrdinal,
+                                  const pnr::ResourceTimeMemoryTarget &target,
+                                  llvm::ArrayRef<std::uint8_t> bytes);
+  llvm::Expected<std::vector<std::uint8_t>>
+  readLiveMemoryTarget(std::uint64_t deviceOrdinal,
+                       const pnr::ResourceTimeMemoryTarget &target) const;
 
 private:
   struct State;

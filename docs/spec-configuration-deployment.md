@@ -66,16 +66,23 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             4.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    5.1
+loom.deployment                    6.0
 ```
 
 ConfigurationABI 4.0 and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
-`loom.hardware_implementation 4.1` occurrence closure. Deployment 5.1 derives
+`loom.hardware_implementation 4.1` occurrence closure. Deployment 6.0 derives
 the exact required SpatialCore occurrence set from its SystemMapping execution
 projection and requires one HardwareImplementation and RuntimePlatformBinding
 per subject. An old validator cannot reinterpret that occurrence coverage or
 the required contextual memory reference under an earlier descriptor.
+Deployment 6.0 also requires each hardware binding to name an exact
+`loom.runtime_platform_binding 4.0` root. That dependency adds the
+provider-owned resource-time cost model to the accepted child language, so it
+is an incompatible change from Deployment 5.1 even though the outer canonical
+JSON field inventory is unchanged. A 6.0 importer rejects rather than
+reinterprets every Deployment 5.1 root; Loom provides no fallback or migration
+between those versions.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -476,7 +483,7 @@ DeploymentExternalInterfaceRef =
   (exact Deployment ArtifactIdentity, external_interface_ordinal)
 ```
 
-Deployment 5.1 admits either the payload-free `FabricModel` implementation
+Deployment 6.0 admits either the payload-free `FabricModel` implementation
 used by semantic DFG/CGRA providers or an explicitly materialized concrete
 implementation. The RuntimePlatformBinding for each occurrence names that
 exact HardwareImplementation. Selecting `FabricModel` never triggers RTL
