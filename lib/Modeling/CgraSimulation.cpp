@@ -377,22 +377,18 @@ llvm::Expected<EvaluationModelResult> publishCompletedExecution(
       CompletedEvidence{std::move(*metrics), std::move(*findings)}};
 }
 
-llvm::Expected<EvaluationModelResult> classifyExecutionFailure(
-    llvm::Error error,
-    std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
-        nullptr) {
-  if (unsupportedMemory)
-    unsupportedMemory->reset();
+llvm::Expected<EvaluationModelResult>
+classifyExecutionFailure(llvm::Error error) {
   std::error_code code;
   std::string diagnostic;
   if (error.isA<sim::CgraExecutionUnsupported>()) {
+    // The provider's typed incapable-memory payload is logged through its own
+    // owner; Evaluation publishes the typed Unsupported outcome below.
     llvm::handleAllErrors(std::move(error),
                           [&](const sim::CgraExecutionUnsupported &info) {
                             code = info.convertToErrorCode();
                             llvm::raw_string_ostream stream(diagnostic);
                             info.log(stream);
-                            if (unsupportedMemory)
-                              *unsupportedMemory = info.memoryContract();
                           });
   } else {
     llvm::handleAllErrors(std::move(error),
@@ -522,13 +518,9 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const sim::PreparedCgraWorkloadExecution *workloadExecution = nullptr,
     const sim::PreparedSpatialExecutionContext *executionContext = nullptr,
     std::optional<sim::CgraClosedWaitSetDiagnostic> *closedWait = nullptr,
-    std::optional<sim::CgraUnsupportedMemoryContract> *unsupportedMemory =
-        nullptr,
     CgraSimulationAttemptProfile *attemptProfile = nullptr) {
   if (closedWait)
     closedWait->reset();
-  if (unsupportedMemory)
-    unsupportedMemory->reset();
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -574,7 +566,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
   }
   const auto projectionBegin = beginAttemptInterval(attemptProfile != nullptr);
   if (!outcome)
-    return classifyExecutionFailure(outcome.takeError(), unsupportedMemory);
+    return classifyExecutionFailure(outcome.takeError());
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
     return EvaluationModelResult{
         {{kExecutionOutputSlot, {}}},
@@ -1346,7 +1338,6 @@ evaluateCgraSimulationWithDiagnosticsImpl(
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
-  std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemory;
   std::optional<CgraSimulationAttemptProfile> attemptProfile;
   if (collectAttemptProfile)
     attemptProfile.emplace();
@@ -1354,7 +1345,7 @@ evaluateCgraSimulationWithDiagnosticsImpl(
       prepared.request, prepared.resolution, prepared.execution,
       prepared.workload, prepared.runtimeInput, std::move(limits),
       artifactStore, blobStore, &prepared.workloadExecution,
-      &prepared.executionContext, &closedWait, &unsupportedMemory,
+      &prepared.executionContext, &closedWait,
       attemptProfile ? &*attemptProfile : nullptr);
   if (!result)
     return result.takeError();
@@ -1365,7 +1356,6 @@ evaluateCgraSimulationWithDiagnosticsImpl(
   if (!evidence)
     return evidence.takeError();
   return CgraSimulationEvaluation{std::move(*evidence), std::move(closedWait),
-                                  std::move(unsupportedMemory),
                                   std::move(attemptProfile)};
 }
 

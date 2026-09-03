@@ -59,7 +59,6 @@ struct CgraSimulationAttemptProfile final {
 struct CgraSimulationEvaluation final {
   EvaluationEvidence evidence;
   std::optional<sim::CgraClosedWaitSetDiagnostic> closedWait;
-  std::optional<sim::CgraUnsupportedMemoryContract> unsupportedMemoryContract;
   std::optional<CgraSimulationAttemptProfile> attemptProfile;
 };
 

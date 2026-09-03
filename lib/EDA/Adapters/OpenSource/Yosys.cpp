@@ -204,7 +204,11 @@ llvm::Expected<std::string> renderYosysSynthesisDriver(
   driver += "opt\n";
   driver += "check -assert -nolatches\n";
   driver += "write_json outputs/rtl-structure.json\n";
-  driver += "synth -flatten -top " + topModule.str() + "\n";
+  // The SAT-based sharing pass of the default synth script is intractable on
+  // SpatialCore RTL (hours and tens of gigabytes without reaching technology
+  // mapping); resource sharing is a quality-of-results heuristic, not part
+  // of the netlist contract, so the flow synthesizes without it.
+  driver += "synth -flatten -noshare -top " + topModule.str() + "\n";
   driver += "dfflibmap -liberty " + *encodedLiberty + "\n";
   driver += "abc -liberty " + *encodedLiberty + "\n";
   driver += "read_liberty -lib " + *encodedLiberty + "\n";
