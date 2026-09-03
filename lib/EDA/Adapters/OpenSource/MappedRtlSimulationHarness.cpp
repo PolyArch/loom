@@ -422,14 +422,10 @@ void renderInputCounters(llvm::raw_ostream &output,
 /// and the atomic commit write are unchanged. A simulator evaluates the
 /// configuration fan-out at every edge the driver acts on, so a driver that
 /// acts only at the sampling edge spares the falling-edge evaluation of every
-/// configuration cycle. The response wait alone may be taken at the falling
-/// edge: a caller whose next action follows the response through an idle
-/// channel (the readback after the commit write, the kernel launch after the
-/// status read) then presents that action one edge earlier, exactly when a
-/// falling-edge driver did, which keeps the launch phase of the design's
-/// free-running arbitration rotations and therefore the retirement
-/// coordinates unchanged. Every other transaction gains nothing from it,
-/// because the controller is busy for that edge anyway.
+/// configuration cycle. Every read samples its accepted response at the next
+/// falling edge. The caller can then present the next address before the next
+/// rising edge, when the controller can replace the retiring response without
+/// leaving the read channel idle.
 void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
                              std::size_t ordinal, llvm::StringRef clock) {
   output << "  task automatic loom_cfg_write_" << ordinal << "(input logic ["
@@ -483,7 +479,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << ":0] address, output logic ["
          << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] data, output logic [" << kAxiResponseWidth - 1
-         << ":0] response, input logic falling_edge_response);\n"
+         << ":0] response);\n"
          << "    integer wait_cycles;\n"
          << "    begin\n"
          << "      " << prefix << "_araddr <= address;\n"
@@ -498,14 +494,13 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "      end while (!" << prefix << "_arready);\n"
          << "      " << prefix << "_arvalid <= 0;\n"
          << "      wait_cycles = 0;\n"
-         << "      while (!" << prefix << "_rvalid) begin\n"
-         << "        if (falling_edge_response) @(negedge " << clock
-         << "); else @(posedge " << clock << ");\n"
+         << "      do begin\n"
+         << "        @(negedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
          << "_rvalid) $fatal(1, \"AXI4-Lite R response timed out\");\n"
-         << "      end\n"
+         << "      end while (!" << prefix << "_rvalid);\n"
          << "      data = " << prefix << "_rdata;\n"
          << "      response = " << prefix << "_rresp;\n"
          << "    end\n"
@@ -567,7 +562,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount
-         << ", loom_cfg_readback, loom_cfg_response, 0);\n"
+         << ", loom_cfg_readback, loom_cfg_response);\n"
          << "      if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << words << "[" << wordIndex
@@ -579,7 +574,7 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                 program.layout.statusAddress,
                 hardware::rtl::portableConfigurationAddressWidth /
                     kBitsPerHexDigit)
-         << ", loom_cfg_readback, loom_cfg_response, 1);\n"
+         << ", loom_cfg_readback, loom_cfg_response);\n"
          << "    if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << hardware::rtl::portableConfigurationDataWidth

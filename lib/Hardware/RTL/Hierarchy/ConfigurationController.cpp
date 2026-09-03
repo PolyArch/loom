@@ -673,7 +673,10 @@ buildConfigurationControllerModule(
               mux(bodyBuilder, location, payloadMatch,
                   constant(bodyBuilder, location, 2, axiOkay), readResponse);
         }
-        mlir::Value arReady = notValue(bodyBuilder, location, rValid);
+        mlir::Value arReady = orValues(
+            bodyBuilder, location,
+            {notValue(bodyBuilder, location, rValid),
+             accessor.getInput("cfg_rready")});
         mlir::Value readAccept = andValues(
             bodyBuilder, location, {arReady, accessor.getInput("cfg_arvalid")});
         mlir::Value rRetained =
