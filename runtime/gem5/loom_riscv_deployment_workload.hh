@@ -58,6 +58,8 @@ private:
   const std::uint64_t hostMemoryTableEntries;
   const Addr hostResultAddress;
   const std::uint64_t hostResultSize;
+  const Addr hostValueTableAddress;
+  const std::uint64_t hostValueTableEntries;
   const Addr hostReturnAddress;
   const Addr stackBase;
   const Addr stackStride;

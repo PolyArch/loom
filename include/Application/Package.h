@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <utility>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -17,6 +18,11 @@ class BlobStore;
 namespace loom::application {
 
 struct ApplicationDeploymentArtifacts;
+
+struct ApplicationPackageClosure final {
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<BlobDigest> blobs;
+};
 
 class ImportedApplicationPackage final {
 public:
@@ -47,6 +53,14 @@ publishApplicationPackage(const ApplicationDeploymentArtifacts &application,
                           llvm::StringRef outputPath,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs);
+
+/// Derives the exact object and blob closure owned by an Application package.
+/// Consumers may use this projection for strict dependency resolution, but it
+/// does not acquire a second identity or authorize additional package roots.
+llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
+    const FinalizedApplicationRuntimeManifest &manifest,
+    const deployment::FinalizedDeployment &entryDeployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 /// Strictly imports an Application package from its embedded stores, replays
 /// the manifest and every endpoint Deployment, and rejects missing or

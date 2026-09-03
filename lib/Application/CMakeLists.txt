@@ -30,7 +30,9 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
 add_library(LoomApplicationRuntimeManifest
   ActivationDecision.cpp
   Package.cpp
+  ProductOracleEvaluation.cpp
   RuntimeManifest.cpp
+  RuntimeProductContract.cpp
 )
 
 target_include_directories(LoomApplicationRuntimeManifest PUBLIC

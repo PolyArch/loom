@@ -661,7 +661,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.12",
+            "schema": "loom.gem5_system_projection.13",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -671,6 +671,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 "entry_symbol": "loom_host_entry",
                 "result_address": 0,
                 "result_size": 0,
+                "value_table_address": 0,
+                "value_table_entries": 0,
                 "return_address": HOST_LOAD_ADDRESS,
             },
             "instruction_images": [str(instruction_image)],

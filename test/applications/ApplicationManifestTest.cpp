@@ -173,7 +173,7 @@ std::string replaceOnce(std::string text, llvm::StringRef from,
 std::string manifestText(llvm::StringRef digest) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "3.0",
+  "version": "4.0",
   "applications": [
     {
       "identity": "repository-app",
@@ -184,7 +184,8 @@ std::string manifestText(llvm::StringRef digest) {
         "sources": ["main.cpp"],
         "compiler_options": ["-O2"],
         "link_options": [],
-        "operator_protocol_symbols": []
+        "operator_protocol_symbols": [],
+        "product_execution": null
       },
       "cached_inputs": [],
       "inputs": [
@@ -194,7 +195,12 @@ std::string manifestText(llvm::StringRef digest) {
           "runtime_input": "local-runtime",
           "cached_inputs": [],
           "compiler_options": [],
-          "oracle": {"kind": "typed_invariant", "entry": "test/oracles/local.oracle"},
+          "oracle": {
+            "kind": "typed_invariant",
+            "entry": "test/oracles/local.oracle",
+            "sha256": "efb83f2a277e9f49b38efd505f5cbb93885e721b6bd16b788937c9396174c006",
+            "encoding": "utf8"
+          },
           "profile": {
             "warmup_samples": 2,
             "measured_samples": 3,
@@ -214,7 +220,8 @@ std::string manifestText(llvm::StringRef digest) {
         "sources": ["main.c"],
         "compiler_options": ["-O3"],
         "link_options": [],
-        "operator_protocol_symbols": ["upstream_kernel"]
+        "operator_protocol_symbols": ["upstream_kernel"],
+        "product_execution": null
       },
       "cached_inputs": [
         {"logical_name": "weights", "path": "weights.bin", "sha256": ")json" +
@@ -227,7 +234,12 @@ std::string manifestText(llvm::StringRef digest) {
           "runtime_input": "cache-free-runtime",
           "cached_inputs": [],
           "compiler_options": [],
-          "oracle": {"kind": "exact", "entry": "test/oracles/upstream-free.oracle"},
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/oracles/upstream-free.oracle",
+            "sha256": "6fd79a0722e77ae1abea3866b797b823d8bb24ecfdb1097185a8f7b64a220b26",
+            "encoding": "utf8"
+          },
           "profile": {
             "warmup_samples": 0,
             "measured_samples": 1,
@@ -241,7 +253,12 @@ std::string manifestText(llvm::StringRef digest) {
           "runtime_input": "wakeword-runtime",
           "cached_inputs": ["weights"],
           "compiler_options": ["-DWAKEWORD_INPUT=1"],
-          "oracle": {"kind": "exact", "entry": "test/oracles/upstream.oracle"},
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/oracles/upstream.oracle",
+            "sha256": "2f66884b190a5f8463961e8100033b4c9a415bbab3000f68de27aac5f554d35a",
+            "encoding": "utf8"
+          },
           "profile": {
             "warmup_samples": 0,
             "measured_samples": 1,
@@ -418,7 +435,7 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   requireErrorContains(parseApplicationManifest(copiedRevision),
                        "unknown field 'revision'");
   const std::string oldSchema =
-      replaceOnce(text, "\"version\": \"3.0\"", "\"version\": \"2.0\"");
+      replaceOnce(text, "\"version\": \"4.0\"", "\"version\": \"3.0\"");
   requireErrorContains(parseApplicationManifest(oldSchema),
                        "unsupported schema or version");
   const std::string unknownSelectedInput = replaceOnce(
@@ -431,6 +448,10 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
                   "\"upstream_kernel\"]");
   requireErrorContains(parseApplicationManifest(duplicatedProtocolSymbol),
                        "operator_protocol_symbols must be unique");
+  const std::string missingProductExecution =
+      replaceOnce(text, ",\n        \"product_execution\": null", "");
+  requireErrorContains(parseApplicationManifest(missingProductExecution),
+                       "requires field 'product_execution'");
   const std::string invalidCoverage =
       replaceOnce(text, "\"oracle_coverage\": \"all_measured_samples\"",
                   "\"oracle_coverage\": \"sampled\"");
@@ -559,7 +580,12 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
           std::vector<std::string>{"-std=c++17", "-O1", "-ffp-contract=off",
                                    "-fno-exceptions", "-fno-rtti"} ||
       !tinyMl.build.linkOptions.empty() ||
-      !tinyMl.build.operatorProtocolSymbols.empty() ||
+      tinyMl.build.operatorProtocolSymbols !=
+          std::vector<std::string>{"loom_mlperf_tiny_measured_batch"} ||
+      !tinyMl.build.productExecution ||
+      tinyMl.build.productExecution->entrySymbol !=
+          "loom_mlperf_tiny_anomaly" ||
+      tinyMl.build.productExecution->measuredOutputBytesPerSample != 640 ||
       tinyMl.cachedInputs.size() != 2 ||
       tinyMl.cachedInputs[0].logicalName != "model" ||
       tinyMl.cachedInputs[0].path !=
@@ -575,6 +601,9 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
       tinyMl.input.oracle.kind != OracleKind::Exact ||
       tinyMl.input.oracle.entry !=
           "test/applications/mlperf-tiny-anomaly/expected-smoke.txt" ||
+      tinyMl.input.oracle.encoding != OracleEncoding::HexSampleLines ||
+      formatBlobDigestHex(tinyMl.input.oracle.digest) !=
+          "dd3c1741afc700b2a42ce8902dd8a18ec43fbadfee39f9c06bf64122b467cc8f" ||
       formatBlobDigestHex(tinyMl.cachedInputs[0].digest) !=
           "87cf24194ef93d1d9b11a591d805526b98008e351655d29883c825c9c106ba24" ||
       formatBlobDigestHex(tinyMl.cachedInputs[1].digest) !=

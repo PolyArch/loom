@@ -42,11 +42,6 @@
 namespace loom::application {
 namespace {
 
-struct ApplicationPackageClosure final {
-  std::vector<ArtifactRootReference> artifacts;
-  std::vector<BlobDigest> blobs;
-};
-
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "application_package_invalid: " + message);
@@ -167,6 +162,8 @@ llvm::Error addFabricClosure(std::vector<ArtifactRootReference> &roots,
   return llvm::Error::success();
 }
 
+} // namespace
+
 llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     const FinalizedApplicationRuntimeManifest &manifest,
     const deployment::FinalizedDeployment &entryDeployment,
@@ -246,6 +243,8 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   for (const ArtifactRootReference &root : runtime.runtimeRequestDependencies())
     if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
       return std::move(error);
+  if (runtime.productOracle())
+    addBlob(result.blobs, runtime.productOracle()->expectedOutput);
 
   for (const ArtifactRootReference &evidence : runtime.runtimeEvidence()) {
     if (llvm::Error error = addArtifact(result.artifacts, evidence, artifacts))
@@ -278,6 +277,8 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   llvm::sort(result.blobs, blobLess);
   return result;
 }
+
+namespace {
 
 llvm::Expected<std::set<std::string>>
 regularEntryNames(llvm::StringRef directory) {

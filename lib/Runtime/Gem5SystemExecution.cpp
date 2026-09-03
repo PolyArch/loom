@@ -271,7 +271,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.12");
+    json.attribute("schema", "loom.gem5_system_projection.13");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -288,6 +288,8 @@ renderProjection(const Gem5SystemFacts &facts,
                      facts.programResult ? facts.programResult->address : 0);
       json.attribute("result_size",
                      facts.programResult ? facts.programResult->size : 0);
+      json.attribute("value_table_address", facts.valueTableAddress);
+      json.attribute("value_table_entries", facts.valueTableEntries);
       json.attribute("return_address", facts.hostReturnAddress);
     });
     json.attributeArray("instruction_images", [&] {

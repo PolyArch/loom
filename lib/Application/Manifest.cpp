@@ -92,6 +92,21 @@ bool validLogicalName(llvm::StringRef value) {
   });
 }
 
+bool validExternalSymbol(llvm::StringRef value) {
+  if (value.empty())
+    return false;
+  const auto isAlpha = [](unsigned char character) {
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z');
+  };
+  if (!isAlpha(value.front()) && value.front() != '_')
+    return false;
+  return llvm::all_of(value.drop_front(), [&](unsigned char character) {
+    return isAlpha(character) ||
+           (character >= '0' && character <= '9') || character == '_';
+  });
+}
+
 llvm::Error validateLogicalName(llvm::StringRef value,
                                 llvm::StringRef context) {
   if (!validLogicalName(value))
@@ -158,6 +173,14 @@ llvm::Expected<OracleKind> parseOracleKind(llvm::StringRef value) {
   return invalid("oracle kind must be 'exact' or 'typed_invariant'");
 }
 
+llvm::Expected<OracleEncoding> parseOracleEncoding(llvm::StringRef value) {
+  if (value == "utf8")
+    return OracleEncoding::Utf8;
+  if (value == "hex_sample_lines")
+    return OracleEncoding::HexSampleLines;
+  return invalid("oracle encoding must be 'utf8' or 'hex_sample_lines'");
+}
+
 llvm::Expected<OracleCoverage> parseOracleCoverage(llvm::StringRef value) {
   if (value == "all_measured_samples")
     return OracleCoverage::AllMeasuredSamples;
@@ -221,12 +244,45 @@ llvm::Expected<SourceSelection> parseSource(const llvm::json::Object &object,
   return SourceSelection{*kind, root->str()};
 }
 
+llvm::Expected<std::optional<ProductExecutionSelection>>
+parseProductExecution(const llvm::json::Object &build,
+                      const std::string &context) {
+  const llvm::json::Value *value = build.get("product_execution");
+  if (!value)
+    return invalid(context + " requires field 'product_execution'");
+  if (value->getAsNull())
+    return std::optional<ProductExecutionSelection>{};
+  const llvm::json::Object *object = value->getAsObject();
+  if (!object)
+    return invalid(context + " product_execution must be null or an object");
+  const std::string productContext = context + " product_execution";
+  if (llvm::Error error = rejectUnknownFields(
+          *object, productContext,
+          {"entry_symbol", "measured_output_bytes_per_sample"}))
+    return std::move(error);
+  auto entrySymbol = requireString(*object, "entry_symbol", productContext);
+  if (!entrySymbol)
+    return entrySymbol.takeError();
+  auto outputBytes = requireUnsigned(
+      *object, "measured_output_bytes_per_sample", productContext);
+  if (!outputBytes)
+    return outputBytes.takeError();
+  if (!validExternalSymbol(*entrySymbol))
+    return invalid(productContext +
+                   " entry_symbol must be a C external identifier");
+  if (*outputBytes == 0)
+    return invalid(productContext +
+                   " measured_output_bytes_per_sample must be positive");
+  return std::optional<ProductExecutionSelection>{ProductExecutionSelection{
+      entrySymbol->str(), *outputBytes}};
+}
+
 llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
                                           const std::string &context) {
   if (llvm::Error error = rejectUnknownFields(
           object, context,
           {"entry", "language", "sources", "compiler_options", "link_options",
-           "operator_protocol_symbols"}))
+           "operator_protocol_symbols", "product_execution"}))
     return std::move(error);
   auto entry = requireString(object, "entry", context);
   if (!entry)
@@ -247,6 +303,9 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
       requireArray(object, "operator_protocol_symbols", context);
   if (!protocolSymbolsArray)
     return protocolSymbolsArray.takeError();
+  auto productExecution = parseProductExecution(object, context);
+  if (!productExecution)
+    return productExecution.takeError();
   if (llvm::Error error = validateRelativePath(*entry, context + " entry"))
     return std::move(error);
   auto language = parseLanguageMode(*languageText);
@@ -286,7 +345,8 @@ llvm::Expected<BuildSelection> parseBuild(const llvm::json::Object &object,
                         std::move(*sources),
                         std::move(*compilerOptions),
                         std::move(*linkOptions),
-                        std::move(*operatorProtocolSymbols)};
+                        std::move(*operatorProtocolSymbols),
+                        std::move(*productExecution)};
 }
 
 llvm::Expected<CachedInput> parseCachedInput(const llvm::json::Object &object,
@@ -317,8 +377,8 @@ llvm::Expected<CachedInput> parseCachedInput(const llvm::json::Object &object,
 
 llvm::Expected<OracleSelection> parseOracle(const llvm::json::Object &object,
                                             const std::string &context) {
-  if (llvm::Error error =
-          rejectUnknownFields(object, context, {"kind", "entry"}))
+  if (llvm::Error error = rejectUnknownFields(
+          object, context, {"kind", "entry", "sha256", "encoding"}))
     return std::move(error);
   auto kindText = requireString(object, "kind", context);
   if (!kindText)
@@ -326,12 +386,25 @@ llvm::Expected<OracleSelection> parseOracle(const llvm::json::Object &object,
   auto entry = requireString(object, "entry", context);
   if (!entry)
     return entry.takeError();
+  auto digestText = requireString(object, "sha256", context);
+  if (!digestText)
+    return digestText.takeError();
+  auto encodingText = requireString(object, "encoding", context);
+  if (!encodingText)
+    return encodingText.takeError();
   auto kind = parseOracleKind(*kindText);
   if (!kind)
     return kind.takeError();
+  auto digest = parseBlobDigestHex(*digestText);
+  if (!digest)
+    return invalid(
+        context + " has invalid sha256: " + llvm::toString(digest.takeError()));
+  auto encoding = parseOracleEncoding(*encodingText);
+  if (!encoding)
+    return encoding.takeError();
   if (llvm::Error error = validateRelativePath(*entry, context + " entry"))
     return std::move(error);
-  return OracleSelection{*kind, entry->str()};
+  return OracleSelection{*kind, entry->str(), std::move(*digest), *encoding};
 }
 
 llvm::Expected<WorkloadExecutionProfile>
@@ -541,6 +614,30 @@ parseApplication(const llvm::json::Object &object, std::size_t ordinal) {
   if (referencedCacheInputs.size() != cachedInputs.size())
     return invalid(context + " declares an unused cached input");
 
+  if (build->productExecution) {
+    if (build->operatorProtocolSymbols.empty())
+      return invalid(context +
+                     " product_execution requires an operator protocol "
+                     "symbol");
+    for (const WorkloadInputSelection &input : inputs) {
+      if (input.oracle.kind != OracleKind::Exact ||
+          input.oracle.encoding != OracleEncoding::HexSampleLines)
+        return invalid(context +
+                       " product_execution requires exact hex_sample_lines "
+                       "oracles");
+      const std::uint64_t bytesPerSample =
+          build->productExecution->measuredOutputBytesPerSample;
+      if (input.profile.measuredSamples >
+          std::numeric_limits<std::uint64_t>::max() / bytesPerSample)
+        return invalid(context + " product output extent overflows uint64");
+    }
+  } else {
+    for (const WorkloadInputSelection &input : inputs)
+      if (input.oracle.encoding != OracleEncoding::Utf8)
+        return invalid(context +
+                       " host-only inputs require utf8 oracle encoding");
+  }
+
   if (llvm::Error error = rejectUnknownFields(
           **selectionInputsObject, context + " selection_inputs",
           {"smoke", "validation", "scale_eda"}))
@@ -625,6 +722,16 @@ llvm::StringRef toString(OracleKind kind) {
     return "typed_invariant";
   }
   llvm_unreachable("unknown OracleKind");
+}
+
+llvm::StringRef toString(OracleEncoding encoding) {
+  switch (encoding) {
+  case OracleEncoding::Utf8:
+    return "utf8";
+  case OracleEncoding::HexSampleLines:
+    return "hex_sample_lines";
+  }
+  llvm_unreachable("unknown OracleEncoding");
 }
 
 llvm::StringRef toString(OracleCoverage coverage) {
@@ -740,6 +847,12 @@ projectSelectedApplicationInputJson(const SelectedApplicationInput &selection) {
         llvm::json::Object{{"logical_name", input.logicalName},
                            {"path", input.path},
                            {"sha256", formatBlobDigestHex(input.digest)}});
+  llvm::json::Value productExecution = nullptr;
+  if (selection.build.productExecution)
+    productExecution = llvm::json::Object{
+        {"entry_symbol", selection.build.productExecution->entrySymbol},
+        {"measured_output_bytes_per_sample",
+         selection.build.productExecution->measuredOutputBytesPerSample}};
   return llvm::json::Object{
       {"application_identity", selection.applicationIdentity},
       {"input_name", selection.input.name},
@@ -752,14 +865,19 @@ projectSelectedApplicationInputJson(const SelectedApplicationInput &selection) {
            {"sources", std::move(sources)},
            {"compiler_options", std::move(compilerOptions)},
            {"link_options", std::move(linkOptions)},
-           {"operator_protocol_symbols", std::move(operatorProtocolSymbols)}}},
+           {"operator_protocol_symbols", std::move(operatorProtocolSymbols)},
+           {"product_execution", std::move(productExecution)}}},
       {"workload", selection.input.workload},
       {"runtime_input", selection.input.runtimeInput},
       {"input_compiler_options", std::move(inputCompilerOptions)},
       {"cached_inputs", std::move(cachedInputs)},
       {"oracle",
        llvm::json::Object{{"kind", toString(selection.input.oracle.kind)},
-                          {"entry", selection.input.oracle.entry}}}};
+                          {"entry", selection.input.oracle.entry},
+                          {"sha256", formatBlobDigestHex(
+                                         selection.input.oracle.digest)},
+                          {"encoding", toString(
+                                           selection.input.oracle.encoding)}}}};
 }
 
 void writeApplicationManifestInventoryJson(
@@ -767,7 +885,7 @@ void writeApplicationManifestInventoryJson(
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "loom.application_portfolio_inventory");
-    json.attribute("version", "1.0");
+    json.attribute("version", "2.0");
     json.attribute("manifest_schema", ApplicationManifest::schemaIdentity);
     json.attribute("manifest_version", ApplicationManifest::schemaVersion);
     json.attributeArray("rows", [&] {

@@ -107,7 +107,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
                             std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "3.0",
+  "version": "4.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -117,7 +117,8 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
       "sources": ["main.c"],
       "compiler_options": ["-std=c11", "-O0"],
       "link_options": [],
-      "operator_protocol_symbols": []
+      "operator_protocol_symbols": [],
+      "product_execution": null
     },
     "cached_inputs": [],
     "inputs": [{
@@ -127,7 +128,8 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
       "cached_inputs": [],
       "compiler_options": [],
       "oracle": {"kind": ")json" +
-         oracleKind.str() + R"json(", "entry": "expected.txt"},
+         oracleKind.str() + R"json(", "entry": "expected.txt", "sha256": ")json" +
+         digest("expected\n") + R"json(", "encoding": "utf8"},
       "profile": {
         "warmup_samples": )json" +
          std::to_string(warmupSamples) + R"json(,
@@ -148,7 +150,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
                                   std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "3.0",
+  "version": "4.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -158,7 +160,8 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
       "sources": ["main.c"],
       "compiler_options": ["-std=c11", "-O0"],
       "link_options": [],
-      "operator_protocol_symbols": []
+      "operator_protocol_symbols": [],
+      "product_execution": null
     },
     "cached_inputs": [{
       "logical_name": "payload",
@@ -172,7 +175,8 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
       "runtime_input": "host-fixture-input",
       "cached_inputs": ["payload"],
       "compiler_options": [],
-      "oracle": {"kind": "exact", "entry": "expected.txt"},
+      "oracle": {"kind": "exact", "entry": "expected.txt", "sha256": ")json" +
+         digest("expected\n") + R"json(", "encoding": "utf8"},
       "profile": {
         "warmup_samples": )json" +
          std::to_string(warmupSamples) + R"json(,

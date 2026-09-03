@@ -1,16 +1,16 @@
-#include <algorithm>
-#include <charconv>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <limits>
+
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
+#include <charconv>
+#include <cstdio>
+#include <fstream>
 #include <string>
 #include <system_error>
-#include <utility>
 #include <vector>
+#endif
 
 namespace {
 
@@ -56,7 +56,10 @@ public:
       : data_(data), size_(size) {}
 
   bool hasIdentifier(const char (&identifier)[5]) const {
-    return size_ >= 8 && std::memcmp(data_ + 4, identifier, 4) == 0;
+    return size_ >= 8 && data_[4] == static_cast<std::uint8_t>(identifier[0]) &&
+           data_[5] == static_cast<std::uint8_t>(identifier[1]) &&
+           data_[6] == static_cast<std::uint8_t>(identifier[2]) &&
+           data_[7] == static_cast<std::uint8_t>(identifier[3]);
   }
 
   bool root(Table &result) const {
@@ -281,7 +284,8 @@ private:
 };
 
 struct Tensor final {
-  std::vector<std::int32_t> shape;
+  std::int32_t shape[2]{};
+  std::uint32_t shapeSize = 0;
   std::uint8_t type = 0;
   std::uint32_t buffer = 0;
   float scale = 0.0f;
@@ -303,11 +307,11 @@ struct Layer final {
 
 class AnomalyModel final {
 public:
-  explicit AnomalyModel(const std::vector<std::uint8_t> &bytes)
-      : bytes_(bytes), reader_(bytes.data(), bytes.size()) {}
+  AnomalyModel(const std::uint8_t *bytes, std::size_t size)
+      : byteCount_(size), reader_(bytes, size) {}
 
   bool parse() {
-    if (bytes_.size() != kModelByteCount)
+    if (byteCount_ != kModelByteCount)
       return fail("model byte count differs from the pinned model");
     if (!reader_.hasIdentifier("TFL3"))
       return fail("model does not have the TFLite identifier");
@@ -336,7 +340,7 @@ public:
     FlatBufferReader::Vector buffers;
     if (!reader_.vector(model, 4, buffers) || buffers.size != 33)
       return fail("model buffer catalog has an unexpected shape");
-    buffers_.reserve(buffers.size);
+    bufferCount_ = buffers.size;
     for (std::uint32_t index = 0; index != buffers.size; ++index) {
       FlatBufferReader::Table buffer;
       FlatBufferReader::Vector data;
@@ -348,7 +352,7 @@ public:
         if (!reader_.byteRange(data, bytes, size))
           return fail("model buffer data escapes the FlatBuffer");
       }
-      buffers_.push_back({bytes, size});
+      buffers_[index] = {bytes, size};
     }
 
     FlatBufferReader::Vector subgraphs;
@@ -363,26 +367,28 @@ public:
   }
 
   bool invoke(const std::uint8_t *sample, std::size_t sampleSize,
-              std::vector<std::int8_t> &result) const {
-    if (sampleSize != kSampleByteCount || tensors_.empty())
+              std::int8_t *result, std::size_t resultSize) const {
+    if (sampleSize != kSampleByteCount || tensorCount_ == 0 || !result ||
+        resultSize != kSampleElementCount)
       return fail("sample or parsed model is invalid");
     const Tensor &input = tensors_[inputTensor_];
-    std::vector<std::int8_t> current(input.elementCount());
-    for (std::size_t index = 0; index != current.size(); ++index) {
+    std::int8_t current[kSampleElementCount]{};
+    std::int8_t next[kSampleElementCount]{};
+    for (std::size_t index = 0; index != input.elementCount(); ++index) {
       const float value = readFloat(sample + index * sizeof(float));
-      if (!std::isfinite(value))
+      if (!isFinite(value))
         return fail("sample contains a non-finite input");
       current[index] = quantize(value, input);
     }
 
-    for (const Layer &layer : layers_) {
+    for (std::size_t layerIndex = 0; layerIndex != layerCount_; ++layerIndex) {
+      const Layer &layer = layers_[layerIndex];
       const Tensor &inputTensor = tensors_[layer.input];
       const Tensor &weights = tensors_[layer.weights];
       const Tensor &bias = tensors_[layer.bias];
       const Tensor &output = tensors_[layer.output];
       const std::size_t inputCount = inputTensor.elementCount();
       const std::size_t outputCount = output.elementCount();
-      std::vector<std::int8_t> next(outputCount);
       for (std::size_t outputIndex = 0; outputIndex != outputCount;
            ++outputIndex) {
         std::int64_t accumulator = 0;
@@ -400,16 +406,20 @@ public:
                                 inputTensor.scale * weights.scale +
                             static_cast<double>(biasValue) * bias.scale;
         std::int64_t quantized =
-            clampInt8(std::round(real / output.scale) +
-                      static_cast<double>(output.zeroPoint));
+            quantizeToInt8(real / output.scale, output.zeroPoint);
         if (layer.relu)
-          quantized = std::max<std::int64_t>(quantized, output.zeroPoint);
+          quantized = quantized < output.zeroPoint ? output.zeroPoint
+                                                    : quantized;
         next[outputIndex] = static_cast<std::int8_t>(quantized);
       }
-      current = std::move(next);
+      for (std::size_t index = 0; index != outputCount; ++index)
+        current[index] = next[index];
     }
-    result = std::move(current);
-    return result.size() == tensors_[outputTensor_].elementCount();
+    if (tensors_[outputTensor_].elementCount() != resultSize)
+      return fail("model output extent differs from the product ABI");
+    for (std::size_t index = 0; index != resultSize; ++index)
+      result[index] = current[index];
+    return true;
   }
 
 private:
@@ -422,7 +432,7 @@ private:
     FlatBufferReader::Vector tensors;
     if (!reader_.vector(subgraph, 0, tensors) || tensors.size != 31)
       return fail("model tensor catalog has an unexpected shape");
-    tensors_.reserve(tensors.size);
+    tensorCount_ = tensors.size;
     for (std::uint32_t index = 0; index != tensors.size; ++index) {
       FlatBufferReader::Table table;
       FlatBufferReader::Vector shape;
@@ -434,15 +444,15 @@ private:
           !reader_.vector(table, 0, shape) || shape.size == 0 ||
           shape.size > 2 || !reader_.tableU8(table, 1, 0, tensor.type) ||
           !reader_.tableU32(table, 2, 0, tensor.buffer) ||
-          tensor.buffer >= buffers_.size() ||
+          tensor.buffer >= bufferCount_ ||
           !reader_.table(table, 4, quantization) ||
           !reader_.vector(quantization, 2, scales) || scales.size != 1 ||
           !reader_.vector(quantization, 3, zeroPoints) ||
           zeroPoints.size != 1 || !reader_.vectorF32(scales, 0, tensor.scale) ||
           !reader_.vectorI64(zeroPoints, 0, tensor.zeroPoint) ||
-          !std::isfinite(tensor.scale) || tensor.scale <= 0.0f)
+          !isFinite(tensor.scale) || tensor.scale <= 0.0f)
         return fail("model tensor metadata is malformed");
-      tensor.shape.reserve(shape.size);
+      tensor.shapeSize = shape.size;
       tensor.elements = 1;
       for (std::uint32_t dimension = 0; dimension != shape.size; ++dimension) {
         std::int32_t extent = 0;
@@ -450,11 +460,11 @@ private:
             !checkedMultiply(tensor.elements, static_cast<std::size_t>(extent),
                              tensor.elements))
           return fail("model tensor has an invalid shape");
-        tensor.shape.push_back(extent);
+        tensor.shape[dimension] = extent;
       }
       tensor.data = buffers_[tensor.buffer].data;
       tensor.dataSize = buffers_[tensor.buffer].size;
-      tensors_.push_back(std::move(tensor));
+      tensors_[index] = tensor;
     }
     return true;
   }
@@ -486,7 +496,7 @@ private:
     if (!reader_.vector(subgraph, 3, operators) ||
         operators.size != kLayerCount)
       return fail("model does not have the expected FC layer count");
-    layers_.reserve(operators.size);
+    layerCount_ = operators.size;
     std::uint32_t previousOutput = inputTensor_;
     for (std::uint32_t index = 0; index != operators.size; ++index) {
       FlatBufferReader::Table operation;
@@ -512,10 +522,10 @@ private:
           !reader_.vector(operation, 2, outputs) || outputs.size != 1 ||
           !reader_.vectorI32(outputs, 0, output) || input < 0 || weights < 0 ||
           bias < 0 || output < 0 ||
-          static_cast<std::size_t>(input) >= tensors_.size() ||
-          static_cast<std::size_t>(weights) >= tensors_.size() ||
-          static_cast<std::size_t>(bias) >= tensors_.size() ||
-          static_cast<std::size_t>(output) >= tensors_.size() ||
+          static_cast<std::size_t>(input) >= tensorCount_ ||
+          static_cast<std::size_t>(weights) >= tensorCount_ ||
+          static_cast<std::size_t>(bias) >= tensorCount_ ||
+          static_cast<std::size_t>(output) >= tensorCount_ ||
           !reader_.tableU8(operation, 3, 0, optionsType) ||
           optionsType != kFullyConnectedOptions ||
           !reader_.table(operation, 4, options) ||
@@ -535,7 +545,7 @@ private:
                   static_cast<std::uint32_t>(output), relu};
       if (!validateLayer(layer))
         return false;
-      layers_.push_back(layer);
+      layers_[index] = layer;
       previousOutput = layer.output;
     }
     if (previousOutput != outputTensor_)
@@ -554,7 +564,7 @@ private:
     std::size_t expectedBiasBytes = 0;
     if (input.type != kTensorTypeInt8 || weights.type != kTensorTypeInt8 ||
         bias.type != kTensorTypeInt32 || output.type != kTensorTypeInt8 ||
-        weights.shape.size() != 2 || bias.shape.size() != 1 ||
+        weights.shapeSize != 2 || bias.shapeSize != 1 ||
         weights.shape[0] != static_cast<std::int32_t>(outputCount) ||
         weights.shape[1] != static_cast<std::int32_t>(inputCount) ||
         bias.elementCount() != outputCount ||
@@ -565,7 +575,8 @@ private:
         bias.data == nullptr || bias.dataSize != expectedBiasBytes ||
         weights.zeroPoint != 0 || bias.zeroPoint != 0 ||
         input.zeroPoint < -128 || input.zeroPoint > 127 ||
-        output.zeroPoint < -128 || output.zeroPoint > 127)
+        output.zeroPoint < -128 || output.zeroPoint > 127 ||
+        inputCount > kSampleElementCount || outputCount > kSampleElementCount)
       return fail("model FC tensor contract is invalid");
     return true;
   }
@@ -597,32 +608,54 @@ private:
 
   static std::int8_t quantize(float value, const Tensor &tensor) {
     return static_cast<std::int8_t>(
-        clampInt8(static_cast<double>(std::round(value / tensor.scale)) +
-                  static_cast<double>(tensor.zeroPoint)));
+        quantizeToInt8(value / tensor.scale, tensor.zeroPoint));
   }
 
-  static std::int64_t clampInt8(double value) {
-    if (value <= -128.0)
+  static std::int64_t quantizeToInt8(double value,
+                                     std::int64_t zeroPoint) {
+    constexpr double kSafeConversionBound = 1024.0;
+    if (value <= -kSafeConversionBound)
       return -128;
-    if (value >= 127.0)
+    if (value >= kSafeConversionBound)
       return 127;
-    return static_cast<std::int64_t>(value);
+    const std::int64_t rounded = static_cast<std::int64_t>(
+        value < 0.0 ? value - 0.5 : value + 0.5);
+    const std::int64_t shifted = rounded + zeroPoint;
+    if (shifted <= -128)
+      return -128;
+    if (shifted >= 127)
+      return 127;
+    return shifted;
+  }
+
+  static bool isFinite(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return (bits & 0x7f800000U) != 0x7f800000U;
   }
 
   static bool fail(const char *message) {
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
     std::fprintf(stderr, "mlperf-tiny-anomaly-runner: %s\n", message);
+#else
+    (void)message;
+#endif
     return false;
   }
 
-  const std::vector<std::uint8_t> &bytes_;
+  std::size_t byteCount_ = 0;
   FlatBufferReader reader_;
-  std::vector<Buffer> buffers_;
-  std::vector<Tensor> tensors_;
-  std::vector<Layer> layers_;
+  Buffer buffers_[33]{};
+  std::size_t bufferCount_ = 0;
+  Tensor tensors_[31]{};
+  std::size_t tensorCount_ = 0;
+  Layer layers_[kLayerCount]{};
+  std::size_t layerCount_ = 0;
   std::uint32_t inputTensor_ = 0;
   std::uint32_t outputTensor_ = 0;
 };
 
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
 bool readFile(const std::string &path, std::size_t expectedSize,
               std::vector<std::uint8_t> &result) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -652,16 +685,66 @@ bool parseCount(const char *text, std::size_t &result) {
   return parsed.ec == std::errc() && parsed.ptr == end;
 }
 
-void printOutput(std::size_t ordinal, const std::vector<std::int8_t> &output) {
+void printOutput(std::size_t ordinal, const std::uint8_t *output) {
   std::printf("measured_sample=%zu output=", ordinal);
-  for (std::int8_t value : output)
-    std::printf("%02x",
-                static_cast<unsigned>(static_cast<std::uint8_t>(value)));
+  for (std::size_t index = 0; index != kSampleElementCount; ++index)
+    std::printf("%02x", static_cast<unsigned>(output[index]));
   std::printf("\n");
 }
+#endif
 
 } // namespace
 
+extern "C" __attribute__((noinline)) int loom_mlperf_tiny_measured_batch(
+    const std::uint8_t *modelBytes, std::uint64_t modelByteCount,
+    const std::uint8_t *datasetBytes, std::uint64_t datasetByteCount,
+    std::uint64_t warmupSamples, std::uint64_t measuredSamples,
+    std::uint8_t *measuredOutput, std::uint64_t measuredOutputByteCount) {
+  if (!modelBytes || !datasetBytes || !measuredOutput ||
+      modelByteCount != kModelByteCount ||
+      datasetByteCount != kDatasetByteCount || measuredSamples == 0 ||
+      warmupSamples >
+          std::numeric_limits<std::uint64_t>::max() - measuredSamples)
+    return 2;
+  const std::uint64_t totalSamples = warmupSamples + measuredSamples;
+  if (totalSamples > kDatasetByteCount / kSampleByteCount ||
+      measuredSamples >
+          std::numeric_limits<std::uint64_t>::max() / kSampleElementCount ||
+      measuredOutputByteCount != measuredSamples * kSampleElementCount)
+    return 2;
+
+  AnomalyModel model(modelBytes, modelByteCount);
+  if (!model.parse())
+    return 4;
+  std::int8_t sampleOutput[kSampleElementCount]{};
+  for (std::uint64_t sample = 0; sample != totalSamples; ++sample) {
+    if (!model.invoke(datasetBytes + sample * kSampleByteCount,
+                      kSampleByteCount, sampleOutput,
+                      kSampleElementCount))
+      return 5;
+    if (sample < warmupSamples)
+      continue;
+    const std::uint64_t outputOffset =
+        (sample - warmupSamples) * kSampleElementCount;
+    for (std::size_t index = 0; index != kSampleElementCount; ++index)
+      measuredOutput[outputOffset + index] =
+          static_cast<std::uint8_t>(sampleOutput[index]);
+  }
+  return 0;
+}
+
+extern "C" int loom_mlperf_tiny_anomaly(
+    const std::uint8_t *modelBytes, std::uint64_t modelByteCount,
+    const std::uint8_t *datasetBytes, std::uint64_t datasetByteCount,
+    std::uint64_t warmupSamples, std::uint64_t measuredSamples,
+    std::uint8_t *measuredOutput, std::uint64_t measuredOutputByteCount) {
+  return loom_mlperf_tiny_measured_batch(
+      modelBytes, modelByteCount, datasetBytes, datasetByteCount,
+      warmupSamples, measuredSamples, measuredOutput,
+      measuredOutputByteCount);
+}
+
+#if defined(LOOM_APPLICATION_HOST_EXECUTION)
 int main(int argc, char **argv) {
   if (argc != 5) {
     std::fprintf(stderr, "usage: mlperf-tiny-anomaly-runner <model> <dataset> "
@@ -685,17 +768,15 @@ int main(int argc, char **argv) {
   if (!readFile(argv[1], kModelByteCount, modelBytes) ||
       !readFile(argv[2], kDatasetByteCount, datasetBytes))
     return 3;
-  AnomalyModel model(modelBytes);
-  if (!model.parse())
-    return 4;
-
-  for (std::size_t sample = 0; sample != totalSamples; ++sample) {
-    std::vector<std::int8_t> output;
-    if (!model.invoke(datasetBytes.data() + sample * kSampleByteCount,
-                      kSampleByteCount, output))
-      return 5;
-    if (sample >= warmupSamples)
-      printOutput(sample - warmupSamples, output);
-  }
+  std::vector<std::uint8_t> output(measuredSamples * kSampleElementCount);
+  const int status = loom_mlperf_tiny_anomaly(
+      modelBytes.data(), modelBytes.size(), datasetBytes.data(),
+      datasetBytes.size(), warmupSamples, measuredSamples, output.data(),
+      output.size());
+  if (status != 0)
+    return status;
+  for (std::size_t sample = 0; sample != measuredSamples; ++sample)
+    printOutput(sample, output.data() + sample * kSampleElementCount);
   return 0;
 }
+#endif

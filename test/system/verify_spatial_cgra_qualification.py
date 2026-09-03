@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 
 
 PROFILE_SCHEMA = "loom.spatial_cgra_qualification.1"
-MANIFEST_SCHEMA = "loom.execution_matrix_workspace.1.2"
+MANIFEST_SCHEMA = "loom.execution_matrix_workspace.2.0"
 U64_MAX = (1 << 64) - 1
 
 PROFILE_FIELDS = {

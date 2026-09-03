@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_APPLICATION_EXECUTIONGLUE_H
 #define LOOM_LIB_APPLICATION_EXECUTIONGLUE_H
 
+#include "Application/Build.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationInputCapture.h"
@@ -74,7 +75,7 @@ deriveApplicationSpatialInvocationPlan(
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
     const dataflow::CanonicalDataflowArtifact &dataflow,
-    llvm::StringRef applicationEntry,
+    const ApplicationSourceInvocation &sourceInvocation,
     const ApplicationSpatialInvocationPlan &plan);
 
 llvm::Expected<std::unique_ptr<llvm::Module>>

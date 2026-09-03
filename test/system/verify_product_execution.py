@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from loom_evidence_portfolio import (  # noqa: E402
     collect_portfolio_inventory,
     validate_portfolio_pair,
+    validate_portfolio_product_execution,
 )
 
 
@@ -133,6 +134,7 @@ def validate_identity_binding(
             + " is not bound to the pair decision",
         )
     for manifest_field, binding_field in (
+        ("application_runtime_manifest", "runtime_manifest"),
         ("deployment", "deployment"),
         ("workload", "activation_workload"),
         ("runtime_input", "activation_runtime_input"),
@@ -910,6 +912,7 @@ def validate_manifest(
     manifest: dict[str, Any],
     manifest_path: Path,
     expected_i32: int,
+    portfolio_selection: dict[str, Any] | None,
     spatial_invocations: int | None,
     required_dataflow_text: list[str],
     mapping_inspector: str | None,
@@ -932,16 +935,24 @@ def validate_manifest(
         "cgra",
     }
     require(
-        manifest.get("schema")
-        == (
-            "loom.execution_matrix_workspace.1.3"
-            if require_mapped_rtl
-            else "loom.execution_matrix_workspace.1.2"
-        ),
+        manifest.get("schema") == "loom.execution_matrix_workspace.2.0",
         "execution workspace has the wrong schema",
     )
-    for field in ("deployment", "workload", "runtime_input", "gem5_binding"):
+    for field in (
+        "application_runtime_manifest",
+        "deployment",
+        "workload",
+        "runtime_input",
+        "gem5_binding",
+    ):
         validate_reference(manifest.get(field), field)
+    require(
+        manifest["application_runtime_manifest"].get("schema")
+        == "loom.application.runtime_manifest"
+        and manifest["application_runtime_manifest"].get("schema_version")
+        == "5.0",
+        "execution workspace names the wrong Application runtime manifest",
+    )
     if require_mapped_rtl:
         validate_reference(
             manifest.get("mapped_rtl_deployment"), "mapped RTL deployment"
@@ -956,6 +967,70 @@ def validate_manifest(
         manifest.get("value_results") == [[expected_result]],
         "execution cells did not agree with the independent product oracle",
     )
+
+    selected_build = (
+        portfolio_selection.get("build")
+        if isinstance(portfolio_selection, dict)
+        else None
+    )
+    selected_product = (
+        selected_build.get("product_execution")
+        if isinstance(selected_build, dict)
+        else None
+    )
+    selected_profile = (
+        portfolio_selection.get("profile")
+        if isinstance(portfolio_selection, dict)
+        else None
+    )
+    if isinstance(selected_product, dict):
+        require(
+            isinstance(selected_profile, dict),
+            "product portfolio selection has no execution profile",
+        )
+        product_profile = manifest.get("product_profile")
+        require(
+            isinstance(product_profile, dict)
+            and set(product_profile)
+            == {
+                "entry_abi",
+                "entry_symbol",
+                "warmup_samples",
+                "measured_samples",
+                "measured_output_bytes_per_sample",
+                "expected_output_sha256",
+                "output_interface_ordinal",
+            },
+            "execution workspace has an invalid product profile",
+        )
+        require(
+            product_profile.get("entry_abi")
+            == "cached_inputs_profile_output_v1"
+            and product_profile.get("entry_symbol")
+            == selected_product.get("entry_symbol")
+            and product_profile.get("warmup_samples")
+            == selected_profile.get("warmup_samples")
+            and product_profile.get("measured_samples")
+            == selected_profile.get("measured_samples")
+            and product_profile.get("measured_output_bytes_per_sample")
+            == selected_product.get("measured_output_bytes_per_sample")
+            and product_profile.get("output_interface_ordinal")
+            == len(portfolio_selection.get("cached_inputs", [])),
+            "execution workspace product profile differs from the manifest",
+        )
+        expected_output = product_profile.get("expected_output_sha256")
+        require(
+            isinstance(expected_output, str)
+            and len(expected_output) == 64
+            and expected_output == expected_output.lower()
+            and all(character in "0123456789abcdef" for character in expected_output),
+            "execution workspace has an invalid derived product oracle digest",
+        )
+    else:
+        require(
+            manifest.get("product_profile") is None,
+            "non-product execution has a product profile",
+        )
 
     runs = manifest.get("runs")
     require(isinstance(runs, list), "execution workspace runs must be an array")
@@ -1079,6 +1154,21 @@ def validate_manifest(
                 ),
                 f"{label} lacks exact gem5 ticks",
             )
+            for field, schema in (
+                ("product_oracle_request", "evaluation.request"),
+                ("product_oracle_evidence", "evaluation.evidence"),
+            ):
+                if isinstance(selected_product, dict):
+                    validate_reference(run.get(field), f"{label} {field}")
+                    require(
+                        run[field].get("schema") == schema,
+                        f"{label} {field} has the wrong schema",
+                    )
+                else:
+                    require(
+                        run.get(field) is None,
+                        f"{label} unexpectedly carries {field}",
+                    )
 
     dataflow_identities = {run["dataflow"]["artifact"] for run in spatial_runs}
     require(
@@ -1320,6 +1410,7 @@ def main() -> None:
         arguments.portfolio_application,
         arguments.portfolio_input,
     )
+    portfolio_selection = None
     if arguments.portfolio_inventory is not None:
         inventory, inventory_errors = collect_portfolio_inventory(
             read_json(arguments.portfolio_inventory)
@@ -1328,7 +1419,7 @@ def main() -> None:
             not inventory_errors,
             f"canonical portfolio inventory is invalid: {inventory_errors}",
         )
-        expected = next(
+        portfolio_selection = next(
             (
                 row
                 for row in inventory
@@ -1337,7 +1428,7 @@ def main() -> None:
             ),
             None,
         )
-        evaluation = validate_portfolio_pair(pair_evidence, expected)
+        evaluation = validate_portfolio_pair(pair_evidence, portfolio_selection)
         require(
             evaluation is not None
             and evaluation["typed_complete"]
@@ -1358,6 +1449,7 @@ def main() -> None:
         manifest,
         arguments.manifest,
         arguments.expected_i32,
+        portfolio_selection,
         arguments.spatial_invocations,
         arguments.required_dataflow_text,
         arguments.mapping_inspector,
@@ -1381,6 +1473,30 @@ def main() -> None:
         manifest,
         arguments.portfolio_application is not None,
     )
+    if (
+        isinstance(portfolio_selection, dict)
+        and isinstance(portfolio_selection.get("build"), dict)
+        and isinstance(
+            portfolio_selection["build"].get("product_execution"), dict
+        )
+    ):
+        runtime_manifest_bindings = [
+            payload
+            for payload in matching_payloads(
+                events, stage="deployment", event="statistics"
+            )
+            if payload.get("domain") == "application_runtime_manifest"
+        ]
+        product_execution = validate_portfolio_product_execution(
+            pair_evidence,
+            portfolio_selection,
+            runtime_manifest_bindings,
+            [manifest],
+        )
+        require(
+            product_execution["complete"],
+            f"product oracle execution join is incomplete: {product_execution}",
+        )
 
 
 if __name__ == "__main__":

@@ -291,21 +291,6 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
         resourceCoreCost,
         std::nullopt};
 
-  if (prepared.portfolioInput &&
-      (prepared.portfolioInput->input.profile.warmupSamples != 0 ||
-       prepared.portfolioInput->input.profile.measuredSamples != 1))
-    return ApplicationRuntimeValidation{
-        ApplicationMappingRuntimeDisposition::Unsupported,
-        {},
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
-        std::nullopt,
-        {},
-        resourceCoreCost,
-        std::nullopt};
-
   auto contexts = mapping::projectSystemExecutionContexts(
       imported->dataflowView, imported->mapping.view().executionBindings());
   if (!contexts)

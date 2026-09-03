@@ -499,15 +499,15 @@ prove that every declared session entry occurred; selecting only the first or
 final activation, or assuming one member per target, is not valid System
 execution.
 
-The driver's `loom.execution_matrix_workspace.1.2` manifest is a nonsemantic
-workspace projection. It records the exact Deployment, binding, workload,
-runtime-input, Request, Evidence, SimulationExecution, Dataflow,
-SpatialMapping, and HardwareImplementation references that already own the
-run. When the driver also executed the mapped-RTL Spatial engine, the same
-workspace is published as `loom.execution_matrix_workspace.1.3`: it adds the
-exact `mapped_rtl_deployment` reference and one Spatial run with engine `rtl`
-per invocation beside the `dfg` and `cgra` runs, with every other field
-unchanged. The version names the engine set that ran; it is not a second
+The driver's `loom.execution_matrix_workspace.2.0` manifest is a nonsemantic
+workspace projection. Version 2.0 incompatibly requires the exact Application
+runtime-manifest root and a nullable product profile, and each System row has
+nullable product-oracle Request and Evidence roots. It records the exact
+Deployment, binding, workload, runtime-input, Request, Evidence,
+SimulationExecution, Dataflow, SpatialMapping, and HardwareImplementation
+references that already own the run. A mapped-RTL execution adds the exact
+`mapped_rtl_deployment` reference and one Spatial run with engine `rtl` per
+invocation beside the `dfg` and `cgra` runs; it does not select another
 workspace schema. Each Spatial cell also records the dense coordinate tuple decoded from
 the actual System invocation wire; the DFG and CGRA cells for one invocation
 must agree on that tuple. It also records the dispatch target ordinal,
@@ -519,6 +519,13 @@ Deployment authority. The workspace does not acquire an Artifact identity,
 cache a mutable execution, or replace independent import and verification.
 Repeating the command in a new workspace therefore revalidates the package and
 result closure even when immutable implementation or tool caches are reused.
+When the runtime manifest carries a product contract, `product_profile`
+projects that exact contract and each System DFG/CGRA row names a separately
+published product-oracle Request and Evidence. Both Evidence records compare
+the complete observed output memory with the Application-owned expected Blob.
+The product receives only cached input memory, the manifest-derived profile,
+and independent zeroed output storage; no oracle bytes enter its arguments or
+runtime input.
 When the package carries a resource-time transition graph the workspace also
 records `resource_time_drive`: `synchronous` with the controlling engine, the
 endpoint count, and the acknowledged event count when the System DFG cell ran

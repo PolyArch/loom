@@ -34,13 +34,23 @@ with a different accepted dependency schema.
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime-owned manifest or public manual-launch
 schema. The Application layer does publish the incompatible
-`loom.application.runtime_manifest 2.0` activation closure. It references one
+`loom.application.runtime_manifest 5.0` activation closure. It references one
 strictly imported StructuredProgram source workload/runtime pair, the exact
 source-backed Spatial replay cases, one completed pair decision, the selected
 SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
 Deployment-owned System workload/runtime pair, and an optional finite verified
 resource-time transition graph. These references authorize no new Mapping,
 route, entry, or input construction at runtime.
+
+Version 5.0 may additionally carry one manifest-derived product contract. It
+binds `cached_inputs_profile_output_v1`, the selected external symbol, warm-up
+and measured counts, output bytes per measured sample, the dense Deployment
+output-interface ordinal, and a Blob digest for the independently decoded
+expected bytes. Strict import proves the exact pointer/i64 source signature,
+source-to-System memory projection, zeroed unaliased output storage, Host
+interface directions, and activation value geometry. The expected Blob is an
+Evaluation input only. It never becomes a runtime input, guest argument, or
+candidate-identity component.
 
 An Application package contains the exact object/blob closure of that
 manifest and every endpoint Deployment. Execution first validates the source
@@ -601,7 +611,9 @@ entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.12`. For every Bridge session it records aligned
+`loom.gem5_system_projection.13`. Version 13 incompatibly adds the exact
+program-value table address and entry count to the Host projection. For every
+Bridge session it records aligned
 arrays of dispatch-target ordinals, execution-context keys, and Spatial
 workload identities. These arrays are derived together from the immutable
 Deployment and System execution projection. Provider command arguments only
@@ -610,7 +622,7 @@ which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
 
-Projection 12 also requires `dispatch.root_event_trace_path`, a logical target
+Projection 13 also requires `dispatch.root_event_trace_path`, a logical target
 count, and parallel endpoint offset/enable arrays. The arrays define a finite
 runtime endpoint table over the immutable dispatch records; they cannot create
 new targets. An endpoint with dispatch disabled may only be selected as a
@@ -621,6 +633,19 @@ ordinary invocation and otherwise names a Unix stream socket relative to the
 bundle root. Connect, send, and receive operations have one bounded
 `gem5RootEventControlTimeoutMilliseconds` deadline; a missing or stalled
 controller is an invocation failure, never an unbounded simulation wait.
+
+The reserved Host entry receives eight unsigned 64-bit machine arguments:
+dispatch base, logical target count, memory-interface table address and count,
+result address and byte count, then program-value table address and count. A
+zero count requires a zero address. The little-endian memory table starts with
+`LGMI`, version 1, and a 64-bit count. Each dense 32-byte entry contains the
+external-interface ordinal, guest address, byte extent, permission bits, and a
+zero reserved word. Bit 0 permits product reads and bit 1 permits product
+writes. The little-endian value table starts with `LGVI`, version 1, and a
+64-bit count; each dense 16-byte entry contains a byte count and zero-extended
+scalar bits. The current product subset admits exactly one defined nonpointer
+integer lane of at most 64 bits per value entry. The wrapper validates both
+tables before reconstructing the original source-call argument order.
 
 The endpoint table of a controlled invocation is derived from the
 independently verified transition graph by `deriveGem5RootEventEndpointTable`

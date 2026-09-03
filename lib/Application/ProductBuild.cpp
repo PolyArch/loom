@@ -31,6 +31,7 @@
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Function.h"
@@ -612,7 +613,11 @@ std::vector<std::string> projectDriverArguments(
   result.push_back("-B" LOOM_LLVM_TOOLS_DIR);
   result.push_back("-fuse-ld=lld");
   result.push_back("-nostdlib");
-  result.push_back("-Wl,--entry=main");
+  const llvm::StringRef entrySymbol =
+      portfolioInput && portfolioInput->selection.build.productExecution
+          ? portfolioInput->selection.build.productExecution->entrySymbol
+          : llvm::StringRef("main");
+  result.push_back("-Wl,--entry=" + entrySymbol.str());
   result.push_back("-flto=full");
   result.push_back("-ffat-lto-objects");
   result.push_back("-Wl,--fat-lto-objects");
@@ -684,20 +689,255 @@ importProductFinalLink(llvm::StringRef output, llvm::LLVMContext &context) {
   return ProductFinalLinkArtifacts{std::move(*module)};
 }
 
+llvm::Expected<std::vector<std::uint8_t>>
+readPinnedBytes(llvm::StringRef path, const BlobDigest &expected,
+                llvm::StringRef role) {
+  auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
+  if (!buffer)
+    return productError("loom_portfolio_input_invalid",
+                        "cannot read " + role + ": " +
+                            buffer.getError().message());
+  const llvm::StringRef contents = (*buffer)->getBuffer();
+  const llvm::ArrayRef<std::uint8_t> bytes(
+      reinterpret_cast<const std::uint8_t *>(contents.data()),
+      contents.size());
+  const BlobDigest actual = computeBlobDigest(bytes);
+  if (actual != expected)
+    return productError("loom_portfolio_input_invalid",
+                        role + " changed after source admission");
+  return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+}
+
+llvm::Expected<std::vector<std::uint8_t>> decodeHexSampleOracle(
+    llvm::StringRef path, const OracleSelection &oracle,
+    const WorkloadExecutionProfile &profile,
+    std::uint64_t bytesPerSample) {
+  auto bytes = readPinnedBytes(path, oracle.digest, "product oracle");
+  if (!bytes)
+    return bytes.takeError();
+  if (oracle.kind != OracleKind::Exact ||
+      oracle.encoding != OracleEncoding::HexSampleLines)
+    return productError("loom_portfolio_oracle_invalid",
+                        "product oracle has the wrong typed encoding");
+  if (bytesPerSample > std::numeric_limits<std::uint64_t>::max() / 2 ||
+      profile.measuredSamples >
+          std::numeric_limits<std::uint64_t>::max() / bytesPerSample)
+    return productError("loom_portfolio_oracle_invalid",
+                        "product oracle byte extent overflows uint64");
+  const std::uint64_t expectedBytes =
+      profile.measuredSamples * bytesPerSample;
+  if (expectedBytes > std::numeric_limits<std::size_t>::max())
+    return productError("loom_portfolio_oracle_invalid",
+                        "product oracle exceeds host addressability");
+
+  const auto hexValue = [](unsigned char character) -> std::optional<unsigned> {
+    if (character >= '0' && character <= '9')
+      return character - '0';
+    if (character >= 'a' && character <= 'f')
+      return character - 'a' + 10;
+    return std::nullopt;
+  };
+  llvm::StringRef remaining(
+      reinterpret_cast<const char *>(bytes->data()), bytes->size());
+  std::vector<std::uint8_t> decoded;
+  decoded.reserve(static_cast<std::size_t>(expectedBytes));
+  std::uint64_t sample = 0;
+  while (!remaining.empty()) {
+    const auto split = remaining.split('\n');
+    const llvm::StringRef line = split.first;
+    remaining = split.second;
+    if (sample >= profile.measuredSamples)
+      return productError("loom_portfolio_oracle_invalid",
+                          "product oracle has too many sample rows");
+    const std::string prefix =
+        "measured_sample=" + std::to_string(sample) + " output=";
+    if (!line.starts_with(prefix))
+      return productError("loom_portfolio_oracle_invalid",
+                          "product oracle sample ordinals are not dense");
+    const llvm::StringRef encoded = line.drop_front(prefix.size());
+    if (encoded.size() != bytesPerSample * 2)
+      return productError("loom_portfolio_oracle_invalid",
+                          "product oracle sample has the wrong byte extent");
+    for (std::size_t index = 0; index != encoded.size(); index += 2) {
+      const std::optional<unsigned> high = hexValue(encoded[index]);
+      const std::optional<unsigned> low = hexValue(encoded[index + 1]);
+      if (!high || !low)
+        return productError("loom_portfolio_oracle_invalid",
+                            "product oracle contains non-lowercase-hex data");
+      decoded.push_back(static_cast<std::uint8_t>((*high << 4) | *low));
+    }
+    ++sample;
+  }
+  if (sample != profile.measuredSamples || decoded.size() != expectedBytes)
+    return productError("loom_portfolio_oracle_invalid",
+                        "product oracle does not cover every measured sample");
+  return decoded;
+}
+
+sim::CanonicalValueSequence fixedU64(std::uint64_t value) {
+  return {1, {sim::SemanticLane::defined(llvm::APInt(64, value))}};
+}
+
+sim::RuntimeMemoryObject definedMemoryObject(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  std::vector<sim::SemanticMemoryByte> memory;
+  memory.reserve(bytes.size());
+  for (std::uint8_t byte : bytes)
+    memory.push_back({sim::SemanticState::Defined, byte});
+  return sim::RuntimeMemoryObject(std::move(memory));
+}
+
+struct PreparedPortfolioProductInvocation final {
+  ApplicationSourceInvocation sourceInvocation;
+  ProductOracleContract oracle;
+};
+
+llvm::Expected<PreparedPortfolioProductInvocation>
+preparePortfolioProductInvocation(
+    const PreparedProductTarget::PortfolioInput &portfolio,
+    const BlobStore &blobs) {
+  const BuildSelection &build = portfolio.selection.build;
+  if (!build.productExecution)
+    return productError("loom_portfolio_build_invalid",
+                        "portfolio input has no product execution contract");
+  const auto admittedInput = llvm::find_if(
+      portfolio.source.inputs, [&](const AdmittedApplicationInput &input) {
+        return input.inputName == portfolio.selection.input.name;
+      });
+  if (admittedInput == portfolio.source.inputs.end() ||
+      admittedInput->cachedInputs.size() !=
+          portfolio.selection.cachedInputs.size())
+    return productError("loom_portfolio_input_invalid",
+                        "admission lost the selected product input");
+
+  ApplicationSourceInvocation invocation;
+  invocation.entrySymbol = build.productExecution->entrySymbol;
+  invocation.observeReturnValue = true;
+  for (const auto indexed :
+       llvm::enumerate(portfolio.selection.cachedInputs)) {
+    const CachedInput &selected = indexed.value();
+    const AdmittedCachedInput &admitted =
+        admittedInput->cachedInputs[indexed.index()];
+    if (selected.logicalName != admitted.logicalName)
+      return productError("loom_portfolio_input_invalid",
+                          "admitted cache order differs from the manifest");
+    auto bytes = readPinnedBytes(admitted.path, selected.digest,
+                                 "cached product input");
+    if (!bytes)
+      return bytes.takeError();
+    invocation.argumentPlan.push_back(sim::StructuredRuntimeMemoryInput{});
+    invocation.argumentPlan.push_back(fixedU64(bytes->size()));
+    invocation.memoryObjects.push_back(definedMemoryObject(*bytes));
+    invocation.pointerBindings.push_back(
+        {static_cast<std::uint64_t>(indexed.index() * 2),
+         static_cast<std::uint64_t>(indexed.index()), 0});
+  }
+
+  const WorkloadExecutionProfile &profile = portfolio.selection.input.profile;
+  const std::uint64_t bytesPerSample =
+      build.productExecution->measuredOutputBytesPerSample;
+  if (profile.measuredSamples >
+      std::numeric_limits<std::uint64_t>::max() / bytesPerSample)
+    return productError("loom_portfolio_profile_invalid",
+                        "product output extent overflows uint64");
+  const std::uint64_t outputBytes =
+      profile.measuredSamples * bytesPerSample;
+  if (outputBytes == 0 ||
+      outputBytes > std::numeric_limits<std::size_t>::max())
+    return productError("loom_portfolio_profile_invalid",
+                        "product output extent is not addressable");
+  invocation.argumentPlan.push_back(fixedU64(profile.warmupSamples));
+  invocation.argumentPlan.push_back(fixedU64(profile.measuredSamples));
+  const std::uint64_t outputArgument = invocation.argumentPlan.size();
+  invocation.argumentPlan.push_back(sim::StructuredRuntimeMemoryInput{});
+  invocation.argumentPlan.push_back(fixedU64(outputBytes));
+  invocation.memoryObjects.push_back(definedMemoryObject(
+      std::vector<std::uint8_t>(static_cast<std::size_t>(outputBytes), 0)));
+  invocation.pointerBindings.push_back(
+      {outputArgument,
+       static_cast<std::uint64_t>(invocation.memoryObjects.size() - 1), 0});
+  invocation.memoryObservables.push_back(
+      {outputArgument, sim::MemoryObservationForm::FullState,
+       deployment::HostExternalInterfaceDirection::Output});
+
+  auto expectedBytes = decodeHexSampleOracle(
+      admittedInput->oraclePath, portfolio.selection.input.oracle, profile,
+      bytesPerSample);
+  if (!expectedBytes)
+    return expectedBytes.takeError();
+  auto expectedOutput = blobs.put(*expectedBytes);
+  if (!expectedOutput)
+    return expectedOutput.takeError();
+  return PreparedPortfolioProductInvocation{
+      std::move(invocation),
+      ProductOracleContract{ProductEntryABI::CachedInputsProfileOutputV1,
+                            build.productExecution->entrySymbol,
+                            profile.warmupSamples,
+                            profile.measuredSamples,
+                            bytesPerSample,
+                            *expectedOutput,
+                            static_cast<std::uint64_t>(
+                                portfolio.selection.cachedInputs.size())}};
+}
+
 llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
     const llvm::Module &module, PreparedProductTarget &target,
     const ProductBuildOptions &options, ExecutionControlView executionControl) {
   constexpr std::uint64_t softwareFrontierLimit = 8;
   constexpr std::uint64_t hardwareFrontierLimit = 8;
   constexpr std::uint64_t spatialMappingFrontierLimit = 32;
-  const llvm::Function *entry = module.getFunction("main");
+  const bool productPortfolio =
+      target.portfolioInput &&
+      target.portfolioInput->selection.build.productExecution.has_value();
+  const llvm::StringRef entrySymbol =
+      productPortfolio
+          ? llvm::StringRef(target.portfolioInput->selection.build
+                                .productExecution->entrySymbol)
+          : llvm::StringRef("main");
+  const llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration())
     return productError("loom_application_entry_unsupported",
-                        "the final-linked module has no defined main entry");
-  if (entry->isVarArg() || !entry->arg_empty())
-    return productError(
-        "loom_application_entry_unsupported",
-        "the initial product entry supports only a nullary main function");
+                        "the final-linked module has no defined product entry");
+  if (entry->isVarArg())
+    return productError("loom_application_entry_unsupported",
+                        "the product entry cannot be variadic");
+
+  ApplicationSourceInvocation sourceInvocation;
+  std::optional<ProductOracleContract> productOracle;
+  if (productPortfolio) {
+    auto prepared = preparePortfolioProductInvocation(*target.portfolioInput,
+                                                      target.workspace->blobs());
+    if (!prepared)
+      return prepared.takeError();
+    const std::size_t cachedInputCount =
+        target.portfolioInput->selection.cachedInputs.size();
+    const std::size_t expectedArguments = cachedInputCount * 2 + 4;
+    if (!entry->getReturnType()->isIntegerTy(32) ||
+        entry->arg_size() != expectedArguments)
+      return productError(
+          "loom_application_entry_unsupported",
+          "product entry differs from its manifest-derived ABI");
+    for (const auto indexed : llvm::enumerate(entry->args())) {
+      const std::size_t ordinal = indexed.index();
+      const bool pointer =
+          (ordinal < cachedInputCount * 2 && ordinal % 2 == 0) ||
+          ordinal == cachedInputCount * 2 + 2;
+      if (pointer != indexed.value().getType()->isPointerTy() ||
+          (!pointer && !indexed.value().getType()->isIntegerTy(64)))
+        return productError(
+            "loom_application_entry_unsupported",
+            "product entry argument differs from its manifest-derived ABI");
+    }
+    sourceInvocation = std::move(prepared->sourceInvocation);
+    productOracle = std::move(prepared->oracle);
+  } else {
+    if (!entry->arg_empty() || entry->getReturnType()->isVoidTy())
+      return productError(
+          "loom_application_entry_unsupported",
+          "the default product entry requires a nullary value-returning main");
+    sourceInvocation.entrySymbol = entrySymbol.str();
+    sourceInvocation.observeReturnValue = true;
+  }
 
   auto jointPolicy = dse::JointDesignPolicy::get(
       softwareFrontierLimit, hardwareFrontierLimit, softwareFrontierLimit,
@@ -714,10 +954,6 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   preMappingOptions.frontier.stoppingPolicy = options.mappingStoppingPolicy;
   preMappingOptions.executionControl = executionControl;
-  ApplicationSourceInvocation sourceInvocation;
-  sourceInvocation.entrySymbol = "main";
-  sourceInvocation.observeReturnValue = !entry->getReturnType()->isVoidTy();
-
   dse::ResourceTimeFrontierPolicy resourceTimePolicy;
   resourceTimePolicy.spectrumEndpoint = options.mappingSpectrumEndpoint;
   auto outcome = prepareApplicationBuild(
@@ -729,7 +965,7 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
        target.portfolioInput ? std::optional<SelectedApplicationInput>(
                                    target.portfolioInput->selection)
                              : std::nullopt,
-       target.fpaWeight, target.fpaConditions},
+       target.fpaWeight, target.fpaConditions, std::move(productOracle)},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -1154,19 +1390,6 @@ ProductBuildInvocation::create(ProductBuildOptions options) {
           "manifest");
     options.operatorProtocolSymbols =
         target->portfolioInput->selection.build.operatorProtocolSymbols;
-  }
-  if (target->portfolioInput &&
-      (target->portfolioInput->selection.input.profile.warmupSamples != 0 ||
-       target->portfolioInput->selection.input.profile.measuredSamples != 1)) {
-    constexpr llvm::StringLiteral detail =
-        "product source binding supports exactly zero warm-up samples and one "
-        "measured sample; the bounded host profile remains independently "
-        "executable";
-    emitApplicationPairDecisionDiagnostics(
-        makeUnsupportedPortfolioProfilePairDecision(
-            target->portfolioInput->selection, target->system.reference(),
-            detail));
-    return productError("loom_portfolio_profile_unsupported", detail);
   }
   return std::unique_ptr<ProductBuildInvocation>(new ProductBuildInvocation(
       std::make_unique<Impl>(std::move(options), std::move(*localToolConfig),

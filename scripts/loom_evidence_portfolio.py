@@ -29,7 +29,7 @@ OBJECTIVE_EVIDENCE = {
     "runtime_measured",
     "unsupported",
 }
-TINYML_TYPED_FALLBACK_DISPOSITION = "unsupported_semantic"
+UNSUPPORTED_SEMANTIC_DISPOSITION = "unsupported_semantic"
 PAIR_DISPOSITIONS = {
     "verified_acceleration",
     "verified_feasible_but_not_beneficial",
@@ -38,7 +38,7 @@ PAIR_DISPOSITIONS = {
     "mapping_proof_not_established",
     "cancelled_or_timeout",
     "budget_exhausted",
-    TINYML_TYPED_FALLBACK_DISPOSITION,
+    UNSUPPORTED_SEMANTIC_DISPOSITION,
     "implementation_failure",
     "hardware_dse_alternative",
 }
@@ -80,20 +80,57 @@ def _digest(value: Any) -> bool:
 
 
 def _artifact_root(value: Any) -> bool:
+    return _decode_artifact_root(value) is not None
+
+
+def _decode_artifact_root(value: Any) -> dict[str, str] | None:
     if not isinstance(value, str) or len(value) % 2 != 0:
-        return False
+        return None
     try:
         encoded = bytes.fromhex(value)
     except ValueError:
-        return False
+        return None
     if len(encoded) < 4 + 1 + 4 + 4 + 32:
-        return False
+        return None
     schema_length = int.from_bytes(encoded[:4], "big")
     expected_size = 4 + schema_length + 4 + 4 + 32
     if schema_length == 0 or len(encoded) != expected_size:
-        return False
+        return None
     schema = encoded[4 : 4 + schema_length]
-    return all(0x21 <= byte <= 0x7E for byte in schema)
+    if not all(0x21 <= byte <= 0x7E for byte in schema):
+        return None
+    major_offset = 4 + schema_length
+    return {
+        "schema": schema.decode("ascii"),
+        "schema_version": (
+            f"{int.from_bytes(encoded[major_offset:major_offset + 4], 'big')}."
+            f"{int.from_bytes(encoded[major_offset + 4:major_offset + 8], 'big')}"
+        ),
+        "artifact": encoded[major_offset + 8 :].hex(),
+    }
+
+
+def _root_reference(
+    value: Any, schema: str | None = None, version: str | None = None
+) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "schema_version",
+        "artifact",
+    }:
+        return None
+    if not isinstance(value.get("schema"), str) or not isinstance(
+        value.get("schema_version"), str
+    ):
+        return None
+    artifact = value.get("artifact")
+    if not _digest(artifact):
+        return None
+    if schema is not None and value["schema"] != schema:
+        return None
+    if version is not None and value["schema_version"] != version:
+        return None
+    return dict(value)
 
 
 def _artifact_root_list(value: Any) -> bool:
@@ -177,9 +214,9 @@ def collect_portfolio_inventory(
     errors: list[str] = []
     if (
         report.get("schema") != "loom.application_portfolio_inventory"
-        or report.get("version") != "1.0"
+        or report.get("version") != "2.0"
         or report.get("manifest_schema") != "loom.application_portfolio"
-        or report.get("manifest_version") != "3.0"
+        or report.get("manifest_version") != "4.0"
     ):
         return rows, ["unsupported_manifest_inventory_schema"]
     inventory = report.get("rows")
@@ -244,6 +281,16 @@ def collect_portfolio_inventory(
             errors.append(f"{context}:source_invalid")
         if (
             not isinstance(build, dict)
+            or set(build)
+            != {
+                "entry",
+                "language",
+                "sources",
+                "compiler_options",
+                "link_options",
+                "operator_protocol_symbols",
+                "product_execution",
+            }
             or not isinstance(build.get("entry"), str)
             or not isinstance(build.get("language"), str)
             or any(
@@ -258,6 +305,19 @@ def collect_portfolio_inventory(
             )
         ):
             errors.append(f"{context}:build_invalid")
+        else:
+            product = build.get("product_execution")
+            if product is not None and (
+                not isinstance(product, dict)
+                or set(product)
+                != {"entry_symbol", "measured_output_bytes_per_sample"}
+                or not isinstance(product.get("entry_symbol"), str)
+                or not product["entry_symbol"]
+                or _integer(product.get("measured_output_bytes_per_sample"))
+                is None
+                or product["measured_output_bytes_per_sample"] <= 0
+            ):
+                errors.append(f"{context}:product_execution_invalid")
         if not isinstance(row.get("workload"), str) or not isinstance(
             row.get("runtime_input"), str
         ):
@@ -274,6 +334,8 @@ def collect_portfolio_inventory(
             not isinstance(oracle, dict)
             or not isinstance(oracle.get("kind"), str)
             or not isinstance(oracle.get("entry"), str)
+            or not _digest(oracle.get("sha256"))
+            or oracle.get("encoding") not in {"utf8", "hex_sample_lines"}
         ):
             errors.append(f"{context}:oracle_invalid")
         warmup = profile.get("warmup_samples") if isinstance(profile, dict) else None
@@ -294,6 +356,20 @@ def collect_portfolio_inventory(
             or profile.get("oracle_coverage") != "all_measured_samples"
         ):
             errors.append(f"{context}:profile_invalid")
+        if isinstance(build, dict):
+            product = build.get("product_execution")
+            if product is None and isinstance(oracle, dict):
+                if oracle.get("encoding") != "utf8":
+                    errors.append(f"{context}:host_oracle_encoding_invalid")
+            elif isinstance(product, dict):
+                if (
+                    not isinstance(build.get("operator_protocol_symbols"), list)
+                    or not build["operator_protocol_symbols"]
+                    or not isinstance(oracle, dict)
+                    or oracle.get("kind") != "exact"
+                    or oracle.get("encoding") != "hex_sample_lines"
+                ):
+                    errors.append(f"{context}:product_oracle_contract_invalid")
         if len(errors) == error_count:
             rows.append(dict(row))
     return rows, errors
@@ -876,12 +952,198 @@ def validate_portfolio_pair(
     }
 
 
+PRODUCT_ENTRY_ABI = "cached_inputs_profile_output_v1"
+PRODUCT_PROFILE_FIELDS = {
+    "entry_abi",
+    "entry_symbol",
+    "warmup_samples",
+    "measured_samples",
+    "measured_output_bytes_per_sample",
+    "expected_output_sha256",
+    "output_interface_ordinal",
+}
+
+
+def validate_portfolio_product_execution(
+    pair_evidence: dict[str, Any],
+    expected: dict[str, Any],
+    runtime_manifest_bindings: list[dict[str, Any]],
+    execution_workspaces: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Join one product row to its exact runtime manifest and oracle Evidence."""
+    reasons: list[str] = []
+    decision = _pair_decision(pair_evidence)
+    build = expected.get("build")
+    product = build.get("product_execution") if isinstance(build, dict) else None
+    profile = expected.get("profile")
+    cached_inputs = expected.get("cached_inputs")
+    if (
+        decision is None
+        or not isinstance(product, dict)
+        or not isinstance(profile, dict)
+        or not isinstance(cached_inputs, list)
+    ):
+        return {
+            "complete": False,
+            "incomplete_reasons": ["product_manifest_contract_missing"],
+            "runtime_manifest": None,
+            "workspace_count": 0,
+            "oracle_evidence": [],
+        }
+
+    candidate_bindings = [
+        binding
+        for binding in runtime_manifest_bindings
+        if isinstance(binding, dict)
+        and binding.get("pair_identity") == decision.get("pair_identity")
+        and binding.get("invocation_manifest_run_key")
+        == decision.get("invocation_manifest_run_key")
+    ]
+    if not candidate_bindings:
+        reasons.append("runtime_manifest_binding_missing")
+
+    runtime_roots: list[dict[str, str]] = []
+    for binding in candidate_bindings:
+        if (
+            binding.get("schema")
+            != "loom.application_runtime_manifest_binding"
+            or binding.get("version") != "1.0"
+            or binding.get("domain") != "application_runtime_manifest"
+        ):
+            reasons.append("runtime_manifest_binding_schema_invalid")
+            continue
+        for binding_field, decision_field in (
+            ("source_program", "source_program"),
+            ("fabric", "fabric"),
+            ("workload", "workload"),
+            ("runtime_input", "runtime_input"),
+            ("selected_system", "selected_system"),
+            ("selected_mapping", "selected_system_mapping"),
+        ):
+            if binding.get(binding_field) != decision.get(decision_field):
+                reasons.append(f"runtime_manifest_{binding_field}_mismatch")
+        decoded = _decode_artifact_root(binding.get("runtime_manifest"))
+        if (
+            decoded is None
+            or decoded.get("schema") != "loom.application.runtime_manifest"
+            or decoded.get("schema_version") != "5.0"
+        ):
+            reasons.append("runtime_manifest_root_invalid")
+            continue
+        runtime_roots.append(decoded)
+
+    unique_runtime_roots = {
+        (root["schema"], root["schema_version"], root["artifact"])
+        for root in runtime_roots
+    }
+    if len(unique_runtime_roots) != 1:
+        reasons.append("runtime_manifest_binding_not_unique")
+        runtime_root = None
+    else:
+        runtime_root = runtime_roots[0]
+
+    matching_workspaces = (
+        [
+            workspace
+            for workspace in execution_workspaces
+            if isinstance(workspace, dict)
+            and workspace.get("application_runtime_manifest") == runtime_root
+        ]
+        if runtime_root is not None
+        else []
+    )
+    if not matching_workspaces:
+        reasons.append("product_execution_workspace_missing")
+
+    oracle_evidence: list[dict[str, str]] = []
+    for workspace in matching_workspaces:
+        if workspace.get("schema") != "loom.execution_matrix_workspace.2.0":
+            reasons.append("product_execution_workspace_schema_invalid")
+        if candidate_bindings:
+            binding = candidate_bindings[0]
+            for workspace_field, binding_field in (
+                ("deployment", "deployment"),
+                ("workload", "activation_workload"),
+                ("runtime_input", "activation_runtime_input"),
+            ):
+                if workspace.get(workspace_field) != _decode_artifact_root(
+                    binding.get(binding_field)
+                ):
+                    reasons.append(f"product_execution_{workspace_field}_mismatch")
+
+        actual_profile = workspace.get("product_profile")
+        if not isinstance(actual_profile, dict) or set(actual_profile) != (
+            PRODUCT_PROFILE_FIELDS
+        ):
+            reasons.append("product_execution_profile_invalid")
+        else:
+            expected_profile = {
+                "entry_abi": PRODUCT_ENTRY_ABI,
+                "entry_symbol": product.get("entry_symbol"),
+                "warmup_samples": profile.get("warmup_samples"),
+                "measured_samples": profile.get("measured_samples"),
+                "measured_output_bytes_per_sample": product.get(
+                    "measured_output_bytes_per_sample"
+                ),
+                "output_interface_ordinal": len(cached_inputs),
+            }
+            for field, value in expected_profile.items():
+                if actual_profile.get(field) != value:
+                    reasons.append(f"product_execution_{field}_mismatch")
+            if not _digest(actual_profile.get("expected_output_sha256")):
+                reasons.append("product_execution_expected_output_invalid")
+
+        if workspace.get("value_results") != [["0"]]:
+            reasons.append("product_execution_result_invalid")
+        runs = workspace.get("runs")
+        system_runs = (
+            [
+                run
+                for run in runs
+                if isinstance(run, dict) and run.get("scope") == "system"
+            ]
+            if isinstance(runs, list)
+            else []
+        )
+        if len(system_runs) != 2 or {
+            run.get("engine") for run in system_runs
+        } != {"dfg", "cgra"}:
+            reasons.append("product_execution_system_matrix_incomplete")
+            continue
+        for run in system_runs:
+            request = _root_reference(
+                run.get("product_oracle_request"), "evaluation.request"
+            )
+            evidence = _root_reference(
+                run.get("product_oracle_evidence"), "evaluation.evidence"
+            )
+            if request is None:
+                reasons.append("product_oracle_request_invalid")
+            if evidence is None:
+                reasons.append("product_oracle_evidence_invalid")
+            else:
+                oracle_evidence.append(evidence)
+
+    reasons = list(dict.fromkeys(reasons))
+    return {
+        "complete": not reasons,
+        "incomplete_reasons": reasons,
+        "runtime_manifest": runtime_root,
+        "workspace_count": len(matching_workspaces),
+        "oracle_evidence": oracle_evidence,
+    }
+
+
 def evaluate_portfolio(
     inventory: list[dict[str, Any]],
     host_runs: list[dict[str, Any]],
     pair_evidence: list[dict[str, Any]],
     manifest_errors: list[str],
+    runtime_manifest_bindings: list[dict[str, Any]] | None = None,
+    execution_workspaces: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    runtime_manifest_bindings = runtime_manifest_bindings or []
+    execution_workspaces = execution_workspaces or []
     inventory_by_key = {
         (row.get("application_identity"), row.get("input_name")): row
         for row in inventory
@@ -912,6 +1174,11 @@ def evaluate_portfolio(
         pairs_by_key.setdefault(
             (row.get("application_identity"), row.get("input_name")), []
         ).append(row)
+    pair_records_by_key: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for evidence in pair_evidence:
+        pair_records_by_key.setdefault(portfolio_pair_key(evidence), []).append(
+            evidence
+        )
 
     member_evaluations: list[dict[str, Any]] = []
     for row in inventory:
@@ -938,18 +1205,28 @@ def evaluate_portfolio(
         canonical_application_qor_complete = any(
             pair["canonical_qor_complete"] for pair in pairs
         )
-        application = key[0]
-        tinyml_typed_fallback_complete = (
-            application == TINYML_APPLICATION
-            and typed_pair_complete
-            and not canonical_application_qor_complete
-            and all(
-                pair.get("disposition") == TINYML_TYPED_FALLBACK_DISPOSITION
-                and set(pair.get("unsupported_objective_dimensions", []))
-                == set(APPLICATION_OBJECTIVE_DIMENSIONS)
-                for pair in pairs
-            )
+        build = row.get("build")
+        product_required = isinstance(build, dict) and isinstance(
+            build.get("product_execution"), dict
         )
+        product_executions = [
+            validate_portfolio_product_execution(
+                evidence,
+                row,
+                runtime_manifest_bindings,
+                execution_workspaces,
+            )
+            for evidence in pair_records_by_key.get(key, [])
+            if (
+                (validated := validate_portfolio_pair(evidence, row)) is not None
+                and validated["canonical_qor_complete"]
+            )
+        ]
+        product_execution_complete = not product_required or (
+            bool(product_executions)
+            and all(execution["complete"] for execution in product_executions)
+        )
+        application = key[0]
         funnel_comparisons = [
             pair["funnel_exact_comparison"]
             for pair in pairs
@@ -1004,7 +1281,9 @@ def evaluate_portfolio(
                 "canonical_application_qor_complete": (
                     canonical_application_qor_complete
                 ),
-                "tinyml_typed_fallback_complete": (tinyml_typed_fallback_complete),
+                "product_execution_required": product_required,
+                "product_execution_complete": product_execution_complete,
+                "product_executions": product_executions,
                 "typed_residuals": sorted(
                     {
                         residual
@@ -1021,9 +1300,8 @@ def evaluate_portfolio(
                 ),
                 "portfolio_requirement_complete": host_conformance_complete
                 and typed_pair_complete
-                and (
-                    tinyml_typed_fallback_complete or canonical_application_qor_complete
-                ),
+                and canonical_application_qor_complete
+                and product_execution_complete,
             }
         )
 
@@ -1044,13 +1322,17 @@ def evaluate_portfolio(
             for row in required
             if not row["accelerator_disposition_complete"]
         ]
-        qor_required = [
-            row for row in required if row["application_identity"] != TINYML_APPLICATION
-        ]
+        qor_required = required
         missing_qor = [
             [row["application_identity"], row["input_name"]]
             for row in qor_required
             if not row["canonical_application_qor_complete"]
+        ]
+        missing_product_execution = [
+            [row["application_identity"], row["input_name"]]
+            for row in required
+            if row["product_execution_required"]
+            and not row["product_execution_complete"]
         ]
         selection_evaluations.append(
             {
@@ -1065,11 +1347,13 @@ def evaluate_portfolio(
                     for row in qor_required
                 ],
                 "missing_canonical_qor_pairs": missing_qor,
+                "missing_product_execution_pairs": missing_product_execution,
                 "host_conformance_gate_holds": bool(required) and not missing_host,
                 "accelerator_disposition_gate_holds": bool(required)
                 and not missing_typed,
                 "canonical_application_qor_gate_holds": bool(qor_required)
                 and not missing_qor,
+                "product_execution_gate_holds": not missing_product_execution,
                 "portfolio_requirement_gate_holds": bool(required)
                 and all(row["portfolio_requirement_complete"] for row in required),
             }
@@ -1088,8 +1372,10 @@ def evaluate_portfolio(
         for application in CANONICAL_QOR_APPLICATIONS
     }
     tinyml_rows = members_by_application.get(TINYML_APPLICATION, [])
-    tinyml_profile_holds = bool(tinyml_rows) and any(
-        row["host_conformance_complete"] and row["tinyml_typed_fallback_complete"]
+    tinyml_profile_holds = bool(tinyml_rows) and all(
+        row["host_conformance_complete"]
+        and row["canonical_application_qor_complete"]
+        and row["product_execution_complete"]
         for row in tinyml_rows
     )
     all_selection_gates_hold = all(
@@ -1108,7 +1394,7 @@ def evaluate_portfolio(
     acceptance = {
         "canonical_qor_witnesses": canonical_witnesses,
         "canonical_qor_witnesses_hold": all(canonical_witnesses.values()),
-        "tinyml_host_conformance_and_typed_fallback_hold": tinyml_profile_holds,
+        "tinyml_product_profiles_hold": tinyml_profile_holds,
         "all_execution_selection_gates_hold": all_selection_gates_hold,
         "funnel_exact_comparison_sample_holds": funnel_exact_comparison_sample_holds,
         "portfolio_acceptance_holds": not manifest_errors

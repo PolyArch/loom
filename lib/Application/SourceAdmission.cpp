@@ -215,6 +215,22 @@ canonicalFile(const std::filesystem::path &base, llvm::StringRef relative,
   return canonical;
 }
 
+llvm::Error verifyFileDigest(const std::filesystem::path &path,
+                             const BlobDigest &expected,
+                             llvm::StringRef context) {
+  auto buffer = llvm::MemoryBuffer::getFile(path.string(), false, false);
+  if (!buffer)
+    return failed(context + " cannot be read: " +
+                  buffer.getError().message());
+  const llvm::StringRef bytes = (*buffer)->getBuffer();
+  const BlobDigest actual = computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()));
+  if (actual != expected)
+    return invalid(context + " has digest " + formatBlobDigestHex(actual) +
+                   " instead of " + formatBlobDigestHex(expected));
+  return llvm::Error::success();
+}
+
 llvm::Expected<bool> pathExists(const std::filesystem::path &path,
                                 llvm::StringRef context) {
   std::error_code error;
@@ -386,6 +402,9 @@ llvm::Expected<AdmittedApplicationFiles> resolveBuildAndOracleFiles(
                                 repositoryRoot, "oracle entry");
     if (!oracle)
       return oracle.takeError();
+    if (llvm::Error error =
+            verifyFileDigest(*oracle, input.oracle.digest, "oracle entry"))
+      return std::move(error);
     if (llvm::is_contained(selectedSources, *oracle))
       return invalid("oracle entry for '" + application.identity +
                      "' is also a selected program source");

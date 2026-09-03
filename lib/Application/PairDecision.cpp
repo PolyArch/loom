@@ -746,8 +746,6 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           result.portfolioExecutionBinding =
               ApplicationPortfolioExecutionBinding::CanonicalSimulation;
         if (result.portfolioInput &&
-            result.portfolioInput->input.profile.warmupSamples == 0 &&
-            result.portfolioInput->input.profile.measuredSamples == 1 &&
             outcome.runtimeDisposition ==
                 ApplicationMappingRuntimeDisposition::Completed &&
             !outcome.runtimeEvidence.empty() &&
