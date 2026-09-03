@@ -408,7 +408,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           sourceProvenance);
       if (!child) {
         bool rejected = false;
-        llvm::Error retained = llvm::Error::success();
+        std::optional<StructuredOwnershipCandidateRejectionRecord> rejection;
         llvm::Error unhandled = llvm::handleErrors(
             child.takeError(),
             [&](const frontend::StructuredScheduleProposalRefusal &error) {
@@ -417,12 +417,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             },
             [&](const frontend::SpatialOwnershipCandidateRejection &error) {
               rejected = true;
-              if (invocation)
-                retained = detail::StructuredOwnershipInvocationAccess::
-                    recordFinalizationRejection(
-                        *invocation, reference,
-                        {error.kind(), error.message(),
-                         error.memoryContract()});
+              rejection.emplace(StructuredOwnershipCandidateRejectionRecord{
+                  error.kind(), error.message(), error.memoryContract()});
               if (producesLogicalThreadDomain)
                 switch (error.kind()) {
                 case frontend::SpatialOwnershipCandidateRejectionKind::
@@ -436,9 +432,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 }
             });
         if (unhandled)
-          return llvm::joinErrors(std::move(unhandled), std::move(retained));
-        if (retained)
-          return std::move(retained);
+          return unhandled;
+        if (rejection && invocation)
+          if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
+                  recordFinalizationRejection(*invocation, reference,
+                                              std::move(*rejection)))
+            return error;
         if (!rejected)
           return invalid("schedule candidate failed without a classified "
                          "outcome");

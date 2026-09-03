@@ -176,20 +176,22 @@ cloneRoot(StructuredOwnershipInvocation *invocation,
 llvm::Expected<std::optional<frontend::MaterializedOwnershipCandidate>>
 finalizeCandidate(
     frontend::MaterializedStructuredOwnershipCandidate candidate,
-    const ArtifactRootReference &reference,
+    const ArtifactRootReference &generatorInput,
     StructuredOwnershipInvocation *invocation,
     const fabric::FinalizedFabricRoot &fabric,
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
   // A refused leaf leaves no candidate behind; the bound invocation retains
-  // the typed refusal against the leaf's Ownership coordinate so the
-  // application decision can state it.
+  // the typed refusal against the Ownership coordinate of the generator input
+  // the leaf descends from, so the application decision can state it. The
+  // leaf itself is not anchored: its mechanical and decision edges reach the
+  // invocation only on admission, so its own lineage cannot be resolved here.
   const auto retainRejection =
       [&](StructuredOwnershipCandidateRejectionRecord rejection)
       -> llvm::Error {
     if (!invocation)
       return llvm::Error::success();
     return detail::StructuredOwnershipInvocationAccess::
-        recordFinalizationRejection(*invocation, reference,
+        recordFinalizationRejection(*invocation, generatorInput,
                                     std::move(rejection));
   };
   if (candidate.ownedSpatialRegion) {
@@ -356,6 +358,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::uint64_t consumedMechanicalClosures = 0;
   bool outputLimitReached = false;
 
+  const ArtifactRootReference *generatorInput = nullptr;
   std::function<llvm::Error(ArtifactRootReference,
                             frontend::MaterializedStructuredOwnershipCandidate)>
       expand = [&](ArtifactRootReference reference,
@@ -374,9 +377,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         outputLimitReached = true;
         return llvm::Error::success();
       }
-      auto finalized = finalizeCandidate(std::move(candidate), reference,
-                                         invocation, *exactFabric,
-                                         loweringOptions);
+      auto finalized =
+          finalizeCandidate(std::move(candidate), *generatorInput, invocation,
+                            *exactFabric, loweringOptions);
       if (!finalized)
         return finalized.takeError();
       if (!*finalized)
@@ -437,6 +440,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
        inputBindings[StructuredProgramsInput].artifacts) {
     if (outputLimitReached)
       break;
+    generatorInput = &reference;
     auto candidate = cloneRoot(invocation, reference, store);
     if (!candidate)
       return candidate.takeError();
