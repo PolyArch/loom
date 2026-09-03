@@ -1,5 +1,6 @@
 #include "CgraAdmissionTestSupport.h"
 
+#include "ApplicationRuntimeValidationInternal.h"
 #include "CGRAExecutionPlan.h"
 
 #include "Common/ArtifactStore.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -221,8 +223,8 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactRootReference &spatialMappingReference,
     const ArtifactRootReference &foreignFabricReference,
     const ArtifactStore &store, const BlobStore &blobs, bool expectPhysicalTags,
-    bool expectCausalComputeRelease,
-    bool expectSameInputDistinctSwitchRows) {
+    bool expectCausalComputeRelease, bool expectSameInputDistinctSwitchRows,
+    bool verifyApplicationEvidenceCoverage) {
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
   auto view = take(dataflow.view());
@@ -444,6 +446,8 @@ void loom::test::exerciseCgraAdmission(
       {0, {1, {sim::SemanticLane::defined(llvm::APInt(32, 8))}}}};
   auto foreignRuntime = take(sim::finalizeSimulationRuntimeInput(
       foreignRuntimeDraft, workload, view));
+  const ArtifactRootReference foreignRuntimeReference =
+      take(sim::publishSimulationRuntimeInput(foreignRuntime, store));
   if (!rejected(sim::startCgraExecutionSession(preparedWorkload, workload,
                                                foreignRuntime)))
     fail("prepared CGRA workload execution accepted a foreign runtime input");
@@ -485,6 +489,98 @@ void loom::test::exerciseCgraAdmission(
       !std::holds_alternative<evaluation::AbsentFinding>(
           completed->findingResults.front().result))
     fail("exact DFG/CGRA observations did not compare equal");
+  auto foreignPreparedCgra =
+      take(evaluation::models::prepareCgraSimulationEvaluation(
+          dataflowReference, fabricReference, spatialMappingReference,
+          workloadReference, foreignRuntimeReference, defaultResolvedConfig(),
+          store, blobs));
+  const ArtifactRootReference retiredEvidenceReference =
+      take(evaluation::publishEvaluationEvidence(cgraEvidence, store));
+  if (verifyApplicationEvidenceCoverage) {
+    auto foreignPreparedDfg =
+        take(evaluation::models::prepareDfgSimulationEvaluation(
+            dataflowReference, workloadReference, foreignRuntimeReference,
+            defaultResolvedConfig(), store, blobs));
+    auto foreignDfgEvidence = take(evaluation::models::evaluateDfgSimulation(
+        foreignPreparedDfg, {128, std::nullopt}, store, blobs));
+    auto foreignCgraEvidence = take(evaluation::models::evaluateCgraSimulation(
+        foreignPreparedCgra, {128, std::nullopt}, store, blobs));
+    auto foreignComparison =
+        take(evaluation::models::prepareSimulationComparisonEvaluation(
+            foreignDfgEvidence.outputBindings().front().artifacts.front(),
+            foreignPreparedDfg.resolution,
+            foreignCgraEvidence.outputBindings().front().artifacts.front(),
+            foreignPreparedCgra.resolution, defaultResolvedConfig(), store,
+            blobs));
+    auto foreignComparisonEvidence =
+        take(evaluation::models::evaluateSimulationComparison(foreignComparison,
+                                                              store, blobs));
+    if (!rejected(evaluation::models::prepareSimulationComparisonEvaluation(
+            dfgEvidence.outputBindings().front().artifacts.front(),
+            preparedDfg.resolution,
+            foreignCgraEvidence.outputBindings().front().artifacts.front(),
+            foreignPreparedCgra.resolution, defaultResolvedConfig(), store,
+            blobs)))
+      fail("SimulationComparison accepted executions from different replay "
+           "inputs");
+
+    const ArtifactRootReference dfgEvidenceReference =
+        take(evaluation::publishEvaluationEvidence(dfgEvidence, store));
+    const ArtifactRootReference comparisonEvidenceReference =
+        take(evaluation::publishEvaluationEvidence(comparisonEvidence, store));
+    const ArtifactRootReference foreignDfgEvidenceReference =
+        take(evaluation::publishEvaluationEvidence(foreignDfgEvidence, store));
+    const ArtifactRootReference foreignCgraEvidenceReference =
+        take(evaluation::publishEvaluationEvidence(foreignCgraEvidence, store));
+    const ArtifactRootReference foreignComparisonEvidenceReference =
+        take(evaluation::publishEvaluationEvidence(foreignComparisonEvidence,
+                                                   store));
+    const std::array spatialMappings{spatialMappingReference};
+    const std::array replayCases{
+        sim::SourceBackedDfgReplayCaseReference{workloadReference,
+                                                runtimeReference},
+        sim::SourceBackedDfgReplayCaseReference{workloadReference,
+                                                foreignRuntimeReference}};
+    const std::array runtimeEvidenceReferences{
+        dfgEvidenceReference,         retiredEvidenceReference,
+        comparisonEvidenceReference,  foreignDfgEvidenceReference,
+        foreignCgraEvidenceReference, foreignComparisonEvidenceReference};
+    const std::array oracleEvidenceReferences{
+        comparisonEvidenceReference, foreignComparisonEvidenceReference};
+    auto evidenceJoin =
+        take(application::detail::resolveApplicationRuntimeEvidenceJoin(
+            runtimeEvidenceReferences, oracleEvidenceReferences,
+            dataflowReference, spatialMappings, replayCases, store, blobs));
+    if (evidenceJoin.dfgCycles == 0 || evidenceJoin.cgraCycles == 0)
+      fail("application runtime Evidence join lost measured execution cycles");
+
+    const std::array incompleteRuntimeEvidence{
+        dfgEvidenceReference, retiredEvidenceReference,
+        comparisonEvidenceReference, foreignDfgEvidenceReference,
+        foreignCgraEvidenceReference};
+    const std::array incompleteOracleEvidence{comparisonEvidenceReference};
+    if (!rejected(application::detail::resolveApplicationRuntimeEvidenceJoin(
+            incompleteRuntimeEvidence, incompleteOracleEvidence,
+            dataflowReference, spatialMappings, replayCases, store, blobs)))
+      fail("application runtime Evidence accepted incomplete comparison "
+           "coverage");
+    const std::array duplicateOracleEvidence{comparisonEvidenceReference,
+                                             comparisonEvidenceReference};
+    if (!rejected(application::detail::resolveApplicationRuntimeEvidenceJoin(
+            runtimeEvidenceReferences, duplicateOracleEvidence,
+            dataflowReference, spatialMappings, replayCases, store, blobs)))
+      fail("application runtime Evidence accepted a duplicate oracle root");
+    const std::array duplicateComparisonEvidence{
+        dfgEvidenceReference, retiredEvidenceReference,
+        comparisonEvidenceReference, comparisonEvidenceReference};
+    const std::array singleReplayCase{replayCases.front()};
+    const std::array singleOracleEvidence{comparisonEvidenceReference};
+    if (!rejected(application::detail::resolveApplicationRuntimeEvidenceJoin(
+            duplicateComparisonEvidence, singleOracleEvidence,
+            dataflowReference, spatialMappings, singleReplayCase, store,
+            blobs)))
+      fail("application runtime Evidence accepted a duplicate comparison root");
+  }
 
   const ArtifactRootReference cgraExecutionReference =
       cgraEvidence.outputBindings().front().artifacts.front();
@@ -500,8 +596,6 @@ void loom::test::exerciseCgraAdmission(
             sim::TerminalWitnessRef{evaluation::ModelOutputSlotRef(0), 0})}}};
   };
 
-  const ArtifactRootReference retiredEvidenceReference =
-      take(evaluation::publishEvaluationEvidence(cgraEvidence, store));
   if (!rejected(evaluation::models::importVerifiedCgraClosedWaitEvidence(
           retiredEvidenceReference, store, blobs)))
     fail("retired CGRA Evidence was imported as a closed wait");
@@ -655,13 +749,6 @@ void loom::test::exerciseCgraAdmission(
           preparedCgra.resolution, store, blobs)))
     fail("CGRA Evidence accepted a foreign execution output");
 
-  const ArtifactRootReference foreignRuntimeReference =
-      take(sim::publishSimulationRuntimeInput(foreignRuntime, store));
-  auto foreignPreparedCgra =
-      take(evaluation::models::prepareCgraSimulationEvaluation(
-          dataflowReference, fabricReference, spatialMappingReference,
-          workloadReference, foreignRuntimeReference, defaultResolvedConfig(),
-          store, blobs));
   if (!rejected(evaluation::EvaluationEvidence::get(
           foreignPreparedCgra.request,
           {{evaluation::ModelOutputSlotRef(0), {forgedExecutionReference}}},

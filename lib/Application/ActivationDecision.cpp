@@ -1257,6 +1257,19 @@ resolveApplicationRuntimeEvidenceJoin(
   if (runtimeEvidence.empty() || oracleEvidence.empty())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                   "application runtime requires runtime and oracle Evidence");
+  const auto hasDuplicateRoot =
+      [](llvm::ArrayRef<ArtifactRootReference> roots) {
+        std::vector<ArtifactRootReference> ordered(roots.begin(), roots.end());
+        llvm::sort(ordered, artifactRootReferenceLess);
+        return std::adjacent_find(ordered.begin(), ordered.end()) !=
+               ordered.end();
+      };
+  if (hasDuplicateRoot(runtimeEvidence))
+    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                  "runtime Evidence repeats an Evidence root");
+  if (hasDuplicateRoot(oracleEvidence))
+    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                  "oracle Evidence repeats an Evidence root");
   for (const ArtifactRootReference &oracle : oracleEvidence)
     if (!llvm::is_contained(runtimeEvidence, oracle))
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
@@ -1465,6 +1478,7 @@ resolveApplicationRuntimeEvidenceJoin(
   std::vector<InputPair> expectedPairs;
   for (const sim::SourceBackedDfgReplayCaseReference &replay : replayCases)
     expectedPairs.push_back({replay.workload, replay.runtimeInput});
+  const std::size_t expectedPairCount = expectedPairs.size();
   std::vector<InputPair> dfgPairs;
   std::vector<InputPair> cgraPairs;
   for (const ExecutionRecord &record : executions)
@@ -1475,14 +1489,16 @@ resolveApplicationRuntimeEvidenceJoin(
   canonicalizePairs(expectedPairs);
   canonicalizePairs(dfgPairs);
   canonicalizePairs(cgraPairs);
-  if (expectedPairs.empty() || dfgPairs != expectedPairs ||
-      cgraPairs != expectedPairs ||
+  if (expectedPairs.empty() || expectedPairs.size() != expectedPairCount ||
+      dfgPairs != expectedPairs || cgraPairs != expectedPairs ||
       dfgExecutionCount != expectedPairs.size() ||
       cgraExecutionCount != expectedPairs.size())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                   "runtime Evidence does not join through exact source-backed "
                   "replay inputs");
 
+  std::vector<InputPair> comparisonPairs;
+  std::vector<ArtifactRootReference> comparisonEvidence;
   for (const EvidenceFacts &row : evidenceFacts) {
     if (!llvm::is_contained(oracleEvidence, row.evidence))
       continue;
@@ -1508,6 +1524,12 @@ resolveApplicationRuntimeEvidenceJoin(
         compared[0]->kind == ExecutionKind::Dfg ? compared[0] : compared[1];
     const ExecutionRecord *cgra =
         compared[0]->kind == ExecutionKind::Cgra ? compared[0] : compared[1];
+    const InputPair dfgPair{dfg->workload, dfg->runtimeInput};
+    const InputPair cgraPair{cgra->workload, cgra->runtimeInput};
+    if (!(dfgPair == cgraPair))
+      return reject(
+          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+          "oracle Evidence compares executions from different replay inputs");
     auto resolution = evaluation::models::resolveSimulationComparisonCase(
         dfg->execution, dfg->resolution, cgra->execution, cgra->resolution,
         artifacts, blobs);
@@ -1530,7 +1552,22 @@ resolveApplicationRuntimeEvidenceJoin(
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "oracle Evidence did not establish an absent comparison finding");
+    comparisonPairs.push_back(dfgPair);
+    comparisonEvidence.push_back(row.evidence);
   }
+  const std::size_t comparisonCount = comparisonPairs.size();
+  canonicalizePairs(comparisonPairs);
+  llvm::sort(comparisonEvidence, artifactRootReferenceLess);
+  std::vector<ArtifactRootReference> expectedOracleEvidence(
+      oracleEvidence.begin(), oracleEvidence.end());
+  llvm::sort(expectedOracleEvidence, artifactRootReferenceLess);
+  if (comparisonEvidence != expectedOracleEvidence ||
+      comparisonPairs != expectedPairs ||
+      comparisonCount != expectedPairs.size())
+    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                  "oracle Evidence does not provide exact one-to-one "
+                  "SimulationComparison coverage for the source-backed "
+                  "replay inputs");
   return result;
 }
 

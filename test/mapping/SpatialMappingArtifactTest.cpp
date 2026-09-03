@@ -599,7 +599,7 @@ void completeCandidateRoundTrip(
     const auto foreignFabric = buildTemporalFabric(store);
     loom::test::exerciseCgraAdmission(
         dataflowReference, fabric.reference(), generated->candidates.front(),
-        foreignFabric.reference(), store, blobs, false, true);
+        foreignFabric.reference(), store, blobs, false, true, false, true);
     auto wrongInspection = loom::mapping::inspectSpatialMapping(
         dataflow, tech.view(), foreignFabric.view(), generatedView.view());
     if (wrongInspection)

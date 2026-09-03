@@ -66,9 +66,10 @@ struct ApplicationRuntimeEvidenceJoin final {
 
 /// Strictly resolves the runtime Evidence of one exact application Mapping.
 /// The supporting set must cover the source-backed DFG and CGRA executions,
-/// while the oracle subset must contain an independently imported completed
-/// SimulationComparison with an AbsentFinding result. Cycle totals are
-/// re-derived from those strict imports rather than trusted from diagnostics.
+/// while the oracle subset must contain exactly one independently imported
+/// completed SimulationComparison with an AbsentFinding result for every
+/// source-backed workload/runtime-input pair. Cycle totals are re-derived from
+/// those strict imports rather than trusted from diagnostics.
 llvm::Expected<ApplicationRuntimeEvidenceJoin>
 resolveApplicationRuntimeEvidenceJoin(
     llvm::ArrayRef<ArtifactRootReference> runtimeEvidence,

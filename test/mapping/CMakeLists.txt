@@ -129,12 +129,14 @@ target_include_directories(loom-configured-hardware-projection-test PRIVATE
 )
 
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Application
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
   ${LOOM_SOURCE_DIR}/lib/PnR
   ${LOOM_SOURCE_DIR}/lib/Simulator
 )
 
 target_include_directories(loom-spatial-memory-service-handshake-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Application
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
   ${LOOM_SOURCE_DIR}/lib/PnR
   ${LOOM_SOURCE_DIR}/lib/Simulator
@@ -290,6 +292,7 @@ target_link_libraries(loom-spatial-mapping-wire-test PRIVATE
 
 target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
   LoomADGBuilder
+  LoomApplicationRuntimeManifest
   LoomDSEMappingGenerator
   LoomMappingArtifact
   LoomMappingInspection
@@ -313,6 +316,7 @@ target_link_libraries(loom-spatial-mapping-artifact-test PRIVATE
 
 target_link_libraries(loom-spatial-memory-service-handshake-test PRIVATE
   LoomADGBuilder
+  LoomApplicationRuntimeManifest
   LoomDSEMappingGenerator
   LoomMappingArtifact
   LoomMappingInspection
