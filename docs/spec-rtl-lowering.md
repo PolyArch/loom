@@ -908,6 +908,16 @@ once at the ordinary verbosity level with its simulation time, because those
 three stages have very different cost and the stamp gives each its exact cycle
 count.
 
+`loom-system-run --mapped-rtl` receives the selected simulator's machine-local
+binding only through its explicit mapped-RTL local configuration input. The
+separately declared exact version-probe line becomes the
+`MappedRtlSimulatorBinding` in the Request; the driver cannot derive that
+semantic identity from the ambient process. Provider preparation probes the
+configured binding, requires the resulting line to equal the Request binding,
+and admits it only through the backend catalog's validated-release relation.
+The external-tool invocation specification owns the explicit-binding
+requirements of this driver boundary.
+
 The portable mapped-RTL provider derives a tool-local hierarchical compilation
 plan without making generated SystemVerilog a second hierarchy authority. The
 portable publisher freezes the exact post-`LowerSeqToSV` and `HWMemSimImpl`

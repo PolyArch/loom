@@ -9,7 +9,9 @@
 #include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/Models/MappedRtlSimulationConfig.h"
 #include "Evaluation/Request.h"
+#include "ExternalTool/LocalConfig.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -26,7 +28,15 @@ struct MappedRtlProviderOptions final {
   std::uint64_t buildJobs = 0;
   std::uint64_t buildWorkers = 0;
   std::uint64_t modelThreads = 0;
+  external_tool::LocalToolConfig localToolConfig;
+  evaluation::models::MappedRtlSimulatorBinding simulatorBinding;
 };
+
+/// Validates that the selected simulator has one explicit local binding, that
+/// its Request build identity names that simulator, and that driver-owned
+/// parallelism options have no competing local owner.
+llvm::Error
+validateMappedRtlProviderOptions(const MappedRtlProviderOptions &options);
 
 /// The published Request, its artifact resolution, and the imported Evidence
 /// of one mapped RTL cell; the driver completes and compares the run like
