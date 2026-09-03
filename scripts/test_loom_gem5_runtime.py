@@ -254,9 +254,8 @@ def read_exact(connection: socket.socket, size: int) -> bytes:
 
 def serve_root_event_control(
     server: socket.socket,
-    events: list[tuple[int, int, int, int, int, int]],
-    completion_received: threading.Event,
-    release_completion: threading.Event,
+    acknowledged_events: list[tuple[int, int, int, int, int, int]],
+    process: subprocess.Popen[str],
     errors: list[BaseException],
 ) -> None:
     try:
@@ -282,19 +281,16 @@ def serve_root_event_control(
                     or action != expected_action
                 ):
                     raise RuntimeError("root event control request is not canonical")
-                events.append(
-                    (generation, entity, occurrence, action, tick, delta)
-                )
-                if action == 1:
-                    completion_received.set()
-                    if not release_completion.wait(timeout_seconds(Tier.XLONG)):
-                        raise RuntimeError("completion acknowledgement was not released")
                 decision = (
                     ROOT_EVENT_CONTINUE
                     if action == 0
                     else ROOT_EVENT_ACTIVATE_ENDPOINT
                 )
                 endpoint = 0 if action == 0 else 1
+                if action == 1 and process.poll() is not None:
+                    raise RuntimeError(
+                        "gem5 retired before the completion acknowledgement"
+                    )
                 connection.sendall(
                     ROOT_EVENT_CONTROL_ACK.pack(
                         ROOT_EVENT_CONTROL_ACK_MAGIC,
@@ -303,9 +299,14 @@ def serve_root_event_control(
                         endpoint,
                     )
                 )
+                # The post-run lifecycle comparison uses only requests whose
+                # acknowledgements were delivered, so no second host thread
+                # needs to delay this response inside the device deadline.
+                acknowledged_events.append(
+                    (generation, entity, occurrence, action, tick, delta)
+                )
     except BaseException as error:
         errors.append(error)
-        completion_received.set()
     finally:
         server.close()
 
@@ -787,21 +788,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         root_control_server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         root_control_server.bind(str(root_event_control_path))
         root_control_server.listen(1)
-        controlled_events: list[tuple[int, int, int, int, int, int]] = []
-        completion_received = threading.Event()
-        release_completion = threading.Event()
+        acknowledged_events: list[tuple[int, int, int, int, int, int]] = []
         control_errors: list[BaseException] = []
-        control_thread = threading.Thread(
-            target=serve_root_event_control,
-            args=(
-                root_control_server,
-                controlled_events,
-                completion_received,
-                release_completion,
-                control_errors,
-            ),
-        )
-        control_thread.start()
         with gem5_log_path.open("w", encoding="utf-8") as gem5_log:
             process = subprocess.Popen(
                 command,
@@ -809,21 +797,19 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 stdout=gem5_log,
                 stderr=subprocess.STDOUT,
             )
+            control_thread = threading.Thread(
+                target=serve_root_event_control,
+                args=(
+                    root_control_server,
+                    acknowledged_events,
+                    process,
+                    control_errors,
+                ),
+            )
+            control_thread.start()
             try:
-                if not completion_received.wait(timeout_seconds(Tier.XLONG)):
-                    raise RuntimeError("gem5 did not reach the controlled completion")
-                if control_errors:
-                    raise RuntimeError(
-                        f"root event controller failed: {control_errors[0]}"
-                    )
-                if process.poll() is not None:
-                    raise RuntimeError(
-                        "gem5 retired before the completion acknowledgement"
-                    )
-                release_completion.set()
                 return_code = process.wait(timeout=timeout_seconds(Tier.XLONG))
             finally:
-                release_completion.set()
                 if process.poll() is None:
                     process.kill()
                     process.wait()
@@ -872,7 +858,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             or completion[5:] != (2, ROOT_EVENT_ACTIVATE_ENDPOINT, 1)
         ):
             raise RuntimeError("root lifecycle trace disagrees with the Host boundary")
-        if len(controlled_events) != 2 or any(
+        if len(acknowledged_events) != 2 or any(
             trace[:6]
             != (
                 controlled[1],
@@ -882,7 +868,9 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 controlled[5],
                 controlled[0],
             )
-            for trace, controlled in zip(lifecycle, controlled_events, strict=True)
+            for trace, controlled in zip(
+                lifecycle, acknowledged_events, strict=True
+            )
         ):
             raise RuntimeError("root lifecycle trace disagrees with its controller")
         completion_ticks = []
