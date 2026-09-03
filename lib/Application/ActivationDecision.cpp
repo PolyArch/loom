@@ -1,6 +1,7 @@
 #include "Application/ActivationDecision.h"
 
 #include "Application/Build.h"
+#include "ApplicationRuntimeValidationInternal.h"
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -1241,7 +1242,12 @@ llvm::Error addInvocationDependencies(
       manifest.outcome());
 }
 
-llvm::Error validateEvidenceJoin(
+} // namespace
+
+namespace detail {
+
+llvm::Expected<ApplicationRuntimeEvidenceJoin>
+resolveApplicationRuntimeEvidenceJoin(
     llvm::ArrayRef<ArtifactRootReference> runtimeEvidence,
     llvm::ArrayRef<ArtifactRootReference> oracleEvidence,
     const ArtifactRootReference &dataflow,
@@ -1250,7 +1256,7 @@ llvm::Error validateEvidenceJoin(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (runtimeEvidence.empty() || oracleEvidence.empty())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "activation decision requires runtime and oracle Evidence");
+                  "application runtime requires runtime and oracle Evidence");
   for (const ArtifactRootReference &oracle : oracleEvidence)
     if (!llvm::is_contained(runtimeEvidence, oracle))
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
@@ -1272,6 +1278,7 @@ llvm::Error validateEvidenceJoin(
   };
   std::vector<EvidenceFacts> evidenceFacts;
   std::vector<ExecutionRecord> executions;
+  ApplicationRuntimeEvidenceJoin result;
   evidenceFacts.reserve(runtimeEvidence.size());
   executions.reserve(runtimeEvidence.size());
   for (const ArtifactRootReference &evidence : runtimeEvidence) {
@@ -1384,6 +1391,26 @@ llvm::Error validateEvidenceJoin(
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "strict runtime Evidence differs from its dependency projection");
+    const auto *completed =
+        std::get_if<evaluation::CompletedEvidence>(&strict->outcome());
+    const auto *point =
+        completed && completed->metricResults.size() == 1
+            ? std::get_if<evaluation::PointObservation>(
+                  &completed->metricResults.front().observation)
+            : nullptr;
+    const auto *cycles =
+        point ? std::get_if<evaluation::IntegerValue>(&point->value) : nullptr;
+    if (!cycles || cycles->value() < 0)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "runtime Evidence has no nonnegative cycle metric");
+    std::uint64_t &cycleTotal =
+        kind == ExecutionKind::Dfg ? result.dfgCycles : result.cgraCycles;
+    const std::uint64_t cycleValue =
+        static_cast<std::uint64_t>(cycles->value());
+    if (cycleValue > std::numeric_limits<std::uint64_t>::max() - cycleTotal)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "runtime Evidence cycle total overflowed");
+    cycleTotal += cycleValue;
     std::optional<ArtifactRootReference> execution;
     for (const evaluation::ModelOutputBinding &binding :
          strict->outputBindings())
@@ -1443,11 +1470,15 @@ llvm::Error validateEvidenceJoin(
   for (const ExecutionRecord &record : executions)
     (record.kind == ExecutionKind::Dfg ? dfgPairs : cgraPairs)
         .push_back({record.workload, record.runtimeInput});
+  const std::size_t dfgExecutionCount = dfgPairs.size();
+  const std::size_t cgraExecutionCount = cgraPairs.size();
   canonicalizePairs(expectedPairs);
   canonicalizePairs(dfgPairs);
   canonicalizePairs(cgraPairs);
   if (expectedPairs.empty() || dfgPairs != expectedPairs ||
-      cgraPairs != expectedPairs)
+      cgraPairs != expectedPairs ||
+      dfgExecutionCount != expectedPairs.size() ||
+      cgraExecutionCount != expectedPairs.size())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                   "runtime Evidence does not join through exact source-backed "
                   "replay inputs");
@@ -1491,9 +1522,21 @@ llvm::Error validateEvidenceJoin(
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "oracle Evidence failed strict SimulationComparison import");
+    const auto *completed =
+        std::get_if<evaluation::CompletedEvidence>(&strict->outcome());
+    if (!completed || completed->findingResults.size() != 1 ||
+        !std::holds_alternative<evaluation::AbsentFinding>(
+            completed->findingResults.front().result))
+      return reject(
+          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+          "oracle Evidence did not establish an absent comparison finding");
   }
-  return llvm::Error::success();
+  return result;
 }
+
+} // namespace detail
+
+namespace {
 
 llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
                              const ArtifactStore &artifacts,
@@ -1693,11 +1736,12 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
 
   auto spatialMappings =
       mapping->view().executionBindings().spatialMappingImports();
-  if (llvm::Error error = validateEvidenceJoin(
-          draft.runtimeEvidence, draft.oracleEvidence,
-          draft.planning.canonicalDataflow, spatialMappings,
-          draft.sourceBackedReplayCases, artifacts, blobs))
-    return error;
+  auto evidenceJoin = detail::resolveApplicationRuntimeEvidenceJoin(
+      draft.runtimeEvidence, draft.oracleEvidence,
+      draft.planning.canonicalDataflow, spatialMappings,
+      draft.sourceBackedReplayCases, artifacts, blobs);
+  if (!evidenceJoin)
+    return evidenceJoin.takeError();
   return llvm::Error::success();
 }
 

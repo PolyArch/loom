@@ -82,6 +82,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   std::vector<JointDesignInvocationManifestReference> encounteredInvocations;
   std::uint64_t attemptedSoftwarePlans = 0;
   std::uint64_t hardwareReopenSearches = 0;
+  std::uint64_t hardwareSpectrumParentsConsumed = 0;
   std::uint64_t hardwareParentPromotions = 0;
   std::uint64_t hardwareReopensDeferredByQuality = 0;
   std::uint64_t hardwareReopensWithheldWithoutExactFeedback = 0;
@@ -881,17 +882,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       if (!fair)
         return fair.takeError();
       feedbackExecutionPolicy.emplace(std::move(*fair));
+      ++hardwareSpectrumParentsConsumed;
       if (request.boundedQuality->hardwarePromotion) {
-        auto promoted = markHardwarePromotion(attempt.planOrdinal);
-        if (!promoted)
-          return promoted.takeError();
-        if (attempt.plan->frontier.systemFrontier.size() != 1 ||
-            *promoted != attempt.plan->frontier.systemFrontier.front())
+        if (attempt.plan->frontier.systemFrontier.size() != 1)
           return invalid("hardware promotion quality owner names a foreign "
                          "parent System");
-        promotedParentSystem = std::move(*promoted);
+        promotedParentSystem = attempt.plan->frontier.systemFrontier.front();
       }
-      ++hardwareParentPromotions;
     }
     ++hardwareReopenSearches;
     mapping_debug::emit(
@@ -906,6 +903,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           fields["actor_count"] = attempt.coverage.actorCount;
         });
     std::optional<JointDesignExecution> lastReopenedFailure;
+    const std::size_t firstAttemptRecord = attemptRecords.size();
     auto reopened = tryHardwareFeedbackReopen(
         policy, *attempt.plan, attempt.execution, lastReopenedFailure,
         attempt.planOrdinal, attemptRecords, accounting, encounteredInvocations,
@@ -914,6 +912,15 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         feedbackExecutionPolicy ? &*feedbackExecutionPolicy : nullptr);
     if (!reopened)
       return reopened.takeError();
+    if (promotedParentSystem && attemptRecords.size() != firstAttemptRecord) {
+      auto promoted = markHardwarePromotion(attempt.planOrdinal);
+      if (!promoted)
+        return promoted.takeError();
+      if (*promoted != *promotedParentSystem)
+        return invalid("hardware promotion quality owner names a foreign "
+                       "parent System");
+      ++hardwareParentPromotions;
+    }
     if (*reopened) {
       if (llvm::Error error = retainJointDesignExecutionInvocations(
               encounteredInvocations, **reopened))
@@ -1021,9 +1028,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     }
     const std::uint64_t remainingParentBudget =
         request.boundedQuality->maximumHardwareSpectrumParents >
-                hardwareParentPromotions
+                hardwareSpectrumParentsConsumed
             ? request.boundedQuality->maximumHardwareSpectrumParents -
-                  hardwareParentPromotions
+                  hardwareSpectrumParentsConsumed
             : 0;
     const std::uint64_t parentLimit = std::min<std::uint64_t>(
         remainingParentBudget, hardwareParentOrder.size());
@@ -1038,22 +1045,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
       VerifiedAlternative &parent =
           verifiedAlternatives[hardwareParentOrder[parentOrdinal]];
+      ++hardwareSpectrumParentsConsumed;
       if (parent.planOrdinal >= plans.size() || !plans[parent.planOrdinal])
         return invalid("bounded-quality hardware parent lost its plan");
       const std::uint64_t parentPlanOrdinal = parent.planOrdinal;
       std::optional<ArtifactRootReference> promotedParentSystem;
       if (request.boundedQuality->hardwarePromotion) {
-        auto promoted = markHardwarePromotion(parentPlanOrdinal);
-        if (!promoted)
-          return promoted.takeError();
-        if (plans[parentPlanOrdinal]->frontier.systemFrontier.size() != 1 ||
-            *promoted !=
-                plans[parentPlanOrdinal]->frontier.systemFrontier.front())
+        if (plans[parentPlanOrdinal]->frontier.systemFrontier.size() != 1)
           return invalid("hardware promotion quality owner names a foreign "
                          "parent System");
-        promotedParentSystem = std::move(*promoted);
+        promotedParentSystem =
+            plans[parentPlanOrdinal]->frontier.systemFrontier.front();
       }
-      ++hardwareParentPromotions;
       auto spectrumPolicy = fairBoundedQualityPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal);
       if (!spectrumPolicy)
@@ -1070,13 +1073,26 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           return std::move(error);
       hardwareReopenSearches += spectrum->attemptedSystems;
       boundedQualitySearchIncomplete |= spectrum->incomplete;
-      for (JointDesignExecution &execution : spectrum->verified) {
+      if (spectrum->attemptedSystems != spectrum->attempts.size())
+        return invalid("hardware spectrum attempt count lost its exact child "
+                       "execution inventory");
+      if (promotedParentSystem && !spectrum->attempts.empty()) {
+        auto promoted = markHardwarePromotion(parentPlanOrdinal);
+        if (!promoted)
+          return promoted.takeError();
+        if (*promoted != *promotedParentSystem)
+          return invalid("hardware promotion quality owner names a foreign "
+                         "parent System");
+        ++hardwareParentPromotions;
+      }
+      for (FinalizedMappingHardwareAttempt &attempt : spectrum->attempts) {
+        JointDesignExecution &execution = attempt.execution;
         if (llvm::Error error = recordJointAttempt(
-                attemptRecords, parentPlanOrdinal,
-                plans[parentPlanOrdinal]->frontier.systemFrontier.front(),
-                execution, promotedParentSystem))
+                attemptRecords, parentPlanOrdinal, attempt.system, execution,
+                promotedParentSystem))
           return std::move(error);
-        verifiedMappingCount += mappingCount(execution);
+        const std::size_t executionMappingCount = mappingCount(execution);
+        verifiedMappingCount += executionMappingCount;
         saturatingAdd(accounting.techMappingInvocationCount,
                       execution.summary.techMappingInvocationCount);
         saturatingAdd(accounting.spatialPnrInvocationCount,
@@ -1095,8 +1111,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                       execution.summary.spatialPnrJournalReplayCount);
         saturatingAdd(accounting.systemPnrJournalReplayCount,
                       execution.summary.systemPnrJournalReplayCount);
-        verifiedAlternatives.push_back(
-            {parentPlanOrdinal, std::move(execution)});
+        if (executionMappingCount != 0)
+          verifiedAlternatives.push_back(
+              {parentPlanOrdinal, std::move(execution)});
       }
     }
   }

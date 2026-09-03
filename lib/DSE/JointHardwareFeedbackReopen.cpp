@@ -149,13 +149,13 @@ exploreFinalizedMappingHardwareSpectrum(
         });
     if (count != 0) {
       parentMapping = firstMapping(*execution);
-      result.verified.push_back(std::move(*execution));
     } else {
       parentMapping.reset();
       if (std::holds_alternative<IncompleteDsePlanExecution>(
               execution->planExecution))
         result.incomplete = true;
     }
+    result.attempts.push_back({child->reference, std::move(*execution)});
     currentSystem = child->reference;
     currentConfig = std::move(child->config);
   }

@@ -469,7 +469,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         request.boundedQuality->provenanceDomain ==
             dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
       return detail::projectApplicationQualityRuntime(
-          execution, mapping, *request.boundedQuality, artifacts);
+          prepared, alternative, execution, mapping, *request.boundedQuality,
+          artifacts, blobs);
     return detail::validateApplicationMappingRuntime(
         prepared, alternative, execution, request.executionPolicy, artifacts,
         blobs);
@@ -789,8 +790,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               request.boundedQuality->provenanceDomain ==
                   dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
             auto runtime = detail::projectApplicationQualityRuntime(
+                prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
                 owner, *qualityIncomplete->incomplete.candidate,
-                *request.boundedQuality, artifacts);
+                *request.boundedQuality, artifacts, blobs);
             if (!runtime)
               return runtime.takeError();
             projected = std::move(*runtime);

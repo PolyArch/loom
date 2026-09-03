@@ -259,12 +259,9 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
        decision.qualityInvocations) {
     llvm::json::Object encoded;
     encoded["plan_ordinal_base"] = invocation.planOrdinalBase;
-    if (invocation.invocationRunKey)
-      encoded["invocation_manifest_run_key"] = llvm::toHex(
-          llvm::ArrayRef<std::uint8_t>(*invocation.invocationRunKey),
-          /*LowerCase=*/true);
-    else
-      encoded["invocation_manifest_run_key"] = nullptr;
+    encoded["invocation_manifest_run_key"] =
+        llvm::toHex(llvm::ArrayRef<std::uint8_t>(invocation.invocationRunKey),
+                    /*LowerCase=*/true);
     encoded["quality_disposition"] = spelling(invocation.qualityDisposition);
     addOptionalRoot(encoded, "quality_incomplete_candidate",
                     invocation.qualityIncompleteCandidate);

@@ -418,7 +418,7 @@ struct ApplicationFunnelExactComparison final {
 /// base instead of being folded into the final JointDesignExecutionSummary.
 struct ApplicationPairQualityInvocationRecord final {
   std::uint64_t planOrdinalBase = 0;
-  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  std::array<std::uint8_t, 32> invocationRunKey{};
   dse::JointDesignQualityDisposition qualityDisposition =
       dse::JointDesignQualityDisposition::NotRequested;
   std::optional<ArtifactRootReference> qualityIncompleteCandidate;

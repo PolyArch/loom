@@ -90,8 +90,16 @@ struct TechGateExecution final {
   bool coversRequiredGraphs = false;
 };
 
+struct FinalizedMappingHardwareAttempt final {
+  ArtifactRootReference system;
+  JointDesignExecution execution;
+};
+
 struct FinalizedMappingHardwareSpectrum final {
-  std::vector<JointDesignExecution> verified;
+  /// Every child System that entered ordinary Mapping. Failed and incomplete
+  /// attempts remain necessary promotion provenance even though only a
+  /// verified Mapping can re-enter bounded-quality selection.
+  std::vector<FinalizedMappingHardwareAttempt> attempts;
   std::vector<JointDesignInvocationManifestReference> invocations;
   std::uint64_t attemptedSystems = 0;
   bool incomplete = false;

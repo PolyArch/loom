@@ -270,6 +270,9 @@ struct JointDesignExecutionSummary final {
   std::vector<JointPairAnalyticObservation> retainedJointPairAnalytics;
   std::uint64_t attemptedSoftwarePlans = 0;
   std::uint64_t hardwareReopenSearches = 0;
+  /// Exact invocation-local count of hardware-promotion observations marked
+  /// for ordinary child Mapping. Generic hardware-parent search remains owned
+  /// by hardwareReopenSearches and does not manufacture a model promotion.
   std::uint64_t hardwareParentPromotions = 0;
   std::uint64_t hardwareReopensDeferredByQuality = 0;
   std::uint64_t hardwareReopensWithheldWithoutExactFeedback = 0;
