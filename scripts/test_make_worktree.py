@@ -229,6 +229,14 @@ class MakeWorktreeTest(unittest.TestCase):
             set(targets.removeprefix("-DLLVM_TARGETS_TO_BUILD=").split(";")),
             {"host", "RISCV", "ARM", "AArch64"},
         )
+        self.assertEqual(
+            [
+                argument
+                for argument in self.module.LLVM_SEMANTIC_CMAKE_ARGS
+                if argument.startswith("-DLLVM_FORCE_ENABLE_STATS=")
+            ],
+            ["-DLLVM_FORCE_ENABLE_STATS=ON"],
+        )
 
     def build_environment(self, module, run=UNSET):
         stack = ExitStack()

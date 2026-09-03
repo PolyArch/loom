@@ -145,6 +145,10 @@ LLVM_SEMANTIC_CMAKE_ARGS = (
     "-DLLVM_ENABLE_PROJECTS=mlir;clang;lld;polly",
     "-DLLVM_TARGETS_TO_BUILD=host;RISCV;ARM;AArch64",
     "-DLLVM_ENABLE_ASSERTIONS=ON",
+    # llvm::Statistic otherwise changes representation with each consumer's
+    # NDEBUG policy. Loom supports assertion-free product builds against this
+    # assertions-on package, so the package must expose one stable layout.
+    "-DLLVM_FORCE_ENABLE_STATS=ON",
     "-DLLVM_ENABLE_RTTI=ON",
     "-DLLVM_INSTALL_UTILS=ON",
     "-DBUILD_SHARED_LIBS=OFF",
