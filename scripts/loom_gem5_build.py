@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 SCONS_MODULE = "scons/4.10.1"
 READINESS_SCHEMA = "loom.gem5_build_readiness.1"
+GEM5_BUILD_DIRECTORY = "gem5"
 GEM5_TARGET = "RISCV"
 GEM5_VARIANT = "opt"
 
@@ -188,7 +189,7 @@ class BuildPaths:
 
 
 def build_paths(repository_root: pathlib.Path) -> BuildPaths:
-    root = primary_worktree(repository_root) / "build" / "gem5"
+    root = primary_worktree(repository_root) / "build" / GEM5_BUILD_DIRECTORY
     build_directory = root / "build" / GEM5_TARGET
     return BuildPaths(
         root=root,

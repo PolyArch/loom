@@ -1127,7 +1127,7 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertTrue(linked.circt_stamp.exists())
             self.assertTrue(linked.or_tools_stamp.exists())
 
-    def test_clean_preserves_only_a_marked_external_tool_cache(self):
+    def test_clean_preserves_separately_owned_products(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
             paths.loom_build.mkdir(parents=True)
@@ -1141,6 +1141,9 @@ class MakeWorktreeTest(unittest.TestCase):
             (cache / "entries").mkdir()
             (cache / "locks").mkdir()
             (cache / "entries" / "result").write_text("cached\n")
+            gem5 = paths.loom_build / self.module.GEM5_BUILD_DIRECTORY
+            gem5.mkdir()
+            (gem5 / "loom-gem5-readiness.json").write_text("ready\n")
             (paths.loom_build / "build.ninja").write_text("generated\n")
             (paths.loom_build / "lib").mkdir()
             (paths.loom_build / "lib" / "generated.a").write_text("generated\n")
@@ -1148,6 +1151,7 @@ class MakeWorktreeTest(unittest.TestCase):
             self.module.cmd_clean(paths, self.args)
 
             self.assertTrue((cache / "entries" / "result").is_file())
+            self.assertTrue((gem5 / "loom-gem5-readiness.json").is_file())
             self.assertFalse((paths.loom_build / "build.ninja").exists())
             self.assertFalse((paths.loom_build / "lib").exists())
 
@@ -1160,6 +1164,63 @@ class MakeWorktreeTest(unittest.TestCase):
             (cache / "foreign").write_text("not a Loom cache\n")
             self.module.cmd_clean(paths, self.args)
             self.assertFalse(cache.exists())
+
+    def test_dependency_reconfigure_preserves_separately_owned_products(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            self.ready_circt(shared)
+            consumer = self.loom_consumer(shared, Path(td) / "consumer")
+            gem5 = consumer.loom_build / self.module.GEM5_BUILD_DIRECTORY
+            gem5.mkdir()
+            (gem5 / "loom-gem5-readiness.json").write_text("ready\n")
+            cache = (
+                consumer.loom_build / self.module.EXTERNAL_TOOL_CACHE_DIRECTORY
+            )
+            cache.mkdir()
+            (cache / EXTERNAL_TOOL_CACHE_MARKER).write_text(
+                EXTERNAL_TOOL_CACHE_MARKER_CONTENTS
+            )
+            (cache / "entries").mkdir()
+            (cache / "entries" / "result").write_text("cached\n")
+            (consumer.loom_build / "generated-object").write_text("stale\n")
+            configured = []
+
+            def capture_configure(
+                paths, circt_dir, or_tools_dir, or_tools_commit
+            ):
+                configured.append((circt_dir, or_tools_dir, or_tools_commit))
+                (paths.loom_build / "build.ninja").write_text("ninja\n")
+
+            with (
+                patch.object(
+                    self.module,
+                    "configure_loom",
+                    side_effect=capture_configure,
+                ),
+                patch.object(self.module, "run"),
+            ):
+                self.module._build_loom_with_lease(
+                    consumer,
+                    self.args,
+                    self.state,
+                    self.llvm_identity,
+                    self.or_tools_identity,
+                )
+
+            self.assertEqual(
+                configured,
+                [
+                    (
+                        str(shared.circt_cmake_dir),
+                        str(shared.or_tools_cmake_dir),
+                        self.state.or_tools_commit,
+                    )
+                ],
+            )
+            self.assertTrue((gem5 / "loom-gem5-readiness.json").is_file())
+            self.assertTrue((cache / "entries" / "result").is_file())
+            self.assertFalse((consumer.loom_build / "generated-object").exists())
 
     def test_explicit_circt_build_uses_package_readiness_only(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:

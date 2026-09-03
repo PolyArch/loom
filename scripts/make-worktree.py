@@ -126,9 +126,11 @@ except ModuleNotFoundError:
     )
 
 try:
+    from loom_gem5_build import GEM5_BUILD_DIRECTORY
     from loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
     from loom_lit_summary import run_lit_with_unsupported_summary
 except ModuleNotFoundError:
+    from scripts.loom_gem5_build import GEM5_BUILD_DIRECTORY
     from scripts.loom_or_tools_config import OR_TOOLS_SEMANTIC_CMAKE_ARGS
     from scripts.loom_lit_summary import run_lit_with_unsupported_summary
 
@@ -1616,13 +1618,18 @@ def _build_loom_with_lease(
     if loom_build_is_stale(paths):
         info(
             f"loom build at {paths.loom_build} references a missing "
-            f"shared LLVM ({paths.mlir_dir}); wiping and reconfiguring"
+            f"shared LLVM ({paths.mlir_dir}); clearing Loom products and "
+            "reconfiguring"
         )
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
+        clean_loom_build(paths, policy)
     bn = paths.loom_build / "build.ninja"
     if bn.exists() and not cmake_cache_uses_compilers(paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER):
-        info(f"loom build compiler changed to {LOOM_C_COMPILER}/{LOOM_CXX_COMPILER}; removing {paths.loom_build}")
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
+        info(
+            f"loom build compiler changed to {LOOM_C_COMPILER}/"
+            f"{LOOM_CXX_COMPILER}; clearing Loom products under "
+            f"{paths.loom_build}"
+        )
+        clean_loom_build(paths, policy)
 
     # `make loom` never builds CIRCT. It only offers an already-built,
     # stamped CIRCT matching the identities held by this reader lease.
@@ -1642,8 +1649,11 @@ def _build_loom_with_lease(
         != str(paths.externals_root)
     )
     if bn.exists() and package_changed:
-        info(f"loom build dependency package changed; removing {paths.loom_build} and reconfiguring")
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
+        info(
+            "loom build dependency package changed; clearing Loom products "
+            f"under {paths.loom_build} and reconfiguring"
+        )
+        clean_loom_build(paths, policy)
     if not bn.exists():
         if policy is LoomBuildPolicy.PRODUCT:
             configure_loom(
@@ -1773,12 +1783,18 @@ def cmd_build_gem5(paths: Paths, args: argparse.Namespace) -> None:
     )
 
 
-def clean_loom_build(paths: Paths) -> None:
+def clean_loom_build(
+    paths: Paths,
+    policy: LoomBuildPolicy = LoomBuildPolicy.PRODUCT,
+) -> None:
     if paths.loom_build.exists():
         cache_root = paths.loom_build / EXTERNAL_TOOL_CACHE_DIRECTORY
+        gem5_root = paths.loom_build / GEM5_BUILD_DIRECTORY
         info(f"removing build products under {paths.loom_build}")
         for product in paths.loom_build.iterdir():
             if product == cache_root and is_external_tool_cache_root(cache_root):
+                continue
+            if policy is LoomBuildPolicy.PRODUCT and product == gem5_root:
                 continue
             if product.is_symlink() or product.is_file():
                 product.unlink(missing_ok=True)
@@ -1792,7 +1808,8 @@ def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
 
 def cmd_clean_loom_strict(paths: Paths, args: argparse.Namespace) -> None:
     clean_loom_build(
-        select_loom_build(paths, LoomBuildPolicy.STRICT_CORRECTNESS)
+        select_loom_build(paths, LoomBuildPolicy.STRICT_CORRECTNESS),
+        LoomBuildPolicy.STRICT_CORRECTNESS,
     )
 
 
