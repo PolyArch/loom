@@ -162,11 +162,20 @@ struct ConfigurationUnitState final {
   mlir::Value activeBank;
   mlir::Value initialized;
   mlir::Value coveredCount;
-  mlir::Value activeStoredWords;
   std::vector<mlir::Value> activeWords;
   mlir::Value complete;
   mlir::Value commitSuccess;
 };
+
+mlir::Value activeWordAt(mlir::OpBuilder &builder, mlir::Location location,
+                         const ConfigurationUnitState &unit,
+                         mlir::Value wordIndex) {
+  mlir::Value bankZeroWord = circt::hw::ArrayGetOp::create(
+      builder, location, unit.bankZero, wordIndex);
+  mlir::Value bankOneWord = circt::hw::ArrayGetOp::create(
+      builder, location, unit.bankOne, wordIndex);
+  return mux(builder, location, unit.activeBank, bankOneWord, bankZeroWord);
+}
 
 mlir::Value assembleBundle(mlir::OpBuilder &builder, mlir::Location location,
                            llvm::ArrayRef<ConfigurationUnitState> units,
@@ -404,14 +413,12 @@ buildConfigurationControllerModule(
               bodyBuilder, location, state.coveredCountNext, clock, reset,
               llvm::APInt(coveredCountWidth, 0), prefix + "_covered_count",
               clockReset.asynchronousReset);
-          state.activeStoredWords = mux(bodyBuilder, location, state.activeBank,
-                                        state.bankOne, state.bankZero);
           state.activeWords.reserve(layout.payloadWordCount);
           const unsigned wordIndexWidth = indexWidth(layout.payloadWordCount);
           for (std::uint64_t word = 0; word != layout.payloadWordCount;
                ++word) {
-            mlir::Value storedWord = circt::hw::ArrayGetOp::create(
-                bodyBuilder, location, state.activeStoredWords,
+            mlir::Value storedWord = activeWordAt(
+                bodyBuilder, location, state,
                 constant(bodyBuilder, location, wordIndexWidth, word));
             state.activeWords.push_back(mux(
                 bodyBuilder, location, state.initialized, storedWord,
@@ -634,8 +641,8 @@ buildConfigurationControllerModule(
               mux(bodyBuilder, location, payloadMatch, wordIndex,
                   constant(bodyBuilder, location,
                            indexWidth(layout.payloadWordCount), 0));
-          mlir::Value storedWord = circt::hw::ArrayGetOp::create(
-              bodyBuilder, location, unit.activeStoredWords, safeWordIndex);
+          mlir::Value storedWord =
+              activeWordAt(bodyBuilder, location, unit, safeWordIndex);
           mlir::Value word =
               mux(bodyBuilder, location, unit.initialized, storedWord,
                   inactiveWordAt(bodyBuilder, location, layout, safeWordIndex));
