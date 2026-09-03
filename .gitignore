@@ -1,5 +1,6 @@
 # Build artifacts, including repository-local EDA runs
 /build/
+/build-strict/
 /externals/llvm/build/
 /externals/or-tools/build/
 /externals/or-tools/install/
