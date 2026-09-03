@@ -62,6 +62,26 @@ llvm::Error validateVersionProbe(const ToolVersionProbe &probe) {
   return llvm::Error::success();
 }
 
+/// Collapses every run of blanks to one space so a tool that aligns its
+/// version line with tabs freezes the same identity as one that uses spaces;
+/// the generated launcher applies the same rule before comparing.
+std::string collapseBlankRuns(llvm::StringRef text) {
+  std::string collapsed;
+  collapsed.reserve(text.size());
+  bool pendingBlank = false;
+  for (const char character : text) {
+    if (character == ' ' || character == '\t') {
+      pendingBlank = true;
+      continue;
+    }
+    if (pendingBlank && !collapsed.empty())
+      collapsed += ' ';
+    pendingBlank = false;
+    collapsed += character;
+  }
+  return collapsed;
+}
+
 std::optional<std::string>
 normalizeVersionOutput(llvm::StringRef versionText,
                        const ToolVersionProbe &probe) {
@@ -87,7 +107,7 @@ normalizeVersionOutput(llvm::StringRef versionText,
       return std::nullopt;
     version = std::move(*selected);
   }
-  return version;
+  return collapseBlankRuns(version);
 }
 
 struct ProbeFiles {

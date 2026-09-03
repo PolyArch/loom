@@ -656,7 +656,7 @@ void versionNormalizationMatchesDiscovery(const std::filesystem::path &root) {
                         "set -u\n"
                         "if [[ \"${1-}\" == --version ]]; then\n"
                         "  printf '%s\\n' 'host: runtime-specific'\n"
-                        "  printf '%s\\n' 'dc_shell version - Y-2026.03-SP2'\n"
+                        "  printf 'dc_shell version  -\\tY-2026.03-SP2\\n'\n"
                         "  printf '%s\\n' 'time: invocation-specific'\n"
                         "  exit 1\n"
                         "fi\n"

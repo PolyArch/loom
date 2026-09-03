@@ -62,9 +62,12 @@ optional stable-line selector. A selected candidate is valid only when its
 exit code is accepted, its required marker is present, and its stable-line
 selector matches exactly one nonempty output line. The normalized selected
 line, or the normalized complete output when no selector exists, is the frozen
-version identity. Provider descriptors, rather than generic runner policy,
-own tool-specific conventions such as a successful version command returning
-a nonzero exit code.
+version identity; normalization trims the text and collapses every internal
+run of blanks to one space, so a tool that aligns its version line with tabs
+freezes the same identity as one that uses spaces, and the generated launcher
+compares under the same rule. Provider descriptors, rather than generic
+runner policy, own tool-specific conventions such as a successful version
+command returning a nonzero exit code.
 
 The local binding resolver owns only this derivation:
 

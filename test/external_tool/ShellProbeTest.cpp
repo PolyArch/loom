@@ -80,7 +80,7 @@ std::string diagnosticToolScript() {
          "set -u\n"
          "[[ \"${1-}\" == --version ]] || exit 2\n"
          "printf '%s\\n' 'host: changes-between-runtimes'\n"
-         "printf '%s\\n' 'dc_shell version - Y-2026.03-SP2'\n"
+         "printf 'dc_shell version  -\\tY-2026.03-SP2\\n'\n"
          "printf '%s\\n' 'timestamp: changes-between-invocations'\n"
          "exit 1\n";
 }
@@ -231,7 +231,8 @@ void providerExitAndStableVersionLineAreNormalized(
   require(__func__, result.has_value(),
           "provider-specific version exit was rejected");
   require(__func__, result->version == "dc_shell version - Y-2026.03-SP2",
-          "volatile version output was not reduced to the stable line");
+          "volatile version output was not reduced to the stable line with "
+          "its blank runs collapsed");
 }
 
 std::string invocationNameToolScript() {

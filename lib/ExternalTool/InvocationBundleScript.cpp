@@ -199,6 +199,11 @@ void appendVersionOutputCheck(std::string &script,
   script += "while [[ \"$loom_version_output\" == *[[:space:]] ]]; do "
             "loom_version_output=\"${loom_version_output:0:${#loom_version_"
             "output}-1}\"; done\n";
+  // The discovery probe froze the identity with every blank run collapsed to
+  // one space; the launcher compares under the same rule.
+  script += "loom_version_output=\"${loom_version_output//$'\\t'/ }\"\n";
+  script += "while [[ \"$loom_version_output\" == *'  '* ]]; do "
+            "loom_version_output=\"${loom_version_output//  / }\"; done\n";
   script += "if [[ \"$loom_version_output\" != " + shellQuote(expected) +
             " ]]; then\n";
   appendFailure(script, InvocationCompletionStatus::VersionMismatch,
