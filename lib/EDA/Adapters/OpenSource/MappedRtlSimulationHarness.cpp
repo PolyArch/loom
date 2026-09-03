@@ -442,7 +442,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "    logic address_accepted;\n"
          << "    logic data_accepted;\n"
          << "    begin\n"
-         << "      if (loom_verbose_level >= 1) $display(\"[loom][rtl][cfg] "
+         << "      if (loom_verbose_level >= 3) $display(\"[loom][rtl][cfg] "
             "write address=%h data=%h strobe=%h\", address, data, strobe);\n"
          << "      " << prefix << "_awaddr <= address;\n"
          << "      " << prefix << "_awvalid <= 1;\n"
