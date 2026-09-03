@@ -41,9 +41,12 @@ SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
 Deployment-owned System workload/runtime pair, and an optional finite verified
 resource-time transition graph. Version 5.0 also carries the canonical set of
 durable `loom.dse.hardware_mutation_repair_record` roots produced while the
-pair was evaluated and a nullable exact selected-record root. These required
-fields are an incompatible addition to 4.0; an empty set and null selection
-state that no hardware-mutation repair was executed or selected. These
+pair was evaluated and a nullable exact selected-record root. The exact set
+and selection are owned by `loom.application.activation_decision` 2.0;
+runtime-manifest construction and strict import require their projection to
+agree with that durable activation owner. These required fields are an
+incompatible addition to 4.0; an empty set and null selection state that no
+hardware-mutation repair was executed or selected. These
 references authorize no new Mapping, route, entry, or input construction at
 runtime. Strict import proves that every record has the selected Mapping's
 Dataflow owner and belongs to a mutation lineage reachable from the original
@@ -51,9 +54,10 @@ pair Fabric. When a `hardware_dse_alternative` was produced by an executed
 mutation repair, it names the unique reachable record whose child System and
 preserve-first child SystemMapping equal the selected owners; a general
 hardware-frontier selection has no parent-Mapping repair record and leaves the
-field null. Records for evaluated but nonselected children remain separate
-provenance. Every non-hardware pair disposition requires a null selected
-record.
+field null. A unique repair record that selects the activation SystemMapping
+must be named; omission is invalid. Records for evaluated but nonselected
+children remain separate provenance. Every non-hardware pair disposition
+requires a null selected record.
 
 An Application package contains the exact object/blob closure of that
 manifest, every endpoint Deployment, and every manifest-named hardware

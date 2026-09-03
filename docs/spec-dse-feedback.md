@@ -3439,11 +3439,14 @@ generator), `instruction_capacity` (Temporal instruction-store resize), and
 `system_instruction_context` (InstructionCore realization selection) use the
 same executor and record as the FU, memory, FIFO, operand-buffer, switch,
 SpatialCore, AccCore, transport, service, and combined families.
-Application mapping provenance retains the canonical set of these record
-roots. Runtime manifest 5.0 and Application package closure carry that set and
-the complete parent/child System and SystemMapping closures, so removing the
-DSE journal or build store cannot erase the mutation evidence selected or
-rejected while the pair was evaluated.
+Application mapping provenance supplies the canonical set of these record
+roots to `loom.application.activation_decision` 2.0, which is the durable
+application owner of the exact evaluated set and nullable selected record.
+Runtime manifest 5.0 is a checked projection of that owner, and Application
+package closure carries the set and the complete parent/child System and
+SystemMapping closures. Removing the DSE journal or build store therefore
+cannot erase the mutation evidence selected or rejected while the pair was
+evaluated.
 
 The mutation record does not name a `FinalizedDeployment` or a
 `ResourceTimeTransition`. Runtime manifest 5.0 joins only the selected repair

@@ -6,6 +6,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/HardwareMutationRepairRecord.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -414,6 +415,13 @@ void encodeRoots(Encoder &encoder,
     encoder.root(root);
 }
 
+void encodeOptionalRoot(Encoder &encoder,
+                        const std::optional<ArtifactRootReference> &reference) {
+  encoder.u32(reference ? 1 : 0);
+  if (reference)
+    encoder.root(*reference);
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 decodeRoots(Decoder &decoder, llvm::StringRef field) {
   auto count = decoder.count((field + " count").str());
@@ -428,6 +436,21 @@ decodeRoots(Decoder &decoder, llvm::StringRef field) {
     roots.push_back(std::move(*root));
   }
   return roots;
+}
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+decodeOptionalRoot(Decoder &decoder, llvm::StringRef field) {
+  auto present = decoder.u32((field + " presence").str());
+  if (!present)
+    return present.takeError();
+  if (*present > 1)
+    return malformed(field + " has a noncanonical presence tag");
+  if (*present == 0)
+    return std::optional<ArtifactRootReference>{};
+  auto root = decoder.root(field);
+  if (!root)
+    return root.takeError();
+  return std::optional<ArtifactRootReference>(std::move(*root));
 }
 
 llvm::Expected<ComponentViewDigest> decodeDigest(Decoder &decoder,
@@ -504,6 +527,8 @@ encodeDecision(const ApplicationActivationDecisionDraft &draft) {
   encoder.u32(static_cast<std::uint32_t>(draft.disposition));
   encodeRoots(encoder, draft.runtimeEvidence);
   encodeRoots(encoder, draft.oracleEvidence);
+  encodeOptionalRoot(encoder, draft.selectedHardwareMutationRepairRecord);
+  encodeRoots(encoder, draft.hardwareMutationRepairRecords);
   return encoder.take();
 }
 
@@ -691,6 +716,13 @@ decodeDecision(llvm::ArrayRef<std::uint8_t> bytes,
   auto oracleEvidence = decodeRoots(decoder, "oracle Evidence");
   if (!oracleEvidence)
     return oracleEvidence.takeError();
+  auto selectedRepair =
+      decodeOptionalRoot(decoder, "selected hardware mutation repair record");
+  if (!selectedRepair)
+    return selectedRepair.takeError();
+  auto repairRecords = decodeRoots(decoder, "hardware mutation repair records");
+  if (!repairRecords)
+    return repairRecords.takeError();
   if (!decoder.atEnd())
     return malformed("activation decision has trailing bytes");
 
@@ -718,7 +750,9 @@ decodeDecision(llvm::ArrayRef<std::uint8_t> bytes,
       std::move(*selectedMapping),
       static_cast<ApplicationPairDecisionDisposition>(*disposition),
       std::move(*runtimeEvidence),
-      std::move(*oracleEvidence)};
+      std::move(*oracleEvidence),
+      std::move(*selectedRepair),
+      std::move(*repairRecords)};
 }
 
 template <typename Range, typename Less>
@@ -1495,6 +1529,104 @@ llvm::Error validateEvidenceJoin(
   return llvm::Error::success();
 }
 
+llvm::Error
+validateHardwareMutationRepairs(const ApplicationActivationDecisionDraft &draft,
+                                const ArtifactStore &artifacts) {
+  std::vector<
+      std::pair<ArtifactRootReference, dse::HardwareMutationRepairRecord>>
+      repairs;
+  repairs.reserve(draft.hardwareMutationRepairRecords.size());
+  for (const ArtifactRootReference &reference :
+       draft.hardwareMutationRepairRecords) {
+    auto imported =
+        dse::importHardwareMutationRepairRecord(reference, artifacts);
+    if (!imported)
+      return reject(ApplicationActivationDecisionErrorReason::
+                        HardwareMutationRepairMismatch,
+                    "hardware mutation repair record failed strict import: " +
+                        llvm::toString(imported.takeError()));
+    auto parent = mapping::importSystemMapping(imported->record().parentMapping,
+                                               artifacts);
+    if (!parent)
+      return reject(
+          ApplicationActivationDecisionErrorReason::
+              HardwareMutationRepairMismatch,
+          "hardware mutation repair parent Mapping failed strict import: " +
+              llvm::toString(parent.takeError()));
+    if (parent->view().dataflowIdentity() !=
+        draft.planning.canonicalDataflow.artifact)
+      return reject(
+          ApplicationActivationDecisionErrorReason::
+              HardwareMutationRepairMismatch,
+          "hardware mutation repair record names a foreign CanonicalDataflow");
+    repairs.push_back({reference, imported->record()});
+  }
+
+  std::vector<ArtifactRootReference> reachableSystems = {draft.fabric};
+  std::vector<bool> reachableRepairs(repairs.size(), false);
+  bool grewReachability = true;
+  while (grewReachability) {
+    grewReachability = false;
+    for (const auto indexed : llvm::enumerate(repairs)) {
+      if (reachableRepairs[indexed.index()] ||
+          !llvm::is_contained(reachableSystems,
+                              indexed.value().second.parentSystem))
+        continue;
+      reachableRepairs[indexed.index()] = true;
+      grewReachability = true;
+      const auto rememberSystem = [&](const ArtifactRootReference &system) {
+        if (!llvm::is_contained(reachableSystems, system))
+          reachableSystems.push_back(system);
+      };
+      rememberSystem(indexed.value().second.childSystem);
+      for (const dse::HardwareMutationImpactRecord &impact :
+           indexed.value().second.impacts)
+        if (impact.child)
+          rememberSystem(*impact.child);
+    }
+  }
+  if (llvm::is_contained(reachableRepairs, false))
+    return reject(
+        ApplicationActivationDecisionErrorReason::
+            HardwareMutationRepairMismatch,
+        "hardware mutation repair provenance is not rooted in the source "
+        "Fabric");
+
+  std::vector<ArtifactRootReference> selectedRepairs;
+  for (const auto &entry : repairs)
+    if (entry.second.childSystem == draft.selectedSystem &&
+        llvm::is_contained(entry.second.incremental.mappings,
+                           draft.selectedMapping))
+      selectedRepairs.push_back(entry.first);
+  if (selectedRepairs.size() > 1)
+    return reject(
+        ApplicationActivationDecisionErrorReason::
+            HardwareMutationRepairMismatch,
+        "more than one hardware mutation repair record selects the exact "
+        "SystemMapping");
+
+  const bool hardwareAlternative =
+      draft.disposition ==
+      ApplicationPairDecisionDisposition::HardwareDseAlternative;
+  if (selectedRepairs.empty()) {
+    if (draft.selectedHardwareMutationRepairRecord)
+      return reject(
+          ApplicationActivationDecisionErrorReason::
+              HardwareMutationRepairMismatch,
+          "selected hardware mutation repair record does not select the "
+          "activation SystemMapping");
+    return llvm::Error::success();
+  }
+  if (!hardwareAlternative || !draft.selectedHardwareMutationRepairRecord ||
+      *draft.selectedHardwareMutationRepairRecord != selectedRepairs.front())
+    return reject(
+        ApplicationActivationDecisionErrorReason::
+            HardwareMutationRepairMismatch,
+        "the unique hardware mutation repair for the activation SystemMapping "
+        "is not selected");
+  return llvm::Error::success();
+}
+
 llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs) {
@@ -1598,6 +1730,8 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
     return reject(ApplicationActivationDecisionErrorReason::MappingMismatch,
                   "selected SystemMapping differs from the selected System or "
                   "CanonicalDataflow");
+  if (llvm::Error error = validateHardwareMutationRepairs(draft, artifacts))
+    return error;
 
   if (draft.sourceBackedReplayCases.empty())
     return reject(ApplicationActivationDecisionErrorReason::DependencyMismatch,
@@ -1735,6 +1869,9 @@ ApplicationActivationDecision::get(ApplicationActivationDecisionDraft draft,
   if (llvm::Error error =
           canonicalizeRoots(draft.oracleEvidence, "oracle Evidence"))
     return std::move(error);
+  if (llvm::Error error = canonicalizeRoots(draft.hardwareMutationRepairRecords,
+                                            "hardware mutation repair records"))
+    return std::move(error);
   if (llvm::Error error = validateDecision(draft, artifacts, blobs))
     return std::move(error);
   std::vector<std::uint8_t> encoded = encodeDecision(draft);
@@ -1764,6 +1901,10 @@ projectApplicationActivationDecisionDependencies(
   for (const ArtifactRootReference &evidence : decision.runtimeEvidence())
     if (llvm::Error error =
             addEvidenceDependencies(projection, evidence, artifacts))
+      return std::move(error);
+  for (const ArtifactRootReference &repair :
+       decision.hardwareMutationRepairRecords())
+    if (llvm::Error error = addDependencyRoot(projection, repair, artifacts))
       return std::move(error);
   auto invocation = dse::importJointDesignInvocationManifest(
       decision.dseInvocation(), artifacts, blobs);

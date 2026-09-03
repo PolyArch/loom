@@ -7,7 +7,6 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
-#include "DSE/HardwareMutationRepairRecord.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Deployment/Deployment.h"
@@ -1177,7 +1176,12 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       decision.runtimeEvidence() !=
           llvm::ArrayRef<ArtifactRootReference>(draft.runtimeEvidence) ||
       decision.oracleEvidence() !=
-          llvm::ArrayRef<ArtifactRootReference>(draft.oracleEvidence))
+          llvm::ArrayRef<ArtifactRootReference>(draft.oracleEvidence) ||
+      decision.selectedHardwareMutationRepairRecord() !=
+          draft.selectedHardwareMutationRepairRecord ||
+      decision.hardwareMutationRepairRecords() !=
+          llvm::ArrayRef<ArtifactRootReference>(
+              draft.hardwareMutationRepairRecords))
     return reject(
         ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
         "activation decision differs from the selected runtime execution");
@@ -1291,85 +1295,6 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
       importedMapping->view().dataflowIdentity()};
-
-  std::uint64_t selectedHardwareRepairCount = 0;
-  bool selectedHardwareRepairMatches = false;
-  std::vector<std::pair<ArtifactRootReference,
-                        dse::HardwareMutationRepairRecord>>
-      hardwareRepairs;
-  hardwareRepairs.reserve(draft.hardwareMutationRepairRecords.size());
-  for (const ArtifactRootReference &reference :
-       draft.hardwareMutationRepairRecords) {
-    auto record = dse::importHardwareMutationRepairRecord(reference, artifacts);
-    if (!record)
-      return reject(
-          ApplicationRuntimeManifestErrorReason::HardwareMutationRepairMismatch,
-          "hardware mutation repair record failed strict import: " +
-              llvm::toString(record.takeError()));
-    auto repairParent =
-        mapping::importSystemMapping(record->record().parentMapping, artifacts);
-    if (!repairParent)
-      return reject(
-          ApplicationRuntimeManifestErrorReason::HardwareMutationRepairMismatch,
-          "hardware mutation repair parent Mapping failed strict import: " +
-              llvm::toString(repairParent.takeError()));
-    if (repairParent->view().dataflowIdentity() != dataflow.artifact)
-      return reject(
-          ApplicationRuntimeManifestErrorReason::HardwareMutationRepairMismatch,
-          "hardware mutation repair record names a foreign Dataflow");
-    const bool selectsMapping =
-        record->record().childSystem == draft.selectedSystem &&
-        contains(record->record().incremental.mappings, draft.selectedMapping);
-    if (selectsMapping)
-      ++selectedHardwareRepairCount;
-    if (draft.selectedHardwareMutationRepairRecord &&
-        reference == *draft.selectedHardwareMutationRepairRecord)
-      selectedHardwareRepairMatches = selectsMapping;
-    hardwareRepairs.push_back({reference, record->record()});
-  }
-
-  std::vector<ArtifactRootReference> reachableSystems = {draft.fabric};
-  std::vector<bool> reachableRepairs(hardwareRepairs.size(), false);
-  bool grewReachability = true;
-  while (grewReachability) {
-    grewReachability = false;
-    for (const auto indexed : llvm::enumerate(hardwareRepairs)) {
-      if (reachableRepairs[indexed.index()] ||
-          !contains(reachableSystems, indexed.value().second.parentSystem))
-        continue;
-      reachableRepairs[indexed.index()] = true;
-      grewReachability = true;
-      const auto rememberSystem = [&](const ArtifactRootReference &system) {
-        if (!contains(reachableSystems, system))
-          reachableSystems.push_back(system);
-      };
-      rememberSystem(indexed.value().second.childSystem);
-      for (const dse::HardwareMutationImpactRecord &impact :
-           indexed.value().second.impacts)
-        if (impact.child)
-          rememberSystem(*impact.child);
-    }
-  }
-  if (llvm::is_contained(reachableRepairs, false))
-    return reject(
-        ApplicationRuntimeManifestErrorReason::HardwareMutationRepairMismatch,
-        "hardware mutation repair provenance is not rooted in the pair "
-        "Fabric");
-
-  const bool hardwareAlternative =
-      draft.pairDisposition ==
-      ApplicationPairDecisionDisposition::HardwareDseAlternative;
-  if (draft.selectedHardwareMutationRepairRecord) {
-    if (!hardwareAlternative || draft.selectedSystem == draft.fabric ||
-        !contains(draft.hardwareMutationRepairRecords,
-                  *draft.selectedHardwareMutationRepairRecord) ||
-        !selectedHardwareRepairMatches || selectedHardwareRepairCount != 1)
-      return reject(
-          ApplicationRuntimeManifestErrorReason::
-              HardwareMutationRepairMismatch,
-          "selected hardware repair must be the unique record for its child "
-          "SystemMapping");
-  }
 
   auto importedDeployment =
       deployment::importDeployment(draft.deployment, artifacts, blobs);

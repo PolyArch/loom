@@ -1428,6 +1428,75 @@ bool SystemMappingMigrationConePartition::admitsReplacementGraphs(
          });
 }
 
+static llvm::Error validateFinalizedMigrationSeedRelations(
+    const ::loom::mapping::FinalizedSystemMapping &parentMapping,
+    const SystemExecutionBindingCorrespondence &correspondence,
+    const SystemMappingMigrationContext &context,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const ArtifactStore &store) {
+  if (parentMapping.view().fabricIdentity() !=
+      correspondence.parentSystem().artifact)
+    return invalid("parent Mapping and correspondence have different Systems");
+  if (llvm::Error error = validateCorrespondence(correspondence, store))
+    return error;
+
+  auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
+      context.childConstraints(), store);
+  if (!constraints)
+    return constraints.takeError();
+  if (constraints->view().dataflowIdentity() !=
+          parentMapping.view().dataflowIdentity() ||
+      constraints->view().fabricIdentity() !=
+          correspondence.childSystem().artifact)
+    return invalid("migration context constraints bind foreign owners");
+
+  if (!llvm::is_sorted(reopenedRoots, rootLess) ||
+      std::adjacent_find(reopenedRoots.begin(), reopenedRoots.end()) !=
+          reopenedRoots.end())
+    return invalid("schedule migration roots are not canonical");
+  for (const auto root : reopenedRoots) {
+    if (root.artifact != parentMapping.view().dataflowIdentity() ||
+        !llvm::is_contained(
+            parentMapping.view().executionBindings().rootThreadLaunches(),
+            root) ||
+        !llvm::is_contained(constraints->view().rootThreadLaunches(), root))
+      return invalid("schedule migration names a foreign invalidation root");
+  }
+
+  auto cone = projectSystemMappingMigrationConePartition(parentMapping.view(),
+                                                         reopenedRoots, store);
+  if (!cone)
+    return cone.takeError();
+  if (!llvm::all_of(cone->preservedSpatialMappings, [&](const auto &mapping) {
+        return llvm::is_contained(context.spatialMappings(), mapping);
+      }))
+    return invalid("migration context omits a preserved-cone SpatialMapping");
+
+  for (const ArtifactRootReference &mappingReference :
+       context.spatialMappings()) {
+    auto mapping =
+        ::loom::mapping::importSpatialMapping(mappingReference, store);
+    if (!mapping)
+      return mapping.takeError();
+    if (mapping->view().dataflowIdentity() !=
+        parentMapping.view().dataflowIdentity())
+      return invalid("migration SpatialMapping binds a foreign Dataflow");
+    if (llvm::is_contained(cone->preservedSpatialMappings, mappingReference))
+      continue;
+    auto tech = ::loom::mapping::importTechMapping(
+        {::loom::mapping::mappingArtifactSchema.identity.str(),
+         ::loom::mapping::mappingArtifactSchema.version,
+         mapping->view().techMappingIdentity()},
+        store);
+    if (!tech)
+      return tech.takeError();
+    if (!cone->admitsReplacementGraphs(tech->view().covers()))
+      return invalid("migration context replaces a SpatialMapping outside "
+                     "the reopened graph cone");
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<SystemMappingMigrationContext>
 SystemMappingMigrationContext::get(
     ArtifactRootReference childConstraints,
@@ -1662,20 +1731,6 @@ finalizeSystemMappingMigrationSeed(
       ::loom::mapping::importSystemMapping(parentMappingReference, store);
   if (!parentMapping)
     return parentMapping.takeError();
-  if (parentMapping->view().fabricIdentity() !=
-      correspondence.parentSystem().artifact)
-    return invalid("parent Mapping and correspondence have different Systems");
-  if (llvm::Error error = validateCorrespondence(correspondence, store))
-    return std::move(error);
-  auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
-      context.childConstraints(), store);
-  if (!constraints)
-    return constraints.takeError();
-  if (constraints->view().dataflowIdentity() !=
-          parentMapping->view().dataflowIdentity() ||
-      constraints->view().fabricIdentity() !=
-          correspondence.childSystem().artifact)
-    return invalid("migration context constraints bind foreign owners");
   std::vector<::dataflow::RootThreadLaunchRef> canonicalReopenedRoots(
       reopenedRoots.begin(), reopenedRoots.end());
   llvm::sort(canonicalReopenedRoots, rootLess);
@@ -1683,46 +1738,10 @@ finalizeSystemMappingMigrationSeed(
                          canonicalReopenedRoots.end()) !=
       canonicalReopenedRoots.end())
     return invalid("schedule migration repeats an invalidation root");
-  for (const auto root : canonicalReopenedRoots) {
-    if (root.artifact != parentMapping->view().dataflowIdentity() ||
-        !llvm::is_contained(
-            parentMapping->view().executionBindings().rootThreadLaunches(),
-            root) ||
-        !llvm::is_contained(constraints->view().rootThreadLaunches(), root))
-      return invalid("schedule migration names a foreign invalidation root");
-  }
-  auto cone = projectSystemMappingMigrationConePartition(
-      parentMapping->view(), canonicalReopenedRoots, store);
-  if (!cone)
-    return cone.takeError();
-  if (!llvm::all_of(cone->preservedSpatialMappings, [&](const auto &mapping) {
-        return llvm::is_contained(context.spatialMappings(), mapping);
-      }))
-    return invalid(
-        "migration context omits a preserved-cone SpatialMapping");
-
-  for (const ArtifactRootReference &mappingReference :
-       context.spatialMappings()) {
-    auto mapping =
-        ::loom::mapping::importSpatialMapping(mappingReference, store);
-    if (!mapping)
-      return mapping.takeError();
-    if (mapping->view().dataflowIdentity() !=
-        parentMapping->view().dataflowIdentity())
-      return invalid("migration SpatialMapping binds a foreign Dataflow");
-    if (llvm::is_contained(cone->preservedSpatialMappings, mappingReference))
-      continue;
-    auto tech = ::loom::mapping::importTechMapping(
-        {::loom::mapping::mappingArtifactSchema.identity.str(),
-         ::loom::mapping::mappingArtifactSchema.version,
-         mapping->view().techMappingIdentity()},
-        store);
-    if (!tech)
-      return tech.takeError();
-    if (!cone->admitsReplacementGraphs(tech->view().covers()))
-      return invalid("migration context replaces a SpatialMapping outside "
-                     "the reopened graph cone");
-  }
+  if (llvm::Error error = validateFinalizedMigrationSeedRelations(
+          *parentMapping, correspondence, context, canonicalReopenedRoots,
+          store))
+    return std::move(error);
   auto canonicalBytes = canonicalFinalizedSeedBytes(
       parentMappingReference, correspondence, context, canonicalReopenedRoots);
   if (!canonicalBytes)
@@ -1803,6 +1822,9 @@ importSystemMappingMigrationSeed(const ArtifactRootReference &reference,
       std::move(decodedCorrespondence->modules), store);
   if (!correspondence)
     return correspondence.takeError();
+  if (llvm::Error error = validateFinalizedMigrationSeedRelations(
+          *parentMapping, *correspondence, *context, reopenedRoots, store))
+    return std::move(error);
   auto canonical = canonicalFinalizedSeedBytes(
       *parentMappingReference, *correspondence, *context, reopenedRoots);
   if (!canonical)

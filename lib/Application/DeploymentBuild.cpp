@@ -269,7 +269,9 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
        selectedMapping,
        pair.disposition,
        selectedOutcome->runtimeEvidence,
-       selectedOutcome->oracleEvidence},
+       selectedOutcome->oracleEvidence,
+       selectedOutcome->hardwareMutationRepairRecord,
+       mappingExecution.provenance.hardwareMutationRepairRecords},
       artifacts, blobs);
   if (!activationDecision)
     return activationDecision.takeError();
