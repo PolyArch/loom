@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -88,13 +89,36 @@ except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
 
 if (catalog_projection.get("schema") !=
         "loom.external_tool.backend_catalog" or
-        catalog_projection.get("version") != "1.0"):
+        catalog_projection.get("version") != "1.1"):
     lit_config.fatal("backend tool catalog projection has an unknown schema")
 available_backend_features = catalog_projection.get("available_features")
 if not isinstance(available_backend_features, list) or not all(
         isinstance(feature, str) for feature in available_backend_features):
     lit_config.fatal("backend tool catalog projection has invalid features")
 config.available_features.update(available_backend_features)
+
+# Every available validated release contributes the exact binding the
+# catalog probe resolved, so RUN lines name a tool's declared build line and
+# executable through the catalog rather than through a second probe.
+for _tool in catalog_projection.get("tools", []):
+    _bindings = [release["binding"]
+                 for release in _tool.get("validated_releases", [])
+                 if release.get("binding")]
+    if not _bindings:
+        continue
+    if len(_bindings) != 1:
+        lit_config.fatal("several validated releases of {} are available"
+                         .format(_tool["logical_tool_key"]))
+    for _field in ("version", "executable"):
+        _value = _bindings[0][_field]
+        if not _value.isprintable() or any(c in _value for c in '"\\$`%'):
+            lit_config.fatal("{} {} of {} is not shell-safe: {!r}".format(
+                _field, "line", _tool["logical_tool_key"], _value))
+    _key = re.escape(_tool["logical_tool_key"])
+    config.substitutions.append(
+        ("%loom-" + _key + "-build\\b", _bindings[0]["version"]))
+    config.substitutions.append(
+        ("%loom-" + _key + "-executable\\b", _bindings[0]["executable"]))
 
 for _tier in Tier:
     config.substitutions.append(

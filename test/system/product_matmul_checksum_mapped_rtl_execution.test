@@ -11,15 +11,15 @@
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=matmul_kernel \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
-# RUN: %python -c 'import json,pathlib,shutil; executable=shutil.which("verilator"); assert executable; pathlib.Path("%t.local-tool-config.json").write_text(json.dumps({"schema":"loom.local_tool_config","version":"1.1","runtime":{"policy":"host"},"tools":{"verilator":{"binding":{"executable":str(pathlib.Path(executable).resolve())}}}}))'
+# RUN: %python -c 'import json,pathlib; pathlib.Path("%t.local-tool-config.json").write_text(json.dumps({"schema":"loom.local_tool_config","version":"1.1","runtime":{"policy":"host"},"tools":{"verilator":{"binding":{"executable":"%loom-verilator-executable"}}}}))'
 # RUN: env LOOM_VERBOSE_LEVEL=1 timeout %loom-timeout-xlong loom-system-run \
 # RUN:   --deployment-package=%t.deployment --output=%t.execution \
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=1219 \
 # RUN:   --mapped-rtl --mapped-rtl-build-jobs=8 --mapped-rtl-model-threads=8 \
 # RUN:   --mapped-rtl-local-tool-config=%t.local-tool-config.json \
-# RUN:   --mapped-rtl-provider-build="$(verilator --version)" \
+# RUN:   --mapped-rtl-provider-build="%loom-verilator-build" \
 # RUN:   > %t.run.stdout 2> %t.run.stderr
-# RUN: %python -c 'import json,pathlib,shutil,subprocess; executable=str(pathlib.Path(shutil.which("verilator")).resolve()); version=subprocess.check_output(["verilator","--version"],text=True).strip(); manifests=[json.loads(path.read_text()) for path in pathlib.Path("%t.execution/bundles").glob("spatial-rtl-*/manifest.json")]; assert manifests and all(manifest["tool_binding"]["source"]=="explicit" and manifest["tool_binding"]["executable"]==executable and manifest["tool_binding"]["version"]==version for manifest in manifests)'
+# RUN: %python -c 'import json,pathlib; executable="%loom-verilator-executable"; version="%loom-verilator-build"; manifests=[json.loads(path.read_text()) for path in pathlib.Path("%t.execution/bundles").glob("spatial-rtl-*/tool-invocation.json")]; assert manifests and all(manifest["tool_binding"]["source"]=="explicit" and manifest["tool_binding"]["executable"]==executable and manifest["tool_binding"]["version"]==version for manifest in manifests)'
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --expected-i32=1219 \

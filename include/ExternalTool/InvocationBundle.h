@@ -23,7 +23,17 @@
 #include <variant>
 #include <vector>
 
+namespace llvm::json {
+class OStream;
+} // namespace llvm::json
+
 namespace loom::external_tool {
+
+/// Writes one resolved tool binding as the `tool_binding` object of the
+/// invocation manifest and execution binding; the backend tool catalog
+/// projection reuses the same shape for every available validated release.
+void writeResolvedToolBinding(llvm::json::OStream &json,
+                              const ResolvedToolBinding &binding);
 
 class ExternalToolInvocationExecutionReceipt final {
 public:

@@ -44,7 +44,7 @@ machine-local configuration itself. It supplies its provider descriptor and
 consumes the frozen binding produced by the shared resolver.
 
 The provider descriptor is referenced from the single
-`loom.external_tool.backend_catalog 1.0` entry owned by
+`loom.external_tool.backend_catalog 1.1` entry owned by
 [External Tool Invocation](spec-external-tool-invocation.md#ownership). An
 adapter cannot copy its logical key, official product name, validated module
 release, or version-probe rule. Repository conformance features are derived

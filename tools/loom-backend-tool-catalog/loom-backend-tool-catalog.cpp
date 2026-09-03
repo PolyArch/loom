@@ -1,3 +1,4 @@
+#include "ExternalTool/InvocationBundle.h"
 #include "ExternalTool/Provider.h"
 #include "ExternalTool/ShellProbe.h"
 
@@ -12,8 +13,10 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -44,10 +47,12 @@ llvm::Expected<llvm::SmallString<256>> absoluteProbeDirectory() {
   return path;
 }
 
-llvm::Expected<bool> releaseIsAvailable(
-    const loom::external_tool::BackendToolCatalogEntry &entry,
-    const loom::external_tool::BackendToolReleaseProfile &release,
-    llvm::StringRef probeDirectory) {
+/// Probes one validated release in the current environment and returns the
+/// resolved binding when the exact release is available.
+llvm::Expected<std::optional<loom::external_tool::ResolvedToolBinding>>
+probeRelease(const loom::external_tool::BackendToolCatalogEntry &entry,
+             const loom::external_tool::BackendToolReleaseProfile &release,
+             llvm::StringRef probeDirectory) {
   loom::external_tool::ShellToolBindingProbe probe(probeDirectory.str(),
                                                    release.exactVersionProbe);
   auto result = loom::external_tool::resolveEnvironmentToolBinding(
@@ -56,7 +61,7 @@ llvm::Expected<bool> releaseIsAvailable(
       probe);
   if (!result)
     return result.takeError();
-  return result->has_value();
+  return std::move(*result);
 }
 
 llvm::Error run() {
@@ -66,41 +71,68 @@ llvm::Error run() {
   if (!probeDirectory)
     return probeDirectory.takeError();
 
-  llvm::json::Array availableFeatures;
-  llvm::json::Array tools;
+  struct ProbedRelease final {
+    const loom::external_tool::BackendToolReleaseProfile *release = nullptr;
+    std::optional<loom::external_tool::ResolvedToolBinding> binding;
+  };
+  struct ProbedEntry final {
+    const loom::external_tool::BackendToolCatalogEntry *entry = nullptr;
+    std::vector<ProbedRelease> releases;
+  };
+  std::vector<std::string> availableFeatures;
+  std::vector<ProbedEntry> entries;
   for (const auto &entry : loom::external_tool::backendToolCatalog()) {
-    llvm::json::Array releases;
+    ProbedEntry probed{&entry, {}};
     for (const auto &release : entry.validatedReleases) {
-      auto available =
-          releaseIsAvailable(entry, release, probeDirectory->str());
-      if (!available)
-        return available.takeError();
-      if (*available)
+      auto binding = probeRelease(entry, release, probeDirectory->str());
+      if (!binding)
+        return binding.takeError();
+      if (*binding)
         availableFeatures.push_back(release.conformanceFeature);
-      releases.push_back(llvm::json::Object{
-          {"conformance_feature", release.conformanceFeature},
-          {"module_alias", release.moduleAlias
-                               ? llvm::json::Value(*release.moduleAlias)
-                               : llvm::json::Value(nullptr)},
-          {"available", *available},
-      });
+      probed.releases.push_back({&release, std::move(*binding)});
     }
-    tools.push_back(llvm::json::Object{
-        {"logical_tool_key", entry.provider.binding.key},
-        {"official_product_name", entry.officialProductName},
-        {"validated_releases", std::move(releases)},
-    });
+    entries.push_back(std::move(probed));
   }
 
-  llvm::json::Object projection{
-      {"schema", "loom.external_tool.backend_catalog"},
-      {"version", "1.0"},
-      {"available_features", std::move(availableFeatures)},
-      {"tools", std::move(tools)},
-  };
-  llvm::outs() << llvm::formatv("{0:2}",
-                                llvm::json::Value(std::move(projection)))
-               << '\n';
+  // Keys are written in sorted order so the projection stays byte-stable.
+  llvm::json::OStream json(llvm::outs(), 2);
+  json.object([&] {
+    json.attributeArray("available_features", [&] {
+      for (const std::string &feature : availableFeatures)
+        json.value(feature);
+    });
+    json.attribute("schema", "loom.external_tool.backend_catalog");
+    json.attributeArray("tools", [&] {
+      for (const ProbedEntry &probed : entries)
+        json.object([&] {
+          json.attribute("logical_tool_key",
+                         probed.entry->provider.binding.key);
+          json.attribute("official_product_name",
+                         probed.entry->officialProductName);
+          json.attributeArray("validated_releases", [&] {
+            for (const ProbedRelease &release : probed.releases)
+              json.object([&] {
+                if (release.binding) {
+                  json.attributeBegin("binding");
+                  loom::external_tool::writeResolvedToolBinding(
+                      json, *release.binding);
+                  json.attributeEnd();
+                } else {
+                  json.attribute("binding", nullptr);
+                }
+                json.attribute("conformance_feature",
+                               release.release->conformanceFeature);
+                if (release.release->moduleAlias)
+                  json.attribute("module_alias", *release.release->moduleAlias);
+                else
+                  json.attribute("module_alias", nullptr);
+              });
+          });
+        });
+    });
+    json.attribute("version", "1.1");
+  });
+  llvm::outs() << '\n';
   return llvm::Error::success();
 }
 

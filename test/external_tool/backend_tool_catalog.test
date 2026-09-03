@@ -8,4 +8,11 @@
 # CHECK-NEXT: "genus-26.10-p002.1"
 # CHECK-NEXT: ]
 # CHECK: "schema": "loom.external_tool.backend_catalog"
-# CHECK: "version": "1.0"
+# CHECK: "logical_tool_key": "verilator"
+# CHECK: "binding": {
+# CHECK-NEXT: "tool_key": "verilator"
+# CHECK-NEXT: "source": "environment_path"
+# CHECK: "version": "Verilator 5.050 fixture"
+# CHECK: "logical_tool_key": "yosys"
+# CHECK: "binding": null
+# CHECK: "version": "1.1"

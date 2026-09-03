@@ -421,26 +421,6 @@ void writeStringArray(llvm::json::OStream &json,
   });
 }
 
-void writeBinding(llvm::json::OStream &json,
-                  const ResolvedToolBinding &binding) {
-  json.object([&] {
-    json.attribute("tool_key", binding.toolKey);
-    json.attribute("source", bindingSourceName(binding.source));
-    json.attribute("executable", binding.executable);
-    json.attribute("version", binding.version);
-    json.attributeBegin("requested_modules");
-    writeStringArray(json, binding.requestedModules);
-    json.attributeEnd();
-    json.attributeBegin("loaded_modules");
-    writeStringArray(json, binding.loadedModules);
-    json.attributeEnd();
-    if (binding.moduleInit)
-      json.attribute("module_init", *binding.moduleInit);
-    if (binding.environmentVariable)
-      json.attribute("environment_variable", *binding.environmentVariable);
-  });
-}
-
 std::string formatCanonicalHex(llvm::ArrayRef<std::uint8_t> bytes) {
   return llvm::toHex(bytes, /*LowerCase=*/true);
 }
@@ -1421,6 +1401,26 @@ openPreparedBundle(const PreparedExternalToolInvocation &prepared) {
 
 } // namespace
 
+void writeResolvedToolBinding(llvm::json::OStream &json,
+                              const ResolvedToolBinding &binding) {
+  json.object([&] {
+    json.attribute("tool_key", binding.toolKey);
+    json.attribute("source", bindingSourceName(binding.source));
+    json.attribute("executable", binding.executable);
+    json.attribute("version", binding.version);
+    json.attributeBegin("requested_modules");
+    writeStringArray(json, binding.requestedModules);
+    json.attributeEnd();
+    json.attributeBegin("loaded_modules");
+    writeStringArray(json, binding.loadedModules);
+    json.attributeEnd();
+    if (binding.moduleInit)
+      json.attribute("module_init", *binding.moduleInit);
+    if (binding.environmentVariable)
+      json.attribute("environment_variable", *binding.environmentVariable);
+  });
+}
+
 void writeToolVersionProbeJson(llvm::json::OStream &json,
                                const ToolVersionProbe &probe) {
   json.object([&] {
@@ -1512,14 +1512,14 @@ llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
     json.attribute("schema", "loom.external_tool_execution_binding");
     json.attribute("version", "1.0");
     json.attributeBegin("tool_binding");
-    writeBinding(json, tool);
+    writeResolvedToolBinding(json, tool);
     json.attributeEnd();
     json.attributeObject("runtime_binding", [&] {
       json.attribute("kind", runtimeKindName(runtime.kind));
       if (runtime.kind == InvocationRuntimeKind::PolyArchContainer) {
         json.attribute("os", *runtime.os);
         json.attributeBegin("container_binding");
-        writeBinding(json, *runtime.polyArchContainer);
+        writeResolvedToolBinding(json, *runtime.polyArchContainer);
         json.attributeEnd();
       }
     });
@@ -1601,7 +1601,7 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
     json.attribute("result_importer_identity",
                    manifest.semanticContract.resultImporterIdentity);
     json.attributeBegin("tool_binding");
-    writeBinding(json, manifest.tool);
+    writeResolvedToolBinding(json, manifest.tool);
     json.attributeEnd();
     json.attributeBegin("tool_version_probe");
     writeToolVersionProbeJson(json, manifest.toolVersionProbe);
@@ -1611,7 +1611,7 @@ std::string serializeManifest(const InvocationManifestData &manifest) {
       if (manifest.runtime.kind == InvocationRuntimeKind::PolyArchContainer) {
         json.attribute("os", *manifest.runtime.os);
         json.attributeBegin("container_binding");
-        writeBinding(json, *manifest.runtime.polyArchContainer);
+        writeResolvedToolBinding(json, *manifest.runtime.polyArchContainer);
         json.attributeEnd();
         json.attributeBegin("container_version_probe");
         writeToolVersionProbeJson(json, manifest.containerVersionProbe);

@@ -8,7 +8,7 @@ isolation, scheduling, or Evaluation result schemas.
 
 ## Ownership
 
-`loom.external_tool.backend_catalog 1.0` is the sole owner of every backend
+`loom.external_tool.backend_catalog 1.1` is the sole owner of every backend
 tool's logical key, official product name, static typed local descriptor, and
 validated release profiles. The descriptor declares executable names,
 provider-recognized environment roots, ordered module candidates, runtime
@@ -42,7 +42,11 @@ official name, module release, or version-probe convention. Machine-local
 configuration may contain an unused key, but only a registered catalog entry
 can consume it or create a provider capability. Lit and other conformance
 harnesses consume a machine-readable projection of this catalog; they cannot
-maintain another executable/version/feature table.
+maintain another executable/version/feature table. The projection carries,
+for every available validated release, the resolved binding in the same
+`tool_binding` shape as the invocation manifest, so a harness input such as a
+declared simulator build line or explicit executable derives from the one
+catalog probe rather than from a second probe of the environment.
 
 The exact `CandidateGeneratorDescriptor` or `EvaluationModelDescriptor` owns
 the typed semantic `prepare/import` boundary and its result contract. A local
