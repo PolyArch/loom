@@ -40,7 +40,9 @@ all live here:
 from __future__ import annotations
 
 import argparse
+import copy
 import ctypes
+import enum
 import fcntl
 import json
 import math
@@ -169,6 +171,19 @@ CIRCT_SEMANTIC_CMAKE_ARGS = (
     "-DCIRCT_INCLUDE_DOCS=OFF",
     "-DCIRCT_INCLUDE_TOOLS=OFF", "-DCIRCT_SLANG_FRONTEND_ENABLED=ON", "-DCIRCT_SLANG_BUILD_FROM_SOURCE=ON",
 )
+
+
+class LoomBuildPolicy(enum.Enum):
+    PRODUCT = ("build", False)
+    STRICT_CORRECTNESS = ("build-strict", True)
+
+    def __init__(self, directory_name: str, assertions_enabled: bool):
+        self.directory_name = directory_name
+        self.assertions_enabled = assertions_enabled
+
+    @property
+    def cmake_assertions(self) -> str:
+        return "ON" if self.assertions_enabled else "OFF"
 
 
 def validate_lock_timeout(value: str | float) -> float:
@@ -330,6 +345,14 @@ class Paths:
     @property
     def is_main(self) -> bool:
         return self.main == self.root
+
+
+def select_loom_build(paths: Paths, policy: LoomBuildPolicy) -> Paths:
+    if policy is LoomBuildPolicy.PRODUCT:
+        return paths
+    selected = copy.copy(paths)
+    selected.loom_build = paths.root / policy.directory_name
+    return selected
 
 
 @dataclass(frozen=True)
@@ -1087,6 +1110,8 @@ def configure_loom(
     circt_dir: str | None,
     or_tools_dir: str,
     or_tools_commit: str,
+    *,
+    policy: LoomBuildPolicy = LoomBuildPolicy.PRODUCT,
 ) -> None:
     cmd = [
         "cmake",
@@ -1097,7 +1122,7 @@ def configure_loom(
         "-B",
         str(paths.loom_build),
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DLOOM_ENABLE_ASSERTIONS=OFF",
+        f"-DLOOM_ENABLE_ASSERTIONS={policy.cmake_assertions}",
         f"-DCMAKE_C_COMPILER={LOOM_C_COMPILER}",
         f"-DCMAKE_CXX_COMPILER={LOOM_CXX_COMPILER}",
         f"-DMLIR_DIR={paths.mlir_dir}",
@@ -1586,6 +1611,7 @@ def _build_loom_with_lease(
     state: DependencyState,
     llvm_identity: str,
     or_tools_identity: str,
+    policy: LoomBuildPolicy = LoomBuildPolicy.PRODUCT,
 ) -> None:
     if loom_build_is_stale(paths):
         info(
@@ -1606,6 +1632,8 @@ def _build_loom_with_lease(
         die("validated OR-Tools reader lease has no matching installed package")
     package_changed = (
         read_cmake_cache_entry(paths.loom_build, "CIRCT_DIR") != (circt_dir or "")
+        or read_cmake_cache_entry(paths.loom_build, "LOOM_ENABLE_ASSERTIONS")
+        != policy.cmake_assertions
         or read_cmake_cache_entry(paths.loom_build, "Polly_DIR")
         != str(paths.cmake_polly_dir)
         or read_cmake_cache_entry(paths.loom_build, "ortools_DIR") != or_tools_dir
@@ -1617,16 +1645,30 @@ def _build_loom_with_lease(
         info(f"loom build dependency package changed; removing {paths.loom_build} and reconfiguring")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
     if not bn.exists():
-        configure_loom(
-            paths,
-            circt_dir,
-            or_tools_dir,
-            state.or_tools_commit,
-        )
+        if policy is LoomBuildPolicy.PRODUCT:
+            configure_loom(
+                paths,
+                circt_dir,
+                or_tools_dir,
+                state.or_tools_commit,
+            )
+        else:
+            configure_loom(
+                paths,
+                circt_dir,
+                or_tools_dir,
+                state.or_tools_commit,
+                policy=policy,
+            )
     run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
 
 
-def build_loom(paths: Paths, args: argparse.Namespace) -> None:
+def build_loom(
+    paths: Paths,
+    args: argparse.Namespace,
+    policy: LoomBuildPolicy = LoomBuildPolicy.PRODUCT,
+) -> None:
+    paths = select_loom_build(paths, policy)
     with shared_llvm_lease(paths, args) as (state, llvm_identity):
         with shared_or_tools_lease(paths, args) as (
             or_tools_state,
@@ -1640,6 +1682,7 @@ def build_loom(paths: Paths, args: argparse.Namespace) -> None:
                 state,
                 llvm_identity,
                 or_tools_identity,
+                policy,
             )
 
 
@@ -1675,6 +1718,10 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"loom_c          {compiler_status(LOOM_C_COMPILER, LOOM_CLANG_MIN)}")
     print(f"loom_cxx        {compiler_status(LOOM_CXX_COMPILER, LOOM_CLANG_MIN)}")
     print(f"loom_build      {paths.loom_build}")
+    print(
+        "loom_strict_build "
+        + str(paths.root / LoomBuildPolicy.STRICT_CORRECTNESS.directory_name)
+    )
     print(f"loom_stale      {loom_build_is_stale(paths)}")
     print(f"circt_build     {paths.circt_build}")
     print(f"circt_stamp     {paths.circt_stamp}")
@@ -1706,6 +1753,12 @@ def cmd_build_loom(paths: Paths, args: argparse.Namespace) -> None:
     build_loom(paths, args)
 
 
+def cmd_build_loom_strict(paths: Paths, args: argparse.Namespace) -> None:
+    check_git_version()
+    check_loom_compilers()
+    build_loom(paths, args, LoomBuildPolicy.STRICT_CORRECTNESS)
+
+
 def cmd_build_gem5(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
     run(
@@ -1720,7 +1773,7 @@ def cmd_build_gem5(paths: Paths, args: argparse.Namespace) -> None:
     )
 
 
-def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
+def clean_loom_build(paths: Paths) -> None:
     if paths.loom_build.exists():
         cache_root = paths.loom_build / EXTERNAL_TOOL_CACHE_DIRECTORY
         info(f"removing build products under {paths.loom_build}")
@@ -1731,6 +1784,16 @@ def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
                 product.unlink(missing_ok=True)
             else:
                 shutil.rmtree(product)
+
+
+def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
+    clean_loom_build(paths)
+
+
+def cmd_clean_loom_strict(paths: Paths, args: argparse.Namespace) -> None:
+    clean_loom_build(
+        select_loom_build(paths, LoomBuildPolicy.STRICT_CORRECTNESS)
+    )
 
 
 def cmd_build_circt(paths: Paths, args: argparse.Namespace) -> None:
@@ -1769,6 +1832,10 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
     if paths.loom_build.exists():
         info(f"removing {paths.loom_build}")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
+    strict_build = paths.root / LoomBuildPolicy.STRICT_CORRECTNESS.directory_name
+    if strict_build.exists():
+        info(f"removing {strict_build}")
+        shutil.rmtree(strict_build, ignore_errors=True)
     if paths.is_main:
         # Acquire independent products in the same order as ordinary Loom
         # builds, then revoke every readiness projection before deletion.
@@ -1874,7 +1941,9 @@ def main() -> None:
         "build-or-tools",
         "build-gem5",
         "build-loom",
+        "build-loom-strict",
         "clean",
+        "clean-loom-strict",
         "distclean",
         "test",
     ):
@@ -1891,7 +1960,9 @@ def main() -> None:
         "build-or-tools": cmd_build_or_tools,
         "build-gem5": cmd_build_gem5,
         "build-loom": cmd_build_loom,
+        "build-loom-strict": cmd_build_loom_strict,
         "clean": cmd_clean,
+        "clean-loom-strict": cmd_clean_loom_strict,
         "distclean": cmd_distclean,
         "test": cmd_test,
     }

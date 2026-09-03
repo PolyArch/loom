@@ -238,6 +238,46 @@ class MakeWorktreeTest(unittest.TestCase):
             ["-DLLVM_FORCE_ENABLE_STATS=ON"],
         )
 
+    def test_loom_build_policies_have_distinct_directories_and_assertions(
+        self,
+    ) -> None:
+        paths = build_paths(REPO_TEMP_ROOT / "loom-build-policies")
+        strict = self.module.select_loom_build(
+            paths, self.module.LoomBuildPolicy.STRICT_CORRECTNESS
+        )
+        self.assertIs(
+            self.module.select_loom_build(
+                paths, self.module.LoomBuildPolicy.PRODUCT
+            ),
+            paths,
+        )
+        self.assertEqual(paths.loom_build, paths.root / "build")
+        self.assertEqual(strict.loom_build, paths.root / "build-strict")
+        self.assertEqual(strict.llvm_build, paths.llvm_build)
+
+        commands = []
+        with patch.object(
+            self.module,
+            "run",
+            side_effect=lambda cmd, **kwargs: commands.append(cmd),
+        ):
+            self.module.configure_loom(paths, None, "/or-tools", "or-tools-pin")
+            self.module.configure_loom(
+                strict,
+                None,
+                "/or-tools",
+                "or-tools-pin",
+                policy=self.module.LoomBuildPolicy.STRICT_CORRECTNESS,
+            )
+        self.assertIn("-DLOOM_ENABLE_ASSERTIONS=OFF", commands[0])
+        self.assertIn("-DLOOM_ENABLE_ASSERTIONS=ON", commands[1])
+        self.assertEqual(
+            commands[0][commands[0].index("-B") + 1], str(paths.loom_build)
+        )
+        self.assertEqual(
+            commands[1][commands[1].index("-B") + 1], str(strict.loom_build)
+        )
+
     def build_environment(self, module, run=UNSET):
         stack = ExitStack()
         stack.enter_context(patch.object(module, "check_git_version"))
@@ -316,6 +356,7 @@ class MakeWorktreeTest(unittest.TestCase):
             (paths.loom_build / "CMakeCache.txt").write_text(
                 "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
                 "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
+                "LOOM_ENABLE_ASSERTIONS:BOOL=OFF\n"
                 f"Polly_DIR:PATH={shared.cmake_polly_dir}\n"
                 f"ortools_DIR:PATH={shared.or_tools_cmake_dir}\n"
                 "LOOM_ORTOOLS_SOURCE_COMMIT:STRING="

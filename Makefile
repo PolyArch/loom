@@ -23,12 +23,16 @@
 #                    drifted;
 #                    never builds CIRCT, but offers an already-built
 #                    shared CIRCT via -DCIRCT_DIR when one matches)
+#   make loom-strict - build the assertion-enabled strict-correctness Loom
+#                      configuration in this worktree's build-strict directory
 #   make test      - run the complete Loom lit test suite (target: check-loom)
 #   make experiment-root - create and print the resolved local experiment root
 #   make install-hooks - install the repository's local Git hooks
 #   make sync-worktree - preflight and synchronize a linked branch with main
 #   make clean     - remove this worktree's build products while preserving
 #                    its reusable external-tool result cache
+#   make clean-strict - remove strict-correctness build products while
+#                       preserving its reusable external-tool result cache
 #   make distclean - main worktree: remove the loom build and shared LLVM,
 #                    CIRCT, and OR-Tools builds. Linked worktree: remove only
 #                    this loom build (shared builds are left alone).
@@ -55,7 +59,8 @@ export JOBS
 export LOOM_LOCAL_CONFIG
 export LOOM_EXTERNAL_TOOL_CACHE_ROOT
 
-.PHONY: all doctor llvm circt or-tools gem5 loom test experiment-root install-hooks sync-worktree clean distclean
+.PHONY: all doctor llvm circt or-tools gem5 loom loom-strict test
+.PHONY: experiment-root install-hooks sync-worktree clean clean-strict distclean
 
 all: loom
 
@@ -76,6 +81,9 @@ gem5:
 
 loom:
 	@$(WT) build-loom
+
+loom-strict:
+	@$(WT) build-loom-strict
 
 test:
 	@$(WT) test
@@ -102,6 +110,9 @@ sync-worktree:
 
 clean:
 	@$(WT) clean
+
+clean-strict:
+	@$(WT) clean-loom-strict
 
 distclean:
 	@$(WT) distclean
