@@ -415,7 +415,7 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
           "selected candidate execution invented a source coverage profile");
 }
 
-void orderedLogicalChannelsMulticastCompleteSequences() {
+void orderedLogicalChannelGenerationsCompleteMulticastSequences() {
   const char *test = __func__;
   if (llvm::InitializeNativeTarget() ||
       llvm::InitializeNativeTargetAsmPrinter())
@@ -465,14 +465,10 @@ module {
     dataflow.thread.yield
   }
 
-  llvm.func @kernel() -> i32 {
-    %one = llvm.mlir.constant(1 : i64) : i64
-    %left = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
-    %right = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+  llvm.func @channel_epoch(%first: i32, %second: i32,
+                           %left: !llvm.ptr, %right: !llvm.ptr) {
     %channel = dataflow.channel.create : !dataflow.channel<i32>
-    %seven = llvm.mlir.constant(7 : i32) : i32
-    %eleven = llvm.mlir.constant(11 : i32) : i32
-    %producer = dataflow.thread.launch @producer(%channel, %seven, %eleven)
+    %producer = dataflow.thread.launch @producer(%channel, %first, %second)
         : (!dataflow.channel<i32>, i32, i32) -> !dataflow.thread_token
     dataflow.thread.wait %producer : !dataflow.thread_token
     %consumer0 = dataflow.thread.launch @consumer(%channel, %left)
@@ -481,6 +477,21 @@ module {
     %consumer1 = dataflow.thread.launch @consumer(%channel, %right)
         : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
     dataflow.thread.wait %consumer1 : !dataflow.thread_token
+    llvm.return
+  }
+
+  llvm.func @kernel() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %left = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %right = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %seven = llvm.mlir.constant(7 : i32) : i32
+    %eleven = llvm.mlir.constant(11 : i32) : i32
+    llvm.call @channel_epoch(%seven, %eleven, %left, %right)
+        : (i32, i32, !llvm.ptr, !llvm.ptr) -> ()
+    %thirteen = llvm.mlir.constant(13 : i32) : i32
+    %five = llvm.mlir.constant(5 : i32) : i32
+    llvm.call @channel_epoch(%thirteen, %five, %left, %right)
+        : (i32, i32, !llvm.ptr, !llvm.ptr) -> ()
     %left_value = llvm.load %left : !llvm.ptr -> i32
     %right_value = llvm.load %right : !llvm.ptr -> i32
     %result = llvm.add %left_value, %right_value : i32
@@ -507,7 +518,8 @@ module {
                                         selected, source, workload, input));
   require(test,
           loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
-          "ordered multicast changed whole-program observations");
+          "reused ordered multicast generations changed whole-program "
+          "observations");
 
   auto consumerFirst = parse(R"mlir(
 module {
@@ -1159,7 +1171,7 @@ int main() {
   nonDefinedInputsFailClosed();
   typedCosineUsesCanonicalNativeSemantics();
   selectedOwnershipCarriersExecuteAsWholeProgram();
-  orderedLogicalChannelsMulticastCompleteSequences();
+  orderedLogicalChannelGenerationsCompleteMulticastSequences();
   forallAggregationRegionsAreNotProfileBlocks();
   storedPointerPayloadExecutesThroughNativeObjectRegistry();
   denseThreadDomainsPreserveWholeProgramSemantics();

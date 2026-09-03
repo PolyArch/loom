@@ -810,24 +810,31 @@ nested, dynamic-grid, or insufficiently supplied launch is typed Unsupported
 before any callback can expose an unwritten receive slot.
 
 That proof also derives the finite flat producer and per-branch consumer event
-counts for the complete logical channel invocation. The generated adapter
-creates each channel's `OrderedChannelABI` instance with the proven producer
-count as its bounded message capacity, opens the generation with those counts
-before the first endpoint call, and requires producer finish, every consumer
-terminal, and collective join after the selected entry returns. Because every
-send of a channel precedes every receive in the serialized projection, that
-bound is exact: the host path allocates no unbounded storage and never
-observes `WouldBlock`. Runtime does not infer these counts from queue
-occupancy or observed execution.
+counts for each complete dynamic invocation of an exact channel-create
+lineage. The generated adapter assigns that lineage one execution-local dense
+slot, creates its `OrderedChannelABI` instance with the proven producer count
+as bounded message capacity, and opens the first generation with those counts
+before the first endpoint call. No generation can retain more messages than
+its complete producer count, so that bound is exact: the host path allocates
+no unbounded storage and never observes `WouldBlock`. Runtime does not infer
+these counts from queue occupancy or observed execution.
+
+Reaching the producer count finishes the producer. A branch's final
+acknowledgement exposes its generation terminal and finishes that consumer;
+the final branch collectively joins the generation. A later dynamic execution
+of the same exact channel-create lineage reuses that ABI instance only by
+resetting the joined generation and reopening the same finite rate table. The
+execution-local dense slot is a lowering lookup for the existing SSA lineage,
+not channel, route, Mapping, or session identity. Re-entry before join is a
+typed lifecycle failure rather than an overlapping generation.
 
 The adapter transports every rejected ABI outcome as its original typed
 `OrderedChannelABIError`; it does not flatten backpressure, sequence
 exhaustion, rate excess, cancellation, or lifecycle misuse into a generic
 execution string. Any failure after entry cancels every generation that has
 not joined, including failures while finishing endpoints or deinitializing the
-native image. A fully terminal path alone joins. Each native execution owns a
-fresh transient ABI instance; reset and reuse of one direct ABI session are
-separate conformance evidence rather than an adapter lifecycle guarantee.
+native image. A fully terminal path alone joins. Each native execution owns
+fresh transient lineage slots; their ABI instances never cross executions.
 
 The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with

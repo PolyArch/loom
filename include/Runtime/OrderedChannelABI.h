@@ -122,6 +122,10 @@ public:
   llvm::Error reset();
 
   std::uint64_t generation() const { return generation_; }
+  bool hasStaticRateContract() const { return expectedMessages_.has_value(); }
+  bool generationJoined() const;
+  llvm::Expected<bool>
+  consumerFinished(std::uint32_t consumerOrdinal) const;
 
   llvm::Expected<OrderedChannelReceiveTicket>
   receive(std::uint32_t consumerOrdinal);

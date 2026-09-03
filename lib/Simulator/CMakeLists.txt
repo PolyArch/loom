@@ -109,6 +109,7 @@ add_mlir_library(LoomNativeSimulationOracle
   NativeExecutionSupport.cpp
   NativeSimulationOracle.cpp
   SourceBackedDfgValidation.cpp
+  StructuredProgramNativeChannelLifecycle.cpp
   StructuredProgramNativeExecution.cpp
   StructuredProgramWorkloadInstrumentation.cpp
   StructuredProgramObservations.cpp
