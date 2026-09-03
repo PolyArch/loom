@@ -118,6 +118,13 @@ struct ResourceTimeSpectrumFunnelResult final {
   ResourceTimeSpectrumFunnelAccounting accounting;
 };
 
+/// True only when one independently verified scenario contains the exact
+/// Mapping and, when requested, carries that verified spectrum class.
+bool resourceTimeSpectrumAdmitsMappingClass(
+    const ResourceTimeSpectrumFunnelResult &result,
+    const ArtifactRootReference &mapping,
+    std::optional<PreMappingSpectrumClass> requestedClass = std::nullopt);
+
 /// One state in an ordered finite Mapping/Deployment path. The path is
 /// invocation-local compiler output; it is never inferred from allocation
 /// counts or discovered by scanning the ArtifactStore. A nonempty path must

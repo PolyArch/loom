@@ -17,6 +17,19 @@
 /// encoder here exists once.
 namespace loom::application::diagnostics_detail {
 
+inline constexpr llvm::StringLiteral applicationPairDecisionSchemaIdentity =
+    "loom.application_pair_decision";
+inline constexpr llvm::StringLiteral applicationPairDecisionSchemaVersion =
+    "1.2";
+inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaIdentity =
+    "loom.application_pair_evidence";
+inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaVersion =
+    "1.2";
+inline constexpr llvm::StringLiteral applicationPairDispositionSchemaIdentity =
+    "loom.application_pair_disposition";
+inline constexpr llvm::StringLiteral applicationPairDispositionSchemaVersion =
+    "1.2";
+
 llvm::StringRef spelling(dse::JointDesignAttemptDisposition value);
 llvm::StringRef spelling(dse::JointDesignQualityDisposition value);
 llvm::StringRef spelling(dse::JointDesignQualityIncompleteReason value);

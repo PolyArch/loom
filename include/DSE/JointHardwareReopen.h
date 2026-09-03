@@ -5,6 +5,7 @@
 #include "DSE/JointDesignExploration.h"
 #include "DSE/JointMappingMigration.h"
 #include "DSE/PreMappingFrontier.h"
+#include "DSE/ResourceTimeSpectrum.h"
 #include "DSE/SpatialRuntimeFeedback.h"
 #include "DSE/SpatialTransportCegar.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -13,6 +14,7 @@
 #include "PnR/SpatialProgressState.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -189,13 +191,46 @@ struct JointResourceTimeAdjacentRepair final {
   JointDesignExplorationPlan plan;
   std::optional<ArtifactRootReference> coldMapping;
   std::optional<ArtifactRootReference> incrementalMapping;
+  std::optional<ResourceTimeSpectrumFunnelResult> coldSelectionSpectrum;
+  std::optional<ResourceTimeSpectrumFunnelResult> incrementalSelectionSpectrum;
+  std::vector<ArtifactRootReference> coldEligibleMappings;
+  std::vector<ArtifactRootReference> incrementalEligibleMappings;
+  std::vector<DsePlanIncompleteReason> coldExecutionIncompleteReasons;
+  std::vector<DsePlanIncompleteReason> incrementalExecutionIncompleteReasons;
   JointDesignExecution coldExecution;
-  JointDesignExecution execution;
+  /// Lower Tech/Spatial work for the reopened roots. This remains present
+  /// when that prerequisite terminates incomplete before System PnR.
+  JointDesignExecution incrementalLowerExecution;
+  /// Present only when the lower frontier completed and the System-only plan
+  /// was therefore admissible.
+  std::optional<JointDesignExecution> incrementalExecution;
   JointMappingReuseDisposition reuseDisposition =
       JointMappingReuseDisposition::ColdFallback;
   mapping::SystemMappingImportSessionStatistics coldVerification;
   mapping::SystemMappingImportSessionStatistics incrementalVerification;
 };
+
+enum class JointResourceTimeMappingRepairSide : std::uint8_t {
+  Cold,
+  Incremental,
+};
+
+/// Existing caller-owned independent verifier for Mapping candidates. The
+/// adjacent repair uses it only after exact partition and preserve-cone checks,
+/// tests canonical singleton candidates in order, and invokes it over the
+/// complete eligible frontier when no singleton is accepted. Every generated
+/// Mapping remains in its execution regardless of the selection result.
+using JointResourceTimeMappingVerifier =
+    llvm::function_ref<llvm::Expected<ResourceTimeSpectrumFunnelResult>(
+        JointResourceTimeMappingRepairSide,
+        llvm::ArrayRef<ArtifactRootReference>)>;
+
+/// Returns the exact canonical root set whose requested System partition
+/// changes between two adjacent plans. Missing, added, and resized roots are
+/// all changes; unchanged roots are never admitted to the migration cone.
+std::vector<::dataflow::RootThreadLaunchRef> deriveSystemPartitionDelta(
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> parent,
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> child);
 
 /// One canonical hardware CandidateDecision edge retained from the generator
 /// that materialized it. The descriptor kind selects the existing typed
@@ -329,6 +364,7 @@ executeResourceTimeAdjacentMappingRepair(
     const JointDesignPolicy &policy,
     llvm::ArrayRef<pnr::SystemBindingPartitionIntent> childPartitions,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    JointResourceTimeMappingVerifier mappingVerifier,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 

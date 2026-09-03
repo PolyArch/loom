@@ -1796,6 +1796,17 @@ void graphBindingWorkflow() {
       scheduleMappings->candidates.front(), store));
   require(scheduleMapping.reference() != finalizedParentMapping.reference(),
           "resource-time repair reproduced the unchanged parent Mapping");
+  require(roots.size() > 1,
+          "resource-time preservation fixture requires a preserved root");
+  require(take(loom::pnr::preservesSystemMappingMigrationCone(
+              finalizedParentMapping.view(), scheduleMapping.view(),
+              scheduleReopenedRoots, store)),
+          "resource-time repair changed a cone-external System selection");
+  const std::array incorrectlyReopenedRoots{roots.front()};
+  require(!take(loom::pnr::preservesSystemMappingMigrationCone(
+              finalizedParentMapping.view(), scheduleMapping.view(),
+              incorrectlyReopenedRoots, store)),
+          "preservation check admitted a changed cone-external root");
   std::vector<loom::fabric::AccCoreOccurrenceRef> repairedScheduleTargets;
   for (const auto &binding :
        scheduleMapping.view().executionBindings().threadBindings()) {

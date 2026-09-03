@@ -29,8 +29,6 @@
 #include "JointHardwareReopenExecution.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
-#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
-#include "PnR/System/SystemMappingMigration.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/IR/MLIRContext.h"
@@ -2143,148 +2141,12 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         !switchFallback.seed.spatialMappings.empty())
       fail("global switch mutation did not produce a typed cold fallback");
   }
-  llvm::SmallString<128> adjacentJournal(temporary.path());
-  llvm::sys::path::append(adjacentJournal, "adjacent-resource-time");
-  const std::array adjacentPartitions = {
-      loom::pnr::SystemBindingPartitionIntent{mappedRoots.front(), 2}};
-  const std::array adjacentRoots = {mappedRoots.front()};
-  loom::dse::JointHardwareReopenRequest adjacentRequest{
-      take(loom::dse::DseProducerSemanticBuildIdentity::get(
-          "loom.test.resource_time_adjacent.v1")),
-      adjacentJournal.str().str(),
-      {},
-      loom::dse::JointDesignStoppingPolicy::FirstVerified,
-      std::nullopt,
-      std::nullopt,
-      take(loom::dse::SiteCapacity::get(2, 0, 0)),
-      take(loom::dse::PlanExecutionPolicy::get(
-          2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
-  adjacentRequest.invocationSemanticInputs = {alternateSystem};
-  const auto adjacentRepair =
-      take(loom::dse::executeResourceTimeAdjacentMappingRepair(
-          plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
-          std::move(adjacentRequest), store, blobs));
-  std::vector<loom::ArtifactRootReference> adjacentSemanticInputs =
-      loom::dse::projectJointDesignSemanticInputs(adjacentRepair.plan);
-  adjacentSemanticInputs.push_back(alternateSystem);
-  const auto adjacentClosure = take(loom::dse::DseRunClosure::get(
-      take(loom::dse::DseProducerSemanticBuildIdentity::get(
-          "loom.test.resource_time_adjacent.v1")),
-      adjacentSemanticInputs, adjacentRepair.plan.resolvedConfig, {}, store));
-  if (!adjacentRepair.execution.invocationRunKey() ||
-      *adjacentRepair.execution.invocationRunKey() !=
-          adjacentClosure.runKey().bytes())
-    fail("adjacent repair closure omitted its invocation semantic input");
-  const auto adjacentSeed = take(loom::pnr::importSystemMappingMigrationSeed(
-      adjacentRepair.migrationSeed, store));
-  if (adjacentSeed.reopenedRoots() !=
-          llvm::ArrayRef<dataflow::RootThreadLaunchRef>(adjacentRoots) ||
-      adjacentRepair.coldExecution.summary.techMappingDispatchCount == 0 ||
-      adjacentRepair.coldExecution.summary.spatialPnrDispatchCount == 0 ||
-      adjacentRepair.coldExecution.summary.systemPnrDispatchCount == 0 ||
-      adjacentRepair.coldExecution.summary.coldReopenWallTimeNanoseconds !=
-          adjacentRepair.coldExecution.summary.executionWallTimeNanoseconds ||
-      adjacentRepair.coldExecution.summary
-              .incrementalReopenWallTimeNanoseconds != 0 ||
-      adjacentRepair.execution.summary.techMappingDispatchCount == 0 ||
-      adjacentRepair.execution.summary.spatialPnrDispatchCount == 0 ||
-      adjacentRepair.execution.summary.systemPnrDispatchCount != 1 ||
-      adjacentRepair.execution.summary.incrementalReopenWallTimeNanoseconds !=
-          adjacentRepair.execution.summary.executionWallTimeNanoseconds ||
-      adjacentRepair.execution.summary.coldReopenWallTimeNanoseconds != 0 ||
-      adjacentRepair.execution.summary.preservedTechMappings != 0 ||
-      adjacentRepair.execution.summary.preservedSpatialMappings != 0 ||
-      adjacentRepair.reuseDisposition !=
-          loom::dse::JointMappingReuseDisposition::ColdFallback)
-    fail("adjacent resource-time finalist retained a reopened root Mapping");
-  std::vector<loom::ArtifactRootReference> adjacentMappings;
-  for (const auto &pair : adjacentRepair.execution.mappedPairs)
-    adjacentMappings.insert(adjacentMappings.end(), pair.systemMappings.begin(),
-                            pair.systemMappings.end());
-  llvm::sort(adjacentMappings, loom::artifactRootReferenceLess);
-  adjacentMappings.erase(
-      std::unique(adjacentMappings.begin(), adjacentMappings.end()),
-      adjacentMappings.end());
-  std::vector<loom::ArtifactRootReference> coldAdjacentMappings;
-  for (const auto &pair : adjacentRepair.coldExecution.mappedPairs)
-    coldAdjacentMappings.insert(coldAdjacentMappings.end(),
-                                pair.systemMappings.begin(),
-                                pair.systemMappings.end());
-  llvm::sort(coldAdjacentMappings, loom::artifactRootReferenceLess);
-  coldAdjacentMappings.erase(
-      std::unique(coldAdjacentMappings.begin(), coldAdjacentMappings.end()),
-      coldAdjacentMappings.end());
-  if (adjacentMappings.empty() ||
-      llvm::is_contained(adjacentMappings, mappings.front()))
-    fail("adjacent resource-time repair did not publish a distinct Mapping");
-  if (coldAdjacentMappings.empty() || !adjacentRepair.coldMapping ||
-      !adjacentRepair.incrementalMapping ||
-      !llvm::is_contained(coldAdjacentMappings, *adjacentRepair.coldMapping) ||
-      !llvm::is_contained(adjacentMappings, *adjacentRepair.incrementalMapping))
-    fail("adjacent resource-time repair did not publish a paired cold and "
-         "incremental Mapping");
-  auto adjacentMapping =
-      take(loom::mapping::importSystemMapping(adjacentMappings.front(), store));
-  if (adjacentMapping.view().dataflowIdentity() !=
-          plan.frontier.pairs.front().software.dataflow.artifact ||
-      adjacentMapping.view().fabricIdentity() != system.artifact)
-    fail("adjacent resource-time repair changed immutable owners");
-  auto adjacentDataflowArtifact = take(dataflow::importCanonicalDataflow(
-      plan.frontier.pairs.front().software.dataflow, store));
-  auto adjacentDataflow = take(adjacentDataflowArtifact.view());
-  auto adjacentContexts = take(loom::mapping::projectSystemExecutionContexts(
-      adjacentDataflow, adjacentMapping.view().executionBindings()));
-  std::set<std::vector<std::uint8_t>> adjacentCores;
-  for (const auto &domain : adjacentContexts.instructionDomains)
-    if (domain.root == mappedRoots.front())
-      adjacentCores.insert(loom::fabric::canonicalFabricBytes(
-          loom::fabric::AccCoreOccurrenceRef{domain.context.accCore}));
-  for (const auto &domain : adjacentContexts.spatialDomains)
-    if (domain.graph.rootThreadLaunch == mappedRoots.front())
-      adjacentCores.insert(loom::fabric::canonicalFabricBytes(
-          loom::fabric::AccCoreOccurrenceRef{domain.context.accCore}));
-  if (adjacentCores.size() != adjacentPartitions.front().partitionCount)
-    fail("adjacent resource-time repair did not remap the reopened root to "
-         "its requested resource count");
-  if (qualityRuns("adjacent")) {
-    if (!incompleteRepairQuality)
-      fail("quality-promotion fixture lost its incomplete repair policy");
-    llvm::SmallString<128> incompleteAdjacentJournal(temporary.path());
-    llvm::sys::path::append(incompleteAdjacentJournal,
-                            "adjacent-resource-time-quality-incomplete");
-    loom::dse::JointHardwareReopenRequest incompleteAdjacentRequest{
-        take(loom::dse::DseProducerSemanticBuildIdentity::get(
-            "loom.test.resource_time_adjacent.quality_incomplete.v1")),
-        incompleteAdjacentJournal.str().str(),
-        {},
-        loom::dse::JointDesignStoppingPolicy::BoundedQuality,
-        *incompleteRepairQuality,
-        std::nullopt,
-        take(loom::dse::SiteCapacity::get(2, 0, 0)),
-        take(loom::dse::PlanExecutionPolicy::get(
-            2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))};
-    const auto incompleteAdjacent =
-        take(loom::dse::executeResourceTimeAdjacentMappingRepair(
-            plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
-            std::move(incompleteAdjacentRequest), store, blobs));
-    const auto retainsMappedPair = [](const auto &execution) {
-      return llvm::any_of(execution.mappedPairs, [](const auto &pair) {
-        return !pair.systemMappings.empty();
-      });
-    };
-    for (const auto *execution :
-         {&incompleteAdjacent.coldExecution, &incompleteAdjacent.execution})
-      if (!retainsMappedPair(*execution) ||
-          execution->summary.qualityDisposition !=
-              loom::dse::JointDesignQualityDisposition::Unsupported ||
-          execution->summary.selectedMapping ||
-          execution->summary.selectedPlanOrdinal)
-        fail("bounded incomplete adjacent repair retained a selected "
-             "Mapping");
-    if (incompleteAdjacent.coldMapping || incompleteAdjacent.incrementalMapping)
-      fail("bounded incomplete adjacent repair published a Mapping join");
-  }
-
+  joint_fixture::exerciseAdjacentResourceTimeMappingRepair(
+      temporary.path(), plan, parentExecution, policy, mappedRoots.front(),
+      system, systemView, alternateSystem, mappings.front(),
+      qualityRuns("adjacent"),
+      incompleteRepairQuality ? &*incompleteRepairQuality : nullptr, store,
+      blobs);
   const std::vector<loom::ArtifactRootReference> systems = {system,
                                                             alternateSystem};
   const std::vector<loom::dse::JointMemberPromotion> memberPromotions = {

@@ -3,6 +3,7 @@
 #include "ADG/Export.h"
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
+#include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -188,6 +189,12 @@ bool sameRepairEvidence(
                           observation.coldProviderWork) &&
          sameProviderWork(evidence.incrementalProviderWork,
                           observation.incrementalProviderWork) &&
+         evidence.coldRuntimeEvidence == observation.coldRuntimeEvidence &&
+         evidence.coldOracleEvidence == observation.coldOracleEvidence &&
+         evidence.incrementalRuntimeEvidence ==
+             observation.incrementalRuntimeEvidence &&
+         evidence.incrementalOracleEvidence ==
+             observation.incrementalOracleEvidence &&
          evidence.coldDfgCycles == observation.coldDfgCycles &&
          evidence.coldCgraCycles == observation.coldCgraCycles &&
          evidence.incrementalDfgCycles == observation.incrementalDfgCycles &&
@@ -195,19 +202,29 @@ bool sameRepairEvidence(
 }
 
 llvm::Expected<mapping::SystemMappingImportSessionStatistics>
-measureIndependentSystemMappingImport(const ArtifactRootReference &reference,
-                                      const ArtifactIdentity &expectedDataflow,
-                                      const ArtifactIdentity &expectedFabric,
-                                      const ArtifactStore &artifacts) {
-  mapping::SystemMappingImportSession session(
-      artifacts, 1, mapping::SystemMappingImportSessionMode::New);
-  auto imported = mapping::importSystemMapping(reference, artifacts);
-  if (!imported)
-    return imported.takeError();
-  if (imported->view().dataflowIdentity() != expectedDataflow ||
-      imported->view().fabricIdentity() != expectedFabric)
+measureIndependentSystemMappingImports(
+    llvm::ArrayRef<ArtifactRootReference> references,
+    const ArtifactIdentity &expectedDataflow,
+    const ArtifactIdentity &expectedFabric, const ArtifactStore &artifacts) {
+  if (references.empty())
     return visualizationError(
-        "independently replayed repair Mapping has foreign owners");
+        "independent repair replay has no Mapping candidate");
+  mapping::SystemMappingImportSession session(
+      artifacts, references.size(),
+      mapping::SystemMappingImportSessionMode::New);
+  for (const auto indexed : llvm::enumerate(references)) {
+    if (llvm::is_contained(references.take_front(indexed.index()),
+                           indexed.value()))
+      return visualizationError(
+          "independent repair replay repeats a Mapping candidate");
+    auto imported = mapping::importSystemMapping(indexed.value(), artifacts);
+    if (!imported)
+      return imported.takeError();
+    if (imported->view().dataflowIdentity() != expectedDataflow ||
+        imported->view().fabricIdentity() != expectedFabric)
+      return visualizationError(
+          "independently replayed repair Mapping has foreign owners");
+  }
   return session.statistics();
 }
 
@@ -336,6 +353,9 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
     return std::vector<std::string>{};
   }
   const pnr::ResourceTimeTransitionGraph &graph = *manifestGraph;
+  const std::optional<dse::PreMappingSpectrumClass> requestedSpectrumClass =
+      dse::spectrumClassForEndpoint(
+          prepared.resourceTimePolicy.spectrumEndpoint);
   if (llvm::Error error =
           pnr::verifyResourceTimeTransitionGraph(graph, artifacts, blobs))
     return visualizationError("resource-time transition graph failed "
@@ -371,14 +391,20 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
     if (path.scheduleOwnerPlanOrdinal !=
             *execution.execution.summary.selectedPlanOrdinal ||
         path.scheduleOwnerPlanOrdinal >= prepared.mappingAlternatives.size() ||
+        !execution.provenance.pairDecision ||
+        !execution.provenance.pairDecision->selectedScheduleHintDigest ||
         path.scheduleHintDigest !=
+            *execution.provenance.pairDecision->selectedScheduleHintDigest ||
+        !llvm::is_contained(
             prepared.mappingAlternatives[path.scheduleOwnerPlanOrdinal]
-                .resourceTimeScheduleHintDigest ||
+                .equivalentScheduleHintDigests,
+            path.scheduleHintDigest) ||
         path.observationOrdinals.size() != graph.transitions.size())
       return visualizationError("resource-time graph lost its exact schedule "
                                 "path owner");
     ArtifactRootReference parentMapping = graph.entry.mapping;
     std::uint64_t parentPlanOrdinal = path.scheduleOwnerPlanOrdinal;
+    ComponentViewDigest parentScheduleHint = path.scheduleHintDigest;
     for (std::size_t edgeOrdinal = 0;
          edgeOrdinal != graph.transitions.size(); ++edgeOrdinal) {
       const std::uint64_t observationOrdinal =
@@ -391,9 +417,17 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
           execution.provenance
               .incrementalMappingObservations[observationOrdinal];
       const pnr::ResourceTimeTransition &edge = graph.transitions[edgeOrdinal];
-      if (!source.verified || !source.childMapping ||
+      const build_detail::ApplicationIncrementalMappingOutcome sourceOutcome =
+          build_detail::deriveIncrementalMappingOutcome(source);
+      if (!sourceOutcome.verified || !source.childMapping ||
           source.parentPlanOrdinal != parentPlanOrdinal ||
           source.parentMapping != parentMapping ||
+          source.parentScheduleHintDigest != parentScheduleHint ||
+          source.childPlanOrdinal >= prepared.mappingAlternatives.size() ||
+          !llvm::is_contained(
+              prepared.mappingAlternatives[source.childPlanOrdinal]
+                  .equivalentScheduleHintDigests,
+              source.childScheduleHintDigest) ||
           edge.parent.mapping != source.parentMapping ||
           edge.child.mapping != *source.childMapping)
         return visualizationError("resource-time graph path does not match its "
@@ -401,6 +435,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
       pathSources.push_back(&source);
       parentMapping = *source.childMapping;
       parentPlanOrdinal = source.childPlanOrdinal;
+      parentScheduleHint = source.childScheduleHintDigest;
     }
   }
 
@@ -521,7 +556,9 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
             !sameAllocations(candidate.afterActive, after.active))
           return visualizationError("parent spectrum transition does not bind "
                                     "its adjacent states");
-        if (sameTransition(candidate, evidence.transition)) {
+        if ((!requestedSpectrumClass ||
+             scenario.spectrumClass == *requestedSpectrumClass) &&
+            sameTransition(candidate, evidence.transition)) {
           ++parentMatches;
         }
       }
@@ -579,7 +616,10 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
           return visualizationError("child spectrum state has a foreign "
                                     "Dataflow event: " +
                                     llvm::toString(std::move(error)));
-        childCarriesActiveWork |= !state.active.empty();
+        childCarriesActiveWork |=
+            (!requestedSpectrumClass ||
+             scenario.spectrumClass == *requestedSpectrumClass) &&
+            !state.active.empty();
       }
     }
     if (!childCarriesActiveWork)
@@ -623,9 +663,17 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
     if (!sameRepairEvidence(evidence.repair, *source))
       return visualizationError("resource-time repair evidence changed its "
                                 "ordered source observation");
-    if (!source->coldMapping ||
-        source->disposition != dse::JointDesignAttemptDisposition::Verified ||
-        source->incompleteReason ||
+    const build_detail::ApplicationIncrementalMappingOutcome sourceOutcome =
+        build_detail::deriveIncrementalMappingOutcome(*source);
+    if (!source->coldMapping || !sourceOutcome.verified ||
+        source->disposition != sourceOutcome.disposition ||
+        source->incompleteReason != sourceOutcome.incompleteReason ||
+        !llvm::is_contained(source->coldMappingCandidates,
+                            *source->coldMapping) ||
+        !llvm::is_contained(source->incrementalMappingCandidates,
+                            evidence.transition.child.mapping) ||
+        source->spectrumEndpoint !=
+            prepared.resourceTimePolicy.spectrumEndpoint ||
         source->parentPlanOrdinal >= prepared.mappingAlternatives.size() ||
         source->childPlanOrdinal >= prepared.mappingAlternatives.size())
       return visualizationError("resource-time repair source is incomplete");
@@ -633,10 +681,10 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
         prepared.mappingAlternatives[source->parentPlanOrdinal];
     const PreparedApplicationMappingAlternative &childAlternative =
         prepared.mappingAlternatives[source->childPlanOrdinal];
-    if (parentAlternative.resourceTimeScheduleHintDigest !=
-            source->parentScheduleHintDigest ||
-        childAlternative.resourceTimeScheduleHintDigest !=
-            source->childScheduleHintDigest ||
+    if (!llvm::is_contained(parentAlternative.equivalentScheduleHintDigests,
+                            source->parentScheduleHintDigest) ||
+        !llvm::is_contained(childAlternative.equivalentScheduleHintDigests,
+                            source->childScheduleHintDigest) ||
         parentAlternative.dataflow != expectedDataflow ||
         childAlternative.dataflow != expectedDataflow ||
         parentAlternative.plan.pairOutputs.size() != 1 ||
@@ -681,8 +729,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
           outcome.disposition != dse::JointDesignAttemptDisposition::Verified ||
           outcome.runtimeDisposition !=
               ApplicationMappingRuntimeDisposition::Completed ||
-          !llvm::is_contained(outcome.systemMappings,
-                              evidence.transition.child.mapping))
+          outcome.runtimeMapping != evidence.transition.child.mapping)
         continue;
       if (childOutcome)
         return visualizationError("resource-time repair has more than one "
@@ -695,14 +742,48 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
       return visualizationError("resource-time incremental QoR does not match "
                                 "its exact Mapping outcome");
 
-    auto coldImport = measureIndependentSystemMappingImport(
-        *source->coldMapping, expectedDataflow.artifact,
+    auto preparedSoftware =
+        detail::findPreparedSoftware(prepared, expectedDataflow.artifact);
+    if (!preparedSoftware)
+      return visualizationError(
+          "resource-time runtime Evidence has no prepared software owner: " +
+          llvm::toString(preparedSoftware.takeError()));
+    auto coldRuntimeMapping =
+        mapping::importSystemMapping(*source->coldMapping, artifacts);
+    if (!coldRuntimeMapping)
+      return visualizationError("cold runtime Mapping import failed: " +
+                                llvm::toString(coldRuntimeMapping.takeError()));
+    auto coldRuntime = detail::resolveApplicationRuntimeEvidenceJoin(
+        evidence.repair.coldRuntimeEvidence, evidence.repair.coldOracleEvidence,
+        expectedDataflow,
+        coldRuntimeMapping->view().executionBindings().spatialMappingImports(),
+        (*preparedSoftware)->replayCases, artifacts, blobs);
+    if (!coldRuntime)
+      return visualizationError("cold runtime Evidence join failed: " +
+                                llvm::toString(coldRuntime.takeError()));
+    auto incrementalRuntime = detail::resolveApplicationRuntimeEvidenceJoin(
+        evidence.repair.incrementalRuntimeEvidence,
+        evidence.repair.incrementalOracleEvidence, expectedDataflow,
+        childMapping->view().executionBindings().spatialMappingImports(),
+        (*preparedSoftware)->replayCases, artifacts, blobs);
+    if (!incrementalRuntime)
+      return visualizationError("incremental runtime Evidence join failed: " +
+                                llvm::toString(incrementalRuntime.takeError()));
+    if (source->coldDfgCycles != coldRuntime->dfgCycles ||
+        source->coldCgraCycles != coldRuntime->cgraCycles ||
+        source->incrementalDfgCycles != incrementalRuntime->dfgCycles ||
+        source->incrementalCgraCycles != incrementalRuntime->cgraCycles)
+      return visualizationError("resource-time runtime Evidence cycle totals "
+                                "do not match their source observations");
+
+    auto coldImport = measureIndependentSystemMappingImports(
+        source->coldMappingCandidates, expectedDataflow.artifact,
         expectedFabric.artifact, artifacts);
     if (!coldImport)
       return visualizationError("cold Mapping replay failed: " +
                                 llvm::toString(coldImport.takeError()));
-    auto incrementalImport = measureIndependentSystemMappingImport(
-        evidence.transition.child.mapping, expectedDataflow.artifact,
+    auto incrementalImport = measureIndependentSystemMappingImports(
+        source->incrementalMappingCandidates, expectedDataflow.artifact,
         expectedFabric.artifact, artifacts);
     if (!incrementalImport)
       return visualizationError("incremental Mapping replay failed: " +
@@ -729,12 +810,16 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
       return visualizationError(
           "cannot derive the child resource-time Mapping cone: " +
           llvm::toString(childCone.takeError()));
-    if (parentCone->preservedSpatialMappings !=
-            childCone->preservedSpatialMappings ||
-        parentCone->preservedTechMappings !=
-            childCone->preservedTechMappings)
+    auto preserved = pnr::preservesSystemMappingMigrationCone(
+        parentMapping->view(), childMapping->view(),
+        evidence.repair.reopenedRoots, artifacts);
+    if (!preserved)
+      return visualizationError(
+          "cannot verify the resource-time Mapping preservation cone: " +
+          llvm::toString(preserved.takeError()));
+    if (!*preserved)
       return visualizationError("resource-time repair changed a cone-external "
-                                "lower Mapping");
+                                "System selection");
     if (evidence.repair.preservedSpatialMappings !=
             parentCone->preservedSpatialMappings.size() ||
         evidence.repair.preservedTechMappings !=
@@ -859,6 +944,16 @@ llvm::Error writeBundle(llvm::StringRef destination,
           imported->view().executionBindings().spatialMappingImports().end());
     }
   }
+  for (const ApplicationIncrementalMappingObservation &observation :
+       execution.provenance.incrementalMappingObservations) {
+    for (llvm::ArrayRef<ArtifactRootReference> evidence :
+         {llvm::ArrayRef(observation.coldRuntimeEvidence),
+          llvm::ArrayRef(observation.coldOracleEvidence),
+          llvm::ArrayRef(observation.incrementalRuntimeEvidence),
+          llvm::ArrayRef(observation.incrementalOracleEvidence)})
+      runtimeEvidence.insert(runtimeEvidence.end(), evidence.begin(),
+                             evidence.end());
+  }
   canonicalize(runtimeEvidence);
   for (MappingDomain &domain : mappingDomains) {
     canonicalize(domain.systemMappings);
@@ -929,7 +1024,7 @@ llvm::Error writeBundle(llvm::StringRef destination,
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "loom.visualization_bundle");
-      json.attribute("version", "1.4");
+      json.attribute("version", "1.5");
       json.attributeObject("fabric", [&] {
         writeArtifactRootReferenceJsonFields(json, system.reference());
       });
@@ -1104,6 +1199,14 @@ llvm::Error writeBundle(llvm::StringRef destination,
                                 evidence.repair.coldProviderWork);
               writeProviderWork(json, "incremental_provider_work",
                                 evidence.repair.incrementalProviderWork);
+              writeReferenceArray(json, "cold_runtime_evidence",
+                                  evidence.repair.coldRuntimeEvidence);
+              writeReferenceArray(json, "cold_oracle_evidence",
+                                  evidence.repair.coldOracleEvidence);
+              writeReferenceArray(json, "incremental_runtime_evidence",
+                                  evidence.repair.incrementalRuntimeEvidence);
+              writeReferenceArray(json, "incremental_oracle_evidence",
+                                  evidence.repair.incrementalOracleEvidence);
               const auto optional = [&](llvm::StringRef name,
                                         std::optional<std::uint64_t> value) {
                 if (value)

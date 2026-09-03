@@ -55,9 +55,6 @@ std::optional<ApplicationPairDecisionDisposition>
 mapRuntimeDispositionToPairDisposition(
     ApplicationMappingRuntimeDisposition disposition);
 
-std::optional<dse::PreMappingSpectrumClass>
-requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint);
-
 llvm::Expected<std::vector<dataflow::RootThreadLaunchRef>>
 deriveApplicationPartitionDelta(const dse::JointDesignExplorationPlan &parent,
                                 const dse::JointDesignExplorationPlan &child);
@@ -65,7 +62,31 @@ deriveApplicationPartitionDelta(const dse::JointDesignExplorationPlan &parent,
 std::optional<ApplicationPairDecisionDisposition>
 classifyResourceTimeSelectionOutcome(
     const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
-    std::optional<dse::PreMappingSpectrumClass> requestedClass);
+    std::optional<dse::PreMappingSpectrumClass> requestedClass,
+    const std::optional<ArtifactRootReference> &runtimeMapping = std::nullopt);
+
+std::optional<dse::CandidateGeneratorIncompleteReason>
+resourceTimeSelectionIncompleteReason(
+    const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
+    std::optional<dse::PreMappingSpectrumClass> requestedClass = std::nullopt,
+    const std::optional<ArtifactRootReference> &mapping = std::nullopt);
+
+std::optional<dse::DsePlanIncompleteReason> resourceTimeRuntimeIncompleteReason(
+    ApplicationMappingRuntimeDisposition disposition);
+
+struct ApplicationIncrementalMappingOutcome final {
+  dse::JointDesignAttemptDisposition disposition =
+      dse::JointDesignAttemptDisposition::Incomplete;
+  std::optional<dse::DsePlanIncompleteReason> incompleteReason;
+  bool verified = false;
+};
+
+ApplicationIncrementalMappingOutcome deriveIncrementalMappingOutcome(
+    const ApplicationIncrementalMappingObservation &observation);
+
+void retainPrioritizedIncompleteReason(
+    std::optional<dse::DsePlanIncompleteReason> &retained,
+    dse::DsePlanIncompleteReason reason);
 
 ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
     llvm::ArrayRef<ApplicationPairDecisionDisposition> causes,
@@ -85,6 +106,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
     const dse::JointDesignExecution &execution,
+    llvm::ArrayRef<ApplicationIncrementalMappingObservation>
+        incrementalMappingObservations,
     llvm::ArrayRef<ApplicationPairQualityInvocationRecord> qualityInvocations);
 
 ApplicationPairDecisionRecord makePreparationPairDecision(

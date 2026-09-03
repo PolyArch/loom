@@ -95,7 +95,8 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
           ApplicationPairManifestJoinStatus::OwnerScopedPlanningClosure ||
       !pair.invocationRunKey || !pair.pairIdentity || !pair.sourceProgram ||
       !pair.fabric || !pair.workload || !pair.runtimeInput ||
-      !pair.selectedCandidateIdentity || !pair.selectedSystem)
+      !pair.selectedCandidateIdentity || !pair.selectedSystem ||
+      !pair.selectedScheduleHintDigest)
     return invalid("Deployment selection lacks an exact pair manifest join");
   if (*pair.invocationRunKey != *invocationRunKey)
     return invalid("Deployment pair run key differs from Mapping execution");
@@ -122,7 +123,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   for (const ApplicationMappingCandidateOutcome &outcome :
        mappingExecution.candidateOutcomes) {
     if (outcome.planOrdinal != selectedPlan ||
-        !llvm::is_contained(outcome.systemMappings, selectedMapping))
+        outcome.runtimeMapping != selectedMapping)
       continue;
     if (!selectedOutcome) {
       selectedOutcome = &outcome;
@@ -131,6 +132,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
                outcome.runtimeDisposition !=
                    selectedOutcome->runtimeDisposition ||
                outcome.systemMappings != selectedOutcome->systemMappings ||
+               outcome.runtimeMapping != selectedOutcome->runtimeMapping ||
                outcome.runtimeEvidence != selectedOutcome->runtimeEvidence ||
                outcome.oracleEvidence != selectedOutcome->oracleEvidence ||
                outcome.hardwareMutationRepairRecord !=
@@ -193,11 +195,12 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   for (const ApplicationPairMappingObservation &observation :
        selectedCandidate->mappingObservations) {
     if (observation.planOrdinal != selectedPlan ||
-        !llvm::is_contained(observation.systemMappings, selectedMapping))
+        observation.runtimeMapping != selectedMapping)
       continue;
     if (observation.system != selectedOutcome->system ||
         observation.mappingDisposition != selectedOutcome->disposition ||
         observation.runtimeDisposition != selectedOutcome->runtimeDisposition ||
+        observation.runtimeMapping != selectedOutcome->runtimeMapping ||
         observation.runtimeEvidence != selectedOutcome->runtimeEvidence ||
         observation.oracleEvidence != selectedOutcome->oracleEvidence ||
         observation.hardwareMutationRepairRecord !=
@@ -218,6 +221,8 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   if (selectedScheduleHints.empty() ||
       selectedScheduleHints != observedScheduleHints ||
       selectedScheduleHints != preparedScheduleHints ||
+      !llvm::is_contained(selectedScheduleHints,
+                          *pair.selectedScheduleHintDigest) ||
       std::adjacent_find(selectedScheduleHints.begin(),
                          selectedScheduleHints.end()) !=
           selectedScheduleHints.end())
@@ -689,6 +694,13 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       mappingExecution.execution.summary.selectedPlanOrdinal;
   if (selectedPlan && *selectedPlan >= prepared.mappingAlternatives.size())
     return invalid("selected resource-time plan ordinal is out of range");
+  const ApplicationPairDecisionRecord *pairDecision =
+      mappingExecution.provenance.pairDecision
+          ? &*mappingExecution.provenance.pairDecision
+          : nullptr;
+  if (selectedPlan &&
+      (!pairDecision || !pairDecision->selectedScheduleHintDigest))
+    return invalid("selected resource-time plan has no exact schedule hint");
 
   std::vector<const ApplicationIncrementalMappingObservation *>
       pathObservations;
@@ -704,9 +716,12 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       return invalid("resource-time Mapping path has a foreign schedule owner");
     const PreparedApplicationMappingAlternative &scheduleOwner =
         prepared.mappingAlternatives[path.scheduleOwnerPlanOrdinal];
-    if (path.scheduleHintDigest != scheduleOwner.resourceTimeScheduleHintDigest)
+    if (path.scheduleHintDigest != *pairDecision->selectedScheduleHintDigest ||
+        !llvm::is_contained(scheduleOwner.equivalentScheduleHintDigests,
+                            path.scheduleHintDigest))
       return invalid("resource-time Mapping path lost its schedule digest");
     std::uint64_t parentPlanOrdinal = path.scheduleOwnerPlanOrdinal;
+    ComponentViewDigest parentScheduleHint = path.scheduleHintDigest;
     ArtifactRootReference parentMapping = imported->mapping.reference();
     for (const std::uint64_t observationOrdinal : path.observationOrdinals) {
       if (observationOrdinal >=
@@ -715,18 +730,20 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       const ApplicationIncrementalMappingObservation &observation =
           mappingExecution.provenance
               .incrementalMappingObservations[observationOrdinal];
-      if (!observation.verified || !observation.childMapping ||
+      const build_detail::ApplicationIncrementalMappingOutcome
+          observationOutcome =
+              build_detail::deriveIncrementalMappingOutcome(observation);
+      if (!observationOutcome.verified || !observation.childMapping ||
           observation.parentMapping != parentMapping ||
           observation.parentPlanOrdinal != parentPlanOrdinal ||
           observation.parentPlanOrdinal >=
               prepared.mappingAlternatives.size() ||
           observation.childPlanOrdinal >= prepared.mappingAlternatives.size() ||
-          observation.parentScheduleHintDigest !=
-              prepared.mappingAlternatives[observation.parentPlanOrdinal]
-                  .resourceTimeScheduleHintDigest ||
-          observation.childScheduleHintDigest !=
+          observation.parentScheduleHintDigest != parentScheduleHint ||
+          !llvm::is_contained(
               prepared.mappingAlternatives[observation.childPlanOrdinal]
-                  .resourceTimeScheduleHintDigest ||
+                  .equivalentScheduleHintDigests,
+              observation.childScheduleHintDigest) ||
           llvm::is_contained(endpointMappings, *observation.childMapping))
         return invalid("resource-time Mapping path is not one exact verified "
                        "repair chain");
@@ -745,6 +762,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       endpointMappings.push_back(*observation.childMapping);
       parentMapping = *observation.childMapping;
       parentPlanOrdinal = observation.childPlanOrdinal;
+      parentScheduleHint = observation.childScheduleHintDigest;
     }
   }
 
@@ -802,6 +820,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   std::vector<ApplicationResourceTimeTransitionEvidence>
       resourceTimeTransitions;
   std::optional<pnr::ResourceTimeTransitionGraph> resourceTimeTransitionGraph;
+  const std::optional<dse::PreMappingSpectrumClass> requestedSpectrumClass =
+      dse::spectrumClassForEndpoint(
+          prepared.resourceTimePolicy.spectrumEndpoint);
   if (selectedPlan && endpoints.size() > 1) {
     const ApplicationResourceTimeMappingPath &path =
         *mappingExecution.provenance.resourceTimeMappingPath;
@@ -829,7 +850,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       const dse::VerifiedResourceTimeSpectrumScenario *pathScenario = nullptr;
       for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
            spectrum->scenarios) {
-        if (!scenario.transitionGraph ||
+        if ((requestedSpectrumClass &&
+             scenario.spectrumClass != *requestedSpectrumClass) ||
+            !scenario.transitionGraph ||
             scenario.transitionGraph->entry.mapping !=
                 endpoints.front().mapping ||
             scenario.transitionGraph->entry.deployment !=
@@ -855,8 +878,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
         pathScenario = &scenario;
       }
       if (!pathScenario)
-        return invalid("verified resource-time spectrum lost its exact ordered "
-                       "Mapping path");
+        continue;
 
       resourceTimeTransitionGraph = *pathScenario->transitionGraph;
       resourceTimeSpectrum = **verified;
@@ -884,7 +906,10 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
           return childVerified.takeError();
         if (!*childVerified ||
             !std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
-                (*childVerified)->verification))
+                (*childVerified)->verification) ||
+            !dse::resourceTimeSpectrumAdmitsMappingClass(
+                **childVerified, *candidate.childMapping,
+                requestedSpectrumClass))
           return invalid("resource-time path child lost its independently "
                          "verified Mapping spectrum");
         resourceTimeTransitions.push_back(
@@ -907,6 +932,10 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
               candidate.incrementalVerifierWork,
               candidate.coldProviderWork,
               candidate.incrementalProviderWork,
+              candidate.coldRuntimeEvidence,
+              candidate.coldOracleEvidence,
+              candidate.incrementalRuntimeEvidence,
+              candidate.incrementalOracleEvidence,
               candidate.coldDfgCycles,
               candidate.coldCgraCycles,
               candidate.incrementalDfgCycles,
@@ -921,29 +950,44 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   if (selectedPlan && !resourceTimeTransitionGraph) {
     const PreparedApplicationMappingAlternative &alternative =
         prepared.mappingAlternatives[*selectedPlan];
+    const ApplicationMappingCandidateOutcome *selectedSpectrumOutcome = nullptr;
     for (const ApplicationMappingCandidateOutcome &outcome :
          mappingExecution.candidateOutcomes) {
       if (outcome.planOrdinal != *selectedPlan ||
-          outcome.systemMappings.empty() ||
-          !llvm::is_contained(outcome.systemMappings,
-                              imported->mapping.reference()))
+          outcome.resourceTimeScheduleHintDigest !=
+              *pairDecision->selectedScheduleHintDigest ||
+          outcome.runtimeMapping != imported->mapping.reference())
         continue;
-      auto verified = verifyResourceTimeAlternative(
-          prepared.resourceTimeFunnel, alternative,
-          {imported->mapping.reference()}, artifacts, blobs,
-          outcome.resourceTimeScheduleHintDigest, {}, request.executionControl);
-      if (!verified)
-        return verified.takeError();
-      if (!*verified)
-        continue;
-      const bool completed =
-          std::holds_alternative<dse::VerifiedResourceTimeSpectrum>(
-              (*verified)->verification);
-      if (!resourceTimeSpectrum || completed)
-        resourceTimeSpectrum = std::move(**verified);
-      if (completed)
-        break;
+      if (selectedSpectrumOutcome)
+        return invalid("selected resource-time schedule has more than one "
+                       "exact Mapping outcome");
+      selectedSpectrumOutcome = &outcome;
     }
+    if (!selectedSpectrumOutcome)
+      return invalid("selected resource-time schedule has no exact Mapping "
+                     "outcome");
+    if (requestedSpectrumClass &&
+        (!selectedSpectrumOutcome->resourceTimeSpectrum ||
+         !dse::resourceTimeSpectrumAdmitsMappingClass(
+             *selectedSpectrumOutcome->resourceTimeSpectrum,
+             imported->mapping.reference(), requestedSpectrumClass)))
+      return invalid("selected resource-time schedule does not establish its "
+                     "requested endpoint");
+    auto verified = verifyResourceTimeAlternative(
+        prepared.resourceTimeFunnel, alternative,
+        {imported->mapping.reference()}, artifacts, blobs,
+        *pairDecision->selectedScheduleHintDigest, {},
+        request.executionControl);
+    if (!verified)
+      return verified.takeError();
+    if (!*verified)
+      return invalid("selected resource-time schedule has no Spectrum owner");
+    if (requestedSpectrumClass &&
+        !dse::resourceTimeSpectrumAdmitsMappingClass(
+            **verified, imported->mapping.reference(), requestedSpectrumClass))
+      return invalid("selected resource-time schedule failed independent "
+                     "endpoint verification");
+    resourceTimeSpectrum = std::move(**verified);
   }
 
   if (selectedPlan && !resourceTimeTransitionGraph) {

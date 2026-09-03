@@ -65,6 +65,11 @@ enum class PreMappingSpectrumClass : std::uint8_t {
 
 llvm::StringRef toString(PreMappingSpectrumClass value);
 
+/// The exact verified class requested by a focused endpoint policy. Automatic
+/// leaves class selection to the ordinary objective and diversity policy.
+std::optional<PreMappingSpectrumClass>
+spectrumClassForEndpoint(PreMappingSpectrumEndpoint endpoint);
+
 enum class PreMappingSpectrumSeedKind : std::uint8_t {
   /// Legacy spellings remain readable in invocation evidence but are no
   /// longer emitted by the planner. Endpoint labels belong to verified

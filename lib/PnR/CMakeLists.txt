@@ -91,6 +91,7 @@ add_mlir_library(LoomPnR
   System/SystemCapacityProjection.cpp
   System/ResourceTimeTransition.cpp
   System/ResourceTimeTransitionGraph.cpp
+  System/SystemMappingConePreservation.cpp
   System/SystemMappingMigration.cpp
   System/SystemNegotiatedRouter.cpp
   System/SystemServiceRouter.cpp

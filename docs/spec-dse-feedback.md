@@ -3409,6 +3409,35 @@ preference. A resource-time transition remains `Unsupported` or
 and route deltas, live-state correspondence, and migration-time contract are
 all derived by their existing owners.
 
+For a first-verified adjacent repair, the System provider exhausts its finite
+configured restart set inside that repair and the controller selects the first
+canonical independently verified Mapping whose projected per-root resource
+counts exactly realize the requested partition intent, whose preserve-first
+cone retains the exact cone-external thread and graph relations, lower
+Mappings, service plans and routes, and ResourceUses, and which the caller's
+existing independent schedule verifier accepts. This is a selection
+precondition, not a new Mapping constraint: the migration result and every
+fresh legal Mapping remain in the recorded output frontier. The schedule
+verifier sees only candidates which satisfy both structural preconditions. If
+no eligible output realizes the schedule on one side, that side publishes no
+selected Mapping and retains the complete generated Mapping frontier, the
+complete eligible frontier, and its typed Spectrum outcome. The application
+repair observation retains both cold and preserve-first frontiers and outcomes;
+the pair decision derives their attempted, verified, and typed-incomplete
+summary without changing the independently valid selected parent disposition
+or claiming Deployment-level transition closure. Ordinary first-verified
+product Mapping outside this adjacent-state repair is unchanged.
+
+Selection requires the provider plan for that side and every lower-stage
+prerequisite to complete. An incomplete plan publishes its exact typed reason,
+does not invoke the schedule verifier, and cannot select a Mapping from a
+finite output prefix. A verifier cancellation is terminal for that side: no
+later candidate is tried, the complete precomputed eligible frontier remains
+visible, and the cancellation outcome is retained. A focused spectrum endpoint
+is satisfied only when one verified scenario contains both the exact candidate
+Mapping and the requested class; separate scenarios cannot be joined into a
+selection proof.
+
 Cold comparison and preserve-first repair are two real executions over the
 same Dataflow, System, partition intent, and policy. They use distinct journal
 roots, schedulers, and PnR derived-context sessions. Each side independently

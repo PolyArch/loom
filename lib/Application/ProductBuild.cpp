@@ -896,49 +896,90 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
   if (mappingCount == 0)
     return productError("loom_mapping_no_feasible_candidate",
                         "joint Mapping selected no SystemMapping");
+  if (prepared.resourceTimePolicy.spectrumEndpoint !=
+      dse::PreMappingSpectrumEndpoint::Automatic) {
+    const std::optional<dse::PreMappingSpectrumClass> requestedClass =
+        dse::spectrumClassForEndpoint(
+            prepared.resourceTimePolicy.spectrumEndpoint);
+    if (!requestedClass)
+      return productError("loom_mapping_spectrum_endpoint_unsupported",
+                          "requested endpoint has no canonical class");
+    if (!execution->execution.summary.selectedMapping) {
+      if (!execution->provenance.pairDecision)
+        return productError(
+            "loom_mapping_spectrum_endpoint_decision_missing",
+            "requested endpoint has no pair-owned Mapping disposition");
+      const bool completedEndpointFailure =
+          llvm::any_of(execution->candidateOutcomes, [&](const auto &outcome) {
+            return outcome.runtimeDisposition ==
+                       ApplicationMappingRuntimeDisposition::Completed &&
+                   outcome.runtimeMapping.has_value();
+          });
+      switch (execution->provenance.pairDecision->disposition) {
+      case ApplicationPairDecisionDisposition::UnsupportedSemantic:
+        return productError(
+            "loom_mapping_spectrum_endpoint_unsupported",
+            completedEndpointFailure
+                ? "requested endpoint has no verified SystemMapping schedule"
+                : "requested endpoint evaluation is unsupported");
+      case ApplicationPairDecisionDisposition::MappingProofNotEstablished:
+        return productError(
+            "loom_mapping_spectrum_endpoint_proof_not_established",
+            "requested endpoint Mapping proof was not established");
+      case ApplicationPairDecisionDisposition::CancelledOrTimeout:
+        return productError(
+            "loom_mapping_spectrum_endpoint_cancelled_or_timeout",
+            "requested endpoint Mapping was cancelled or timed out");
+      case ApplicationPairDecisionDisposition::ImplementationFailure:
+        return productError(
+            "loom_mapping_spectrum_endpoint_implementation_failure",
+            "requested endpoint Mapping provider failed");
+      case ApplicationPairDecisionDisposition::BudgetExhausted:
+        return productError(
+            "loom_mapping_spectrum_endpoint_budget_exhausted",
+            "requested endpoint exhausted its bounded Mapping work");
+      case ApplicationPairDecisionDisposition::NoPromisingCandidate:
+        return productError(
+            "loom_mapping_spectrum_endpoint_no_promising_candidate",
+            "requested endpoint has no promising Mapping candidate");
+      case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
+        return productError(
+            "loom_mapping_spectrum_endpoint_hardware_incompatible",
+            "requested endpoint is incompatible with the exact hardware");
+      case ApplicationPairDecisionDisposition::VerifiedAcceleration:
+      case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+      case ApplicationPairDecisionDisposition::HardwareDseAlternative:
+        return productError(
+            "loom_mapping_spectrum_endpoint_decision_inconsistent",
+            "successful pair decision has no selected endpoint Mapping");
+      }
+      llvm_unreachable("closed application pair decision disposition");
+    } else {
+      const bool verified =
+          llvm::any_of(execution->candidateOutcomes, [&](const auto &outcome) {
+            if (execution->execution.summary.selectedPlanOrdinal &&
+                outcome.planOrdinal !=
+                    *execution->execution.summary.selectedPlanOrdinal)
+              return false;
+            if (!execution->execution.summary.selectedMapping ||
+                outcome.runtimeMapping !=
+                    execution->execution.summary.selectedMapping)
+              return false;
+            if (!outcome.resourceTimeSpectrum)
+              return false;
+            return dse::resourceTimeSpectrumAdmitsMappingClass(
+                *outcome.resourceTimeSpectrum,
+                *execution->execution.summary.selectedMapping, requestedClass);
+          });
+      if (!verified)
+        return productError(
+            "loom_mapping_spectrum_endpoint_unsupported",
+            "requested endpoint has no verified SystemMapping schedule");
+    }
+  }
   if (!execution->execution.summary.selectedMapping)
     return productError("loom_mapping_selection_incomplete",
                         "Mapping returned candidates without a selected root");
-  if (prepared.resourceTimePolicy.spectrumEndpoint !=
-      dse::PreMappingSpectrumEndpoint::Automatic) {
-    const auto requestedClass = [&]() {
-      switch (prepared.resourceTimePolicy.spectrumEndpoint) {
-      case dse::PreMappingSpectrumEndpoint::MaxTemporal:
-        return dse::PreMappingSpectrumClass::MaxTemporal;
-      case dse::PreMappingSpectrumEndpoint::MaxSpatial:
-        return dse::PreMappingSpectrumClass::MaxSpatial;
-      case dse::PreMappingSpectrumEndpoint::Intermediate:
-        return dse::PreMappingSpectrumClass::Intermediate;
-      case dse::PreMappingSpectrumEndpoint::Automatic:
-        llvm_unreachable("automatic spectrum endpoint was not requested");
-      }
-      llvm_unreachable("unknown spectrum endpoint");
-    }();
-    const bool verified =
-        llvm::any_of(execution->candidateOutcomes, [&](const auto &outcome) {
-          if (execution->execution.summary.selectedPlanOrdinal &&
-              outcome.planOrdinal !=
-                  *execution->execution.summary.selectedPlanOrdinal)
-            return false;
-          if (!execution->execution.summary.selectedMapping ||
-              !llvm::is_contained(
-                  outcome.systemMappings,
-                  *execution->execution.summary.selectedMapping))
-            return false;
-          if (!outcome.resourceTimeSpectrum)
-            return false;
-          const auto *spectrum = std::get_if<dse::VerifiedResourceTimeSpectrum>(
-              &outcome.resourceTimeSpectrum->verification);
-          return spectrum &&
-                 llvm::any_of(spectrum->scenarios, [&](const auto &scenario) {
-                   return scenario.spectrumClass == requestedClass;
-                 });
-        });
-    if (!verified)
-      return productError(
-          "loom_mapping_spectrum_endpoint_unsupported",
-          "requested endpoint has no verified SystemMapping schedule");
-  }
   return std::move(*execution);
 }
 

@@ -28,6 +28,10 @@ class ArtifactStore;
 class BlobStore;
 } // namespace loom
 
+namespace loom::mapping {
+struct SystemExecutionContextProjection;
+} // namespace loom::mapping
+
 namespace loom::pnr {
 
 class FrozenSystemPnrProblem;
@@ -106,6 +110,17 @@ struct SystemMappingMigrationConePartition final {
 llvm::Expected<SystemMappingMigrationConePartition>
 projectSystemMappingMigrationConePartition(
     const ::loom::mapping::SystemMappingView &mapping,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const ArtifactStore &store);
+
+/// Independently compares the exact cone-external System selections of two
+/// verified Mappings on one immutable Dataflow/System. Thread and graph
+/// execution relations, lower Mappings, shared or preserved service plans and
+/// routes, and their ResourceUses must remain identical. Choices owned only by
+/// `reopenedRoots` may differ.
+llvm::Expected<bool> preservesSystemMappingMigrationCone(
+    const ::loom::mapping::SystemMappingView &parent,
+    const ::loom::mapping::SystemMappingView &child,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
     const ArtifactStore &store);
 
@@ -362,6 +377,16 @@ struct ResourceTimeScheduleWitness final {
 /// Deployment legality remain owned by their existing import/verifier paths.
 llvm::Error
 validateResourceTimeTransition(const ResourceTimeTransition &transition);
+
+/// Projects the distinct physical AccCore resources used by one Dataflow root
+/// from an independently derived System execution-context relation. This is
+/// the canonical allocation projection shared by resource-time Mapping
+/// selection and transition verification; it does not make the requested
+/// allocation a Mapping-legality constraint.
+llvm::Expected<std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>>
+projectResourceTimeMappingResources(
+    const ::loom::mapping::SystemExecutionContextProjection &contexts,
+    ::dataflow::RootThreadLaunchRef root);
 
 /// Independently imports both Mapping/Deployment endpoints and verifies the
 /// exact event-relative allocation evidence. Structural validation alone can

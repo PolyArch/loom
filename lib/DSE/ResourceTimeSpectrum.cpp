@@ -931,6 +931,7 @@ verifyResourceTimeMappingFinalists(
       accounting.mappingImportCacheHits = importStats.cacheHits;
       accounting.mappingImportCacheMisses = importStats.cacheMisses;
       accounting.mappingImportRetainedBytes = importStats.retainedBytes;
+      accounting.independentlyImportedMappings = imported.size();
       accounting.elapsedNanoseconds =
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - begin)
@@ -990,6 +991,7 @@ verifyResourceTimeMappingFinalists(
         return invalid("resource-time Mapping projection lost a region");
       if (bound.support == ResourceTimeEstimateSupport::Exact &&
           resources->second.size() > bound.maximumUsefulResourceUnits) {
+        accounting.independentlyImportedMappings = imported.size();
         accounting.elapsedNanoseconds =
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - begin)
@@ -1063,6 +1065,7 @@ verifyResourceTimeMappingFinalists(
     }
   }
   if (witness.scenarios.empty()) {
+    accounting.independentlyImportedMappings = imported.size();
     accounting.elapsedNanoseconds =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - begin)
@@ -1116,6 +1119,20 @@ verifyResourceTimeMappingFinalists(
           std::chrono::steady_clock::now() - begin)
           .count();
   return ResourceTimeSpectrumFunnelResult{std::move(*verified), accounting};
+}
+
+bool resourceTimeSpectrumAdmitsMappingClass(
+    const ResourceTimeSpectrumFunnelResult &result,
+    const ArtifactRootReference &mapping,
+    std::optional<PreMappingSpectrumClass> requestedClass) {
+  const auto *verified =
+      std::get_if<VerifiedResourceTimeSpectrum>(&result.verification);
+  return verified &&
+         llvm::any_of(verified->scenarios, [&](const auto &scenario) {
+           return llvm::is_contained(scenario.systemMappings, mapping) &&
+                  (!requestedClass ||
+                   scenario.spectrumClass == *requestedClass);
+         });
 }
 
 } // namespace loom::dse
