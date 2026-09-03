@@ -475,14 +475,20 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
           cursorNext.setValue(nextCursor);
         }
 
-        // A temporal switch presents the tag of one idle candidate per
-        // arbitration component so the downstream readiness of that row is
-        // observable before the token's valid arrives: an atomic upstream
-        // fanout asserts valid on one output only after every peer output is
-        // ready, so readiness must never wait for valid. Valid requesters are
-        // presented by the grant policy; among idle candidates a free-running
-        // rotation presents one and never changes the grant order. An input is
-        // ready only while it is presented on every output it routes to.
+        // A temporal switch presents the tag of idle candidates so the
+        // downstream readiness of a row is observable before the token's
+        // valid arrives: an atomic upstream fanout asserts valid on one output
+        // only after every peer output is ready, so readiness must never wait
+        // for valid. Valid requesters are presented by the grant policy; among
+        // idle candidates whose selected outputs overlap, a free-running
+        // rotation presents one at a time and never changes the grant order,
+        // while candidates whose selected outputs no other candidate claims
+        // are presented together. An input is ready only while it is
+        // presented on every output it routes to, so a row that contends with
+        // no other row is always presented and its readiness reflects only
+        // its outputs' readiness, never the port's own valid. Only another
+        // input's grant excludes a candidate: the grant is exclusive per
+        // output, so an output this input holds is not held by another.
         std::vector<mlir::Value> presentedInput = selectedInput;
         if (*schedule == ::fabric::Schedule::Temporal) {
           std::vector<mlir::Value> held(
@@ -499,12 +505,13 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
             for (unsigned input : component.inputs) {
               llvm::SmallVector<mlir::Value> free;
               for (unsigned output : component.outputs)
-                free.push_back(circt::comb::OrOp::create(
+                free.push_back(orValues(
                     bodyBuilder, location,
-                    circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                 requestedRoute[input][output]),
-                    circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                 held[output])));
+                    {circt::comb::createOrFoldNot(
+                         bodyBuilder, location, requestedRoute[input][output]),
+                     circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                  held[output]),
+                     selectedInput[input]}));
               candidates.push_back(
                   andValues(bodyBuilder, location,
                             {configuredRequest[input],
@@ -537,17 +544,32 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                         bodyBuilder, location,
                         llvm::APInt(pointerWidth, start)),
                     true);
-                mlir::Value taken = bitConstant(bodyBuilder, location, false);
+                std::vector<mlir::Value> claimed(
+                    component.outputs.size(),
+                    bitConstant(bodyBuilder, location, false));
                 for (unsigned offset = 0; offset != candidateCount; ++offset) {
                   const unsigned position = (start + offset) % candidateCount;
+                  const unsigned input = component.inputs[position];
+                  llvm::SmallVector<mlir::Value> contention;
+                  for (auto [index, output] :
+                       llvm::enumerate(component.outputs))
+                    contention.push_back(andValues(
+                        bodyBuilder, location,
+                        {requestedRoute[input][output], claimed[index]}));
+                  mlir::Value presented = andValues(
+                      bodyBuilder, location,
+                      {pointerIs, candidates[position],
+                       circt::comb::createOrFoldNot(
+                           bodyBuilder, location,
+                           orValues(bodyBuilder, location, contention))});
                   idleSelected[position] = circt::comb::OrOp::create(
-                      bodyBuilder, location, idleSelected[position],
-                      andValues(bodyBuilder, location,
-                                {pointerIs, candidates[position],
-                                 circt::comb::createOrFoldNot(
-                                     bodyBuilder, location, taken)}));
-                  taken = circt::comb::OrOp::create(bodyBuilder, location,
-                                                    taken, candidates[position]);
+                      bodyBuilder, location, idleSelected[position], presented);
+                  for (auto [index, output] :
+                       llvm::enumerate(component.outputs))
+                    claimed[index] = circt::comb::OrOp::create(
+                        bodyBuilder, location, claimed[index],
+                        andValues(bodyBuilder, location,
+                                  {presented, requestedRoute[input][output]}));
                 }
               }
             }

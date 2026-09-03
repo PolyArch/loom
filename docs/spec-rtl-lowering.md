@@ -484,12 +484,16 @@ before the token's valid arrives, because the atomic fanout equations of
 `docs/spec-fabric-switch.md` assert valid on one selected output only after
 every peer output is ready. A Temporal switch therefore presents a candidate
 input's tag on each output it routes to whenever no valid requester holds that
-output: valid requesters are presented by the exact GrantPolicy, and among
-idle candidates of one arbitration component a free-running rotation presents
-one at a time. An input is ready only while it is presented on every output
-its resident row selects, so readiness reflects that row's downstream state
-and never the port's own valid. The rotation is transient implementation
-state; it never reorders grants among valid requesters.
+output: valid requesters are presented by the exact GrantPolicy; among idle
+candidates whose selected outputs overlap, a free-running rotation presents
+one at a time, and idle candidates whose selected outputs no other candidate
+claims are presented together. Only another input's grant excludes an idle
+candidate. An input is ready only while it is presented on every output its
+resident row selects, so readiness reflects that row's downstream state and
+never the port's own valid: a row that contends with no other row is always
+presented, and physically admitted crosspoints that no resident row selects
+never couple two rows. The rotation is transient implementation state; it
+never reorders grants among valid requesters.
 
 A Temporal PE presents the context its context-evaluation service grants to
 one FU as that FU's single dispatch context for the clock cycle. The FU and

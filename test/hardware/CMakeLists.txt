@@ -680,6 +680,20 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-switch-idle-presentation-test
+    SwitchIdlePresentationTest.cpp
+  )
+
+  target_link_libraries(loom-switch-idle-presentation-test PRIVATE
+    LoomConfigurationTransportTestSupport
+    LoomHardwareConfigurationTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRFabric
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-bit-reinterpret-test
     PortableScalarBitReinterpretTest.cpp
   )
