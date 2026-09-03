@@ -519,7 +519,18 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
       "loom_cfg_program_word_" + std::to_string(taskOrdinal);
   const std::string words =
       "loom_cfg_program_" + std::to_string(taskOrdinal);
-  output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
+  // The configuration stages have very different simulation cost, so each
+  // boundary is announced once at the ordinary verbosity level with its
+  // simulation time and flushed. A host-side timestamp of the announcement is
+  // then the stage boundary even under a simulator that buffers its standard
+  // output. The time is printed as an integer of the harness's femtosecond
+  // unit, because the simulators format `%t` in different units.
+  output << "    if (loom_verbose_level >= 1) begin\n"
+         << "      $display(\"[loom][rtl][stage] write_begin program="
+         << taskOrdinal << " time_fs=%0d\", $time);\n"
+         << "      $fflush();\n"
+         << "    end\n"
+         << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
          << program.layout.payloadWordCount << "; " << wordIndex << " = "
          << wordIndex << " + 1)\n"
          << "      loom_cfg_write_" << taskOrdinal << "("
@@ -541,13 +552,6 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << ", " << hardware::rtl::portableConfigurationDataWidth
          << "'h00000001, " << hardware::rtl::portableConfigurationByteCount
          << "'h1, 1);\n";
-  // The three configuration stages have very different simulation cost, so
-  // each boundary is announced once at the ordinary verbosity level with its
-  // simulation time and flushed, so a host-side timestamp of the announcement
-  // is the stage boundary even under a simulator that buffers its standard
-  // output, and the simulation time gives the stage its exact cycle count.
-  // The time is printed as an integer of the harness's femtosecond unit,
-  // because the simulators format `%t` in different units.
   output << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] readback_begin program="
          << taskOrdinal << " time_fs=%0d\", $time);\n"
