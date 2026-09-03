@@ -1119,11 +1119,17 @@ deriveMappedRtlExecutionBundleProjection(
   auto simulatorExecutablePath =
       namespacedBundlePath(mappedRtlSimulatorExecutablePath, *prefix);
   auto resultPath = namespacedBundlePath(mappedRtlResultPath, *prefix);
+  auto transportReceiptPath = namespacedBundlePath(
+      ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath,
+      *prefix);
   if (!testbenchPath || !standaloneDriverPath || !bridgedDriverPath ||
       !bridgeEngineSourcePath || !simulatorExecutablePath || !resultPath)
     return invalid("mapped RTL bundle path namespace is invalid");
+  if (!transportReceiptPath)
+    return transportReceiptPath.takeError();
   auto testbench = detail::renderMappedRtlTestbench(
-      facts, configurationProgramPaths, *resultPath);
+      facts, configurationProgramPaths, *resultPath,
+      *transportReceiptPath);
   if (!testbench)
     return testbench.takeError();
   // The hierarchy launcher configures child Verilation, which exists only in
@@ -1159,6 +1165,7 @@ deriveMappedRtlExecutionBundleProjection(
   result.bridgeEngineSourcePath = std::move(*bridgeEngineSourcePath);
   result.simulatorExecutablePath = std::move(*simulatorExecutablePath);
   result.resultPath = std::move(*resultPath);
+  result.configurationTransportReceiptPath = std::move(*transportReceiptPath);
   result.testbench = std::move(*testbench);
   result.standaloneVerilatorDriver = std::move(*standalone);
   result.bridgedVerilatorDriver = std::move(*bridged);
@@ -1188,7 +1195,8 @@ deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
           std::move(*factsOrUnsupported));
   facts.cycleLimit = plan.cycleLimit;
   auto testbench = detail::renderMappedRtlTestbench(
-      facts, facts.configurationProgramPaths, mappedRtlResultPath);
+      facts, facts.configurationProgramPaths, mappedRtlResultPath,
+      ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath);
   if (!testbench)
     return testbench.takeError();
   auto driver = detail::renderMappedRtlVcsDriver(
@@ -1202,6 +1210,8 @@ deriveMappedRtlVcsBundleProjection(const MappedRtlExecutionClosure &closure,
   result.driverPath = mappedRtlVcsDriverPath.str();
   result.simulatorExecutablePath = mappedRtlVcsSimulatorExecutablePath.str();
   result.resultPath = mappedRtlResultPath.str();
+  result.configurationTransportReceiptPath =
+      ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath.str();
   result.testbench = std::move(*testbench);
   result.driver = std::move(*driver);
   // The mandatory 64-bit architecture token is projected into the structured
@@ -1241,7 +1251,52 @@ deriveMappedRtlExecutionImportExpectation(
   if (!resultPath)
     return resultPath.takeError();
   expectation->declaredOutputs = {std::move(*resultPath)};
+  auto receiptPath = namespacedBundlePath(
+      mappedRtlConfigurationTransportReceiptPath, *prefix);
+  if (!receiptPath)
+    return receiptPath.takeError();
+  expectation->declaredOutputs.push_back(std::move(*receiptPath));
   return std::move(*expectation);
+}
+
+llvm::Error validateMappedRtlConfigurationTransportReceipt(
+    const MappedRtlExecutionClosure &closure,
+    const MappedRtlConfigurationTransportReceipt &receipt,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto factsOrUnsupported =
+      detail::deriveMappedRtlInvocationFacts(closure, artifacts, blobs);
+  if (!factsOrUnsupported)
+    return factsOrUnsupported.takeError();
+  if (const auto *unsupported =
+          std::get_if<evaluation::UnsupportedEvidence>(&*factsOrUnsupported))
+    return invalid("configuration transport receipt cannot be validated for "
+                   "an unsupported mapped RTL closure: " +
+                   evaluation::toString(unsupported->reason));
+  const auto &facts = std::get<detail::MappedRtlInvocationFacts>(
+      *factsOrUnsupported);
+  if (receipt.programs.size() != facts.configurationPrograms.size())
+    return invalid("configuration transport receipt program count disagrees "
+                   "with the ConfigurationABI");
+  for (const auto &[ordinal, program] :
+       llvm::enumerate(facts.configurationPrograms)) {
+    const auto &observed = receipt.programs[ordinal];
+    const std::uint64_t expectedWords = program.layout.payloadWordCount;
+    if (observed.payloadWrites != expectedWords)
+      return invalid("configuration program " + std::to_string(ordinal) +
+                     " payload write count disagrees with the "
+                     "ConfigurationABI program payloadWordCount");
+    if (observed.atomicCommits != 1)
+      return invalid("configuration program " + std::to_string(ordinal) +
+                     " has an invalid atomic commit count");
+    if (observed.activeWordComparisons != expectedWords)
+      return invalid("configuration program " + std::to_string(ordinal) +
+                     " active-word comparison count disagrees with the "
+                     "ConfigurationABI program payloadWordCount");
+    if (observed.passingStatusReads != 1)
+      return invalid("configuration program " + std::to_string(ordinal) +
+                     " has an invalid passing status read count");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<sim::SpatialEngineBoundaryResult>

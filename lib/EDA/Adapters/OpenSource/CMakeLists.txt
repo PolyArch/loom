@@ -13,6 +13,7 @@ target_link_libraries(loom-mapped-rtl-hierarchy-verilator PRIVATE
 
 add_library(LoomMappedRtlExecution
   MappedRtlExecution.cpp
+  MappedRtlConfigurationTransportReceipt.cpp
   MappedRtlSimulationFacts.cpp
   MappedRtlSimulationHarness.cpp
   MappedRtlSimulationResult.cpp

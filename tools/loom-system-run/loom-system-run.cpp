@@ -125,6 +125,14 @@ llvm::cl::opt<std::uint64_t> mappedRtlModelThreads(
     "mapped-rtl-model-threads",
     llvm::cl::desc("Simulation threads of the Verilated mapped RTL model"),
     llvm::cl::init(loom::eda::open_source::mappedRtlDefaultModelThreads));
+llvm::cl::opt<std::string> mappedRtlLocalToolConfigPath(
+    "mapped-rtl-local-tool-config",
+    llvm::cl::desc("Explicit local tool configuration for mapped RTL"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string> mappedRtlProviderBuild(
+    "mapped-rtl-provider-build",
+    llvm::cl::desc("Exact mapped-RTL simulator version-probe line"),
+    llvm::cl::value_desc("build"));
 llvm::cl::opt<std::string> spatialCgraProfileOutput(
     "spatial-cgra-profile-output",
     llvm::cl::desc("Write invocation-local Spatial CGRA qualification data"),
@@ -146,6 +154,32 @@ llvm::Error invalid(const llvm::Twine &message) {
 llvm::Error ioError(const llvm::Twine &message) {
   return llvm::createStringError(std::make_error_code(std::errc::io_error),
                                  "system_run_io_error: " + message);
+}
+
+llvm::Expected<loom::system_run::MappedRtlProviderOptions>
+loadMappedRtlProviderOptions() {
+  if (mappedRtlLocalToolConfigPath.empty())
+    return invalid("--mapped-rtl-local-tool-config is required with "
+                   "--mapped-rtl");
+  if (mappedRtlProviderBuild.empty())
+    return invalid("--mapped-rtl-provider-build is required with "
+                   "--mapped-rtl");
+  auto local =
+      loom::external_tool::loadLocalToolConfig(mappedRtlLocalToolConfigPath);
+  if (!local)
+    return local.takeError();
+  loom::system_run::MappedRtlProviderOptions options{
+      mappedRtlSimulator,
+      mappedRtlBuildJobs,
+      mappedRtlBuildWorkers,
+      mappedRtlModelThreads,
+      std::move(*local),
+      loom::evaluation::models::MappedRtlSimulatorBinding{
+          mappedRtlProviderBuild}};
+  if (llvm::Error error =
+          loom::system_run::validateMappedRtlProviderOptions(options))
+    return std::move(error);
+  return options;
 }
 
 std::string child(llvm::StringRef parent, llvm::StringRef name) {
@@ -1765,6 +1799,17 @@ llvm::Error writeManifest(
 }
 
 llvm::Error run() {
+  if (!mappedRtl && (mappedRtlLocalToolConfigPath.getNumOccurrences() != 0 ||
+                     mappedRtlProviderBuild.getNumOccurrences() != 0))
+    return invalid("mapped-RTL tool configuration requires --mapped-rtl");
+  std::optional<loom::system_run::MappedRtlProviderOptions>
+      mappedRtlProviderOptions;
+  if (mappedRtl) {
+    auto loaded = loadMappedRtlProviderOptions();
+    if (!loaded)
+      return loaded.takeError();
+    mappedRtlProviderOptions.emplace(std::move(*loaded));
+  }
   const bool profileRequested = !spatialCgraProfileOutput.empty() ||
                                 spatialCgraWarmupRuns != 0 ||
                                 spatialCgraMeasurementRuns != 0;
@@ -1934,9 +1979,7 @@ llvm::Error run() {
       if (mappedRtl) {
         auto cell = loom::system_run::executeMappedRtlCell(
             invocation, *rtlDeployment, child(workspacePath, "bundles"),
-            {mappedRtlSimulator, mappedRtlBuildJobs, mappedRtlBuildWorkers,
-             mappedRtlModelThreads},
-            artifacts, blobs);
+            *mappedRtlProviderOptions, artifacts, blobs);
         if (!cell)
           return cell.takeError();
         auto executed = completeSpatialRun(

@@ -109,6 +109,21 @@ Generated bundles containing host paths also remain outside tracked source.
 Omitting `--loom-local-config` supplies an empty local configuration and does
 not disable environment or module discovery.
 
+The mapped-RTL mode of `loom-system-run` is intentionally stricter. It requires
+both `--mapped-rtl-local-tool-config=<path>` and
+`--mapped-rtl-provider-build=<exact normalized probe line>`. The selected HDL
+simulator's `tools` entry must contain an explicit executable or module
+binding. An omitted binding, including a stanza that contains only inherited
+environment names or provider options, cannot authorize ambient environment,
+`PATH`, provider-default, or module-alias discovery for this mode. The mapped
+RTL provider resolves and probes that explicit binding through the ordinary
+typed provider contract, requires exact equality with the declared build, and
+accepts the release only through the backend catalog's validated-release
+relation. This stricter invocation boundary does not change the general
+three-tier resolution rule for other consumers.
+The driver's mapped-RTL job and model-thread options remain their sole owner;
+the selected tool stanza cannot repeat them as provider options.
+
 The local configuration is strict versioned JSON. Its initial authoring shape
 is:
 
@@ -911,6 +926,8 @@ limits may make an attempt incomplete but cannot change formal selection.
 Stable tests cover:
 
 - strict local JSON and absence of implicit local-config loading;
+- the mapped-RTL system driver requiring a declared build and an explicit
+  selected-simulator binding before it imports a Deployment package;
 - explicit external-file entries resolving only named ordinary files, with
   symlink, mutation, digest mismatch, glob, and recursive scan rejected;
 - equal external-file bytes at different local paths producing the same

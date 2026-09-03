@@ -324,15 +324,16 @@ void renderMemoryService(llvm::raw_ostream &output,
            << "            loom_memory_lane_offset_" << ordinal << " = ("
            << port.prefix << "_request_access_form == 2) ? "
            << "loom_memory_byte_in_lane_" << ordinal << " : "
-           << "loom_memory_byte_ordinal_" << ordinal << ";\n"
+           << "loom_memory_byte_ordinal_" << ordinal
+           << ";\n"
            // The complete byte-address expression is evaluated in the
            // portable calculation width; a request whose exact address
            // leaves the byte-address domain is a typed failure, never an
            // alias of the wrapped low bits.
            << "            if (" << port.prefix
-           << "_request_address_form == 0) loom_memory_wide_address_"
-           << ordinal << " = " << wideCast << "(loom_memory_root_base_"
-           << ordinal << ") + " << wideCast << "(" << port.prefix
+           << "_request_address_form == 0) loom_memory_wide_address_" << ordinal
+           << " = " << wideCast << "(loom_memory_root_base_" << ordinal
+           << ") + " << wideCast << "(" << port.prefix
            << "_request_base_address) + " << wideCast
            << "(loom_memory_lane_address_" << ordinal << ") * " << wideCast
            << "(loom_memory_element_bytes_" << ordinal << ") + " << wideCast
@@ -421,14 +422,10 @@ void renderInputCounters(llvm::raw_ostream &output,
 /// and the atomic commit write are unchanged. A simulator evaluates the
 /// configuration fan-out at every edge the driver acts on, so a driver that
 /// acts only at the sampling edge spares the falling-edge evaluation of every
-/// configuration cycle. The response wait alone may be taken at the falling
-/// edge: a caller whose next action follows the response through an idle
-/// channel (the readback after the commit write, the kernel launch after the
-/// status read) then presents that action one edge earlier, exactly when a
-/// falling-edge driver did, which keeps the launch phase of the design's
-/// free-running arbitration rotations and therefore the retirement
-/// coordinates unchanged. Every other transaction gains nothing from it,
-/// because the controller is busy for that edge anyway.
+/// configuration cycle. Every read samples its accepted response at the next
+/// falling edge. The caller can then present the next address before the next
+/// rising edge, when the controller can replace the retiring response without
+/// leaving the read channel idle.
 void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
                              std::size_t ordinal, llvm::StringRef clock) {
   output << "  task automatic loom_cfg_write_" << ordinal << "(input logic ["
@@ -442,7 +439,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "    logic address_accepted;\n"
          << "    logic data_accepted;\n"
          << "    begin\n"
-         << "      if (loom_verbose_level >= 1) $display(\"[loom][rtl][cfg] "
+         << "      if (loom_verbose_level >= 3) $display(\"[loom][rtl][cfg] "
             "write address=%h data=%h strobe=%h\", address, data, strobe);\n"
          << "      " << prefix << "_awaddr <= address;\n"
          << "      " << prefix << "_awvalid <= 1;\n"
@@ -456,8 +453,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "        @(posedge " << clock << ");\n"
          << "        address_accepted = address_accepted | " << prefix
          << "_awready;\n"
-         << "        data_accepted = data_accepted | " << prefix
-         << "_wready;\n"
+         << "        data_accepted = data_accepted | " << prefix << "_wready;\n"
          << "        if (address_accepted) " << prefix << "_awvalid <= 0;\n"
          << "        if (data_accepted) " << prefix << "_wvalid <= 0;\n"
          << "        wait_cycles = wait_cycles + 1;\n"
@@ -483,7 +479,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << ":0] address, output logic ["
          << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] data, output logic [" << kAxiResponseWidth - 1
-         << ":0] response, input logic falling_edge_response);\n"
+         << ":0] response);\n"
          << "    integer wait_cycles;\n"
          << "    begin\n"
          << "      " << prefix << "_araddr <= address;\n"
@@ -498,14 +494,13 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "      end while (!" << prefix << "_arready);\n"
          << "      " << prefix << "_arvalid <= 0;\n"
          << "      wait_cycles = 0;\n"
-         << "      while (!" << prefix << "_rvalid) begin\n"
-         << "        if (falling_edge_response) @(negedge " << clock
-         << "); else @(posedge " << clock << ");\n"
+         << "      do begin\n"
+         << "        @(negedge " << clock << ");\n"
          << "        wait_cycles = wait_cycles + 1;\n"
          << "        if (wait_cycles == " << kConfigurationHandshakeCycleLimit
          << " && !" << prefix
          << "_rvalid) $fatal(1, \"AXI4-Lite R response timed out\");\n"
-         << "      end\n"
+         << "      end while (!" << prefix << "_rvalid);\n"
          << "      data = " << prefix << "_rdata;\n"
          << "      response = " << prefix << "_rresp;\n"
          << "    end\n"
@@ -517,11 +512,21 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                                 std::size_t taskOrdinal) {
   const std::string wordIndex =
       "loom_cfg_program_word_" + std::to_string(taskOrdinal);
-  const std::string words =
-      "loom_cfg_program_" + std::to_string(taskOrdinal);
-  output << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
+  const std::string words = "loom_cfg_program_" + std::to_string(taskOrdinal);
+  // The configuration stages have very different simulation cost, so each
+  // boundary is announced once at the ordinary verbosity level with its
+  // simulation time and flushed. A host-side timestamp of the announcement is
+  // then the stage boundary even under a simulator that buffers its standard
+  // output. The time is printed as an integer of the harness's femtosecond
+  // unit, because the simulators format `%t` in different units.
+  output << "    if (loom_verbose_level >= 1) begin\n"
+         << "      $display(\"[loom][rtl][stage] write_begin program="
+         << taskOrdinal << " time_fs=%0d\", $time);\n"
+         << "      $fflush();\n"
+         << "    end\n"
+         << "    for (" << wordIndex << " = 0; " << wordIndex << " < "
          << program.layout.payloadWordCount << "; " << wordIndex << " = "
-         << wordIndex << " + 1)\n"
+         << wordIndex << " + 1) begin\n"
          << "      loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -531,7 +536,10 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount << ", " << words
          << "[" << wordIndex << "][31:0], " << words << "[" << wordIndex
-         << "][35:32], 0);\n";
+         << "][35:32], 0);\n"
+         << "      loom_cfg_payload_writes_" << taskOrdinal << " = "
+         << "loom_cfg_payload_writes_" << taskOrdinal << " + 1;\n"
+         << "    end\n";
   output << "    loom_cfg_write_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
          << llvm::format_hex_no_prefix(
@@ -540,7 +548,9 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << ", " << hardware::rtl::portableConfigurationDataWidth
          << "'h00000001, " << hardware::rtl::portableConfigurationByteCount
-         << "'h1, 1);\n";
+         << "'h1, 1);\n"
+         << "    loom_cfg_atomic_commits_" << taskOrdinal << " = "
+         << "loom_cfg_atomic_commits_" << taskOrdinal << " + 1;\n";
   // The three configuration stages have very different simulation cost, so
   // each boundary is announced once at the ordinary verbosity level with its
   // simulation time and flushed, so a host-side timestamp of the announcement
@@ -564,11 +574,13 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                     kBitsPerHexDigit)
          << " + " << wordIndex << " * "
          << hardware::rtl::portableConfigurationByteCount
-         << ", loom_cfg_readback, loom_cfg_response, 0);\n"
+         << ", loom_cfg_readback, loom_cfg_response);\n"
          << "      if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << words << "[" << wordIndex
          << "][31:0]) $fatal(1, \"active configuration readback mismatch\");\n"
+         << "      loom_cfg_active_word_comparisons_" << taskOrdinal << " = "
+         << "loom_cfg_active_word_comparisons_" << taskOrdinal << " + 1;\n"
          << "    end\n";
   output << "    loom_cfg_read_" << taskOrdinal << "("
          << hardware::rtl::portableConfigurationAddressWidth << "'h"
@@ -576,12 +588,64 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
                 program.layout.statusAddress,
                 hardware::rtl::portableConfigurationAddressWidth /
                     kBitsPerHexDigit)
-         << ", loom_cfg_readback, loom_cfg_response, 1);\n"
+         << ", loom_cfg_readback, loom_cfg_response);\n"
          << "    if (loom_cfg_response !== 2'b00 || "
             "loom_cfg_readback !== "
          << hardware::rtl::portableConfigurationDataWidth
          << "'h00000000) $fatal(1, "
-            "\"configuration status did not clear\");\n";
+            "\"configuration status did not clear\");\n"
+         << "    loom_cfg_passing_status_reads_" << taskOrdinal << " = "
+         << "loom_cfg_passing_status_reads_" << taskOrdinal << " + 1;\n";
+}
+
+void renderConfigurationTransportReceiptWriter(
+    llvm::raw_ostream &output, const MappedRtlInvocationFacts &facts,
+    llvm::StringRef receiptPath) {
+  output << "  task automatic loom_write_configuration_transport_receipt;\n"
+         << "    integer receipt_file;\n"
+         << "    begin\n"
+         << "      if (loom_cfg_receipt_written) $fatal(1, \"configuration "
+            "transport receipt was written more than once\");\n";
+  for (const auto &[ordinal, program] :
+       llvm::enumerate(facts.configurationPrograms)) {
+    output << "      if (loom_cfg_payload_writes_" << ordinal << " != "
+           << program.layout.payloadWordCount
+           << ") $fatal(1, \"configuration payload write count is "
+              "incomplete\");\n"
+           << "      if (loom_cfg_atomic_commits_" << ordinal
+           << " != 1) $fatal(1, \"configuration atomic commit count is "
+              "not one\");\n"
+           << "      if (loom_cfg_active_word_comparisons_" << ordinal
+           << " != " << program.layout.payloadWordCount
+           << ") $fatal(1, \"configuration active-word comparison count is "
+              "incomplete\");\n"
+           << "      if (loom_cfg_passing_status_reads_" << ordinal
+           << " != 1) $fatal(1, \"configuration passing status read count "
+              "is not one\");\n";
+  }
+  output << "      receipt_file = $fopen(\"" << receiptPath << "\", \"w\");\n"
+         << "      if (receipt_file == 0) $fatal(1, \"could not open "
+            "configuration transport receipt\");\n"
+         << "      $fwrite(receipt_file, \""
+         << mappedRtlConfigurationTransportReceiptSchema << " "
+         << mappedRtlConfigurationTransportReceiptVersion << "\\n\");\n"
+         << "      $fwrite(receipt_file, \"programs "
+         << facts.configurationPrograms.size() << "\\n\");\n";
+  for (std::size_t ordinal = 0;
+       ordinal != facts.configurationPrograms.size(); ++ordinal)
+    output << "      $fwrite(receipt_file, \"program " << ordinal
+           << " payload_writes %0d atomic_commits %0d "
+              "active_word_comparisons %0d passing_status_reads %0d\\n\", "
+           << "loom_cfg_payload_writes_" << ordinal << ", "
+           << "loom_cfg_atomic_commits_" << ordinal << ", "
+           << "loom_cfg_active_word_comparisons_" << ordinal << ", "
+           << "loom_cfg_passing_status_reads_" << ordinal << ");\n";
+  output << "      $fwrite(receipt_file, \"end\\n\");\n"
+         << "      $fflush(receipt_file);\n"
+         << "      $fclose(receipt_file);\n"
+         << "      loom_cfg_receipt_written = 1;\n"
+         << "    end\n"
+         << "  endtask\n";
 }
 
 void renderResultWriter(llvm::raw_ostream &output,
@@ -669,14 +733,12 @@ void renderResultWriter(llvm::raw_ostream &output,
 } // namespace
 
 llvm::Expected<std::string>
-renderMappedRtlConfigurationProgramFile(
-    const ConfigurationProgram &program) {
+renderMappedRtlConfigurationProgramFile(const ConfigurationProgram &program) {
   if (llvm::Error error = validateProgram(program))
     return std::move(error);
   std::string text;
   llvm::raw_string_ostream output(text);
-  for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
-       ++word)
+  for (std::uint64_t word = 0; word != program.layout.payloadWordCount; ++word)
     output << llvm::format_hex_no_prefix(imageStrobe(program.image, word), 1)
            << llvm::format_hex_no_prefix(imageWord(program.image, word), 8)
            << '\n';
@@ -686,7 +748,8 @@ renderMappedRtlConfigurationProgramFile(
 llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
                          llvm::ArrayRef<std::string> configurationProgramPaths,
-                         llvm::StringRef resultPath) {
+                         llvm::StringRef resultPath,
+                         llvm::StringRef configurationTransportReceiptPath) {
   if (facts.top.empty())
     return invalid("RTL top name is absent");
   if (facts.selectedClock.empty())
@@ -760,6 +823,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   output << "  logic loom_inputs_enabled;\n"
          << "  logic loom_resets_released;\n"
          << "  logic loom_retired;\n"
+         << "  logic loom_cfg_receipt_written;\n"
          << "  longint unsigned loom_cycle;\n"
          << "  longint unsigned loom_launch_cycle;\n"
          << "  longint unsigned loom_retirement_cycle;\n"
@@ -772,7 +836,15 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
     output << "  logic [" << kConfigurationProgramWordWidth - 1
            << ":0] loom_cfg_program_" << ordinal << " [0:"
            << program.layout.payloadWordCount - 1 << "];\n"
-           << "  integer loom_cfg_program_word_" << ordinal << ";\n";
+           << "  integer loom_cfg_program_word_" << ordinal << ";\n"
+           << "  longint unsigned loom_cfg_payload_writes_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_atomic_commits_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_active_word_comparisons_" << ordinal
+           << ";\n"
+           << "  longint unsigned loom_cfg_passing_status_reads_" << ordinal
+           << ";\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
          << "  assign loom_engine_retirement_cycle = "
@@ -809,8 +881,15 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   output << "  initial begin\n"
          << "    loom_inputs_enabled = 0;\n"
          << "    loom_resets_released = 0;\n"
+         << "    loom_cfg_receipt_written = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
             "loom_verbose_level)) loom_verbose_level = 0;\n";
+  for (std::size_t ordinal = 0;
+       ordinal != facts.configurationPrograms.size(); ++ordinal)
+    output << "    loom_cfg_payload_writes_" << ordinal << " = 0;\n"
+           << "    loom_cfg_atomic_commits_" << ordinal << " = 0;\n"
+           << "    loom_cfg_active_word_comparisons_" << ordinal << " = 0;\n"
+           << "    loom_cfg_passing_status_reads_" << ordinal << " = 0;\n";
   for (const auto &[ordinal, path] :
        llvm::enumerate(configurationProgramPaths))
     output << "    $readmemh(\"" << path << "\", loom_cfg_program_"
@@ -877,7 +956,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationProgram(output, program, ordinal);
-  output << "    if (loom_verbose_level >= 1) begin\n"
+  output << "    loom_write_configuration_transport_receipt();\n"
+         << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] kernel_begin time_fs=%0d\", "
             "$time);\n"
          << "      $fflush();\n"
@@ -956,6 +1036,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationTask(output, program.portPrefix, ordinal,
                             facts.selectedClock);
+  renderConfigurationTransportReceiptWriter(
+      output, facts, configurationTransportReceiptPath);
   renderMemoryService(output, facts);
 
   for (const auto &[ordinal, value] : llvm::enumerate(facts.valueResults))
@@ -1054,7 +1136,8 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
   if (style == MappedRtlVerilationStyle::Hierarchical)
     output << "--hierarchical\n";
   output << "-j\n"
-         << plan.buildJobs << "\n--threads\n" << plan.modelThreads << "\n";
+         << plan.buildJobs << "\n--threads\n"
+         << plan.modelThreads << "\n";
   if (style == MappedRtlVerilationStyle::Hierarchical)
     output << "--hierarchical-threads\n" << plan.modelThreads << "\n";
   output << "--timing\n--Wall\n--Wno-fatal\n"
@@ -1091,9 +1174,9 @@ renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
   // The harness declares its own 1 fs timescale; the same scale is applied to
   // every RTL module so the clock periods of the harness are exact.
   output << "-sverilog\n-timescale=1fs/1fs\n-top\n"
-         << mappedRtlHarnessTop << "\n-j" << plan.buildJobs << "\n-Mdir="
-         << workDirectoryPath << "/csrc\n-o\n" << simulatorExecutablePath
-         << "\n";
+         << mappedRtlHarnessTop << "\n-j" << plan.buildJobs
+         << "\n-Mdir=" << workDirectoryPath << "/csrc\n-o\n"
+         << simulatorExecutablePath << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   output << testbenchPath << "\n";

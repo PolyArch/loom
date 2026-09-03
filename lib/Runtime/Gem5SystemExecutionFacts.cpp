@@ -438,6 +438,17 @@ std::string mappedRtlLaunchResultPath(std::size_t ordinal) {
              .str();
 }
 
+std::string mappedRtlLaunchConfigurationTransportReceiptPath(
+    std::size_t ordinal) {
+  constexpr llvm::StringLiteral outputRoot = "outputs/";
+  assert(eda::open_source::mappedRtlConfigurationTransportReceiptPath
+             .starts_with(outputRoot));
+  return outputRoot.str() + mappedRtlLaunchPrefix(ordinal) +
+         eda::open_source::mappedRtlConfigurationTransportReceiptPath
+             .drop_front(outputRoot.size())
+             .str();
+}
+
 llvm::Expected<std::vector<std::uint64_t>>
 evaluateSourceMap(mlir::AffineMap map,
                   llvm::ArrayRef<std::uint64_t> consumerCoordinates) {

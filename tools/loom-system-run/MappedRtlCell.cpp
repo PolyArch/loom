@@ -13,7 +13,6 @@
 #include "ExternalTool/InvocationBundle.h"
 #include "ExternalTool/LocalConfig.h"
 #include "ExternalTool/Provider.h"
-#include "ExternalTool/ShellProbe.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/RTL/MaterializationDiagnostics.h"
@@ -25,7 +24,6 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Path.h"
 
-#include <filesystem>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -40,11 +38,6 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "mapped_rtl_cell_invalid: " + message);
-}
-
-llvm::Error ioError(const llvm::Twine &message) {
-  return llvm::createStringError(std::make_error_code(std::errc::io_error),
-                                 "mapped_rtl_cell_io_error: " + message);
 }
 
 std::string child(llvm::StringRef parent, llvm::StringRef name) {
@@ -143,11 +136,42 @@ loom::system_run::deriveMappedRtlDeployment(
   return deployment;
 }
 
+llvm::Error loom::system_run::validateMappedRtlProviderOptions(
+    const MappedRtlProviderOptions &options) {
+  const auto &provider =
+      loom::eda::open_source::mappedRtlHdlSimulatorProvider(options.simulator);
+  const auto configured =
+      options.localToolConfig.tools.find(provider.binding.key);
+  if (configured == options.localToolConfig.tools.end() ||
+      !configured->second.binding.isConfigured())
+    return invalid("selected mapped-RTL simulator '" +
+                   loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
+                       options.simulator) +
+                   "' has no explicit local binding");
+  for (llvm::StringRef option :
+       {"build_jobs", "build_workers", "model_threads"})
+    if (configured->second.providerOptions.get(option))
+      return invalid(provider.binding.key + ".provider_options." + option +
+                     " competes with a loom-system-run option");
+  if (llvm::Error error =
+          loom::evaluation::models::validateMappedRtlSimulatorBinding(
+              options.simulatorBinding))
+    return error;
+  const auto classified = loom::eda::open_source::classifyMappedRtlHdlSimulator(
+      options.simulatorBinding.stableHdlSimulatorBuildIdentity);
+  if (!classified || *classified != options.simulator)
+    return invalid("HDL simulator build identity does not name the selected "
+                   "mapped-RTL simulator");
+  return llvm::Error::success();
+}
+
 llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
     const SpatialInvocationCase &invocation,
     const deployment::FinalizedDeployment &deployment,
     llvm::StringRef bundleRoot, const MappedRtlProviderOptions &options,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (llvm::Error error = validateMappedRtlProviderOptions(options))
+    return std::move(error);
   auto inputs = loom::sim::importSpatialSimulationInputs(
       invocation.workload, invocation.runtimeInput, artifacts);
   if (!inputs)
@@ -170,31 +194,13 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
 
   const auto &provider =
       loom::eda::open_source::mappedRtlHdlSimulatorProvider(options.simulator);
-  const std::string probePath = child(
-      bundleRoot, ("spatial-rtl-probe-" + llvm::Twine(invocation.ordinal)).str());
-  std::error_code directoryError;
-  if (!std::filesystem::create_directory(probePath, directoryError) ||
-      directoryError)
-    return ioError("cannot create mapped RTL tool probe directory");
-  loom::external_tool::LocalToolConfig local;
-  local.runtimePolicy = loom::external_tool::RuntimePolicy::Host;
-  loom::external_tool::ShellToolBindingProbe probe(probePath,
-                                                   provider.versionProbe);
-  auto resolvedTool = loom::external_tool::resolveToolBinding(
-      provider.binding, local,
-      loom::external_tool::captureToolEnvironment(provider.binding), probe);
-  if (!resolvedTool)
-    return resolvedTool.takeError();
-  local.tools[provider.binding.key].binding.executable =
-      resolvedTool->executable;
-  local.tools[provider.binding.key].providerOptions["build_jobs"] =
-      options.buildJobs;
+  loom::external_tool::LocalToolConfig local = options.localToolConfig;
+  const auto configured = local.tools.find(provider.binding.key);
+  configured->second.providerOptions["build_jobs"] = options.buildJobs;
   if (options.simulator ==
       loom::eda::open_source::MappedRtlHdlSimulator::Verilator) {
-    local.tools[provider.binding.key].providerOptions["build_workers"] =
-        options.buildWorkers;
-    local.tools[provider.binding.key].providerOptions["model_threads"] =
-        options.modelThreads;
+    configured->second.providerOptions["build_workers"] = options.buildWorkers;
+    configured->second.providerOptions["model_threads"] = options.modelThreads;
   }
 
   auto subjects = loom::evaluation::EvaluationSubjectBindings::get(
@@ -211,9 +217,7 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   if (!evaluationCase)
     return evaluationCase.takeError();
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  config.evaluation.mappedRtlSimulator =
-      loom::evaluation::models::MappedRtlSimulatorBinding{
-          resolvedTool->version};
+  config.evaluation.mappedRtlSimulator = options.simulatorBinding;
   auto model = loom::evaluation::ResolvedModelBinding::project(
       loom::evaluation::models::mappedRtlSimulatorModelDescriptorRef(), {},
       config);

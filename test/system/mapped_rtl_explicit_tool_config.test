@@ -1,0 +1,26 @@
+# The mapped-RTL engine cannot bootstrap its selected simulator or semantic
+# build identity from ambient process state.
+# RUN: not loom-system-run --deployment-package=%t.missing \
+# RUN:   --output=%t.output --gem5-readiness=%t.missing --mapped-rtl \
+# RUN:   2>&1 | FileCheck %s --check-prefix=MISSING-CONFIG
+# RUN: %python -c 'import json,pathlib; pathlib.Path("%t.ambient.json").write_text(json.dumps({"schema":"loom.local_tool_config","version":"1.1","tools":{"verilator":{"inherit_environment":["PATH"]}}}))'
+# RUN: not loom-system-run --deployment-package=%t.missing \
+# RUN:   --output=%t.output --gem5-readiness=%t.missing --mapped-rtl \
+# RUN:   --mapped-rtl-local-tool-config=%t.ambient.json \
+# RUN:   2>&1 | FileCheck %s --check-prefix=MISSING-BUILD
+# RUN: not loom-system-run --deployment-package=%t.missing \
+# RUN:   --output=%t.output --gem5-readiness=%t.missing --mapped-rtl \
+# RUN:   --mapped-rtl-local-tool-config=%t.ambient.json \
+# RUN:   --mapped-rtl-provider-build="Verilator 5.050" \
+# RUN:   2>&1 | FileCheck %s --check-prefix=AMBIENT-BINDING
+# RUN: %python -c 'import json,pathlib; pathlib.Path("%t.explicit.json").write_text(json.dumps({"schema":"loom.local_tool_config","version":"1.1","tools":{"verilator":{"binding":{"executable":str(pathlib.Path("%t.verilator").resolve())}}}}))'
+# RUN: not loom-system-run --deployment-package=%t.missing \
+# RUN:   --output=%t.output --gem5-readiness=%t.missing --mapped-rtl \
+# RUN:   --mapped-rtl-local-tool-config=%t.explicit.json \
+# RUN:   --mapped-rtl-provider-build="Compiler version = VCS Y-2026.03-SP1_Full64" \
+# RUN:   2>&1 | FileCheck %s --check-prefix=WRONG-SIMULATOR
+
+# MISSING-CONFIG: system_run_invalid: --mapped-rtl-local-tool-config is required with --mapped-rtl
+# MISSING-BUILD: system_run_invalid: --mapped-rtl-provider-build is required with --mapped-rtl
+# AMBIENT-BINDING: mapped_rtl_cell_invalid: selected mapped-RTL simulator 'verilator' has no explicit local binding
+# WRONG-SIMULATOR: mapped_rtl_cell_invalid: HDL simulator build identity does not name the selected mapped-RTL simulator
