@@ -19,6 +19,7 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/FabricLowConfidence.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -197,6 +198,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
       take(loom::fabric::importEntireFabricRoot(system, store));
   auto systemView =
       take(loom::fabric::requireSystemRoot(systemArtifact.view()));
+  const std::uint64_t analyticClockPeriodPicoseconds =
+      take(loom::evaluation::models::fabricLowConfidenceClockPeriodPicoseconds(
+          systemArtifact));
   auto timingProfiles = take(
       loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
   std::vector<loom::ArtifactRootReference> timingProfileRoots;
@@ -471,6 +475,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         firstWorkload,
         candidateDigest,
         systemView.artifact().accCoreOccurrences().size(),
+        analyticClockPeriodPicoseconds,
         std::nullopt,
         std::nullopt,
         bundle.reference(),
