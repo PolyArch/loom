@@ -35,11 +35,10 @@ llvm::Expected<ApplicationRepairQualityChoice> chooseApplicationRepairByQuality(
     const ArtifactStore &artifacts);
 
 llvm::Expected<ApplicationRuntimeValidation>
-projectApplicationQualityRuntime(
-    const dse::JointDesignExecution &execution,
-    const ArtifactRootReference &mapping,
-    const dse::JointBoundedQualityPolicy &quality,
-    const ArtifactStore &artifacts);
+projectApplicationQualityRuntime(const dse::JointDesignExecution &execution,
+                                 const ArtifactRootReference &mapping,
+                                 const dse::JointBoundedQualityPolicy &quality,
+                                 const ArtifactStore &artifacts);
 
 /// A quality observation may be incomplete after application runtime has
 /// already completed, for example when the FPA model refuses an

@@ -109,8 +109,8 @@ enum class JointDesignQualityIncompleteReason : std::uint8_t {
   CancelledOrTimeout,
 };
 
-JointDesignQualityDisposition jointDesignQualityDisposition(
-    JointDesignQualityIncompleteReason reason);
+JointDesignQualityDisposition
+jointDesignQualityDisposition(JointDesignQualityIncompleteReason reason);
 
 llvm::StringRef jointDesignQualityIncompleteReasonSpelling(
     JointDesignQualityIncompleteReason reason);
@@ -151,8 +151,8 @@ struct JointDesignQualityProvenance final {
       std::optional<SpatialFifoRuntimeFeedback> spatialFifoFeedback = {},
       std::optional<SpatialOperandQueueRuntimeFeedback>
           spatialOperandQueueFeedback = {},
-      std::optional<SpatialTransportRuntimeFeedback>
-          spatialTransportFeedback = {},
+      std::optional<SpatialTransportRuntimeFeedback> spatialTransportFeedback =
+          {},
       std::optional<std::uint64_t> resourceCoreCost = {},
       JointDesignQualityRuntimeCompletion runtimeCompletion =
           JointDesignQualityRuntimeCompletion::NotEstablished,
@@ -195,8 +195,7 @@ struct JointDesignQualityProvenance final {
            lhs.supportingEvidence == rhs.supportingEvidence &&
            lhs.verificationEvidence == rhs.verificationEvidence &&
            lhs.spatialFifoFeedback == rhs.spatialFifoFeedback &&
-           lhs.spatialOperandQueueFeedback ==
-               rhs.spatialOperandQueueFeedback &&
+           lhs.spatialOperandQueueFeedback == rhs.spatialOperandQueueFeedback &&
            lhs.spatialTransportFeedback == rhs.spatialTransportFeedback &&
            lhs.resourceCoreCost == rhs.resourceCoreCost &&
            lhs.runtimeCompletion == rhs.runtimeCompletion &&
