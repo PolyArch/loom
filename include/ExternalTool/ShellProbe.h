@@ -32,6 +32,13 @@ struct ToolVersionProbe {
   std::optional<std::string> selectedOutputLineSubstring;
 };
 
+/// Projects captured probe output to the frozen version identity. Rejects
+/// absent required text and ambiguous selected lines; normalizes whitespace
+/// exactly as discovery and invocation re-verification do.
+std::optional<std::string>
+normalizeToolVersionOutput(llvm::StringRef output,
+                           const ToolVersionProbe &probe);
+
 llvm::ArrayRef<llvm::StringLiteral> defaultModuleInitializationPaths();
 
 /// Probes one already-resolved PolyArch/container and tool composition by

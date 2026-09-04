@@ -82,9 +82,11 @@ std::string collapseBlankRuns(llvm::StringRef text) {
   return collapsed;
 }
 
+} // namespace
+
 std::optional<std::string>
-normalizeVersionOutput(llvm::StringRef versionText,
-                       const ToolVersionProbe &probe) {
+normalizeToolVersionOutput(llvm::StringRef versionText,
+                           const ToolVersionProbe &probe) {
   std::string version = versionText.trim().str();
   if (version.empty())
     return std::nullopt;
@@ -109,6 +111,8 @@ normalizeVersionOutput(llvm::StringRef versionText,
   }
   return collapseBlankRuns(version);
 }
+
+namespace {
 
 struct ProbeFiles {
   std::string script;
@@ -332,7 +336,7 @@ collectProbeResult(const ProbeFiles &files, const ToolVersionProbe &probe,
   if (!versionText)
     return versionText.takeError();
   std::optional<std::string> normalized =
-      normalizeVersionOutput(*versionText, probe);
+      normalizeToolVersionOutput(*versionText, probe);
   if (!normalized)
     return std::optional<ProbedToolBinding>{};
 
@@ -460,7 +464,7 @@ llvm::Expected<std::optional<std::string>> probeContainerToolComposition(
   if (!versionText)
     return versionText.takeError();
   std::optional<std::string> normalized =
-      normalizeVersionOutput(*versionText, toolVersionProbe);
+      normalizeToolVersionOutput(*versionText, toolVersionProbe);
   if (!normalized)
     return std::optional<std::string>(
         "container composition version output did not match the probe");

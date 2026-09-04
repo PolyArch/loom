@@ -195,7 +195,10 @@ verifyReadiness(const Gem5SystemFacts &facts,
   if (error)
     return invalid("cannot canonicalize the resolved gem5 executable");
   const std::filesystem::path recordedBinary(binary->str());
-  if (recordedBinary != resolvedTool || !versionProbe->contains(tool.version))
+  const auto recordedVersion =
+      normalizeToolVersionOutput(*versionProbe, provider.versionProbe);
+  if (recordedBinary != resolvedTool || !recordedVersion ||
+      *recordedVersion != tool.version)
     return invalid("gem5 readiness does not describe the resolved executable");
   auto fingerprint = parseExternalFileFingerprint(*binarySha);
   if (!fingerprint)
