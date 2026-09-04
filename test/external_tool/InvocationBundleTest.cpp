@@ -1561,6 +1561,29 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
       (diagnosticManifest.find(loom::diagnosticVerbosityArgumentPrefix.str()) !=
        std::string::npos) == expectsArgument,
       "diagnostic projection disagrees with the Common-owned level");
+  // The frozen tool may own the diagnostic command itself, as a simulator
+  // that runs its own elaborated snapshot does; the appended argument stays
+  // out of the key there too.
+  ExternalToolInvocationBundleSpec toolDiagnosticBase = baseSpec(tool, output);
+  toolDiagnosticBase.commands = {{tool.string(), "elaborate"},
+                                 {tool.string(), "simulate", output}};
+  const PreparedExternalToolInvocation toolDiagnosticBaseInvocation =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-tool-diagnostic-base").string(),
+                         toolDiagnosticBase));
+  ExternalToolInvocationBundleSpec toolDiagnosticSpec = toolDiagnosticBase;
+  toolDiagnosticSpec.diagnosticCommandOrdinals = {1};
+  const PreparedExternalToolInvocation toolDiagnosticInvocation =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(
+               (root / "cache-tool-diagnostic").string(), toolDiagnosticSpec));
+  require(__func__,
+          take(__func__,
+               deriveExternalToolResultCacheKey(toolDiagnosticInvocation)) ==
+              take(__func__, deriveExternalToolResultCacheKey(
+                                 toolDiagnosticBaseInvocation)),
+          "diagnostic verbosity on the frozen tool's own command changed the "
+          "result cache key");
   const ExternalToolResultCacheKey relocatedKey =
       take(__func__, deriveExternalToolResultCacheKey(relocated));
   require(__func__, firstKey == relocatedKey,

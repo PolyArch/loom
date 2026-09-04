@@ -545,6 +545,17 @@ digestOrdinaryFile(const std::filesystem::path &path) {
   return BlobDigest::fromBytes(digest.final());
 }
 
+/// Digest the file a launcher path resolves to while retaining the launcher
+/// spelling in the manifest for argv[0]-based dispatch.
+llvm::Expected<BlobDigest> digestLauncher(const std::filesystem::path &path) {
+  std::error_code error;
+  const std::filesystem::path resolved =
+      std::filesystem::canonical(path, error);
+  if (error)
+    return cacheError("cannot resolve launcher path: " + error.message());
+  return digestOrdinaryFile(resolved);
+}
+
 llvm::Expected<std::string>
 canonicalInputMaterial(const InvocationManifestData &manifest) {
   llvm::SmallString<4096> storage;
@@ -608,15 +619,15 @@ canonicalExecutionConfiguration(const PreparedExternalToolInvocation &prepared,
     json.attributeEnd();
     json.attribute("result_importer_identity",
                    manifest.semanticContract.resultImporterIdentity);
-    const std::set<std::string> producedExecutables(
-        manifest.toolProducedExecutables.begin(),
-        manifest.toolProducedExecutables.end());
+    // Finalization is the only author of a diagnostic verbosity argument and
+    // appends it last to the diagnostic command, whether that command is a
+    // tool-produced program or the frozen tool running its own snapshot; the
+    // presentation argument never enters the key.
     json.attributeArray("commands", [&] {
       for (const std::vector<std::string> &command : manifest.commands)
         json.array([&] {
           for (const auto &[index, argument] : llvm::enumerate(command))
-            if (!(producedExecutables.count(command.front()) != 0 &&
-                  index + 1 == command.size() &&
+            if (!(index + 1 == command.size() &&
                   isDiagnosticVerbosityArgument(argument)))
               writeNormalizedLocalPathSegments(json, argument, tokens);
         });
@@ -659,13 +670,13 @@ canonicalExecutionConfiguration(const PreparedExternalToolInvocation &prepared,
 
 llvm::Expected<std::string>
 canonicalToolVersion(const InvocationManifestData &manifest) {
-  auto toolDigest = digestOrdinaryFile(manifest.tool.executable);
+  auto toolDigest = digestLauncher(manifest.tool.executable);
   if (!toolDigest)
     return toolDigest.takeError();
   std::optional<BlobDigest> containerDigest;
   if (manifest.runtime.polyArchContainer) {
     auto digest =
-        digestOrdinaryFile(manifest.runtime.polyArchContainer->executable);
+        digestLauncher(manifest.runtime.polyArchContainer->executable);
     if (!digest)
       return digest.takeError();
     containerDigest = *digest;

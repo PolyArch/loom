@@ -234,6 +234,31 @@ void providerExitAndStableVersionLineAreNormalized(
           "volatile version output was not reduced to the stable line");
 }
 
+std::string invocationNameToolScript() {
+  return "#!/usr/bin/env bash\n"
+         "set -eu\n"
+         "[[ \"${1-}\" == -version ]]\n"
+         "printf '%s version 1.0\\n' \"$(basename \"$0\")\"\n";
+}
+
+void symlinkedLauncherKeepsItsInvocationName(
+    const std::filesystem::path &root) {
+  const std::filesystem::path shell = root / "bin" / "suite_shell";
+  writeFile(shell, invocationNameToolScript(), true);
+  const std::filesystem::path launcher = root / "bin" / "dc_shell";
+  std::filesystem::create_symlink("suite_shell", launcher);
+  ShellToolBindingProbe probe(
+      root.string(),
+      ToolVersionProbe{{"-version"}, "dc_shell version", {0}, "version"});
+  std::optional<ProbedToolBinding> result =
+      take(__func__, probe.probeExecutable(launcher.string()));
+  require(__func__, result.has_value(), "symlinked launcher was not resolved");
+  require(__func__, result->executable == launcher.string(),
+          "frozen executable lost the probed launcher name");
+  require(__func__, result->version == "dc_shell version 1.0",
+          "frozen version is not the launcher's own product line");
+}
+
 void moduleEnvironmentRootCanSelectLauncher(const std::filesystem::path &root) {
   const std::filesystem::path toolRoot = root / "tool-root";
   const std::filesystem::path executable = toolRoot / "bin" / "tool64";
@@ -372,6 +397,7 @@ int main(int argc, char **argv) {
   moduleHomeInitIsDiscovered(root / "module-home-discovery");
   incompatibleVersionIsRejected(root / "incompatible");
   providerExitAndStableVersionLineAreNormalized(root / "stable-version");
+  symlinkedLauncherKeepsItsInvocationName(root / "symlinked-launcher");
   moduleEnvironmentRootCanSelectLauncher(root / "module-root");
   moduleWithoutClosureIsRejected(root / "missing-module-closure");
   containerCompositionHonorsRequiredEnvironment(root / "composition");

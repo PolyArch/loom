@@ -80,9 +80,8 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
            ToolVersionProbe{{"-version"}, "21512b0", {0}, "21512b0"},
            edaContainerCompatibility(),
        },
-       {release(
-           "openroad-2026-08-25", "openroad/2026.08.25-21512b0ab68c",
-           ToolVersionProbe{{"-version"}, "21512b0", {0}, "21512b0"})}},
+       {release("openroad-2026-08-25", "openroad/2026.08.25-21512b0ab68c",
+                ToolVersionProbe{{"-version"}, "21512b0", {0}, "21512b0"})}},
       {"gem5",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{
@@ -141,16 +140,34 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
                {"fc_shell"},
                {{"FC_HOME", "bin/fc_shell"},
                 {"FUSIONCOMPILER_HOME", "bin/fc_shell"}},
-               {"synopsys/fusioncompiler/Y-2026.03", "synopsys/fusioncompiler"},
+               {"synopsys/fusioncompiler/Y-2026.03-SP1",
+                "synopsys/fusioncompiler"},
            },
            ToolVersionProbe{
                {"-version"}, "fc_shell version", {0}, "fc_shell version"},
            edaContainerCompatibility(),
        },
-       {release("fusion-compiler-y-2026.03",
-                "synopsys/fusioncompiler/Y-2026.03",
+       {release("fusion-compiler-y-2026.03-sp1",
+                "synopsys/fusioncompiler/Y-2026.03-SP1",
                 ToolVersionProbe{
-                    {"-version"}, "Y-2026.03", {0}, "fc_shell version"})}},
+                    {"-version"}, "Y-2026.03-SP1", {0}, "fc_shell version"})}},
+      {"Synopsys IC Compiler II",
+       ExternalToolProviderDescriptor{
+           ToolProviderDescriptor{
+               "icc2_shell",
+               {"icc2_shell"},
+               {{"ICC2_HOME", "bin/icc2_shell"},
+                {"ICC2_ROOT", "bin/icc2_shell"}},
+               {"synopsys/icc2/Y-2026.03-SP1", "synopsys/icc2"},
+           },
+           ToolVersionProbe{
+               {"-version"}, "icc2_shell version", {0}, "icc2_shell version"},
+           edaContainerCompatibility(),
+       },
+       {release(
+           "ic-compiler-ii-y-2026.03-sp1", "synopsys/icc2/Y-2026.03-SP1",
+           ToolVersionProbe{
+               {"-version"}, "Y-2026.03-SP1", {0}, "icc2_shell version"})}},
       {"Synopsys PrimeTime and PrimePower",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{

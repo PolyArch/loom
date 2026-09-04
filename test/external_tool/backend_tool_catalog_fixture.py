@@ -13,6 +13,7 @@ def main() -> int:
     executables = (
         "dc_shell",
         "fc_shell",
+        "icc2_shell",
         "genus",
         "innovus",
         "joules",

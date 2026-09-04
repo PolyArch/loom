@@ -295,12 +295,17 @@ collectProbeResult(const ProbeFiles &files, const ToolVersionProbe &probe,
       readProbeFile(files.executable, "resolved executable");
   if (!executableText)
     return executableText.takeError();
-  llvm::SmallString<256> executable(*executableText);
+  // Canonicalize the directory while retaining the probed launcher name.
+  // Suite launchers dispatch on argv[0], so resolving the final symlink would
+  // freeze a different program identity.
+  const llvm::StringRef executable(*executableText);
   llvm::SmallString<256> canonicalExecutable;
-  if (std::error_code error =
-          llvm::sys::fs::real_path(executable, canonicalExecutable, true))
+  if (std::error_code error = llvm::sys::fs::real_path(
+          llvm::sys::path::parent_path(executable), canonicalExecutable, true))
     return probeError("could not canonicalize resolved executable: " +
                       error.message());
+  llvm::sys::path::append(canonicalExecutable,
+                          llvm::sys::path::filename(executable));
 
   llvm::Expected<std::string> versionText =
       readProbeFile(files.version, "version output");

@@ -346,8 +346,10 @@ tool-root variable plus a normalized relative launcher path before consulting
 the resulting `PATH`. This remains part of the module-discovery tier. It lets a
 suite module select its supported launcher explicitly, including a 64-bit
 launcher when a presentation default is unusable, without embedding a host
-installation path. The resolved executable is canonicalized and frozen just
-like a `PATH` result.
+installation path. Its directory chain is canonicalized while the launcher
+name it was probed under is retained, because suite launchers dispatch on
+their invocation name. The launcher content digest covers the file that name
+resolves to, so retargeting the symlink invalidates the cache.
 
 ## Provider-Owned Architecture Selection
 

@@ -27,7 +27,7 @@ int main() {
     fail("backend tool catalog is invalid: " +
          llvm::toString(std::move(error)));
   const llvm::ArrayRef<BackendToolCatalogEntry> catalog = backendToolCatalog();
-  require(catalog.size() == 17,
+  require(catalog.size() == 18,
           "backend tool catalog does not cover every supported provider");
   std::set<std::string> keys;
   std::set<std::string> names;
@@ -139,7 +139,7 @@ int main() {
   const ExternalToolProviderDescriptor &fc = fusionCompilerProvider();
   require(fc.binding.key == "fc_shell" &&
               fc.binding.moduleAliases.front() ==
-                  "synopsys/fusioncompiler/Y-2026.03",
+                  "synopsys/fusioncompiler/Y-2026.03-SP1",
           "Fusion Compiler provider contract is incomplete");
 
   const ExternalToolProviderDescriptor &pt = primeTimeProvider();
