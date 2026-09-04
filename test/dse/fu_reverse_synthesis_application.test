@@ -6,14 +6,14 @@
 # RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
 # RUN:   --workers 1 --site-cpu 1 --progress-jsonl %t/progress.jsonl \
 # RUN:   --fu-reverse-synthesis-dataflow \
-# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:     %S/Inputs/fu_reverse_synthesis_integer_add_sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/initial.json 2> %t/initial.log
 # RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
 # RUN:   --blob-store %t/blobs --run-root %t/run \
 # RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \
 # RUN:   --workers 1 --site-cpu 1 --progress-jsonl %t/progress.jsonl \
 # RUN:   --fu-reverse-synthesis-dataflow \
-# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:     %S/Inputs/fu_reverse_synthesis_integer_add_sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/replay.json 2> %t/replay.log
 # RUN: mkdir -p %t/independent-run
 # RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
@@ -22,7 +22,7 @@
 # RUN:   --workers 1 --site-cpu 1 \
 # RUN:   --progress-jsonl %t/independent-progress.jsonl \
 # RUN:   --fu-reverse-synthesis-dataflow \
-# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:     %S/Inputs/fu_reverse_synthesis_integer_add_sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/independent.json \
 # RUN:   2> %t/independent.log
 # RUN: mkdir -p %t/incomplete-run
@@ -32,7 +32,7 @@
 # RUN:   --workers 1 --site-cpu 1 --maximum-dispatches 1 \
 # RUN:   --progress-jsonl %t/incomplete-progress.jsonl \
 # RUN:   --fu-reverse-synthesis-dataflow \
-# RUN:     %S/../../examples/fu-reverse-synthesis/integer-add-sub.mlir \
+# RUN:     %S/Inputs/fu_reverse_synthesis_integer_add_sub.mlir \
 # RUN:   --fu-reverse-synthesis-evidence %t/incomplete.json 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=INCOMPLETE
 # RUN: rm -rf %t/negative && mkdir -p %t/negative/artifacts %t/negative/blobs
