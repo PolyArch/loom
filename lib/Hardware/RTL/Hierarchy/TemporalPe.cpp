@@ -1259,6 +1259,8 @@ llvm::Expected<PeModule> buildTemporalPeModule(
         };
         std::vector<FifoReadCandidate> fifoReadCandidates;
         std::vector<mlir::Value> fifoReadSelected(layout.registerFifoCount);
+        std::vector<circt::Backedge> fifoReadCommitted;
+        fifoReadCommitted.reserve(layout.registerFifoCount);
         for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo) {
           std::vector<std::vector<mlir::Value>> selectorMatches(
               layout.contextCount,
@@ -1307,8 +1309,10 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               clockReset.asynchronousReset);
           fifoReadSelected[fifo] = roundRobinPackedSelection(
               bodyBuilder, location, packedRequests, requestCount, cursor);
+          fifoReadCommitted.push_back(
+              backedges.get(bodyBuilder.getIntegerType(requestCount)));
           next.setValue(nextCursorFromPacked(bodyBuilder, location, cursor,
-                                             fifoReadSelected[fifo],
+                                             fifoReadCommitted.back(),
                                              requestCount));
         }
 
@@ -1492,6 +1496,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               circt::hw::ConstantOp::create(
                   bodyBuilder, location, llvm::APInt(commitEligible.size(), 0)),
               true);
+          fifoReadCommitted[fifo].setValue(committed);
         }
 
         metrics.childOperations =
