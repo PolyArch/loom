@@ -18,10 +18,12 @@ add_library(LoomMappingArtifact
   SpatialMappingImportContext.cpp
   SpatialMappingHardwareDemand.cpp
   MappingProgressAnalysis.cpp
+  SpatialChannelProgress.cpp
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
   SpatialPhysicalDemandProjection.cpp
   SystemMappingConstraintSet.cpp
+  SystemEventProgress.cpp
   SystemMappingConstraintSetBuilder.cpp
   SystemConfiguredHardwareProjection.cpp
   SystemMappingArtifact.cpp

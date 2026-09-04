@@ -692,20 +692,20 @@ actor wait cycle.
 ## Implementation Responsibility Review
 
 `lib/Mapping/Artifact/MappingProgressAnalysis.cpp` owns the single wait-for
-closure algorithm that search-time System progress and strict SystemMapping
-verification must both call, together with the frozen event-causality index
-it consumes and the one spelling of every closure reason. The closure
-projection input is owned by `SystemMappingClosureProjection.cpp`, physical
-durable-boundary and Temporal PE facts by
-`SpatialPhysicalDemandProjection.cpp`, Presburger cell intersection by
-`SystemPresburger.cpp`, and capacity inventories by the capacity
-verification owners. The review decision is two extractions with existing
-independent consumers: the Dataflow progress basis (the actor dependency
-graph, initialized-feedback removal, and residual cycle witness), which the
-Spatial and System PnR problem owners already consume directly, and the
-Spatial route progress family, which composes route topology with the
-physical boundary facts and has its own legality rules. The projection
-adapter, the closure kernel, and the reason taxonomy stay together because
-one projection and one algorithm is itself the contract; a second proof
-authority is forbidden. The Spatial-named error prefix currently attached to
-System-path failures is a known mislabel to correct at the owner.
+closure algorithm that search-time and strict Mapping verification both call,
+and the one spelling of every closure reason. `SystemEventProgress.cpp` owns
+the frozen System event-causality index, completion-frontier qualification,
+System route dependencies, and the adapter from the strict System closure to
+the shared progress projection. `SpatialChannelProgress.cpp` owns the
+Dataflow actor dependency basis, initialized-feedback removal, Spatial route
+dependencies, and selected channel storage and capacity projections. These
+modules use the existing public progress interface; their shared private key,
+cycle, and feedback-input helpers do not create another proof authority.
+
+The strict System closure input remains owned by
+`SystemMappingClosureProjection.cpp`, physical durable-boundary and Temporal
+PE facts by `SpatialPhysicalDemandProjection.cpp`, Presburger cell
+intersection by `SystemPresburger.cpp`, and capacity inventories by the
+capacity verification owners. Both projection adapters feed the same closure
+kernel. The Spatial-named error prefix currently attached to System-path
+failures remains unchanged by this responsibility split.
