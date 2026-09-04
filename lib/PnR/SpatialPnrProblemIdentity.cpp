@@ -14,19 +14,18 @@ using namespace loom::pnr;
 
 namespace {
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.25\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.26\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-// Exact local-transfer handshake pairing now participates in candidate
-// hard-violation state and an alternative closed by its own pairing leaves
-// the frozen local-transfer domain, so older frozen models are not reusable.
-constexpr std::uint32_t cacheSchemaMinor = 25;
+// Configured switch contention now freezes exact policy-directed relation
+// kinds, so an older frozen model cannot be interpreted by this projection.
+constexpr std::uint32_t cacheSchemaMinor = 26;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.25";
+    "loom.spatial_pnr.freeze.2.26";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.12";
+    "loom.spatial_pnr.native_layout.2.13";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,

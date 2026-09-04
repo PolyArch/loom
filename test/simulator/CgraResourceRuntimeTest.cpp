@@ -1,6 +1,7 @@
 #include "CGRAResourceRuntime.h"
 
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -154,10 +155,78 @@ void derivedActivationAcquiresSharedClaimsOnce() {
     fail("derived activation did not release one whole envelope");
 }
 
+void fixedPriorityAcceptsOutputDisjointRequests() {
+  using namespace fabric;
+  using namespace loom::sim::detail;
+  const SwitchResourceContract switchContract =
+      take(SwitchResourceContract::create(
+          {Schedule::Temporal,
+           3,
+           2,
+           {{0, 1, 2}, {0, 1, 2}},
+           TemporalSwitchGrantPolicy(TemporalSwitchFixedPriority{{1, 0, 2}})}));
+  const ResourceContract *contracts[] = {&switchContract.resourceContract()};
+  const CgraResourcePatternSelection selections[] = {
+      {0, take(switchContract.traversalPattern(0, 0))},
+      {0, take(switchContract.traversalPattern(1, 1))}};
+  const auto plan = take(freezeCgraResourceRuntimePlan(contracts, selections));
+  auto runtime = take(CgraResourceRuntime::create(plan));
+
+  llvm::SmallVector<CgraResourceGrant, 2> grants;
+  const CgraResourceRequest disjoint[] = {{0, 0}, {1, 0}};
+  if (llvm::Error error = runtime.grant(disjoint, grants))
+    fail(llvm::toString(std::move(error)));
+  if (grants.size() != 2 ||
+      !((grants[0].selectedUseOrdinal == 0 &&
+         grants[1].selectedUseOrdinal == 1) ||
+        (grants[0].selectedUseOrdinal == 1 &&
+         grants[1].selectedUseOrdinal == 0)))
+    fail("fixed priority did not accept both output-disjoint requesters");
+}
+
+void roundRobinCursorFollowsTheLastDisjointGrant() {
+  using namespace fabric;
+  using namespace loom::sim::detail;
+  const SwitchResourceContract switchContract =
+      take(SwitchResourceContract::create(
+          {Schedule::Temporal,
+           3,
+           2,
+           {{0, 1, 2}, {0, 1, 2}},
+           TemporalSwitchGrantPolicy(TemporalSwitchRoundRobin{{0, 1, 2}, 0})}));
+  const ResourceContract *contracts[] = {&switchContract.resourceContract()};
+  const CgraResourcePatternSelection selections[] = {
+      {0, take(switchContract.traversalPattern(0, 0))},
+      {0, take(switchContract.traversalPattern(1, 1))},
+      {0, take(switchContract.traversalPattern(1, 0))},
+      {0, take(switchContract.traversalPattern(2, 0))}};
+  const auto plan = take(freezeCgraResourceRuntimePlan(contracts, selections));
+  auto runtime = take(CgraResourceRuntime::create(plan));
+
+  llvm::SmallVector<CgraResourceGrant, 4> grants;
+  const CgraResourceRequest disjoint[] = {{0, 0}, {1, 0}};
+  if (llvm::Error error = runtime.grant(disjoint, grants))
+    fail(llvm::toString(std::move(error)));
+  if (grants.size() != 2 || grants[0].selectedUseOrdinal != 0 ||
+      grants[1].selectedUseOrdinal != 1)
+    fail("round-robin did not accept both output-disjoint requesters");
+  for (const CgraResourceGrant &grant : grants)
+    if (llvm::Error error = runtime.release(grant.claimEnvelope))
+      fail(llvm::toString(std::move(error)));
+
+  const CgraResourceRequest contended[] = {{2, 0}, {3, 0}};
+  if (llvm::Error error = runtime.grant(contended, grants))
+    fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 3)
+    fail("round-robin cursor did not follow the last disjoint grant");
+}
+
 } // namespace
 
 int main() {
   atomicClaimsAndRoundRobinAreExecutedExactly();
   derivedActivationAcquiresSharedClaimsOnce();
+  fixedPriorityAcceptsOutputDisjointRequests();
+  roundRobinCursorFollowsTheLastDisjointGrant();
   return EXIT_SUCCESS;
 }

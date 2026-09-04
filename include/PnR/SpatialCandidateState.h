@@ -198,8 +198,8 @@ private:
   std::vector<std::unique_ptr<RouteTreeTransactionScratch>> routeScratch_;
   std::vector<std::optional<RouteTreeTransaction>> routeTransactions_;
   SpatialTagAssignmentScratch tagScratch_;
-  /// Lazily constructed; the type is internal to the switch handshake
-  /// projection translation unit.
+  /// Prepared when the frozen problem contains a Temporal-switch handshake
+  /// domain; the type is internal to the projection translation unit.
   std::unique_ptr<detail::SpatialSwitchHandshakeProjectionScratch>
       switchProjectionScratch_;
   HandshakeCandidateScratch handshakeScratch_;
@@ -255,7 +255,6 @@ private:
   std::vector<PnrIndex> tagProjectionDomains_;
   std::vector<PnrIndex> changedSwitchHandshakeDomains_;
   std::vector<std::vector<PnrIndex>> newSwitchHandshakeDomainFragments_;
-  std::vector<std::pair<PnrIndex, std::int32_t>> switchHandshakeCountDeltas_;
   std::vector<PnrIndex> removedSwitchHandshakeFragments_;
   std::vector<PnrIndex> addedSwitchHandshakeFragments_;
   bool switchHandshakeBaselineCaptured_ = false;
@@ -702,11 +701,6 @@ private:
   /// valid across rejected proposals; each commit installs the fragments the
   /// closing move already derived.
   std::vector<std::vector<PnrIndex>> switchHandshakeFragmentsByDomain_;
-  /// Number of Temporal switch domains currently listing each handshake
-  /// fragment. The active fragment set the handshake state consumes is the
-  /// fragments with a nonzero count, so cross-domain sharing keeps one
-  /// contribution.
-  std::vector<std::uint32_t> switchHandshakeFragmentDomainCounts_;
   bool switchHandshakeFragmentsValid_ = false;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;

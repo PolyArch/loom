@@ -150,6 +150,7 @@ target_include_directories(loom-simulator-cgra-resource-runtime-test PRIVATE
 )
 
 target_link_libraries(loom-simulator-cgra-resource-runtime-test PRIVATE
+  LoomFabricSwitchResourceContract
   LoomSimulator
   LLVMSupport
 )

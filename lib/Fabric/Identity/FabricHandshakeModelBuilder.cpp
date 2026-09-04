@@ -243,6 +243,9 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
     case HandshakeFragmentSelectorKind::ExactSwitchActivationTraversal:
       activationKind = HandshakeActivationKind::ExactSwitchActivationTraversal;
       break;
+    case HandshakeFragmentSelectorKind::SwitchContention:
+      activationKind = HandshakeActivationKind::SwitchContention;
+      break;
     case HandshakeFragmentSelectorKind::FuCapability:
     case HandshakeFragmentSelectorKind::FuOperationCase:
     case HandshakeFragmentSelectorKind::FuOperationInputActive:
@@ -295,6 +298,9 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
              HandshakeActivationKind::ExactSwitchActivationTraversal) !=
         pending.selector.switchActivation.has_value())
       return invalid("switch activation fragment has no exact key");
+    if ((activationKind == HandshakeActivationKind::SwitchContention) !=
+        pending.selector.switchContention.has_value())
+      return invalid("switch contention fragment has no exact relation");
     structure->fragments.push_back(
         {*offset, *count, activationKind, *witnessOffset, *witnessCount});
     structure->fragmentContributionOrdinals.insert(
@@ -380,17 +386,18 @@ HandshakeOwnerModel::fragment(std::uint32_t ordinal) const {
       storage_->instances[instance]
           .structure->fragments[ordinal - layout.fragmentOffset];
   const auto &instanceStorage = storage_->instances[instance];
-  const auto switchActivation =
-      instanceStorage.switchActivationOverride
-          ? instanceStorage.switchActivationOverride
-          : (*instanceStorage.selectors)[ordinal - layout.fragmentOffset]
-                .switchActivation;
+  const detail::HandshakeFragmentSelector &selector =
+      (*instanceStorage.selectors)[ordinal - layout.fragmentOffset];
+  const auto switchActivation = instanceStorage.switchActivationOverride
+                                    ? instanceStorage.switchActivationOverride
+                                    : selector.switchActivation;
   return {record.contributionOffset + layout.contributionOffset,
           record.contributionCount,
           record.activationKind,
           record.witnessOffset + layout.witnessOffset,
           record.witnessCount,
-          switchActivation};
+          switchActivation,
+          selector.switchContention};
 }
 
 std::uint32_t HandshakeOwnerModel::fragmentContributionCount() const {
@@ -573,7 +580,7 @@ llvm::Expected<HandshakeOwnerModel>
 HandshakeOwnerModelFactory::instantiateSwitchRows(
     FabricSwitchOccurrenceRef occurrence,
     llvm::ArrayRef<HandshakeOwnerModel> rowShapes, std::uint64_t residentRows,
-    bool temporal) {
+    bool temporal, const HandshakeOwnerModel *contentionShape) {
   if (residentRows == 0 || rowShapes.empty())
     return invalid("switch handshake has no row shape");
   if (residentRows > std::numeric_limits<std::uint32_t>::max())
@@ -581,7 +588,12 @@ HandshakeOwnerModelFactory::instantiateSwitchRows(
   std::vector<HandshakeOwnerModelInstance> instances;
   if (rowShapes.size() > std::numeric_limits<std::size_t>::max() / residentRows)
     return invalid("switch handshake instance count overflows");
-  instances.reserve(rowShapes.size() * static_cast<std::size_t>(residentRows));
+  const std::size_t rowInstanceCount =
+      rowShapes.size() * static_cast<std::size_t>(residentRows);
+  if (contentionShape &&
+      rowInstanceCount == std::numeric_limits<std::size_t>::max())
+    return invalid("switch handshake instance count overflows");
+  instances.reserve(rowInstanceCount + (contentionShape ? 1 : 0));
   for (std::uint64_t row = 0; row != residentRows; ++row) {
     for (auto [shapeOrdinal, shape] : llvm::enumerate(rowShapes)) {
       if (!shape.storage_ || shape.storage_->instances.size() != 1 ||
@@ -608,6 +620,25 @@ HandshakeOwnerModelFactory::instantiateSwitchRows(
           static_cast<std::uint32_t>(shapeOrdinal);
       instances.push_back(std::move(instance));
     }
+  }
+  if (contentionShape) {
+    if (!temporal)
+      return invalid("Spatial switch handshake has a contention shape");
+    if (!contentionShape->storage_ ||
+        contentionShape->storage_->instances.size() != 1 ||
+        contentionShape->owner() !=
+            FabricHandshakeOwner::switchResource(occurrence))
+      return invalid("switch contention shape has the wrong owner");
+    HandshakeOwnerModelInstance instance =
+        contentionShape->storage_->instances.front();
+    for (const HandshakeFragmentSelector &selector : *instance.selectors)
+      if (selector.kind != HandshakeFragmentSelectorKind::SwitchContention ||
+          !selector.switchContention ||
+          selector.switchContention->occurrence != occurrence)
+        return invalid("switch contention shape has a foreign relation");
+    instance.projectionShapeOrdinal =
+        static_cast<std::uint32_t>(rowShapes.size());
+    instances.push_back(std::move(instance));
   }
   auto storage = buildStorage(FabricHandshakeOwner::switchResource(occurrence),
                               std::move(instances));

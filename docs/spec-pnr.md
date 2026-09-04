@@ -103,6 +103,10 @@ address, timestamp, allocation order, or invocation ordinal is never a key.
 Changing any dependency produces a miss; a hit performs the owner's cheap
 exact-key and structural revalidation before use.
 
+The `FabricStaticContext` key mechanically includes the canonical compiled
+handshake-context key. A handshake schema or algorithm change therefore
+invalidates its parent without a manually synchronized version owner.
+
 Context reuse is bounded by an explicit invocation or execution-session owner.
 Values are shared immutable handles and are destroyed with that owner. A
 process-global unbounded map is forbidden. Mutable candidates, transactions,
@@ -997,7 +1001,8 @@ A search candidate may temporarily require more packed rows than the Fabric
 owns. The complete row projection remains the owner of
 `TagResidentCapacityOveruse` and route cost. Handshake projection instantiates
 only the occurrence-local resident-row prefix because an overflow row has no
-physical activation. This does not make the candidate publishable: after row
+physical activation and contributes no crosspoint to the switch contention
+relation. This does not make the candidate publishable: after row
 pressure returns within capacity, every surviving row is reconstructed and
 must pass the full row-aware handshake check. Strict Mapping verification and
 configuration reject any remaining overflow independently.
@@ -1216,7 +1221,15 @@ therefore projects this source as structural zero.
 graph owned by the frozen Fabric handshake index. A selected Temporal-PE
 register-FIFO option activates the exact writer-output/reader-input pairing
 fragments resolved by the Fabric handshake owner; traversal selection alone
-does not infer that pairing. Candidate transactions update those fragments and
+does not infer that pairing. For each Temporal switch match domain, the frozen
+index also retains the Fabric-owned typed fragments of the compact contention
+projection. The candidate supplies crosspoints from its provisional
+in-capacity resident-row prefix to the Fabric-owned derivation, which returns
+the deterministic readiness-forest and policy-directed output-valid fragments
+to activate. Overflow rows remain visible to the capacity owner but have no
+physical activation. Worker-local dense scratch is reusable and carries no
+semantic state; PnR does not construct a second contention table or enumerate
+component boundary pairs. Candidate transactions update those fragments and
 their graph ranks with the local-disposition decision, while the cold verifier
 rebuilds the same graph from complete selected state. A cycle is a hard,
 non-temporary violation. Its dedicated first total-order level is strictly

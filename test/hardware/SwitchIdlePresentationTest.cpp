@@ -1,18 +1,19 @@
 // Anchors the Temporal switch idle-presentation contract of
-// docs/spec-rtl-lowering.md with the exact generated RTL of one temporal
-// switch whose two resident rows either select disjoint outputs or contend
-// for one output:
+// docs/spec-rtl-lowering.md with exact generated RTL for Temporal switches
+// whose resident rows select disjoint outputs, contend for one output, or
+// exercise output-disjoint multi-grant under each admitted grant policy:
 //  - with disjoint outputs both rows are presented together, so each input
 //    is ready exactly while its output is ready and never observes its own
 //    valid, and a token on either input retires without waiting for the
 //    idle rotation;
 //  - with one shared output the idle rotation presents one candidate at a
 //    time, a valid requester is presented by the grant policy even while the
-//    rotation shows the other input, and simultaneous requesters retire one
-//    per handoff.
-// The first fixture is the joint whose absence closed a combinational cycle
-// through the reusable switch fabric of a mapped Matmul under an event-driven
-// simulator; the second keeps the contention semantics unchanged.
+//    rotation shows the other input, and simultaneous requesters retire in
+//    the exact fixed-priority or round-robin order.
+// The disjoint fixture protects the configured-only boundary: configured
+// disjoint rows are not serialized or coupled by handshake dependencies.
+// The contention and multi-grant fixtures preserve policy-specific grant
+// semantics while sharing the idle-presentation contract.
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
 #include "ConfigurationABITestSupport.h"
@@ -36,6 +37,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -63,10 +65,38 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-enum class Fixture { Disjoint, Contending };
+enum class Fixture {
+  Disjoint,
+  RoundRobinContention,
+  RoundRobinMultiGrantCursor,
+  FixedPriorityContention,
+  FixedPriorityMultiGrant
+};
 
 llvm::StringRef fixtureName(Fixture fixture) {
-  return fixture == Fixture::Disjoint ? "disjoint" : "contending";
+  switch (fixture) {
+  case Fixture::Disjoint:
+    return "disjoint";
+  case Fixture::RoundRobinContention:
+    return "round_robin";
+  case Fixture::RoundRobinMultiGrantCursor:
+    return "round_robin_multi_grant";
+  case Fixture::FixedPriorityContention:
+    return "fixed_priority";
+  case Fixture::FixedPriorityMultiGrant:
+    return "fixed_priority_multi_grant";
+  }
+  llvm_unreachable("closed switch fixture domain");
+}
+
+bool isMultiGrantFixture(Fixture fixture) {
+  return fixture == Fixture::RoundRobinMultiGrantCursor ||
+         fixture == Fixture::FixedPriorityMultiGrant;
+}
+
+bool isFixedPriorityFixture(Fixture fixture) {
+  return fixture == Fixture::FixedPriorityContention ||
+         fixture == Fixture::FixedPriorityMultiGrant;
 }
 
 /// One resident row: the input, the output it selects, and its tag.
@@ -79,29 +109,54 @@ struct ResidentRow final {
 std::vector<ResidentRow> residentRows(Fixture fixture) {
   if (fixture == Fixture::Disjoint)
     return {{0, 0, 2}, {1, 1, 1}};
+  if (isMultiGrantFixture(fixture))
+    return {{0, 0, 0}, {1, 1, 1}, {1, 0, 3}, {2, 0, 2}};
   return {{0, 0, 2}, {1, 0, 1}};
 }
 
-/// A 2 x 2 fully connected temporal switch with a two-entry route table and
-/// a round-robin grant, the smallest fabric in which two resident rows share
-/// one arbitration component.
+/// One fully connected Temporal switch. The ordinary fixtures use two inputs,
+/// two outputs, and two resident rows. The multi-grant fixtures add a third
+/// requester and two rows at input one; the RoundRobin case also distinguishes
+/// cursor advance after the first successful requester from the last.
 FinalizedFabricRoot makeFixtureModule(llvm::StringRef test,
                                       const ArtifactStore &store,
                                       Fixture fixture) {
   using namespace loom::adg;
   DesignBuilder design(store);
   const PortType tagged8x2 = take(test, PortType::taggedBits(8, 2));
+  const bool multiGrant = isMultiGrantFixture(fixture);
+  const bool fixedPriority = isFixedPriorityFixture(fixture);
+  const std::uint32_t inputCount = multiGrant ? 3 : 2;
+  std::vector<PortType> inputTypes(inputCount, tagged8x2);
+  std::vector<PortType> outputTypes(2, tagged8x2);
   auto spatial =
       take(test, design.createSpatialCore(
                      ("switch-idle-presentation-" + fixtureName(fixture)).str(),
-                     {tagged8x2, tagged8x2}, {tagged8x2, tagged8x2}));
+                     inputTypes, outputTypes));
+  ::fabric::TemporalSwitchGrantPolicy grantPolicy =
+      fixedPriority
+          ? ::fabric::TemporalSwitchGrantPolicy(
+                ::fabric::TemporalSwitchFixedPriority{
+                    multiGrant ? std::vector<std::uint32_t>{1, 0, 2}
+                               : std::vector<std::uint32_t>{1, 0}})
+          : multiGrant ? ::fabric::TemporalSwitchGrantPolicy(
+                             ::fabric::TemporalSwitchRoundRobin{{0, 1, 2}, 0})
+                       : ::fabric::TemporalSwitchGrantPolicy(
+                             ::fabric::TemporalSwitchRoundRobin{{0, 1}, 0});
+  std::vector<SpatialValue> switchInputs;
+  switchInputs.reserve(inputCount);
+  for (std::uint32_t input = 0; input != inputCount; ++input)
+    switchInputs.push_back(take(test, spatial.input(input)));
+  std::vector<std::vector<std::uint32_t>> connectivity(
+      2, std::vector<std::uint32_t>(inputCount));
+  for (auto &sources : connectivity)
+    for (std::uint32_t input = 0; input != inputCount; ++input)
+      sources[input] = input;
   auto routed = take(
-      test,
-      spatial.addSwitch(
-          {take(test, spatial.input(0)), take(test, spatial.input(1))},
-          SwitchSpec::temporal({tagged8x2, tagged8x2}, {tagged8x2, tagged8x2},
-                               {{0, 1}, {0, 1}}, 2,
-                               ::fabric::TemporalSwitchRoundRobin{{0, 1}, 0})));
+      test, spatial.addSwitch(switchInputs,
+                              SwitchSpec::temporal(
+                                  inputTypes, outputTypes, connectivity,
+                                  multiGrant ? 4 : 2, std::move(grantPolicy))));
   if (llvm::Error error = spatial.close(routed.values()))
     fail(test, llvm::toString(std::move(error)));
   auto finalized = take(test, std::move(design).finalize());
@@ -248,6 +303,20 @@ void writeArtifacts(const std::filesystem::path &root,
   const std::string prefix =
       ("switch_idle_presentation_" + fixtureName(artifact.fixture)).str();
   const bool disjoint = artifact.fixture == Fixture::Disjoint;
+  const bool multiGrant =
+      isMultiGrantFixture(artifact.fixture);
+  const bool fixedPriority = isFixedPriorityFixture(artifact.fixture);
+  const auto writeYosysScript = [&] {
+    std::ofstream(root / (prefix + ".ys"))
+        << "\nread_verilog -sv " << prefix << R"ys(_module.sv
+hierarchy -check -top loom_module
+check -assert
+proc
+synth -top loom_module
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+)ys";
+  };
   std::ofstream(root / (prefix + "_module.sv")) << artifact.systemVerilog;
   std::ofstream testbench(root / (prefix + "_testbench.sv"));
   testbench << "\nmodule " << prefix << R"sv(_testbench;
@@ -261,6 +330,14 @@ void writeArtifacts(const std::filesystem::path &root,
   logic [1:0] input_1_tag;
   logic       input_1_valid;
   logic       input_1_ready;
+)sv";
+  if (multiGrant)
+    testbench << R"sv(  logic [7:0] input_2_data;
+  logic [1:0] input_2_tag;
+  logic       input_2_valid;
+  logic       input_2_ready;
+)sv";
+  testbench << R"sv(
   logic [7:0] output_0_data;
   logic [1:0] output_0_tag;
   logic       output_0_valid;
@@ -340,6 +417,8 @@ void writeArtifacts(const std::filesystem::path &root,
   int ready_1_cycles;
   int both_ready_cycles;
   int neither_ready_cycles;
+  int first_grant;
+  int granted;
 
   initial begin
     clock = 0;
@@ -350,6 +429,13 @@ void writeArtifacts(const std::filesystem::path &root,
     input_1_data = 0;
     input_1_tag = 0;
     input_1_valid = 0;
+)sv";
+  if (multiGrant)
+    testbench << R"sv(    input_2_data = 0;
+    input_2_tag = 0;
+    input_2_valid = 0;
+)sv";
+  testbench << R"sv(
     output_0_ready = 1;
     output_1_ready = 1;
 )sv";
@@ -362,8 +448,78 @@ void writeArtifacts(const std::filesystem::path &root,
           "Disabled Temporal switch presented readiness or a token");
 
 )sv";
+  if (multiGrant)
+    testbench << R"sv(    check(!input_2_ready,
+          "Disabled Temporal switch presented requester 2 readiness");
+
+)sv";
   testbench << take(test, loom::hardware::test::portableAxiLiteProgramAndVerify(
                               artifact.target, artifact.image));
+  if (multiGrant) {
+    testbench << R"sv(    @(negedge clock);
+    input_0_data = 8'd10;
+    input_0_tag = 2'd0;
+    input_0_valid = 1;
+    input_1_data = 8'd11;
+    input_1_tag = 2'd1;
+    input_1_valid = 1;
+    input_2_data = 8'd12;
+    input_2_tag = 2'd2;
+    #1;
+    check(input_0_ready && input_1_ready && !input_2_ready &&
+              output_0_valid && output_0_data == input_0_data &&
+              output_0_tag == input_0_tag && output_1_valid &&
+              output_1_data == input_1_data &&
+              output_1_tag == input_1_tag,
+          "GrantPolicy did not admit both output-disjoint requesters");
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_data = 8'd13;
+    input_1_tag = 2'd3;
+    input_2_valid = 1;
+    #1;
+)sv";
+    if (fixedPriority)
+      testbench << R"sv(    check(input_1_ready && !input_2_ready &&
+              output_0_valid && output_0_data == input_1_data &&
+              output_0_tag == input_1_tag && !output_1_valid,
+          "FixedPriority did not select its first contending requester");
+    @(posedge clock);
+    @(negedge clock);
+    input_1_valid = 0;
+    #1;
+    check(input_2_ready && output_0_valid &&
+              output_0_data == input_2_data &&
+              output_0_tag == input_2_tag && !output_1_valid,
+          "FixedPriority did not grant the remaining requester");
+)sv";
+    else
+      testbench << R"sv(    check(!input_1_ready && input_2_ready && output_0_valid &&
+              output_0_data == input_2_data &&
+              output_0_tag == input_2_tag && !output_1_valid,
+          "RoundRobin cursor did not follow the last disjoint grant");
+    @(posedge clock);
+    @(negedge clock);
+    input_2_valid = 0;
+    #1;
+    check(input_1_ready && output_0_valid &&
+              output_0_data == input_1_data &&
+              output_0_tag == input_1_tag && !output_1_valid,
+          "RoundRobin did not grant the remaining contending requester");
+)sv";
+    testbench << R"sv(    @(posedge clock);
+    @(negedge clock);
+    input_1_valid = 0;
+    input_2_valid = 0;
+    expect_silence("Multi-grant tokens repeated");
+    $finish;
+  end
+endmodule
+)sv";
+    writeYosysScript();
+    return;
+  }
   // Both inputs present their resident tags without a token so the idle
   // presentation of the two rows is observable.
   testbench << R"sv(    @(negedge clock);
@@ -397,6 +553,22 @@ void writeArtifacts(const std::filesystem::path &root,
     end
     @(negedge clock);
     output_0_ready = 1;
+    input_0_data = 8'd165;
+    input_0_valid = 1;
+    input_1_data = 8'd90;
+    input_1_valid = 1;
+    #1;
+    check(input_0_ready && input_1_ready && output_0_valid &&
+              output_0_data == input_0_data &&
+              output_0_tag == input_0_tag && output_1_valid &&
+              output_1_data == input_1_data &&
+              output_1_tag == input_1_tag,
+          "Output-disjoint requesters did not transfer together");
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    expect_silence("Simultaneous disjoint tokens repeated");
     send_expect(0, 0, 2'd2, 8'd165, waited);
     check(waited == 1, "Idle row 0 was not ready for its first token");
     expect_silence("Row 0 token leaked to another output or repeated");
@@ -407,7 +579,7 @@ void writeArtifacts(const std::filesystem::path &root,
   end
 endmodule
 )sv";
-  else
+  else {
     testbench
         << R"sv(    check(both_ready_cycles == 0 && neither_ready_cycles == 0,
           "Rows contending for one output were not presented one at a time");
@@ -426,47 +598,73 @@ endmodule
     input_1_valid = 1;
     ready_0_cycles = 0;
     ready_1_cycles = 0;
-    repeat (3) begin
-      @(posedge clock);
+    first_grant = -1;
+    repeat (2) begin
       #1;
       check(!(input_0_ready && input_1_ready),
             "Two contending requesters were granted in one cycle");
       if (input_0_valid && input_0_ready) begin
+        granted = 0;
+        if (first_grant == -1) first_grant = 0;
         ready_0_cycles = ready_0_cycles + 1;
-        @(negedge clock);
-        input_0_valid = 0;
+        check(output_0_valid && output_0_ready &&
+                  output_0_data == input_0_data &&
+                  output_0_tag == input_0_tag && !output_1_valid,
+              "Requester 0 grant did not carry its exact output transfer");
       end else if (input_1_valid && input_1_ready) begin
+        granted = 1;
+        if (first_grant == -1) first_grant = 1;
         ready_1_cycles = ready_1_cycles + 1;
-        @(negedge clock);
-        input_1_valid = 0;
+        check(output_0_valid && output_0_ready &&
+                  output_0_data == input_1_data &&
+                  output_0_tag == input_1_tag && !output_1_valid,
+              "Requester 1 grant did not carry its exact output transfer");
+      end else begin
+        $fatal(1, "No contending requester was granted");
       end
+      @(posedge clock);
+      @(negedge clock);
+      if (granted == 0)
+        input_0_valid = 0;
+      else
+        input_1_valid = 0;
     end
     check(ready_0_cycles == 1 && ready_1_cycles == 1,
           "Simultaneous contending requesters did not both retire");
+)sv";
+    testbench << (fixedPriority ? R"sv(    check(first_grant == 1,
+          $sformatf("FixedPriority granted requester %0d first", first_grant));
+)sv"
+                                : R"sv(    check(first_grant == 1,
+          $sformatf("RoundRobin granted requester %0d after advance",
+                    first_grant));
+)sv");
+    testbench << R"sv(
     $finish;
   end
 endmodule
 )sv";
-  std::ofstream(root / (prefix + ".ys"))
-      << "\nread_verilog -sv " << prefix << R"ys(_module.sv
-hierarchy -check -top loom_module
-check -assert
-proc
-synth -top loom_module
-check -assert
-select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
-)ys";
+  }
+  writeYosysScript();
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
-  require("main", argc == 2, "expected exactly one output directory");
+  require("main", argc == 3,
+          "expected an output directory and one fixture name");
   const std::filesystem::path root(argv[1]);
   std::filesystem::create_directories(root);
-  for (const Fixture fixture : {Fixture::Disjoint, Fixture::Contending})
-    writeArtifacts(
-        root,
-        buildArtifact(root / "store" / fixtureName(fixture).str(), fixture));
+  std::optional<Fixture> selected;
+  for (const Fixture fixture :
+       {Fixture::Disjoint, Fixture::RoundRobinContention,
+        Fixture::RoundRobinMultiGrantCursor, Fixture::FixedPriorityContention,
+        Fixture::FixedPriorityMultiGrant})
+    if (fixtureName(fixture) == argv[2]) {
+      selected = fixture;
+      break;
+    }
+  require("main", selected.has_value(), "unknown switch fixture name");
+  writeArtifacts(root, buildArtifact(root / "store", *selected));
   return 0;
 }

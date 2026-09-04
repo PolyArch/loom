@@ -12,7 +12,7 @@ digests; this document introduces no new persistent schema:
 ```text
 Spatial:
   loom.spatial_pnr.config.15.6
-  loom.spatial_pnr.freeze.2.25
+  loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.4
   selected FabricPhysicalTimingProfile descriptor and digest
 
@@ -86,15 +86,17 @@ Spatial freeze validates exact `D/T/F/C/K`, the selected physical timing
 profile, and all finite owner domains before candidate allocation. It derives
 canonical compute and memory choices, attachment alternatives, RegFIFO
 alternatives, residual nets, routing topology, resource contracts, packed-row
-fragments, tags, progress dependencies, objective inputs, and reverse indexes.
-Freeze descriptor `loom.spatial_pnr.freeze.2.25` covers those observable
+fragments, tags, compiled handshake owner models and fragments, potential
+Fabric-owned Temporal-switch contention relation incidence, progress
+dependencies, objective inputs, and reverse indexes.
+Freeze descriptor `loom.spatial_pnr.freeze.2.26` covers those observable
 domains. Internal storage layout is not replay state.
 The frozen-model cache key is a SHA-256 over the domain
-`loom.spatial_pnr.frozen_model.key.v2.25`, whose minor follows the freeze
+`loom.spatial_pnr.frozen_model.key.v2.26`, whose minor follows the freeze
 descriptor, plus the exact `D/T/F/C/K` identities, the ResolvedConfig view
 descriptor and digest, the freeze descriptor, the importer identity
 `loom.spatial_pnr.importers.2.1`, the native layout tag
-`loom.spatial_pnr.native_layout.2.12`, the PnR index width, and the physical
+`loom.spatial_pnr.native_layout.2.13`, the PnR index width, and the physical
 timing profile digest. The native layout tag versions only the in-memory
 storage layout: changing it invalidates cached frozen models without changing
 any replay identity.

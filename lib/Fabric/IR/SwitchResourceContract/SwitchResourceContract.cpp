@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <map>
 #include <type_traits>
 #include <utility>
 
@@ -39,6 +40,35 @@ std::vector<RequesterKey> requesterKeys(std::uint32_t inputCount) {
   return requesters;
 }
 
+struct SwitchPolicyProjection final {
+  std::vector<std::uint32_t> requesterOrder;
+  std::optional<std::uint32_t> roundRobinResetPosition;
+};
+
+SwitchPolicyProjection projectSwitchPolicy(const ResourceContract &contract) {
+  SwitchPolicyProjection result;
+  const auto policy = contract.grantPolicy();
+  if (!policy)
+    return result;
+  if (const auto *fixed = std::get_if<FixedPriorityView>(&*policy)) {
+    result.requesterOrder.reserve(fixed->requesterOrder().size());
+    for (RequesterKey requester : fixed->requesterOrder())
+      result.requesterOrder.push_back(requester.ordinal());
+    return result;
+  }
+  const auto &roundRobin = std::get<RoundRobinView>(*policy);
+  result.requesterOrder.reserve(roundRobin.requesterCycle().size());
+  for (RequesterKey requester : roundRobin.requesterCycle())
+    result.requesterOrder.push_back(requester.ordinal());
+  const auto reset =
+      llvm::find(result.requesterOrder, roundRobin.resetCursor().ordinal());
+  assert(reset != result.requesterOrder.end() &&
+         "validated RoundRobin reset requester is absent");
+  result.roundRobinResetPosition =
+      static_cast<std::uint32_t>(reset - result.requesterOrder.begin());
+  return result;
+}
+
 } // namespace
 
 llvm::Expected<std::uint64_t>
@@ -54,6 +84,95 @@ fabric::validatedSwitchCrosspointCount(std::uint64_t inputCount,
         static_cast<unsigned long long>(*crosspoints),
         static_cast<unsigned long long>(kSwitchCrosspointLimit));
   return *crosspoints;
+}
+
+llvm::Expected<std::vector<SwitchArbitrationComponent>>
+fabric::deriveSwitchArbitrationComponents(
+    Schedule schedule, std::uint32_t inputCount, std::uint32_t outputCount,
+    llvm::ArrayRef<std::vector<std::uint32_t>> sourcesByOutput,
+    const ResourceContract &contract) {
+  if (inputCount == 0 || outputCount == 0 ||
+      sourcesByOutput.size() != outputCount)
+    return invalid("arbitration topology has an invalid shape");
+
+  std::vector<std::uint32_t> parent(inputCount + outputCount);
+  for (std::uint32_t index = 0; index != parent.size(); ++index)
+    parent[index] = index;
+  const auto root = [&](std::uint32_t value) {
+    std::uint32_t result = value;
+    while (parent[result] != result)
+      result = parent[result];
+    while (parent[value] != value) {
+      const std::uint32_t next = parent[value];
+      parent[value] = result;
+      value = next;
+    }
+    return result;
+  };
+  for (std::uint32_t output = 0; output != outputCount; ++output) {
+    if (sourcesByOutput[output].empty())
+      return invalid("arbitration topology has an unconnected output");
+    for (std::uint32_t input : sourcesByOutput[output]) {
+      if (input >= inputCount)
+        return invalid("arbitration topology input is outside its domain");
+      std::uint32_t inputRoot = root(input);
+      std::uint32_t outputRoot = root(inputCount + output);
+      if (inputRoot != outputRoot)
+        parent[outputRoot] = inputRoot;
+    }
+  }
+
+  std::map<std::uint32_t, SwitchArbitrationComponent> byRoot;
+  for (std::uint32_t input = 0; input != inputCount; ++input)
+    byRoot[root(input)].inputs.push_back(input);
+  for (std::uint32_t output = 0; output != outputCount; ++output)
+    byRoot[root(inputCount + output)].outputs.push_back(output);
+
+  const SwitchPolicyProjection policy = projectSwitchPolicy(contract);
+  const std::vector<std::uint32_t> &fullOrder = policy.requesterOrder;
+  const bool roundRobin = policy.roundRobinResetPosition.has_value();
+
+  std::vector<SwitchArbitrationComponent> result;
+  result.reserve(byRoot.size());
+  for (auto &[componentRoot, component] : byRoot) {
+    (void)componentRoot;
+    if (schedule == Schedule::Temporal && !fullOrder.empty()) {
+      for (std::uint32_t requester : fullOrder)
+        if (llvm::is_contained(component.inputs, requester))
+          component.requesterOrder.push_back(requester);
+      if (component.requesterOrder.size() != component.inputs.size())
+        return invalid("GrantPolicy omits a switch component requester");
+      if (roundRobin && component.inputs.size() > 1) {
+        const std::uint32_t resetOrdinal = *policy.roundRobinResetPosition;
+        std::uint32_t bestDistance = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t bestPosition = 0;
+        for (auto [position, requester] :
+             llvm::enumerate(component.requesterOrder)) {
+          const auto found = llvm::find(fullOrder, requester);
+          const std::uint32_t ordinal =
+              static_cast<std::uint32_t>(found - fullOrder.begin());
+          const std::uint32_t distance =
+              ordinal >= resetOrdinal
+                  ? ordinal - resetOrdinal
+                  : static_cast<std::uint32_t>(fullOrder.size()) -
+                        resetOrdinal + ordinal;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPosition = static_cast<std::uint32_t>(position);
+          }
+        }
+        component.roundRobinResetPosition = bestPosition;
+      }
+    } else {
+      component.requesterOrder = component.inputs;
+    }
+    result.push_back(std::move(component));
+  }
+  llvm::sort(result, [](const SwitchArbitrationComponent &lhs,
+                        const SwitchArbitrationComponent &rhs) {
+    return lhs.inputs < rhs.inputs;
+  });
+  return result;
 }
 
 llvm::Expected<SwitchResourceContract>

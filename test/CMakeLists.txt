@@ -166,6 +166,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-system-attachment-finalizer-test
   loom-fabric-module-boundary-transport-passthrough-test
   loom-fabric-handshake-model-test
+  loom-fabric-switch-handshake-policy-test
   loom-fabric-queue-discipline-test
   loom-fabric-boundary-data-path-test
   loom-fabric-boundary-transfer-test

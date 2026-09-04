@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -316,6 +315,9 @@ private:
           case HandshakeActivationKind::Always:
             retain = true;
             break;
+          case HandshakeActivationKind::SwitchContention:
+            retain = true;
+            break;
           case HandshakeActivationKind::AnyTraversal:
           case HandshakeActivationKind::AnySwitchActivationTraversal:
           case HandshakeActivationKind::ExactSwitchActivationTraversal:
@@ -366,6 +368,8 @@ private:
           switchActivationBaseFragments;
       std::map<std::pair<SwitchActivationKey, PnrIndex>, std::vector<PnrIndex>>
           switchTraversalFragments;
+      std::vector<FrozenSpatialSwitchHandshakeContentionRelation>
+          contentionRelations;
 
       const auto switchDomain = [&](FabricSwitchOccurrenceRef occurrence)
           -> llvm::Expected<PnrIndex> {
@@ -499,11 +503,39 @@ private:
                 *globalFragment);
             break;
           }
+          case HandshakeActivationKind::SwitchContention: {
+            if (!fragment.switchContention)
+              return invalid(
+                  "Temporal switch contention fragment has no relation");
+            auto domain = switchDomain(fragment.switchContention->occurrence);
+            if (!domain)
+              return domain.takeError();
+            contentionRelations.push_back(
+                {*domain, *fragment.switchContention, *globalFragment});
+            break;
+          }
           case HandshakeActivationKind::ExactOwnerSelection:
             break;
           }
         }
       }
+
+      const auto contentionKey =
+          [](const FrozenSpatialSwitchHandshakeContentionRelation &relation) {
+            return std::make_tuple(
+                relation.matchDomain,
+                static_cast<std::uint8_t>(relation.relation.relation),
+                relation.relation.input, relation.relation.output);
+          };
+      llvm::sort(contentionRelations, [&](const auto &lhs, const auto &rhs) {
+        return contentionKey(lhs) < contentionKey(rhs);
+      });
+      for (std::size_t ordinal = 1; ordinal < contentionRelations.size();
+           ++ordinal)
+        if (contentionKey(contentionRelations[ordinal - 1]) ==
+            contentionKey(contentionRelations[ordinal]))
+          return invalid("Temporal switch contention relation is repeated");
+      result_.switchContentionRelations_ = std::move(contentionRelations);
 
       for (auto &fragments : traversalFragments) {
         llvm::sort(fragments);
@@ -1328,6 +1360,40 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
                selection.fragmentOffset, selection.fragmentCount))
         if (fragment >= handshake.fragments().size())
           return invalid("Temporal switch traversal fragment is out of range");
+    }
+  }
+  const auto domains = routing.tagContinuity().matchDomains();
+  const auto contentionKey = [](const auto &entry) {
+    return std::make_tuple(entry.matchDomain,
+                           static_cast<std::uint8_t>(entry.relation.relation),
+                           entry.relation.input, entry.relation.output);
+  };
+  for (auto [ordinal, relation] :
+       llvm::enumerate(handshake.switchContentionRelations())) {
+    if (relation.matchDomain >= domains.size() ||
+        domains[relation.matchDomain].kind !=
+            FabricPhysicalTagMatchDomainKind::TemporalSwitchTable ||
+        relation.fragment >= handshake.fragments().size())
+      return invalid("Temporal switch contention relation is inconsistent");
+    const FrozenSpatialHandshakeFragment &frozen =
+        handshake.fragments()[relation.fragment];
+    if (frozen.owner >= handshake.ownerModels().size())
+      return invalid("Temporal switch contention fragment owner is absent");
+    const HandshakeOwnerModel &model = handshake.ownerModels()[frozen.owner];
+    if (frozen.localFragment >= model.fragmentCount())
+      return invalid("Temporal switch contention fragment is out of range");
+    const HandshakeActivationFragment fragment =
+        model.fragment(frozen.localFragment);
+    if (fragment.activationKind != HandshakeActivationKind::SwitchContention ||
+        !fragment.switchContention ||
+        *fragment.switchContention != relation.relation ||
+        domains[relation.matchDomain].owner !=
+            FabricInventoryOwnerRef::of(relation.relation.occurrence))
+      return invalid("Temporal switch contention relation is foreign");
+    if (ordinal != 0) {
+      const auto &previous = handshake.switchContentionRelations()[ordinal - 1];
+      if (contentionKey(previous) >= contentionKey(relation))
+        return invalid("Temporal switch contention relations are noncanonical");
     }
   }
   if (handshake.computePlacementFragmentOffsets().size() !=

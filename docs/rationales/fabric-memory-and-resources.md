@@ -277,8 +277,25 @@ backpressure, arbitration, and resource-use facts cannot be inferred from
 multiple module-level SSA uses or from a route tree alone.
 
 The mapper selects traversals and configuration from the switch's exact
-connectivity and resource contracts. Protocol packetization and implementation
-microstate remain outside the architecture-level switch owner.
+connectivity and resource contracts. The architecture-level switch owner
+defines observable grant transitions and the configured readiness-presentation
+invariant. Protocol packetization, the exact idle-presentation mechanism, and
+physical register realization remain implementation details.
+
+Potential fan-in is not active contention. A switch may admit crosspoints that
+no resident row selects, and globally forbidding every cycle those alternatives
+could form would reject legal configured hardware. Fabric therefore owns one
+compact conditional handshake shape; Mapping supplies the exact resident-row
+selection that activates it.
+
+Readiness follows configured contention components because idle presentation
+observes only selected output conflicts. Unused physical crosspoints therefore
+cannot affect presentation. Output validity cannot use the same undirected
+approximation. Round-robin grant state may place any requester first, but fixed
+priority has a stable direction. A priority-prefix projection preserves that
+distinction in linear space, so a lower-priority requester does not gain a
+false dependency on an unrelated earlier output. Presentation-only tag or data
+selection is not repackaged as a Valid dependency.
 
 One `fabric.switch` is one physical crossbar, so its implementation cost is not
 independent of its shape. Area, wiring, selector depth, timing closure, and

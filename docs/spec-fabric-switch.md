@@ -311,6 +311,46 @@ structural dependency. These projections feed the two gates in
 `docs/spec-fabric-module.md` and `docs/spec-mapping-verification.md` and are not
 stored as a second switch graph.
 
+A Temporal switch additionally owns the grant and readiness-presentation
+dependency invariants of configured same-output contention. Two inputs contend
+when resident Active entries of both select a common output. An input's
+contention component is the transitive closure of that relation over configured
+crosspoints; an admitted crosspoint that no resident entry selects cannot
+connect two inputs.
+
+Idle presentation makes every input's readiness in a multi-input configured
+component depend on every component input's validity. The sealed Fabric owner
+represents this complete readiness relation with a deterministic spanning
+forest and two directed owner-local junction layers. It does not enumerate
+the boundary transitive closure.
+
+Output-valid dependencies follow the exact `GrantPolicy`. With `RoundRobin`,
+any requester may precede any other requester as the cursor advances, so every
+component input validity can reach every configured component output validity.
+With `FixedPriority`, form a directed requester graph whose edge `i -> j`
+exists when `i` precedes `j` in the exact policy order and their selected
+output sets overlap. `Valid(in_i)` reaches `Valid(out_o)` exactly when `i` can
+reach a requester that selects `o`, including itself. A lower-priority input
+therefore cannot affect an unrelated output served only by earlier requesters.
+
+The FixedPriority projection uses one owner-local selection junction per input
+and one priority-prefix chain per physical output. A selected crosspoint
+connects its prefix to the input selection and the selection to the next
+prefix and output validity. On every directly contended physical output, each
+unselected admitted crosspoint carries the prefix across that priority
+position, including positions before the first or after the last selected
+crosspoint. This is linear in admitted crosspoints and switch vertices and
+preserves the exact directed reachability without an all-to-all closure. The
+readiness forest is likewise linear. Forest and prefix ordering are
+algorithm-versioned derived details, not Fabric or Mapping identity.
+
+These fragments augment the stateless row arcs. They are derived from the
+complete selected configuration, never persisted, never unconditional, and
+never infer a Valid dependency from presentation-only data or tag selection.
+No Ready-to-Ready or Ready-to-Valid relation is added because grant and
+presentation do not observe output readiness. A one-input component, and every
+Spatial switch, contributes only the stateless row arcs.
+
 ### Tag-driven trigger semantics
 
 When a token arrives at an input port carrying tag value `t`, the
@@ -350,6 +390,44 @@ state-update behavior, latency, and backpressure visibility. The shared
 schedule-specific requester inventory, typed attribute syntax, ResourceState
 values, canonical initial state, capacity dimensions, stable typed requester
 order, and atomic transfer UsePatterns.
+
+The switch implementation derives one nonpersistent typed physical
+arbitration projection from `connectivity_table` and the finalized
+ResourceContract. Treat inputs and outputs as a bipartite graph joined only by
+admitted crosspoints; each connected component stores its ascending input and
+output ordinals and the component-local projection of the exact GrantPolicy
+order. This projection is the sole physical-component and grant derivation
+consumed by handshake compilation and RTL lowering. It adds no Fabric field:
+its algorithm identities belong to those derived consumers, and every
+valid-request transfer remains governed by the existing GrantPolicy, capacity,
+and atomic-use semantics. FixedPriority scans the projected order and grants
+every eligible requester whose selected outputs remain capacity-feasible in
+that cycle. This switch-owned atomic grant-set projection repeatedly applies
+the shared one-requester selection primitive to remaining requests and
+residual output capacity. RoundRobin owns one successful-grant
+cursor per multi-input physical component, reset to the first component
+requester at or after the policy's typed reset requester in cyclic order. It
+scans cyclically from that cursor and accepts every eligible requester whose
+selected outputs remain capacity-feasible, advances after each successful
+transfer, ends at the successor of the last successful requester, and holds if
+none succeeds. Components are physically output-disjoint, so this projection
+admits their independent grants without manufacturing cross-component
+exclusion.
+
+When no valid requester holds an output, the implementation must expose
+downstream readiness to every configured candidate without starving a
+contending candidate. It may present output-disjoint candidates together, but
+unselected crosspoints must affect neither presentation nor grant exclusion.
+The exact idle-presentation mechanism, state, reset value, and advance rule are
+RTL implementation details. They cannot select, exclude, or reorder a
+valid-request transfer and are invalidated through the RTL implementation
+identity, not the Fabric schema.
+
+Clock and Reset consumption remains the ResourceState rule owned by
+`docs/spec-fabric-module.md`: every switch has a nonempty `K + L` ResourceState
+inventory and therefore consumes both ports. Grant cursors are transient
+execution state, and idle-presentation state is transient implementation state;
+neither is another ResourceState or a second clock-use authority.
 
 Its normalized resource projection is linear in physical connectivity:
 
@@ -395,11 +473,19 @@ power set of possible broadcast destinations.
 Fabric 1.0 requires an exact policy whenever temporal physical connectivity
 admits fan-in between runtime requesters. A later exact Fabric-owned refinement
 domain may broaden that authoring surface, but Mapping, simulation, runtime,
-and RTL lowering may not fill in a missing policy or choose a default. Cursor
-and reservation state are nonpersistent execution state. The implementation
-owns the arbiter circuit and transient cursor, but not the cycle-visible policy
-semantics. Spatial fan-in alternatives remain statically capacity-closed and
-must not manufacture either an arbiter or a policy.
+and RTL lowering may not fill in a missing policy or choose a default. Grant
+cursor and reservation state are nonpersistent execution state whose exact
+semantics come from the Fabric policy. Idle-presentation state is owned by the
+RTL implementation and cannot alter those grant semantics.
+Spatial fan-in alternatives remain statically capacity-closed and must not
+manufacture either an arbiter or a policy.
+
+The grant is decided within the request cycle. Its combinational visibility is
+owned by `Handshake Dependency Projection`: only contention created by the
+configured resident rows contributes dependencies. Physical fan-in and a
+potential structural cycle that would close only through unselected
+crosspoints remain legal; `docs/spec-mapping-verification.md` rejects only a
+cycle in the selected configured graph.
 
 ### Broadcast backpressure contract
 

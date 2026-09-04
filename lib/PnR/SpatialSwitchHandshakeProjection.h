@@ -52,6 +52,13 @@ public:
   operator=(const SpatialSwitchHandshakeProjectionScratch &) = delete;
   ~SpatialSwitchHandshakeProjectionScratch();
 
+  llvm::Error prepare(const FrozenSpatialPnrProblem &problem);
+  llvm::Error prepareFragmentStorage(
+      std::vector<std::vector<PnrIndex>> &fragmentsByDomain,
+      std::vector<PnrIndex> &removedFragments,
+      std::vector<PnrIndex> &addedFragments) const;
+  std::size_t retainedStorageBytes() const;
+
   /// Opaque reusable buffers; the definition is local to the projection
   /// translation unit.
   struct Storage;

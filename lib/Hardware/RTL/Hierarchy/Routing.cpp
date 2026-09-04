@@ -2,6 +2,7 @@
 
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/ResourceContract.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
@@ -11,13 +12,12 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
-#include <limits>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::hardware::rtl::hierarchy {
@@ -75,38 +75,61 @@ struct SwitchRoute final {
   std::uint64_t configurationBit = 0;
 };
 
-struct SwitchArbitrationComponent final {
-  std::vector<unsigned> inputs;
-  std::vector<unsigned> outputs;
-  std::vector<unsigned> requesterOrder;
-  std::optional<unsigned> roundRobinResetPosition;
+struct SwitchIdlePresentation final {
+  std::vector<std::uint32_t> requesterOrder;
+  std::uint32_t resetPosition = 0;
 };
 
-std::vector<unsigned> switchComponents(unsigned inputCount,
-                                       unsigned outputCount,
-                                       llvm::ArrayRef<SwitchRoute> routes) {
-  std::vector<unsigned> parent(inputCount + outputCount);
-  for (unsigned index = 0; index != parent.size(); ++index)
-    parent[index] = index;
-  const auto root = [&](unsigned value) {
-    while (parent[value] != value) {
-      parent[value] = parent[parent[value]];
-      value = parent[value];
-    }
-    return value;
-  };
-  for (const SwitchRoute &route : routes) {
-    unsigned input = static_cast<unsigned>(route.inputOrdinal);
-    unsigned output = inputCount + static_cast<unsigned>(route.outputOrdinal);
-    input = root(input);
-    output = root(output);
-    if (input != output)
-      parent[output] = input;
+struct SwitchImplementationArbitration final {
+  std::vector<::fabric::SwitchArbitrationComponent> components;
+  std::optional<SwitchIdlePresentation> idlePresentation;
+
+  bool hasCursorState() const {
+    return idlePresentation.has_value() ||
+           llvm::any_of(components, [](const auto &component) {
+             return component.roundRobinResetPosition.has_value();
+           });
   }
-  std::vector<unsigned> result(parent.size());
-  for (unsigned index = 0; index != parent.size(); ++index)
-    result[index] = root(index);
-  return result;
+};
+
+llvm::Expected<SwitchImplementationArbitration>
+deriveSwitchImplementationArbitration(
+    ::fabric::Schedule schedule, std::uint32_t inputCount,
+    std::uint32_t outputCount,
+    llvm::ArrayRef<std::vector<std::uint32_t>> sourcesByOutput,
+    const ::fabric::ResourceContract &contract) {
+  auto components = ::fabric::deriveSwitchArbitrationComponents(
+      schedule, inputCount, outputCount, sourcesByOutput, contract);
+  if (!components)
+    return components.takeError();
+  std::optional<SwitchIdlePresentation> idlePresentation;
+  if (schedule == ::fabric::Schedule::Temporal) {
+    const auto policy = contract.grantPolicy();
+    if (policy) {
+      SwitchIdlePresentation presentation;
+      if (const auto *fixed =
+              std::get_if<::fabric::FixedPriorityView>(&*policy)) {
+        presentation.requesterOrder.reserve(fixed->requesterOrder().size());
+        for (::fabric::RequesterKey requester : fixed->requesterOrder())
+          presentation.requesterOrder.push_back(requester.ordinal());
+      } else {
+        const auto &roundRobin = std::get<::fabric::RoundRobinView>(*policy);
+        presentation.requesterOrder.reserve(
+            roundRobin.requesterCycle().size());
+        for (::fabric::RequesterKey requester : roundRobin.requesterCycle())
+          presentation.requesterOrder.push_back(requester.ordinal());
+        const auto reset = llvm::find(presentation.requesterOrder,
+                                      roundRobin.resetCursor().ordinal());
+        if (reset == presentation.requesterOrder.end())
+          return invalid("switch RoundRobin reset requester is absent");
+        presentation.resetPosition = static_cast<std::uint32_t>(
+            reset - presentation.requesterOrder.begin());
+      }
+      idlePresentation = std::move(presentation);
+    }
+  }
+  return SwitchImplementationArbitration{std::move(*components),
+                                         std::move(idlePresentation)};
 }
 
 unsigned counterWidth(std::uint64_t bound);
@@ -202,80 +225,23 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
       llvm::is_contained(outputEndpoints, nullptr))
     return invalid("switch endpoint domain is not dense");
 
-  const std::vector<unsigned> componentRoots =
-      switchComponents(inputCount, outputCount, routes);
-  std::map<unsigned, SwitchArbitrationComponent> componentsByRoot;
-  for (unsigned input = 0; input != inputCount; ++input)
-    componentsByRoot[componentRoots[input]].inputs.push_back(input);
-  for (unsigned output = 0; output != outputCount; ++output)
-    componentsByRoot[componentRoots[inputCount + output]].outputs.push_back(
-        output);
-
-  const ::fabric::ResourceContract *contract =
+  std::vector<std::vector<std::uint32_t>> sourcesByOutput(outputCount);
+  for (const SwitchRoute &route : routes)
+    sourcesByOutput[route.outputOrdinal].push_back(route.inputOrdinal);
+  const ::fabric::ResourceContract *resourceContract =
       fabric.resourceContract(fabric::FabricInventoryOwnerRef::of(sw));
-  if (!contract)
-    return invalid("switch has no exact ResourceContract");
-  const std::optional<::fabric::GrantPolicyView> policy =
-      contract->grantPolicy();
-  std::vector<unsigned> fullOrder;
-  std::optional<unsigned> resetRequester;
-  bool roundRobin = false;
-  if (policy) {
-    if (const auto *fixed =
-            std::get_if<::fabric::FixedPriorityView>(&*policy)) {
-      for (::fabric::RequesterKey requester : fixed->requesterOrder())
-        fullOrder.push_back(requester.ordinal());
-    } else {
-      const auto &typed = std::get<::fabric::RoundRobinView>(*policy);
-      roundRobin = true;
-      for (::fabric::RequesterKey requester : typed.requesterCycle())
-        fullOrder.push_back(requester.ordinal());
-      resetRequester = typed.resetCursor().ordinal();
-    }
-  }
-  std::vector<SwitchArbitrationComponent> components;
-  components.reserve(componentsByRoot.size());
-  for (auto &[root, component] : componentsByRoot) {
-    (void)root;
-    if (policy) {
-      for (unsigned requester : fullOrder)
-        if (llvm::is_contained(component.inputs, requester))
-          component.requesterOrder.push_back(requester);
-      if (component.requesterOrder.size() != component.inputs.size())
-        return invalid("switch GrantPolicy omits a requester");
-      if (roundRobin) {
-        const auto reset = llvm::find(fullOrder, *resetRequester);
-        if (reset == fullOrder.end())
-          return invalid("switch reset requester is outside its policy");
-        const unsigned resetOrdinal =
-            static_cast<unsigned>(reset - fullOrder.begin());
-        unsigned bestDistance = std::numeric_limits<unsigned>::max();
-        unsigned bestPosition = 0;
-        for (auto [position, requester] :
-             llvm::enumerate(component.requesterOrder)) {
-          const auto found = llvm::find(fullOrder, requester);
-          const unsigned ordinal =
-              static_cast<unsigned>(found - fullOrder.begin());
-          const unsigned distance =
-              ordinal >= resetOrdinal
-                  ? ordinal - resetOrdinal
-                  : static_cast<unsigned>(fullOrder.size()) - resetOrdinal +
-                        ordinal;
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestPosition = static_cast<unsigned>(position);
-          }
-        }
-        component.roundRobinResetPosition = bestPosition;
-      }
-    } else {
-      component.requesterOrder = component.inputs;
-      if (*schedule == ::fabric::Schedule::Temporal &&
-          component.inputs.size() != 1)
-        return invalid("contending switch component has no GrantPolicy");
-    }
-    components.push_back(std::move(component));
-  }
+  if (!resourceContract)
+    return invalid("switch has no finalized ResourceContract");
+  auto arbitration = deriveSwitchImplementationArbitration(
+      *schedule, inputCount, outputCount, sourcesByOutput, *resourceContract);
+  if (!arbitration)
+    return arbitration.takeError();
+  const llvm::ArrayRef<::fabric::SwitchArbitrationComponent> components =
+      arbitration->components;
+  const std::optional<SwitchIdlePresentation> idlePresentation =
+      arbitration->idlePresentation;
+  const bool consumesClockAndReset = resourceContract->stateCount() != 0;
+  const bool needsCursorBackedges = arbitration->hasCursorState();
 
   std::uint64_t temporalEntryCount = 0;
   std::uint64_t temporalTagWidth = 0;
@@ -299,7 +265,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
   auto configuration = appendComponentPorts(
       builder, llvm::ArrayRef<FieldDecoderPlan>(&*decoder, 1), *endpoints,
-      inputs, outputs, roundRobin, &*decoder);
+      inputs, outputs, consumesClockAndReset, &*decoder);
   if (!configuration)
     return configuration.takeError();
   std::optional<std::string> materializationError;
@@ -360,9 +326,10 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         std::vector<mlir::Value> admissibleInput(
             inputCount, bitConstant(bodyBuilder, location, false));
         std::optional<circt::BackedgeBuilder> backedges;
-        if (roundRobin || *schedule == ::fabric::Schedule::Temporal)
+        if (needsCursorBackedges)
           backedges.emplace(bodyBuilder, location);
-        for (const SwitchArbitrationComponent &component : components) {
+        for (const ::fabric::SwitchArbitrationComponent &component :
+             components) {
           struct ArbitrationSelection final {
             std::vector<mlir::Value> selected;
             std::vector<mlir::Value> admissible;
@@ -394,8 +361,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                     bodyBuilder, location, reserved[output],
                     andValues(
                         bodyBuilder, location,
-                        {result.selected[input],
-                         requestedRoute[input][output]}));
+                        {result.selected[input], requestedRoute[input][output]}));
             }
             return result;
           };
@@ -500,84 +466,76 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                   andValues(bodyBuilder, location,
                             {selectedInput[input],
                              requestedRoute[input][output]}));
-          for (const SwitchArbitrationComponent &component : components) {
-            llvm::SmallVector<mlir::Value> candidates;
-            for (unsigned input : component.inputs) {
-              llvm::SmallVector<mlir::Value> free;
-              for (unsigned output : component.outputs)
-                free.push_back(orValues(
-                    bodyBuilder, location,
-                    {circt::comb::createOrFoldNot(
-                         bodyBuilder, location, requestedRoute[input][output]),
-                     circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                  held[output]),
-                     selectedInput[input]}));
-              candidates.push_back(
-                  andValues(bodyBuilder, location,
-                            {configuredRequest[input],
-                             andValues(bodyBuilder, location, free)}));
-            }
-            const unsigned candidateCount =
-                static_cast<unsigned>(component.inputs.size());
-            std::vector<mlir::Value> idleSelected(
-                candidateCount, bitConstant(bodyBuilder, location, false));
-            if (candidateCount == 1) {
-              idleSelected.front() = candidates.front();
-            } else {
-              const unsigned pointerWidth = counterWidth(candidateCount);
-              circt::Backedge pointerNext =
-                  backedges->get(bodyBuilder.getIntegerType(pointerWidth));
-              mlir::Value pointer = createRegister(
-                  bodyBuilder, location, pointerNext,
-                  accessor.getInput("clock"), accessor.getInput("reset"),
-                  llvm::APInt(pointerWidth, 0),
-                  "idle_presentation_" +
-                      std::to_string(component.inputs.front()) + "_reg",
-                  clockReset.asynchronousReset);
-              pointerNext.setValue(incrementModulo(bodyBuilder, location,
-                                                   pointer, candidateCount));
-              for (unsigned start = 0; start != candidateCount; ++start) {
-                mlir::Value pointerIs = circt::comb::ICmpOp::create(
-                    bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                    pointer,
-                    circt::hw::ConstantOp::create(
-                        bodyBuilder, location,
-                        llvm::APInt(pointerWidth, start)),
-                    true);
-                std::vector<mlir::Value> claimed(
-                    component.outputs.size(),
-                    bitConstant(bodyBuilder, location, false));
-                for (unsigned offset = 0; offset != candidateCount; ++offset) {
-                  const unsigned position = (start + offset) % candidateCount;
-                  const unsigned input = component.inputs[position];
-                  llvm::SmallVector<mlir::Value> contention;
-                  for (auto [index, output] :
-                       llvm::enumerate(component.outputs))
-                    contention.push_back(andValues(
-                        bodyBuilder, location,
-                        {requestedRoute[input][output], claimed[index]}));
-                  mlir::Value presented = andValues(
+          std::vector<mlir::Value> candidates(inputCount);
+          for (unsigned input = 0; input != inputCount; ++input) {
+            llvm::SmallVector<mlir::Value> free;
+            for (unsigned output = 0; output != outputCount; ++output)
+              free.push_back(orValues(
+                  bodyBuilder, location,
+                  {circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                requestedRoute[input][output]),
+                   circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                held[output]),
+                   selectedInput[input]}));
+            candidates[input] =
+                andValues(bodyBuilder, location,
+                          {configuredRequest[input],
+                           andValues(bodyBuilder, location, free)});
+          }
+          std::vector<mlir::Value> idleSelected(
+              inputCount, bitConstant(bodyBuilder, location, false));
+          if (!idlePresentation) {
+            idleSelected = candidates;
+          } else {
+            const auto &order = idlePresentation->requesterOrder;
+            const unsigned candidateCount = static_cast<unsigned>(order.size());
+            const unsigned pointerWidth = counterWidth(candidateCount);
+            circt::Backedge pointerNext =
+                backedges->get(bodyBuilder.getIntegerType(pointerWidth));
+            mlir::Value pointer = createRegister(
+                bodyBuilder, location, pointerNext, accessor.getInput("clock"),
+                accessor.getInput("reset"),
+                llvm::APInt(pointerWidth, idlePresentation->resetPosition),
+                "idle_presentation_reg", clockReset.asynchronousReset);
+            pointerNext.setValue(incrementModulo(bodyBuilder, location, pointer,
+                                                 candidateCount));
+            for (unsigned start = 0; start != candidateCount; ++start) {
+              mlir::Value pointerIs = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                  pointer,
+                  circt::hw::ConstantOp::create(
+                      bodyBuilder, location, llvm::APInt(pointerWidth, start)),
+                  true);
+              std::vector<mlir::Value> claimed(
+                  outputCount, bitConstant(bodyBuilder, location, false));
+              for (unsigned offset = 0; offset != candidateCount; ++offset) {
+                const unsigned position = (start + offset) % candidateCount;
+                const unsigned input = order[position];
+                llvm::SmallVector<mlir::Value> contention;
+                for (unsigned output = 0; output != outputCount; ++output)
+                  contention.push_back(andValues(
                       bodyBuilder, location,
-                      {pointerIs, candidates[position],
-                       circt::comb::createOrFoldNot(
-                           bodyBuilder, location,
-                           orValues(bodyBuilder, location, contention))});
-                  idleSelected[position] = circt::comb::OrOp::create(
-                      bodyBuilder, location, idleSelected[position], presented);
-                  for (auto [index, output] :
-                       llvm::enumerate(component.outputs))
-                    claimed[index] = circt::comb::OrOp::create(
-                        bodyBuilder, location, claimed[index],
-                        andValues(bodyBuilder, location,
-                                  {presented, requestedRoute[input][output]}));
-                }
+                      {requestedRoute[input][output], claimed[output]}));
+                mlir::Value presented = andValues(
+                    bodyBuilder, location,
+                    {pointerIs, candidates[input],
+                     circt::comb::createOrFoldNot(
+                         bodyBuilder, location,
+                         orValues(bodyBuilder, location, contention))});
+                idleSelected[input] = circt::comb::OrOp::create(
+                    bodyBuilder, location, idleSelected[input], presented);
+                for (unsigned output = 0; output != outputCount; ++output)
+                  claimed[output] = circt::comb::OrOp::create(
+                      bodyBuilder, location, claimed[output],
+                      andValues(bodyBuilder, location,
+                                {presented, requestedRoute[input][output]}));
               }
             }
-            for (auto [position, input] : llvm::enumerate(component.inputs))
-              presentedInput[input] = circt::comb::OrOp::create(
-                  bodyBuilder, location, selectedInput[input],
-                  idleSelected[position]);
           }
+          for (unsigned input = 0; input != inputCount; ++input)
+            presentedInput[input] = circt::comb::OrOp::create(
+                bodyBuilder, location, selectedInput[input],
+                idleSelected[input]);
         }
 
         for (unsigned input = 0; input != inputCount; ++input) {
@@ -672,7 +630,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
   if (materializationError)
     return invalid(*materializationError);
   std::vector<std::uint8_t> implementationKey;
-  appendKeyU64(implementationKey, 1);
+  appendKeyU64(implementationKey, 2);
   appendKeyU64(implementationKey, static_cast<std::uint32_t>(*schedule));
   appendKeyU64(implementationKey, decoder->encodedBitCount);
   appendKeyU64(implementationKey, clockReset.asynchronousReset);
@@ -690,7 +648,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
     appendKeyU64(implementationKey, route.configurationBit);
   }
   appendKeyU64(implementationKey, components.size());
-  for (const SwitchArbitrationComponent &component : components) {
+  for (const ::fabric::SwitchArbitrationComponent &component : components) {
     appendKeyU64(implementationKey, component.inputs.size());
     for (unsigned input : component.inputs)
       appendKeyU64(implementationKey, input);
@@ -704,6 +662,13 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                  component.roundRobinResetPosition.has_value());
     if (component.roundRobinResetPosition)
       appendKeyU64(implementationKey, *component.roundRobinResetPosition);
+  }
+  appendKeyU64(implementationKey, idlePresentation.has_value());
+  if (idlePresentation) {
+    appendKeyU64(implementationKey, idlePresentation->requesterOrder.size());
+    for (unsigned requester : idlePresentation->requesterOrder)
+      appendKeyU64(implementationKey, requester);
+    appendKeyU64(implementationKey, idlePresentation->resetPosition);
   }
   appendKeyU64(implementationKey, temporalEntryCount);
   appendKeyU64(implementationKey, temporalTagWidth);

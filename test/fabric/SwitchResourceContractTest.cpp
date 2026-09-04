@@ -4,6 +4,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <optional>
@@ -82,6 +83,40 @@ void physicalTraversalsOwnOneLinearResourceProjection() {
           "broadcast or fan-in changed the input-owned requester relation");
   require(test, contract.resourceContract().grantPolicy().has_value(),
           "fan-in did not retain its exact arbitration policy");
+  const auto components = take(
+      test, fabric::deriveSwitchArbitrationComponents(
+                fabric::Schedule::Temporal, 2, 2,
+                std::vector<std::vector<std::uint32_t>>{{0, 1}, {0}},
+                contract.resourceContract()));
+  require(test,
+          components.size() == 1 &&
+              components.front().inputs == std::vector<std::uint32_t>({0, 1}) &&
+              components.front().outputs ==
+                  std::vector<std::uint32_t>({0, 1}) &&
+              components.front().requesterOrder ==
+                  std::vector<std::uint32_t>({0, 1}) &&
+              components.front().roundRobinResetPosition == 0,
+          "Temporal switch lost its canonical arbitration component");
+
+  fabric::SwitchResourceContract fixed =
+      take(test, fabric::SwitchResourceContract::create(
+                     {fabric::Schedule::Temporal,
+                      2,
+                      1,
+                      {{0, 1}},
+                      fabric::TemporalSwitchGrantPolicy(
+                          fabric::TemporalSwitchFixedPriority{{1, 0}})}));
+  const auto fixedComponents = take(
+      test, fabric::deriveSwitchArbitrationComponents(
+                fabric::Schedule::Temporal, 2, 1,
+                std::vector<std::vector<std::uint32_t>>{{0, 1}},
+                fixed.resourceContract()));
+  require(test,
+          fixedComponents.size() == 1 &&
+              fixedComponents.front().requesterOrder ==
+                  std::vector<std::uint32_t>({1, 0}) &&
+              !fixedComponents.front().roundRobinResetPosition,
+          "FixedPriority fan-in lost its physical policy projection");
 
   llvm::Expected<fabric::UsePatternKey> disconnected =
       contract.traversalPattern(1, 1);
@@ -96,6 +131,36 @@ void fanInWithoutPolicyIsRejected() {
       {fabric::Schedule::Temporal, 2, 1, {{0, 1}}, std::nullopt});
   require(test, !contract, "fan-in without an exact policy was accepted");
   llvm::consumeError(contract.takeError());
+}
+
+void disjointArbitrationDomainsShareOnlyThePolicyOrder() {
+  const char *test = __func__;
+  fabric::SwitchResourceContract contract =
+      take(test, fabric::SwitchResourceContract::create(
+                     {fabric::Schedule::Temporal,
+                      4,
+                      2,
+                      {{0, 1}, {2, 3}},
+                      fabric::TemporalSwitchGrantPolicy(
+                          fabric::TemporalSwitchRoundRobin{{2, 0, 3, 1}, 3})}));
+
+  const auto components = take(
+      test, fabric::deriveSwitchArbitrationComponents(
+                fabric::Schedule::Temporal, 4, 2,
+                std::vector<std::vector<std::uint32_t>>{{0, 1}, {2, 3}},
+                contract.resourceContract()));
+  require(
+      test,
+      components.size() == 2 &&
+          components[0].inputs == std::vector<std::uint32_t>({0, 1}) &&
+          components[0].outputs == std::vector<std::uint32_t>({0}) &&
+          components[0].requesterOrder == std::vector<std::uint32_t>({0, 1}) &&
+          components[0].roundRobinResetPosition == 1 &&
+          components[1].inputs == std::vector<std::uint32_t>({2, 3}) &&
+          components[1].outputs == std::vector<std::uint32_t>({1}) &&
+          components[1].requesterOrder == std::vector<std::uint32_t>({2, 3}) &&
+          components[1].roundRobinResetPosition == 1,
+      "disjoint physical grant domains lost their exact policy projection");
 }
 
 void spatialAlternativesShareOneConfigurationRequester() {
@@ -181,6 +246,7 @@ void sharedCrosspointArithmeticIsOverflowSafe() {
 int main() {
   physicalTraversalsOwnOneLinearResourceProjection();
   fanInWithoutPolicyIsRejected();
+  disjointArbitrationDomainsShareOnlyThePolicyOrder();
   spatialAlternativesShareOneConfigurationRequester();
   crosspointProductOwnsTheShapeLimit();
   sharedCrosspointArithmeticIsOverflowSafe();

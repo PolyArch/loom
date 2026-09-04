@@ -646,6 +646,23 @@ state selects fragments; the final verifier discards every incremental cache
 and derives the graph again. Performance gates reject an inefficient
 projection, but never change candidate legality or search semantics.
 
+Temporal switch contention uses the same split. Fabric owns a readiness forest
+and the exact fixed-priority or round-robin output-valid fragments. Frozen PnR
+stores their typed incidence once. A search candidate derives the selected
+crosspoints in its provisional in-capacity resident-row prefix into reusable
+dense owner scratch, activates the resulting fragments, and updates the
+existing graph transaction. Strict final verification repeats that derivation
+from exact configured rows. Physical alternatives, overflow rows without
+resident storage, and presentation-only payload signals cannot enter the
+active graph. Cold replay independently reconstructs candidate state and its
+graph while deliberately reusing the same Fabric-owned contention relation;
+it is an independent cache check, not a second semantic oracle.
+
+`FabricStaticContext` stores the compiled Fabric handshake context and
+mechanically nests its canonical key. The frozen Spatial model key separately
+versions its own configured-contention incidence rather than duplicating a
+child algorithm identity.
+
 ## Why Legality And QoR Are Separate
 
 Mapping's local solver cost can measure domain-independent facts such as

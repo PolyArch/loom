@@ -1104,6 +1104,17 @@ struct FrozenSpatialSwitchHandshakeActivation final {
   PnrIndex traversalSelectionCount = 0;
 };
 
+/// One compact Fabric-owned contention fragment of a Temporal switch. The
+/// candidate derives its activation from its selected in-capacity row prefix;
+/// strict final verification supplies exact configured crosspoints. This
+/// frozen record only binds the readiness or policy relation to the dense PnR
+/// graph.
+struct FrozenSpatialSwitchHandshakeContentionRelation final {
+  PnrIndex matchDomain = 0;
+  ::loom::fabric::FabricSwitchHandshakeContentionRelation relation;
+  PnrIndex fragment = 0;
+};
+
 struct FrozenSpatialMemoryOperationHandshakeDomain final {
   PnrIndex placement = 0;
   PnrIndex actor = 0;
@@ -1175,6 +1186,10 @@ public:
   llvm::ArrayRef<PnrIndex> switchTraversalFragments() const {
     return switchTraversalFragments_;
   }
+  llvm::ArrayRef<FrozenSpatialSwitchHandshakeContentionRelation>
+  switchContentionRelations() const {
+    return switchContentionRelations_;
+  }
   llvm::ArrayRef<PnrIndex> computePlacementFragmentOffsets() const {
     return computePlacementFragmentOffsets_;
   }
@@ -1243,6 +1258,8 @@ private:
   std::vector<FrozenSpatialSwitchHandshakeTraversalSelection>
       switchTraversalSelections_;
   std::vector<PnrIndex> switchTraversalFragments_;
+  std::vector<FrozenSpatialSwitchHandshakeContentionRelation>
+      switchContentionRelations_;
   std::vector<PnrIndex> computePlacementFragmentOffsets_;
   std::vector<PnrIndex> computePlacementFragments_;
   std::vector<PnrIndex> localTransferFragmentOffsets_;

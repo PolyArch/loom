@@ -9,9 +9,12 @@
 #include "llvm/Support/Error.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <tuple>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -116,6 +119,7 @@ enum class HandshakeActivationKind : std::uint8_t {
   AnySwitchActivationTraversal,
   ExactSwitchActivationTraversal,
   ExactOwnerSelection,
+  SwitchContention,
 };
 
 /// One Mapping-derived Temporal switch activation identity. The resident row
@@ -137,6 +141,40 @@ struct FabricSwitchHandshakeActivationKey final {
   }
 };
 
+/// Compact, Fabric-owned dependencies for configured Temporal-switch
+/// contention. Relations select private readiness-forest or policy-directed
+/// output-valid junctions, so exact boundary reachability remains linear in
+/// the physical crosspoints rather than enumerating every boundary pair.
+enum class FabricSwitchHandshakeContentionRelationKind : std::uint8_t {
+  ReadyInputValid,
+  ReadyTreeInputParent,
+  ReadyTreeOutputParent,
+  ReadyRootBridge,
+  InputReady,
+  RoundRobinOutputValid,
+  FixedInputValid,
+  FixedSelectedCrosspoint,
+  FixedUnselectedCrosspoint,
+};
+
+struct FabricSwitchHandshakeContentionRelation final {
+  FabricSwitchOccurrenceRef occurrence;
+  FabricSwitchHandshakeContentionRelationKind relation =
+      FabricSwitchHandshakeContentionRelationKind::ReadyRootBridge;
+  FabricOrdinal input = 0;
+  FabricOrdinal output = 0;
+
+  friend bool operator==(const FabricSwitchHandshakeContentionRelation &lhs,
+                         const FabricSwitchHandshakeContentionRelation &rhs) {
+    return lhs.occurrence == rhs.occurrence && lhs.relation == rhs.relation &&
+           lhs.input == rhs.input && lhs.output == rhs.output;
+  }
+  friend bool operator!=(const FabricSwitchHandshakeContentionRelation &lhs,
+                         const FabricSwitchHandshakeContentionRelation &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 struct HandshakeActivationFragment final {
   std::uint32_t contributionOffset = 0;
   std::uint32_t contributionCount = 0;
@@ -145,6 +183,7 @@ struct HandshakeActivationFragment final {
   std::uint32_t witnessOffset = 0;
   std::uint32_t witnessCount = 0;
   std::optional<FabricSwitchHandshakeActivationKey> switchActivation;
+  std::optional<FabricSwitchHandshakeContentionRelation> switchContention;
 };
 
 struct FabricFuOperationHandshakeBinding final {
@@ -405,6 +444,86 @@ struct FabricHandshakeSelection final {
   std::vector<FabricPeRegisterFifoHandshakeSelection> peRegisterFifos;
 };
 
+/// The same-output contention relation of one Temporal switch for a
+/// caller-supplied selected resident-prefix crosspoint set. Strict Mapping and
+/// configured-hardware consumers supply every exact Active resident row. PnR
+/// may supply the in-capacity prefix of a provisional candidate; that result is
+/// search state, not a configured-hardware claim. Physical connectivity absent
+/// from the supplied rows is never part of the relation. Consumers use this
+/// value to activate compact owner-local readiness and policy fragments without
+/// inventing another contention table.
+struct FabricSwitchSelectedCrosspoint final {
+  FabricOrdinal input = 0;
+  FabricOrdinal output = 0;
+};
+
+/// Reusable owner-local storage for deriving configured switch contention.
+/// It carries no selection or Fabric identity and may be retained by hot
+/// Mapping and PnR consumers.
+class FabricSwitchSelectedContentionScratch final {
+public:
+  FabricSwitchSelectedContentionScratch();
+  FabricSwitchSelectedContentionScratch(
+      const FabricSwitchSelectedContentionScratch &) = delete;
+  FabricSwitchSelectedContentionScratch &
+  operator=(const FabricSwitchSelectedContentionScratch &) = delete;
+  ~FabricSwitchSelectedContentionScratch();
+
+  void prepare(std::size_t crosspointCapacity);
+  std::size_t retainedStorageBytes() const;
+
+private:
+  struct Storage;
+  std::unique_ptr<Storage> storage_;
+
+  friend class FabricSwitchSelectedContention;
+};
+
+class FabricSwitchSelectedContention final {
+public:
+  static FabricSwitchSelectedContention
+  derive(FabricSwitchOccurrenceRef occurrence,
+         llvm::ArrayRef<FabricSwitchSelectedCrosspoint> crosspoints);
+
+  void rebuild(FabricSwitchOccurrenceRef occurrence,
+               llvm::ArrayRef<FabricSwitchSelectedCrosspoint> crosspoints,
+               FabricSwitchSelectedContentionScratch &scratch);
+
+  void prepare(std::size_t crosspointCapacity);
+  bool activates(const FabricSwitchHandshakeContentionRelation &relation) const;
+  std::size_t retainedStorageBytes() const;
+
+private:
+  struct Component final {
+    FabricOrdinal root = 0;
+    std::size_t inputCount = 0;
+  };
+  struct TreeEdge final {
+    FabricOrdinal input = 0;
+    FabricOrdinal output = 0;
+    bool inputIsParent = false;
+
+    friend bool operator<(const TreeEdge &lhs, const TreeEdge &rhs) {
+      return std::tie(lhs.input, lhs.output, lhs.inputIsParent) <
+             std::tie(rhs.input, rhs.output, rhs.inputIsParent);
+    }
+  };
+  std::vector<Component> components_;
+  std::vector<std::pair<FabricOrdinal, std::size_t>> componentOfInput_;
+  std::vector<std::pair<FabricOrdinal, std::size_t>> componentOfOutput_;
+  std::vector<TreeEdge> treeEdges_;
+  FabricSwitchOccurrenceRef occurrence_;
+  std::vector<FabricSwitchSelectedCrosspoint> selectedCrosspoints_;
+  std::vector<std::pair<FabricOrdinal, FabricOrdinal>> selectedInputsByOutput_;
+
+  const Component *componentOf(FabricOrdinal input) const;
+  const Component *componentOfOutput(FabricOrdinal output) const;
+  bool contended(FabricOrdinal input) const;
+  bool outputContended(FabricOrdinal output) const;
+  bool selected(FabricOrdinal input, FabricOrdinal output) const;
+  bool directlyContended(FabricOrdinal output) const;
+};
+
 namespace detail {
 class HandshakeOwnerModelBuilder;
 class HandshakeOwnerModelFactory;
@@ -423,6 +542,7 @@ enum class HandshakeFragmentSelectorKind : std::uint8_t {
   PeRegisterFifoBinding,
   AnySwitchActivationTraversal,
   ExactSwitchActivationTraversal,
+  SwitchContention,
 };
 
 struct HandshakeFuOperationSelector final {
@@ -457,6 +577,7 @@ struct HandshakeFragmentSelector final {
       requiredExternalMemoryOutputRoles;
   std::optional<HandshakePeRegisterFifoSelector> peRegisterFifo;
   std::optional<FabricSwitchHandshakeActivationKey> switchActivation;
+  std::optional<FabricSwitchHandshakeContentionRelation> switchContention;
   std::optional<std::uint32_t> exclusiveGroup;
 };
 } // namespace detail
@@ -590,6 +711,12 @@ private:
 /// structural storage while retaining exact physical bindings.
 llvm::Expected<std::vector<HandshakeOwnerModel>>
 compileHandshakeOwnerModels(const FabricArtifactView &view);
+
+/// Canonical key of the compiled handshake context. Derived-context owners
+/// append this key rather than duplicating or manually synchronizing its
+/// algorithm identity.
+std::array<std::uint8_t, 32>
+deriveFabricHandshakeContextKey(const FabricArtifactView &view);
 
 llvm::Expected<FabricHandshakeContext>
 buildFabricHandshakeContext(const FabricArtifactView &view);

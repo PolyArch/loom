@@ -16,7 +16,7 @@
 namespace loom::pnr::detail {
 
 inline constexpr llvm::StringLiteral fabricStaticContextAlgorithmIdentity =
-    "loom.pnr.fabric_static_context.1";
+    "loom.pnr.fabric_static_context.2";
 inline constexpr llvm::StringLiteral fabricTimingContextAlgorithmIdentity =
     "loom.pnr.fabric_timing_context.1";
 

@@ -114,6 +114,7 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   addTrackedArray(bytes, work, handshake.ownerModels());
   addTrackedArray(bytes, work, handshake.fragments());
   addTrackedArray(bytes, work, handshake.traversalFragments());
+  addTrackedArray(bytes, work, handshake.switchContentionRelations());
   addTrackedArray(bytes, work, handshake.computePlacementFragments());
   addTrackedArray(bytes, work, handshake.localTransferFragmentOffsets());
   addTrackedArray(bytes, work, handshake.localTransferFragments());

@@ -471,6 +471,13 @@ add_executable(loom-fabric-handshake-model-test
   FabricHandshakeModelTest.cpp
 )
 
+add_executable(loom-fabric-switch-handshake-policy-test
+  ../TestAllocationProbe.cpp
+  FabricSwitchHandshakePolicyTest.cpp
+)
+
+loom_enable_allocation_probe(loom-fabric-switch-handshake-policy-test)
+
 add_executable(loom-fabric-system-contract-test
   FabricSystemContractTest.cpp
 )
@@ -624,6 +631,13 @@ target_link_libraries(loom-fabric-handshake-model-test PRIVATE
   MLIRFabric
   MLIRIR
   MLIRParser
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-switch-handshake-policy-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
   LLVMSupport
 )
 

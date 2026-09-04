@@ -309,9 +309,11 @@ GrantPolicy =
     }
 ```
 
-`FixedPriority` grants the first eligible requester in the exact permutation.
-`RoundRobin` scans the exact cycle from the current cursor and advances only
-after a successful grant. Reset establishes `reset_cursor`.
+Each policy operation is one selection step. `FixedPriority` selects the first
+eligible requester in the exact permutation. `RoundRobin` scans the exact
+cycle from the current cursor and advances only after a successful selection;
+reset establishes `reset_cursor`. The concrete resource owns any composition
+of selection steps with its declared capacity.
 
 The policy may be absent only when the verifier proves that no two distinct
 requesters can be simultaneously eligible for the same capacity. Multiple

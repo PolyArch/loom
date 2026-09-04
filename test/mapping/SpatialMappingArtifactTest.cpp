@@ -23,6 +23,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/UsePatternValue.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -56,6 +57,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -65,7 +67,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
-#include <iterator>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -446,16 +448,19 @@ void operandPairingPressureIsIncremental(
   requireSuccess(candidate.verify());
 }
 
-enum class SwitchResidencyExpectation : std::uint8_t {
-  Fits,
-  ExceedsCapacity,
+enum class TemporalSwitchRouteFixture : std::uint8_t {
+  None,
+  PackedRows,
+  SameInputSeparatedRows,
+  ContendingSeparatedRows,
+  ExceedsResidentCapacity,
 };
+
 void completeCandidateRoundTrip(
     bool temporal, bool boundaryWrapped = false, bool forceTagConflict = false,
     ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic,
-    bool switchPackingFabric = false, bool requireSeparatedSwitchRows = false,
-    SwitchResidencyExpectation switchResidency =
-        SwitchResidencyExpectation::Fits) {
+    TemporalSwitchRouteFixture switchFixture =
+        TemporalSwitchRouteFixture::None) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
@@ -469,8 +474,18 @@ void completeCandidateRoundTrip(
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
+  const bool switchPackingFabric =
+      switchFixture != TemporalSwitchRouteFixture::None;
+  const bool requireSeparatedSwitchRows =
+      switchFixture == TemporalSwitchRouteFixture::SameInputSeparatedRows ||
+      switchFixture == TemporalSwitchRouteFixture::ContendingSeparatedRows ||
+      switchFixture == TemporalSwitchRouteFixture::ExceedsResidentCapacity;
+  const bool requireContendingSwitchRows =
+      switchFixture == TemporalSwitchRouteFixture::ContendingSeparatedRows;
+  const bool exceedsSwitchResidentCapacity =
+      switchFixture == TemporalSwitchRouteFixture::ExceedsResidentCapacity;
   const std::uint64_t switchResidentRows =
-      switchResidency == SwitchResidencyExpectation::ExceedsCapacity ? 1 : 2;
+      exceedsSwitchResidentCapacity ? 1 : 2;
   const auto fabric =
       boundaryWrapped ? loom::test::buildBoundaryTemporalFabric(store)
       : switchPackingFabric
@@ -686,11 +701,11 @@ void completeCandidateRoundTrip(
     selectLegalTemporalBinding(
         *candidate, candidateScratch,
         boundaryWrapped || forceTagConflict || requireSeparatedSwitchRows,
-        switchPackingFabric && !requireSeparatedSwitchRows);
+        switchPackingFabric &&
+            (!requireSeparatedSwitchRows || requireContendingSwitchRows));
     if (!boundaryWrapped && !forceTagConflict && !switchPackingFabric)
       operandPairingPressureIsIncremental(*candidate, candidateScratch);
-    if (forceTagConflict ||
-        switchResidency == SwitchResidencyExpectation::ExceedsCapacity) {
+    if (forceTagConflict || exceedsSwitchResidentCapacity) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
       loom::pnr::SpatialNetRouterScratch router;
       requireSuccess(router.prepare(*problem));
@@ -713,7 +728,7 @@ void completeCandidateRoundTrip(
       requireSuccess(costs.resetFromCandidate());
       if (!costs.hasTagPressureViolation())
         fail("PathFinder cost state ignored committed tag pressure");
-      if (switchResidency == SwitchResidencyExpectation::ExceedsCapacity) {
+      if (exceedsSwitchResidentCapacity) {
         if (candidate->tagResidentCapacityOveruse() == 0)
           fail("Temporal switch fixture did not exceed resident capacity");
         requireSuccess(candidate->verify());
@@ -924,6 +939,71 @@ void completeCandidateRoundTrip(
     if (!observedSwitchConflict)
       fail("incompatible Temporal switch signatures did not conflict");
   }
+  if (switchPackingFabric && !forceTagConflict && !requireSeparatedSwitchRows) {
+    std::optional<loom::pnr::PnrIndex> changedSegment;
+    std::optional<loom::pnr::PnrIndex> changedDomain;
+    for (loom::pnr::PnrIndex domain = 0; domain < matchDomains.size();
+         ++domain) {
+      const auto members = tagAssignments.domainSegments(domain);
+      if (matchDomains[domain].kind !=
+              loom::fabric::FabricPhysicalTagMatchDomainKind::
+                  TemporalSwitchTable ||
+          members.size() < 2)
+        continue;
+      for (std::size_t position = 1; position < members.size(); ++position)
+        if (tagAssignments.values()[members[position]] ==
+            tagAssignments.values()[members.front()]) {
+          changedSegment = members[position];
+          changedDomain = domain;
+          break;
+        }
+      if (changedSegment)
+        break;
+    }
+    if (!changedSegment || !changedDomain)
+      fail("switch projection fixture has no packed resident-row pair");
+    const auto netOffsets = tagAssignments.netSegmentOffsets();
+    const auto netEnd = llvm::upper_bound(netOffsets, *changedSegment);
+    if (netEnd == netOffsets.begin())
+      fail("packed switch segment has no logical-net owner");
+    const loom::pnr::PnrIndex logicalNet =
+        static_cast<loom::pnr::PnrIndex>(netEnd - netOffsets.begin() - 1);
+    const loom::pnr::PnrIndex localSegment =
+        *changedSegment - netOffsets[logicalNet];
+    const auto original = candidate->tagValues(logicalNet)[localSegment];
+    if (!original || original->getBitWidth() > 8)
+      fail("switch projection fixture has no bounded exact tag value");
+    std::optional<llvm::APInt> replacement;
+    const auto domainMembers = tagAssignments.domainSegments(*changedDomain);
+    for (std::uint64_t value = 0;
+         value != (std::uint64_t{1} << original->getBitWidth()); ++value) {
+      const llvm::APInt candidateValue(original->getBitWidth(), value);
+      if (llvm::none_of(domainMembers, [&](loom::pnr::PnrIndex member) {
+            const auto &assigned = tagAssignments.values()[member];
+            return assigned && *assigned == candidateValue;
+          })) {
+        replacement = candidateValue;
+        break;
+      }
+    }
+    if (!replacement)
+      fail("switch projection fixture exhausted its tag domain");
+
+    loom::pnr::SpatialCandidateScratch switchScratch;
+    requireSuccess(switchScratch.prepare(*problem));
+    const auto applyTag = [&](const llvm::APInt &value) {
+      auto move = take(candidate->beginMove(switchScratch));
+      requireSuccess(move.setPhysicalTagValue(logicalNet, localSegment, value));
+      const auto projection = take(move.projectCurrentRoutes());
+      if (take(move.close()) != projection.selectedHandshakeAcyclic)
+        fail("incremental switch regrouping disagreed with its route "
+             "projection");
+      requireSuccess(move.commit());
+      requireSuccess(candidate->verify());
+    };
+    applyTag(*replacement);
+    applyTag(*original);
+  }
   if (boundaryWrapped && !observedSharedLocalDomain)
     fail(
         ("Temporal route fixture did not exercise local tag interference: " +
@@ -1013,64 +1093,130 @@ void completeCandidateRoundTrip(
     requireSuccess(candidate->verify());
   }
 
-  if (switchPackingFabric) {
-    // Replaying the committed RouteTree exactly makes the move a semantic
-    // no-op that closes before the switch-handshake regroup; a direct commit
-    // of that move must preserve the committed fragment baseline instead of
-    // publishing the stale scratch fragments.
-    const auto &net0 = problem->transfers().logicalNets()[0];
-    const auto &tree0 = candidate->routeTree(0);
-    const auto source0 = tree0.sourceEndpoint();
-    if (!source0)
-      fail("switch no-op fixture requires a routed net");
-    std::vector<std::vector<loom::pnr::PnrIndex>> sinkChains(net0.sinkCount);
-    std::vector<loom::pnr::PnrIndex> sinkEndpoints(net0.sinkCount);
-    for (loom::pnr::PnrIndex sink = 0; sink < net0.sinkCount; ++sink) {
-      const auto sinkEndpoint = tree0.sinkEndpoint(sink);
+  if (requireContendingSwitchRows) {
+    // Select a routed net through the frozen switch-traversal relation, then
+    // compare each incremental transition with an independent cold projection.
+    std::optional<loom::pnr::PnrIndex> selectedLogicalNet;
+    const auto switchSelections =
+        problem->handshake().switchTraversalSelections();
+    for (loom::pnr::PnrIndex logicalNet = 0;
+         logicalNet < problem->transfers().logicalNets().size(); ++logicalNet) {
+      const auto &tree = candidate->routeTree(logicalNet);
+      for (const auto &node : tree.nodeStorage()) {
+        if (node.parentArc == loom::pnr::getInvalidPnrIndex())
+          continue;
+        const loom::pnr::PnrIndex traversal =
+            problem->routing().routingArcs()[node.parentArc].traversal;
+        if (llvm::any_of(switchSelections, [&](const auto &selection) {
+              return selection.traversal == traversal;
+            })) {
+          selectedLogicalNet = logicalNet;
+          break;
+        }
+      }
+      if (selectedLogicalNet)
+        break;
+    }
+    if (!selectedLogicalNet)
+      fail("switch route fixture has no selected switch traversal");
+
+    struct SavedRoute final {
+      loom::pnr::PnrIndex source = 0;
+      std::vector<loom::pnr::PnrIndex> sinkEndpoints;
+      std::vector<std::vector<loom::pnr::PnrIndex>> sinkChains;
+    };
+    const auto &logicalNetSpec =
+        problem->transfers().logicalNets()[*selectedLogicalNet];
+    const auto &tree = candidate->routeTree(*selectedLogicalNet);
+    const auto source = tree.sourceEndpoint();
+    if (!source)
+      fail("switch transaction fixture requires a routed net");
+    SavedRoute saved{*source,
+                     std::vector<loom::pnr::PnrIndex>(logicalNetSpec.sinkCount),
+                     std::vector<std::vector<loom::pnr::PnrIndex>>(
+                         logicalNetSpec.sinkCount)};
+    for (loom::pnr::PnrIndex sink = 0; sink < logicalNetSpec.sinkCount;
+         ++sink) {
+      const auto sinkEndpoint = tree.sinkEndpoint(sink);
       if (!sinkEndpoint)
-        fail("switch no-op fixture requires a routed sink");
-      sinkEndpoints[sink] = *sinkEndpoint;
+        fail("switch transaction fixture requires a routed sink");
+      saved.sinkEndpoints[sink] = *sinkEndpoint;
       std::vector<loom::pnr::PnrIndex> reverseArcs;
       loom::pnr::PnrIndex endpoint = *sinkEndpoint;
       while (true) {
-        const auto slot = tree0.findNode(endpoint);
+        const auto slot = tree.findNode(endpoint);
         if (!slot)
-          fail("switch no-op fixture lost a route node");
-        const auto &node = tree0.nodeStorage()[*slot];
+          fail("switch transaction fixture lost a route node");
+        const auto &node = tree.nodeStorage()[*slot];
         if (node.parentArc == loom::pnr::getInvalidPnrIndex())
           break;
         reverseArcs.push_back(node.parentArc);
         endpoint = problem->routing().arcSources()[node.parentArc];
       }
-      if (endpoint != *source0)
-        fail("switch no-op fixture sink does not descend from the source");
-      sinkChains[sink].assign(reverseArcs.rbegin(), reverseArcs.rend());
+      if (endpoint != saved.source)
+        fail("switch transaction fixture sink does not descend from its "
+             "source");
+      saved.sinkChains[sink].assign(reverseArcs.rbegin(), reverseArcs.rend());
     }
-    loom::pnr::SpatialCandidateScratch noopScratch;
-    requireSuccess(noopScratch.prepare(*problem));
-    auto noopMove = take(candidate->beginMove(noopScratch));
-    requireSuccess(noopMove.ripUpWholeRoute(0));
-    requireSuccess(noopMove.bindRouteSource(0, *source0));
-    llvm::DenseSet<loom::pnr::PnrIndex> attached{*source0};
-    for (loom::pnr::PnrIndex sink = 0; sink < net0.sinkCount; ++sink) {
-      requireSuccess(noopMove.bindRouteSink(0, sink, sinkEndpoints[sink]));
-      const auto &chain = sinkChains[sink];
-      loom::pnr::PnrIndex attachPoint = *source0;
-      std::size_t attachedPrefix = 0;
-      for (std::size_t arc = 0; arc < chain.size(); ++arc) {
-        const loom::pnr::PnrIndex target =
-            problem->routing().routingArcs()[chain[arc]].target;
-        if (!attached.contains(target))
-          break;
-        attachPoint = target;
-        attachedPrefix = arc + 1;
+    std::vector<std::uint8_t> attached(
+        problem->routing().routingEndpoints().size(), 0);
+    const auto restoreRoute =
+        [&](loom::pnr::SpatialMoveTransaction &move) -> llvm::Error {
+      if (llvm::Error error =
+              move.bindRouteSource(*selectedLogicalNet, saved.source))
+        return error;
+      std::fill(attached.begin(), attached.end(), 0);
+      attached[saved.source] = 1;
+      for (loom::pnr::PnrIndex sink = 0; sink < saved.sinkEndpoints.size();
+           ++sink) {
+        if (llvm::Error error = move.bindRouteSink(*selectedLogicalNet, sink,
+                                                   saved.sinkEndpoints[sink]))
+          return error;
+        const auto &chain = saved.sinkChains[sink];
+        loom::pnr::PnrIndex attachPoint = saved.source;
+        std::size_t attachedPrefix = 0;
+        for (std::size_t arc = 0; arc < chain.size(); ++arc) {
+          const loom::pnr::PnrIndex target =
+              problem->routing().routingArcs()[chain[arc]].target;
+          if (!attached[target])
+            break;
+          attachPoint = target;
+          attachedPrefix = arc + 1;
+        }
+        if (llvm::Error error = move.attachRoutePath(
+                *selectedLogicalNet, attachPoint,
+                llvm::ArrayRef(chain).drop_front(attachedPrefix), sink))
+          return error;
+        for (std::size_t arc = attachedPrefix; arc < chain.size(); ++arc)
+          attached[problem->routing().routingArcs()[chain[arc]].target] = 1;
       }
-      requireSuccess(noopMove.attachRoutePath(
-          0, attachPoint, llvm::ArrayRef(chain).drop_front(attachedPrefix),
-          sink));
-      for (std::size_t arc = attachedPrefix; arc < chain.size(); ++arc)
-        attached.insert(problem->routing().routingArcs()[chain[arc]].target);
-    }
+      return llvm::Error::success();
+    };
+    loom::pnr::SpatialCandidateScratch transitionScratch;
+    requireSuccess(transitionScratch.prepare(*problem));
+    auto removal = take(candidate->beginMove(transitionScratch));
+    requireSuccess(removal.ripUpWholeRoute(*selectedLogicalNet));
+    const auto removedProjection = take(removal.projectCurrentRoutes());
+    const bool removalAcyclic = take(removal.close());
+    requireSuccess(removal.commit());
+    if (removalAcyclic != removedProjection.selectedHandshakeAcyclic)
+      fail("incremental switch removal disagreed with its cold route "
+           "projection");
+    requireSuccess(candidate->verify());
+
+    auto restoration = take(candidate->beginMove(transitionScratch));
+    requireSuccess(restoreRoute(restoration));
+    const auto restoredProjection = take(restoration.projectCurrentRoutes());
+    const bool restorationAcyclic = take(restoration.close());
+    requireSuccess(restoration.commit());
+    if (restorationAcyclic != restoredProjection.selectedHandshakeAcyclic)
+      fail("incremental switch restoration disagreed with its cold route "
+           "projection");
+    requireSuccess(candidate->verify());
+
+    auto noopMove = take(candidate->beginMove(transitionScratch));
+    requireSuccess(noopMove.ripUpWholeRoute(*selectedLogicalNet));
+    requireSuccess(restoreRoute(noopMove));
     if (!take(noopMove.close()))
       fail("switch no-op replay closed a handshake cycle");
     if (noopMove.hasSemanticChange())
@@ -1342,6 +1488,52 @@ void completeCandidateRoundTrip(
             fabric.view(), imported.view().routeTrees(),
             imported.view().resourceUses(),
             imported.view().physicalTagSegments()));
+    const auto &handshakeSelection = imported.view().handshakeSelection();
+    std::map<std::vector<std::uint8_t>, loom::fabric::FabricOrdinal>
+        nextHandshakeRow;
+    std::size_t expectedSwitchActivations = 0;
+    for (const auto &row : switchRows) {
+      const auto occurrenceKey =
+          loom::fabric::canonicalFabricBytes(row.occurrence);
+      const loom::fabric::FabricOrdinal rowOrdinal =
+          nextHandshakeRow[occurrenceKey]++;
+      std::map<loom::fabric::FabricOrdinal,
+               std::vector<loom::fabric::FabricPhysicalTraversalRef>>
+          expectedByInput;
+      for (const auto &signature : row.signatures)
+        llvm::append_range(expectedByInput[signature.input],
+                           signature.traversals);
+      for (auto &entry : expectedByInput) {
+        const loom::fabric::FabricOrdinal input = entry.first;
+        auto &traversals = entry.second;
+        llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
+          return loom::fabric::canonicalFabricBytes(lhs) <
+                 loom::fabric::canonicalFabricBytes(rhs);
+        });
+        traversals.erase(std::unique(traversals.begin(), traversals.end()),
+                         traversals.end());
+        const auto activation = llvm::find_if(
+            handshakeSelection.switchActivations, [&](const auto &candidate) {
+              return candidate.key.occurrence == row.occurrence &&
+                     candidate.key.row == rowOrdinal &&
+                     candidate.key.input == input;
+            });
+        if (activation == handshakeSelection.switchActivations.end() ||
+            activation->traversals != traversals)
+          fail("SpatialMapping handshake selection diverged from packed rows");
+        ++expectedSwitchActivations;
+      }
+    }
+    if (handshakeSelection.switchActivations.size() !=
+        expectedSwitchActivations)
+      fail("SpatialMapping handshake selection added a switch activation");
+    for (const auto &traversal : handshakeSelection.traversals) {
+      const auto *sw = std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+          &traversal.payload);
+      if (sw && fabric.view().switchSchedule(sw->owner) ==
+                    ::fabric::Schedule::Temporal)
+        fail("Temporal switch traversal bypassed its resident-row activation");
+    }
     std::vector<loom::fabric::FabricSwitchOccurrenceRef> configuredSwitches;
     for (const auto &row : switchRows)
       if (!llvm::is_contained(configuredSwitches, row.occurrence))
@@ -1379,7 +1571,7 @@ void completeCandidateRoundTrip(
       loom::test::exerciseCgraAdmission(
           dataflowReference, fabric.reference(), finalized.reference(),
           buildTemporalFabric(store).reference(), store, blobs, true, false,
-          requireSeparatedSwitchRows);
+          requireSeparatedSwitchRows && !requireContendingSwitchRows);
   }
 
   if (boundaryWrapped) {
@@ -1510,14 +1702,20 @@ int main() {
                              ComputeContractKind::Transparent);
   completeCandidateRoundTrip(true);
   completeCandidateRoundTrip(true, false, false,
-                             ComputeContractKind::OneCycleElastic, true);
-  completeCandidateRoundTrip(true, false, false,
-                             ComputeContractKind::OneCycleElastic, true, true);
-  completeCandidateRoundTrip(true, false, false,
-                             ComputeContractKind::OneCycleElastic, true, true,
-                             SwitchResidencyExpectation::ExceedsCapacity);
+                             ComputeContractKind::OneCycleElastic,
+                             TemporalSwitchRouteFixture::PackedRows);
+  completeCandidateRoundTrip(
+      true, false, false, ComputeContractKind::OneCycleElastic,
+      TemporalSwitchRouteFixture::SameInputSeparatedRows);
+  completeCandidateRoundTrip(
+      true, false, false, ComputeContractKind::OneCycleElastic,
+      TemporalSwitchRouteFixture::ContendingSeparatedRows);
+  completeCandidateRoundTrip(
+      true, false, false, ComputeContractKind::OneCycleElastic,
+      TemporalSwitchRouteFixture::ExceedsResidentCapacity);
   completeCandidateRoundTrip(true, false, true,
-                             ComputeContractKind::OneCycleElastic, true);
+                             ComputeContractKind::OneCycleElastic,
+                             TemporalSwitchRouteFixture::PackedRows);
   completeCandidateRoundTrip(true, true);
   completeCandidateRoundTrip(true, true, true);
   loom::test::exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair();

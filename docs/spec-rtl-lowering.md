@@ -489,11 +489,27 @@ candidates whose selected outputs overlap, a free-running rotation presents
 one at a time, and idle candidates whose selected outputs no other candidate
 claims are presented together. Only another input's grant excludes an idle
 candidate. An input is ready only while it is presented on every output its
-resident row selects, so readiness reflects that row's downstream state and
-never the port's own valid: a row that contends with no other row is always
-presented, and physically admitted crosspoints that no resident row selects
-never couple two rows. The rotation is transient implementation state; it
-never reorders grants among valid requesters.
+resident row selects. A row that contends with no other resident row is always
+presented, so its readiness reflects only its outputs' readiness and never the
+port's own valid. Physically admitted crosspoints that no resident row selects
+create no configured combinational dependency or grant exclusion. Rows of
+different inputs that select a common output are presented one at a time and
+granted by the exact `GrantPolicy`; within the resulting configured component,
+every input readiness observes every component
+input validity. Round-robin output validity observes the complete component;
+fixed-priority output validity follows only the exact directed requester-prefix
+relation. These are the configured grant and readiness-presentation
+dependencies owned by `docs/spec-fabric-switch.md` and checked by the selected
+closure in `docs/spec-mapping-verification.md`. RTL implements idle
+presentation with one switch-local cursor over the full typed policy order:
+FixedPriority starts at position zero, RoundRobin starts at its typed reset
+requester, and every non-reset edge advances once modulo the order. From that
+position, it greedily presents configured candidates with disjoint selected
+outputs. The RTL implementation identity covers this mechanism, including its
+order, reset, advance, and greedy selection. Clock and Reset ports follow the
+nonempty ResourceState rule in `docs/spec-fabric-module.md`, independently of
+whether a cursor exists. The presentation cursor never reorders grants among
+valid requesters.
 
 A Temporal PE presents the context its context-evaluation service grants to
 one FU as that FU's single dispatch context for the clock cycle. The FU and

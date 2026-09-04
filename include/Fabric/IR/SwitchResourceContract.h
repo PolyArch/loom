@@ -41,6 +41,17 @@ struct TemporalSwitchRoundRobin final {
 using TemporalSwitchGrantPolicy =
     std::variant<TemporalSwitchFixedPriority, TemporalSwitchRoundRobin>;
 
+/// One canonical connected component of the switch's physical bipartite
+/// input/output graph. Inputs and outputs are ascending physical ordinals;
+/// requesterOrder is the exact component-local projection of GrantPolicy, or
+/// ascending input order when no runtime policy is admitted.
+struct SwitchArbitrationComponent final {
+  std::vector<std::uint32_t> inputs;
+  std::vector<std::uint32_t> outputs;
+  std::vector<std::uint32_t> requesterOrder;
+  std::optional<std::uint32_t> roundRobinResetPosition;
+};
+
 struct SwitchResourceDeclaration final {
   Schedule schedule = Schedule::Spatial;
   std::uint32_t inputCount = 0;
@@ -48,6 +59,16 @@ struct SwitchResourceDeclaration final {
   std::vector<std::vector<std::uint32_t>> sourcesByOutput;
   std::optional<TemporalSwitchGrantPolicy> grantPolicy;
 };
+
+/// Derives the one canonical physical component and policy projection shared
+/// by Fabric handshake compilation and RTL lowering. The generic contract is
+/// the sole grant-policy source; admitted connectivity supplies only the
+/// switch-owned bipartite topology.
+llvm::Expected<std::vector<SwitchArbitrationComponent>>
+deriveSwitchArbitrationComponents(
+    Schedule schedule, std::uint32_t inputCount, std::uint32_t outputCount,
+    llvm::ArrayRef<std::vector<std::uint32_t>> sourcesByOutput,
+    const ResourceContract &contract);
 
 /// The complete Mapping-visible resource projection of one switch.
 /// It remains linear in the physical connectivity: every admitted input/output

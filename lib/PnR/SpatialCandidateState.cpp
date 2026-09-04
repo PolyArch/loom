@@ -235,6 +235,13 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   }
   if (llvm::Error error = tagScratch_.prepare(problem))
     return error;
+  if (detail::hasSpatialTemporalSwitchHandshakeDomain(problem)) {
+    if (!switchProjectionScratch_)
+      switchProjectionScratch_ =
+          std::make_unique<detail::SpatialSwitchHandshakeProjectionScratch>();
+    if (llvm::Error error = switchProjectionScratch_->prepare(problem))
+      return error;
+  }
   if (llvm::Error error = handshakeScratch_.prepare(problem.handshake()))
     return error;
   if (llvm::Error error =
@@ -330,6 +337,15 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   changedSwitchHandshakeDomains_.reserve(tagDomainCount);
   newSwitchHandshakeDomainFragments_.clear();
   newSwitchHandshakeDomainFragments_.resize(tagDomainCount);
+  removedSwitchHandshakeFragments_.clear();
+  addedSwitchHandshakeFragments_.clear();
+  if (switchProjectionScratch_ &&
+      detail::hasSpatialTemporalSwitchHandshakeDomain(problem))
+    if (llvm::Error error = switchProjectionScratch_->
+            prepareFragmentStorage(newSwitchHandshakeDomainFragments_,
+                                   removedSwitchHandshakeFragments_,
+                                   addedSwitchHandshakeFragments_))
+      return error;
   traversalDeltaMarks_.assign(traversalCount, 0);
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
@@ -367,6 +383,9 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       tagScratch_.retainedStorageBytes() +
       handshakeScratch_.retainedStorageBytes() +
       handshakeProjectionScratch_.retainedStorageBytes() +
+      (switchProjectionScratch_
+           ? switchProjectionScratch_->retainedStorageBytes()
+           : 0) +
       (routeConstraintScratch_ ? routeConstraintScratch_->retainedStorageBytes()
                                : 0) +
       (memoryConstraintScratch_
@@ -410,7 +429,6 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(tagProjectionDomains_) +
       retainedBytes(changedSwitchHandshakeDomains_) +
       retainedBytes(newSwitchHandshakeDomainFragments_) +
-      retainedBytes(switchHandshakeCountDeltas_) +
       retainedBytes(removedSwitchHandshakeFragments_) +
       retainedBytes(addedSwitchHandshakeFragments_) +
       retainedBytes(traversalDeltaMarks_) + retainedBytes(traversalRemoved_) +
@@ -474,7 +492,6 @@ void SpatialCandidateScratch::resetTransaction() {
   for (PnrIndex domain : changedSwitchHandshakeDomains_)
     newSwitchHandshakeDomainFragments_[domain].clear();
   changedSwitchHandshakeDomains_.clear();
-  switchHandshakeCountDeltas_.clear();
   removedSwitchHandshakeFragments_.clear();
   addedSwitchHandshakeFragments_.clear();
   switchHandshakeBaselineCaptured_ = false;
@@ -1775,18 +1792,15 @@ llvm::Error SpatialCandidateState::verifyCachedState() const {
       return candidateError(
           "switch-handshake domain fragments diverged from their cold "
           "projection");
-    std::vector<std::uint32_t> expectedCounts(
-        problem_->handshake().fragments().size(), 0);
+    std::vector<PnrIndex> flatFragments;
     for (const auto &fragments : *fragmentsByDomain)
-      for (PnrIndex fragment : fragments) {
-        if (fragment >= expectedCounts.size())
-          return candidateError("switch handshake fragment is out of range");
-        ++expectedCounts[fragment];
-      }
-    if (expectedCounts != switchHandshakeFragmentDomainCounts_)
+      flatFragments.insert(flatFragments.end(), fragments.begin(),
+                           fragments.end());
+    llvm::sort(flatFragments);
+    if (std::adjacent_find(flatFragments.begin(), flatFragments.end()) !=
+        flatFragments.end())
       return candidateError(
-          "switch-handshake fragment domain counts diverged from their cold "
-          "projection");
+          "switch handshake fragment belongs to multiple match domains");
   }
   return progressState_.verifyCachedState(*this);
 }

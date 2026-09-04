@@ -93,7 +93,8 @@ public:
   static llvm::Expected<HandshakeOwnerModel>
   instantiateSwitchRows(FabricSwitchOccurrenceRef occurrence,
                         llvm::ArrayRef<HandshakeOwnerModel> rowShapes,
-                        std::uint64_t residentRows, bool temporal);
+                        std::uint64_t residentRows, bool temporal,
+                        const HandshakeOwnerModel *contentionShape = nullptr);
 
   static llvm::Expected<std::vector<HandshakeDependencyArc>>
   deriveUnconditionalDependencyArcs(llvm::ArrayRef<HandshakeOwnerModel> models);
@@ -130,6 +131,27 @@ private:
   std::vector<PendingFragment> pending_;
 };
 
+inline std::vector<std::uint8_t> handshakeJunctionKey(std::uint8_t family,
+                                                      std::uint64_t first,
+                                                      std::uint64_t second) {
+  std::vector<std::uint8_t> key;
+  key.reserve(17);
+  key.push_back(family);
+  for (unsigned shift = 0; shift != 64; shift += 8)
+    key.push_back(static_cast<std::uint8_t>(first >> (56 - shift)));
+  for (unsigned shift = 0; shift != 64; shift += 8)
+    key.push_back(static_cast<std::uint8_t>(second >> (56 - shift)));
+  return key;
+}
+
+inline HandshakeFragmentSelector
+switchContentionSelector(FabricSwitchHandshakeContentionRelation relation) {
+  HandshakeFragmentSelector selector;
+  selector.kind = HandshakeFragmentSelectorKind::SwitchContention;
+  selector.switchContention = std::move(relation);
+  return selector;
+}
+
 std::vector<std::uint8_t> handshakeSignalKey(const HandshakeSignalRef &signal);
 std::vector<std::uint8_t> handshakeOwnerKey(const FabricHandshakeOwner &owner);
 std::optional<FabricHandshakeOwner>
@@ -142,6 +164,10 @@ llvm::Error verifyMemoryInternalHandshakeClosure(
 llvm::Expected<HandshakeOwnerModel>
 compileFuHandshakeModel(const FabricArtifactView &view,
                         FabricFuOccurrenceRef occurrence);
+
+llvm::Expected<HandshakeOwnerModel> compileSwitchHandshakeModel(
+    const FabricArtifactView &view, FabricSwitchOccurrenceRef occurrence,
+    llvm::ArrayRef<const FabricPhysicalTraversalView *> traversals);
 
 } // namespace loom::fabric::detail
 

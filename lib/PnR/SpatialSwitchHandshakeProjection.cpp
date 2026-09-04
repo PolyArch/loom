@@ -7,8 +7,8 @@
 #include "Fabric/Identity/FabricTemporalSwitchRoute.h"
 
 #include "llvm/ADT/STLExtras.h"
-
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <system_error>
 #include <tuple>
@@ -16,6 +16,16 @@
 
 using namespace loom::pnr;
 using namespace loom::pnr::detail;
+
+namespace {
+
+llvm::Error invalid(const llvm::Twine &message) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::invalid_argument),
+      "invalid Spatial Temporal switch handshake projection: " + message);
+}
+
+} // namespace
 
 struct loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
     Storage final {
@@ -32,6 +42,11 @@ struct loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
   std::vector<PnrIndex> participatingNets;
   std::vector<std::pair<::loom::fabric::FabricOrdinal, PnrIndex>>
       inputTraversals;
+  std::vector<::loom::fabric::FabricSwitchSelectedCrosspoint>
+      residentCrosspoints;
+  ::loom::fabric::FabricSwitchSelectedContentionScratch contentionScratch;
+  ::loom::fabric::FabricSwitchSelectedContention contention;
+  std::vector<std::size_t> domainFragmentCapacities;
 };
 
 loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
@@ -40,18 +55,111 @@ loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
 loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
     ~SpatialSwitchHandshakeProjectionScratch() = default;
 
+llvm::Error
+loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::prepare(
+    const FrozenSpatialPnrProblem &problem) {
+  Storage &storage = *storage_;
+  const FrozenSpatialHandshakeIndex &handshake = problem.handshake();
+  const std::size_t domainCount =
+      problem.routing().tagContinuity().matchDomains().size();
+  storage.domainFragmentCapacities.assign(domainCount, 0);
+  const auto addDomainCapacity = [&](PnrIndex domain,
+                                     std::size_t increment) -> llvm::Error {
+    if (domain >= storage.domainFragmentCapacities.size())
+      return invalid("frozen switch fragment names an absent match domain");
+    std::size_t &capacity = storage.domainFragmentCapacities[domain];
+    if (increment > std::numeric_limits<std::size_t>::max() - capacity)
+      return invalid("frozen switch fragment capacity overflows size_t");
+    capacity += increment;
+    return llvm::Error::success();
+  };
+  const auto baseFragments = handshake.switchActivationBaseFragments();
+  const auto selections = handshake.switchTraversalSelections();
+  const auto traversalFragments = handshake.switchTraversalFragments();
+  for (const FrozenSpatialSwitchHandshakeActivation &activation :
+       handshake.switchActivations()) {
+    if (activation.baseFragmentOffset > baseFragments.size() ||
+        activation.baseFragmentCount >
+            baseFragments.size() - activation.baseFragmentOffset ||
+        activation.traversalSelectionOffset > selections.size() ||
+        activation.traversalSelectionCount >
+            selections.size() - activation.traversalSelectionOffset)
+      return invalid("frozen switch activation fragment range is invalid");
+    if (llvm::Error error = addDomainCapacity(
+            activation.matchDomain, activation.baseFragmentCount))
+      return error;
+    for (const FrozenSpatialSwitchHandshakeTraversalSelection &selection :
+         selections.slice(activation.traversalSelectionOffset,
+                          activation.traversalSelectionCount)) {
+      if (selection.fragmentOffset > traversalFragments.size() ||
+          selection.fragmentCount >
+              traversalFragments.size() - selection.fragmentOffset)
+        return invalid(
+            "frozen switch traversal fragment range is invalid");
+      if (llvm::Error error = addDomainCapacity(activation.matchDomain,
+                                                selection.fragmentCount))
+        return error;
+    }
+  }
+  for (const FrozenSpatialSwitchHandshakeContentionRelation &relation :
+       handshake.switchContentionRelations())
+    if (llvm::Error error = addDomainCapacity(relation.matchDomain, 1))
+      return error;
+  return llvm::Error::success();
+}
+
+llvm::Error loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
+    prepareFragmentStorage(
+        std::vector<std::vector<PnrIndex>> &fragmentsByDomain,
+        std::vector<PnrIndex> &removedFragments,
+        std::vector<PnrIndex> &addedFragments) const {
+  const Storage &storage = *storage_;
+  if (fragmentsByDomain.size() != storage.domainFragmentCapacities.size())
+    return invalid("switch fragment storage has the wrong domain count");
+  std::size_t totalCapacity = 0;
+  for (std::size_t domain = 0; domain != fragmentsByDomain.size(); ++domain) {
+    const std::size_t capacity = storage.domainFragmentCapacities[domain];
+    if (capacity > std::numeric_limits<std::size_t>::max() - totalCapacity)
+      return invalid("switch fragment storage capacity overflows size_t");
+    totalCapacity += capacity;
+    fragmentsByDomain[domain].reserve(capacity);
+  }
+  removedFragments.reserve(totalCapacity);
+  addedFragments.reserve(totalCapacity);
+  return llvm::Error::success();
+}
+
+std::size_t loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
+    retainedStorageBytes() const {
+  const Storage &storage = *storage_;
+  std::size_t bytes =
+      storage.signatureViews.capacity() *
+          sizeof(::loom::fabric::FabricTemporalSwitchRouteSignatureView) +
+      storage.signatureOffsets.capacity() * sizeof(std::size_t) +
+      storage.demandViews.capacity() *
+          sizeof(::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView) +
+      storage.routeProjectionScratch.retainedStorageBytes() +
+      storage.rowSpans.rowOffsets.capacity() * sizeof(std::uint64_t) +
+      storage.rowSpans.demandOrdinals.capacity() * sizeof(std::uint64_t) +
+      storage.demands.capacity() *
+          sizeof(const SpatialTemporalSwitchSegmentDemand *) +
+      storage.participatingNets.capacity() * sizeof(PnrIndex) +
+      storage.inputTraversals.capacity() *
+          sizeof(std::pair<::loom::fabric::FabricOrdinal, PnrIndex>) +
+      storage.residentCrosspoints.capacity() *
+          sizeof(::loom::fabric::FabricSwitchSelectedCrosspoint) +
+      storage.contentionScratch.retainedStorageBytes() +
+      storage.contention.retainedStorageBytes() +
+      storage.domainFragmentCapacities.capacity() * sizeof(std::size_t);
+  return bytes;
+}
+
 namespace {
 using ProjectionStorage =
     ::loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::Storage;
 } // namespace
 
 namespace {
-
-llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::invalid_argument),
-      "invalid Spatial Temporal switch handshake projection: " + message);
-}
 
 const FrozenSpatialSwitchHandshakeActivation *
 findActivation(const FrozenSpatialHandshakeIndex &handshake, PnrIndex domain,
@@ -83,6 +191,26 @@ findTraversal(const FrozenSpatialHandshakeIndex &handshake,
          PnrIndex key) { return candidate.traversal < key; });
   return found == selections.end() || found->traversal != traversal ? nullptr
                                                                     : &*found;
+}
+
+void appendContentionFragments(
+    const FrozenSpatialHandshakeIndex &handshake, PnrIndex domain,
+    llvm::ArrayRef<::loom::fabric::FabricSwitchSelectedCrosspoint> crosspoints,
+    std::vector<PnrIndex> &fragments, ProjectionStorage &storage) {
+  const auto relations = handshake.switchContentionRelations();
+  auto relation = llvm::lower_bound(
+      relations, domain,
+      [](const FrozenSpatialSwitchHandshakeContentionRelation &candidate,
+         PnrIndex key) { return candidate.matchDomain < key; });
+  if (relation == relations.end() || relation->matchDomain != domain)
+    return;
+  storage.contention.rebuild(relation->relation.occurrence, crosspoints,
+                             storage.contentionScratch);
+  for (; relation != relations.end() && relation->matchDomain == domain;
+       ++relation) {
+    if (storage.contention.activates(relation->relation))
+      fragments.push_back(relation->fragment);
+  }
 }
 
 using SwitchDemand = SpatialTemporalSwitchSegmentDemand;
@@ -155,6 +283,8 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
                                    : storage.rowSpans.rowOffsets.size() - 1;
 
   const FrozenSpatialHandshakeIndex &handshake = problem.handshake();
+  auto &residentCrosspoints = storage.residentCrosspoints;
+  residentCrosspoints.clear();
   for (std::size_t rowOrdinal = 0; rowOrdinal < rowCount; ++rowOrdinal) {
     const std::optional<std::uint64_t> residentCapacity =
         matchDomains[domain].residentEntryCapacity;
@@ -171,9 +301,12 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
       if (demandOrdinal >= demands.size())
         return invalid("Fabric switch row names an absent route demand");
       for (const SpatialTemporalSwitchInputSignature &signature :
-           demands[demandOrdinal]->signatures)
+           demands[demandOrdinal]->signatures) {
         for (PnrIndex traversal : signature.traversals)
           inputTraversals.push_back({signature.input, traversal});
+        for (::loom::fabric::FabricOrdinal output : signature.outputs)
+          residentCrosspoints.push_back({signature.input, output});
+      }
     }
     llvm::sort(inputTraversals);
     inputTraversals.erase(
@@ -207,6 +340,8 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
       }
     }
   }
+  appendContentionFragments(handshake, domain, residentCrosspoints, fragments,
+                            storage);
   llvm::sort(fragments);
   fragments.erase(std::unique(fragments.begin(), fragments.end()),
                   fragments.end());

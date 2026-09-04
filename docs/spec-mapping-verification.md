@@ -248,6 +248,19 @@ traffic values, token coordinates, or observed traces cannot be used to erase
 a structural dependency. ConfigurationABI bits are derived later and cannot
 change this graph.
 
+For a Temporal switch, the selected resident rows also determine its
+contention components: inputs whose configured crosspoints select a common
+output, closed transitively. The verifier includes the Fabric-owned grant and
+presentation relation for every component with two or more inputs
+(`docs/spec-fabric-switch.md`). A compact owner-local spanning forest preserves
+the complete readiness reachability. Round-robin output validity uses that
+component relation, while fixed-priority output validity uses the exact
+policy-directed prefix projection. Neither form adds an internal cycle. A
+one-input component contributes only the stateless row arcs. Physical fan-in
+and a potential cycle that would close only through crosspoints absent from
+the configured rows remain legal; only the selected configured graph must be
+acyclic.
+
 For `fabric.fifo`, bypass contributes its transparent forward-valid and
 backward-ready arcs. Buffered mode contributes neither cross-FIFO arc: its
 output validity and input capacity are both derived from cycle-start registered

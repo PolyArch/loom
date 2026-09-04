@@ -27,7 +27,7 @@ namespace loom::fabric {
 namespace {
 
 constexpr llvm::StringLiteral handshakeContextAlgorithmIdentity =
-    "loom.fabric.handshake_context.2";
+    "loom.fabric.handshake_context.3";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -53,8 +53,10 @@ void appendText(std::vector<std::uint8_t> &target, llvm::StringRef text) {
                           text.size()));
 }
 
+} // namespace
+
 std::array<std::uint8_t, 32>
-deriveHandshakeContextKey(const FabricArtifactView &view) {
+deriveFabricHandshakeContextKey(const FabricArtifactView &view) {
   std::vector<std::uint8_t> preimage;
   appendText(preimage, handshakeContextAlgorithmIdentity);
   appendText(preimage, fabricArtifactSchema.identity);
@@ -64,6 +66,8 @@ deriveHandshakeContextKey(const FabricArtifactView &view) {
   appendBytes(preimage, view.identity().bytes());
   return llvm::SHA256::hash(preimage);
 }
+
+namespace {
 
 std::uint64_t elapsedNanoseconds(std::chrono::steady_clock::time_point begin) {
   return static_cast<std::uint64_t>(
@@ -158,18 +162,6 @@ private:
                      detail::CanonicalFabricByteKeyHash>
       byOwner_;
 };
-
-std::vector<std::uint8_t> ordinalKey(std::uint8_t family, std::uint64_t first,
-                                     std::uint64_t second) {
-  std::vector<std::uint8_t> key;
-  key.reserve(17);
-  key.push_back(family);
-  for (unsigned shift = 0; shift != 64; shift += 8)
-    key.push_back(static_cast<std::uint8_t>(first >> (56 - shift)));
-  for (unsigned shift = 0; shift != 64; shift += 8)
-    key.push_back(static_cast<std::uint8_t>(second >> (56 - shift)));
-  return key;
-}
 
 std::optional<FabricHandshakeOwner>
 ownerOfTraversal(const FabricPhysicalTraversalRef &traversal) {
@@ -621,20 +613,6 @@ allTraversalsSelector(llvm::ArrayRef<FabricPhysicalTraversalRef> traversals) {
 }
 
 detail::HandshakeFragmentSelector
-switchActivationSelector(FabricSwitchHandshakeActivationKey activation,
-                         llvm::ArrayRef<FabricPhysicalTraversalRef> traversals,
-                         bool any) {
-  detail::HandshakeFragmentSelector selector;
-  selector.kind =
-      any ? detail::HandshakeFragmentSelectorKind::AnySwitchActivationTraversal
-          : detail::HandshakeFragmentSelectorKind::
-                ExactSwitchActivationTraversal;
-  selector.traversalWitnesses.assign(traversals.begin(), traversals.end());
-  selector.switchActivation = activation;
-  return selector;
-}
-
-detail::HandshakeFragmentSelector
 memorySelector(FabricMemoryCapabilityAlternativeRef capability,
                FabricUsePatternRef usePattern,
                ::dataflow::semantics::MemoryMaskForm maskForm,
@@ -739,7 +717,8 @@ compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner,
     std::vector<std::uint32_t> readyJunctions;
     readyJunctions.reserve(registerFifoCount);
     for (std::uint64_t fifo = 0; fifo != registerFifoCount; ++fifo)
-      readyJunctions.push_back(builder.junction(ordinalKey(4, fifo, 0)));
+      readyJunctions.push_back(
+          builder.junction(detail::handshakeJunctionKey(4, fifo, 0)));
 
     for (FabricFuOccurrenceRef fu : view.fuOccurrences()) {
       if (view.parentPeOf(fu) != owner)
@@ -922,105 +901,6 @@ compileMemoryModel(const FabricArtifactView &view,
   return builder.finish();
 }
 
-llvm::Expected<HandshakeOwnerModel> compileSwitchModel(
-    const FabricArtifactView &view, FabricSwitchOccurrenceRef owner,
-    llvm::ArrayRef<const FabricPhysicalTraversalView *> traversals) {
-  struct Row final {
-    FabricOrdinal output = 0;
-    FabricPhysicalTraversalRef reference;
-    FabricTransportEndpointRef source;
-    FabricTransportEndpointRef destination;
-  };
-  std::map<FabricOrdinal, std::vector<Row>> byInput;
-  for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
-    const FabricPhysicalTraversalView &traversal = *traversalPointer;
-    if (traversal.reference.kind() !=
-        FabricPhysicalTraversalKind::SwitchTraversal)
-      continue;
-    const auto &payload =
-        std::get<FabricSwitchTraversalPayload>(traversal.reference.payload);
-    if (payload.owner != owner)
-      continue;
-    if (traversal.sources.size() != 1 || traversal.destinations.size() != 1)
-      return invalid("switch traversal has invalid endpoint cardinality");
-    byInput[payload.input].push_back({payload.output, traversal.reference,
-                                      traversal.sources.front(),
-                                      traversal.destinations.front()});
-  }
-
-  const auto schedule = view.switchSchedule(owner);
-  if (!schedule)
-    return invalid("switch occurrence has no scheduling contract");
-  const std::uint64_t residentRows = *schedule == ::fabric::Schedule::Temporal
-                                         ? view.switchRouteTableSize(owner)
-                                         : 1;
-  if (residentRows == 0)
-    return invalid("switch occurrence has no configurable route row");
-  std::vector<HandshakeOwnerModel> rowShapes;
-  rowShapes.reserve(byInput.size());
-  for (auto &[input, rows] : byInput) {
-    llvm::sort(rows, [](const Row &lhs, const Row &rhs) {
-      return lhs.output < rhs.output;
-    });
-    detail::HandshakeOwnerModelBuilder builder(
-        FabricHandshakeOwner::switchResource(owner));
-    std::vector<FabricPhysicalTraversalRef> witnesses;
-    witnesses.reserve(rows.size());
-    for (const Row &row : rows)
-      witnesses.push_back(row.reference);
-
-    const FabricSwitchHandshakeActivationKey activation{owner, 0, input};
-    std::vector<std::uint32_t> prefix(rows.size() + 1);
-    std::vector<std::uint32_t> suffix(rows.size() + 1);
-    for (std::size_t position = 0; position <= rows.size(); ++position) {
-      prefix[position] = builder.junction(ordinalKey(0, input, position));
-      suffix[position] = builder.junction(ordinalKey(1, input, position));
-    }
-
-    std::vector<Arc> base;
-    base.reserve(rows.size() * 2 + 1);
-    for (std::size_t position = 0; position < rows.size(); ++position) {
-      base.emplace_back(prefix[position], prefix[position + 1]);
-      base.emplace_back(suffix[position + 1], suffix[position]);
-    }
-    const std::uint32_t inputReady = builder.boundarySignal(
-        {rows.front().source, HandshakeSignalKind::Ready});
-    base.emplace_back(prefix.back(), inputReady);
-    builder.addFragment(
-        *schedule == ::fabric::Schedule::Temporal
-            ? switchActivationSelector(activation, witnesses, true)
-            : anyTraversalSelector(witnesses),
-        std::move(base));
-
-    for (std::size_t position = 0; position < rows.size(); ++position) {
-      const Row &row = rows[position];
-      const std::uint32_t inputValid =
-          builder.boundarySignal({row.source, HandshakeSignalKind::Valid});
-      const std::uint32_t outputValid =
-          builder.boundarySignal({row.destination, HandshakeSignalKind::Valid});
-      const std::uint32_t outputReady =
-          builder.boundarySignal({row.destination, HandshakeSignalKind::Ready});
-      const FabricPhysicalTraversalRef selected[] = {row.reference};
-      builder.addFragment(
-          *schedule == ::fabric::Schedule::Temporal
-              ? switchActivationSelector(activation, selected, false)
-              : traversalSelector(row.reference),
-          {{outputReady, prefix[position + 1]},
-           {outputReady, suffix[position]},
-           {inputValid, outputValid},
-           {prefix[position], outputValid},
-           {suffix[position + 1], outputValid}});
-    }
-    auto shape = builder.finish();
-    if (!shape)
-      return shape.takeError();
-    rowShapes.push_back(std::move(*shape));
-  }
-  return detail::HandshakeOwnerModelFactory::instantiateSwitchRows(
-      owner, rowShapes, residentRows,
-      *schedule == ::fabric::Schedule::Temporal);
-}
-
 llvm::Expected<HandshakeOwnerModel> compileFifoModel(
     FabricFifoOccurrenceRef owner,
     llvm::ArrayRef<const FabricPhysicalTraversalView *> traversals) {
@@ -1170,8 +1050,10 @@ llvm::Expected<HandshakeOwnerModel> compileTransferPatternModel(
   std::vector<std::uint32_t> prefix(legs.size() + 1);
   std::vector<std::uint32_t> suffix(legs.size() + 1);
   for (std::size_t position = 0; position <= legs.size(); ++position) {
-    prefix[position] = builder.junction(ordinalKey(2, 0, position));
-    suffix[position] = builder.junction(ordinalKey(3, 0, position));
+    prefix[position] =
+        builder.junction(detail::handshakeJunctionKey(2, 0, position));
+    suffix[position] =
+        builder.junction(detail::handshakeJunctionKey(3, 0, position));
   }
   std::vector<Arc> base;
   for (std::size_t position = 0; position < legs.size(); ++position) {
@@ -1268,7 +1150,7 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
     models.push_back(std::move(*model));
   }
   for (FabricSwitchOccurrenceRef owner : view.switchOccurrences()) {
-    auto model = compileSwitchModel(
+    auto model = detail::compileSwitchHandshakeModel(
         view, owner,
         traversalIndex.forOwner(FabricHandshakeOwner::switchResource(owner)));
     if (!model)
@@ -1348,7 +1230,7 @@ buildFabricHandshakeContext(const FabricArtifactView &view) {
       std::make_shared<const std::vector<HandshakeDependencyArc>>(
           std::move(*unconditional));
   return FabricHandshakeContext(
-      view.identity(), deriveHandshakeContextKey(view), std::move(owner),
+      view.identity(), deriveFabricHandshakeContextKey(view), std::move(owner),
       std::move(unconditionalOwner), std::move(ownerIndex), statistics);
 }
 
@@ -1368,7 +1250,7 @@ llvm::Error
 revalidateFabricHandshakeContext(const FabricHandshakeContext &context,
                                  const FabricArtifactView &view) {
   if (context.fabricIdentity() != view.identity() ||
-      context.key() != deriveHandshakeContextKey(view))
+      context.key() != deriveFabricHandshakeContextKey(view))
     return invalid("handshake context binds another Fabric or algorithm");
   for (auto [ordinal, model] : llvm::enumerate(context.ownerModels())) {
     const auto found = context.ownerModelOrdinal(model.owner());
@@ -1608,6 +1490,28 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
       if (candidate.occurrence() == owner)
         selectedFu = &candidate;
   }
+  std::optional<FabricSwitchSelectedContention> selectedSwitchContention;
+  if (model.owner().kind() == FabricHandshakeOwnerKind::SwitchOccurrence) {
+    const FabricSwitchOccurrenceRef owner =
+        std::get<FabricSwitchOccurrenceRef>(model.owner().payload());
+    std::vector<FabricSwitchSelectedCrosspoint> crosspoints;
+    for (const FabricSwitchHandshakeActivationSelection &activation :
+         selection.switchActivations) {
+      if (activation.key.occurrence != owner)
+        continue;
+      for (const FabricPhysicalTraversalRef &traversal :
+           activation.traversals) {
+        const auto *payload =
+            std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
+        if (!payload || payload->owner != owner ||
+            payload->input != activation.key.input)
+          return invalid("selected switch activation has a foreign crosspoint");
+        crosspoints.push_back({payload->input, payload->output});
+      }
+    }
+    selectedSwitchContention =
+        FabricSwitchSelectedContention::derive(owner, crosspoints);
+  }
   std::map<std::uint32_t, std::uint32_t> selectedExclusiveGroups;
   for (std::uint32_t ordinal = 0; ordinal != model.fragmentCount(); ++ordinal) {
     const detail::HandshakeFragmentSelector selector =
@@ -1670,6 +1574,16 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
               true;
         }
       }
+      break;
+    case detail::HandshakeFragmentSelectorKind::SwitchContention:
+      if (!selector.switchContention || !selectedSwitchContention)
+        return invalid(
+            "Temporal switch contention fragment has no exact relation");
+      if (model.owner() != FabricHandshakeOwner::switchResource(
+                               selector.switchContention->occurrence))
+        return invalid("Temporal switch contention relation is foreign");
+      selected =
+          selectedSwitchContention->activates(*selector.switchContention);
       break;
     case detail::HandshakeFragmentSelectorKind::FuCapability:
       selected = selectedFu && selector.fuOccurrence && selector.fuCapability &&

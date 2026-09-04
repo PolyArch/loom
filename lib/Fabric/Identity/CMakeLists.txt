@@ -20,6 +20,7 @@ add_mlir_library(LoomFabricIdentity
   FabricPhysicalTagProjection.cpp
   FabricFuCapabilityTemplate.cpp
   FabricHandshake.cpp
+  FabricHandshakeSwitch.cpp
   FabricHandshakeModelBuilder.cpp
   FabricHandshakeSelection.cpp
   FabricHandshakeFu.cpp

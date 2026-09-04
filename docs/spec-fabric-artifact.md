@@ -625,13 +625,16 @@ the owner-local nodes and arcs reached by the exact typed selection. The final
 verifier independently rebuilds that active overlay; it does not trust a
 candidate's incremental graph or a diagnostic projection.
 The shared context is keyed by a SHA-256 over the algorithm identity
-`loom.fabric.handshake_context.2`, the `loom.fabric` schema descriptor, the
+`loom.fabric.handshake_context.3`, the `loom.fabric` schema descriptor, the
 root kind, and the root identity, so a context built by another algorithm
-version is never reused. Algorithm version 2 activates the exact writer and
+version is never reused. Algorithm version 3 activates the exact writer and
 reader pairing fragments of every Mapping-selected Temporal-PE register-FIFO
-connection (`FabricPeRegisterFifoHandshakeSelection`) in the selected
-handshake graph; a same-FU pairing therefore surfaces as a selected
-combinational cycle instead of an unconditional one.
+connection (`FabricPeRegisterFifoHandshakeSelection`) and compiles each
+Temporal switch's selected-resident contention relation as one
+occurrence-level shape. Strict Mapping supplies the complete selected
+resident-row set; physical connectivity or one row in isolation cannot imply
+contention, and contention fragments are never part of the unconditional
+structural gate.
 
 `FabricHandshakeOwner` is a sealed view-only union of existing
 occurrence-level Fabric owners and fixed point connections.

@@ -198,15 +198,15 @@ struct UsePatternTiming final {
 
 class ResourceContract;
 
-/// Validated fixed-priority order. It has no cursor: the permutation alone
-/// decides every grant.
+/// Validated fixed-priority order. It has no cursor: the permutation orders
+/// each grant-selection step.
 class FixedPriorityView {
 public:
   llvm::ArrayRef<RequesterKey> requesterOrder() const { return order_; }
 
-  /// The first eligible requester in the exact permutation. `eligible` is
-  /// transient execution state indexed by requester ordinal and sized to the
-  /// requester domain.
+  /// One selection step returning the first eligible requester in the exact
+  /// permutation. `eligible` is transient execution state indexed by
+  /// requester ordinal and sized to the requester domain.
   std::optional<RequesterKey> grant(llvm::ArrayRef<bool> eligible) const;
 
 private:
@@ -234,8 +234,9 @@ public:
   /// The cursor established by reset.
   RequesterKey resetCursor() const { return cycle_[resetPosition_]; }
 
-  /// Scans the exact cycle from `cursor`, which must be `resetCursor()` or a
-  /// `nextCursor` of this cycle, and advances only past a granted requester.
+  /// One selection step scanning the exact cycle from `cursor`, which must be
+  /// `resetCursor()` or a `nextCursor` of this cycle, and advancing only past
+  /// a granted requester.
   RoundRobinGrant grant(RequesterKey cursor,
                         llvm::ArrayRef<bool> eligible) const;
 

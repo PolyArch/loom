@@ -52,6 +52,7 @@ std::array<std::uint8_t, 32> loom::pnr::detail::deriveFabricStaticContextKey(
   appendU32Be(preimage, ::loom::fabric::fabricArtifactSchema.version.minor);
   appendU32Be(preimage, static_cast<std::uint32_t>(fabric.rootKind()));
   appendBytes(preimage, fabric.identity().bytes());
+  appendBytes(preimage, deriveFabricHandshakeContextKey(fabric));
   appendU32Be(preimage, sizeof(PnrIndex) * 8);
   return llvm::SHA256::hash(preimage);
 }
