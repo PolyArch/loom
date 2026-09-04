@@ -37,6 +37,7 @@
 #include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
 #include "EDA/Adapters/OpenSource/OpenRoadStaticFpa.h"
 #include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
+#include "EDA/Adapters/Synopsys/DesignCompilerBlock.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Request.h"
@@ -1173,6 +1174,12 @@ llvm::Expected<int> run() {
     return error;
   // The offline EDA providers are production owners of loom-dse: the plan
   // executor dispatches them only through the configured external site.
+  if (llvm::Error error =
+          eda::synopsys::registerDesignCompilerGateNetlistCandidateGenerator())
+    return error;
+  if (llvm::Error error =
+          eda::synopsys::registerDesignCompilerBlockGateNetlistCandidateGenerator())
+    return error;
   if (llvm::Error error =
           eda::open_source::registerYosysGateNetlistCandidateGenerator())
     return error;

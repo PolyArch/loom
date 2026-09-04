@@ -1,6 +1,7 @@
 add_library(LoomEDASynopsys
   Common.cpp
   DesignCompiler.cpp
+  DesignCompilerBlock.cpp
   DesignCompilerGenerator.cpp
   FusionCompiler.cpp
   FusionCompilerGenerator.cpp
@@ -19,6 +20,7 @@ target_link_libraries(LoomEDASynopsys PUBLIC
   LoomEvaluation
   LoomExternalTool
   LoomHardwareImplementation
+  LoomHardwareRTL
   LoomImplementationPlatform
   LLVMSupport
 )

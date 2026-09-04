@@ -20,6 +20,9 @@
 
 namespace loom::eda::synopsys {
 
+inline constexpr llvm::StringLiteral designCompilerGateNetlistOutputPath =
+    "outputs/design-compiler-gate-netlist.v";
+
 inline constexpr dse::CandidateGeneratorKind
     designCompilerGateNetlistCandidateGeneratorKind(0x53444347);
 
@@ -129,11 +132,23 @@ struct DesignCompilerGateNetlist final {
 
 const SynopsysInvocationDescriptor &designCompilerDescriptor();
 
-llvm::Expected<std::string>
-renderDesignCompilerDriver(llvm::StringRef top,
-                           llvm::ArrayRef<std::string> rtlSources,
-                           llvm::ArrayRef<std::string> generationConstraints,
-                           llvm::StringRef targetLibrary);
+/// The source view selects whether synthesis may change definition boundaries.
+/// This is fixed by the registered implementation or block generator.
+enum class DesignCompilerHierarchy : std::uint8_t {
+  Optimize,
+  PreserveDefinitions,
+};
+
+/// Shared nonsemantic resolution boundary for Design Compiler generators.
+llvm::Expected<SynopsysFrozenInvocation> resolveDesignCompilerInvocation(
+    const ResolvedDesignCompilerGateNetlistConfigView &config,
+    const external_tool::ExternalToolPreparationContext &context);
+
+llvm::Expected<std::string> renderDesignCompilerDriver(
+    llvm::StringRef top, llvm::ArrayRef<std::string> rtlSources,
+    llvm::ArrayRef<std::string> generationConstraints,
+    llvm::StringRef targetLibrary,
+    DesignCompilerHierarchy hierarchy = DesignCompilerHierarchy::Optimize);
 
 llvm::Expected<DesignCompilerGateNetlist>
 parseDesignCompilerGateNetlist(llvm::StringRef contents, llvm::StringRef top);

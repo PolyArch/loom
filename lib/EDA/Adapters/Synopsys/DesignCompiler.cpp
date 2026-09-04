@@ -15,7 +15,7 @@ constexpr SynopsysImplementationState acceptedStates[]{
     {hardware::RepresentationRootVariant::Rtl, std::nullopt}};
 constexpr llvm::StringLiteral providerInputs[]{"target_library"};
 constexpr llvm::StringLiteral declaredOutputs[]{
-    "outputs/design-compiler-gate-netlist.v"};
+    designCompilerGateNetlistOutputPath};
 
 const SynopsysInvocationDescriptor descriptor{
     &external_tool::designCompilerProvider(),
@@ -70,11 +70,10 @@ const SynopsysInvocationDescriptor &designCompilerDescriptor() {
   return descriptor;
 }
 
-llvm::Expected<std::string>
-renderDesignCompilerDriver(llvm::StringRef top,
-                           llvm::ArrayRef<std::string> rtlSources,
-                           llvm::ArrayRef<std::string> generationConstraints,
-                           llvm::StringRef targetLibrary) {
+llvm::Expected<std::string> renderDesignCompilerDriver(
+    llvm::StringRef top, llvm::ArrayRef<std::string> rtlSources,
+    llvm::ArrayRef<std::string> generationConstraints,
+    llvm::StringRef targetLibrary, DesignCompilerHierarchy hierarchy) {
   if (!isPortableHdlIdentifier(top))
     return makeSynopsysAdapterError(
         SynopsysAdapterFailureKind::MissingSemanticInput,
@@ -89,7 +88,8 @@ renderDesignCompilerDriver(llvm::StringRef top,
     if (llvm::Error error = validateBundleInputPath(
             descriptor.implementationSemanticIdentity, source))
       return std::move(error);
-  if (generationConstraints.empty() ||
+  if ((generationConstraints.empty() &&
+       hierarchy == DesignCompilerHierarchy::Optimize) ||
       !llvm::is_sorted(generationConstraints) ||
       std::adjacent_find(generationConstraints.begin(),
                          generationConstraints.end()) !=
@@ -140,11 +140,19 @@ renderDesignCompilerDriver(llvm::StringRef top,
       return word.takeError();
     commands += "read_sdc " + *word + "\n";
   }
-  commands += "compile_ultra\n"
-              "check_design\n";
-  return renderSynopsysTclBatch(commands,
-                                "write -format verilog -hierarchy -output "
-                                "{outputs/design-compiler-gate-netlist.v}\n");
+  switch (hierarchy) {
+  case DesignCompilerHierarchy::Optimize:
+    commands += "compile_ultra\ncheck_design\n";
+    break;
+  case DesignCompilerHierarchy::PreserveDefinitions:
+    commands += "set_ungroup [get_designs *] false\n"
+                "compile_ultra -no_autoungroup -no_boundary_optimization\n"
+                "if {![check_design]} {error {Block design check failed}}\n";
+    break;
+  }
+  return renderSynopsysTclBatch(
+      commands, "write -format verilog -hierarchy -output {" +
+                    designCompilerGateNetlistOutputPath.str() + "}\n");
 }
 
 llvm::Expected<DesignCompilerGateNetlist>

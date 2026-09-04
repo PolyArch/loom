@@ -39,8 +39,6 @@ using namespace hardware;
 
 constexpr char configSchema[] =
     "loom.eda.synopsys.design_compiler_gate_netlist_config.1.0";
-constexpr llvm::StringLiteral outputPath =
-    "outputs/design-compiler-gate-netlist.v";
 constexpr llvm::StringLiteral externalContractPayload =
     "contracts/design-compiler-standard-cells.txt";
 
@@ -386,7 +384,7 @@ expectation(const InvocationFacts &facts) {
   result.externalInputs.push_back(ExternalToolInvocationExternalInput{
       asicStandardCellLibertyInputSlot.str(),
       facts.config.standardCellLiberty()});
-  result.declaredOutputs.push_back(outputPath.str());
+  result.declaredOutputs.push_back(designCompilerGateNetlistOutputPath.str());
   return result;
 }
 
@@ -545,21 +543,12 @@ importDesignCompilerGateNetlistImplementation(
   return importHardwareImplementation(reference, *catalog, artifacts, blobs);
 }
 
-namespace {
-
-llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
-    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-    const ResolvedCandidateGeneratorBinding &binding,
-    const ExternalImplementationContractCatalog &contracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs,
+llvm::Expected<SynopsysFrozenInvocation> resolveDesignCompilerInvocation(
+    const ResolvedDesignCompilerGateNetlistConfigView &config,
     const ExternalToolPreparationContext &context) {
-  auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
-  if (!facts)
-    return facts.takeError();
-  auto externalFiles =
-      resolveExternalFiles({{asicStandardCellLibertyInputSlot.str(),
-                             facts->config.standardCellLiberty()}},
-                           context.localConfig);
+  auto externalFiles = resolveExternalFiles(
+      {{asicStandardCellLibertyInputSlot.str(), config.standardCellLiberty()}},
+      context.localConfig);
   if (!externalFiles)
     return externalFiles.takeError();
 
@@ -574,10 +563,10 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
                                  toolEnvironment, toolProbe);
   if (!tool)
     return tool.takeError();
-  if (tool->version != facts->config.stableProviderBuildIdentity())
+  if (tool->version != config.stableProviderBuildIdentity())
     return invalid(llvm::Twine("resolved DesignCompiler build '") +
                    tool->version + "' does not match semantic build '" +
-                   facts->config.stableProviderBuildIdentity() + "'");
+                   config.stableProviderBuildIdentity() + "'");
 
   std::vector<std::string> inheritEnvironment;
   const auto configured =
@@ -604,27 +593,51 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
   if (!runtime)
     return runtime.takeError();
 
-  auto driver = renderDesignCompilerDriver(facts->top, facts->rtlPaths,
-                                           facts->constraintPaths,
-                                           externalFiles->front().absolutePath);
+  return SynopsysFrozenInvocation{std::move(*tool),
+                                  toolProvider.versionProbe,
+                                  std::move(*runtime),
+                                  containerProvider.versionProbe,
+                                  std::move(inheritEnvironment),
+                                  std::move(*externalFiles),
+                                  {}};
+}
+
+namespace {
+
+llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ExternalImplementationContractCatalog &contracts,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ExternalToolPreparationContext &context) {
+  auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
+  if (!facts)
+    return facts.takeError();
+  auto frozen = resolveDesignCompilerInvocation(facts->config, context);
+  if (!frozen)
+    return frozen.takeError();
+
+  auto driver = renderDesignCompilerDriver(
+      facts->top, facts->rtlPaths, facts->constraintPaths,
+      frozen->externalFiles.front().absolutePath);
   if (!driver)
     return driver.takeError();
   std::vector<MaterializedBundleFile> files{
       {"drivers/design-compiler.tcl", std::move(*driver), std::nullopt, false}};
   files.insert(files.end(), facts->semanticInputs.begin(),
                facts->semanticInputs.end());
-  const std::string executable = tool->executable;
+  const std::string executable = frozen->tool.executable;
   ExternalToolInvocationBundleSpec specification{
       facts->semanticContract,
-      std::move(*tool),
-      toolProvider.versionProbe,
-      std::move(*runtime),
-      containerProvider.versionProbe,
+      std::move(frozen->tool),
+      frozen->toolVersionProbe,
+      std::move(frozen->runtime),
+      frozen->containerVersionProbe,
       {{executable, "-f", "drivers/design-compiler.tcl"}},
-      std::move(inheritEnvironment),
-      {outputPath.str()},
+      std::move(frozen->inheritEnvironment),
+      {designCompilerGateNetlistOutputPath.str()},
       std::move(files),
-      std::move(*externalFiles),
+      std::move(frozen->externalFiles),
       {}};
   return finalizeExternalToolInvocationBundle(context.bundleDestination,
                                               specification);
@@ -785,7 +798,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   if (llvm::Error error = validateSynopsysOutputInventory(
           designCompilerDescriptor(), prepared.bundleRoot))
     return std::move(error);
-  auto output = readExternalToolInvocationDeclaredOutput(imported, outputPath);
+  auto output = readExternalToolInvocationDeclaredOutput(
+      imported, designCompilerGateNetlistOutputPath);
   if (!output)
     return output.takeError();
   auto netlist = parseDesignCompilerGateNetlist(*output, facts->top);

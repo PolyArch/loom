@@ -603,11 +603,13 @@ emission ranges, the block closure of one definition is its transitive member
 set with ports, parameters, direct-child multiplicities, and emission
 digests. Each member's content identity is the SHA-256 of its interface,
 parameters, the emitted source preamble, direct-child identities with
-multiplicity, and its emission bytes
-with its own emitted name and every concrete child's emitted name replaced by
-the content-derived block name `loom_block_<identity>`; an external
-definition's identity keeps its symbol name. The identity depends on neither
-the occurrence subject, the emitted occurrence names, nor the top module, so
+multiplicity, and its emission bytes. For hashing, its own emitted name is
+replaced by the fixed placeholder `loom_block_self`, and each concrete child's
+emitted name by that child's content-derived name `loom_block_<identity>`.
+Rendered source uses the content-derived name for the definition itself too.
+An external definition's identity keeps its symbol name. The identity depends
+on neither the occurrence subject, the emitted occurrence names, nor the
+enclosing implementation's top module, so
 occurrence-named definitions whose normalized closures are byte-equal share
 one block, and the instance count of a block inside a root is the
 multiplicity-weighted count through every parent. Derivation cold-validates
@@ -641,6 +643,30 @@ no occurrence reference; its parent association must remain in the separate
 mechanical derivation invocation and be rederived when a parent consumes a
 block result. It does not itself assert a whole-SpatialCore implementation or
 physical composition.
+
+`BlockGateNetlist` (`loom.block_gate_netlist` version 1.0) is the separate
+hardware-owned result of block logic synthesis. It binds the reusable source,
+exact ASIC platform and corner, registered standard-cell library contract,
+library content fingerprint, and existing structural GateNetlist representation
+root. Its importer compares the complete root interface against the source,
+retains only source-derived clock constraints, validates payload closure, and
+resolves the library contract through the existing contract catalog. Vendor
+import additionally verifies the black-box contract against the exact mapped
+external-definition inventory. Tool/build/driver provenance remains in the
+producing invocation.
+
+The registered Design Compiler block generator consumes exactly a
+`RtlBlockSource` and an ImplementationPlatform. Its resolved provider build,
+corner, and library content use the existing Design Compiler config owner.
+Every semantic source or constraint bundle file references the reusable source
+Artifact, so equal blocks from different parent occurrences can reuse the
+ordinary exact ExternalTool result cache. It preserves all concrete source
+members and their definition boundaries; no excluded-child or empty-stub path
+exists. Clockless blocks carry no fabricated clock constraint. A block netlist
+is not routed physical evidence: parent implementation must still verify each
+source association and account for its glue, interconnect, clock tree, routing,
+macro blockage, dynamic power, and root timing before publishing whole-root
+physical results.
 
 ## Clocks, Reset, And Quiescence
 

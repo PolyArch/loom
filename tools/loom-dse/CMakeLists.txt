@@ -14,6 +14,7 @@ target_link_libraries(loom-dse PRIVATE
   LoomDSEMappingGenerator
   LoomDSEModelingGenerator
   LoomEDAOpenSource
+  LoomEDASynopsys
   MLIRDataflow
   MLIRIR
   MLIRParser
