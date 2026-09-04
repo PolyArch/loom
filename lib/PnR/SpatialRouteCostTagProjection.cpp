@@ -12,32 +12,13 @@
 using namespace loom::pnr;
 using namespace loom::pnr::detail;
 
-namespace {
-
-std::size_t retainedDemandBytes(
-    const std::vector<SpatialTemporalSwitchSegmentDemand> &demands) {
-  std::size_t bytes =
-      demands.capacity() * sizeof(SpatialTemporalSwitchSegmentDemand);
-  for (const auto &demand : demands) {
-    bytes += demand.signatures.capacity() *
-             sizeof(SpatialTemporalSwitchInputSignature);
-    for (const auto &signature : demand.signatures)
-      bytes +=
-          signature.outputs.capacity() * sizeof(::loom::fabric::FabricOrdinal) +
-          signature.traversals.capacity() * sizeof(PnrIndex);
-  }
-  return bytes;
-}
-
-} // namespace
-
 std::size_t SpatialRouteCostSwitchRowState::retainedStorageBytes() const {
   std::size_t bytes =
       netDemands.capacity() *
           sizeof(std::vector<SpatialTemporalSwitchSegmentDemand>) +
       netDemandsSettled.capacity() * sizeof(std::uint8_t) +
       demandJournal.capacity() * sizeof(DemandJournal) +
-      retainedDemandBytes(selectedNetDemands) +
+      retainedSpatialTemporalSwitchDemandStorageBytes(selectedNetDemands) +
       updateDomainDemands.capacity() * sizeof(std::vector<SelectedDemandRef>) +
       updateTouchedDomains.capacity() * sizeof(PnrIndex) +
       updateDomainMarks.capacity() * sizeof(std::uint64_t) +
@@ -50,9 +31,9 @@ std::size_t SpatialRouteCostSwitchRowState::retainedStorageBytes() const {
       updateUses.capacity() * sizeof(SpatialTagDomainUse) +
       demandScratch.retainedStorageBytes();
   for (const auto &demands : netDemands)
-    bytes += retainedDemandBytes(demands);
+    bytes += retainedSpatialTemporalSwitchDemandStorageBytes(demands);
   for (const DemandJournal &journal : demandJournal)
-    bytes += retainedDemandBytes(journal.demands);
+    bytes += retainedSpatialTemporalSwitchDemandStorageBytes(journal.demands);
   for (const auto &demands : updateDomainDemands)
     bytes += demands.capacity() * sizeof(SelectedDemandRef);
   return bytes;

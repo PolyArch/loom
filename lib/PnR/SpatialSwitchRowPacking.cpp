@@ -18,6 +18,21 @@ using namespace loom::pnr::detail;
 
 namespace {
 
+std::size_t
+retainedSignatureBytes(const SpatialTemporalSwitchInputSignature &signature) {
+  return signature.outputs.capacity() * sizeof(::loom::fabric::FabricOrdinal) +
+         signature.traversals.capacity() * sizeof(PnrIndex);
+}
+
+std::size_t
+retainedDemandBytes(const SpatialTemporalSwitchSegmentDemand &demand) {
+  std::size_t bytes = demand.signatures.capacity() *
+                      sizeof(SpatialTemporalSwitchInputSignature);
+  for (const auto &signature : demand.signatures)
+    bytes += retainedSignatureBytes(signature);
+  return bytes;
+}
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -188,6 +203,31 @@ verifyDemandCoverage(const FrozenSpatialPnrProblem &problem,
 
 } // namespace
 
+std::size_t loom::pnr::detail::retainedSpatialTemporalSwitchDemandStorageBytes(
+    const std::vector<SpatialTemporalSwitchSegmentDemand> &demands) {
+  std::size_t bytes =
+      demands.capacity() * sizeof(SpatialTemporalSwitchSegmentDemand);
+  for (const auto &demand : demands)
+    bytes += retainedDemandBytes(demand);
+  return bytes;
+}
+
+std::size_t SpatialTemporalSwitchDemandScratch::retainedStorageBytes() const {
+  std::size_t bytes =
+      retainedSpatialTemporalSwitchDemandStorageBytes(demandPool_) +
+      signaturePool_.capacity() * sizeof(SpatialTemporalSwitchInputSignature) +
+      vectorPool_.capacity() *
+          sizeof(std::vector<SpatialTemporalSwitchSegmentDemand>) +
+      crosspoints_.capacity() * sizeof(SpatialTemporalSwitchCrosspoint) +
+      views_.capacity() *
+          sizeof(::loom::fabric::FabricTemporalSwitchRouteSignatureView);
+  for (const auto &signature : signaturePool_)
+    bytes += retainedSignatureBytes(signature);
+  for (const auto &demands : vectorPool_)
+    bytes += retainedSpatialTemporalSwitchDemandStorageBytes(demands);
+  return bytes;
+}
+
 llvm::ArrayRef<PnrIndex>
 SpatialTagInterferenceProjection::conflicts(PnrIndex vertex) const {
   assert(vertex + 1 < conflictOffsets_.size());
@@ -292,6 +332,7 @@ std::size_t SpatialTagInterferenceProjection::retainedStorageBytes() const {
 
 std::size_t SpatialTagInterferenceUpdateScratch::retainedStorageBytes() const {
   std::size_t bytes =
+      demandScratch_.retainedStorageBytes() +
       previousNetSegmentOffsets_.capacity() * sizeof(PnrIndex) +
       previousVertexRefs_.capacity() * sizeof(SpatialTagVertexRef) +
       previousConflictOffsets_.capacity() * sizeof(PnrIndex) +

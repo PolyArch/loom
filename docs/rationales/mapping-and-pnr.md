@@ -629,8 +629,12 @@ The Frozen model therefore stores one compact owner-local potential graph and
 typed reverse incidence. A candidate stores only arc reference counts, an
 active bitset, and topological order. Reference counts preserve the fact that
 several selected decisions may activate one physical dependency without
-duplicating arc identity. Dense arrays and preallocated epoch scratch keep the
-hot path local and allocation-free.
+duplicating arc identity. Frozen fragment-incidence bounds preallocate the
+committed and staged fragment sets. Candidate-dependent demand, signature, and
+crosspoint scratch grows only to observed high-water shapes and is reused
+thereafter, avoiding an artificial logical-net-by-routing-graph allocation in
+every worker. Route construction and independent cold verification have
+separate execution contracts.
 
 Array-based Pearce-Kelly updates were chosen because most moves touch a small
 rank interval, rank-respecting insertions are constant time, and the algorithm

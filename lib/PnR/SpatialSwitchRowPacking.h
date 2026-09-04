@@ -45,6 +45,9 @@ struct SpatialTemporalSwitchSegmentDemand final {
   }
 };
 
+std::size_t retainedSpatialTemporalSwitchDemandStorageBytes(
+    const std::vector<SpatialTemporalSwitchSegmentDemand> &demands);
+
 /// One switch crosspoint of a selected route in frozen-ordinal form; the
 /// flat derivation sorts these once and groups them linearly.
 struct SpatialTemporalSwitchCrosspoint final {
@@ -71,6 +74,7 @@ public:
   /// Returns exhausted demand storage to the pools so the next derivation
   /// reuses its vector capacity.
   void recycle(std::vector<SpatialTemporalSwitchSegmentDemand> &&demands);
+  std::size_t retainedStorageBytes() const;
 
 private:
   std::vector<SpatialTemporalSwitchSegmentDemand> demandPool_;
