@@ -973,8 +973,9 @@ module {
       debtObjective.capacityShortfall != 0)
     fail("unproven capacity produced the wrong objective projection");
 
-  // A capacity-carrying closed component resolves exactly when every member
-  // class has a proven obligation within its pool.
+  // Capacity bounds discharge only edges waiting on their exact destination
+  // pool. One discharged edge can break a cycle without a bound for every
+  // other member; a cycle with no discharged edge remains proof debt.
   std::vector<MappingBufferDependencyEdge> capacityCycle{
       waitEdge(globalQueueNode(7), globalQueueNode(8),
                MappingBufferDependencyEdgeKind::DownstreamCapacity),
@@ -997,13 +998,18 @@ module {
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("proven-sufficient members did not resolve the capacity component");
-  const auto unprovenMember = resolvedThrough({globalObligation(
-      7, 4, 2, MappingReconvergentCapacityProofKind::Proven)});
+  if (resolvedThrough({globalObligation(
+                          7, 4, 2,
+                          MappingReconvergentCapacityProofKind::Proven)})
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("one sufficient destination pool did not break the capacity cycle");
+  const auto unprovenMember = resolvedThrough({});
   if (unprovenMember.kind !=
           loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       unprovenMember.reason != loom::mapping::MappingProgressClosureReason::
                                    ReconvergentCapacityNotEstablished)
-    fail("a capacity component without a member proof was resolved");
+    fail("an undischargeable capacity cycle was resolved");
 
   // A proven shortfall on a component member still reports the shortfall.
   const auto memberShortfall = resolvedThrough({globalObligation(
