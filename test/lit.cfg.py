@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from config.timeout_budgets import (  # noqa: E402
     seconds,
     shell,
 )
+from scripts import loom_gem5_build  # noqa: E402
 
 import lit.formats
 from lit.llvm import llvm_config
@@ -43,20 +45,22 @@ lit_config.parallelism_groups["full-budget-rtl"] = 1
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
 
-gem5_readiness_path = os.path.join(
-    config.loom_obj_root, "gem5", "loom-gem5-readiness.json")
+gem5_readiness_path = ""
+gem5_binary_path = ""
 try:
-    with open(gem5_readiness_path, encoding="utf-8") as readiness_file:
-        gem5_readiness = json.load(readiness_file)
-    gem5_binary = gem5_readiness.get("binary")
-    if (gem5_readiness.get("schema") == "loom.gem5_build_readiness.1" and
-            isinstance(gem5_binary, str) and os.path.isabs(gem5_binary) and
-            os.path.isfile(gem5_binary) and os.access(gem5_binary, os.X_OK)):
-        gem5_directory = os.path.dirname(gem5_binary)
+    gem5_paths = loom_gem5_build.build_paths(pathlib.Path(_repository_root))
+    gem5_readiness_path = str(gem5_paths.readiness)
+    gem5_expected = loom_gem5_build.expected_readiness(
+        pathlib.Path(_repository_root), gem5_paths,
+        loom_gem5_build.module_environment())
+    gem5_ready, _ = loom_gem5_build.inspect_readiness(gem5_paths, gem5_expected)
+    if gem5_ready:
+        gem5_binary_path = str(gem5_paths.binary)
+        gem5_directory = os.path.dirname(gem5_binary_path)
         config.environment["PATH"] = os.pathsep.join(
             [gem5_directory, config.environment["PATH"]])
         config.available_features.add("loom-gem5")
-except (OSError, json.JSONDecodeError):
+except (OSError, loom_gem5_build.BuildError):
     pass
 
 # The backend tool catalog probe below and every test see the same tool
@@ -354,6 +358,7 @@ config.substitutions.append(
         gem5_readiness_path,
     )
 )
+config.substitutions.append(("%loom-gem5-binary", gem5_binary_path))
 
 # Loom driver tools share name prefixes with other substitutions. Lit's
 # substitution is substring-based, so match their complete placeholders.
