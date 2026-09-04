@@ -1,3 +1,4 @@
+#include "Arbitration.h"
 #include "Components.h"
 
 #include "Fabric/IR/FabricOps.h"
@@ -281,6 +282,27 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
             inputCount,
             std::vector<mlir::Value>(
                 outputCount, bitConstant(bodyBuilder, location, false)));
+        std::vector<std::vector<mlir::Value>> temporalEntryMatches;
+        if (*schedule == ::fabric::Schedule::Temporal) {
+          temporalEntryMatches.resize(temporalEntryCount,
+                                      std::vector<mlir::Value>(inputCount));
+          for (std::uint64_t entry = 0; entry != temporalEntryCount; ++entry) {
+            const std::uint64_t base = entry * temporalEntryWidth;
+            mlir::Value valid =
+                selectedBit(bodyBuilder, location, fieldSignal, base);
+            mlir::Value tag = circt::comb::ExtractOp::create(
+                bodyBuilder, location, fieldSignal, base + 1, temporalTagWidth);
+            for (unsigned input = 0; input != inputCount; ++input)
+              temporalEntryMatches[entry][input] = andValues(
+                  bodyBuilder, location,
+                  {valid,
+                   circt::comb::ICmpOp::create(
+                       bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                       tag,
+                       accessor.getInput(inputEndpoints[input]->tag->getName()),
+                       true)});
+          }
+        }
         for (const SwitchRoute &route : routes) {
           mlir::Value selected = bitConstant(bodyBuilder, location, false);
           if (*schedule == ::fabric::Schedule::Spatial) {
@@ -290,35 +312,62 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
             for (std::uint64_t entry = 0; entry != temporalEntryCount;
                  ++entry) {
               const std::uint64_t base = entry * temporalEntryWidth;
-              mlir::Value valid =
-                  selectedBit(bodyBuilder, location, fieldSignal, base);
-              mlir::Value tag = circt::comb::ExtractOp::create(
-                  bodyBuilder, location, fieldSignal, base + 1,
-                  temporalTagWidth);
-              mlir::Value matches = circt::comb::ICmpOp::create(
-                  bodyBuilder, location, circt::comb::ICmpPredicate::eq, tag,
-                  accessor.getInput(route.input->tag->getName()), true);
               mlir::Value crosspoint = selectedBit(
                   bodyBuilder, location, fieldSignal,
                   base + 1 + temporalTagWidth + route.configurationBit);
               selected = circt::comb::OrOp::create(
                   bodyBuilder, location, selected,
                   andValues(bodyBuilder, location,
-                            {valid, matches, crosspoint}));
+                            {temporalEntryMatches[entry][route.inputOrdinal],
+                             crosspoint}));
             }
           }
           requestedRoute[route.inputOrdinal][route.outputOrdinal] = selected;
         }
 
+        std::vector<mlir::Value> requestedRouteMask(inputCount);
+        std::vector<mlir::Value> routeReady(inputCount);
+        std::vector<std::vector<mlir::Value>> peerRouteReady(
+            inputCount, std::vector<mlir::Value>(outputCount));
         std::vector<mlir::Value> requested(inputCount);
         std::vector<mlir::Value> configuredRequest(inputCount);
+        mlir::Value emptyRouteMask = circt::hw::ConstantOp::create(
+            bodyBuilder, location, llvm::APInt(outputCount, 0));
         for (unsigned input = 0; input != inputCount; ++input) {
-          configuredRequest[input] =
-              orValues(bodyBuilder, location, requestedRoute[input]);
+          requestedRouteMask[input] =
+              packBits(bodyBuilder, location, requestedRoute[input]);
+          configuredRequest[input] = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::ne,
+              requestedRouteMask[input], emptyRouteMask, true);
           requested[input] = andValues(
               bodyBuilder, location,
               {accessor.getInput(inputEndpoints[input]->valid.getName()),
                configuredRequest[input]});
+          std::vector<mlir::Value> readyTerms;
+          readyTerms.reserve(outputCount);
+          for (unsigned output = 0; output != outputCount; ++output)
+            readyTerms.push_back(circt::comb::OrOp::create(
+                bodyBuilder, location,
+                circt::comb::createOrFoldNot(bodyBuilder, location,
+                                             requestedRoute[input][output]),
+                accessor.getInput(outputEndpoints[output]->ready.getName())));
+          std::vector<mlir::Value> prefixReady(
+              outputCount + 1, bitConstant(bodyBuilder, location, true));
+          std::vector<mlir::Value> suffixReady(
+              outputCount + 1, bitConstant(bodyBuilder, location, true));
+          for (unsigned output = 0; output != outputCount; ++output)
+            prefixReady[output + 1] =
+                andValues(bodyBuilder, location,
+                          {prefixReady[output], readyTerms[output]});
+          for (unsigned output = outputCount; output != 0; --output)
+            suffixReady[output - 1] =
+                andValues(bodyBuilder, location,
+                          {readyTerms[output - 1], suffixReady[output]});
+          routeReady[input] = andValues(bodyBuilder, location, readyTerms);
+          for (unsigned output = 0; output != outputCount; ++output)
+            peerRouteReady[input][output] =
+                andValues(bodyBuilder, location,
+                          {prefixReady[output], suffixReady[output + 1]});
         }
 
         std::vector<mlir::Value> selectedInput(
@@ -340,28 +389,27 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                     inputCount, bitConstant(bodyBuilder, location, false)),
                 std::vector<mlir::Value>(
                     inputCount, bitConstant(bodyBuilder, location, false))};
-            std::vector<mlir::Value> reserved(
-                outputCount, bitConstant(bodyBuilder, location, false));
+            mlir::Value reserved = emptyRouteMask;
             for (unsigned input : order) {
-              llvm::SmallVector<mlir::Value> conflicts;
-              for (unsigned output : component.outputs)
-                conflicts.push_back(andValues(
-                    bodyBuilder, location,
-                    {requestedRoute[input][output], reserved[output]}));
+              mlir::Value conflicts = circt::comb::AndOp::create(
+                  bodyBuilder, location, requestedRouteMask[input], reserved,
+                  true);
               mlir::Value conflictFree = circt::comb::createOrFoldNot(
                   bodyBuilder, location,
-                  orValues(bodyBuilder, location, conflicts));
-              result.admissible[input] = andValues(
-                  bodyBuilder, location,
-                  {configuredRequest[input], conflictFree});
+                  circt::comb::ICmpOp::create(
+                      bodyBuilder, location, circt::comb::ICmpPredicate::ne,
+                      conflicts, emptyRouteMask, true));
+              result.admissible[input] =
+                  andValues(bodyBuilder, location,
+                            {configuredRequest[input], conflictFree});
               result.selected[input] = andValues(
                   bodyBuilder, location, {requested[input], conflictFree});
-              for (unsigned output : component.outputs)
-                reserved[output] = circt::comb::OrOp::create(
-                    bodyBuilder, location, reserved[output],
-                    andValues(
-                        bodyBuilder, location,
-                        {result.selected[input], requestedRoute[input][output]}));
+              reserved = circt::comb::OrOp::create(
+                  bodyBuilder, location, reserved,
+                  circt::comb::MuxOp::create(
+                      bodyBuilder, location, result.selected[input],
+                      requestedRouteMask[input], emptyRouteMask, true),
+                  true);
             }
             return result;
           };
@@ -415,18 +463,9 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                   bodyBuilder, location, admissibleInput[input],
                   andValues(bodyBuilder, location,
                             {cursorIs, selection.admissible[input]}));
-              llvm::SmallVector<mlir::Value> allReady;
-              for (unsigned output : component.outputs)
-                allReady.push_back(circt::comb::OrOp::create(
-                    bodyBuilder, location,
-                    circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                 requestedRoute[input][output]),
-                    accessor.getInput(
-                        outputEndpoints[output]->ready.getName())));
               mlir::Value fire =
                   andValues(bodyBuilder, location,
-                            {selection.selected[input],
-                             andValues(bodyBuilder, location, allReady)});
+                            {selection.selected[input], routeReady[input]});
               const unsigned next = (start + offset + 1) % order.size();
               candidateNext = circt::comb::MuxOp::create(
                   bodyBuilder, location, fire,
@@ -457,30 +496,29 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         // output, so an output this input holds is not held by another.
         std::vector<mlir::Value> presentedInput = selectedInput;
         if (*schedule == ::fabric::Schedule::Temporal) {
-          std::vector<mlir::Value> held(
-              outputCount, bitConstant(bodyBuilder, location, false));
+          mlir::Value held = emptyRouteMask;
           for (unsigned input = 0; input != inputCount; ++input)
-            for (unsigned output = 0; output != outputCount; ++output)
-              held[output] = circt::comb::OrOp::create(
-                  bodyBuilder, location, held[output],
-                  andValues(bodyBuilder, location,
-                            {selectedInput[input],
-                             requestedRoute[input][output]}));
+            held = circt::comb::OrOp::create(
+                bodyBuilder, location, held,
+                circt::comb::MuxOp::create(
+                    bodyBuilder, location, selectedInput[input],
+                    requestedRouteMask[input], emptyRouteMask, true),
+                true);
           std::vector<mlir::Value> candidates(inputCount);
           for (unsigned input = 0; input != inputCount; ++input) {
-            llvm::SmallVector<mlir::Value> free;
-            for (unsigned output = 0; output != outputCount; ++output)
-              free.push_back(orValues(
-                  bodyBuilder, location,
-                  {circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                requestedRoute[input][output]),
-                   circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                held[output]),
-                   selectedInput[input]}));
-            candidates[input] =
-                andValues(bodyBuilder, location,
-                          {configuredRequest[input],
-                           andValues(bodyBuilder, location, free)});
+            mlir::Value overlap = circt::comb::AndOp::create(
+                bodyBuilder, location, requestedRouteMask[input], held, true);
+            candidates[input] = andValues(
+                bodyBuilder, location,
+                {configuredRequest[input],
+                 orValues(bodyBuilder, location,
+                          {selectedInput[input],
+                           circt::comb::createOrFoldNot(
+                               bodyBuilder, location,
+                               circt::comb::ICmpOp::create(
+                                   bodyBuilder, location,
+                                   circt::comb::ICmpPredicate::ne, overlap,
+                                   emptyRouteMask, true))})});
           }
           std::vector<mlir::Value> idleSelected(
               inputCount, bitConstant(bodyBuilder, location, false));
@@ -506,29 +544,30 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                   circt::hw::ConstantOp::create(
                       bodyBuilder, location, llvm::APInt(pointerWidth, start)),
                   true);
-              std::vector<mlir::Value> claimed(
-                  outputCount, bitConstant(bodyBuilder, location, false));
+              mlir::Value claimed = emptyRouteMask;
               for (unsigned offset = 0; offset != candidateCount; ++offset) {
                 const unsigned position = (start + offset) % candidateCount;
                 const unsigned input = order[position];
-                llvm::SmallVector<mlir::Value> contention;
-                for (unsigned output = 0; output != outputCount; ++output)
-                  contention.push_back(andValues(
-                      bodyBuilder, location,
-                      {requestedRoute[input][output], claimed[output]}));
-                mlir::Value presented = andValues(
-                    bodyBuilder, location,
-                    {pointerIs, candidates[input],
-                     circt::comb::createOrFoldNot(
-                         bodyBuilder, location,
-                         orValues(bodyBuilder, location, contention))});
+                mlir::Value contention = circt::comb::AndOp::create(
+                    bodyBuilder, location, requestedRouteMask[input], claimed,
+                    true);
+                mlir::Value presented =
+                    andValues(bodyBuilder, location,
+                              {pointerIs, candidates[input],
+                               circt::comb::createOrFoldNot(
+                                   bodyBuilder, location,
+                                   circt::comb::ICmpOp::create(
+                                       bodyBuilder, location,
+                                       circt::comb::ICmpPredicate::ne,
+                                       contention, emptyRouteMask, true))});
                 idleSelected[input] = circt::comb::OrOp::create(
                     bodyBuilder, location, idleSelected[input], presented);
-                for (unsigned output = 0; output != outputCount; ++output)
-                  claimed[output] = circt::comb::OrOp::create(
-                      bodyBuilder, location, claimed[output],
-                      andValues(bodyBuilder, location,
-                                {presented, requestedRoute[input][output]}));
+                claimed = circt::comb::OrOp::create(
+                    bodyBuilder, location, claimed,
+                    circt::comb::MuxOp::create(
+                        bodyBuilder, location, presented,
+                        requestedRouteMask[input], emptyRouteMask, true),
+                    true);
               }
             }
           }
@@ -539,20 +578,13 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         }
 
         for (unsigned input = 0; input != inputCount; ++input) {
-          llvm::SmallVector<mlir::Value> allReady;
-          for (unsigned output = 0; output != outputCount; ++output)
-            allReady.push_back(circt::comb::OrOp::create(
-                bodyBuilder, location,
-                circt::comb::createOrFoldNot(bodyBuilder, location,
-                                             requestedRoute[input][output]),
-                accessor.getInput(outputEndpoints[output]->ready.getName())));
           accessor.setOutput(
               inputEndpoints[input]->ready.getName(),
               andValues(bodyBuilder, location,
                         {*schedule == ::fabric::Schedule::Temporal
                              ? presentedInput[input]
                              : admissibleInput[input],
-                         andValues(bodyBuilder, location, allReady)}));
+                         routeReady[input]}));
         }
 
         for (unsigned output = 0; output != outputCount; ++output) {
@@ -579,19 +611,9 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
             mlir::Value presented = andValues(
                 bodyBuilder, location,
                 {presentedInput[input], requestedRoute[input][output]});
-            llvm::SmallVector<mlir::Value> peerReady;
-            for (unsigned peer = 0; peer != outputCount; ++peer) {
-              if (peer == output)
-                continue;
-              peerReady.push_back(circt::comb::OrOp::create(
-                  bodyBuilder, location,
-                  circt::comb::createOrFoldNot(bodyBuilder, location,
-                                               requestedRoute[input][peer]),
-                  accessor.getInput(outputEndpoints[peer]->ready.getName())));
-            }
-            validTerms.push_back(andValues(
-                bodyBuilder, location,
-                {selected, andValues(bodyBuilder, location, peerReady)}));
+            validTerms.push_back(
+                andValues(bodyBuilder, location,
+                          {selected, peerRouteReady[input][output]}));
             auto adapted = adaptForwardTransportSignals(
                 bodyBuilder, location, inputEndpoint.dataPath,
                 outputEndpoint.dataPath,
@@ -630,7 +652,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
   if (materializationError)
     return invalid(*materializationError);
   std::vector<std::uint8_t> implementationKey;
-  appendKeyU64(implementationKey, 2);
+  appendKeyU64(implementationKey, 3);
   appendKeyU64(implementationKey, static_cast<std::uint32_t>(*schedule));
   appendKeyU64(implementationKey, decoder->encodedBitCount);
   appendKeyU64(implementationKey, clockReset.asynchronousReset);

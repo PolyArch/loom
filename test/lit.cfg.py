@@ -282,6 +282,7 @@ tools = [
     "loom-fabric-system-service-contract-test",
     "loom-fabric-temporal-operand-buffer-test",
     "loom-fabric-temporal-switch-route-test",
+    "loom-fabric-switch-handshake-policy-test",
     "loom-fabric-switch-resource-contract-test",
     "loom-hardware-configuration-diagnostics-test",
     "loom-constant-callback-specialization-test",
