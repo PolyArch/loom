@@ -58,10 +58,11 @@ void exactRowsAreTagKeyed() {
       FabricTemporalSwitchTaggedRouteDemandView{{first}, tag(1)}};
   const auto rows = take(projectFabricTemporalSwitchRouteRows(demands));
   require(rows.size() == 2, "distinct tags did not own distinct rows");
-  require(rows[0].tag == tag(1) && rows[0].demandOrdinals ==
-                                            std::vector<std::uint64_t>{3},
+  require(::fabric::comparePhysicalTagValues(rows[0].tag, tag(1)) == 0 &&
+              rows[0].demandOrdinals == std::vector<std::uint64_t>{3},
           "exact rows are not ordered by unsigned tag");
-  require(rows[1].tag == tag(5) && rows[1].compatible &&
+  require(::fabric::comparePhysicalTagValues(rows[1].tag, tag(5)) == 0 &&
+              rows[1].compatible &&
               rows[1].demandOrdinals ==
                   std::vector<std::uint64_t>({0, 1, 2}),
           "compatible equal-tag demands did not share one row");
@@ -112,10 +113,12 @@ void candidateRowsPreserveAssignedIdentity() {
   const auto rows =
       take(projectFabricTemporalSwitchCandidateRouteRows(demands));
   require(rows.size() == 3, "candidate projection changed its row lower bound");
-  require(rows[0].tag == tag(0) &&
+  require(rows[0].tag &&
+              ::fabric::comparePhysicalTagValues(*rows[0].tag, tag(0)) == 0 &&
               rows[0].demandOrdinals == std::vector<std::uint64_t>{0},
           "candidate projection changed the lower assigned row");
-  require(rows[1].tag == tag(1) &&
+  require(rows[1].tag &&
+              ::fabric::comparePhysicalTagValues(*rows[1].tag, tag(1)) == 0 &&
               rows[1].demandOrdinals ==
                   std::vector<std::uint64_t>({1, 2}),
           "unassigned demand did not join the first compatible assigned row");
