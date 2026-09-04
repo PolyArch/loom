@@ -531,6 +531,81 @@ projectRtlModuleGraph(mlir::ModuleOp module, llvm::StringRef exactTopModule) {
   return graph;
 }
 
+llvm::Expected<RtlModuleGraphSourceBinding>
+bindRtlModuleGraphSource(const RtlModuleGraphProjection &graph,
+                         llvm::StringRef source) {
+  const auto digestOf = [](llvm::StringRef bytes) {
+    return computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
+        reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()));
+  };
+  if (!graph.sourceDigest || graph.topModule >= graph.modules.size())
+    return invalid("module graph is not bound to emitted source");
+  if (source.size() != graph.sourceByteCount ||
+      digestOf(source) != *graph.sourceDigest)
+    return invalid("RTL payload does not match the module graph source");
+
+  const auto verifyRange =
+      [&](const RtlModuleEmissionRange &range,
+          llvm::StringRef owner) -> llvm::Expected<llvm::StringRef> {
+    if (range.offset > source.size() ||
+        range.byteCount > source.size() - range.offset)
+      return invalid(owner + " source range is outside the RTL payload");
+    const llvm::StringRef bytes =
+        source.substr(static_cast<std::size_t>(range.offset),
+                      static_cast<std::size_t>(range.byteCount));
+    if (digestOf(bytes) != range.digest)
+      return invalid(owner + " source range digest is inconsistent");
+    return bytes;
+  };
+  const auto saturatingAdd = [](std::uint64_t lhs, std::uint64_t rhs) {
+    return lhs > std::numeric_limits<std::uint64_t>::max() - rhs
+               ? std::numeric_limits<std::uint64_t>::max()
+               : lhs + rhs;
+  };
+
+  std::uint64_t accounted = graph.framingByteCount;
+  llvm::StringRef preamble;
+  if (graph.preamble) {
+    if (graph.preamble->offset != 0)
+      return invalid("RTL preamble does not start at byte zero");
+    auto bytes = verifyRange(*graph.preamble, "RTL preamble");
+    if (!bytes)
+      return bytes.takeError();
+    preamble = *bytes;
+    accounted = saturatingAdd(accounted, graph.preamble->byteCount);
+  }
+  RtlModuleGraphSourceBinding binding{source, preamble, {}};
+  binding.moduleBytes_.resize(graph.modules.size());
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+  if (!preamble.empty())
+    ranges.emplace_back(0, preamble.size());
+  for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal) {
+    const RtlModuleProjection &module = graph.modules[ordinal];
+    if (module.kind == RtlModuleDefinitionKind::External) {
+      if (module.emission)
+        return invalid("external module unexpectedly owns source bytes");
+      continue;
+    }
+    if (!module.emission)
+      return invalid("concrete module has no emitted source range");
+    auto bytes = verifyRange(*module.emission, module.emittedName);
+    if (!bytes)
+      return bytes.takeError();
+    binding.moduleBytes_[ordinal] = *bytes;
+    accounted = saturatingAdd(accounted, module.emission->byteCount);
+    ranges.emplace_back(
+        module.emission->offset,
+        saturatingAdd(module.emission->offset, module.emission->byteCount));
+  }
+  if (accounted != graph.sourceByteCount)
+    return invalid("module ranges do not cover the exact RTL payload");
+  llvm::sort(ranges);
+  for (std::size_t index = 1; index < ranges.size(); ++index)
+    if (ranges[index - 1].second > ranges[index].first)
+      return invalid("module emission ranges overlap");
+  return binding;
+}
+
 llvm::Expected<RtlModuleGraphProjection>
 exportFramedRtlModuleGraph(mlir::ModuleOp module,
                            const RtlModuleGraphProjection &before,

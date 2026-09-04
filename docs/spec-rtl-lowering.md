@@ -597,6 +597,51 @@ representation for every occurrence. A required cross-boundary optimization
 must be an explicit bounded refinement whose result remains verifiable against
 the same Fabric contracts.
 
+The reusable unit of that composition is derived, never authored. From the
+portable publisher's frozen definition catalog, instance DAG, and framed
+emission ranges, the block closure of one definition is its transitive member
+set with ports, parameters, direct-child multiplicities, and emission
+digests. Each member's content identity is the SHA-256 of its interface,
+parameters, the emitted source preamble, direct-child identities with
+multiplicity, and its emission bytes
+with its own emitted name and every concrete child's emitted name replaced by
+the content-derived block name `loom_block_<identity>`; an external
+definition's identity keeps its symbol name. The identity depends on neither
+the occurrence subject, the emitted occurrence names, nor the top module, so
+occurrence-named definitions whose normalized closures are byte-equal share
+one block, and the instance count of a block inside a root is the
+multiplicity-weighted count through every parent. Derivation cold-validates
+every recorded range against the exact stored source and requires the emitted
+bytes to name definitions exactly as the instance DAG states; any
+disagreement fails closed. The rendered block source lists rendered members in
+dependency order under their block names, preserving the exact source
+preamble and every concrete dependency. External definitions remain explicit
+unresolved symbol contracts. No child may be omitted without a separately
+verified implementation product. Member order is canonical by dependency
+height and content identity, so complete source ordering does not depend on
+occurrence names. Token-aware replacement operates only within exact recorded
+emission ranges, preserves comments and strings, and rejects reserved-name
+collisions; it does not discover a second hierarchy from SystemVerilog.
+
+`RtlBlockSource` (`loom.rtl_block_source` version 1.0) is the hardware-owned
+reusable source Artifact. Its only construction path accepts an exact portable
+HardwareImplementation, its ConfigurationABI, and a selected definition from
+that implementation's canonical graph. Construction replays the portable
+publisher, normalizes the complete closure, and publishes its exact source
+blob, definition DAG, interface, and threaded domain contract. The System
+clock contract owns the constraint; block SDC is a derived rendering. A
+clockless block carries no period. The structural closure identity is distinct
+from the period-sensitive source Artifact identity.
+
+Cold import verifies the source blob, framing, definition references and
+multiplicities, normalized content names and ordering, root port geometry
+through the existing RepresentationIndex, and the clock/reset port shapes.
+Unknown fields or noncanonical bytes are rejected. A source Artifact contains
+no occurrence reference; its parent association must remain in the separate
+mechanical derivation invocation and be rederived when a parent consumes a
+block result. It does not itself assert a whole-SpatialCore implementation or
+physical composition.
+
 ## Clocks, Reset, And Quiescence
 
 RTL exposes the exact Fabric clock/reset domains and only their declared

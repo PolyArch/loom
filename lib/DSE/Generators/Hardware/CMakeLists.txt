@@ -5,6 +5,7 @@ add_library(LoomDSEHardwareGenerator
   FuReverseSynthesisSystem.cpp
   HardwareDecision.cpp
   PortableSpatialCoreRtlCandidateGenerator.cpp
+  RtlBlockSourceCandidateGenerator.cpp
   SpatialMicroarchitectureCandidateGenerator.cpp
   SpatialTopologyCandidateGenerator.cpp
   SystemCompositionCandidateGenerator.cpp

@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Common/DiagnosticVerbosity.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -18,6 +19,7 @@
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <optional>
@@ -128,46 +130,27 @@ std::string fixedDecimal(unsigned __int128 coefficient,
   return digits;
 }
 
+/// The top port named by one interface locator, or an error when the locator
+/// is not a port of the portable top module.
+llvm::Expected<std::string>
+topPortName(const ImplementationInterface &interface, llvm::StringRef role) {
+  constexpr llvm::StringLiteral topPrefix = "loom_module.";
+  if (interface.representationLocator.kind != RepresentationObjectKind::Port)
+    return invalid("SpatialCore RTL has no exact " + role + " port");
+  llvm::StringRef port = interface.representationLocator.canonicalName;
+  if (!port.consume_front(topPrefix) || port.empty())
+    return invalid("SpatialCore " + role +
+                   " locator is outside the top module");
+  return port.str();
+}
+
 llvm::Expected<std::string>
 deriveGenerationConstraint(const FinalizedConfigurationABI &configurationAbi,
                            llvm::ArrayRef<ImplementationInterface> interfaces) {
-  const ImplementationInterface *clockInterface = nullptr;
-  for (const ImplementationInterface &interface : interfaces) {
-    if (!std::holds_alternative<ImplementationClockInterfaceRef>(
-            interface.semanticRef))
-      continue;
-    if (clockInterface)
-      return invalid("SpatialCore RTL has more than one clock interface");
-    clockInterface = &interface;
-  }
-  if (!clockInterface || clockInterface->representationLocator.kind !=
-                             RepresentationObjectKind::Port)
-    return invalid("SpatialCore RTL has no exact clock port");
-  constexpr llvm::StringLiteral topPrefix = "loom_module.";
-  llvm::StringRef clockPort =
-      clockInterface->representationLocator.canonicalName;
-  if (!clockPort.consume_front(topPrefix) || clockPort.empty())
-    return invalid("SpatialCore clock locator is outside the top module");
-
-  const auto &semantic =
-      std::get<ImplementationClockInterfaceRef>(clockInterface->semanticRef);
-  const fabric::HardwareDomainContractRecord *domain =
-      configurationAbi.abi().fabricSystem().hardwareDomainContract(
-          semantic.domain);
-  const auto *clock =
-      domain
-          ? std::get_if<fabric::ClockDomainContractRecord>(&domain->contract())
-          : nullptr;
-  if (!clock)
-    return invalid("SpatialCore clock interface has no clock-domain contract");
-
-  const std::string period = fixedDecimal(clock->periodFs(), 6);
-  const std::string rising = fixedDecimal(clock->phaseFs(), 6);
-  const unsigned __int128 fallingFemtosecondHalves =
-      static_cast<unsigned __int128>(clock->phaseFs()) * 2 + clock->periodFs();
-  const std::string falling = fixedDecimal(fallingFemtosecondHalves * 5, 7);
-  return "create_clock -name loom_clock -period " + period + " -waveform {" +
-         rising + " " + falling + "} [get_ports {" + clockPort.str() + "}]\n";
+  auto binding = deriveSpatialCoreClockBinding(configurationAbi, interfaces);
+  if (!binding)
+    return binding.takeError();
+  return renderCreateClockConstraint(binding->clock, binding->clockPort);
 }
 
 struct PendingPortablePayload final {
@@ -355,6 +338,64 @@ llvm::Error verifyPortableSpatialCoreMaterialization(
 
 } // namespace
 
+llvm::Expected<SpatialCoreClockBinding> deriveSpatialCoreClockBinding(
+    const FinalizedConfigurationABI &configurationAbi,
+    llvm::ArrayRef<ImplementationInterface> interfaces) {
+  const ImplementationInterface *clockInterface = nullptr;
+  const ImplementationInterface *resetInterface = nullptr;
+  for (const ImplementationInterface &interface : interfaces) {
+    if (std::holds_alternative<ImplementationClockInterfaceRef>(
+            interface.semanticRef)) {
+      if (clockInterface)
+        return invalid("SpatialCore RTL has more than one clock interface");
+      clockInterface = &interface;
+    } else if (std::holds_alternative<ImplementationResetInterfaceRef>(
+                   interface.semanticRef)) {
+      if (resetInterface)
+        return invalid("SpatialCore RTL has more than one reset interface");
+      resetInterface = &interface;
+    }
+  }
+  if (!clockInterface)
+    return invalid("SpatialCore RTL has no exact clock port");
+  auto clockPort = topPortName(*clockInterface, "clock");
+  if (!clockPort)
+    return clockPort.takeError();
+  std::optional<std::string> resetPort;
+  if (resetInterface) {
+    auto port = topPortName(*resetInterface, "reset");
+    if (!port)
+      return port.takeError();
+    resetPort = std::move(*port);
+  }
+
+  const auto &semantic =
+      std::get<ImplementationClockInterfaceRef>(clockInterface->semanticRef);
+  const fabric::HardwareDomainContractRecord *domain =
+      configurationAbi.abi().fabricSystem().hardwareDomainContract(
+          semantic.domain);
+  const auto *clock =
+      domain
+          ? std::get_if<fabric::ClockDomainContractRecord>(&domain->contract())
+          : nullptr;
+  if (!clock)
+    return invalid("SpatialCore clock interface has no clock-domain contract");
+  return SpatialCoreClockBinding{std::move(*clockPort), std::move(resetPort),
+                                 *clock};
+}
+
+std::string
+renderCreateClockConstraint(const fabric::ClockDomainContractRecord &clock,
+                            llvm::StringRef clockPort) {
+  const std::string period = fixedDecimal(clock.periodFs(), 6);
+  const std::string rising = fixedDecimal(clock.phaseFs(), 6);
+  const unsigned __int128 fallingFemtosecondHalves =
+      static_cast<unsigned __int128>(clock.phaseFs()) * 2 + clock.periodFs();
+  const std::string falling = fixedDecimal(fallingFemtosecondHalves * 5, 7);
+  return "create_clock -name loom_clock -period " + period + " -waveform {" +
+         rising + " " + falling + "} [get_ports {" + clockPort.str() + "}]\n";
+}
+
 llvm::Expected<FinalizedHardwareImplementation>
 finalizePortableSpatialCoreHardwareImplementation(
     const FinalizedConfigurationABI &configurationAbi,
@@ -418,7 +459,12 @@ projectPortableSpatialCoreRtlModuleGraph(
     return expected.takeError();
   if (llvm::Error mismatch =
           verifyPortableSpatialCoreMaterialization(expected->draft, actual)) {
-    llvm::consumeError(std::move(mismatch));
+    if (diagnosticVerbosityEnabled(DiagnosticVerbosity::Decision))
+      llvm::errs() << "rtl_spatial_core_implementation: canonical "
+                      "materialization mismatch: "
+                   << llvm::toString(std::move(mismatch)) << '\n';
+    else
+      llvm::consumeError(std::move(mismatch));
     return std::nullopt;
   }
   return std::optional<RtlModuleGraphProjection>(

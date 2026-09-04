@@ -64,6 +64,8 @@ add_library(LoomHardwareRTL
   Providers/ScalarValueSelect.cpp
   Providers/TokenConstantSync.cpp
   Providers/TokenMuxDemux.cpp
+  RtlBlockClosure.cpp
+  RtlBlockSource.cpp
   RtlModuleGraph.cpp
   Specialization.cpp
   SpatialCoreImplementation.cpp
@@ -87,6 +89,7 @@ target_link_libraries(LoomHardwareRTL PUBLIC
   LoomFabricIdentity
   LoomHardwareConfiguration
   LoomHardwareImplementation
+  MLIRAsmParser
   MLIRDataflow
   MLIRIR
   MLIRPass

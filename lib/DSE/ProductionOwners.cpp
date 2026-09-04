@@ -10,6 +10,7 @@
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
+#include "DSE/RtlBlockSourceCandidateGenerator.h"
 #include "DSE/SpatialMappingEvaluationAcquisition.h"
 #include "DSE/SpatialMappingFeedbackCandidateGenerator.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
@@ -51,6 +52,7 @@ llvm::Error registerProductionDseOwners() {
       &registerSpatialMicroarchitectureCandidateGenerator,
       &registerSystemCompositionCandidateGenerator,
       &registerPortableSpatialCoreRtlCandidateGenerator,
+      &registerRtlBlockSourceCandidateGenerator,
       &registerFpaGbdtTrainingCandidateGenerator,
       &registerSystemRuntimeGbdtTrainingCandidateGenerator,
       &registerStructuredEvaluationPromotionAcquisition,

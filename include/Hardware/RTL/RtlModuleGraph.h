@@ -114,6 +114,34 @@ exportFramedRtlModuleGraph(mlir::ModuleOp module,
                            const RtlModuleGraphProjection &before,
                            llvm::raw_ostream &output);
 
+/// The exact per-definition byte views of one framed RTL source. A binding
+/// exists only after the source identity, every recorded range digest, the
+/// preamble, the framing byte count, and the complete coverage were validated
+/// against the payload bytes, so no consumer rediscovers modules from text.
+class RtlModuleGraphSourceBinding final {
+public:
+  llvm::StringRef source() const { return source_; }
+  llvm::StringRef preamble() const { return preamble_; }
+  /// Indexed by module ordinal; empty for external definitions.
+  llvm::ArrayRef<llvm::StringRef> moduleBytes() const { return moduleBytes_; }
+
+private:
+  RtlModuleGraphSourceBinding(llvm::StringRef source, llvm::StringRef preamble,
+                              std::vector<llvm::StringRef> moduleBytes)
+      : source_(source), preamble_(preamble),
+        moduleBytes_(std::move(moduleBytes)) {}
+  llvm::StringRef source_;
+  llvm::StringRef preamble_;
+  std::vector<llvm::StringRef> moduleBytes_;
+
+  friend llvm::Expected<RtlModuleGraphSourceBinding>
+  bindRtlModuleGraphSource(const RtlModuleGraphProjection &, llvm::StringRef);
+};
+
+llvm::Expected<RtlModuleGraphSourceBinding>
+bindRtlModuleGraphSource(const RtlModuleGraphProjection &graph,
+                         llvm::StringRef source);
+
 } // namespace loom::hardware::rtl
 
 #endif // LOOM_HARDWARE_RTL_RTLMODULEGRAPH_H

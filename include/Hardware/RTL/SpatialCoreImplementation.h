@@ -20,6 +20,24 @@ class BlobStore;
 
 namespace loom::hardware::rtl {
 
+/// The exact clock binding of one portable SpatialCore implementation: the
+/// top port names of its clock and reset interfaces and the System's clock
+/// domain contract, from which the one generation constraint is rendered.
+struct SpatialCoreClockBinding final {
+  std::string clockPort;
+  std::optional<std::string> resetPort;
+  fabric::ClockDomainContractRecord clock;
+};
+
+llvm::Expected<SpatialCoreClockBinding> deriveSpatialCoreClockBinding(
+    const FinalizedConfigurationABI &configurationAbi,
+    llvm::ArrayRef<ImplementationInterface> interfaces);
+
+/// The one create_clock constraint of a clock port under its domain contract.
+std::string
+renderCreateClockConstraint(const fabric::ClockDomainContractRecord &clock,
+                            llvm::StringRef clockPort);
+
 /// Uses the canonical portable provider registry and an isolated lowering
 /// context to materialize one SpatialCore implementation.
 llvm::Expected<FinalizedHardwareImplementation>

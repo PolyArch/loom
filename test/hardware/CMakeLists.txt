@@ -694,6 +694,20 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-rtl-block-closure-test
+    RtlBlockClosureTest.cpp
+  )
+
+  target_link_libraries(loom-rtl-block-closure-test PRIVATE
+    LoomHardwareConfigurationTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    LoomDSEHardwareGenerator
+    MLIRFabric
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-portable-scalar-bit-reinterpret-test
     PortableScalarBitReinterpretTest.cpp
   )
