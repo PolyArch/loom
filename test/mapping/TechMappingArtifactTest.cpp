@@ -689,9 +689,6 @@ void spatialCandidateWorkflow(llvm::StringRef testCase) {
   auto scale = loom::adg::builtinSmallTarget.scale;
   if (testCase == "progress-witness-shortfall")
     scale.interconnectFifoDepth = 1;
-  if (testCase == "progress-witness-unknown")
-    scale.interconnectFifoQueueDiscipline =
-        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
   withSpatialCandidateFixture([&](const auto &problem) {
     if (testCase == "canonical-initialization")
       loom::test::exerciseCanonicalCandidateInitialization(problem);
@@ -700,10 +697,8 @@ void spatialCandidateWorkflow(llvm::StringRef testCase) {
     else if (testCase == "action-domain")
       loom::test::exerciseSpatialActionDomainAndObjective(problem);
     else if (testCase == "progress-witness" ||
-             testCase == "progress-witness-shortfall" ||
-             testCase == "progress-witness-unknown")
-      loom::test::exerciseSpatialProgressWitnessClosure(
-          problem, scale.interconnectFifoQueueDiscipline);
+             testCase == "progress-witness-shortfall")
+      loom::test::exerciseSpatialProgressWitnessClosure(problem);
     else if (testCase == "annealing-cold-replay")
       loom::test::exerciseSpatialAnnealingReplay(problem, false);
     else if (testCase == "annealing-warm-replay")

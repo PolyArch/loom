@@ -66,8 +66,7 @@ void exerciseSpatialActionDomainAndObjective(
     const pnr::FrozenSpatialPnrProblemHandle &problem);
 
 void exerciseSpatialProgressWitnessClosure(
-    const pnr::FrozenSpatialPnrProblemHandle &problem,
-    ::fabric::FifoQueueDiscipline discipline);
+    const pnr::FrozenSpatialPnrProblemHandle &problem);
 
 void exerciseSpatialAnnealingReplay(
     const pnr::FrozenSpatialPnrProblemHandle &problem, bool warmScratch);

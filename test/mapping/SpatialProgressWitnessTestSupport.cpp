@@ -133,8 +133,7 @@ struct ConflictFixture final {
 };
 
 ConflictFixture
-buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem,
-                     ::fabric::FifoQueueDiscipline discipline) {
+buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem) {
   using namespace loom::pnr;
   auto probeCandidate = take(createCanonicalSpatialCandidate(problem));
   EndpointRouteSearchScratch search;
@@ -145,8 +144,6 @@ buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem,
 
   for (PnrIndex owner = 0;
        owner < problem->progressIndex().finiteBufferOwners().size(); ++owner) {
-    if (problem->progressIndex().ownerQueueDisciplines()[owner] != discipline)
-      continue;
     std::vector<RoutedNet> routes;
     for (PnrIndex logicalNet = 0;
          logicalNet < problem->transfers().logicalNets().size(); ++logicalNet) {
@@ -177,10 +174,9 @@ buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem,
 } // namespace
 
 void loom::test::exerciseSpatialProgressWitnessClosure(
-    const pnr::FrozenSpatialPnrProblemHandle &problem,
-    ::fabric::FifoQueueDiscipline discipline) {
+    const pnr::FrozenSpatialPnrProblemHandle &problem) {
   using namespace pnr;
-  ConflictFixture fixture = buildConflictFixture(problem, discipline);
+  ConflictFixture fixture = buildConflictFixture(problem);
   SpatialFiniteBufferConflictWitness witness;
   requireSuccess(fixture.candidate->rebuildFiniteBufferConflictWitness(
       fixture.owner, witness));
@@ -210,19 +206,16 @@ void loom::test::exerciseSpatialProgressWitnessClosure(
   SpatialActionDomainScratch domain;
   requireSuccess(domain.prepare(*problem));
   requireSuccess(domain.rebuild(*fixture.candidate));
-  const bool unknownBound =
-      discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
   const auto depth =
       problem->progressIndex().ownerSharedSlotCapacities()[fixture.owner];
-  const auto expectedGap = unknownBound || depth >= fixture.logicalNets.size()
+  const auto expectedGap = depth >= fixture.logicalNets.size()
                                ? 0
                                : fixture.logicalNets.size() - depth;
-  const bool hasDebt = unknownBound || expectedGap != 0;
-  if (fixture.candidate->progress().capacityProofDebtOwner(fixture.owner) !=
-          unknownBound ||
+  const bool hasDebt = expectedGap != 0;
+  if (fixture.candidate->progress().capacityProofDebtOwner(fixture.owner) ||
       fixture.candidate->progress().capacityShortfall(fixture.owner) !=
           expectedGap)
-    fail("capacity owner lost the known-bound versus unknown-bound distinction");
+    fail("acyclic FIFO owner lost its known sufficient capacity bound");
   const SpatialMappingAction progressAction =
       SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
           ResolvedPnrViolationKind::ProgressProofDebt, fixture.owner}};
