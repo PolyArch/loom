@@ -78,19 +78,33 @@ llvm::SmallVector<llvm::StringRef, 64> terminatedLines(llvm::StringRef bytes) {
 
 struct FilteredArguments final {
   std::string contents;
-  std::size_t removedTokens = 0;
+  std::size_t removedTestbenchTokens = 0;
+  std::size_t preambleTokens = 0;
 };
 
-FilteredArguments filterTestbench(llvm::StringRef bytes,
-                                  llvm::StringRef testbench) {
+FilteredArguments projectArguments(llvm::StringRef bytes,
+                                   llvm::StringRef testbench,
+                                   llvm::StringRef preamble, bool child) {
   FilteredArguments result;
   result.contents.reserve(bytes.size());
+  llvm::StringRef preambleLine;
   for (llvm::StringRef line : terminatedLines(bytes)) {
-    if (line.trim() == testbench) {
-      ++result.removedTokens;
+    if (line.trim() == preamble) {
+      ++result.preambleTokens;
+      preambleLine = line;
+      continue;
+    }
+    if (child && line.trim() == testbench) {
+      ++result.removedTestbenchTokens;
       continue;
     }
     result.contents.append(line.data(), line.size());
+  }
+  if (!preambleLine.empty()) {
+    std::string prefix = preambleLine.str();
+    if (prefix.back() != '\n')
+      prefix.push_back('\n');
+    result.contents.insert(0, prefix);
   }
   return result;
 }
@@ -144,12 +158,15 @@ int main(int argc, char **argv) {
       std::getenv(mappedRtlHierarchyVerilatorVariable.data());
   const char *testbench =
       std::getenv(mappedRtlHierarchyTestbenchVariable.data());
-  if (!verilator || !*verilator || !testbench || !*testbench)
+  const char *preamble = std::getenv(mappedRtlHierarchyPreambleVariable.data());
+  if (!verilator || !*verilator || !testbench || !*testbench || !preamble ||
+      !*preamble)
     return failWith(MappedRtlHierarchyLauncherExit::Configuration,
-                    llvm::Twine(mappedRtlHierarchyVerilatorVariable) + " and " +
-                        mappedRtlHierarchyTestbenchVariable +
-                        " must name the Verilator executable and the harness "
-                        "path");
+                    llvm::Twine(mappedRtlHierarchyVerilatorVariable) + ", " +
+                        mappedRtlHierarchyTestbenchVariable + " and " +
+                        mappedRtlHierarchyPreambleVariable +
+                        " must name the Verilator executable, harness and "
+                        "preamble paths");
   std::vector<std::string> arguments(argv + 1, argv + argc);
   std::optional<std::size_t> argumentFile;
   for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
@@ -170,17 +187,20 @@ int main(int argc, char **argv) {
   const llvm::StringRef contents = (*buffer)->getBuffer();
   const bool child =
       llvm::any_of(terminatedLines(contents), isHierarchicalChildLine);
-  if (!child)
-    execVerilator(verilator, arguments);
-
-  const FilteredArguments filtered = filterTestbench(contents, testbench);
-  if (filtered.removedTokens != 1)
+  const FilteredArguments filtered =
+      projectArguments(contents, testbench, preamble, child);
+  if (filtered.preambleTokens != 1)
+    return failWith(MappedRtlHierarchyLauncherExit::PreambleTokenCount,
+                    "argument file " + argumentPath + " names " +
+                        llvm::Twine(filtered.preambleTokens) +
+                        " preamble tokens; exactly one is required");
+  if (child && filtered.removedTestbenchTokens != 1)
     return failWith(MappedRtlHierarchyLauncherExit::TestbenchTokenCount,
                     "child argument file " + argumentPath + " names " +
-                        llvm::Twine(filtered.removedTokens) +
+                        llvm::Twine(filtered.removedTestbenchTokens) +
                         " harness tokens; exactly one is required");
   const std::string filteredPath =
-      argumentPath + mappedRtlHierarchyChildArgumentsSuffix.str();
+      argumentPath + mappedRtlHierarchyArgumentsSuffix.str();
   if (llvm::Error error = publishImmutable(filteredPath, filtered.contents))
     return failWith(MappedRtlHierarchyLauncherExit::InputOutput,
                     llvm::toString(std::move(error)));

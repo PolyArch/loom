@@ -4,6 +4,7 @@
 #include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 #include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/Provider.h"
+#include "Hardware/RTL/RtlModuleGraph.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -45,6 +46,8 @@ constexpr std::uint64_t kHierarchyMultiplicityWeightThreshold = 25'000;
 constexpr std::uint64_t kHierarchyRootClosureBodyLineBudget = 100'000;
 constexpr std::uint64_t kHierarchyRootClosureByteBudget = 4'000'000;
 constexpr std::size_t kHierarchyMaximumBlockCount = 128;
+constexpr llvm::StringLiteral kVerilatorPreamblePath =
+    "drivers/verilator-preamble.sv";
 constexpr llvm::StringLiteral kHierarchySelectionPolicy =
     "circt_instance_graph_root_closure_rebalanced";
 
@@ -164,17 +167,17 @@ llvm::Error validateMakeVariableValue(llvm::StringRef name,
 
 /// The make command-line variables that bind the generated hierarchy makefile
 /// to the frozen hierarchy launcher, the frozen Verilator executable, and the
-/// harness path the launcher removes from child argument files. GNU make
+/// harness and preamble paths projected by the launcher. GNU make
 /// exports command-line variables to every recipe, which is how the launcher
 /// receives its configuration.
-llvm::Expected<std::vector<std::string>>
-renderHierarchyLauncherMakeVariables(const MappedRtlBuildTools &tools,
-                                     llvm::StringRef verilatorExecutable,
-                                     llvm::StringRef testbenchPath) {
-  const std::array<std::pair<llvm::StringRef, llvm::StringRef>, 3> bindings{{
+llvm::Expected<std::vector<std::string>> renderHierarchyLauncherMakeVariables(
+    const MappedRtlBuildTools &tools, llvm::StringRef verilatorExecutable,
+    llvm::StringRef testbenchPath, llvm::StringRef preamblePath) {
+  const std::array<std::pair<llvm::StringRef, llvm::StringRef>, 4> bindings{{
       {verilatorHierarchyLauncherVariable, tools.hierarchyLauncher},
       {mappedRtlHierarchyVerilatorVariable, verilatorExecutable},
       {mappedRtlHierarchyTestbenchVariable, testbenchPath},
+      {mappedRtlHierarchyPreambleVariable, preamblePath},
   }};
   std::vector<std::string> variables;
   variables.reserve(bindings.size());
@@ -359,7 +362,7 @@ llvm::Expected<std::string> annotateHierarchicalBlock(llvm::StringRef bytes,
 }
 
 llvm::Expected<std::pair<std::vector<ParsedSource>, MappedRtlHierarchyPlan>>
-deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts, llvm::StringRef) {
+deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts) {
   const hardware::rtl::RtlModuleGraphProjection &graph = facts.rtlModuleGraph;
   if (!graph.sourceDigest || graph.topModule >= graph.modules.size())
     return invalid("CIRCT RTL module graph is not bound to emitted source");
@@ -381,57 +384,16 @@ deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts, llvm::StringRef) {
   if (facts.top != graph.modules[graph.topModule].emittedName)
     return invalid("HardwareImplementation top disagrees with CIRCT graph");
 
-  const auto verifyRange =
-      [&](const hardware::rtl::RtlModuleEmissionRange &range,
-          llvm::StringRef owner) -> llvm::Expected<llvm::StringRef> {
-    if (range.offset > sourceBytes.size() ||
-        range.byteCount > sourceBytes.size() - range.offset)
-      return invalid(owner + " source range is outside the RTL payload");
-    llvm::StringRef bytes =
-        sourceBytes.substr(static_cast<std::size_t>(range.offset),
-                           static_cast<std::size_t>(range.byteCount));
-    if (digestSource(bytes) != range.digest)
-      return invalid(owner + " source range digest is inconsistent");
-    return bytes;
-  };
-  std::uint64_t accounted = graph.framingByteCount;
-  if (graph.preamble) {
-    if (graph.preamble->offset != 0)
-      return invalid("CIRCT RTL preamble does not start at byte zero");
-    auto bytes = verifyRange(*graph.preamble, "RTL preamble");
-    if (!bytes)
-      return bytes.takeError();
-    accounted = saturatingAdd(accounted, graph.preamble->byteCount);
-  }
-  std::vector<llvm::StringRef> moduleBytes(graph.modules.size());
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
-  for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal) {
-    const hardware::rtl::RtlModuleProjection &module = graph.modules[ordinal];
-    if (module.kind == hardware::rtl::RtlModuleDefinitionKind::External) {
-      if (module.emission)
-        return invalid("external CIRCT module unexpectedly owns source bytes");
-      if (module.reachable)
-        return invalid("reachable CIRCT module has no concrete definition");
-      continue;
-    }
-    if (!module.emission)
-      return invalid("concrete CIRCT module has no emitted source range");
-    auto bytes = verifyRange(*module.emission, module.emittedName);
-    if (!bytes)
-      return bytes.takeError();
-    moduleBytes[ordinal] = *bytes;
-    accounted = saturatingAdd(accounted, module.emission->byteCount);
-    ranges.emplace_back(
-        module.emission->offset,
-        saturatingAdd(module.emission->offset, module.emission->byteCount));
-  }
-  if (accounted != graph.sourceByteCount ||
-      graph.sourceByteCount != sourceBytes.size())
-    return invalid("CIRCT module graph does not cover the exact RTL payload");
-  llvm::sort(ranges);
-  for (std::size_t index = 1; index != ranges.size(); ++index)
-    if (ranges[index - 1].second > ranges[index].first)
-      return invalid("CIRCT module source ranges overlap");
+  auto boundSource =
+      hardware::rtl::bindRtlModuleGraphSource(graph, sourceBytes);
+  if (!boundSource)
+    return boundSource.takeError();
+  const llvm::ArrayRef<llvm::StringRef> moduleBytes =
+      boundSource->moduleBytes();
+  for (const hardware::rtl::RtlModuleProjection &module : graph.modules)
+    if (module.kind == hardware::rtl::RtlModuleDefinitionKind::External &&
+        module.reachable)
+      return invalid("reachable CIRCT module has no concrete definition");
 
   std::vector<ParsedModule> modules(graph.modules.size());
   for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal)
@@ -498,7 +460,7 @@ deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts, llvm::StringRef) {
   plan.sourceSha256 = formatBlobDigestHex(*graph.sourceDigest);
   plan.sourceByteCount = graph.sourceByteCount;
   plan.framingByteCount = graph.framingByteCount;
-  plan.preambleByteCount = graph.preamble ? graph.preamble->byteCount : 0;
+  plan.preamble = boundSource->preamble().str();
   std::set<std::size_t> selected;
   for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal) {
     const ParsedModule &module = modules[ordinal];
@@ -739,7 +701,7 @@ std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
       json.attribute("path", plan.sourcePath);
       json.attribute("bytes", plan.sourceByteCount);
       json.attribute("sha256", plan.sourceSha256);
-      json.attribute("preamble_bytes", plan.preambleByteCount);
+      json.attribute("preamble_bytes", plan.preamble.size());
       json.attribute("framing_bytes", plan.framingByteCount);
     });
     json.attribute("rtl_library_directory", plan.rtlLibraryDirectoryPath);
@@ -1043,7 +1005,7 @@ deriveMappedRtlExecutionBundleProjection(
       std::get<detail::MappedRtlInvocationFacts>(
           std::move(*factsOrUnsupported));
   facts.cycleLimit = plan.cycleLimit;
-  auto hierarchy = deriveHierarchyPlan(facts, pathPrefix);
+  auto hierarchy = deriveHierarchyPlan(facts);
   if (!hierarchy)
     return hierarchy.takeError();
   auto prefix = canonicalPathPrefix(pathPrefix);
@@ -1073,14 +1035,18 @@ deriveMappedRtlExecutionBundleProjection(
     hierarchy->second.derivedRtlPaths.push_back(source.derivedPath);
   auto rtlLibraryDirectoryPath =
       namespacedBundlePath(hierarchy->second.rtlLibraryDirectoryPath, *prefix);
+  auto preamblePath = namespacedBundlePath(kVerilatorPreamblePath, *prefix);
   auto hierarchyManifestPath =
       namespacedBundlePath(hierarchy->second.manifestPath, *prefix);
   auto workDirectoryPath =
       namespacedBundlePath(hierarchy->second.workDirectoryPath, *prefix);
-  if (!rtlLibraryDirectoryPath || !hierarchyManifestPath || !workDirectoryPath)
+  if (!rtlLibraryDirectoryPath || !preamblePath || !hierarchyManifestPath ||
+      !workDirectoryPath)
     return llvm::joinErrors(
-        rtlLibraryDirectoryPath ? llvm::Error::success()
-                                : rtlLibraryDirectoryPath.takeError(),
+        llvm::joinErrors(
+            rtlLibraryDirectoryPath ? llvm::Error::success()
+                                    : rtlLibraryDirectoryPath.takeError(),
+            preamblePath ? llvm::Error::success() : preamblePath.takeError()),
         llvm::joinErrors(hierarchyManifestPath
                              ? llvm::Error::success()
                              : hierarchyManifestPath.takeError(),
@@ -1090,12 +1056,14 @@ deriveMappedRtlExecutionBundleProjection(
       std::move(*rtlLibraryDirectoryPath);
   hierarchy->second.manifestPath = std::move(*hierarchyManifestPath);
   hierarchy->second.workDirectoryPath = std::move(*workDirectoryPath);
-  facts.rtlPaths.clear();
+  facts.rtlPaths = {*preamblePath};
   facts.rtlLibraryDirectories = {hierarchy->second.rtlLibraryDirectoryPath};
   const std::string hierarchyManifest =
       renderHierarchyPlan(hierarchy->second, hierarchy->first);
   std::vector<external_tool::MaterializedBundleFile> toolLocalInputs;
-  toolLocalInputs.reserve(hierarchy->first.size() + 1);
+  toolLocalInputs.reserve(hierarchy->first.size() + 2);
+  toolLocalInputs.push_back(
+      {*preamblePath, hierarchy->second.preamble, std::nullopt, false});
   for (ParsedSource &source : hierarchy->first) {
     toolLocalInputs.push_back({source.derivedPath,
                                std::move(source.derivedBytes),
@@ -1143,7 +1111,8 @@ deriveMappedRtlExecutionBundleProjection(
   std::vector<std::string> launcherVariables;
   if (hierarchy->second.style == MappedRtlVerilationStyle::Hierarchical) {
     auto variables = renderHierarchyLauncherMakeVariables(
-        plan.buildTools, plan.verilatorExecutable, *testbenchPath);
+        plan.buildTools, plan.verilatorExecutable, *testbenchPath,
+        *preamblePath);
     if (!variables)
       return variables.takeError();
     launcherVariables = std::move(*variables);

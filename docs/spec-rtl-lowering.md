@@ -1041,13 +1041,14 @@ multiplicity, reachability, or source closure. Missing, overlapping, foreign,
 or digest-mismatched ranges fail closed.
 
 Block selection uses unique transitive module-DAG weight together with exact
-root-instance multiplicity. The HardwareImplementation root, large memory and
-Temporal-PE definitions, and sufficiently reused FIFO or switch definitions
+root-instance multiplicity. Large memory and Temporal-PE definitions and sufficiently reused FIFO or
+switch definitions
 form bounded coarse blocks; small low-reuse definitions remain in their exact
-parent closure. The HardwareImplementation root is distinct from the generated
-Verilator testbench top and may be a hierarchical block; the testbench top is
-never annotated. The testbench is the only explicit SystemVerilog input, and
-the Hardware root is resolved lazily through the derived `-y` library. The plan
+parent closure. The HardwareImplementation root and generated testbench top
+remain unmarked. The exact graph-bound source preamble is materialized once as
+an explicit SystemVerilog input before the harness. It is not duplicated in
+individual library definitions, because it may contain global declarations.
+The Hardware root is resolved lazily through the derived `-y` library. The plan
 records the complete CIRCT dependency DAG, per-module source and derived bytes
 and digests, selected blocks, exact unmarked block closures, paths, and policy
 parameters. The plan is published as `loom.mapped_rtl_hierarchy_plan.2`.
@@ -1063,18 +1064,22 @@ thread count is a separate option emitted once as both `--threads` and
 `--hierarchical-threads`, so the generated main, the root model, and the
 hierarchical schedule agree. Both counts use the closed domain 1, 2, 4, or 8.
 Verilator propagates every explicit SystemVerilog input of the planning
-command into each child argument file, and the testbench is the only explicit
-input, so each child would otherwise elaborate the complete design through
-the harness. The generated hierarchy makefile therefore launches Verilator
-through the hierarchy launcher, a Loom-built auxiliary tool frozen by path and
-digest in the manifest's typed auxiliary-tool domain and configured through
-make command-line variables that name the frozen Verilator executable and the
-harness path. For a child argument file the launcher publishes an immutable
-filtered sibling beside the Verilator-generated file, never edits that file,
-requires the harness token exactly once and otherwise exits 42, records the
-input and output digests on the Verilation command's captured error stream,
-and executes Verilator on the sibling; root argument files pass through
-unchanged. It never reads SystemVerilog. After that barrier, one typed
+command into each child argument file, so each child would otherwise elaborate
+the complete design through the harness. Verilator also places a generated
+child module source before the other explicit sources, so the preamble must
+be restored ahead of that child. The generated hierarchy makefile therefore
+launches Verilator through the hierarchy launcher, a Loom-built auxiliary tool
+frozen by path and digest in the manifest's typed auxiliary-tool domain and
+configured through make command-line variables that name the frozen Verilator
+executable and the harness and preamble paths. For each generated argument
+file the launcher requires exactly one preamble token, places that token first,
+and publishes an immutable filtered sibling beside the original. Child files
+also require exactly one harness token, which is removed; root files retain
+the harness. Every other input byte is retained, and the original file is
+never edited. Missing or duplicate harness and preamble tokens fail with the
+launcher's typed exit codes. It records input and output digests on the
+Verilation command's captured error stream and executes Verilator on the
+sibling. It never reads SystemVerilog. After that barrier, one typed
 auxiliary build-tool command runs `hier_build` from the generated Mdir using
 the makefile basename. A final tool-produced executable command owns
 simulation. The exact make, C++ compiler, linker, archiver, and hierarchy

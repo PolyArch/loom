@@ -1,7 +1,7 @@
 // Exercises the hierarchy Verilator launcher against a recording Verilator
 // stand-in: concurrent invocations on one child argument file publish one
-// immutable filtered sibling, the harness token count is enforced, and root
-// argument files pass through untouched.
+// immutable filtered sibling, harness and preamble token counts are enforced,
+// and the preamble precedes module inputs in both child and root arguments.
 
 #include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 
@@ -95,6 +95,8 @@ public:
       environment.push_back(
           (mappedRtlHierarchyTestbenchVariable + "=drivers/testbench.sv")
               .str());
+      environment.push_back(
+          (mappedRtlHierarchyPreambleVariable + "=drivers/preamble.sv").str());
     }
     std::vector<llvm::StringRef> environmentRefs(environment.begin(),
                                                  environment.end());
@@ -143,6 +145,7 @@ private:
 std::string childArguments(unsigned testbenchTokens) {
   std::string text = "--cc\n-Mdir work/verilator/Vblock \n"
                      "/absolute/drivers/verilator-library/block.sv\n"
+                     "drivers/preamble.sv\n"
                      " --prefix Vblock\n"
                      " --top-module-encoded block\n"
                      " --hierarchical-child 1\n"
@@ -156,7 +159,7 @@ std::string childArguments(unsigned testbenchTokens) {
 
 std::string rootArguments() {
   return "Vblock/block.sv\n--hierarchical-block block,block\n--threads 1\n"
-         "--cc\ndrivers/testbench.sv\n"
+         "--cc\ndrivers/testbench.sv\ndrivers/preamble.sv\n"
          "\"--main\" \"-j\" \"8\" \"-y\" \"drivers/verilator-library\" "
          "\"+libext+.sv\"\n";
 }
@@ -173,10 +176,13 @@ void concurrentChildInvocationsShareOneFilteredFile(
   const std::filesystem::path directory = harness.root() / "work/verilator";
   const std::filesystem::path arguments = directory / "Vblock__hierMkArgs.f";
   writeFile(arguments, childArguments(1));
-  const std::string expected = childArguments(0);
+  std::string expected = childArguments(0);
+  const std::string preamble = "drivers/preamble.sv\n";
+  expected.erase(expected.find(preamble), preamble.size());
+  expected.insert(0, preamble);
   const std::filesystem::path filtered =
       directory /
-      ("Vblock__hierMkArgs.f" + mappedRtlHierarchyChildArgumentsSuffix.str());
+      ("Vblock__hierMkArgs.f" + mappedRtlHierarchyArgumentsSuffix.str());
   const std::vector<LauncherRun> runs =
       harness.run(kConcurrentInvocations, arguments.string());
   for (const LauncherRun &run : runs) {
@@ -209,26 +215,44 @@ void tokenCountIsEnforced(const LauncherHarness &harness, unsigned tokens) {
               !runs.front().verilatorArguments,
           "a child argument file with the wrong harness token count did not "
           "fail closed");
-  require(
-      !std::filesystem::exists(
-          directory / (name + mappedRtlHierarchyChildArgumentsSuffix.str())),
-      "a rejected child argument file published a filtered sibling");
+  require(!std::filesystem::exists(
+              directory / (name + mappedRtlHierarchyArgumentsSuffix.str())),
+          "a rejected child argument file published a filtered sibling");
 }
 
-void rootArgumentsPassThrough(const LauncherHarness &harness) {
+void rootPreamblePrecedesModuleInputs(const LauncherHarness &harness) {
   const std::filesystem::path directory = harness.root() / "work/verilator";
   const std::filesystem::path arguments = directory / "Vtop__hierMkArgs.f";
   writeFile(arguments, rootArguments());
   const std::vector<LauncherRun> runs = harness.run(1, arguments.string());
-  require(runs.front().exitCode == 0 && runs.front().verilatorArguments &&
-              *runs.front().verilatorArguments ==
-                  "-f\n" + arguments.string() + "\n" &&
-              runs.front().verilatorArgumentFile == rootArguments(),
-          "the root argument file did not pass through unchanged");
-  require(!std::filesystem::exists(
-              directory / ("Vtop__hierMkArgs.f" +
-                           mappedRtlHierarchyChildArgumentsSuffix.str())),
-          "the root argument file gained a filtered sibling");
+  std::string expected = rootArguments();
+  const std::string preamble = "drivers/preamble.sv\n";
+  expected.erase(expected.find(preamble), preamble.size());
+  expected.insert(0, preamble);
+  require(runs.front().exitCode == 0 &&
+              runs.front().verilatorArgumentFile == expected,
+          "the root preamble did not precede its unchanged module inputs");
+  require(readFile(arguments) == rootArguments(),
+          "the root argument file was edited in place");
+}
+
+void preambleTokenCountIsEnforced(const LauncherHarness &harness) {
+  const std::filesystem::path directory = harness.root() / "work/verilator";
+  for (unsigned count : {0U, 2U}) {
+    const std::filesystem::path arguments =
+        directory / ("Vpreamble" + std::to_string(count) + "__hierMkArgs.f");
+    std::string text = childArguments(1);
+    const std::string preamble = "drivers/preamble.sv\n";
+    text.replace(text.find(preamble), preamble.size(),
+                 count == 0 ? "" : preamble + preamble);
+    writeFile(arguments, text);
+    const std::vector<LauncherRun> runs = harness.run(1, arguments.string());
+    require(runs.front().exitCode ==
+                    static_cast<int>(
+                        MappedRtlHierarchyLauncherExit::PreambleTokenCount) &&
+                !runs.front().verilatorArguments,
+            "a wrong preamble token count did not fail closed");
+  }
 }
 
 void missingConfigurationFailsClosed(const LauncherHarness &harness) {
@@ -255,7 +279,8 @@ int main() {
     concurrentChildInvocationsShareOneFilteredFile(harness);
     tokenCountIsEnforced(harness, 0);
     tokenCountIsEnforced(harness, 2);
-    rootArgumentsPassThrough(harness);
+    rootPreamblePrecedesModuleInputs(harness);
+    preambleTokenCountIsEnforced(harness);
     missingConfigurationFailsClosed(harness);
   }
   std::filesystem::remove_all(root);

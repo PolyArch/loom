@@ -95,7 +95,7 @@ struct MappedRtlHierarchyPlan final {
   std::string sourceSha256;
   std::uint64_t sourceByteCount = 0;
   std::uint64_t framingByteCount = 0;
-  std::uint64_t preambleByteCount = 0;
+  std::string preamble;
   std::string hardwareRootModule;
   std::uint64_t hardwareRootBodyLines = 0;
   std::uint64_t hardwareRootTransitiveBodyLines = 0;
