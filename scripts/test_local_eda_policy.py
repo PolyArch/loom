@@ -18,6 +18,7 @@ STAGED_CHECK = REPO_ROOT / "scripts" / "check_staged_local_paths.py"
 ROOT_RESOLVER = REPO_ROOT / "scripts" / "resolve_experiment_root.py"
 HOOK = REPO_ROOT / ".githooks" / "pre-commit"
 TEST_ROOT = REPO_ROOT / "build" / "local-policy-tests"
+TOP_LEVEL_TEMP_DIRECTORY = "temp"
 DiskUsage = namedtuple("DiskUsage", "total used free")
 
 
@@ -118,6 +119,29 @@ class StagedPathPolicyTest(unittest.TestCase):
 
                 self.assertEqual(completed.returncode, 1, completed.stderr)
                 self.assertIn(repr(relative), completed.stderr)
+
+    def test_rejects_staged_top_level_temp_paths(self) -> None:
+        relative = f"{TOP_LEVEL_TEMP_DIRECTORY}/forbidden-ledger.md"
+        write(self.fixture.root / relative, "private\n")
+        git(self.fixture.root, "add", "--force", relative)
+
+        completed = self.fixture.invoke_staged_check()
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn(repr(relative), completed.stderr)
+
+    def test_rejects_any_tracked_ignored_file(self) -> None:
+        relative = "private-output.txt"
+        write(self.fixture.root / ".gitignore", "/private-output.txt\n")
+        git(self.fixture.root, "add", ".gitignore")
+        git(self.fixture.root, "commit", "-m", "Ignore private output")
+        write(self.fixture.root / relative, "private\n")
+        git(self.fixture.root, "add", "--force", relative)
+
+        completed = self.fixture.invoke_staged_check()
+
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn(repr(relative), completed.stderr)
 
     def test_allows_nested_lookalikes_and_forbidden_path_deletions(self) -> None:
         write(self.fixture.root / "nested/build/result.txt", "authored\n")

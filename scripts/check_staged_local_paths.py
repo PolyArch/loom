@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 
+TOP_LEVEL_TEMP_DIRECTORY = b"temp"
+
+
 def git_bytes(cwd: Path, *arguments: str) -> bytes:
     completed = subprocess.run(
         ["git", *arguments],
@@ -30,6 +33,12 @@ def is_local_path(path: bytes) -> bool:
     )
 
 
+def is_top_level_temp_path(path: bytes) -> bool:
+    return path == TOP_LEVEL_TEMP_DIRECTORY or path.startswith(
+        TOP_LEVEL_TEMP_DIRECTORY + b"/"
+    )
+
+
 def main() -> int:
     try:
         root = Path(
@@ -49,12 +58,30 @@ def main() -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
+    staged_paths = {path for path in raw.split(b"\0") if path}
+    try:
+        tracked_ignored_raw = git_bytes(
+            root, "ls-files", "-ci", "--exclude-standard", "-z", "--"
+        )
+    except RuntimeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    tracked_ignored_paths = {
+        path for path in tracked_ignored_raw.split(b"\0") if path
+    }
     violations = sorted(
-        path for path in raw.split(b"\0") if path and is_local_path(path)
+        (path, "staged local output")
+        for path in staged_paths
+        if is_local_path(path) or is_top_level_temp_path(path)
     )
-    for path in violations:
+    violations.extend(
+        (path, "tracked ignored file")
+        for path in sorted(tracked_ignored_paths)
+        if path not in {entry[0] for entry in violations}
+    )
+    for path, reason in violations:
         print(
-            f"staged local output is not publishable: {os.fsdecode(path)!r}",
+            f"{reason} is not publishable: {os.fsdecode(path)!r}",
             file=sys.stderr,
         )
     return 1 if violations else 0
