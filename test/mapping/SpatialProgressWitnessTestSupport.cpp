@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -132,7 +133,8 @@ struct ConflictFixture final {
 };
 
 ConflictFixture
-buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem) {
+buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem,
+                     ::fabric::FifoQueueDiscipline discipline) {
   using namespace loom::pnr;
   auto probeCandidate = take(createCanonicalSpatialCandidate(problem));
   EndpointRouteSearchScratch search;
@@ -143,6 +145,8 @@ buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem) {
 
   for (PnrIndex owner = 0;
        owner < problem->progressIndex().finiteBufferOwners().size(); ++owner) {
+    if (problem->progressIndex().ownerQueueDisciplines()[owner] != discipline)
+      continue;
     std::vector<RoutedNet> routes;
     for (PnrIndex logicalNet = 0;
          logicalNet < problem->transfers().logicalNets().size(); ++logicalNet) {
@@ -173,9 +177,10 @@ buildConflictFixture(const loom::pnr::FrozenSpatialPnrProblemHandle &problem) {
 } // namespace
 
 void loom::test::exerciseSpatialProgressWitnessClosure(
-    const pnr::FrozenSpatialPnrProblemHandle &problem) {
+    const pnr::FrozenSpatialPnrProblemHandle &problem,
+    ::fabric::FifoQueueDiscipline discipline) {
   using namespace pnr;
-  ConflictFixture fixture = buildConflictFixture(problem);
+  ConflictFixture fixture = buildConflictFixture(problem, discipline);
   SpatialFiniteBufferConflictWitness witness;
   requireSuccess(fixture.candidate->rebuildFiniteBufferConflictWitness(
       fixture.owner, witness));
@@ -205,19 +210,49 @@ void loom::test::exerciseSpatialProgressWitnessClosure(
   SpatialActionDomainScratch domain;
   requireSuccess(domain.prepare(*problem));
   requireSuccess(domain.rebuild(*fixture.candidate));
-  if (fixture.candidate->progressProofDebtWitnessCount() != 0)
-    fail("acyclic shared FIFO incidence became capacity proof debt");
-  if (fixture.candidate->progressCapacityShortfall() != 0)
-    fail("a shared FIFO at its proven bound became a capacity shortfall");
+  const bool unknownBound =
+      discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  const auto depth =
+      problem->progressIndex().ownerSharedSlotCapacities()[fixture.owner];
+  const auto expectedGap = unknownBound || depth >= fixture.logicalNets.size()
+                               ? 0
+                               : fixture.logicalNets.size() - depth;
+  const bool hasDebt = unknownBound || expectedGap != 0;
+  if (fixture.candidate->progress().capacityProofDebtOwner(fixture.owner) !=
+          unknownBound ||
+      fixture.candidate->progress().capacityShortfall(fixture.owner) !=
+          expectedGap)
+    fail("capacity owner lost the known-bound versus unknown-bound distinction");
   const SpatialMappingAction progressAction =
       SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
           ResolvedPnrViolationKind::ProgressProofDebt, fixture.owner}};
   const SpatialActionKey progressKey = spatialActionKey(progressAction);
-  if (llvm::any_of(domain.view().transportChoices, [&](const auto &action) {
+  const bool hasAction =
+      llvm::any_of(domain.view().transportChoices, [&](const auto &action) {
         return spatialActionKey(SpatialMappingAction{
                    SpatialTransportRoutingAction{action}}) == progressKey;
-      }))
-    fail("raw shared FIFO incidence entered the proof-debt Action domain");
+      });
+  if (hasAction != hasDebt)
+    fail("capacity proof debt and its Action domain disagree");
+  for (const auto &action : domain.view().transportChoices)
+    if (const auto *region =
+            std::get_if<SpatialWitnessRegionRoutingAction>(&action))
+      if (region->witnessKind == ResolvedPnrViolationKind::HardProgressViolation)
+        fail("a capacity bound became a hard progress routing Action");
+  SpatialFiniteBufferConflictWitness debtWitness;
+  auto reconstructed = fixture.candidate->rebuildCapacityProofDebtWitness(
+      fixture.owner, debtWitness);
+  if (hasDebt) {
+    requireSuccess(std::move(reconstructed));
+    if (debtWitness.owner != witness.owner ||
+        debtWitness.competingLogicalNets != witness.competingLogicalNets ||
+        debtWitness.routeAnchors.size() != witness.routeAnchors.size())
+      fail("capacity debt reconstruction lost its exact owner route closure");
+  } else {
+    if (!reconstructed)
+      fail("a sufficient capacity accepted a live proof-debt witness");
+    llvm::consumeError(std::move(reconstructed));
+  }
   requireSuccess(fixture.candidate->verify());
 
   const SpatialProgressStatistics &statistics =

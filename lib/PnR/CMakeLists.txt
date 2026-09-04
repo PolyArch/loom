@@ -18,6 +18,7 @@ add_mlir_library(LoomPnR
   SpatialAction.cpp
   SpatialActionDomain.cpp
   SpatialActionExecutor.cpp
+  SpatialActionMemoryReconciliation.cpp
   SpatialActiveProblemStatistics.cpp
   SpatialActiveRoutingDomain.cpp
   SpatialAnnealingSearch.cpp

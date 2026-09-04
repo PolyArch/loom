@@ -599,7 +599,8 @@ spatialConstraintText(const dataflow::CanonicalDataflowProgramView &dataflow,
 }
 
 template <typename Exercise>
-void withSpatialCandidateFixture(Exercise &&exercise) {
+void withSpatialCandidateFixture(
+    Exercise &&exercise, const loom::adg::BuiltinTargetScale &scale) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
@@ -608,7 +609,7 @@ void withSpatialCandidateFixture(Exercise &&exercise) {
   auto dataflowView = take(dataflowArtifact.view());
   loom::adg::DesignBuilder builder(store);
   auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      builder, loom::adg::BuiltinTargetPreset::Small));
+      builder, scale));
   requireSuccess(expansion.spatialCore.close(expansion.outputs));
   auto design = take(std::move(builder).finalize());
   const auto &fabricRoot = design.roots().front();
@@ -685,6 +686,12 @@ std::string spatialConstraintMappingText(
 }
 
 void spatialCandidateWorkflow(llvm::StringRef testCase) {
+  auto scale = loom::adg::builtinSmallTarget.scale;
+  if (testCase == "progress-witness-shortfall")
+    scale.interconnectFifoDepth = 1;
+  if (testCase == "progress-witness-unknown")
+    scale.interconnectFifoQueueDiscipline =
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
   withSpatialCandidateFixture([&](const auto &problem) {
     if (testCase == "canonical-initialization")
       loom::test::exerciseCanonicalCandidateInitialization(problem);
@@ -692,8 +699,11 @@ void spatialCandidateWorkflow(llvm::StringRef testCase) {
       loom::test::exerciseSpatialInitializerDiversification(problem);
     else if (testCase == "action-domain")
       loom::test::exerciseSpatialActionDomainAndObjective(problem);
-    else if (testCase == "progress-witness")
-      loom::test::exerciseSpatialProgressWitnessClosure(problem);
+    else if (testCase == "progress-witness" ||
+             testCase == "progress-witness-shortfall" ||
+             testCase == "progress-witness-unknown")
+      loom::test::exerciseSpatialProgressWitnessClosure(
+          problem, scale.interconnectFifoQueueDiscipline);
     else if (testCase == "annealing-cold-replay")
       loom::test::exerciseSpatialAnnealingReplay(problem, false);
     else if (testCase == "annealing-warm-replay")
@@ -705,7 +715,7 @@ void spatialCandidateWorkflow(llvm::StringRef testCase) {
     } else {
       fail(("unknown Spatial candidate workflow case: " + testCase).str());
     }
-  });
+  }, scale);
 }
 
 void artifactRoundTripAndReferenceValidation() {

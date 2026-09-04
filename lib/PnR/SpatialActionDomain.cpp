@@ -826,7 +826,7 @@ llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
     return error;
   for (PnrIndex owner : progressShortfallWitnessOwners_) {
     if (llvm::Error error = appendWitness(
-            ResolvedPnrViolationKind::HardProgressViolation, owner))
+            ResolvedPnrViolationKind::ProgressProofDebt, owner))
       return error;
     if (progressWitnessCount == std::numeric_limits<std::uint64_t>::max())
       return invalid("progress witness count overflows u64");

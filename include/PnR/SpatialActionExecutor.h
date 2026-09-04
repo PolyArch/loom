@@ -274,7 +274,7 @@ private:
   std::vector<SpatialWholeNetDispositionKind> explicitNetDispositions_;
   std::vector<PnrIndex> explicitRegisterFifoTransfers_;
   std::vector<PnrIndex> affectedNets_;
-  SpatialFiniteBufferConflictWitness hardProgressWitness_;
+  SpatialFiniteBufferConflictWitness capacityProofDebtWitness_;
   std::vector<PnrIndex> routeCostTraversals_;
   std::vector<PnrIndex> routeCostLogicalNets_;
   std::vector<std::pair<SpatialCandidateScratch::DecisionKind, PnrIndex>>

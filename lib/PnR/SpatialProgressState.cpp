@@ -908,7 +908,7 @@ llvm::Error SpatialProgressState::rebuildCapacityProofDebtWitness(
     SpatialFiniteBufferConflictWitness &witness) const {
   if (&candidate.problem() != problem_ || owner >= ownerCount_)
     return invalid("capacity-debt witness owner is out of range");
-  if (!ownerHasCapacityProofDebt(owner))
+  if (!ownerHasCapacityProofDebt(owner) && ownerCapacityShortfall(owner) == 0)
     return invalid("capacity-debt witness owner has no live debt");
   return rebuildCapacityOwnerWitness(candidate, owner, witness);
 }
