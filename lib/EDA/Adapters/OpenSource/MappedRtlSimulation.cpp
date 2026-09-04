@@ -34,6 +34,34 @@ llvm::Error invalid(const llvm::Twine &detail) {
       "mapped_rtl_simulation_invalid: " + detail);
 }
 
+/// Xcelium's snapshot is executed by suite members behind the frozen xrun
+/// launcher. Their bytes belong to the invocation identity just as the C++
+/// compiler and linker do for a Verilated model.
+llvm::Expected<std::vector<ResolvedAuxiliaryToolExecutable>>
+resolveXceliumRuntimeTools(const ResolvedToolBinding &xrun) {
+  const std::filesystem::path suite =
+      std::filesystem::path(xrun.executable).parent_path();
+  struct RuntimeTool {
+    llvm::StringLiteral slot;
+    llvm::StringLiteral executable;
+  };
+  static constexpr RuntimeTool runtimeTools[]{
+      {"xcelium_xmelab", "xmelab"},
+      {"xcelium_xmsim", "xmsim"},
+      {"xcelium_xmvlog", "xmvlog"},
+  };
+  std::vector<ResolvedAuxiliaryToolExecutable> result;
+  for (const RuntimeTool &runtime : runtimeTools) {
+    const std::string executable = (suite / runtime.executable.str()).string();
+    auto fingerprint = fingerprintExternalFile(executable);
+    if (!fingerprint)
+      return fingerprint.takeError();
+    result.push_back({runtime.slot.str(), runtime.executable.str(), executable,
+                      std::move(*fingerprint)});
+  }
+  return result;
+}
+
 llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
   const std::filesystem::path outputs =
       std::filesystem::path(bundleRoot.str()) / "outputs";
@@ -258,6 +286,12 @@ prepareProvider(const EvaluationRequest &request,
     commands = {std::move(bundle.compileCommand),
                 std::move(bundle.simulationCommand)};
     toolProducedExecutables = std::move(bundle.toolProducedExecutables);
+    if (*simulator == MappedRtlHdlSimulator::Xcelium) {
+      auto runtimeTools = resolveXceliumRuntimeTools(*tool);
+      if (!runtimeTools)
+        return runtimeTools.takeError();
+      auxiliaryTools = std::move(*runtimeTools);
+    }
     resultPath = std::move(bundle.resultPath);
     configurationTransportReceiptPath =
         std::move(bundle.configurationTransportReceiptPath);

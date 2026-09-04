@@ -1039,13 +1039,16 @@ directory through the same launcher with the same `-64bit` token. The
 argument file selects SystemVerilog, applies the harness's femtosecond
 timescale to every module, names the harness top and the snapshot library
 directory one level below the bundle's `work/` root, turns off the launcher's
-log, key, and history files, and lists the exact semantic RTL source before
-the harness; the simulation command repeats the library directory and the
-three suppressions because the snapshot run reads no argument file. Xcelium
-elaborates the semantic source directly into a snapshot library, not a
-program, so this member lists no tool-produced executable, admits the cycle
+log, key, ordinary-history, and environment-history files, and lists the
+exact semantic RTL source before the harness; the simulation command repeats
+the library directory and suppressions because the snapshot run reads no
+argument file. Xcelium elaborates the semantic source directly into a snapshot
+library, not a program, so this member lists no tool-produced executable, admits the cycle
 limit as its only provider option, and elaborates and simulates
-single-threaded. The two event-driven members share one bundle projection:
+single-threaded. The xmvlog, xmelab, and xmsim executables beside the frozen
+xrun launcher are fingerprinted as typed auxiliary tools; changing a snapshot's
+compiler, elaborator, or simulator invalidates ordinary invocation reuse. The
+two event-driven members share one bundle projection:
 the harness, the argument file, the compile command, the tool-produced
 executables of that command, and the simulation command.
 

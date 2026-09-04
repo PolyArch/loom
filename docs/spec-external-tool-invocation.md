@@ -129,7 +129,9 @@ accepts the release only through the backend catalog's validated-release
 relation. This stricter invocation boundary does not change the general
 three-tier resolution rule for other consumers.
 The driver's mapped-RTL job and model-thread options remain their sole owner;
-the selected tool stanza cannot repeat them as provider options.
+the selected tool stanza cannot repeat them as provider options. Explicit
+hierarchy-worker and model-thread options require Verilator. Xcelium admits
+no explicit mapped-RTL parallelism options.
 
 The local configuration is strict versioned JSON. Its initial authoring shape
 is:

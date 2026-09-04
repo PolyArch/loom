@@ -1301,7 +1301,8 @@ deriveMappedRtlXceliumBundleProjection(
                                mappedRtlXceliumLibraryDirectoryPath.str(),
                                "-nolog",
                                "-nokey",
-                               "-nohistory"};
+                               "-nohistory",
+                               "-noenvhistory"};
   return projection;
 }
 

@@ -1196,7 +1196,8 @@ renderMappedRtlXceliumDriver(const MappedRtlInvocationFacts &facts,
   // `work/` root, and no log, key, or history file is written beside it.
   output << "-sv\n-timescale\n1fs/1fs\n-top\n"
          << mappedRtlHarnessTop << "\n-xmlibdirname\n"
-         << libraryDirectoryPath << "\n-nolog\n-nokey\n-nohistory\n";
+         << libraryDirectoryPath
+         << "\n-nolog\n-nokey\n-nohistory\n-noenvhistory\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   output << testbenchPath << "\n";

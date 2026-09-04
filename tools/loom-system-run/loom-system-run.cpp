@@ -169,6 +169,15 @@ loadMappedRtlProviderOptions() {
   if (mappedRtlProviderBuild.empty())
     return invalid("--mapped-rtl-provider-build is required with "
                    "--mapped-rtl");
+  using Simulator = loom::eda::open_source::MappedRtlHdlSimulator;
+  if (mappedRtlSimulator != Simulator::Verilator &&
+      (mappedRtlBuildWorkers.getNumOccurrences() ||
+       mappedRtlModelThreads.getNumOccurrences()))
+    return invalid("mapped-RTL hierarchy workers and model threads require "
+                   "Verilator");
+  if (mappedRtlSimulator == Simulator::Xcelium &&
+      mappedRtlBuildJobs.getNumOccurrences())
+    return invalid("mapped-RTL compilation jobs are not supported by Xcelium");
   auto local =
       loom::external_tool::loadLocalToolConfig(mappedRtlLocalToolConfigPath);
   if (!local)
