@@ -200,8 +200,9 @@ struct MappedRtlVcsCompilationPlan final {
 /// The elaboration inputs of one Xcelium bundle: the attempt limit and the
 /// frozen xrun launcher. Xcelium elaborates the harness into a snapshot inside
 /// its library directory and simulates that snapshot through the same
-/// launcher, so the bundle freezes no auxiliary build tool and lists no
-/// tool-produced executable.
+/// launcher. The bundle has no separate C++ build command or tool-produced
+/// executable; the suite's compiler, elaborator, and simulator executables
+/// are frozen as typed auxiliary tools by provider preparation.
 struct MappedRtlXceliumElaborationPlan final {
   std::uint64_t cycleLimit = 0;
   std::string xrunExecutable;
