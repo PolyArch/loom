@@ -20,7 +20,9 @@ mlir::Value packBits(mlir::OpBuilder &builder, mlir::Location location,
 
 /// The canonical round-robin grant of the Fabric resource contracts: the
 /// first requester at or after the cursor in cyclic requester order, as a
-/// one-hot-or-zero word over the packed request domain.
+/// one-hot-or-zero word over the packed request domain. `packed` has exactly
+/// `requestCount` bits and `cursor` is an in-range `indexWidth(requestCount)`
+/// position in that same order.
 mlir::Value roundRobinPackedSelection(mlir::OpBuilder &builder,
                                       mlir::Location location,
                                       mlir::Value packed, unsigned requestCount,

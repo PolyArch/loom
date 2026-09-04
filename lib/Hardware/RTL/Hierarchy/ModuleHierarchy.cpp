@@ -1,5 +1,6 @@
 #include "ModuleHierarchy.h"
 
+#include "Arbitration.h"
 #include "Components.h"
 #include "ConfigurationController.h"
 #include "OperationShell.h"
@@ -427,43 +428,6 @@ mlir::Value equals(mlir::OpBuilder &builder, mlir::Location location,
   return circt::comb::ICmpOp::create(
       builder, location, circt::comb::ICmpPredicate::eq, value,
       integerConstant(builder, location, width, expected), true);
-}
-
-std::vector<mlir::Value>
-roundRobinSelection(mlir::OpBuilder &builder, mlir::Location location,
-                    llvm::ArrayRef<mlir::Value> requests, mlir::Value cursor) {
-  std::vector<mlir::Value> selected(requests.size(),
-                                    bitConstant(builder, location, false));
-  for (std::size_t start = 0; start != requests.size(); ++start) {
-    mlir::Value atStart = equals(builder, location, cursor, start);
-    mlir::Value reserved = bitConstant(builder, location, false);
-    for (std::size_t offset = 0; offset != requests.size(); ++offset) {
-      const std::size_t requester = (start + offset) % requests.size();
-      mlir::Value grant = andValues(
-          builder, location,
-          {atStart, requests[requester],
-           circt::comb::createOrFoldNot(builder, location, reserved)});
-      selected[requester] = circt::comb::OrOp::create(
-          builder, location, selected[requester], grant);
-      reserved = circt::comb::OrOp::create(builder, location, reserved,
-                                           requests[requester]);
-    }
-  }
-  return selected;
-}
-
-mlir::Value nextCursor(mlir::OpBuilder &builder, mlir::Location location,
-                       mlir::Value current, llvm::ArrayRef<mlir::Value> fired) {
-  const unsigned width =
-      mlir::cast<mlir::IntegerType>(current.getType()).getWidth();
-  mlir::Value next = current;
-  for (std::size_t requester = 0; requester != fired.size(); ++requester)
-    next = circt::comb::MuxOp::create(
-        builder, location, fired[requester],
-        integerConstant(builder, location, width,
-                        (requester + 1) % fired.size()),
-        next, true);
-  return next;
 }
 
 } // namespace

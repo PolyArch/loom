@@ -36,44 +36,47 @@ mlir::Value roundRobinPackedSelection(mlir::OpBuilder &builder,
                                       mlir::Value packed, unsigned requestCount,
                                       mlir::Value cursor) {
   assert(requestCount != 0 && "round-robin domain must not be empty");
-  if (requestCount == 1)
-    return packed;
+  assert(mlir::cast<mlir::IntegerType>(packed.getType()).getWidth() ==
+             requestCount &&
+         "packed request width disagrees with its round-robin domain");
   const unsigned cursorWidth =
       mlir::cast<mlir::IntegerType>(cursor.getType()).getWidth();
-  const unsigned distanceWidth = requestCount;
-  assert(cursorWidth <= distanceWidth &&
-         "round-robin cursor width exceeds its requester domain");
+  assert(cursorWidth == indexWidth(requestCount) &&
+         "round-robin cursor has the wrong width for its requester domain");
+  if (requestCount == 1)
+    return packed;
   mlir::Value extendedCursor = cursor;
-  if (cursorWidth < distanceWidth)
+  if (cursorWidth < requestCount)
     extendedCursor = circt::comb::ConcatOp::create(
         builder, location,
         llvm::ArrayRef<mlir::Value>{
-            constant(builder, location, distanceWidth - cursorWidth, 0),
+            constant(builder, location, requestCount - cursorWidth, 0),
             cursor});
-  mlir::Value inverseDistance = circt::comb::SubOp::create(
-      builder, location,
-      constant(builder, location, distanceWidth, requestCount), extendedCursor,
+  mlir::Value cursorOneHot = circt::comb::ShlOp::create(
+      builder, location, constant(builder, location, requestCount, 1),
+      extendedCursor, true);
+  // Subtracting the cursor bit isolates the first request at or after that
+  // position. If that interval is empty, the ordinary lowest bit is the
+  // wrapped selection.
+  mlir::Value selectedAhead = circt::comb::AndOp::create(
+      builder, location, packed,
+      circt::comb::createOrFoldNot(
+          builder, location,
+          circt::comb::SubOp::create(builder, location, packed, cursorOneHot,
+                                     true),
+          true),
       true);
-
-  mlir::Value rotatedRight = circt::comb::ShrUOp::create(
-      builder, location, packed, extendedCursor, true);
-  mlir::Value wrappedLeft = circt::comb::ShlOp::create(
-      builder, location, packed, inverseDistance, true);
-  mlir::Value rotated = circt::comb::OrOp::create(
-      builder, location, rotatedRight, wrappedLeft, true);
-  mlir::Value lowest = circt::comb::AndOp::create(
-      builder, location, rotated,
+  mlir::Value selectedWrapped = circt::comb::AndOp::create(
+      builder, location, packed,
       circt::comb::SubOp::create(builder, location,
                                  constant(builder, location, requestCount, 0),
-                                 rotated, true),
+                                 packed, true),
       true);
-
-  mlir::Value restoredLeft = circt::comb::ShlOp::create(
-      builder, location, lowest, extendedCursor, true);
-  mlir::Value restoredRight = circt::comb::ShrUOp::create(
-      builder, location, lowest, inverseDistance, true);
-  return circt::comb::OrOp::create(builder, location, restoredLeft,
-                                   restoredRight, true);
+  mlir::Value hasAhead = circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::ne, selectedAhead,
+      constant(builder, location, requestCount, 0), true);
+  return circt::comb::MuxOp::create(builder, location, hasAhead, selectedAhead,
+                                    selectedWrapped, true);
 }
 
 mlir::Value roundRobinPackedSelection(mlir::OpBuilder &builder,
