@@ -1222,11 +1222,13 @@ llvm::Expected<PeModule> buildTemporalPeModule(
           packedFifoRequesterKind = packBits(bodyBuilder, location, kindDomain);
         }
 
-        std::vector<mlir::Value> queueGranted(
+        std::vector<mlir::Value> queueSelected(
             queues.size(), bitConstant(bodyBuilder, location, false));
         for (std::uint32_t unit = 0; unit != units.size(); ++unit) {
           std::vector<mlir::Value> requests;
+          llvm::SmallVector<mlir::Value> committed;
           requests.reserve(units[unit].queues.size());
+          committed.reserve(units[unit].queues.size());
           for (std::uint32_t queueOrdinal : units[unit].queues) {
             const LogicalQueuePlan &queue = queues[queueOrdinal];
             const SelectorSignals &selector =
@@ -1236,6 +1238,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                 {contextSelected[queue.fu][queue.context], selector.route,
                  operandTargetsExternal[queue.context][queue.input],
                  queueRuntime[queueOrdinal].valid}));
+            committed.push_back(queueRuntime[queueOrdinal].dequeueReady);
           }
           StatefulSelection selection = makeStatefulSelection(
               bodyBuilder, location, backedges, requests,
@@ -1244,9 +1247,10 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               clockReset);
           for (std::uint32_t local = 0; local != units[unit].queues.size();
                ++local)
-            queueGranted[units[unit].queues[local]] = selection.selected[local];
+            queueSelected[units[unit].queues[local]] =
+                selection.selected[local];
           advanceStatefulSelection(bodyBuilder, location, selection,
-                                   selection.selected);
+                                   committed);
         }
 
         struct FifoReadCandidate final {
@@ -1317,25 +1321,26 @@ llvm::Expected<PeModule> buildTemporalPeModule(
         }
 
         std::vector<std::vector<std::vector<std::vector<mlir::Value>>>>
-            fifoReadGranted(layout.fus.size());
+            fifoReadCandidateSelected(layout.fus.size());
         for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
-          fifoReadGranted[fu].resize(layout.contextCount);
+          fifoReadCandidateSelected[fu].resize(layout.contextCount);
           for (std::uint32_t context = 0; context != layout.contextCount;
                ++context) {
-            fifoReadGranted[fu][context].resize(layout.fus[fu].inputCount);
+            fifoReadCandidateSelected[fu][context].resize(
+                layout.fus[fu].inputCount);
             for (std::uint32_t input = 0; input != layout.fus[fu].inputCount;
                  ++input)
-              fifoReadGranted[fu][context][input].resize(
+              fifoReadCandidateSelected[fu][context][input].resize(
                   layout.registerFifoCount);
           }
         }
         for (const FifoReadCandidate &candidate : fifoReadCandidates)
           if (!candidate.discard)
-            fifoReadGranted[candidate.fu][candidate.context][candidate.input]
-                           [candidate.fifo] = circt::comb::ExtractOp::create(
-                               bodyBuilder, location,
-                               fifoReadSelected[candidate.fifo],
-                               candidate.selectionOrdinal, 1);
+            fifoReadCandidateSelected[candidate.fu][candidate.context]
+                                     [candidate.input][candidate.fifo] =
+                circt::comb::ExtractOp::create(
+                    bodyBuilder, location, fifoReadSelected[candidate.fifo],
+                    candidate.selectionOrdinal, 1);
 
         std::vector<std::vector<mlir::Value>> fuInputReady(layout.fus.size());
         std::vector<FuOutputRuntime> fuOutputs;
@@ -1382,22 +1387,23 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                   queueOf[context][fu][endpoint.localOrdinal];
               mlir::Value queuePath = andValues(
                   bodyBuilder, location,
-                  {queueGranted[queue],
+                  {queueSelected[queue],
                    operandTargetsExternal[context][endpoint.localOrdinal],
                    queueRuntime[queue].valid});
 
               const std::uint64_t targetDomainSize =
                   std::uint64_t{1} << layout.inputTargetBitCount;
-              llvm::SmallVector<mlir::Value> targetGrants(
+              llvm::SmallVector<mlir::Value> targetSelections(
                   targetDomainSize, bitConstant(bodyBuilder, location, false));
               for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount;
                    ++fifo)
-                targetGrants[layout.inputPortCount + fifo] =
-                    fifoReadGranted[fu][context][endpoint.localOrdinal][fifo];
-              mlir::Value fifoGrant = indexedValue(
-                  bodyBuilder, location, selector.target, targetGrants);
+                targetSelections[layout.inputPortCount + fifo] =
+                    fifoReadCandidateSelected[fu][context]
+                                             [endpoint.localOrdinal][fifo];
+              mlir::Value fifoSelected = indexedValue(
+                  bodyBuilder, location, selector.target, targetSelections);
               contextValid.push_back(
-                  orValues(bodyBuilder, location, {queuePath, fifoGrant}));
+                  orValues(bodyBuilder, location, {queuePath, fifoSelected}));
               if (payloadWidth != 0) {
                 llvm::SmallVector<mlir::Value> targetData(
                     targetDomainSize,
@@ -1408,7 +1414,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                 mlir::Value selectedFifoData = indexedValue(
                     bodyBuilder, location, selector.target, targetData);
                 contextData.push_back(circt::comb::MuxOp::create(
-                    bodyBuilder, location, fifoGrant, selectedFifoData,
+                    bodyBuilder, location, fifoSelected, selectedFifoData,
                     *queueRuntime[queue].data, true));
               }
             }
@@ -1473,9 +1479,10 @@ llvm::Expected<PeModule> buildTemporalPeModule(
 
         for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
           const LogicalQueuePlan &plan = queues[queue];
-          queueRuntime[queue].dequeueReady.setValue(andValues(
+          mlir::Value committed = andValues(
               bodyBuilder, location,
-              {queueGranted[queue], fuInputReady[plan.fu][plan.input]}));
+              {queueSelected[queue], fuInputReady[plan.fu][plan.input]});
+          queueRuntime[queue].dequeueReady.setValue(committed);
         }
 
         std::vector<mlir::Value> fifoReadReady(layout.registerFifoCount);
@@ -1569,12 +1576,14 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             metrics.decodeAndPoolOperations - metrics.ingressOperations -
             metrics.dispatchOperations - metrics.childOperations;
         // Result egress: valid FU outputs whose resident row routes them to a
-        // port or register FIFO are offered by the canonical round-robin
-        // policy; the cursor advances past every offered requester, accepted
-        // or refused, so a result whose downstream is not ready for its tag
-        // cannot hold the port against the other valid results (the offer
-        // rotation of the per-tag virtual channel discipline), and every FU
-        // output learns through its offered signal when the PE presents it.
+        // port or register FIFO are presented by the canonical round-robin
+        // policy. A PE-port cursor advances past every offered requester,
+        // accepted or refused, so a result whose downstream is not ready for
+        // its tag cannot hold the port against the other valid results (the
+        // offer rotation of the per-tag virtual channel discipline). A
+        // register-FIFO write cursor advances only when its selected write
+        // commits. Every FU output learns through its offered signal when the
+        // PE presents it.
         // Readiness must be observable before valid, because an operation
         // that publishes several results atomically asserts each result's
         // valid only once its peers are ready. While no valid requester holds
@@ -1804,8 +1813,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             fuOutputOfferedTerms[candidate].push_back(presented[candidate]);
           }
           writeCommit.setValue(orValues(bodyBuilder, location, fired));
-          advanceStatefulSelection(bodyBuilder, location, selection,
-                                   selection.selected);
+          advanceStatefulSelection(bodyBuilder, location, selection, fired);
         }
 
         for (std::size_t candidate = 0; candidate != fuOutputs.size();

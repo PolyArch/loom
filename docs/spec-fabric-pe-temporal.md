@@ -610,7 +610,13 @@ states of every resident context whose configured template drives it; it
 delivers one held result per PE clock cycle under the canonical round-robin
 policy over the templates' routes, and only the granted result retires on that
 handoff. The other held results stay in their operations' result-holding
-states and keep those operations busy.
+states and keep those operations busy. A PE output port advances its distinct
+offer cursor past every valid requester it offers, whether the handoff is
+accepted or refused, so tag-specific downstream refusal cannot hold that port
+against another ready result. Idle readiness presentation does not advance the
+cursor. This offer cursor is not a ResourceContract service-grant cursor and
+does not replace the successful-grant cursor rules for operand queues or
+register FIFOs.
 
 ## Mapping Ownership
 

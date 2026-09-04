@@ -525,21 +525,26 @@ operation of the same FU only while that context is the dispatch context; its
 producer stays busy until then. Every FU output reports the producing context so
 the PE applies that context's result selectors; an output holding no result
 reports the dispatch context. Result egress follows the same
-readiness-before-valid rule as the switches: a PE output port or register FIFO
+readiness-before-valid rule as the switches; the Temporal PE specification
+owns the distinct offer and service-grant cursor events. A PE output port
 offers valid FU outputs by the canonical round-robin policy, advancing its
-cursor past every offered requester whether the downstream accepted or refused
-the offer (the offer rotation of the per-tag virtual channel discipline), so a
-result whose downstream is not ready for its tag never holds the port against
-the other valid results; the grant is the offer that is accepted. While no
-valid requester holds a port, the port presents readiness to the routed output
-of one idle FU at a time, the same FU on every port of the PE, so an operation
-that publishes several results atomically observes their capacity before it
-asserts any valid. The idle FU follows the context-evaluation service rather than a
-free-running rotation: under a shared service it is the FU granted this cycle,
-and under per-FU services a pointer holds each FU with eligible rows for one
-complete pass of its dispatch rotation, so every resident context of every FU
-is presented on its ports while it is the dispatch context (a rotation whose
-period shares a factor with the FU count would otherwise never align with it).
+cursor past every offered requester whether the downstream accepted or
+refused the offer (the offer rotation of the per-tag virtual channel
+discipline). A result whose downstream is not ready for its tag never holds
+the port against the other valid results; the grant is the offer that is
+accepted. A register FIFO also presents one selected FU output, but its
+write cursor follows the Fabric register-FIFO service contract and advances
+only when that write commits.
+While no valid requester holds a port, the port presents readiness to the
+routed output of one idle FU at a time, the same FU on every port of the PE,
+so an operation that publishes several results atomically observes their
+capacity before it asserts any valid. The idle FU follows the
+context-evaluation service, not a free-running rotation. Under a shared
+service, it is the FU granted this cycle; under per-FU services, a pointer
+holds each FU with eligible rows for one complete pass of its dispatch
+rotation, so every resident context of every FU is presented on its ports
+while it is the dispatch context (a rotation whose period shares a factor with
+the FU count would otherwise never align with it).
 Inside a Temporal PE's FU, several
 operations may hold results for one FU boundary output at the same time because
 their resident contexts differ; that output grants exactly one producing route
