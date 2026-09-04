@@ -2,6 +2,7 @@
 
 #include "JointHardwareReopenExecution.h"
 
+#include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/JointMappingMigration.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
