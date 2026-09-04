@@ -7,7 +7,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -47,9 +49,11 @@ struct FabricTemporalSwitchPackedRouteRow final {
 
 /// One search-state demand whose Physical Tag may still be unassigned. An
 /// unassigned value has no configuration identity and cannot be persisted.
+/// The assigned tag is borrowed for the duration of one projection; numeric
+/// value, not APInt storage width, is semantic.
 struct FabricTemporalSwitchCandidateRouteDemandView final {
   FabricTemporalSwitchRouteDemandView route;
-  std::optional<llvm::APInt> tag;
+  const llvm::APInt *tag = nullptr;
 };
 
 /// Canonical row membership for a PnR candidate. Assigned rows retain their
@@ -104,12 +108,55 @@ struct FabricTemporalSwitchRouteRowMemberSpans final {
   std::vector<std::uint64_t> demandOrdinals;
 };
 
+/// Reusable storage for the canonical candidate-row projection. It carries no
+/// route demand, row membership, or Fabric identity between calls.
+class FabricTemporalSwitchCandidateRouteProjectionScratch final {
+public:
+  FabricTemporalSwitchCandidateRouteProjectionScratch();
+  FabricTemporalSwitchCandidateRouteProjectionScratch(
+      const FabricTemporalSwitchCandidateRouteProjectionScratch &) = delete;
+  FabricTemporalSwitchCandidateRouteProjectionScratch &operator=(
+      const FabricTemporalSwitchCandidateRouteProjectionScratch &) = delete;
+  ~FabricTemporalSwitchCandidateRouteProjectionScratch();
+
+  /// Retains capacity for at least this many demands. Preparation carries no
+  /// semantic state and may be repeated with larger bounds.
+  void prepare(std::size_t demandCapacity);
+  std::size_t retainedStorageBytes() const;
+
+  /// Opaque reusable buffers; only canonical projection functions can access
+  /// their contents.
+  struct Storage;
+
+private:
+  std::unique_ptr<Storage> storage_;
+
+  friend llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
+  projectFabricTemporalSwitchCandidateRouteRows(
+      llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands);
+  friend llvm::Error projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+      llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+      FabricTemporalSwitchRouteRowMemberSpans &result,
+      FabricTemporalSwitchCandidateRouteProjectionScratch &scratch);
+  friend llvm::Expected<std::uint64_t>
+  projectFabricTemporalSwitchCandidateRouteRowCount(
+      llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+      FabricTemporalSwitchCandidateRouteProjectionScratch &scratch);
+};
+
 llvm::Error projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
     FabricTemporalSwitchRouteRowMemberSpans &result);
+llvm::Error projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchRouteRowMemberSpans &result,
+    FabricTemporalSwitchCandidateRouteProjectionScratch &scratch);
 
 llvm::Expected<std::uint64_t> projectFabricTemporalSwitchCandidateRouteRowCount(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands);
+llvm::Expected<std::uint64_t> projectFabricTemporalSwitchCandidateRouteRowCount(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchCandidateRouteProjectionScratch &scratch);
 
 } // namespace loom::fabric
 

@@ -19,8 +19,11 @@ add_executable(loom-fabric-physical-tag-test
 )
 
 add_executable(loom-fabric-temporal-switch-route-test
+  ../TestAllocationProbe.cpp
   TemporalSwitchRouteTest.cpp
 )
+
+loom_enable_allocation_probe(loom-fabric-temporal-switch-route-test)
 
 add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp

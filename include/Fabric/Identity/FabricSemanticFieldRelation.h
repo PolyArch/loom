@@ -41,7 +41,8 @@ struct FabricBoundaryConfiguration final {
 };
 
 /// One active Temporal switch table row. Traversals sharing the tag form the
-/// row's spatial crosspoint selection.
+/// row's spatial crosspoint selection. The APInt carries an unsigned numeric
+/// value; the switch endpoint supplies the sole hardware encoding width.
 struct FabricTemporalSwitchRouteEntry final {
   llvm::APInt tag;
   std::vector<FabricPhysicalTraversalRef> selectedTraversals;

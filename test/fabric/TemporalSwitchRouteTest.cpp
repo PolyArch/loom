@@ -1,4 +1,7 @@
+#include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/Identity/FabricTemporalSwitchRoute.h"
+
+#include "../TestAllocationProbe.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -6,7 +9,6 @@
 
 #include <array>
 #include <cstdlib>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +31,11 @@ template <typename T> T take(llvm::Expected<T> result) {
   if (!result)
     fail(llvm::toString(result.takeError()));
   return std::move(*result);
+}
+
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
 }
 
 llvm::APInt tag(std::uint64_t value) { return llvm::APInt(4, value); }
@@ -93,12 +100,15 @@ void candidateRowsPreserveAssignedIdentity() {
   const std::array<FabricTemporalSwitchRouteSignatureView, 2> joinsNeither = {
       FabricTemporalSwitchRouteSignatureView{occurrence, 0, output3},
       FabricTemporalSwitchRouteSignatureView{occurrence, 1, output4}};
+  const llvm::APInt assignedLowTag = tag(0);
+  const llvm::APInt assignedHighTag = tag(1);
   const std::array<FabricTemporalSwitchCandidateRouteDemandView, 4> demands = {
-      FabricTemporalSwitchCandidateRouteDemandView{{assignedLow}, tag(0)},
-      FabricTemporalSwitchCandidateRouteDemandView{{assignedHigh}, tag(1)},
-      FabricTemporalSwitchCandidateRouteDemandView{{joinsHigh}, std::nullopt},
-      FabricTemporalSwitchCandidateRouteDemandView{{joinsNeither},
-                                                    std::nullopt}};
+      FabricTemporalSwitchCandidateRouteDemandView{{assignedLow},
+                                                   &assignedLowTag},
+      FabricTemporalSwitchCandidateRouteDemandView{{assignedHigh},
+                                                   &assignedHighTag},
+      FabricTemporalSwitchCandidateRouteDemandView{{joinsHigh}, nullptr},
+      FabricTemporalSwitchCandidateRouteDemandView{{joinsNeither}, nullptr}};
   const auto rows =
       take(projectFabricTemporalSwitchCandidateRouteRows(demands));
   require(rows.size() == 3, "candidate projection changed its row lower bound");
@@ -114,12 +124,78 @@ void candidateRowsPreserveAssignedIdentity() {
           "incompatible unassigned demand did not open a provisional row");
 }
 
+void wideTagCandidateProjectionReusesScratch() {
+  const FabricSwitchOccurrenceRef occurrence(17);
+  const std::array<FabricOrdinal, 1> output0 = {0};
+  const std::array<FabricOrdinal, 1> output1 = {1};
+  const std::array<FabricTemporalSwitchRouteSignatureView, 1> first = {
+      FabricTemporalSwitchRouteSignatureView{occurrence, 0, output0}};
+  const std::array<FabricTemporalSwitchRouteSignatureView, 1> second = {
+      FabricTemporalSwitchRouteSignatureView{occurrence, 1, output1}};
+  const std::array<FabricTemporalSwitchRouteSignatureView, 1> third = {
+      FabricTemporalSwitchRouteSignatureView{occurrence, 2, output0}};
+  llvm::APInt lower(129, 0);
+  lower.setBit(100);
+  llvm::APInt equalWithWiderStorage(193, 0);
+  equalWithWiderStorage.setBit(100);
+  llvm::APInt higher(193, 0);
+  higher.setBit(101);
+  const std::array<FabricTemporalSwitchCandidateRouteDemandView, 3> demands = {
+      FabricTemporalSwitchCandidateRouteDemandView{{first}, &lower},
+      FabricTemporalSwitchCandidateRouteDemandView{{second},
+                                                   &equalWithWiderStorage},
+      FabricTemporalSwitchCandidateRouteDemandView{{third}, &higher}};
+  const std::array<FabricTemporalSwitchCandidateRouteDemandView, 3> reordered =
+      {FabricTemporalSwitchCandidateRouteDemandView{{second},
+                                                    &equalWithWiderStorage},
+       FabricTemporalSwitchCandidateRouteDemandView{{first}, &lower},
+       FabricTemporalSwitchCandidateRouteDemandView{{third}, &higher}};
+
+  const auto materialized =
+      take(projectFabricTemporalSwitchCandidateRouteRows(demands));
+  const auto reorderedMaterialized =
+      take(projectFabricTemporalSwitchCandidateRouteRows(reordered));
+  const llvm::APInt canonicalLower = ::fabric::canonicalPhysicalTagValue(lower);
+  require(materialized.size() == 2 && reorderedMaterialized.size() == 2 &&
+              materialized[0].tag == canonicalLower &&
+              reorderedMaterialized[0].tag == canonicalLower &&
+              materialized[0].tag->getBitWidth() == 101 &&
+              reorderedMaterialized[0].tag->getBitWidth() == 101,
+          "equal numeric tags retained input-order-dependent storage width");
+
+  FabricTemporalSwitchCandidateRouteProjectionScratch scratch;
+  scratch.prepare(demands.size());
+  FabricTemporalSwitchRouteRowMemberSpans spans;
+  spans.rowOffsets.reserve(demands.size() + 1);
+  spans.demandOrdinals.reserve(demands.size());
+  const std::size_t retainedBytes =
+      scratch.retainedStorageBytes() +
+      spans.rowOffsets.capacity() * sizeof(std::uint64_t) +
+      spans.demandOrdinals.capacity() * sizeof(std::uint64_t);
+  require(loom::test::allocationProbeIsCalibrated(),
+          "allocation probe is not calibrated");
+  loom::test::startAllocationProbe();
+  requireSuccess(projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+      demands, spans, scratch));
+  const std::size_t allocations = loom::test::stopAllocationProbe();
+  require(spans.rowOffsets == std::vector<std::uint64_t>({0, 2, 3}) &&
+              spans.demandOrdinals == std::vector<std::uint64_t>({0, 1, 2}),
+          "wide numeric tag identity changed candidate row membership");
+  require(allocations == 0 &&
+              scratch.retainedStorageBytes() +
+                      spans.rowOffsets.capacity() * sizeof(std::uint64_t) +
+                      spans.demandOrdinals.capacity() * sizeof(std::uint64_t) ==
+                  retainedBytes,
+          "first prepared wide-tag candidate projection allocated storage");
+}
+
 } // namespace
 
 int main() {
   exactRowsAreTagKeyed();
   incompatibleEqualTagRemainsObservable();
   candidateRowsPreserveAssignedIdentity();
+  wideTagCandidateProjectionReusesScratch();
   llvm::outs() << "Temporal switch route tests passed\n";
   return 0;
 }

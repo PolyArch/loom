@@ -23,18 +23,17 @@ inline llvm::APInt canonicalPhysicalTagValue(const llvm::APInt &value) {
 /// one machine word compare without widening.
 inline int comparePhysicalTagValues(const llvm::APInt &lhs,
                                     const llvm::APInt &rhs) {
-  if (lhs.getBitWidth() <= 64 && rhs.getBitWidth() <= 64) {
-    const std::uint64_t left = lhs.getZExtValue();
-    const std::uint64_t right = rhs.getZExtValue();
-    return left < right ? -1 : left > right ? 1 : 0;
+  const unsigned leftActiveBits = lhs.getActiveBits();
+  const unsigned rightActiveBits = rhs.getActiveBits();
+  if (leftActiveBits != rightActiveBits)
+    return leftActiveBits < rightActiveBits ? -1 : 1;
+  const unsigned wordCount = (leftActiveBits + 63) / 64;
+  for (unsigned word = wordCount; word != 0; --word) {
+    const std::uint64_t left = lhs.getRawData()[word - 1];
+    const std::uint64_t right = rhs.getRawData()[word - 1];
+    if (left != right)
+      return left < right ? -1 : 1;
   }
-  const unsigned width = std::max(lhs.getBitWidth(), rhs.getBitWidth());
-  const llvm::APInt left = lhs.zext(width);
-  const llvm::APInt right = rhs.zext(width);
-  if (left.ult(right))
-    return -1;
-  if (right.ult(left))
-    return 1;
   return 0;
 }
 

@@ -1136,6 +1136,26 @@ void spatialSwitchConnectivityBecomesTraversals() {
       test, temporalFinalized.view().semanticFieldRelation(field, context()));
   if (llvm::Error error = relation.validateSemanticValue(encoded.bytes()))
     fail(test, llvm::toString(std::move(error)));
+  const auto narrow =
+      take(test, loom::fabric::encodeTemporalSwitchConfiguration(
+                     temporalFinalized.view(), field,
+                     {loom::fabric::FabricTemporalSwitchRouteEntry{
+                         llvm::APInt(2, 3), selected}}));
+  const auto wide =
+      take(test, loom::fabric::encodeTemporalSwitchConfiguration(
+                     temporalFinalized.view(), field,
+                     {loom::fabric::FabricTemporalSwitchRouteEntry{
+                         llvm::APInt(7, 3), selected}}));
+  require(test,
+          encoded.bytes().equals(narrow.bytes()) &&
+              encoded.bytes().equals(wide.bytes()),
+          "Temporal switch codec treated APInt storage width as semantic");
+  expectRejected(test,
+                 loom::fabric::encodeTemporalSwitchConfiguration(
+                     temporalFinalized.view(), field,
+                     {loom::fabric::FabricTemporalSwitchRouteEntry{
+                         llvm::APInt(5, 16), selected}}),
+                 "exceeds the owner width");
   expectRejected(test,
                  loom::fabric::encodeTemporalSwitchConfiguration(
                      temporalFinalized.view(), field,

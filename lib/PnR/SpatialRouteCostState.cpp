@@ -1091,13 +1091,10 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
            demand.signatures)
         rows.updateSignatureViews.push_back(
             {signature.occurrence, signature.input, signature.outputs});
-      std::optional<llvm::APInt> normalized;
-      if (tag)
-        normalized = tag->zextOrTrunc(domains[domain].tagWidthBits);
       rows.updateDemandViews.push_back(
           {{llvm::ArrayRef(rows.updateSignatureViews)
                 .slice(begin, demand.signatures.size())},
-           std::move(normalized)});
+           tag});
     };
     for (const auto &candidate : rows.updateDomainDemands[domain])
       appendViews(*candidate.route, candidate.tag);
@@ -1107,14 +1104,16 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
         appendViews(demand, nullptr);
     if (rows.updateDemandViews.size() == baseCount)
       continue;
+    rows.updateProjectionScratch.prepare(rows.updateDemandViews.size());
     auto baseRows =
         ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
-            llvm::ArrayRef(rows.updateDemandViews).take_front(baseCount));
+            llvm::ArrayRef(rows.updateDemandViews).take_front(baseCount),
+            rows.updateProjectionScratch);
     if (!baseRows)
       return baseRows.takeError();
     auto combinedRows =
         ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
-            rows.updateDemandViews);
+            rows.updateDemandViews, rows.updateProjectionScratch);
     if (!combinedRows)
       return combinedRows.takeError();
     if (*combinedRows < *baseRows)

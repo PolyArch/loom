@@ -37,11 +37,24 @@ std::size_t SpatialRouteCostSwitchRowState::retainedStorageBytes() const {
           sizeof(std::vector<SpatialTemporalSwitchSegmentDemand>) +
       netDemandsSettled.capacity() * sizeof(std::uint8_t) +
       demandJournal.capacity() * sizeof(DemandJournal) +
-      retainedDemandBytes(selectedNetDemands);
+      retainedDemandBytes(selectedNetDemands) +
+      updateDomainDemands.capacity() * sizeof(std::vector<SelectedDemandRef>) +
+      updateTouchedDomains.capacity() * sizeof(PnrIndex) +
+      updateDomainMarks.capacity() * sizeof(std::uint64_t) +
+      updateMarginalRows.capacity() * sizeof(std::uint64_t) +
+      updateSignatureViews.capacity() *
+          sizeof(::loom::fabric::FabricTemporalSwitchRouteSignatureView) +
+      updateDemandViews.capacity() *
+          sizeof(::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView) +
+      updateProjectionScratch.retainedStorageBytes() +
+      updateUses.capacity() * sizeof(SpatialTagDomainUse) +
+      demandScratch.retainedStorageBytes();
   for (const auto &demands : netDemands)
     bytes += retainedDemandBytes(demands);
   for (const DemandJournal &journal : demandJournal)
     bytes += retainedDemandBytes(journal.demands);
+  for (const auto &demands : updateDomainDemands)
+    bytes += demands.capacity() * sizeof(SelectedDemandRef);
   return bytes;
 }
 

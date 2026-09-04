@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -69,6 +70,11 @@ deriveSpatialTemporalSwitchHandshakeDomainFragments(
     const FrozenSpatialPnrProblem &problem, PnrIndex domain,
     const SpatialTagAssignmentStateStorage &assignments,
     SpatialSwitchHandshakeProjectionScratch &scratch);
+llvm::Error deriveSpatialTemporalSwitchHandshakeDomainFragments(
+    const FrozenSpatialPnrProblem &problem, PnrIndex domain,
+    const SpatialTagAssignmentStateStorage &assignments,
+    SpatialSwitchHandshakeProjectionScratch &scratch,
+    std::vector<PnrIndex> &fragments);
 
 } // namespace loom::pnr::detail
 

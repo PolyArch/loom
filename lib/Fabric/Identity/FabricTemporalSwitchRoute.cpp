@@ -6,7 +6,7 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <map>
+#include <numeric>
 #include <system_error>
 #include <vector>
 
@@ -98,7 +98,7 @@ loom::fabric::projectFabricTemporalSwitchRouteRows(
   std::vector<FabricTemporalSwitchCandidateRouteDemandView> candidates;
   candidates.reserve(demands.size());
   for (const FabricTemporalSwitchTaggedRouteDemandView &demand : demands)
-    candidates.push_back({demand.route, demand.tag});
+    candidates.push_back({demand.route, &demand.tag});
   auto projected = projectFabricTemporalSwitchCandidateRouteRows(candidates);
   if (!projected)
     return projected.takeError();
@@ -113,37 +113,24 @@ loom::fabric::projectFabricTemporalSwitchRouteRows(
   return result;
 }
 
-namespace {
-
-/// Flat row-grouping core shared by the materializing and counting
-/// projections. Rows keep their demand members as index chains into one
-/// node pool, so grouping allocates only three flat vectors regardless of
-/// the demand count, and compatibility checks resolve members through the
-/// caller's demand views without copying routes.
-struct FlatRowState final {
+/// Reusable flat row-grouping storage shared by the materializing and
+/// counting projections. Rows borrow tags from the caller for the duration of
+/// one projection. Membership uses index chains into one node pool, avoiding
+/// per-occurrence and per-row allocation.
+struct loom::fabric::FabricTemporalSwitchCandidateRouteProjectionScratch::
+    Storage final {
   struct Row final {
     FabricSwitchOccurrenceRef occurrence;
-    std::optional<llvm::APInt> tag;
+    const llvm::APInt *tag = nullptr;
     bool compatible = true;
     std::size_t headMember = SIZE_MAX;
     std::size_t tailMember = SIZE_MAX;
   };
-  struct Occurrence final {
-    FabricEntityId id;
-    llvm::SmallVector<std::size_t, 4> rowOrder;
-  };
   std::vector<Row> rows;
   /// Member chain node: demand ordinal plus next node index.
   std::vector<std::pair<std::size_t, std::size_t>> members;
-  llvm::SmallVector<Occurrence, 8> occurrences;
+  std::vector<std::size_t> rowOrder;
 
-  Occurrence &occurrenceFor(FabricEntityId id) {
-    for (Occurrence &occurrence : occurrences)
-      if (occurrence.id == id)
-        return occurrence;
-    occurrences.push_back({id, {}});
-    return occurrences.back();
-  }
   void appendMember(Row &row, std::size_t demandOrdinal) {
     members.push_back({demandOrdinal, SIZE_MAX});
     if (row.headMember == SIZE_MAX)
@@ -161,44 +148,40 @@ struct FlatRowState final {
   }
 };
 
-llvm::Expected<FlatRowState> prepareCandidateRouteRows(
-    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  FlatRowState state;
+namespace {
+
+using CandidateRouteProjectionStorage =
+    FabricTemporalSwitchCandidateRouteProjectionScratch::Storage;
+
+llvm::Error prepareCandidateRouteRows(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    CandidateRouteProjectionStorage &state) {
+  state.rows.clear();
+  state.members.clear();
+  state.rowOrder.clear();
   state.rows.reserve(demands.size());
   state.members.reserve(demands.size());
-  llvm::SmallVector<std::pair<FabricEntityId, unsigned>, 8> tagWidths;
+  state.rowOrder.reserve(demands.size());
   for (std::size_t ordinal = 0; ordinal != demands.size(); ++ordinal) {
     const FabricTemporalSwitchCandidateRouteDemandView &demand =
         demands[ordinal];
     if (llvm::Error error =
             validateFabricTemporalSwitchRouteDemand(demand.route))
-      return std::move(error);
+      return error;
     if (!demand.tag)
       continue;
     const FabricSwitchOccurrenceRef occurrence =
         demand.route.signatures.front().occurrence;
-    bool widthKnown = false;
-    for (const auto &width : tagWidths)
-      if (width.first == occurrence.id()) {
-        widthKnown = true;
-        if (width.second != demand.tag->getBitWidth())
-          return invalid("one switch occurrence has inconsistent tag widths");
-        break;
-      }
-    if (!widthKnown)
-      tagWidths.push_back({occurrence.id(), demand.tag->getBitWidth()});
-    FlatRowState::Occurrence &group = state.occurrenceFor(occurrence.id());
-    FlatRowState::Row *selected = nullptr;
-    for (const std::size_t rowOrdinal : group.rowOrder) {
-      FlatRowState::Row &row = state.rows[rowOrdinal];
-      if (row.tag && compareUnsigned(*row.tag, *demand.tag) == 0) {
+    CandidateRouteProjectionStorage::Row *selected = nullptr;
+    for (CandidateRouteProjectionStorage::Row &row : state.rows) {
+      if (row.occurrence == occurrence && row.tag &&
+          compareUnsigned(*row.tag, *demand.tag) == 0) {
         selected = &row;
         break;
       }
     }
     if (!selected) {
-      state.rows.push_back({occurrence, *demand.tag, true, SIZE_MAX, SIZE_MAX});
-      group.rowOrder.push_back(state.rows.size() - 1);
+      state.rows.push_back({occurrence, demand.tag, true, SIZE_MAX, SIZE_MAX});
       selected = &state.rows.back();
     }
     selected->compatible &=
@@ -208,10 +191,16 @@ llvm::Expected<FlatRowState> prepareCandidateRouteRows(
         });
     state.appendMember(*selected, ordinal);
   }
-  for (FlatRowState::Occurrence &group : state.occurrences)
-    llvm::sort(group.rowOrder, [&](std::size_t lhs, std::size_t rhs) {
-      return compareUnsigned(*state.rows[lhs].tag, *state.rows[rhs].tag) < 0;
-    });
+  state.rowOrder.resize(state.rows.size());
+  std::iota(state.rowOrder.begin(), state.rowOrder.end(), 0);
+  std::sort(state.rowOrder.begin(), state.rowOrder.end(),
+            [&](std::size_t lhs, std::size_t rhs) {
+              const auto &left = state.rows[lhs];
+              const auto &right = state.rows[rhs];
+              if (left.occurrence.id() != right.occurrence.id())
+                return left.occurrence.id() < right.occurrence.id();
+              return compareUnsigned(*left.tag, *right.tag) < 0;
+            });
 
   for (std::size_t ordinal = 0; ordinal != demands.size(); ++ordinal) {
     const FabricTemporalSwitchCandidateRouteDemandView &demand =
@@ -220,10 +209,11 @@ llvm::Expected<FlatRowState> prepareCandidateRouteRows(
       continue;
     const FabricSwitchOccurrenceRef occurrence =
         demand.route.signatures.front().occurrence;
-    FlatRowState::Occurrence &group = state.occurrenceFor(occurrence.id());
-    FlatRowState::Row *selected = nullptr;
-    for (const std::size_t rowOrdinal : group.rowOrder) {
-      FlatRowState::Row &row = state.rows[rowOrdinal];
+    CandidateRouteProjectionStorage::Row *selected = nullptr;
+    for (const std::size_t rowOrdinal : state.rowOrder) {
+      CandidateRouteProjectionStorage::Row &row = state.rows[rowOrdinal];
+      if (row.occurrence != occurrence)
+        continue;
       if (row.compatible && state.allMembers(row, [&](std::size_t member) {
             return compatibleFabricTemporalSwitchRouteDemands(
                 demands[member].route, demand.route);
@@ -233,43 +223,68 @@ llvm::Expected<FlatRowState> prepareCandidateRouteRows(
       }
     }
     if (!selected) {
-      state.rows.push_back(
-          {occurrence, std::nullopt, true, SIZE_MAX, SIZE_MAX});
-      group.rowOrder.push_back(state.rows.size() - 1);
+      state.rows.push_back({occurrence, nullptr, true, SIZE_MAX, SIZE_MAX});
+      const std::size_t rowOrdinal = state.rows.size() - 1;
+      const auto position =
+          llvm::upper_bound(state.rowOrder, occurrence.id(),
+                            [&](FabricEntityId id, std::size_t existing) {
+                              return id < state.rows[existing].occurrence.id();
+                            });
+      state.rowOrder.insert(position, rowOrdinal);
       selected = &state.rows.back();
     }
     state.appendMember(*selected, ordinal);
   }
-  llvm::sort(state.occurrences, [](const FlatRowState::Occurrence &lhs,
-                                   const FlatRowState::Occurrence &rhs) {
-    return lhs.id < rhs.id;
-  });
-  return state;
+  return llvm::Error::success();
 }
 
 } // namespace
 
+FabricTemporalSwitchCandidateRouteProjectionScratch::
+    FabricTemporalSwitchCandidateRouteProjectionScratch()
+    : storage_(std::make_unique<Storage>()) {}
+
+FabricTemporalSwitchCandidateRouteProjectionScratch::
+    ~FabricTemporalSwitchCandidateRouteProjectionScratch() = default;
+
+void FabricTemporalSwitchCandidateRouteProjectionScratch::prepare(
+    std::size_t demandCapacity) {
+  storage_->rows.reserve(demandCapacity);
+  storage_->members.reserve(demandCapacity);
+  storage_->rowOrder.reserve(demandCapacity);
+}
+
+std::size_t
+FabricTemporalSwitchCandidateRouteProjectionScratch::retainedStorageBytes()
+    const {
+  return storage_->rows.capacity() * sizeof(Storage::Row) +
+         storage_->members.capacity() *
+             sizeof(std::pair<std::size_t, std::size_t>) +
+         storage_->rowOrder.capacity() * sizeof(std::size_t);
+}
+
 llvm::Expected<std::vector<FabricTemporalSwitchCandidateRouteRow>>
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  auto state = prepareCandidateRouteRows(demands);
-  if (!state)
-    return state.takeError();
+  FabricTemporalSwitchCandidateRouteProjectionScratch scratch;
+  CandidateRouteProjectionStorage &state = *scratch.storage_;
+  if (llvm::Error error = prepareCandidateRouteRows(demands, state))
+    return std::move(error);
   std::vector<FabricTemporalSwitchCandidateRouteRow> result;
-  result.reserve(state->rows.size());
-  for (const FlatRowState::Occurrence &group : state->occurrences)
-    for (const std::size_t rowOrdinal : group.rowOrder) {
-      const FlatRowState::Row &row = state->rows[rowOrdinal];
-      FabricTemporalSwitchCandidateRouteRow materialized;
-      materialized.occurrence = row.occurrence;
-      materialized.tag = row.tag;
-      materialized.compatible = row.compatible;
-      state->allMembers(row, [&](std::size_t member) {
-        materialized.demandOrdinals.push_back(member);
-        return true;
-      });
-      result.push_back(std::move(materialized));
-    }
+  result.reserve(state.rows.size());
+  for (const std::size_t rowOrdinal : state.rowOrder) {
+    const CandidateRouteProjectionStorage::Row &row = state.rows[rowOrdinal];
+    FabricTemporalSwitchCandidateRouteRow materialized;
+    materialized.occurrence = row.occurrence;
+    if (row.tag)
+      materialized.tag = ::fabric::canonicalPhysicalTagValue(*row.tag);
+    materialized.compatible = row.compatible;
+    state.allMembers(row, [&](std::size_t member) {
+      materialized.demandOrdinals.push_back(member);
+      return true;
+    });
+    result.push_back(std::move(materialized));
+  }
   return result;
 }
 
@@ -277,21 +292,30 @@ llvm::Error
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
     FabricTemporalSwitchRouteRowMemberSpans &result) {
-  auto state = prepareCandidateRouteRows(demands);
-  if (!state)
-    return state.takeError();
+  FabricTemporalSwitchCandidateRouteProjectionScratch scratch;
+  return projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+      demands, result, scratch);
+}
+
+llvm::Error
+loom::fabric::projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchRouteRowMemberSpans &result,
+    FabricTemporalSwitchCandidateRouteProjectionScratch &scratch) {
+  CandidateRouteProjectionStorage &state = *scratch.storage_;
+  if (llvm::Error error = prepareCandidateRouteRows(demands, state))
+    return error;
   result.rowOffsets.clear();
   result.demandOrdinals.clear();
-  result.rowOffsets.reserve(state->rows.size() + 1);
-  result.demandOrdinals.reserve(state->members.size());
-  for (const FlatRowState::Occurrence &group : state->occurrences)
-    for (const std::size_t rowOrdinal : group.rowOrder) {
-      result.rowOffsets.push_back(result.demandOrdinals.size());
-      state->allMembers(state->rows[rowOrdinal], [&](std::size_t member) {
-        result.demandOrdinals.push_back(member);
-        return true;
-      });
-    }
+  result.rowOffsets.reserve(state.rows.size() + 1);
+  result.demandOrdinals.reserve(state.members.size());
+  for (const std::size_t rowOrdinal : state.rowOrder) {
+    result.rowOffsets.push_back(result.demandOrdinals.size());
+    state.allMembers(state.rows[rowOrdinal], [&](std::size_t member) {
+      result.demandOrdinals.push_back(member);
+      return true;
+    });
+  }
   result.rowOffsets.push_back(result.demandOrdinals.size());
   return llvm::Error::success();
 }
@@ -299,8 +323,16 @@ loom::fabric::projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
 llvm::Expected<std::uint64_t>
 loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
     llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands) {
-  auto state = prepareCandidateRouteRows(demands);
-  if (!state)
-    return state.takeError();
-  return static_cast<std::uint64_t>(state->rows.size());
+  FabricTemporalSwitchCandidateRouteProjectionScratch scratch;
+  return projectFabricTemporalSwitchCandidateRouteRowCount(demands, scratch);
+}
+
+llvm::Expected<std::uint64_t>
+loom::fabric::projectFabricTemporalSwitchCandidateRouteRowCount(
+    llvm::ArrayRef<FabricTemporalSwitchCandidateRouteDemandView> demands,
+    FabricTemporalSwitchCandidateRouteProjectionScratch &scratch) {
+  CandidateRouteProjectionStorage &state = *scratch.storage_;
+  if (llvm::Error error = prepareCandidateRouteRows(demands, state))
+    return std::move(error);
+  return static_cast<std::uint64_t>(state.rows.size());
 }

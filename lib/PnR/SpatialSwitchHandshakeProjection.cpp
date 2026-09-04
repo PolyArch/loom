@@ -9,7 +9,6 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
-#include <map>
 #include <optional>
 #include <system_error>
 #include <tuple>
@@ -20,15 +19,17 @@ using namespace loom::pnr::detail;
 
 struct loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
     Storage final {
-  std::vector<
-      std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>>
-      signatureStorage;
-  std::size_t signatureStorageUsed = 0;
+  std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>
+      signatureViews;
+  std::vector<std::size_t> signatureOffsets;
   std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
       demandViews;
+  ::loom::fabric::FabricTemporalSwitchCandidateRouteProjectionScratch
+      routeProjectionScratch;
   ::loom::fabric::FabricTemporalSwitchRouteRowMemberSpans rowSpans;
   std::vector<const ::loom::pnr::detail::SpatialTemporalSwitchSegmentDemand *>
       demands;
+  std::vector<PnrIndex> participatingNets;
   std::vector<std::pair<::loom::fabric::FabricOrdinal, PnrIndex>>
       inputTraversals;
 };
@@ -87,10 +88,12 @@ findTraversal(const FrozenSpatialHandshakeIndex &handshake,
 using SwitchDemand = SpatialTemporalSwitchSegmentDemand;
 
 template <typename TagLookup>
-llvm::Expected<std::vector<PnrIndex>>
+llvm::Error
 projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
                        llvm::ArrayRef<const SwitchDemand *> demands,
-                       TagLookup lookupTag, ProjectionStorage &storage) {
+                       TagLookup lookupTag, ProjectionStorage &storage,
+                       std::vector<PnrIndex> &fragments) {
+  fragments.clear();
   const auto matchDomains = problem.routing().tagContinuity().matchDomains();
   if (domain >= matchDomains.size())
     return invalid("switch demand names an absent match domain");
@@ -98,21 +101,23 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
       ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
     return invalid("switch demand names a non-switch match domain");
 
-  // Inner signature vectors keep their capacity across projections; only the
-  // used prefix is meaningful.
-  if (storage.signatureStorage.size() < demands.size())
-    storage.signatureStorage.resize(demands.size());
-  storage.signatureStorageUsed = demands.size();
-  for (auto [ordinal, demand] : llvm::enumerate(demands)) {
+  std::size_t signatureCount = 0;
+  for (const SwitchDemand *demand : demands) {
     if (!demand || demand->domain != domain)
       return invalid("switch demand grouping is inconsistent");
-    auto &signatures = storage.signatureStorage[ordinal];
-    signatures.clear();
-    signatures.reserve(demand->signatures.size());
+    signatureCount += demand->signatures.size();
+  }
+  storage.signatureViews.clear();
+  storage.signatureViews.reserve(signatureCount);
+  storage.signatureOffsets.clear();
+  storage.signatureOffsets.reserve(demands.size() + 1);
+  storage.signatureOffsets.push_back(0);
+  for (const SwitchDemand *demand : demands) {
     for (const SpatialTemporalSwitchInputSignature &signature :
          demand->signatures)
-      signatures.push_back(
+      storage.signatureViews.push_back(
           {signature.occurrence, signature.input, signature.outputs});
+    storage.signatureOffsets.push_back(storage.signatureViews.size());
   }
 
   storage.demandViews.clear();
@@ -126,23 +131,30 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
               matchDomains[domain].tagWidthBits, **tag))
         return invalid("switch route demand has an out-of-range Physical Tag");
       storage.demandViews.push_back(
-          {{storage.signatureStorage[ordinal]},
-           (*tag)->zextOrTrunc(matchDomains[domain].tagWidthBits)});
+          {{llvm::ArrayRef(storage.signatureViews)
+                .slice(storage.signatureOffsets[ordinal],
+                       storage.signatureOffsets[ordinal + 1] -
+                           storage.signatureOffsets[ordinal])},
+           *tag});
     } else {
       storage.demandViews.push_back(
-          {{storage.signatureStorage[ordinal]}, std::nullopt});
+          {{llvm::ArrayRef(storage.signatureViews)
+                .slice(storage.signatureOffsets[ordinal],
+                       storage.signatureOffsets[ordinal + 1] -
+                           storage.signatureOffsets[ordinal])},
+           nullptr});
     }
   }
   if (llvm::Error error = ::loom::fabric::
           projectFabricTemporalSwitchCandidateRouteRowMemberSpans(
-              storage.demandViews, storage.rowSpans))
-    return std::move(error);
+              storage.demandViews, storage.rowSpans,
+              storage.routeProjectionScratch))
+    return error;
   const std::size_t rowCount = storage.rowSpans.rowOffsets.empty()
                                    ? 0
                                    : storage.rowSpans.rowOffsets.size() - 1;
 
   const FrozenSpatialHandshakeIndex &handshake = problem.handshake();
-  std::vector<PnrIndex> fragments;
   for (std::size_t rowOrdinal = 0; rowOrdinal < rowCount; ++rowOrdinal) {
     const std::optional<std::uint64_t> residentCapacity =
         matchDomains[domain].residentEntryCapacity;
@@ -198,7 +210,7 @@ projectDomainFragments(const FrozenSpatialPnrProblem &problem, PnrIndex domain,
   llvm::sort(fragments);
   fragments.erase(std::unique(fragments.begin(), fragments.end()),
                   fragments.end());
-  return fragments;
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<std::vector<const SwitchDemand *>>>
@@ -280,24 +292,26 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeFragments(
   }
 
   std::vector<PnrIndex> fragments;
+  std::vector<PnrIndex> domainFragments;
   SpatialSwitchHandshakeProjectionScratch localScratch;
   for (PnrIndex domain = 0; domain < demandsByDomain.size(); ++domain) {
     if (demandsByDomain[domain].empty())
       continue;
-    auto projected = projectDomainFragments(
-        problem, domain, demandsByDomain[domain],
-        [&](const SwitchDemand &demand) -> llvm::Expected<const llvm::APInt *> {
-          if (demand.logicalNet >= tagValues.size() ||
-              demand.segment >= tagValues[demand.logicalNet].size())
-            return invalid(
-                "switch demand names an absent Physical Tag segment");
-          const auto &value = tagValues[demand.logicalNet][demand.segment];
-          return value ? &*value : nullptr;
-        },
-        localScratch.storage());
-    if (!projected)
-      return projected.takeError();
-    fragments.insert(fragments.end(), projected->begin(), projected->end());
+    if (llvm::Error error = projectDomainFragments(
+            problem, domain, demandsByDomain[domain],
+            [&](const SwitchDemand &demand)
+                -> llvm::Expected<const llvm::APInt *> {
+              if (demand.logicalNet >= tagValues.size() ||
+                  demand.segment >= tagValues[demand.logicalNet].size())
+                return invalid(
+                    "switch demand names an absent Physical Tag segment");
+              const auto &value = tagValues[demand.logicalNet][demand.segment];
+              return value ? &*value : nullptr;
+            },
+            localScratch.storage(), domainFragments))
+      return std::move(error);
+    fragments.insert(fragments.end(), domainFragments.begin(),
+                     domainFragments.end());
   }
   llvm::sort(fragments);
   fragments.erase(std::unique(fragments.begin(), fragments.end()),
@@ -317,15 +331,13 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
   for (PnrIndex domain = 0; domain < grouped->size(); ++domain) {
     if ((*grouped)[domain].empty())
       continue;
-    auto projected = projectDomainFragments(
-        problem, domain, (*grouped)[domain],
-        [&](const SwitchDemand &demand) {
-          return assignmentTag(assignments, demand);
-        },
-        localScratch.storage());
-    if (!projected)
-      return projected.takeError();
-    fragments[domain] = std::move(*projected);
+    if (llvm::Error error = projectDomainFragments(
+            problem, domain, (*grouped)[domain],
+            [&](const SwitchDemand &demand) {
+              return assignmentTag(assignments, demand);
+            },
+            localScratch.storage(), fragments[domain]))
+      return std::move(error);
   }
   return fragments;
 }
@@ -344,6 +356,19 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
     const FrozenSpatialPnrProblem &problem, PnrIndex domain,
     const SpatialTagAssignmentStateStorage &assignments,
     SpatialSwitchHandshakeProjectionScratch &scratch) {
+  std::vector<PnrIndex> fragments;
+  if (llvm::Error error = deriveSpatialTemporalSwitchHandshakeDomainFragments(
+          problem, domain, assignments, scratch, fragments))
+    return std::move(error);
+  return fragments;
+}
+
+llvm::Error
+loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
+    const FrozenSpatialPnrProblem &problem, PnrIndex domain,
+    const SpatialTagAssignmentStateStorage &assignments,
+    SpatialSwitchHandshakeProjectionScratch &scratch,
+    std::vector<PnrIndex> &fragments) {
   const auto matchDomains = problem.routing().tagContinuity().matchDomains();
   if (domain >= matchDomains.size())
     return invalid("updated switch domain is out of range");
@@ -359,7 +384,9 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
   // vertex inventory bounds the participating logical nets. Ascending net
   // order preserves the canonical demand order of a full scan.
   const auto vertices = assignments.interference.domainVertices(domain);
-  llvm::SmallVector<PnrIndex, 32> participatingNets;
+  std::vector<PnrIndex> &participatingNets =
+      scratch.storage().participatingNets;
+  participatingNets.clear();
   participatingNets.reserve(vertices.size());
   for (const SpatialTagVertexRef &vertex : vertices)
     participatingNets.push_back(vertex.logicalNet);
@@ -387,5 +414,5 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
       [&](const SwitchDemand &demand) {
         return assignmentTag(assignments, demand);
       },
-      scratch.storage());
+      scratch.storage(), fragments);
 }

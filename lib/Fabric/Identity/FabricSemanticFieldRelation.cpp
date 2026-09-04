@@ -1,6 +1,7 @@
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/PhysicalTag.h"
 #include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -604,9 +605,11 @@ llvm::Expected<CanonicalSemanticBytes> encodeTemporalSwitchConfiguration(
 
   std::vector<FabricTemporalSwitchRouteEntry> rows(entries.begin(),
                                                    entries.end());
-  for (const FabricTemporalSwitchRouteEntry &entry : rows) {
-    if (entry.tag.getBitWidth() != path->tagWidthBits)
-      return rejected("Temporal switch route tag has the wrong width");
+  for (FabricTemporalSwitchRouteEntry &entry : rows) {
+    if (!::fabric::isRepresentablePhysicalTagValue(path->tagWidthBits,
+                                                   entry.tag))
+      return rejected("Temporal switch route tag exceeds the owner width");
+    entry.tag = entry.tag.zextOrTrunc(path->tagWidthBits);
     if (entry.selectedTraversals.empty())
       return rejected("Temporal switch route entry selects no traversal");
   }
