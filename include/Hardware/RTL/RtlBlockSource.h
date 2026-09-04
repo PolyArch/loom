@@ -66,6 +66,14 @@ llvm::Error verifyPortableRtlBlockSourceDerivation(
     const FinalizedHardwareImplementation &implementation,
     std::size_t definition, const BlobStore &blobs);
 
+/// Verifies the entire canonical top closure; a valid leaf source cannot
+/// satisfy a whole-implementation association.
+llvm::Error verifyPortableRtlBlockSourceRootDerivation(
+    const FinalizedRtlBlockSource &source,
+    const FinalizedConfigurationABI &configurationAbi,
+    const FinalizedHardwareImplementation &implementation,
+    const BlobStore &blobs);
+
 /// Verifies a complete child source against one definition of a validated
 /// parent source, including the inherited System clock contract. The parent
 /// source's own occurrence association remains a separate derivation.

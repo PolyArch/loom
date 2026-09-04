@@ -3,6 +3,7 @@ add_library(LoomEDASynopsys
   DesignCompiler.cpp
   DesignCompilerBlock.cpp
   DesignCompilerGenerator.cpp
+  DesignCompilerImplementation.cpp
   FusionCompiler.cpp
   FusionCompilerGenerator.cpp
   PrimePower.cpp

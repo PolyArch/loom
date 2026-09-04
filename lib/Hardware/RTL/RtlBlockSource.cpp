@@ -328,7 +328,7 @@ derive(const RtlModuleGraphProjection &graph,
 llvm::Expected<SourceFacts>
 derive(const FinalizedConfigurationABI &configurationAbi,
        const FinalizedHardwareImplementation &implementation,
-       std::size_t definition, const BlobStore &blobs) {
+       std::optional<std::size_t> definition, const BlobStore &blobs) {
   auto graph = projectPortableSpatialCoreRtlModuleGraph(configurationAbi,
                                                         implementation);
   if (!graph)
@@ -345,7 +345,7 @@ derive(const FinalizedConfigurationABI &configurationAbi,
       configurationAbi, implementation.implementation().interfaces());
   if (!domain)
     return domain.takeError();
-  return derive(**graph, *bound, definition,
+  return derive(**graph, *bound, definition.value_or((**graph).topModule),
                 {domain->clockPort, domain->resetPort}, domain->clock);
 }
 
@@ -427,6 +427,17 @@ llvm::Error verifyPortableRtlBlockSourceDerivation(
     const FinalizedHardwareImplementation &implementation,
     std::size_t definition, const BlobStore &blobs) {
   auto derived = derive(configurationAbi, implementation, definition, blobs);
+  if (!derived)
+    return derived.takeError();
+  return verifySourceIdentity(*derived, source);
+}
+
+llvm::Error verifyPortableRtlBlockSourceRootDerivation(
+    const FinalizedRtlBlockSource &source,
+    const FinalizedConfigurationABI &configurationAbi,
+    const FinalizedHardwareImplementation &implementation,
+    const BlobStore &blobs) {
+  auto derived = derive(configurationAbi, implementation, std::nullopt, blobs);
   if (!derived)
     return derived.takeError();
   return verifySourceIdentity(*derived, source);

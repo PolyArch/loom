@@ -669,6 +669,24 @@ source association and account for its glue, interconnect, clock tree, routing,
 macro blockage, dynamic power, and root timing before publishing whole-root
 physical results.
 
+The registered `synopsys.design_compiler.portable_gate_implementation`
+association consumes the original portable HardwareImplementation and a
+complete mapped root BlockGateNetlist. It replays the root source against the
+exact canonical top, rebinds only direct public port locators to the normalized
+root, and validates their indexed direction and width. The existing
+HardwareImplementation publisher retains the original Fabric, SpatialCore
+subject and ConfigurationABI, the unchanged mapped payload closure, and the
+exact mapped ASIC platform and standard-cell library contract. An already
+bound source platform must match; an unbound portable source acquires the
+mapped platform. The invocation retains the exact root block and its corner.
+
+This association is deterministic over its immutable inputs and invokes no
+synthesis tool. Exact portable replay also requires the canonical empty
+activity, memory-macro and external-binding catalogs. It does not support
+specialized RTL associations or infer missing signal correspondences. The
+published GateNetlist has no physical stage, routed FPA, logic-equivalence
+signoff or measured activity claim.
+
 The full, block and hierarchical Design Compiler generators share the
 `IndependentReplicates` determinism contract. Native exports retain execution
 metadata, including a date header, so independent fresh executions may produce

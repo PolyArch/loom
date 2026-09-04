@@ -270,9 +270,14 @@ Fixture buildFixture(const std::filesystem::path &root, Shape shape) {
   auto parentSource = take(
       test, finalizePortableRtlBlockSource(
                 abi, implementation, fixture.graph.topModule, store, blobs));
-  if (llvm::Error error = verifyPortableRtlBlockSourceDerivation(
-          parentSource, abi, implementation, fixture.graph.topModule, blobs))
+  if (llvm::Error error = verifyPortableRtlBlockSourceRootDerivation(
+          parentSource, abi, implementation, blobs))
     fail(test, llvm::toString(std::move(error)));
+  llvm::Error incompleteRoot = verifyPortableRtlBlockSourceRootDerivation(
+      imported, abi, implementation, blobs);
+  require(test, static_cast<bool>(incompleteRoot),
+          "a valid leaf source satisfied the whole implementation association");
+  llvm::consumeError(std::move(incompleteRoot));
   const auto &parentProjection = parentSource.projection();
   for (const auto &dependency :
        fixture.graph.modules[fixture.graph.topModule].dependencies) {

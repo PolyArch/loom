@@ -38,6 +38,21 @@ llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveDesignCompilerHierarchicalBlockGateNetlistBinding(
     const ResolvedDesignCompilerGateNetlistConfigView &config);
 
+/// Associates an accepted complete mapped root with its exact portable RTL
+/// implementation. All source derivation and public interface facts are
+/// checked before publishing the existing HardwareImplementation schema.
+inline constexpr dse::CandidateGeneratorKind
+    designCompilerPortableGateImplementationCandidateGeneratorKind(0x53444349);
+const dse::CandidateGeneratorDescriptor &
+designCompilerPortableGateImplementationCandidateGeneratorDescriptor();
+llvm::Error registerDesignCompilerPortableGateImplementationCandidateGenerator();
+llvm::Expected<std::vector<dse::CandidateGeneratorInputBinding>>
+bindDesignCompilerPortableGateImplementationInputs(
+    const ArtifactRootReference &implementation,
+    const ArtifactRootReference &blockNetlist);
+llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
+resolveDesignCompilerPortableGateImplementationBinding();
+
 /// Includes the vendor-owned mapped library contract validation in addition
 /// to the hardware-owned source/technology/interface closure importer.
 llvm::Expected<hardware::rtl::FinalizedBlockGateNetlist>
