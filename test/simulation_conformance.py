@@ -27,6 +27,8 @@ from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E40
 
 
 SPATIAL_REFERENCE_FLOOR_SECONDS = 0.1
+#: The paired System policy owns exactly three adjacent attempts.
+PAIRED_SYSTEM_ATTEMPT_COUNT = 3
 SYSTEM_BUDGET_MULTIPLIER = 3.0
 HARD_FAILURE_RATIO = 10.0
 REFERENCE_RATE_TARGET_CYCLES_PER_SECOND = 100_000
@@ -107,6 +109,9 @@ class PairedSystemBudget:
 
 @dataclass(frozen=True)
 class PairedExecutionResult:
+    #: Ordinal of the least-delayed observed System sample; every field below
+    #: describes that sample.
+    system_sample_ordinal: int
     spatial_reference_seconds: float
     system_active_wall_seconds: float
     system_to_spatial_ratio: float
@@ -158,26 +163,44 @@ def paired_system_budget(
 
 def evaluate_paired_execution(
     budget: PairedSystemBudget,
-    system_timing: ActiveExecutionTiming,
+    system_attempts: Sequence["PairedSystemAttempt"],
 ) -> PairedExecutionResult:
     _require_finite_positive(budget.spatial_reference_seconds, "Spatial reference time")
     _require_finite_positive(budget.system_budget_seconds, "System budget")
     _require_finite_positive(budget.hard_failure_seconds, "hard failure time")
+    if len(system_attempts) != PAIRED_SYSTEM_ATTEMPT_COUNT:
+        raise ValueError(
+            "paired System evaluation requires exactly "
+            f"{PAIRED_SYSTEM_ATTEMPT_COUNT} adjacent attempts"
+        )
+    expected_ordinals = tuple(range(PAIRED_SYSTEM_ATTEMPT_COUNT))
+    if tuple(attempt.ordinal for attempt in system_attempts) != expected_ordinals:
+        raise ValueError("paired System attempts must use canonical ordinal order")
+    if any(
+        attempt.measurement is None or attempt.disposition is not None
+        for attempt in system_attempts
+    ):
+        raise ValueError("paired System evaluation requires completed attempts")
+    system_samples = tuple(
+        attempt.measurement.timing
+        for attempt in system_attempts
+        if attempt.measurement is not None
+    )
 
+    # Select the least-delayed observed sample. One delayed observation cannot
+    # fail the pair, while a slowdown present in every sample still does.
+    ordinal = min(
+        range(len(system_samples)),
+        key=lambda index: system_samples[index].active_wall_seconds,
+    )
+    system_timing = system_samples[ordinal]
     ratio = system_timing.active_wall_seconds / budget.spatial_reference_seconds
-    # The rate gate qualifies the simulator's throughput, not the host
-    # scheduler: the simulator process's CPU time (the engine slot for direct
-    # engine measurements, the host slot for the gem5 child) is far less
-    # load-sensitive than active wall time, so a loaded parallel suite must
-    # not turn a healthy engine into a rate failure. Wall time remains the
-    # basis for the paired budget and hard-ratio contracts above.
+    # The 100 KHz gate is reference cycles per active wall second. CPU-time
+    # fields remain diagnostic evidence and cannot hide host contention.
     rate_basis_seconds = system_timing.active_wall_seconds
-    if system_timing.engine_cpu_seconds > 0.0:
-        rate_basis_seconds = system_timing.engine_cpu_seconds
-    elif system_timing.host_cpu_seconds > 0.0:
-        rate_basis_seconds = system_timing.host_cpu_seconds
     rate = system_timing.reference_cycles / rate_basis_seconds
     return PairedExecutionResult(
+        system_sample_ordinal=ordinal,
         spatial_reference_seconds=budget.spatial_reference_seconds,
         system_active_wall_seconds=system_timing.active_wall_seconds,
         system_to_spatial_ratio=ratio,
@@ -261,6 +284,7 @@ class MeasurementDisposition(str, Enum):
     SPATIAL_ABSOLUTE_BUDGET_EXCEEDED = "spatial_absolute_budget_exceeded"
     SYSTEM_EXECUTION_FAILED = "system_execution_failed"
     SYSTEM_TIMED_OUT = "system_timed_out"
+    CGRA_GATE_INCOMPLETE = "cgra_gate_incomplete"
     PROCESS_CLEANUP_FAILED = "process_cleanup_failed"
     PAIRED_WORK_MISMATCH = "paired_work_mismatch"
     SYSTEM_BUDGET_EXCEEDED = "system_budget_exceeded"
@@ -269,14 +293,44 @@ class MeasurementDisposition(str, Enum):
 
 
 @dataclass(frozen=True)
+class PairedSystemAttempt:
+    """One ordered System attempt and its optional parsed outcome."""
+
+    ordinal: int
+    process: ProcessExecution
+    measurement: ExecutionMatrixMeasurement | None = None
+    disposition: MeasurementDisposition | None = None
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError("System attempt ordinal must be nonnegative")
+        if (
+            self.measurement is not None
+            and self.measurement.cell != "paired-system-cgra"
+        ):
+            raise ValueError("System attempt measurement names the wrong cell")
+        if self.measurement is None and self.disposition is None:
+            raise ValueError("System attempt must retain a measurement or disposition")
+        if self.measurement is not None and self.disposition is not None:
+            raise ValueError("System attempt cannot retain two outcomes")
+        if (
+            self.measurement is not None
+            and self.process.disposition is not ProcessDisposition.COMPLETED
+        ):
+            raise ValueError("measured System attempt has an incomplete process")
+
+
+@dataclass(frozen=True)
 class PairedMeasurementReport:
     disposition: MeasurementDisposition
     gate: "CgraGateConfiguration"
     spatial_measurements: tuple[ExecutionMatrixMeasurement, ...]
-    system_measurement: ExecutionMatrixMeasurement | None
+    #: Every retained System process in execution order. Failed or
+    #: unparseable processes retain an absent measurement rather than being
+    #: split across parallel arrays.
+    system_attempts: tuple[PairedSystemAttempt, ...]
     paired_result: PairedExecutionResult | None
     spatial_process: ProcessExecution | None
-    system_process: ProcessExecution | None
     diagnostic: str = ""
 
 
@@ -1492,18 +1546,16 @@ def _failed_report(
     spatial_measurements: Sequence[ExecutionMatrixMeasurement],
     *,
     spatial_process: ProcessExecution | None,
-    system_process: ProcessExecution | None,
     diagnostic: str,
-    system_measurement: ExecutionMatrixMeasurement | None = None,
+    system_attempts: Sequence[PairedSystemAttempt] = (),
 ) -> PairedMeasurementReport:
     return PairedMeasurementReport(
         disposition=disposition,
         gate=gate,
         spatial_measurements=tuple(spatial_measurements),
-        system_measurement=system_measurement,
+        system_attempts=tuple(system_attempts),
         paired_result=None,
         spatial_process=spatial_process,
-        system_process=system_process,
         diagnostic=diagnostic,
     )
 
@@ -1539,6 +1591,17 @@ def run_paired_execution_matrix(
 ) -> PairedMeasurementReport:
     if spatial_warmup_runs < 1 or spatial_measurement_runs < 1:
         raise ValueError("paired measurement requires warmup and measured runs")
+    if gate.source is not CgraGateSource.TRACKED:
+        return _failed_report(
+            MeasurementDisposition.CGRA_GATE_INCOMPLETE,
+            gate,
+            (),
+            spatial_process=None,
+            diagnostic=(
+                "CGRA Spatial absolute budget is provisional; publish the "
+                f"tracked gate at {CGRA_GATE_RELATIVE_PATH} before conformance"
+            ),
+        )
     spatial_timeout = (
         float(timeout_seconds(Tier.MEDIUM))
         if spatial_process_timeout_seconds is None
@@ -1573,7 +1636,6 @@ def run_paired_execution_matrix(
             gate,
             (),
             spatial_process=spatial_process,
-            system_process=None,
             diagnostic=spatial_process.stderr.strip() or spatial_process.stdout.strip(),
         )
     try:
@@ -1588,7 +1650,6 @@ def run_paired_execution_matrix(
             gate,
             (),
             spatial_process=spatial_process,
-            system_process=None,
             diagnostic=str(error),
         )
 
@@ -1614,7 +1675,6 @@ def run_paired_execution_matrix(
             gate,
             spatial_measurements,
             spatial_process=spatial_process,
-            system_process=None,
             diagnostic="Spatial measurements do not name one exact work/config pair",
         )
     if any(
@@ -1626,61 +1686,87 @@ def run_paired_execution_matrix(
             gate,
             spatial_measurements,
             spatial_process=spatial_process,
-            system_process=None,
             diagnostic="a Spatial sample exceeded the tracked Spatial absolute budget",
         )
 
-    system_process = execute_process(
-        (runner, "paired-system-cgra", readiness),
-        system_timeout,
-        termination_grace_seconds=termination_grace_seconds,
-        environment=process_environment,
-    )
-    if system_process.disposition is not ProcessDisposition.COMPLETED:
-        return _failed_report(
-            _process_failure_disposition(system_process, spatial=False),
-            gate,
-            spatial_measurements,
-            spatial_process=spatial_process,
-            system_process=system_process,
-            diagnostic=system_process.stderr.strip() or system_process.stdout.strip(),
+    # The System side runs the exact same work adjacently, once per sample;
+    # every sample proves its identity against the Spatial work through the
+    # harness fingerprints before the least-delayed observed sample is selected.
+    system_attempts: list[PairedSystemAttempt] = []
+    for ordinal in range(PAIRED_SYSTEM_ATTEMPT_COUNT):
+        system_process = execute_process(
+            (runner, "paired-system-cgra", readiness),
+            system_timeout,
+            termination_grace_seconds=termination_grace_seconds,
+            environment=process_environment,
         )
-    try:
-        system_measurement = parse_execution_matrix_measurement(
-            system_process.stdout, "paired-system-cgra"
+        if system_process.disposition is not ProcessDisposition.COMPLETED:
+            system_attempts.append(
+                PairedSystemAttempt(
+                    ordinal,
+                    system_process,
+                    disposition=_process_failure_disposition(
+                        system_process, spatial=False
+                    ),
+                )
+            )
+            return _failed_report(
+                _process_failure_disposition(system_process, spatial=False),
+                gate,
+                spatial_measurements,
+                spatial_process=spatial_process,
+                diagnostic=(
+                    system_process.stderr.strip() or system_process.stdout.strip()
+                ),
+                system_attempts=system_attempts,
+            )
+        try:
+            system_measurement = parse_execution_matrix_measurement(
+                system_process.stdout, "paired-system-cgra"
+            )
+        except ValueError as error:
+            system_attempts.append(
+                PairedSystemAttempt(
+                    ordinal,
+                    system_process,
+                    disposition=MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
+                )
+            )
+            return _failed_report(
+                MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
+                gate,
+                spatial_measurements,
+                spatial_process=spatial_process,
+                diagnostic=str(error),
+                system_attempts=system_attempts,
+            )
+        system_attempts.append(
+            PairedSystemAttempt(ordinal, system_process, system_measurement)
         )
-    except ValueError as error:
-        return _failed_report(
-            MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
-            gate,
-            spatial_measurements,
-            spatial_process=spatial_process,
-            system_process=system_process,
-            diagnostic=str(error),
+        observed_system_work = (
+            system_measurement.work_fingerprint,
+            system_measurement.config_fingerprint,
+            system_measurement.timing.reference_cycles,
+            system_measurement.timing.event_count,
         )
-
-    observed_system_work = (
-        system_measurement.work_fingerprint,
-        system_measurement.config_fingerprint,
-        system_measurement.timing.reference_cycles,
-        system_measurement.timing.event_count,
-    )
-    if observed_system_work != expected_work:
-        return _failed_report(
-            MeasurementDisposition.PAIRED_WORK_MISMATCH,
-            gate,
-            spatial_measurements,
-            spatial_process=spatial_process,
-            system_process=system_process,
-            diagnostic="System measurement names different work or configuration",
-            system_measurement=system_measurement,
-        )
+        if observed_system_work != expected_work:
+            return _failed_report(
+                MeasurementDisposition.PAIRED_WORK_MISMATCH,
+                gate,
+                spatial_measurements,
+                spatial_process=spatial_process,
+                diagnostic=(
+                    f"System sample {ordinal} names "
+                    "different work or configuration"
+                ),
+                system_attempts=system_attempts,
+            )
 
     budget = paired_system_budget(
         [sample.timing.active_wall_seconds for sample in spatial_measurements],
         gate.spatial_absolute_budget_seconds,
     )
-    paired = evaluate_paired_execution(budget, system_measurement.timing)
+    paired = evaluate_paired_execution(budget, system_attempts)
     if paired.hard_ratio_failure:
         disposition = MeasurementDisposition.HARD_RATIO_EXCEEDED
     elif not paired.within_system_budget:
@@ -1693,19 +1779,17 @@ def run_paired_execution_matrix(
         disposition=disposition,
         gate=gate,
         spatial_measurements=spatial_measurements,
-        system_measurement=system_measurement,
+        system_attempts=tuple(system_attempts),
         paired_result=paired,
         spatial_process=spatial_process,
-        system_process=system_process,
     )
 
 
 def _measurement_json(
-    measurement: ExecutionMatrixMeasurement | None,
-) -> dict[str, object] | None:
-    if measurement is None:
-        return None
+    ordinal: int, measurement: ExecutionMatrixMeasurement
+) -> dict[str, object]:
     return {
+        "ordinal": ordinal,
         "cell": measurement.cell,
         "attempt": measurement.attempt,
         "invocation": measurement.invocation,
@@ -1734,9 +1818,26 @@ def _process_json(process: ProcessExecution | None) -> dict[str, object] | None:
     }
 
 
+def _system_attempt_json(attempt: PairedSystemAttempt) -> dict[str, object]:
+    return {
+        "ordinal": attempt.ordinal,
+        "process": _process_json(attempt.process),
+        "disposition": (
+            MeasurementDisposition.MEASURED.value
+            if attempt.measurement is not None
+            else attempt.disposition.value
+        ),
+        "measurement": (
+            None
+            if attempt.measurement is None
+            else _measurement_json(attempt.ordinal, attempt.measurement)
+        ),
+    }
+
+
 def report_json(report: PairedMeasurementReport) -> dict[str, object]:
     projected: dict[str, object] = {
-        "schema": "loom.paired_simulation_measurement_report.3",
+        "schema": "loom.paired_simulation_measurement_report.5",
         "disposition": report.disposition.value,
         "spatial_absolute_budget": {
             "source": report.gate.source.value,
@@ -1750,18 +1851,20 @@ def report_json(report: PairedMeasurementReport) -> dict[str, object]:
         "system_timeout_source": "config.timeout_budgets:xlong",
         "cleanup_timeout_source": "config.timeout_budgets:ultrafast",
         "spatial": [
-            _measurement_json(measurement)
-            for measurement in report.spatial_measurements
+            _measurement_json(ordinal, measurement)
+            for ordinal, measurement in enumerate(report.spatial_measurements)
         ],
-        "system": _measurement_json(report.system_measurement),
+        "system_attempts": [
+            _system_attempt_json(attempt) for attempt in report.system_attempts
+        ],
         "spatial_process": _process_json(report.spatial_process),
-        "system_process": _process_json(report.system_process),
         "diagnostic": report.diagnostic,
         "paired": None,
     }
     if report.paired_result is not None:
         paired = report.paired_result
         projected["paired"] = {
+            "system_sample_ordinal": paired.system_sample_ordinal,
             "spatial_reference_seconds": paired.spatial_reference_seconds,
             "system_active_wall_seconds": paired.system_active_wall_seconds,
             "system_to_spatial_ratio": paired.system_to_spatial_ratio,
@@ -1784,7 +1887,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spatial-measurement-runs", type=int, default=3)
     arguments = parser.parse_args(argv)
     gate = resolve_cgra_gate_configuration()
-    measurement_attempts = 1
     report = run_paired_execution_matrix(
         arguments.execution_matrix_runner,
         arguments.gem5_readiness,
@@ -1792,23 +1894,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         spatial_warmup_runs=arguments.spatial_warmup_runs,
         spatial_measurement_runs=arguments.spatial_measurement_runs,
     )
-    if report.disposition is MeasurementDisposition.REFERENCE_RATE_BELOW_TARGET:
-        # A transient host-load dip can miss the reference rate while the
-        # measurement machinery is healthy. One bounded remeasurement keeps
-        # the rate gate meaningful: an order-of-magnitude host regression
-        # fails both attempts, while a scheduling blip does not fail the
-        # suite. Budget and ratio failures are not retried.
-        measurement_attempts += 1
-        report = run_paired_execution_matrix(
-            arguments.execution_matrix_runner,
-            arguments.gem5_readiness,
-            gate,
-            spatial_warmup_runs=arguments.spatial_warmup_runs,
-            spatial_measurement_runs=arguments.spatial_measurement_runs,
-        )
-    payload = report_json(report)
-    payload["measurement_attempts"] = measurement_attempts
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(report_json(report), indent=2, sort_keys=True))
     return 0 if report.disposition is MeasurementDisposition.MEASURED else 1
 
 

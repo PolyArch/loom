@@ -125,10 +125,28 @@ artifact construction, gem5 build, RTL compilation, cold process startup, and
 RTL elaboration. Excluded setup is measured separately and reused across
 compatible cases.
 
+The System side of one pair is measured in three adjacent executions of the
+exact same work: the same Deployment and fixture, the same gem5 readiness, and
+the same configuration image, proven by equal work and configuration
+fingerprints on every measured row. Every raw sample is retained with its
+ordinal: active wall time, engine, Bridge, and host CPU time, event and
+activation counts, peak resident memory, and the fingerprints. Adjacent
+executions retain the same identity contract, while host conditions may still
+vary. The sample with the minimum active wall time is the least-delayed
+observed sample that the budget, hard-ratio rule, and reference-rate
+requirement consume; this selection does not establish an uncontended or
+steady-state rate. The reference rate of that sample is reference cycles
+divided by active wall seconds. Engine, Bridge, host, and observation CPU times
+are retained as diagnostic fields only and never replace the wall-time
+denominator. One transiently delayed sample therefore does not fail the pair,
+while a slowdown present in every sample still does. No checkpoint or host
+receives a different rule.
+
 The initial reference and budget are:
 
 ```text
 spatial_reference = max(median warmed Spatial-only active wall time, 100 ms)
+system_active = min(active wall time over the three adjacent System executions)
 system_budget = min(3 * spatial_reference,
                     3 * Spatial-only absolute budget)
 ```
@@ -217,11 +235,17 @@ change requires new aggregate evidence and one tracked gate update. The paired
 System + CGRA budget consumes that exact published Spatial-only budget through
 the formula above; no caller or simulator may supply a hidden second value.
 
-Every paired result reports active wall time, the System-to-Spatial ratio,
-reference cycles per wall second, engine/Bridge/host/observation CPU time,
-event and activation counts, and peak resident memory. System simulation
-targets at least 100 k reference cycles per wall second. Raw gem5 ticks are
-not reference cycles. Corpus orchestration uses at most
+If the tracked CGRA gate is absent or incomplete, the runner returns the typed
+`cgra_gate_incomplete` outcome before launching either side of the pair. A
+provisional bootstrap value may describe local qualification setup, but it is
+never a conformance authority and cannot produce a `measured` report.
+
+Every paired result reports every retained System sample with its ordinal
+and, for the selected sample, active wall time, the System-to-Spatial ratio,
+the reference-cycle rate with its basis time, engine/Bridge/host/observation
+CPU time, event and activation counts, and peak resident memory. System
+simulation targets at least 100 k reference cycles per second on that basis.
+Raw gem5 ticks are not reference cycles. Corpus orchestration uses at most
 `min(nproc - 4, memory-derived worker limit, 120)` outer workers and does not
 hide nested oversubscription inside one case.
 

@@ -22,6 +22,40 @@ import simulation_conformance  # noqa: E402
 
 
 class PairedSimulationBudgetTest(unittest.TestCase):
+    @staticmethod
+    def _attempts(
+        timings: list[simulation_conformance.ActiveExecutionTiming],
+    ) -> list[simulation_conformance.PairedSystemAttempt]:
+        process = simulation_conformance.ProcessExecution(
+            simulation_conformance.ProcessDisposition.COMPLETED,
+            ("synthetic-system",),
+            0.0,
+            0,
+            "",
+            "",
+            False,
+        )
+        measurements = [
+            simulation_conformance.ExecutionMatrixMeasurement(
+                "paired-system-cgra",
+                "diagnostic",
+                "paired-system-cgra",
+                "0" * 64,
+                "1" * 64,
+                1,
+                0.0,
+                0.0,
+                "fresh_system_diagnostic",
+                "child_process_lifetime",
+                timing,
+            )
+            for timing in timings
+        ]
+        return [
+            simulation_conformance.PairedSystemAttempt(index, process, measurement)
+            for index, measurement in enumerate(measurements)
+        ]
+
     def test_warmed_median_and_floor_define_the_system_budget(self) -> None:
         tiny = simulation_conformance.paired_system_budget(
             [0.002, 0.003, 0.004],
@@ -59,22 +93,27 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         )
         within = simulation_conformance.evaluate_paired_execution(
             budget,
-            simulation_conformance.ActiveExecutionTiming(
-                active_wall_seconds=2.5,
-                reference_cycles=500_000,
-                event_count=17,
-                activation_count=3,
-                peak_resident_bytes=4096,
-            ),
+            self._attempts([
+                simulation_conformance.ActiveExecutionTiming(
+                    active_wall_seconds=2.5,
+                    reference_cycles=500_000,
+                    event_count=17,
+                    activation_count=3,
+                    peak_resident_bytes=4096,
+                )
+            ] * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT),
         )
         slow = simulation_conformance.evaluate_paired_execution(
             budget,
-            simulation_conformance.ActiveExecutionTiming(
-                active_wall_seconds=10.0,
-                reference_cycles=500_000,
-            ),
+            self._attempts([
+                simulation_conformance.ActiveExecutionTiming(
+                    active_wall_seconds=10.0,
+                    reference_cycles=500_000,
+                )
+            ] * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT),
         )
 
+        self.assertEqual(within.system_sample_ordinal, 0)
         self.assertTrue(within.within_system_budget)
         self.assertFalse(within.hard_ratio_failure)
         self.assertEqual(within.reference_cycles_per_second, 200_000.0)
@@ -86,6 +125,123 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         self.assertFalse(slow.within_system_budget)
         self.assertTrue(slow.hard_ratio_failure)
         self.assertFalse(slow.meets_reference_rate_target)
+
+    def test_minimum_adjacent_sample_is_the_least_delayed_observation(self) -> None:
+        budget = simulation_conformance.paired_system_budget(
+            [1.0, 1.0, 1.0],
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
+        )
+
+        def sample(
+            active_wall_seconds: float, engine_cpu_seconds: float
+        ) -> simulation_conformance.ActiveExecutionTiming:
+            return simulation_conformance.ActiveExecutionTiming(
+                active_wall_seconds=active_wall_seconds,
+                reference_cycles=500_000,
+                engine_cpu_seconds=engine_cpu_seconds,
+            )
+
+        one_delayed = simulation_conformance.evaluate_paired_execution(
+            budget,
+            self._attempts([sample(12.0, 9.0), sample(2.0, 1.0), sample(2.5, 1.2)]),
+        )
+        every_slow = simulation_conformance.evaluate_paired_execution(
+            budget,
+            self._attempts([sample(12.0, 9.0), sample(11.0, 8.0), sample(13.0, 9.5)]),
+        )
+
+        self.assertEqual(one_delayed.system_sample_ordinal, 1)
+        self.assertEqual(one_delayed.system_active_wall_seconds, 2.0)
+        self.assertEqual(one_delayed.reference_rate_basis_seconds, 2.0)
+        self.assertEqual(one_delayed.reference_cycles_per_second, 250_000.0)
+        self.assertTrue(one_delayed.within_system_budget)
+        self.assertFalse(one_delayed.hard_ratio_failure)
+        self.assertTrue(one_delayed.meets_reference_rate_target)
+
+        self.assertEqual(every_slow.system_sample_ordinal, 1)
+        self.assertEqual(every_slow.system_active_wall_seconds, 11.0)
+        self.assertFalse(every_slow.within_system_budget)
+        self.assertTrue(every_slow.hard_ratio_failure)
+        self.assertFalse(every_slow.meets_reference_rate_target)
+
+    def test_wall_time_rate_gate_does_not_use_cpu_time(self) -> None:
+        budget = simulation_conformance.paired_system_budget(
+            [1.0, 1.0, 1.0],
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
+        )
+        loaded = self._attempts(
+            [
+                simulation_conformance.ActiveExecutionTiming(
+                    active_wall_seconds=8.0,
+                    reference_cycles=500_000,
+                    engine_cpu_seconds=1.0,
+                    host_cpu_seconds=1.0,
+                )
+            ]
+            * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT
+        )
+        result = simulation_conformance.evaluate_paired_execution(budget, loaded)
+        self.assertEqual(result.reference_rate_basis_seconds, 8.0)
+        self.assertEqual(result.reference_cycles_per_second, 62_500.0)
+        self.assertFalse(result.meets_reference_rate_target)
+
+    def test_exact_three_samples_and_lowest_ordinal_tie_break(self) -> None:
+        budget = simulation_conformance.paired_system_budget(
+            [1.0, 1.0, 1.0],
+            spatial_absolute_budget_seconds=(
+                simulation_conformance.DFG_SPATIAL_ABSOLUTE_BUDGET_SECONDS
+            ),
+        )
+
+        def sample(
+            active_wall_seconds: float,
+        ) -> simulation_conformance.ActiveExecutionTiming:
+            return simulation_conformance.ActiveExecutionTiming(
+                active_wall_seconds=active_wall_seconds,
+                reference_cycles=500_000,
+            )
+
+        tied = simulation_conformance.evaluate_paired_execution(
+            budget, self._attempts([sample(2.0), sample(1.0), sample(1.0)])
+        )
+        self.assertEqual(tied.system_sample_ordinal, 1)
+        with self.assertRaisesRegex(ValueError, "canonical ordinal order"):
+            simulation_conformance.evaluate_paired_execution(
+                budget,
+                [
+                    simulation_conformance.PairedSystemAttempt(
+                        index + 1, attempt.process, attempt.measurement
+                    )
+                    for index, attempt in enumerate(
+                        self._attempts([sample(1.0), sample(1.0), sample(1.0)])
+                    )
+                ],
+            )
+        failed_process = simulation_conformance.ProcessExecution(
+            simulation_conformance.ProcessDisposition.NONZERO_EXIT,
+            ("synthetic-system",),
+            0.0,
+            7,
+            "",
+            "",
+            False,
+        )
+        with self.assertRaisesRegex(ValueError, "incomplete process"):
+            simulation_conformance.PairedSystemAttempt(
+                0,
+                failed_process,
+                self._attempts([sample(1.0), sample(1.0), sample(1.0)])[0].measurement,
+            )
+        for count in (0, 1, 2, 4):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(ValueError, "exactly 3"):
+                    simulation_conformance.evaluate_paired_execution(
+                        budget, self._attempts([sample(1.0)] * count)
+                    )
 
     def test_invalid_measurements_fail_closed(self) -> None:
         for samples in ([], [0.0], [-1.0], [math.inf], [math.nan]):
@@ -605,6 +761,8 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
                 system = cell == "paired-system-cgra"
                 if os.environ.get("LOOM_TEST_SLEEP") == ("system" if system else "spatial"):
                     time.sleep(30)
+                if system and os.environ.get("LOOM_TEST_FAIL_SYSTEM") == "1":
+                    sys.exit(7)
                 count = int(sys.argv[3]) if batch else 1
                 mismatch = os.environ.get("LOOM_TEST_MISMATCH", "")
                 work = ("2" if system and mismatch == "work" else "0") * 64
@@ -677,13 +835,32 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
             simulation_conformance.MeasurementDisposition.MEASURED,
         )
         self.assertEqual(len(report.spatial_measurements), 3)
-        self.assertIsNotNone(report.system_measurement)
+        self.assertEqual(
+            len(report.system_attempts),
+            simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT,
+        )
+        self.assertEqual(
+            [attempt.ordinal for attempt in report.system_attempts],
+            list(range(simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT)),
+        )
+        assert report.paired_result is not None
+        self.assertTrue(
+            all(attempt.measurement is not None for attempt in report.system_attempts)
+        )
         projected = simulation_conformance.report_json(report)
         self.assertEqual(
             projected["spatial_absolute_budget"]["path"],
             simulation_conformance.CGRA_GATE_RELATIVE_PATH,
         )
         self.assertEqual(projected["spatial_absolute_budget"]["seconds"], 0.5)
+        self.assertEqual(
+            [sample["ordinal"] for sample in projected["system_attempts"]],
+            list(range(simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT)),
+        )
+        self.assertIn(
+            projected["paired"]["system_sample_ordinal"],
+            range(simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT),
+        )
 
     def test_pair_rejects_each_exact_work_or_config_mismatch(self) -> None:
         scratch_root = ROOT / "temp"
@@ -708,7 +885,63 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
                         report.disposition,
                         simulation_conformance.MeasurementDisposition.PAIRED_WORK_MISMATCH,
                     )
-                    self.assertIsNotNone(report.system_measurement)
+                    self.assertEqual(len(report.system_attempts), 1)
+                    self.assertIsNotNone(report.system_attempts[0].measurement)
+
+    def test_provisional_gate_is_typed_incomplete(self) -> None:
+        operator_gate_sha256, _ = (
+            simulation_conformance.load_cgra_representative_operators()
+        )
+        gate = simulation_conformance.CgraGateConfiguration(
+            500_000_000,
+            "",
+            operator_gate_sha256,
+            (),
+            simulation_conformance.CgraGateSource.PROVISIONAL_BOOTSTRAP,
+        )
+        report = simulation_conformance.run_paired_execution_matrix(
+            Path("missing-runner"),
+            Path("missing-readiness"),
+            gate,
+        )
+        self.assertIs(
+            report.disposition,
+            simulation_conformance.MeasurementDisposition.CGRA_GATE_INCOMPLETE,
+        )
+        self.assertEqual(report.system_attempts, ())
+        self.assertIn("provisional", report.diagnostic)
+
+    def test_partial_system_failure_retains_one_typed_attempt(self) -> None:
+        scratch_root = ROOT / "temp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
+            runner, readiness = self._write_runner(directory)
+            os.environ["LOOM_TEST_FAIL_SYSTEM"] = "1"
+            try:
+                report = simulation_conformance.run_paired_execution_matrix(
+                    runner,
+                    readiness,
+                    self._synthetic_gate(),
+                    termination_grace_seconds=0.1,
+                )
+            finally:
+                del os.environ["LOOM_TEST_FAIL_SYSTEM"]
+        self.assertIs(
+            report.disposition,
+            simulation_conformance.MeasurementDisposition.SYSTEM_EXECUTION_FAILED,
+        )
+        self.assertEqual(len(report.system_attempts), 1)
+        self.assertIsNone(report.system_attempts[0].measurement)
+        self.assertEqual(
+            report.system_attempts[0].process.disposition,
+            simulation_conformance.ProcessDisposition.NONZERO_EXIT,
+        )
+        projected = simulation_conformance.report_json(report)
+        self.assertEqual(projected["system_attempts"][0]["measurement"], None)
+        self.assertEqual(
+            projected["system_attempts"][0]["disposition"],
+            simulation_conformance.MeasurementDisposition.SYSTEM_EXECUTION_FAILED.value,
+        )
 
     def test_runner_preserves_spatial_timeout_as_incomplete(self) -> None:
         scratch_root = ROOT / "temp"
