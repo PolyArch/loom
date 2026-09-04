@@ -140,6 +140,7 @@ struct ConfigurationUnitState final {
   mlir::Value activeBank;
   mlir::Value initialized;
   mlir::Value coveredCount;
+  mlir::Value activeStoredWords;
   std::vector<mlir::Value> activeWords;
   mlir::Value complete;
   mlir::Value commitSuccess;
@@ -148,11 +149,8 @@ struct ConfigurationUnitState final {
 mlir::Value activeWordAt(mlir::OpBuilder &builder, mlir::Location location,
                          const ConfigurationUnitState &unit,
                          mlir::Value wordIndex) {
-  mlir::Value bankZeroWord =
-      structuredElementAt(builder, location, unit.bankZero, wordIndex);
-  mlir::Value bankOneWord =
-      structuredElementAt(builder, location, unit.bankOne, wordIndex);
-  return mux(builder, location, unit.activeBank, bankOneWord, bankZeroWord);
+  return circt::hw::ArrayGetOp::create(builder, location,
+                                       unit.activeStoredWords, wordIndex);
 }
 
 mlir::Value assembleBundle(mlir::OpBuilder &builder, mlir::Location location,
@@ -395,6 +393,12 @@ buildConfigurationControllerModule(
               createRegister(bodyBuilder, location, state.activeBankNext, clock,
                              reset, llvm::APInt(1, 0), prefix + "_active_bank",
                              clockReset.asynchronousReset);
+          state.activeStoredWords =
+              mux(bodyBuilder, location, state.activeBank,
+                  circt::sv::ReadInOutOp::create(bodyBuilder, location,
+                                                 state.bankOne),
+                  circt::sv::ReadInOutOp::create(bodyBuilder, location,
+                                                 state.bankZero));
           state.initialized = createRegister(
               bodyBuilder, location, state.initializedNext, clock, reset,
               llvm::APInt(1, 0), prefix + "_initialized",
