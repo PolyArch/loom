@@ -327,8 +327,8 @@ executeSpatialFifoHardwareFeedbackReopen(
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 
-/// Projects the canonical global-depth comparison domain for one proven
-/// static shared-pool shortfall: depth one, depth two, the proven minimum, and
+/// Projects the canonical global-depth comparison domain for one static
+/// shared-pool suggestion: depth one, depth two, the sufficient bound, and
 /// one deeper control. The returned typed domain is consumed by the ordinary
 /// spatial-microarchitecture generator; this adapter owns no Fabric writer.
 llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
