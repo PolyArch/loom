@@ -330,6 +330,45 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         {},
         {}};
 
+  std::set<std::string> capacityOwners;
+  for (const MappingReconvergentCapacityObligation &obligation :
+       projection.reconvergentCapacityObligations) {
+    const std::vector<std::uint8_t> ownerBytes =
+        ::loom::fabric::canonicalFabricBytes(obligation.owner);
+    if (!capacityOwners
+             .insert(
+                 std::string(reinterpret_cast<const char *>(ownerBytes.data()),
+                             ownerBytes.size()))
+             .second)
+      return invalid("reconvergent capacity repeats a shared FIFO owner");
+    if (obligation.queueClasses.empty())
+      return invalid("reconvergent capacity owner has no queue class");
+    const bool proven =
+        obligation.kind == MappingReconvergentCapacityProofKind::Proven;
+    if (proven != obligation.minimumLegalCapacity.has_value())
+      return invalid("reconvergent capacity proof state and minimum differ");
+    std::optional<std::string> previousClass;
+    bool global = false;
+    for (const MappingStaticQueueClass &queueClass : obligation.queueClasses) {
+      global |= queueClass.kind == MappingStaticQueueClassKind::Global;
+      const std::string key = staticWaitNodeKey(
+          MappingStorageQueueProgressNode{obligation.owner, queueClass});
+      if (previousClass && *previousClass >= key)
+        return invalid("reconvergent capacity queue classes are not canonical");
+      previousClass = key;
+    }
+    if (global && obligation.queueClasses.size() != 1)
+      return invalid("global FIFO class was combined with another class");
+    std::optional<std::vector<std::uint8_t>> previousAnchor;
+    for (const auto &anchor : obligation.routeAnchors) {
+      std::vector<std::uint8_t> key =
+          ::loom::fabric::canonicalFabricBytes(anchor);
+      if (previousAnchor && *previousAnchor >= key)
+        return invalid("reconvergent capacity route anchors are not canonical");
+      previousAnchor = std::move(key);
+    }
+  }
+
   // The static buffer-dependency graph quotes only mandatory conjunctive wait
   // facts. A strongly connected component is a certificate only when it is
   // closed: every member's waits stay inside the component. A closed component
@@ -343,9 +382,7 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         MappingProgressClosureReason::BufferDependencyNotEstablished,
         {},
         {}};
-  std::vector<MappingStaticWaitNode> bufferNodes;
-  std::vector<std::vector<std::uint32_t>> capacityComponents;
-  std::vector<std::uint64_t> capacityComponentRouteAnchorCounts;
+  std::optional<std::uint64_t> unresolvedCapacityRouteAnchorCount;
   if (!projection.bufferDependencyEdges->empty()) {
     const auto &edges = *projection.bufferDependencyEdges;
     std::map<std::string, std::uint32_t> nodeOrdinals;
@@ -368,6 +405,23 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     std::vector<std::vector<std::uint32_t>> successorEdges(nodes.size());
     std::vector<bool> selfLoop(nodes.size(), false);
     for (const auto [edgeOrdinal, edge] : llvm::enumerate(edges)) {
+      // A sufficient shared pool discharges only the wait on that pool. Other
+      // order/join edges in the same component retain their own proof force.
+      if (edge.kind == MappingBufferDependencyEdgeKind::DownstreamCapacity) {
+        const auto *storage =
+            std::get_if<MappingStorageQueueProgressNode>(&edge.to);
+        if (storage &&
+            llvm::any_of(
+                projection.reconvergentCapacityObligations,
+                [&](const auto &obligation) {
+                  return obligation.owner == storage->owner &&
+                         obligation.kind ==
+                             MappingReconvergentCapacityProofKind::Proven &&
+                         *obligation.minimumLegalCapacity <=
+                             obligation.selectedCapacity;
+                }))
+          continue;
+      }
       const std::uint32_t from = nodeOrdinals[staticWaitNodeKey(edge.from)];
       const std::uint32_t to = nodeOrdinals[staticWaitNodeKey(edge.to)];
       if (from == to)
@@ -467,8 +521,8 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
               reinterpret_cast<const char *>(bytes.data()), bytes.size()));
         }
       if (carriesCapacity) {
-        capacityComponents.push_back(component);
-        capacityComponentRouteAnchorCounts.push_back(routeAnchors.size());
+        if (!unresolvedCapacityRouteAnchorCount)
+          unresolvedCapacityRouteAnchorCount = routeAnchors.size();
       } else if (!provenComponent) {
         provenComponent = componentOrdinal;
       }
@@ -485,52 +539,11 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
             routeAnchors.size()};
       }
     }
-    bufferNodes = std::move(nodes);
   }
 
-  // The reconvergent capacity proof: a queue class whose proven minimum legal
-  // depth exceeds its selected pool is a proven closed wait by itself — a full
-  // queue at cycle start admits no same-cycle replacement. A closed component
-  // carrying a capacity edge is resolved exactly when every member class has a
-  // proven obligation within its pool; otherwise it stays unestablished.
-  std::set<std::string> capacityOwners;
-  for (const MappingReconvergentCapacityObligation &obligation :
-       projection.reconvergentCapacityObligations) {
-    const std::vector<std::uint8_t> ownerBytes =
-        ::loom::fabric::canonicalFabricBytes(obligation.owner);
-    if (!capacityOwners
-             .insert(
-                 std::string(reinterpret_cast<const char *>(ownerBytes.data()),
-                             ownerBytes.size()))
-             .second)
-      return invalid("reconvergent capacity repeats a shared FIFO owner");
-    if (obligation.queueClasses.empty())
-      return invalid("reconvergent capacity owner has no queue class");
-    const bool proven =
-        obligation.kind == MappingReconvergentCapacityProofKind::Proven;
-    if (proven != obligation.minimumLegalCapacity.has_value())
-      return invalid("reconvergent capacity proof state and minimum differ");
-    std::optional<std::string> previousClass;
-    bool global = false;
-    for (const MappingStaticQueueClass &queueClass : obligation.queueClasses) {
-      global |= queueClass.kind == MappingStaticQueueClassKind::Global;
-      const std::string key = staticWaitNodeKey(
-          MappingStorageQueueProgressNode{obligation.owner, queueClass});
-      if (previousClass && *previousClass >= key)
-        return invalid("reconvergent capacity queue classes are not canonical");
-      previousClass = key;
-    }
-    if (global && obligation.queueClasses.size() != 1)
-      return invalid("global FIFO class was combined with another class");
-    std::optional<std::vector<std::uint8_t>> previousAnchor;
-    for (const auto &anchor : obligation.routeAnchors) {
-      std::vector<std::uint8_t> key =
-          ::loom::fabric::canonicalFabricBytes(anchor);
-      if (previousAnchor && *previousAnchor >= key)
-        return invalid("reconvergent capacity route anchors are not canonical");
-      previousAnchor = std::move(key);
-    }
-  }
+  // Retain the owner-local capacity verdicts. Discharged edges were removed
+  // before SCC construction; a remaining capacity component still lacks a
+  // sufficient bound and cannot establish progress.
   for (const MappingReconvergentCapacityObligation &obligation :
        projection.reconvergentCapacityObligations) {
     if (obligation.kind == MappingReconvergentCapacityProofKind::Proven &&
@@ -558,29 +571,14 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         {},
         0,
         unproven->routeAnchors.size()};
-  for (const auto [componentOrdinal, component] :
-       llvm::enumerate(capacityComponents)) {
-    for (std::uint32_t nodeOrdinal : component) {
-      const auto *storage = std::get_if<MappingStorageQueueProgressNode>(
-          &bufferNodes[nodeOrdinal]);
-      if (!storage)
-        continue;
-      const auto obligation = llvm::find_if(
-          projection.reconvergentCapacityObligations,
-          [&](const MappingReconvergentCapacityObligation &candidate) {
-            return candidate.owner == storage->owner;
-          });
-      if (obligation == projection.reconvergentCapacityObligations.end() ||
-          obligation->kind != MappingReconvergentCapacityProofKind::Proven)
-        return MappingProgressClosure{
-            MappingProgressClosureKind::ProofNotEstablished,
-            MappingProgressClosureReason::ReconvergentCapacityNotEstablished,
-            {},
-            {},
-            0,
-            capacityComponentRouteAnchorCounts[componentOrdinal]};
-    }
-  }
+  if (unresolvedCapacityRouteAnchorCount)
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished,
+        MappingProgressClosureReason::ReconvergentCapacityNotEstablished,
+        {},
+        {},
+        0,
+        *unresolvedCapacityRouteAnchorCount};
 
   const auto eventOrdinal = [&](const ::dataflow::EventFamilyKey &event)
       -> llvm::Expected<std::uint32_t> {

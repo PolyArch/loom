@@ -676,6 +676,13 @@ result remains distinct among `ProvenNoClosedWaitSet`,
 `ProvenClosedWaitSet`, `ProofNotEstablished`, and `Unsupported`; a finite
 successful replay cannot establish an absent static proof.
 
+A sufficient shared-pool bound discharges only downstream-capacity edges
+waiting on that pool. The closure kernel removes those edges before deriving
+closed components. It must retain every independent order/join edge and any
+remaining HOL cycle; a capacity edge cannot authorize discarding its entire
+component. A component whose capacity waits remain unresolved retains proof
+debt.
+
 An exact runtime queue witness binds the independently imported Dataflow,
 Fabric, TechMapping, SpatialMapping, and enclosing SystemMapping identities.
 For every selected QueueKey it records occupancy, capacity, allocation-unit

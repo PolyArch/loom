@@ -790,6 +790,24 @@ module {
   if (!capacityNotEstablished(closureOf(mixed)))
     fail("capacity-carrying order cycle was reported without a capacity proof");
 
+  // Discharging the added capacity wait cannot erase the original HOL cycle.
+  // This joins the independent order witness above with sufficient bounds at
+  // both pools, and protects edge-level proof composition.
+  loom::mapping::MappingProgressProjection mixedWithCapacity = projection;
+  mixedWithCapacity.bufferDependencyEdges = mixed;
+  for (std::uint64_t owner : {7, 8})
+    mixedWithCapacity.reconvergentCapacityObligations.push_back(
+        {loom::fabric::FabricFifoOccurrenceRef(owner),
+         {MappingStaticQueueClass{MappingStaticQueueClassKind::Global,
+                                  llvm::APInt(1, 0)}},
+         {},
+         4,
+         2,
+         loom::mapping::MappingReconvergentCapacityProofKind::Proven});
+  if (!provenCycle(take(loom::mapping::deriveMappingProgressClosure(
+          model, mixedWithCapacity))))
+    fail("a discharged capacity edge erased a mandatory order cycle");
+
   // A component with a wait leaving it is not closed and never becomes a
   // witness.
   std::vector<MappingBufferDependencyEdge> open = fixture.strictEdges();
