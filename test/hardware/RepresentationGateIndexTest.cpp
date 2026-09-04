@@ -649,6 +649,26 @@ endmodule
 )"));
 }
 
+void sharedDefinitionsHaveOneCompilationOwner(const std::filesystem::path &root) {
+  constexpr llvm::StringLiteral top =
+      "module top(input a, output x, y); "
+      "left l(a, x); right r(a, y); endmodule";
+  constexpr llvm::StringLiteral parents =
+      "module left(input a, output y); shared s(a, y); endmodule "
+      "module right(input a, output y); shared s(a, y); endmodule";
+  constexpr llvm::StringLiteral shared =
+      "module shared(input a, output y); assign y = a; endmodule";
+  auto index = take(__func__, tryBuildGateIndexFromUnits(
+      root, "shared-definition", {{"root.v", top}, {"parents.v", parents},
+                                  {"shared.v", shared}}));
+  require(__func__, index.concreteModuleDefinitions().size() == 4,
+          "a shared descendant acquired multiple definition owners");
+  expectInvalid(__func__, tryBuildGateIndexFromUnits(
+      root, "duplicate-shared-definition",
+      {{"root.v", top}, {"parents.v", parents}, {"shared.v", shared},
+       {"independent.v", shared}}));
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -668,6 +688,7 @@ int main(int argc, char **argv) {
   warningsAndAuthoringOrderAreNonsemantic(root);
   prospectiveBytesUseTheExactGateIndexer(root);
   aggregatePortsRetainTheirPublicBoundary(root);
+  sharedDefinitionsHaveOneCompilationOwner(root);
   std::filesystem::remove_all(root);
   return EXIT_SUCCESS;
 }

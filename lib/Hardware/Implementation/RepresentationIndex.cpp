@@ -775,6 +775,11 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
       indexed->definitions.push_back(
           {RepresentationObjectKind::Module, std::string(module->name)});
   llvm::sort(indexed->definitions, representationLocatorCanonicalLess);
+  if (std::adjacent_find(indexed->definitions.begin(),
+                         indexed->definitions.end()) !=
+      indexed->definitions.end())
+    return detail::invalidIndex(
+        "multiple compilation units define one concrete module");
   return indexed;
 }
 

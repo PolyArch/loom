@@ -253,6 +253,11 @@ definition inventory and the exact root's direct module-instance bindings.
 These are distinct from ordinary occurrence object facts: the definition
 inventory includes unreferenced definitions so a consumer can validate a union
 of immutable mapped payload units before selecting its complete parent root.
+Both HDL descriptors reject duplicate concrete module definitions across that
+complete inventory, including byte-equal declarations in different units.
+A shared compiled descendant has one immutable payload owner; composition may
+deduplicate equal blobs before indexing, but indexing never selects among
+competing definitions.
 Direct root bindings include named scalar generate scopes and stop at each
 nested module boundary. They do not introduce another serialized hierarchy
 owner or a second HDL parser.
