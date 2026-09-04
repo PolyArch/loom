@@ -102,12 +102,17 @@ RepresentationIndex::lookup(const RepresentationLocator &locator) const {
 std::vector<RepresentationBoundaryPort>
 RepresentationIndex::rootBoundaryPorts() const {
   std::vector<RepresentationBoundaryPort> ports;
-  for (const Entry &entry : entries_)
-    if (entry.facts.objectKind == RepresentationObjectKind::Port) {
+  const std::string prefix = exactRoot_.canonicalName + ".";
+  for (const Entry &entry : entries_) {
+    const llvm::StringRef name(entry.locator.canonicalName);
+    if (entry.facts.objectKind == RepresentationObjectKind::Port &&
+        name.starts_with(prefix) &&
+        !name.drop_front(prefix.size()).contains('.')) {
       assert(entry.facts.signalGeometry &&
              "indexed Port must carry signal geometry");
       ports.push_back({entry.locator, *entry.facts.signalGeometry});
     }
+  }
   return ports;
 }
 

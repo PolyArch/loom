@@ -849,17 +849,12 @@ projectRuntimeMemory(const HardwareImplementation &implementation,
 }
 
 llvm::Expected<std::vector<RtlPort>>
-projectRootPorts(const ImplementationRepresentationRoot &representation,
-                 const RepresentationIndex &index) {
+projectRootPorts(const RepresentationIndex &index) {
   std::vector<RtlPort> result;
-  const std::string prefix = representation.top.canonicalName + ".";
+  const std::string prefix = index.exactRoot().canonicalName + ".";
   for (const RepresentationBoundaryPort &port : index.rootBoundaryPorts()) {
-    const llvm::StringRef full(port.locator.canonicalName);
-    if (!full.starts_with(prefix))
-      continue;
-    llvm::StringRef local = full.drop_front(prefix.size());
-    if (local.empty() || local.contains('.'))
-      continue;
+    const llvm::StringRef local =
+        llvm::StringRef(port.locator.canonicalName).drop_front(prefix.size());
     result.push_back(
         {local.str(), port.geometry.direction, port.geometry.bitWidth});
   }
@@ -868,11 +863,6 @@ projectRootPorts(const ImplementationRepresentationRoot &representation,
   });
   if (result.empty())
     return invalid("RTL representation has no indexed root Ports");
-  if (std::adjacent_find(result.begin(), result.end(),
-                         [](const RtlPort &lhs, const RtlPort &rhs) {
-                           return lhs.name == rhs.name;
-                         }) != result.end())
-    return invalid("RTL representation has a duplicate root Port");
   return result;
 }
 
@@ -1440,7 +1430,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
     selectedStreamPorts.push_back(*streamPorts[ordinal]);
   }
 
-  auto rootPorts = projectRootPorts(representation, **representationIndex);
+  auto rootPorts = projectRootPorts(**representationIndex);
   if (!rootPorts)
     return rootPorts.takeError();
   auto clockReset = projectClockResetPorts(hardware, *system);

@@ -255,6 +255,19 @@ Fixture buildFixture(const std::filesystem::path &root, Shape shape) {
   if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
           (root / "block-source-ref.json").string(), imported.reference()))
     fail(test, llvm::toString(std::move(error)));
+  // A whole hierarchy must validate its root interface without confusing
+  // nested RTL ports with ports on the block boundary.
+  auto parentSource = take(
+      test, finalizePortableRtlBlockSource(abi, implementation,
+                                          fixture.graph.topModule, store,
+                                          blobs));
+  if (llvm::Error error = verifyPortableRtlBlockSourceDerivation(
+          parentSource, abi, implementation, fixture.graph.topModule, blobs))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+          (root / "parent-source-ref.json").string(),
+          parentSource.reference()))
+    fail(test, llvm::toString(std::move(error)));
   return fixture;
 }
 
