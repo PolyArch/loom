@@ -643,7 +643,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
            *migrationSeed ? &**migrationSeed : nullptr,
-           defaultCandidateWorkerCount()});
+           defaultCandidateWorkerCount(invocation.executionBudget())});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
@@ -857,7 +857,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
            *migrationSeed ? &**migrationSeed : nullptr,
-           defaultCandidateWorkerCount()});
+           defaultCandidateWorkerCount(invocation.executionBudget())});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);

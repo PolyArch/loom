@@ -308,7 +308,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
       config->maximumMaterializationAttempts();
   options.maximumPublishedCandidates =
       invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(1));
-  options.candidateWorkerCount = defaultCandidateWorkerCount();
+  options.candidateWorkerCount =
+      defaultCandidateWorkerCount(invocationView.executionBudget());
   options.protocolCallableRoots.assign(config->protocolCallableRoots().begin(),
                                        config->protocolCallableRoots().end());
   options.generationIntent = config->generationIntent();

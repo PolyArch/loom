@@ -96,7 +96,8 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                       const CandidateGeneratorInvocationView &invocation) {
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
       invokeSpatialPnrCandidateGenerator(
-          inputs, binding, store, defaultCandidateWorkerCount(),
+          inputs, binding, store,
+          defaultCandidateWorkerCount(invocation.executionBudget()),
           invocation.executionControl(),
           invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0)),
           invocation.executionBudget());

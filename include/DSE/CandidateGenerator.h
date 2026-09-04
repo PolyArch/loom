@@ -28,9 +28,10 @@ namespace loom::dse {
 
 class ResolvedCandidateGeneratorBinding;
 
-/// Host-local execution capacity for independent candidate work. Providers
-/// may cap this further by the number of canonical work slots.
-std::uint32_t defaultCandidateWorkerCount();
+/// Host-local capacity capped by the invocation's admitted CPU budget.
+/// Providers may cap this further by their canonical work slots.
+std::uint32_t
+defaultCandidateWorkerCount(ExecutionResourceBudget executionBudget = {});
 
 inline constexpr ArtifactSchemaDescriptor candidateGeneratorDescriptorSchema{
     "loom.candidate_generator_descriptor", SchemaVersion{3, 0}};

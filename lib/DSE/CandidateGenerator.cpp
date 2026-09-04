@@ -19,14 +19,21 @@
 
 namespace loom::dse {
 
-std::uint32_t defaultCandidateWorkerCount() {
+std::uint32_t
+defaultCandidateWorkerCount(ExecutionResourceBudget executionBudget) {
   constexpr std::uint32_t reservedHostThreads = 4;
   constexpr std::uint32_t maximumWorkerCount = 120;
   const unsigned hardware = std::thread::hardware_concurrency();
-  if (hardware <= reservedHostThreads)
-    return 1;
-  return std::min<std::uint32_t>(hardware - reservedHostThreads,
-                                 maximumWorkerCount);
+  const std::uint32_t defaultWorkerCount =
+      hardware <= reservedHostThreads
+          ? 1
+          : std::min<std::uint32_t>(hardware - reservedHostThreads,
+                                    maximumWorkerCount);
+  const std::optional<std::uint64_t> cpuCores = executionBudget.cpuCores;
+  if (!cpuCores || *cpuCores == 0)
+    return defaultWorkerCount;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(defaultWorkerCount, *cpuCores));
 }
 
 llvm::StringRef candidateGeneratorIncompleteReasonSpelling(

@@ -656,6 +656,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   if (inputBindings[TechMappingCandidatesInput].artifacts.empty())
     return CandidateGeneratorProviderResult{
         completed({}), spatialPnrCandidateGeneratorWorkSummary({})};
+  const std::uint32_t invocationWorkerCount =
+      defaultCandidateWorkerCount(invocation.executionBudget());
   ::loom::pnr::DerivedContextCacheAccess staticAccess;
   ::loom::pnr::DerivedContextCacheAccess timingAccess;
   auto derivedContexts = ::loom::pnr::buildFabricDerivedContextBundle(
@@ -996,7 +998,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     };
     const std::uint32_t workerCount = std::max<std::uint32_t>(
         1, std::min<std::uint32_t>(
-               defaultCandidateWorkerCount(),
+               invocationWorkerCount,
                static_cast<std::uint32_t>(preparedCandidates.size())));
     if (workerCount <= 1) {
       for (std::size_t ordinal = 0; ordinal != preparedCandidates.size();
@@ -1271,7 +1273,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         *config,
         prepared.constraints.view(),
         store,
-        defaultCandidateWorkerCount(),
+        invocationWorkerCount,
         invocation.executionControl(),
         &*derivedContexts,
         topology,
