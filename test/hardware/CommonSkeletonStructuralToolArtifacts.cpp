@@ -123,6 +123,22 @@ module spatial_hierarchy_testbench;
     @(negedge clock);
     reset = 0;
 )sv";
+  if (!inactiveConfigurations.empty()) {
+    const PortableConfigurationTarget &probe =
+        inactiveConfigurations.front().first;
+    testbench << "    cfg_write_together(32'hfffffff0, 32'hdeadbeef, "
+                 "4'hf, 2'b11);\n"
+              << "    cfg_read(32'd" << probe.commitAddress
+              << ", cfg_readback, cfg_read_response);\n"
+              << "    if (cfg_read_response !== 2'b10)\n"
+                 "      $fatal(1, \"configuration commit read did not return "
+                 "SLVERR\");\n"
+              << "    cfg_read(32'd" << probe.baseAddress + 1
+              << ", cfg_readback, cfg_read_response);\n"
+              << "    if (cfg_read_response !== 2'b11)\n"
+                 "      $fatal(1, \"misaligned configuration read did not "
+                 "return DECERR\");\n";
+  }
   for (const auto &[target, image] : inactiveConfigurations) {
     auto program = portableAxiLiteProgramAndVerify(target, image);
     if (!program)

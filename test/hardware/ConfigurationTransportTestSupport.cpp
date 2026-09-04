@@ -140,6 +140,20 @@ std::string portableAxiLiteSignalDeclarations() {
 
 std::string portableAxiLiteDriverTasks() {
   return R"sv(
+  task automatic cfg_finish_write(
+      input logic [1:0] expected_response);
+    begin
+      #1;
+      cfg_awvalid = 0;
+      cfg_wvalid = 0;
+      if (cfg_bvalid !== 1'b1)
+        $fatal(1, "AXI4-Lite write did not complete on the accepting edge");
+      if (cfg_bresp !== expected_response)
+        $fatal(1, "unexpected AXI4-Lite write response");
+      @(negedge clock);
+    end
+  endtask
+
   task automatic cfg_write(
       input logic [31:0] address,
       input logic [31:0] data,
@@ -164,7 +178,9 @@ std::string portableAxiLiteDriverTasks() {
       end while (!cfg_awready);
       if (loom_verbose_level >= 2)
         $display("[loom][config][aw] accepted address=%h", address);
-      #1 cfg_awvalid = 0;
+      #1;
+      cfg_awvalid = 0;
+      cfg_awaddr = ~address;
 
       cfg_wdata = data;
       cfg_wstrb = strobe;
@@ -182,20 +198,72 @@ std::string portableAxiLiteDriverTasks() {
       if (loom_verbose_level >= 2)
         $display("[loom][config][w] accepted data=%h strobe=%h", data,
                  strobe);
-      #1 cfg_wvalid = 0;
+      cfg_finish_write(expected_response);
+    end
+  endtask
 
+  task automatic cfg_write_together(
+      input logic [31:0] address,
+      input logic [31:0] data,
+      input logic [3:0] strobe,
+      input logic [1:0] expected_response);
+    integer wait_cycles;
+    logic address_accepted;
+    logic data_accepted;
+    begin
+      cfg_awaddr = address;
+      cfg_awvalid = 1;
+      cfg_wdata = data;
+      cfg_wstrb = strobe;
+      cfg_wvalid = 1;
+      address_accepted = 0;
+      data_accepted = 0;
       wait_cycles = 0;
       do begin
-        @(negedge clock);
+        @(posedge clock);
+        address_accepted = address_accepted | cfg_awready;
+        data_accepted = data_accepted | cfg_wready;
         wait_cycles = wait_cycles + 1;
-        if (loom_verbose_level >= 3)
-          $display("[loom][config][b] cycle=%0d valid=%b response=%b",
-                   wait_cycles, cfg_bvalid, cfg_bresp);
-        if (wait_cycles == 64 && !cfg_bvalid)
-          $fatal(1, "AXI4-Lite B response timed out");
-      end while (!cfg_bvalid);
-      if (cfg_bresp !== expected_response)
-        $fatal(1, "unexpected AXI4-Lite write response");
+        if (wait_cycles == 64 &&
+            (!address_accepted || !data_accepted))
+          $fatal(1, "simultaneous AXI4-Lite write handshake timed out");
+      end while (!address_accepted || !data_accepted);
+      cfg_finish_write(expected_response);
+    end
+  endtask
+
+  task automatic cfg_write_data_first(
+      input logic [31:0] address,
+      input logic [31:0] data,
+      input logic [3:0] strobe,
+      input logic [1:0] expected_response);
+    integer wait_cycles;
+    begin
+      cfg_wdata = data;
+      cfg_wstrb = strobe;
+      cfg_wvalid = 1;
+      wait_cycles = 0;
+      do begin
+        @(posedge clock);
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 64 && !cfg_wready)
+          $fatal(1, "AXI4-Lite W handshake timed out");
+      end while (!cfg_wready);
+      #1;
+      cfg_wvalid = 0;
+      cfg_wdata = ~data;
+      cfg_wstrb = ~strobe;
+
+      cfg_awaddr = address;
+      cfg_awvalid = 1;
+      wait_cycles = 0;
+      do begin
+        @(posedge clock);
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 64 && !cfg_awready)
+          $fatal(1, "AXI4-Lite AW handshake timed out");
+      end while (!cfg_awready);
+      cfg_finish_write(expected_response);
     end
   endtask
 
@@ -338,7 +406,7 @@ portableAxiLiteProgramAndVerify(const PortableConfigurationTarget &target,
            << llvm::format_hex_no_prefix(imageStrobe(image, word), 1)
            << ", 2'b00);\n";
   }
-  output << indentation << "cfg_write(32'h"
+  output << indentation << "cfg_write_data_first(32'h"
          << llvm::format_hex_no_prefix(target.commitAddress, 8)
          << ", 32'h00000001, 4'h1, 2'b00);\n";
   for (std::uint64_t word = 0; word != target.payloadWordCount; ++word) {

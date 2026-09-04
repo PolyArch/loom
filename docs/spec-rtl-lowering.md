@@ -782,7 +782,10 @@ write response and one outstanding read response. Write address and data
 channels remain independent as AXI4-Lite requires: the implementation captures
 at most one address and one data beat in either arrival order, applies the
 write only after both are present, and does not accept another pair until the
-response is consumed.
+response is consumed. Accepting the second beat is the write-completion state
+transition: the write is applied and `BVALID` becomes asserted from that same
+Clock edge, with no separate execute cycle. `BVALID` and `BRESP` then remain
+stable until the response is consumed.
 
 The shared `ConfigurationTransportLayout` begins at byte address zero. It
 selects the occurrence-local Programming Units and sorts them by the canonical

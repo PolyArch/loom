@@ -57,27 +57,6 @@ mlir::Value extract(mlir::OpBuilder &builder, mlir::Location location,
   return circt::comb::ExtractOp::create(builder, location, value, low, width);
 }
 
-mlir::Value createStructuredRegister(mlir::OpBuilder &builder,
-                                     mlir::Location location, mlir::Value next,
-                                     mlir::Value clock, mlir::Value reset,
-                                     mlir::Value resetValue,
-                                     llvm::StringRef name,
-                                     bool asynchronousReset) {
-  if (asynchronousReset)
-    return circt::seq::FirRegOp::create(
-        builder, location, next, clock, builder.getStringAttr(name), reset,
-        resetValue, circt::hw::InnerSymAttr{}, true);
-  return circt::seq::CompRegOp::create(builder, location, next, clock, reset,
-                                       resetValue, name);
-}
-
-mlir::Value createUnresetClockEnabledStructuredRegister(
-    mlir::OpBuilder &builder, mlir::Location location, mlir::Value next,
-    mlir::Value clock, mlir::Value clockEnable, llvm::StringRef name) {
-  return circt::seq::CompRegClockEnabledOp::create(builder, location, next,
-                                                   clock, clockEnable, name);
-}
-
 std::uint32_t inactiveWord(const ConfigurationTransportUnitLayout &layout,
                            std::uint64_t word) {
   std::uint32_t result = 0;
@@ -103,9 +82,12 @@ mlir::Value inactiveWordAt(mlir::OpBuilder &builder, mlir::Location location,
   return result;
 }
 
-mlir::Value zeroArrayConstant(mlir::OpBuilder &builder, mlir::Location location,
-                              circt::hw::ArrayType arrayType) {
-  return circt::sv::VerbatimExprOp::create(builder, location, arrayType, "'0");
+mlir::Value structuredElementAt(mlir::OpBuilder &builder,
+                                mlir::Location location, mlir::Value storage,
+                                mlir::Value index) {
+  mlir::Value element =
+      circt::sv::ArrayIndexInOutOp::create(builder, location, storage, index);
+  return circt::sv::ReadInOutOp::create(builder, location, element);
 }
 
 mlir::Value strobeMask(mlir::OpBuilder &builder, mlir::Location location,
@@ -148,20 +130,13 @@ mlir::Value populationCount4(mlir::OpBuilder &builder, mlir::Location location,
 
 struct ConfigurationUnitState final {
   const ConfigurationTransportUnitLayout *layout = nullptr;
-  circt::hw::ArrayType wordArrayType;
-  circt::hw::ArrayType tagArrayType;
-  circt::Backedge bankZeroNext;
-  circt::Backedge bankZeroEnable;
-  circt::Backedge bankOneNext;
-  circt::Backedge bankOneEnable;
-  circt::Backedge tagsNext;
-  circt::Backedge tagsEnable;
   circt::Backedge activeBankNext;
   circt::Backedge initializedNext;
   circt::Backedge coveredCountNext;
   mlir::Value bankZero;
   mlir::Value bankOne;
   mlir::Value tags;
+  mlir::Value emptyTags;
   mlir::Value activeBank;
   mlir::Value initialized;
   mlir::Value coveredCount;
@@ -173,10 +148,10 @@ struct ConfigurationUnitState final {
 mlir::Value activeWordAt(mlir::OpBuilder &builder, mlir::Location location,
                          const ConfigurationUnitState &unit,
                          mlir::Value wordIndex) {
-  mlir::Value bankZeroWord = circt::hw::ArrayGetOp::create(
-      builder, location, unit.bankZero, wordIndex);
+  mlir::Value bankZeroWord =
+      structuredElementAt(builder, location, unit.bankZero, wordIndex);
   mlir::Value bankOneWord =
-      circt::hw::ArrayGetOp::create(builder, location, unit.bankOne, wordIndex);
+      structuredElementAt(builder, location, unit.bankOne, wordIndex);
   return mux(builder, location, unit.activeBank, bankOneWord, bankZeroWord);
 }
 
@@ -346,46 +321,54 @@ buildConfigurationControllerModule(
             bodyBuilder, location, {awReady, accessor.getInput("cfg_awvalid")});
         mlir::Value wAccept = andValues(
             bodyBuilder, location, {wReady, accessor.getInput("cfg_wvalid")});
+        mlir::Value writeAddressAvailable =
+            orValues(bodyBuilder, location, {awHeld, awAccept});
+        mlir::Value writeDataAvailable =
+            orValues(bodyBuilder, location, {wHeld, wAccept});
         mlir::Value executeWrite =
             andValues(bodyBuilder, location,
-                      {awHeld, wHeld, notValue(bodyBuilder, location, bValid)});
+                      {writeAddressAvailable, writeDataAvailable,
+                       notValue(bodyBuilder, location, bValid)});
+        mlir::Value writeAddress = mux(bodyBuilder, location, awHeld, awAddress,
+                                       accessor.getInput("cfg_awaddr"));
+        mlir::Value writeData = mux(bodyBuilder, location, wHeld, wData,
+                                    accessor.getInput("cfg_wdata"));
+        mlir::Value writeStrobe = mux(bodyBuilder, location, wHeld, wStrobe,
+                                      accessor.getInput("cfg_wstrb"));
 
-        mlir::Value commandByte = extract(bodyBuilder, location, wData, 0, 8);
+        mlir::Value commandByte =
+            extract(bodyBuilder, location, writeData, 0, 8);
         mlir::Value commandValid =
             andValues(bodyBuilder, location,
-                      {extract(bodyBuilder, location, wStrobe, 0, 1),
+                      {extract(bodyBuilder, location, writeStrobe, 0, 1),
                        equals(bodyBuilder, location, commandByte, 1)});
         for (unsigned byte = 1; byte != 4; ++byte) {
           mlir::Value ignored =
               notValue(bodyBuilder, location,
-                       extract(bodyBuilder, location, wStrobe, byte, 1));
+                       extract(bodyBuilder, location, writeStrobe, byte, 1));
           mlir::Value zeroByte =
               equals(bodyBuilder, location,
-                     extract(bodyBuilder, location, wData, byte * 8, 8), 0);
+                     extract(bodyBuilder, location, writeData, byte * 8, 8), 0);
           commandValid =
               andValues(bodyBuilder, location,
                         {commandValid,
                          orValues(bodyBuilder, location, {ignored, zeroByte})});
         }
-        mlir::Value byteWriteMask = strobeMask(bodyBuilder, location, wStrobe);
+        mlir::Value byteWriteMask =
+            strobeMask(bodyBuilder, location, writeStrobe);
 
         std::vector<ConfigurationUnitState> units;
         units.reserve(transportLayout.units.size());
+        mlir::Value hardwareClock =
+            circt::seq::FromClockOp::create(bodyBuilder, location, clock);
         for (auto [unitOrdinal, layout] :
              llvm::enumerate(transportLayout.units)) {
           ConfigurationUnitState state;
           state.layout = &layout;
-          state.wordArrayType = circt::hw::ArrayType::get(
+          const auto wordArrayType = circt::hw::ArrayType::get(
               bodyBuilder.getI32Type(), layout.payloadWordCount);
-          state.tagArrayType = circt::hw::ArrayType::get(
+          const auto tagArrayType = circt::hw::ArrayType::get(
               bodyBuilder.getI4Type(), layout.payloadWordCount);
-          state.bankZeroNext = backedges.get(state.wordArrayType);
-          state.bankZeroEnable = backedges.get(bodyBuilder.getI1Type());
-          state.bankOneNext = backedges.get(state.wordArrayType);
-          state.bankOneEnable = backedges.get(bodyBuilder.getI1Type());
-          state.tagsNext = backedges.get(state.tagArrayType);
-          if (!clockReset.asynchronousReset)
-            state.tagsEnable = backedges.get(bodyBuilder.getI1Type());
           state.activeBankNext = backedges.get(bodyBuilder.getI1Type());
           state.initializedNext = backedges.get(bodyBuilder.getI1Type());
           const unsigned coveredCountWidth =
@@ -393,23 +376,21 @@ buildConfigurationControllerModule(
           state.coveredCountNext =
               backedges.get(bodyBuilder.getIntegerType(coveredCountWidth));
 
-          mlir::Value emptyTags =
-              zeroArrayConstant(bodyBuilder, location, state.tagArrayType);
+          state.emptyTags = circt::sv::VerbatimExprOp::create(
+              bodyBuilder, location, tagArrayType, "'0");
           const std::string prefix = "cfg_unit_" + std::to_string(unitOrdinal);
-          state.bankZero = createUnresetClockEnabledStructuredRegister(
-              bodyBuilder, location, state.bankZeroNext, clock,
-              state.bankZeroEnable, prefix + "_bank_0");
-          state.bankOne = createUnresetClockEnabledStructuredRegister(
-              bodyBuilder, location, state.bankOneNext, clock,
-              state.bankOneEnable, prefix + "_bank_1");
-          if (clockReset.asynchronousReset)
-            state.tags = createStructuredRegister(
-                bodyBuilder, location, state.tagsNext, clock, reset, emptyTags,
-                prefix + "_coverage_tags", true);
-          else
-            state.tags = circt::seq::CompRegClockEnabledOp::create(
-                bodyBuilder, location, state.tagsNext, clock, state.tagsEnable,
-                reset, emptyTags, prefix + "_coverage_tags");
+          state.bankZero = circt::sv::RegOp::create(
+                               bodyBuilder, location, wordArrayType,
+                               bodyBuilder.getStringAttr(prefix + "_bank_0"))
+                               .getResult();
+          state.bankOne = circt::sv::RegOp::create(
+                              bodyBuilder, location, wordArrayType,
+                              bodyBuilder.getStringAttr(prefix + "_bank_1"))
+                              .getResult();
+          state.tags = circt::sv::RegOp::create(
+                           bodyBuilder, location, tagArrayType,
+                           bodyBuilder.getStringAttr(prefix + "_coverage_tags"))
+                           .getResult();
           state.activeBank =
               createRegister(bodyBuilder, location, state.activeBankNext, clock,
                              reset, llvm::APInt(1, 0), prefix + "_active_bank",
@@ -444,7 +425,7 @@ buildConfigurationControllerModule(
         for (ConfigurationUnitState &unit : units) {
           const auto &layout = *unit.layout;
           mlir::Value commitMatch =
-              equals(bodyBuilder, location, awAddress, layout.commitAddress);
+              equals(bodyBuilder, location, writeAddress, layout.commitAddress);
           mlir::Value commitValid =
               andValues(bodyBuilder, location, {commandValid, unit.complete});
           unit.commitSuccess = andValues(
@@ -457,24 +438,26 @@ buildConfigurationControllerModule(
                   writeResponse);
 
           mlir::Value statusMatch =
-              equals(bodyBuilder, location, awAddress, layout.statusAddress);
+              equals(bodyBuilder, location, writeAddress, layout.statusAddress);
           writeResponse = mux(bodyBuilder, location, statusMatch,
                               constant(bodyBuilder, location, 2, axiSlaveError),
                               writeResponse);
 
           mlir::Value atOrAboveBase = circt::comb::ICmpOp::create(
-              bodyBuilder, location, circt::comb::ICmpPredicate::uge, awAddress,
+              bodyBuilder, location, circt::comb::ICmpPredicate::uge,
+              writeAddress,
               constant(bodyBuilder, location, 32, layout.baseAddress), true);
           mlir::Value belowCommit = circt::comb::ICmpOp::create(
-              bodyBuilder, location, circt::comb::ICmpPredicate::ult, awAddress,
+              bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+              writeAddress,
               constant(bodyBuilder, location, 32, layout.commitAddress), true);
           mlir::Value aligned =
               equals(bodyBuilder, location,
-                     extract(bodyBuilder, location, awAddress, 0, 2), 0);
+                     extract(bodyBuilder, location, writeAddress, 0, 2), 0);
           mlir::Value payloadMatch = andValues(
               bodyBuilder, location, {atOrAboveBase, belowCommit, aligned});
           mlir::Value byteOffset = circt::comb::SubOp::create(
-              bodyBuilder, location, awAddress,
+              bodyBuilder, location, writeAddress,
               constant(bodyBuilder, location, 32, layout.baseAddress), true);
           const unsigned wordIndexWidth = indexWidth(layout.payloadWordCount);
           mlir::Value wordIndex =
@@ -497,7 +480,7 @@ buildConfigurationControllerModule(
                   constant(bodyBuilder, location, 32, invalidLastWordMask),
                   constant(bodyBuilder, location, 32, 0));
           mlir::Value invalidSelected = circt::comb::AndOp::create(
-              bodyBuilder, location, wData, byteWriteMask, true);
+              bodyBuilder, location, writeData, byteWriteMask, true);
           invalidSelected = circt::comb::AndOp::create(
               bodyBuilder, location, invalidSelected, invalidMask, true);
           mlir::Value unusedZero =
@@ -511,9 +494,9 @@ buildConfigurationControllerModule(
           mlir::Value payloadWrite = andValues(
               bodyBuilder, location, {executeWrite, payloadMatch, unusedZero});
 
-          mlir::Value bankZeroWord = circt::hw::ArrayGetOp::create(
+          mlir::Value bankZeroWord = structuredElementAt(
               bodyBuilder, location, unit.bankZero, safeWordIndex);
-          mlir::Value bankOneWord = circt::hw::ArrayGetOp::create(
+          mlir::Value bankOneWord = structuredElementAt(
               bodyBuilder, location, unit.bankOne, safeWordIndex);
           mlir::Value oldWord = mux(bodyBuilder, location, unit.activeBank,
                                     bankZeroWord, bankOneWord);
@@ -521,25 +504,35 @@ buildConfigurationControllerModule(
               bodyBuilder, location, oldWord,
               notValue(bodyBuilder, location, byteWriteMask), true);
           mlir::Value selectedWord = circt::comb::AndOp::create(
-              bodyBuilder, location, wData, byteWriteMask, true);
+              bodyBuilder, location, writeData, byteWriteMask, true);
           mlir::Value updatedWord = circt::comb::OrOp::create(
               bodyBuilder, location, retainedWord, selectedWord, true);
           updatedWord = circt::comb::AndOp::create(
               bodyBuilder, location, updatedWord,
               notValue(bodyBuilder, location, invalidMask), true);
-          mlir::Value updatedBankZero = circt::hw::ArrayInjectOp::create(
-              bodyBuilder, location, unit.bankZero, safeWordIndex, updatedWord);
-          mlir::Value updatedBankOne = circt::hw::ArrayInjectOp::create(
-              bodyBuilder, location, unit.bankOne, safeWordIndex, updatedWord);
           mlir::Value writeBankZero =
               andValues(bodyBuilder, location, {payloadWrite, unit.activeBank});
           mlir::Value writeBankOne = andValues(
               bodyBuilder, location,
               {payloadWrite, notValue(bodyBuilder, location, unit.activeBank)});
-          unit.bankZeroNext.setValue(updatedBankZero);
-          unit.bankZeroEnable.setValue(writeBankZero);
-          unit.bankOneNext.setValue(updatedBankOne);
-          unit.bankOneEnable.setValue(writeBankOne);
+          circt::sv::AlwaysFFOp::create(
+              bodyBuilder, location, circt::sv::EventControl::AtPosEdge,
+              hardwareClock, [&] {
+                circt::sv::IfOp::create(
+                    bodyBuilder, location, writeBankZero, [&] {
+                      mlir::Value word = circt::sv::ArrayIndexInOutOp::create(
+                          bodyBuilder, location, unit.bankZero, safeWordIndex);
+                      circt::sv::PAssignOp::create(bodyBuilder, location, word,
+                                                   updatedWord);
+                    });
+                circt::sv::IfOp::create(
+                    bodyBuilder, location, writeBankOne, [&] {
+                      mlir::Value word = circt::sv::ArrayIndexInOutOp::create(
+                          bodyBuilder, location, unit.bankOne, safeWordIndex);
+                      circt::sv::PAssignOp::create(bodyBuilder, location, word,
+                                                   updatedWord);
+                    });
+              });
 
           const unsigned usedLastWordBytes =
               static_cast<unsigned>(layout.payloadByteCount % 4);
@@ -550,9 +543,9 @@ buildConfigurationControllerModule(
                   constant(bodyBuilder, location, 4, lastLaneMask),
                   constant(bodyBuilder, location, 4, 0xf));
           mlir::Value selectedLanes = circt::comb::AndOp::create(
-              bodyBuilder, location, wStrobe, validLanes, true);
-          mlir::Value oldTags = circt::hw::ArrayGetOp::create(
-              bodyBuilder, location, unit.tags, safeWordIndex);
+              bodyBuilder, location, writeStrobe, validLanes, true);
+          mlir::Value oldTags = structuredElementAt(bodyBuilder, location,
+                                                    unit.tags, safeWordIndex);
           mlir::Value generation =
               notValue(bodyBuilder, location, unit.activeBank);
           mlir::Value coveredLanes =
@@ -568,15 +561,25 @@ buildConfigurationControllerModule(
               notValue(bodyBuilder, location, selectedLanes), true);
           mlir::Value updatedTags =
               mux(bodyBuilder, location, generation, tagsSet, tagsCleared);
-          mlir::Value injectedTags = circt::hw::ArrayInjectOp::create(
-              bodyBuilder, location, unit.tags, safeWordIndex, updatedTags);
-          if (clockReset.asynchronousReset)
-            unit.tagsNext.setValue(mux(bodyBuilder, location, payloadWrite,
-                                       injectedTags, unit.tags));
-          else {
-            unit.tagsNext.setValue(injectedTags);
-            unit.tagsEnable.setValue(payloadWrite);
-          }
+          circt::sv::AlwaysFFOp::create(
+              bodyBuilder, location, circt::sv::EventControl::AtPosEdge,
+              hardwareClock,
+              clockReset.asynchronousReset ? circt::sv::ResetType::AsyncReset
+                                           : circt::sv::ResetType::SyncReset,
+              circt::sv::EventControl::AtPosEdge, reset,
+              [&] {
+                circt::sv::IfOp::create(
+                    bodyBuilder, location, payloadWrite, [&] {
+                      mlir::Value tags = circt::sv::ArrayIndexInOutOp::create(
+                          bodyBuilder, location, unit.tags, safeWordIndex);
+                      circt::sv::PAssignOp::create(bodyBuilder, location, tags,
+                                                   updatedTags);
+                    });
+              },
+              [&] {
+                circt::sv::PAssignOp::create(bodyBuilder, location, unit.tags,
+                                             unit.emptyTags);
+              });
 
           const unsigned countWidth =
               mlir::cast<mlir::IntegerType>(unit.coveredCount.getType())
@@ -637,6 +640,11 @@ buildConfigurationControllerModule(
           readResponse =
               mux(bodyBuilder, location, statusMatch,
                   constant(bodyBuilder, location, 2, axiOkay), readResponse);
+          mlir::Value commitMatch =
+              equals(bodyBuilder, location, arAddress, layout.commitAddress);
+          readResponse = mux(bodyBuilder, location, commitMatch,
+                             constant(bodyBuilder, location, 2, axiSlaveError),
+                             readResponse);
 
           mlir::Value atOrAboveBase = circt::comb::ICmpOp::create(
               bodyBuilder, location, circt::comb::ICmpPredicate::uge, arAddress,
