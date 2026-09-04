@@ -3332,21 +3332,22 @@ typed fallback reason until a corresponding hardware decision owner is added.
 
 ### Runtime-Derived Spatial FIFO Feedback
 
-Before runtime exists, a Spatial PnR invocation that retains a proven
-reconvergent-capacity shortfall may return one typed owner-local hardware
-feedback record with the exact FIFO occurrence, selected shared capacity,
-proven minimum, contributing logical producer bindings, and selected traversal
-anchors. The record is invocation output, not a Mapping artifact and not an
-infeasibility proof. It is absent for proof debt, timeout without a retained
-candidate, or a non-capacity violation.
+Before runtime exists, a Spatial PnR invocation that retains a known
+reconvergent-capacity bound above the selected depth may return one typed
+owner-local hardware feedback record with the exact FIFO occurrence, selected
+shared capacity, sufficient bound, contributing logical producer bindings,
+and selected traversal anchors. The record is invocation output, not a Mapping
+artifact and not an infeasibility proof. It is absent for an unknown bound,
+timeout without a retained candidate, or a non-capacity violation.
 
 `HardwareDecision` owns the canonical global-depth comparison domain derived
-from that record: depth one, depth two, the proven minimum, and twice the
-minimum as a deeper control, with duplicate semantic values removed. Values
-outside positive i32 are rejected. Every value remains an ordinary
+from that record: depth one, depth two, the sufficient bound, and twice the
+bound as a deeper control, capped at positive i32, with duplicate semantic
+values removed. An unrepresentable bound or absent deeper control is rejected.
+Every value remains an ordinary
 `ResizeFifo` candidate with candidate-decision lineage, a distinct Fabric
 identity, cold progress verification, and regenerated Mapping/evaluation
-provenance. Neither PnR nor DSE edits the parent Fabric or treats the minimum as
+provenance. Neither PnR nor DSE edits the parent Fabric or treats the bound as
 a private route penalty.
 
 CGRA runtime may request a bounded SpatialCore FIFO hardware child only from

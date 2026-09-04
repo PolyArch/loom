@@ -762,9 +762,8 @@ module {
     fail("same-tag virtual-channel order cycle was not proven");
 
   // The capacity control: per-tag classes remove the order cycle, but the
-  // two nets still share one physical slot pool. A proven minimum above the
-  // selected pool is a closed wait by itself; a sufficient pool keeps the
-  // virtual-channel liveness verdict.
+  // two nets still share one physical slot pool. An unmet sufficient bound
+  // retains proof debt; a sufficient pool keeps the virtual-channel verdict.
   const auto virtualChannelPool = [&](std::uint64_t selectedCapacity) {
     loom::mapping::MappingProgressProjection candidate = projection;
     candidate.bufferDependencyEdges = fixture.virtualChannelEdges();
