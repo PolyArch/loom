@@ -14,6 +14,20 @@
 
 namespace loom::hardware::rtl::hierarchy {
 
+inline constexpr llvm::StringLiteral resultPresentationPriorityPortName =
+    "result_presentation_priority";
+inline constexpr llvm::StringLiteral resultRequesterOffersPortName =
+    "result_requester_offers";
+
+/// Availability of a result before any downstream admission.
+inline std::string fuOutputOfferPortName(const EndpointPlan &endpoint) {
+  return "output_" + std::to_string(endpoint.localOrdinal) + "_offer";
+}
+
+inline std::string fuOutputRequesterPortName(const EndpointPlan &endpoint) {
+  return "output_" + std::to_string(endpoint.localOrdinal) + "_requester";
+}
+
 template <typename Reference> struct ComponentModule final {
   Reference reference;
   circt::hw::HWModuleOp module;
@@ -26,6 +40,7 @@ struct FuModule final {
   circt::hw::HWModuleOp module;
   std::vector<EndpointPlan> endpoints;
   std::optional<unsigned> contextWidthBits;
+  std::vector<bool> resultRequesterDirectPublication;
   ConfigurationBundlePlan configuration;
 };
 using PeModule = ComponentModule<fabric::FabricPeOccurrenceRef>;
@@ -75,16 +90,14 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                const ClockResetPlan &clockReset, mlir::ModuleOp container,
                llvm::StringRef materializationKey = {});
 
-llvm::Expected<PeModule>
-buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
-                      fabric::SpatialCoreOccurrenceRef spatialCore,
-                      const fabric::FabricArtifactView &fabric,
-                      const ConfigurationABI &configurationAbi,
-                      const ConfigurationTransportLayout &transportLayout,
-                      llvm::ArrayRef<FuModule> fuModules,
-                      const ClockResetPlan &clockReset,
-                      fabric::FabricPeOccurrenceRef pe,
-                      llvm::StringRef materializationKey);
+llvm::Expected<PeModule> buildTemporalPeModule(
+    mlir::OpBuilder &builder, mlir::Location location,
+    fabric::SpatialCoreOccurrenceRef spatialCore,
+    const fabric::FabricArtifactView &fabric,
+    const ConfigurationABI &configurationAbi,
+    const ConfigurationTransportLayout &transportLayout,
+    llvm::ArrayRef<FuModule> fuModules, const ClockResetPlan &clockReset,
+    fabric::FabricPeOccurrenceRef pe, llvm::StringRef materializationKey);
 
 llvm::Expected<std::vector<SwitchModule>>
 buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,

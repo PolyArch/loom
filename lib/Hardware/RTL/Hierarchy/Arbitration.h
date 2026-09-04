@@ -68,6 +68,22 @@ void advanceStatefulSelection(mlir::OpBuilder &builder, mlir::Location location,
                               StatefulSelection &selection,
                               llvm::ArrayRef<mlir::Value> fired);
 
+/// One Fabric presentation priority over requester/evaluation positions. The
+/// returned physical requester focus is projected into nested FU selectors.
+mlir::Value makeResultPresentationPriority(
+    mlir::OpBuilder &builder, mlir::Location location,
+    circt::BackedgeBuilder &backedges,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> eligible,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> evaluated, mlir::Value clock,
+    mlir::Value reset, llvm::StringRef name, const ClockResetPlan &clockReset);
+
+/// Stateless complete-tuple selection in the Fabric physical requester order.
+/// Overlapping lanes refuse their complete requester.
+std::vector<mlir::Value> selectResultPresentation(
+    mlir::OpBuilder &builder, mlir::Location location,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> requestedLaneDestinations,
+    mlir::Value priority);
+
 } // namespace loom::hardware::rtl::hierarchy
 
 #endif // LOOM_LIB_HARDWARE_RTL_HIERARCHY_ARBITRATION_H

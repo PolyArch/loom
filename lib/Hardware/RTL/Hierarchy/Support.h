@@ -96,6 +96,9 @@ inline constexpr llvm::StringLiteral configurationValuePortName =
 /// by construction, while an FU-internal result names its own context.
 inline constexpr llvm::StringLiteral dispatchContextPortName =
     "dispatch_context";
+/// Whether that context owns this cycle's evaluation service grant. A default
+/// context index without this grant cannot start an operation transition.
+inline constexpr llvm::StringLiteral dispatchEnablePortName = "dispatch_enable";
 
 struct ClockResetPlan final {
   bool asynchronousReset = false;

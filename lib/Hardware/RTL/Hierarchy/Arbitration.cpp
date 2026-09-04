@@ -1,5 +1,7 @@
 #include "Arbitration.h"
 
+#include "Fabric/IR/ResultPresentation.h"
+
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "llvm/ADT/APInt.h"
@@ -179,6 +181,114 @@ void advanceStatefulSelection(mlir::OpBuilder &builder, mlir::Location location,
   if (selection.next)
     selection.next->setValue(
         nextCursor(builder, location, selection.cursor, fired));
+}
+
+std::vector<mlir::Value> selectResultPresentation(
+    mlir::OpBuilder &builder, mlir::Location location,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> requestedLaneDestinations,
+    mlir::Value priority) {
+  assert(!requestedLaneDestinations.empty() &&
+         !requestedLaneDestinations.front().empty());
+  const auto count =
+      static_cast<std::uint32_t>(requestedLaneDestinations.size());
+  const unsigned destinationCount =
+      mlir::cast<mlir::IntegerType>(
+          requestedLaneDestinations.front().front().getType())
+          .getWidth();
+  mlir::Value empty = constant(builder, location, destinationCount, 0);
+  llvm::SmallVector<mlir::Value> requests;
+  llvm::SmallVector<mlir::Value> requestedDestinations;
+  for (const auto &lanes : requestedLaneDestinations) {
+    mlir::Value claims = empty;
+    llvm::SmallVector<mlir::Value> admissible;
+    for (mlir::Value lane : lanes) {
+      mlir::Value overlap =
+          circt::comb::AndOp::create(builder, location, claims, lane, true);
+      admissible.push_back(circt::comb::ICmpOp::create(
+          builder, location, circt::comb::ICmpPredicate::eq, overlap, empty,
+          true));
+      claims = circt::comb::OrOp::create(builder, location, claims, lane, true);
+    }
+    requestedDestinations.push_back(claims);
+    admissible.push_back(circt::comb::ICmpOp::create(
+        builder, location, circt::comb::ICmpPredicate::ne, claims, empty,
+        true));
+    requests.push_back(andValues(builder, location, admissible));
+  }
+  if (count == 1) {
+    mlir::Value active = circt::comb::ICmpOp::create(
+        builder, location, circt::comb::ICmpPredicate::eq, priority,
+        constant(builder, location,
+                 mlir::cast<mlir::IntegerType>(priority.getType()).getWidth(),
+                 0),
+        true);
+    return {andValues(builder, location, {requests.front(), active})};
+  }
+  std::vector<mlir::Value> result(count, bitConstant(builder, location, false));
+  for (std::uint32_t head = 0; head != count; ++head) {
+    mlir::Value thisHead = circt::comb::ICmpOp::create(
+        builder, location, circt::comb::ICmpPredicate::eq, priority,
+        constant(builder, location,
+                 mlir::cast<mlir::IntegerType>(priority.getType()).getWidth(),
+                 head),
+        true);
+    mlir::Value occupied = empty;
+    for (std::uint32_t requester :
+         ::fabric::resultPresentationOrder(count, head)) {
+      mlir::Value claims = requestedDestinations[requester];
+      mlir::Value overlap =
+          circt::comb::AndOp::create(builder, location, claims, occupied, true);
+      mlir::Value fits = circt::comb::ICmpOp::create(
+          builder, location, circt::comb::ICmpPredicate::eq, overlap, empty,
+          true);
+      mlir::Value grant =
+          andValues(builder, location, {requests[requester], fits});
+      result[requester] = orValues(
+          builder, location,
+          {result[requester], andValues(builder, location, {thisHead, grant})});
+      occupied = circt::comb::OrOp::create(
+          builder, location, occupied,
+          circt::comb::MuxOp::create(builder, location, grant, claims, empty,
+                                     true),
+          true);
+    }
+  }
+  return result;
+}
+
+mlir::Value makeResultPresentationPriority(
+    mlir::OpBuilder &builder, mlir::Location location,
+    circt::BackedgeBuilder &backedges,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> eligible,
+    llvm::ArrayRef<llvm::SmallVector<mlir::Value>> evaluated, mlir::Value clock,
+    mlir::Value reset, llvm::StringRef name, const ClockResetPlan &clockReset) {
+  llvm::SmallVector<std::uint32_t> evaluationCounts;
+  for (const auto &positions : eligible)
+    evaluationCounts.push_back(positions.size());
+  const auto positions =
+      ::fabric::resultPresentationPositions(evaluationCounts);
+  llvm::SmallVector<mlir::Value> requests;
+  for (const auto position : positions)
+    requests.push_back(eligible[position.requester][position.evaluation]);
+  auto selection = makeStatefulSelection(builder, location, backedges, requests,
+                                         clock, reset, name, clockReset);
+  // The additional code denotes no eligible position, so every selector
+  // stays inactive without inventing a requester in the canonical domain.
+  const unsigned focusWidth = indexWidth(eligible.size() + 1);
+  mlir::Value focus = constant(builder, location, focusWidth, eligible.size());
+  llvm::SmallVector<mlir::Value> completed;
+  for (auto [ordinal, position] : llvm::enumerate(positions)) {
+    focus = circt::comb::MuxOp::create(
+        builder, location, selection.selected[ordinal],
+        constant(builder, location, focusWidth, position.requester), focus,
+        true);
+    completed.push_back(
+        andValues(builder, location,
+                  {selection.selected[ordinal],
+                   evaluated[position.requester][position.evaluation]}));
+  }
+  advanceStatefulSelection(builder, location, selection, completed);
+  return focus;
 }
 
 } // namespace loom::hardware::rtl::hierarchy

@@ -680,6 +680,19 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-result-presentation-test
+    ResultPresentationTest.cpp
+  )
+  target_include_directories(loom-result-presentation-test PRIVATE
+    ${LOOM_SOURCE_DIR}/lib/Hardware/RTL/Hierarchy
+  )
+  target_link_libraries(loom-result-presentation-test PRIVATE
+    LoomHardwareRTL
+    LoomFabricTemporalOperandBuffer
+    MLIRIR
+    LLVMSupport
+  )
+
   add_executable(loom-switch-idle-presentation-test
     SwitchIdlePresentationTest.cpp
   )

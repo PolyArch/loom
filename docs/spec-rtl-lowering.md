@@ -525,40 +525,41 @@ operation of the same FU only while that context is the dispatch context; its
 producer stays busy until then. Every FU output reports the producing context so
 the PE applies that context's result selectors; an output holding no result
 reports the dispatch context. Result egress follows the same
-readiness-before-valid rule as the switches; the Temporal PE specification
-owns the distinct offer and service-grant cursor events. A PE output port
-offers valid FU outputs by the canonical round-robin policy, advancing its
-cursor past every offered requester whether the downstream accepted or
-refused the offer (the offer rotation of the per-tag virtual channel
-discipline). A result whose downstream is not ready for its tag never holds
-the port against the other valid results; the grant is the offer that is
-accepted. A register FIFO also presents one selected FU output, but its
-write cursor follows the Fabric register-FIFO service contract and advances
-only when that write commits.
-While no valid requester holds a port, the port presents readiness to the
-routed output of one idle FU at a time, the same FU on every port of the PE,
-so an operation that publishes several results atomically observes their
-capacity before it asserts any valid. The idle FU follows the
-context-evaluation service, not a free-running rotation. Under a shared
-service, it is the FU granted this cycle; under per-FU services, a pointer
-holds each FU with eligible rows for one complete pass of its dispatch
-rotation, so every resident context of every FU is presented on its ports
-while it is the dispatch context (a rotation whose period shares a factor with
-the FU count would otherwise never align with it).
-Inside a Temporal PE's FU, several
-operations may hold results for one FU boundary output at the same time because
-their resident contexts differ; that output grants exactly one producing route
-per cycle by the canonical round-robin policy over its routes, presents the
-granted result and its context, and hands the boundary's readiness to the
-granted route alone, so a handoff retires exactly one result. Admissibility of
-a route never observes that route's own source valid, which keeps readiness
-observable before a transparent operation publishes. The PE tells each FU
-output whether it is offering that output to a port this cycle, and the FU's
-cursor advances past the granted route on every offered cycle, accepted or
-refused, so the same offer rotation applies among the held results of one FU;
-an output the PE is not presenting keeps its grant. An operation input is driven by at most one active route per
-cycle, because one capability template is active per dispatch context, and
-therefore carries no cursor.
+readiness-before-valid rule as the switches. The Temporal PE specification and
+`ResultPresentation` own atomic offer identity, complete destination-set
+admission, and context-qualified presentation fairness. RTL derives pure direct-token
+offers by evaluating the existing combinational provider transform with full
+downstream capacity and pre-admission input availability; that projection's
+state-update outputs have no consumers. Direct provider payloads depend only
+on selected state, configuration and input payloads; FU payload selectors use
+active routes or pure offers. This keeps composed condition-data paths
+independent of downstream readiness. Committed lane validity and the
+ordinary provider evaluation remain the only token/state commit path. Held
+result offers derive directly from their result-valid registers.
+
+A Temporal FU carries both a dispatch context index and its explicit evaluation
+grant. An ungranted default index cannot evaluate an operation, transfer a token
+into an operation input, or advance a direct producer's state. The grant gates
+the ordinary transition and the pure offer projection at the operation shell;
+masking only boundary egress would leave internal transitions possible. Held
+result retirement and an already admitted ordered continuation remain governed
+by their operation-slot contract independently of a new dispatch grant.
+
+FU and PE selectors preserve the complete offer tuple and per-lane destination
+multiplicity before returning readiness. Offer-selected route/context/tag
+signals cannot depend on a peer's committed validity. One PE priority owns the
+physical requester and its context-evaluation position, and projects physical
+focus into each Temporal FU's stateless selector. It advances only when the
+focused position is evaluated, including an empty or refused offer; unrelated
+opportunistic offers cannot advance it. A register FIFO only enqueues on an
+actual valid/ready handoff. No idle-FU fallback, whole-FU firing, or speculative
+resource acquisition is introduced.
+Inside a Temporal PE's FU, operations may hold results from different
+resident contexts simultaneously. Atomic presentation selects complete
+producer destination sets; the selected payload and producing context remain
+stable independently of peer committed validity. A handoff retires only the
+selected valid lane. An operation input has at most one active source route
+in the selected capability template and carries no independent cursor.
 
 Temporal-PE operand storage is emitted from the exact required
 `operand_buffer_size` and mode-derived allocation units. The base contract has

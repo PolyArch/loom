@@ -604,19 +604,64 @@ A selected FU-to-boundary result traversal is transparent. Its result-valid
 and ready dependencies pass through the PE selector, while the selected
 operation's Fabric-owned result-holding state supplies the registered boundary.
 The PE does not own a second implicit result queue. An explicit register-FIFO
-route remains a stateful break under the register-FIFO contract above. One FU
-boundary output is a single physical resource shared by the result-holding
-states of every resident context whose configured template drives it; it
-delivers one held result per PE clock cycle under the canonical round-robin
-policy over the templates' routes, and only the granted result retires on that
-handoff. The other held results stay in their operations' result-holding
-states and keep those operations busy. A PE output port advances its distinct
-offer cursor past every valid requester it offers, whether the handoff is
-accepted or refused, so tag-specific downstream refusal cannot hold that port
-against another ready result. Idle readiness presentation does not advance the
-cursor. This offer cursor is not a ResourceContract service-grant cursor and
-does not replace the successful-grant cursor rules for operand queues or
-register FIFOs.
+route remains a stateful break under the register-FIFO contract above.
+Result presentation carries a readiness-independent offer in addition to
+committed result validity. For direct token publication, the operation's exact
+combinational semantic transform is evaluated with the current producing
+context, state, configuration, and pre-admission input availability and with
+all downstream capacity available. Only its production shape is observed;
+this evaluation cannot mutate state or commit a transition. The ordinary
+handshake and the explicit context-evaluation grant remain the sole commit
+path. A default context index without a grant cannot advance direct state or
+consume an internal token. Independently held result lanes offer
+whenever their result-holding valid state is set.
+
+A direct operation occurrence's simultaneously produced lanes form one atomic
+presentation requester in its FU and producing-context namespace. A held lane
+is an independent requester because the operation slot permits lanes to retire
+separately. Internal FU offer propagation precedes admission and atomic fanout
+validity. The output carries its selected requester's identity and producing
+context together; output routing never infers context from operand tags.
+
+`ResultPresentation` is the Fabric owner of the presentation policy. Each
+physical requester carries a destination mask per result lane. A lane may
+fan out, but two lanes claiming the same destination make their complete tuple
+inadmissible; unioning lanes must not erase that multiplicity. Destinations
+include PE output ports and register-FIFO write ports.
+
+One PE presentation priority ranges over `(requester, evaluation)` positions.
+A direct requester has one position per canonical resident context. A held
+lane has one immediately evaluated position. Focus the next configured-eligible
+position in cyclic order, using the existing context-evaluation service's
+eligibility and evaluation grants. Hold priority until that position is
+evaluated, then advance, including when that evaluation produces no offer or
+downstream refuses the offer. Other presentations never advance that focus.
+A held lane is eligible while it offers its stored result.
+
+Present complete destination sets in cyclic physical-requester order starting
+at the focused requester. A requester is presented only if its complete set is
+disjoint from all sets already presented; later disjoint requesters may proceed
+concurrently. The same physical priority is projected into each nested FU.
+Temporal FUs carry no independent presentation cursor that could hide the
+PE's focused requester. An ordinary spatial FU owns its local priority, with
+one immediately evaluated position per requester.
+
+For a stable eligible configuration, each direct position reaches its focused
+evaluation within the sum, over eligible priority positions, of their owning
+FU's declared context-evaluation periods. When an admissible tuple offers at
+that evaluation, it receives first presentation priority. This covers periodic
+context visibility and refused tags; ordinary round robin over currently valid
+requests alone does not, because dispatch and presentation periods can lock in
+a phase that repeatedly hides one context. Opportunistic disjoint offers do
+not shorten the focused context's evaluation opportunity.
+
+This presentation cursor replaces per-port valid-request cursors and the
+idle-FU fallback/pass-tracking mechanism. It is not a ResourceContract service
+grant and introduces no whole-FU or whole-context firing. Register-FIFO writes
+still commit only on the selected lane's actual valid/ready handoff. Queue
+capacity, operand service grants, state updates, acquisition, and release
+remain owned by their existing ResourceContracts. Group presentation never
+consumes or releases those resources speculatively.
 
 ## Mapping Ownership
 

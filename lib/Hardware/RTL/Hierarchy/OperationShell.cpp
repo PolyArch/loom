@@ -22,7 +22,7 @@ namespace {
 llvm::Expected<std::vector<OperationEndpointPlan>> deriveOperationEndpoints(
     mlir::OpBuilder &builder,
     const fabric::ResolvedFabricOpCapabilityView &capability,
-    std::optional<unsigned> contextWidth) {
+    std::optional<unsigned> contextWidth, bool directPublication) {
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> ports;
   ports.reserve(capability.physicalPorts.size());
   for (const auto &port : capability.physicalPorts)
@@ -66,11 +66,15 @@ llvm::Expected<std::vector<OperationEndpointPlan>> deriveOperationEndpoints(
     if (contextWidth && !input)
       context =
           makePort("_context", builder.getIntegerType(*contextWidth), forward);
-    result.push_back({port->reference.direction, port->reference.ordinal,
-                      port->payloadWidthBits, std::move(data),
-                      std::move(context),
-                      makePort("_valid", builder.getI1Type(), forward),
-                      makePort("_ready", builder.getI1Type(), backward)});
+    result.push_back(
+        {port->reference.direction, port->reference.ordinal,
+         port->payloadWidthBits, std::move(data), std::move(context),
+         !input || directPublication
+             ? std::optional<circt::hw::PortInfo>(
+                   makePort("_offer", builder.getI1Type(), forward))
+             : std::nullopt,
+         makePort("_valid", builder.getI1Type(), forward),
+         makePort("_ready", builder.getI1Type(), backward)});
   }
   return result;
 }
@@ -85,6 +89,8 @@ void appendOperationPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
     append(*endpoint.data);
   if (endpoint.context)
     append(*endpoint.context);
+  if (endpoint.offer)
+    append(*endpoint.offer);
   append(endpoint.valid);
   append(endpoint.ready);
 }
@@ -146,7 +152,8 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                      std::max(1U, llvm::Log2_64_Ceil(contextCount)))
                : std::nullopt;
   auto endpoints =
-      deriveOperationEndpoints(builder, *operation.capability, contextWidth);
+      deriveOperationEndpoints(builder, *operation.capability, contextWidth,
+                               interface->hasDirectTokenPublication());
   if (!endpoints)
     return endpoints.takeError();
   auto leafPorts =
@@ -206,10 +213,14 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
   if (!configuration)
     return configuration.takeError();
   appendClockResetAndConfigurationPorts(builder, *configuration, inputs);
-  if (contextWidth)
+  if (contextWidth) {
     inputs.push_back({{builder.getStringAttr(dispatchContextPortName),
                        builder.getIntegerType(*contextWidth),
                        circt::hw::ModulePort::Direction::Input}});
+    inputs.push_back(
+        {{builder.getStringAttr(dispatchEnablePortName), builder.getI1Type(),
+          circt::hw::ModulePort::Direction::Input}});
+  }
   for (const OperationEndpointPlan &endpoint : *endpoints)
     appendOperationPorts(inputs, outputs, endpoint);
 
@@ -290,7 +301,11 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
           executionContext =
               circt::comb::MuxOp::create(bodyBuilder, location, continuation,
                                          resultContext, dispatchContext, true);
-        mlir::Value executionContextValid = contextInRange;
+        mlir::Value executionContextValid =
+            temporal ? andValues(bodyBuilder, location,
+                                 {contextInRange,
+                                  accessor.getInput(dispatchEnablePortName)})
+                     : contextInRange;
         if (interface->hasOrderedProductionGroups())
           executionContextValid = orValues(
               bodyBuilder, location, {continuation, executionContextValid});
@@ -372,18 +387,17 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
           slotAvailable = held->available;
         }
 
-        mlir::Value leafTransitionEnabled = enabled;
+        mlir::Value leafTransitionEnabled =
+            andValues(bodyBuilder, location, {enabled, executionContextValid});
         if (interface->hasElasticResultStorage())
-          leafTransitionEnabled =
-              andValues(bodyBuilder, location, {enabled, slotAvailable});
+          leafTransitionEnabled = andValues(
+              bodyBuilder, location, {leafTransitionEnabled, slotAvailable});
         mlir::Value acceptsInput = leafTransitionEnabled;
         if (interface->hasOrderedProductionGroups())
           acceptsInput = andValues(bodyBuilder, location,
                                    {leafTransitionEnabled,
                                     circt::comb::createOrFoldNot(
                                         bodyBuilder, location, continuation)});
-        acceptsInput = andValues(bodyBuilder, location,
-                                 {acceptsInput, executionContextValid});
 
         std::map<std::string, mlir::Value> leafInput;
         for (const OperationEndpointPlan *endpoint : inputEndpoints) {
@@ -399,9 +413,10 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         }
         if (interface->hasTokenHandshake())
           for (const OperationEndpointPlan *endpoint : outputEndpoints) {
-            mlir::Value ready = andValues(
-                bodyBuilder, location,
-                {enabled, accessor.getInput(endpoint->ready.getName())});
+            mlir::Value ready =
+                andValues(bodyBuilder, location,
+                          {leafTransitionEnabled,
+                           accessor.getInput(endpoint->ready.getName())});
             if (interface->hasElasticResultStorage())
               ready = leafTransitionEnabled;
             leafInput.emplace(
@@ -414,8 +429,8 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         for (const ConfigurationFieldPlan &field : configurationFields) {
           llvm::SmallVector<mlir::Value, 4> values;
           for (const FieldDecoderPlan &decoder : field.contexts)
-            values.push_back(decodeFieldSignal(
-                bodyBuilder, location, *configurationSignals, decoder));
+            values.push_back(decodeFieldSignal(bodyBuilder, location,
+                                               *configurationSignals, decoder));
           leafInput.emplace("config_" + std::to_string(field.ordinal),
                             values.size() == 1
                                 ? values.front()
@@ -444,6 +459,36 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
           if (port.isOutput())
             leafOutput.emplace(port.getName().str(),
                                instance.getResult(resultOrdinal++));
+
+        // Project an offer through the same semantic transform before any
+        // downstream admission. The transform is combinational: its state
+        // outputs are unused here, and only the ordinary instance can commit
+        // an operation transition. This derives case-dependent production
+        // directly from the provider instead of defining a second case owner.
+        std::map<std::string, mlir::Value> offeredOutput;
+        if (interface->hasDirectTokenPublication()) {
+          auto offerInput = leafInput;
+          for (const OperationEndpointPlan *endpoint : inputEndpoints)
+            offerInput["valid_input_" + std::to_string(endpoint->ordinal)] =
+                andValues(bodyBuilder, location,
+                          {acceptsInput,
+                           accessor.getInput(endpoint->offer->getName())});
+          for (const OperationEndpointPlan *endpoint : outputEndpoints)
+            offerInput["ready_output_" + std::to_string(endpoint->ordinal)] =
+                bitConstant(bodyBuilder, location, true);
+          llvm::SmallVector<mlir::Value> offerOperands;
+          for (const circt::hw::PortInfo &port : *leafPorts)
+            if (!port.isOutput())
+              offerOperands.push_back(offerInput.at(port.getName().str()));
+          auto offerInstance = circt::hw::InstanceOp::create(
+              bodyBuilder, location, leaf.getOperation(), "operation_offer",
+              offerOperands);
+          unsigned outputOrdinal = 0;
+          for (const circt::hw::PortInfo &port : *leafPorts)
+            if (port.isOutput())
+              offeredOutput.emplace(port.getName().str(),
+                                    offerInstance.getResult(outputOrdinal++));
+        }
 
         if (*stateLayout) {
           mlir::Value write =
@@ -587,6 +632,15 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
           accessor.setOutput(endpoint->valid.getName(),
                              publishedValid[ordinal]);
+          accessor.setOutput(
+              endpoint->offer->getName(),
+              hasResultStorage
+                  ? publishedValid[ordinal]
+                  : andValues(
+                        bodyBuilder, location,
+                        {enabled, executionContextValid,
+                         offeredOutput.at("valid_output_" +
+                                          std::to_string(endpoint->ordinal))}));
           if (endpoint->data)
             accessor.setOutput(endpoint->data->getName(),
                                publishedData[ordinal]);

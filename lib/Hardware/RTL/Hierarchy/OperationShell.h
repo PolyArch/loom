@@ -2,8 +2,8 @@
 #define LOOM_LIB_HARDWARE_RTL_HIERARCHY_OPERATIONSHELL_H
 
 #include "Hardware/RTL/CommonSkeleton.h"
-#include "Support.h"
 #include "Hardware/RTL/PhysicalOperation.h"
+#include "Support.h"
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/Builders.h"
@@ -31,6 +31,9 @@ struct OperationEndpointPlan final {
   std::uint32_t payloadWidthBits = 0;
   std::optional<circt::hw::PortInfo> data;
   std::optional<circt::hw::PortInfo> context;
+  /// Availability before downstream admission. Direct token inputs carry
+  /// this separately from committed fanout validity; every result exposes it.
+  std::optional<circt::hw::PortInfo> offer;
   circt::hw::PortInfo valid;
   circt::hw::PortInfo ready;
 };

@@ -275,8 +275,9 @@ FixtureModule makeFixtureModule(llvm::StringRef test,
     // value from port 1 tag 1, result k to port k tag 2. The invariant leaves
     // row 0 Unused. The gate also occupies context 0 with a realization on
     // tag 3 that is never fed, so its FU's dispatch keeps rotating over two
-    // contexts, and its PE hosts a second FU without resident rows, so the
-    // idle-egress pointer has to align with that rotation.
+    // contexts, and its PE hosts a second FU without resident rows, so
+    // presentation must preserve the active context's evaluation opportunity
+    // while the other FU remains ungranted.
     rows.push_back({1, 0, 1, 2});
     if (fixture == Fixture::Gate) {
       rows.push_back({0, 0, 3, 3});

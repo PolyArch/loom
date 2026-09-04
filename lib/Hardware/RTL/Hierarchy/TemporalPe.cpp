@@ -525,8 +525,9 @@ struct FuOutputRuntime final {
   std::optional<mlir::Value> data;
   mlir::Value context;
   mlir::Value valid;
+  mlir::Value offer;
+  mlir::Value requester;
   circt::Backedge ready;
-  circt::Backedge offered;
 };
 
 struct ResultRouteSignals final {
@@ -911,11 +912,11 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                     bodyBuilder, location,
                     {matched, circt::comb::createOrFoldNot(
                                   bodyBuilder, location, headPresent[input])}));
-                present.push_back(orValues(
-                    bodyBuilder, location,
-                    {circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                  roleUses[input]),
-                     headPresent[input], matched}));
+                present.push_back(
+                    orValues(bodyBuilder, location,
+                             {circt::comb::createOrFoldNot(
+                                  bodyBuilder, location, roleUses[input]),
+                              headPresent[input], matched}));
               }
               const mlir::Value fillsMissingRole =
                   orValues(bodyBuilder, location, fills);
@@ -965,8 +966,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             active[member] =
                 orValues(bodyBuilder, location, queueArrivals[queue]);
             mlir::Value memberRank = zero(bodyBuilder, location, 2);
-            for (std::uint32_t port = 0; port != layout.inputPortCount;
-                 ++port)
+            for (std::uint32_t port = 0; port != layout.inputPortCount; ++port)
               memberRank = circt::comb::MuxOp::create(
                   bodyBuilder, location, queueInputMatches[queue][port],
                   portRank[port], memberRank, true);
@@ -1004,13 +1004,13 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             }
             mlir::Value selected = roundRobinPackedSelection(
                 bodyBuilder, location, candidates, cursor);
-            queueGrant[unit.queues[member]] = andValues(
-                bodyBuilder, location,
-                {circt::comb::createOrFoldNot(
-                     bodyBuilder, location,
-                     orValues(bodyBuilder, location, higher)),
-                 circt::comb::ExtractOp::create(bodyBuilder, location,
-                                                selected, member, 1)});
+            queueGrant[unit.queues[member]] =
+                andValues(bodyBuilder, location,
+                          {circt::comb::createOrFoldNot(
+                               bodyBuilder, location,
+                               orValues(bodyBuilder, location, higher)),
+                           circt::comb::ExtractOp::create(
+                               bodyBuilder, location, selected, member, 1)});
           }
           llvm::SmallVector<mlir::Value> committedMembers;
           for (std::uint32_t queue : unit.queues)
@@ -1058,9 +1058,8 @@ llvm::Expected<PeModule> buildTemporalPeModule(
           inputReady[port] = andValues(
               bodyBuilder, location,
               {orValues(bodyBuilder, location,
-                        {anyRouteMatch,
-                         orValues(bodyBuilder, location,
-                                  inputMatchTerms[port])}),
+                        {anyRouteMatch, orValues(bodyBuilder, location,
+                                                 inputMatchTerms[port])}),
                unblocked});
           mlir::Value fired = andValues(
               bodyBuilder, location,
@@ -1102,7 +1101,6 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                                         tagWidth));
         }
 
-        const unsigned idleFuWidth = indexWidth(layout.fus.size());
         std::vector<std::vector<mlir::Value>> contextEligible(
             layout.fus.size(), std::vector<mlir::Value>(layout.contextCount));
         for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu)
@@ -1119,15 +1117,10 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             layout.fus.size(), std::vector<mlir::Value>(
                                    layout.contextCount,
                                    bitConstant(bodyBuilder, location, false)));
-        // The context-evaluation service is one shared unit for the PE or
-        // one independently rotating unit per FU. Each unit reports the
-        // cycle in which its grant restarts a pass over the eligible
-        // candidates and, when shared, the FU it grants this cycle; the
-        // result-egress idle presentation below follows those passes.
-        const std::uint32_t dispatchUnitCount = peResources->dispatchUnitCount();
-        std::vector<mlir::Value> unitPassStart(dispatchUnitCount);
-        std::vector<std::optional<std::uint32_t>> unitOfFu(layout.fus.size());
-        mlir::Value sharedDispatchFu;
+        // Context evaluation remains the Fabric-owned service; presentation
+        // requests are derived independently from the selected operations.
+        const std::uint32_t dispatchUnitCount =
+            peResources->dispatchUnitCount();
         for (std::uint32_t unit = 0; unit != dispatchUnitCount; ++unit) {
           std::vector<mlir::Value> requests;
           const auto candidates = peResources->dispatchCandidatesOf(unit);
@@ -1143,47 +1136,12 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               accessor.getInput("clock"), accessor.getInput("reset"),
               "dispatch_unit_" + std::to_string(unit) + "_cursor_reg",
               clockReset);
-          const unsigned cursorWidth =
-              mlir::cast<mlir::IntegerType>(selection.cursor.getType())
-                  .getWidth();
-          llvm::SmallVector<mlir::Value> wrapped;
-          mlir::Value grantedFu = zero(bodyBuilder, location, idleFuWidth);
-          bool singleFu = true;
           for (auto [request, candidateOrdinal] : llvm::enumerate(candidates)) {
             const auto &candidate =
                 peResources->dispatchCandidates()[candidateOrdinal];
             contextSelected[candidate.fuOccurrence][candidate.context.ordinal] =
                 selection.selected[request];
-            wrapped.push_back(andValues(
-                bodyBuilder, location,
-                {selection.selected[request],
-                 circt::comb::ICmpOp::create(
-                     bodyBuilder, location, circt::comb::ICmpPredicate::ult,
-                     constant(bodyBuilder, location, cursorWidth, request),
-                     selection.cursor, true)}));
-            grantedFu = circt::comb::MuxOp::create(
-                bodyBuilder, location, selection.selected[request],
-                constant(bodyBuilder, location, idleFuWidth,
-                         candidate.fuOccurrence),
-                grantedFu, true);
-            singleFu = singleFu && candidate.fuOccurrence ==
-                                       peResources->dispatchCandidates()
-                                           [candidates.front()]
-                                               .fuOccurrence;
           }
-          // A pass restarts when the grant searched from ordinal 0 (the
-          // cursor wrapped) or wrapped around the end of the domain.
-          unitPassStart[unit] = andValues(
-              bodyBuilder, location,
-              {orValues(bodyBuilder, location, selection.selected),
-               orValues(bodyBuilder, location,
-                        {equals(bodyBuilder, location, selection.cursor, 0),
-                         orValues(bodyBuilder, location, wrapped)})});
-          if (singleFu && !candidates.empty())
-            unitOfFu[peResources->dispatchCandidates()[candidates.front()]
-                         .fuOccurrence] = unit;
-          if (dispatchUnitCount == 1)
-            sharedDispatchFu = grantedFu;
           advanceStatefulSelection(bodyBuilder, location, selection,
                                    selection.selected);
         }
@@ -1249,8 +1207,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                ++local)
             queueSelected[units[unit].queues[local]] =
                 selection.selected[local];
-          advanceStatefulSelection(bodyBuilder, location, selection,
-                                   committed);
+          advanceStatefulSelection(bodyBuilder, location, selection, committed);
         }
 
         struct FifoReadCandidate final {
@@ -1338,10 +1295,42 @@ llvm::Expected<PeModule> buildTemporalPeModule(
           if (!candidate.discard)
             fifoReadCandidateSelected[candidate.fu][candidate.context]
                                      [candidate.input][candidate.fifo] =
-                circt::comb::ExtractOp::create(
-                    bodyBuilder, location, fifoReadSelected[candidate.fifo],
-                    candidate.selectionOrdinal, 1);
+                                         circt::comb::ExtractOp::create(
+                                             bodyBuilder, location,
+                                             fifoReadSelected[candidate.fifo],
+                                             candidate.selectionOrdinal, 1);
 
+        // A single PE presentation priority owns both physical requester and
+        // direct-producing context. FU selectors receive this focus; they do
+        // not maintain another cursor that can hide the focused requester.
+        std::vector<std::uint32_t> requesterOffsets(layout.fus.size());
+        std::vector<llvm::SmallVector<mlir::Value>> presentationEligible;
+        std::vector<llvm::SmallVector<mlir::Value>> presentationEvaluated;
+        std::vector<std::optional<circt::Backedge>> heldRequesterOffers;
+        for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
+          requesterOffsets[fu] = presentationEligible.size();
+          for (bool direct : children[fu]->resultRequesterDirectPublication) {
+            if (direct) {
+              presentationEligible.emplace_back(contextEligible[fu].begin(),
+                                                contextEligible[fu].end());
+              presentationEvaluated.emplace_back(contextSelected[fu].begin(),
+                                                 contextSelected[fu].end());
+              heldRequesterOffers.push_back(std::nullopt);
+            } else {
+              auto offered = backedges.get(bodyBuilder.getI1Type());
+              presentationEligible.push_back({offered});
+              presentationEvaluated.push_back(
+                  {bitConstant(bodyBuilder, location, true)});
+              heldRequesterOffers.push_back(std::move(offered));
+            }
+          }
+        }
+        const std::uint32_t requesterCount = presentationEligible.size();
+        mlir::Value presentationPriority = makeResultPresentationPriority(
+            bodyBuilder, location, backedges, presentationEligible,
+            presentationEvaluated, accessor.getInput("clock"),
+            accessor.getInput("reset"), "result_presentation_cursor_reg",
+            clockReset);
         std::vector<std::vector<mlir::Value>> fuInputReady(layout.fus.size());
         std::vector<FuOutputRuntime> fuOutputs;
         metrics.dispatchOperations =
@@ -1357,22 +1346,28 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             backedges.abandon();
             return;
           }
+          const auto localRequesterCount =
+              child.resultRequesterDirectPublication.size();
+          mlir::Value localPriority =
+              zero(bodyBuilder, location, indexWidth(localRequesterCount));
+          for (std::uint32_t local = 0; local != localRequesterCount; ++local)
+            localPriority = circt::comb::MuxOp::create(
+                bodyBuilder, location,
+                equals(bodyBuilder, location, presentationPriority,
+                       requesterOffsets[fu] + local),
+                constant(bodyBuilder, location, indexWidth(localRequesterCount),
+                         local),
+                localPriority, true);
+          instanceInputs.emplace(resultPresentationPriorityPortName.str(),
+                                 localPriority);
           fuInputReady[fu].resize(layout.fus[fu].inputCount);
           std::vector<circt::Backedge> outputReady(layout.fus[fu].outputCount);
-          std::vector<circt::Backedge> outputOffered(
-              layout.fus[fu].outputCount);
           for (const EndpointPlan &endpoint : child.endpoints) {
             if (endpoint.direction == fabric::FabricPortDirection::Output) {
               outputReady[endpoint.localOrdinal] =
                   backedges.get(bodyBuilder.getI1Type());
               instanceInputs.emplace(endpoint.ready.getName().str(),
                                      outputReady[endpoint.localOrdinal]);
-              outputOffered[endpoint.localOrdinal] =
-                  backedges.get(bodyBuilder.getI1Type());
-              instanceInputs.emplace(
-                  "output_" + std::to_string(endpoint.localOrdinal) +
-                      "_offered",
-                  outputOffered[endpoint.localOrdinal]);
               continue;
             }
             llvm::SmallVector<mlir::Value> contextValid;
@@ -1447,6 +1442,9 @@ llvm::Expected<PeModule> buildTemporalPeModule(
           }
           instanceInputs.emplace(dispatchContextPortName.str(),
                                  selectedContext[fu]);
+          instanceInputs.emplace(
+              dispatchEnablePortName.str(),
+              orValues(bodyBuilder, location, contextSelected[fu]));
 
           auto instance = instantiateModule(
               bodyBuilder, location, child.module,
@@ -1456,6 +1454,12 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             backedges.abandon();
             return;
           }
+          mlir::Value rawOffers =
+              instance->at(resultRequesterOffersPortName.str());
+          for (std::uint32_t local = 0; local != localRequesterCount; ++local)
+            if (auto &offer = heldRequesterOffers[requesterOffsets[fu] + local])
+              offer->setValue(circt::comb::ExtractOp::create(
+                  bodyBuilder, location, rawOffers, local, 1));
           for (const EndpointPlan &endpoint : child.endpoints) {
             if (endpoint.direction == fabric::FabricPortDirection::Input) {
               fuInputReady[fu][endpoint.localOrdinal] =
@@ -1471,8 +1475,10 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             output.context = instance->at(
                 "output_" + std::to_string(endpoint.localOrdinal) + "_context");
             output.valid = instance->at(endpoint.valid.getName().str());
+            output.offer = instance->at(fuOutputOfferPortName(endpoint));
+            output.requester =
+                instance->at(fuOutputRequesterPortName(endpoint));
             output.ready = std::move(outputReady[endpoint.localOrdinal]);
-            output.offered = std::move(outputOffered[endpoint.localOrdinal]);
             fuOutputs.push_back(std::move(output));
           }
         }
@@ -1575,136 +1581,74 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             blockOperationCount(bodyBuilder) - metrics.beginOperations -
             metrics.decodeAndPoolOperations - metrics.ingressOperations -
             metrics.dispatchOperations - metrics.childOperations;
-        // Result egress: valid FU outputs whose resident row routes them to a
-        // port or register FIFO are presented by the canonical round-robin
-        // policy. A PE-port cursor advances past every offered requester,
-        // accepted or refused, so a result whose downstream is not ready for
-        // its tag cannot hold the port against the other valid results (the
-        // offer rotation of the per-tag virtual channel discipline). A
-        // register-FIFO write cursor advances only when its selected write
-        // commits. Every FU output learns through its offered signal when the
-        // PE presents it.
-        // Readiness must be observable before valid, because an operation
-        // that publishes several results atomically asserts each result's
-        // valid only once its peers are ready. While no valid requester holds
-        // a port, the port presents one idle candidate and its configured
-        // tag, so downstream tag-dispatched readiness applies to that
-        // candidate. The idle candidate is the first routed output of one
-        // idle FU, shared by every port of the PE so the several results of one
-        // FU's operation are presented on their ports in the same cycle. The
-        // idle FU follows the context-evaluation service: under a shared
-        // service it is the FU granted this cycle; under per-FU services a
-        // pointer holds each FU that has eligible rows for one complete pass
-        // of its dispatch rotation, from one pass start to the next, so every
-        // resident context of every FU is presented on its ports while it is
-        // the dispatch context. A free-running pointer could never align with
-        // a rotation whose period shares a factor with the FU count.
+        // A direct producer's offered result lanes reserve their complete
+        // configured destination set before ready is consulted. The producing
+        // FU and its carried context keep the requester namespace exact.
+        // Stored result lanes retain independent requesters. Register FIFO
+        // destinations participate in presentation, but only actual valid
+        // handoffs commit writes to the existing queue service.
         std::vector<llvm::SmallVector<mlir::Value>> fuOutputReadyTerms(
             fuOutputs.size());
-        std::vector<llvm::SmallVector<mlir::Value>> fuOutputOfferedTerms(
+        const std::uint32_t destinationCount =
+            layout.outputPortCount + layout.registerFifoCount;
+        std::vector<llvm::SmallVector<mlir::Value>> requesterClaims(
+            requesterCount);
+        std::vector<std::vector<mlir::Value>> candidateRequesters(
             fuOutputs.size());
-        mlir::Value idleFu = zero(bodyBuilder, location, idleFuWidth);
-        if (layout.fus.size() > 1 && sharedDispatchFu) {
-          idleFu = sharedDispatchFu;
-        } else if (layout.fus.size() > 1) {
-          circt::Backedge idleFuNext =
-              backedges.get(bodyBuilder.getIntegerType(idleFuWidth));
-          idleFu = createRegister(bodyBuilder, location, idleFuNext,
-                                  accessor.getInput("clock"),
-                                  accessor.getInput("reset"),
-                                  llvm::APInt(idleFuWidth, 0),
-                                  "result_idle_fu_cursor_reg",
-                                  clockReset.asynchronousReset);
-          circt::Backedge passSeenNext = backedges.get(bodyBuilder.getI1Type());
-          mlir::Value passSeen = createRegister(
-              bodyBuilder, location, passSeenNext, accessor.getInput("clock"),
-              accessor.getInput("reset"), llvm::APInt(1, 0),
-              "result_idle_fu_pass_seen_reg", clockReset.asynchronousReset);
-          llvm::SmallVector<mlir::Value> fuPassStart;
-          llvm::SmallVector<mlir::Value> fuEligible;
-          for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
-            fuPassStart.push_back(unitOfFu[fu]
-                                      ? unitPassStart[*unitOfFu[fu]]
-                                      : bitConstant(bodyBuilder, location, false));
-            fuEligible.push_back(
-                orValues(bodyBuilder, location, contextEligible[fu]));
+        for (auto [candidate, output] : llvm::enumerate(fuOutputs)) {
+          const std::uint32_t localCount =
+              children[output.fu]->resultRequesterDirectPublication.size();
+          for (std::uint32_t local = 0; local != localCount; ++local) {
+            mlir::Value member =
+                andValues(bodyBuilder, location,
+                          {output.offer, equals(bodyBuilder, location,
+                                                output.requester, local)});
+            candidateRequesters[candidate].push_back(member);
+            const std::uint32_t requester = requesterOffsets[output.fu] + local;
+            llvm::SmallVector<mlir::Value> laneClaims;
+            for (std::uint32_t destination = 0; destination != destinationCount;
+                 ++destination)
+              laneClaims.push_back(andValues(
+                  bodyBuilder, location,
+                  {member, resultRoutes[candidate].route,
+                   equals(bodyBuilder, location, resultRoutes[candidate].target,
+                          destination)}));
+            requesterClaims[requester].push_back(
+                packBits(bodyBuilder, location, laneClaims));
           }
-          mlir::Value currentPassStart =
-              indexedValue(bodyBuilder, location, idleFu, fuPassStart);
-          mlir::Value currentEligible =
-              indexedValue(bodyBuilder, location, idleFu, fuEligible);
-          mlir::Value advance = orValues(
-              bodyBuilder, location,
-              {circt::comb::createOrFoldNot(bodyBuilder, location,
-                                            currentEligible),
-               andValues(bodyBuilder, location, {currentPassStart, passSeen})});
-          passSeenNext.setValue(andValues(
-              bodyBuilder, location,
-              {circt::comb::createOrFoldNot(bodyBuilder, location, advance),
-               orValues(bodyBuilder, location, {passSeen, currentPassStart})}));
-          mlir::Value successor = circt::comb::MuxOp::create(
-              bodyBuilder, location,
-              equals(bodyBuilder, location, idleFu, layout.fus.size() - 1),
-              zero(bodyBuilder, location, idleFuWidth),
-              circt::comb::AddOp::create(
-                  bodyBuilder, location, idleFu,
-                  constant(bodyBuilder, location, idleFuWidth, 1), true),
-              true);
-          idleFuNext.setValue(circt::comb::MuxOp::create(
-              bodyBuilder, location, advance, successor, idleFu, true));
         }
-        const auto presentedCandidates =
-            [&](llvm::ArrayRef<mlir::Value> requests,
-                llvm::ArrayRef<mlir::Value> candidates,
-                const StatefulSelection &selection) {
-              mlir::Value anyRequest =
-                  orValues(bodyBuilder, location, requests);
-              mlir::Value taken = bitConstant(bodyBuilder, location, false);
-              std::vector<mlir::Value> presented;
-              presented.reserve(candidates.size());
-              for (std::size_t candidate = 0; candidate != candidates.size();
-                   ++candidate) {
-                mlir::Value idle = andValues(
-                    bodyBuilder, location,
-                    {candidates[candidate],
-                     equals(bodyBuilder, location, idleFu,
-                            fuOutputs[candidate].fu),
-                     circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                  taken)});
-                taken = orValues(bodyBuilder, location, {taken, idle});
-                presented.push_back(circt::comb::MuxOp::create(
-                    bodyBuilder, location, anyRequest,
-                    selection.selected[candidate], idle, true));
-              }
-              return presented;
-            };
+        const auto presentation = selectResultPresentation(
+            bodyBuilder, location, requesterClaims, presentationPriority);
+        std::vector<mlir::Value> candidatePresented;
+        for (auto [candidate, output] : llvm::enumerate(fuOutputs)) {
+          llvm::SmallVector<mlir::Value> alternatives;
+          for (auto [local, member] :
+               llvm::enumerate(candidateRequesters[candidate]))
+            alternatives.push_back(andValues(
+                bodyBuilder, location,
+                {member, presentation[requesterOffsets[output.fu] + local]}));
+          candidatePresented.push_back(
+              orValues(bodyBuilder, location, alternatives));
+        }
+        const auto presentsDestination = [&](std::size_t candidate,
+                                             std::uint32_t destination) {
+          return andValues(
+              bodyBuilder, location,
+              {candidatePresented[candidate], resultRoutes[candidate].route,
+               equals(bodyBuilder, location, resultRoutes[candidate].target,
+                      destination)});
+        };
         for (std::uint32_t outputPort = 0; outputPort != outputEndpoints.size();
              ++outputPort) {
-          std::vector<mlir::Value> requests;
-          std::vector<mlir::Value> candidates;
-          std::vector<std::optional<mlir::Value>> data;
-          requests.reserve(fuOutputs.size());
-          candidates.reserve(fuOutputs.size());
-          data.reserve(fuOutputs.size());
+          std::vector<mlir::Value> presented;
+          llvm::SmallVector<mlir::Value> valid;
           for (std::size_t candidate = 0; candidate != fuOutputs.size();
                ++candidate) {
-            const FuOutputRuntime &output = fuOutputs[candidate];
-            candidates.push_back(andValues(
-                bodyBuilder, location,
-                {resultRoutes[candidate].route,
-                 equals(bodyBuilder, location, resultRoutes[candidate].target,
-                        outputPort)}));
-            requests.push_back(andValues(bodyBuilder, location,
-                                         {output.valid, candidates.back()}));
-            data.push_back(adaptedFuOutputData[candidate]);
+            presented.push_back(presentsDestination(candidate, outputPort));
+            valid.push_back(
+                andValues(bodyBuilder, location,
+                          {presented.back(), fuOutputs[candidate].valid}));
           }
-          StatefulSelection selection = makeStatefulSelection(
-              bodyBuilder, location, backedges, requests,
-              accessor.getInput("clock"), accessor.getInput("reset"),
-              "output_" + std::to_string(outputPort) + "_cursor_reg",
-              clockReset);
-          const std::vector<mlir::Value> presented =
-              presentedCandidates(requests, candidates, selection);
           mlir::Value outputData =
               payloadWidth == 0 ? mlir::Value{}
                                 : zero(bodyBuilder, location, payloadWidth);
@@ -1714,56 +1658,41 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             if (payloadWidth != 0)
               outputData = circt::comb::MuxOp::create(
                   bodyBuilder, location, presented[candidate],
-                  *data[candidate], outputData, true);
+                  *adaptedFuOutputData[candidate], outputData, true);
             outputTag = circt::comb::MuxOp::create(
                 bodyBuilder, location, presented[candidate],
                 resultRoutes[candidate].tag, outputTag, true);
-            mlir::Value portReady = accessor.getInput(
-                outputEndpoints[outputPort]->ready.getName());
+            mlir::Value portReady =
+                accessor.getInput(outputEndpoints[outputPort]->ready.getName());
             fuOutputReadyTerms[candidate].push_back(andValues(
                 bodyBuilder, location, {presented[candidate], portReady}));
-            fuOutputOfferedTerms[candidate].push_back(presented[candidate]);
           }
           if (payloadWidth != 0)
             accessor.setOutput(outputEndpoints[outputPort]->data->getName(),
                                outputData);
           accessor.setOutput(outputEndpoints[outputPort]->tag->getName(),
                              outputTag);
-          accessor.setOutput(
-              outputEndpoints[outputPort]->valid.getName(),
-              orValues(bodyBuilder, location, selection.selected));
-          advanceStatefulSelection(bodyBuilder, location, selection,
-                                   selection.selected);
+          accessor.setOutput(outputEndpoints[outputPort]->valid.getName(),
+                             orValues(bodyBuilder, location, valid));
         }
 
         for (std::size_t candidate = 0; candidate != fuOutputs.size();
-             ++candidate)
+             ++candidate) {
           fuOutputReadyTerms[candidate].push_back(
               resultRoutes[candidate].discard);
+        }
 
         for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo) {
-          std::vector<mlir::Value> requests;
-          std::vector<mlir::Value> candidates;
-          requests.reserve(fuOutputs.size());
-          candidates.reserve(fuOutputs.size());
+          std::vector<mlir::Value> presented;
+          std::vector<mlir::Value> valid;
           for (std::size_t candidate = 0; candidate != fuOutputs.size();
                ++candidate) {
-            candidates.push_back(andValues(
-                bodyBuilder, location,
-                {resultRoutes[candidate].route,
-                 equals(bodyBuilder, location, resultRoutes[candidate].target,
-                        layout.outputPortCount + fifo)}));
-            requests.push_back(
+            presented.push_back(
+                presentsDestination(candidate, layout.outputPortCount + fifo));
+            valid.push_back(
                 andValues(bodyBuilder, location,
-                          {fuOutputs[candidate].valid, candidates.back()}));
+                          {presented.back(), fuOutputs[candidate].valid}));
           }
-          StatefulSelection selection = makeStatefulSelection(
-              bodyBuilder, location, backedges, requests,
-              accessor.getInput("clock"), accessor.getInput("reset"),
-              "register_fifo_" + std::to_string(fifo) + "_write_cursor_reg",
-              clockReset);
-          const std::vector<mlir::Value> presented =
-              presentedCandidates(requests, candidates, selection);
           mlir::Value writePayload =
               zero(bodyBuilder, location, fifoPayloadWidth);
           for (std::size_t candidate = 0; candidate != fuOutputs.size();
@@ -1774,7 +1703,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                                             : adaptedFuOutputData[candidate],
                           resultRoutes[candidate].tag);
             writePayload = circt::comb::MuxOp::create(
-                bodyBuilder, location, selection.selected[candidate], packed,
+                bodyBuilder, location, presented[candidate], packed,
                 writePayload, true);
           }
           std::map<std::string, mlir::Value> instanceInputs;
@@ -1805,23 +1734,18 @@ llvm::Expected<PeModule> buildTemporalPeModule(
           fired.reserve(fuOutputs.size());
           for (std::size_t candidate = 0; candidate != fuOutputs.size();
                ++candidate) {
-            fired.push_back(
-                andValues(bodyBuilder, location,
-                          {selection.selected[candidate], enqueueReady}));
+            fired.push_back(andValues(bodyBuilder, location,
+                                      {valid[candidate], enqueueReady}));
             fuOutputReadyTerms[candidate].push_back(andValues(
                 bodyBuilder, location, {presented[candidate], enqueueReady}));
-            fuOutputOfferedTerms[candidate].push_back(presented[candidate]);
           }
           writeCommit.setValue(orValues(bodyBuilder, location, fired));
-          advanceStatefulSelection(bodyBuilder, location, selection, fired);
         }
 
         for (std::size_t candidate = 0; candidate != fuOutputs.size();
              ++candidate) {
           fuOutputs[candidate].ready.setValue(
               orValues(bodyBuilder, location, fuOutputReadyTerms[candidate]));
-          fuOutputs[candidate].offered.setValue(orValues(
-              bodyBuilder, location, fuOutputOfferedTerms[candidate]));
         }
 
         metrics.resultArbitrationOperations =
