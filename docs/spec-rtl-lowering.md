@@ -668,6 +668,32 @@ source association and account for its glue, interconnect, clock tree, routing,
 macro blockage, dynamic power, and root timing before publishing whole-root
 physical results.
 
+The registered hierarchical block generator additionally consumes the exact
+set of compiled direct-child products. The parent source graph owns the child
+definitions and occurrence multiplicities. Preparation cold-verifies each
+child source as the corresponding parent subgraph and requires identical
+platform, corner and mapped library contracts. It analyzes only the exact
+parent definition and source preamble against the complete mapped children.
+Both imported child definitions and their instances are fixed during parent
+synthesis; auto-ungroup and boundary optimization are disabled.
+Block export applies DC's native Verilog naming rules, while strict import
+still requires the exact source-bound public interface and existing simple
+locator grammar. Packed multidimensional outputs may use the gate descriptor's
+named uniform-direction aggregate ports; their ordered bit-stream type remains
+owned by the pinned Slang frontend.
+
+The resulting block representation combines the locally exported parent and
+helper definitions with the original immutable child netlist payloads. Equal
+descendant payload blobs are retained once. Different payloads defining the
+same module fail the existing HDL admission; no gate-source rewriting or
+independent module parser resolves conflicts. Root constraints derive from
+the parent source and the library contract derives from the complete assembled
+external-definition inventory. Observed import checks the actual direct-child
+multiplicities and root interface before publication. The normal invocation
+and cache bind every child Artifact. This establishes source and composition
+provenance and structural closure, not logical equivalence or routed physical
+results.
+
 ## Clocks, Reset, And Quiescence
 
 RTL exposes the exact Fabric clock/reset domains and only their declared

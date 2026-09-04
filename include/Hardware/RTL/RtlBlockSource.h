@@ -66,6 +66,14 @@ llvm::Error verifyPortableRtlBlockSourceDerivation(
     const FinalizedHardwareImplementation &implementation,
     std::size_t definition, const BlobStore &blobs);
 
+/// Verifies a complete child source against one definition of a validated
+/// parent source, including the inherited System clock contract. The parent
+/// source's own occurrence association remains a separate derivation.
+llvm::Error
+verifyRtlBlockSourceSubgraphDerivation(const FinalizedRtlBlockSource &parent,
+                                       std::size_t definition,
+                                       const FinalizedRtlBlockSource &source);
+
 /// Checks stored framing, all definition source digests and exact dependency
 /// references, canonical content names/order, root interface, and domain
 /// geometry. This validates the reusable block itself; associating it with a

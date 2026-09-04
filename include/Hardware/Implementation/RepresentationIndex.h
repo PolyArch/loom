@@ -63,6 +63,11 @@ struct RepresentationBoundaryPort final {
   }
 };
 
+struct RepresentationModuleInstanceBinding final {
+  RepresentationLocator instance;
+  RepresentationLocator definition;
+};
+
 enum class RepresentationIndexFailureKind : std::uint32_t {
   Invalid = 0,
   Unsupported = 1,
@@ -100,6 +105,19 @@ public:
 
   std::vector<RepresentationBoundaryPort> rootBoundaryPorts() const;
 
+  /// Concrete module definitions in the complete admitted HDL payload closure.
+  /// Non-HDL representations have no module definitions or instance bindings.
+  llvm::ArrayRef<RepresentationLocator> concreteModuleDefinitions() const {
+    return concreteModuleDefinitions_;
+  }
+
+  /// Direct module instances of the exact HDL root, including instances in
+  /// named generate scopes. A nested module body is a separate boundary.
+  llvm::ArrayRef<RepresentationModuleInstanceBinding>
+  rootModuleInstanceBindings() const {
+    return rootModuleInstanceBindings_;
+  }
+
   llvm::ArrayRef<RepresentationLocator> unresolvedExternalDefinitions() const {
     return unresolvedExternalDefinitions_;
   }
@@ -110,15 +128,19 @@ private:
     RepresentationObjectFacts facts;
   };
 
-  RepresentationIndex(RepresentationFormatDescriptorRef formatRef,
-                      RepresentationRootVariant rootVariant,
-                      std::optional<RepresentationPhysicalStage> stage,
-                      RepresentationLocator exactRoot,
-                      std::vector<Entry> entries,
-                      std::vector<RepresentationLocator> unresolved)
+  RepresentationIndex(
+      RepresentationFormatDescriptorRef formatRef,
+      RepresentationRootVariant rootVariant,
+      std::optional<RepresentationPhysicalStage> stage,
+      RepresentationLocator exactRoot, std::vector<Entry> entries,
+      std::vector<RepresentationLocator> unresolved,
+      std::vector<RepresentationLocator> definitions,
+      std::vector<RepresentationModuleInstanceBinding> instances)
       : formatRef_(formatRef), rootVariant_(rootVariant), stage_(stage),
         exactRoot_(std::move(exactRoot)), entries_(std::move(entries)),
-        unresolvedExternalDefinitions_(std::move(unresolved)) {}
+        unresolvedExternalDefinitions_(std::move(unresolved)),
+        concreteModuleDefinitions_(std::move(definitions)),
+        rootModuleInstanceBindings_(std::move(instances)) {}
 
   RepresentationFormatDescriptorRef formatRef_;
   RepresentationRootVariant rootVariant_;
@@ -126,6 +148,8 @@ private:
   RepresentationLocator exactRoot_;
   std::vector<Entry> entries_;
   std::vector<RepresentationLocator> unresolvedExternalDefinitions_;
+  std::vector<RepresentationLocator> concreteModuleDefinitions_;
+  std::vector<RepresentationModuleInstanceBinding> rootModuleInstanceBindings_;
 
   friend llvm::Expected<RepresentationIndex>
   indexRepresentation(RepresentationFormatDescriptorRef,

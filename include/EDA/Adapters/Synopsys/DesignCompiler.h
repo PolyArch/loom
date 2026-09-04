@@ -150,6 +150,20 @@ llvm::Expected<std::string> renderDesignCompilerDriver(
     llvm::StringRef targetLibrary,
     DesignCompilerHierarchy hierarchy = DesignCompilerHierarchy::Optimize);
 
+struct DesignCompilerMappedChildren final {
+  std::vector<std::string> netlistPaths;
+  std::vector<std::string> definitionNames;
+};
+
+/// Synthesizes local parent RTL against fixed mapped child designs and cells.
+/// Publication includes only the parent and locally generated helper designs;
+/// the caller preserves the exact child netlist payloads separately.
+llvm::Expected<std::string> renderDesignCompilerParentDriver(
+    llvm::StringRef top, llvm::StringRef parentRtlSource,
+    const DesignCompilerMappedChildren &children,
+    llvm::ArrayRef<std::string> generationConstraints,
+    llvm::StringRef targetLibrary);
+
 llvm::Expected<DesignCompilerGateNetlist>
 parseDesignCompilerGateNetlist(llvm::StringRef contents, llvm::StringRef top);
 

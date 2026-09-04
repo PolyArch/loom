@@ -69,6 +69,13 @@ RawIndexBuilder::addUnresolvedModule(std::string_view definitionName) {
                                             std::nullopt});
 }
 
+void RawIndexBuilder::addRootModuleInstance(RepresentationLocator instance,
+                                            std::string_view definitionName) {
+  raw_.rootInstances.push_back(
+      {std::move(instance),
+       {RepresentationObjectKind::Module, std::string(definitionName)}});
+}
+
 llvm::Expected<RawIndex> RawIndexBuilder::finish() {
   llvm::sort(
       raw_.entries, [](const RawIndexEntry &lhs, const RawIndexEntry &rhs) {
@@ -79,6 +86,9 @@ llvm::Expected<RawIndex> RawIndexBuilder::finish() {
       return invalidIndex("two HDL objects have the same canonical locator");
   }
   llvm::sort(raw_.unresolved, representationLocatorCanonicalLess);
+  llvm::sort(raw_.rootInstances, [](const auto &lhs, const auto &rhs) {
+    return representationLocatorCanonicalLess(lhs.instance, rhs.instance);
+  });
   return std::move(raw_);
 }
 
@@ -743,17 +753,29 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
   if (!top->isModule())
     return detail::unsupportedIndex("exact top is not a module definition");
 
-  switch (entry.indexer) {
-  case BuiltinRepresentationIndexer::SystemVerilogRtl:
-    return detail::indexSystemVerilogRtl(formatRef, *top, exactRoot);
-  case BuiltinRepresentationIndexer::StructuralVerilogGateNetlist:
-    return detail::indexStructuralVerilogGateNetlist(formatRef, *top,
-                                                     exactRoot);
-  case BuiltinRepresentationIndexer::IndexedPhysical:
-  case BuiltinRepresentationIndexer::FabricModel:
-    llvm_unreachable("physical format cannot use the HDL indexer");
-  }
-  llvm_unreachable("closed built-in representation indexer");
+  auto indexed = [&]() -> llvm::Expected<RawIndex> {
+    switch (entry.indexer) {
+    case BuiltinRepresentationIndexer::SystemVerilogRtl:
+      return detail::indexSystemVerilogRtl(formatRef, *top, exactRoot);
+    case BuiltinRepresentationIndexer::StructuralVerilogGateNetlist:
+      return detail::indexStructuralVerilogGateNetlist(formatRef, *top,
+                                                       exactRoot);
+    case BuiltinRepresentationIndexer::IndexedPhysical:
+    case BuiltinRepresentationIndexer::FabricModel:
+      llvm_unreachable("physical format cannot use the HDL indexer");
+    }
+    llvm_unreachable("closed built-in representation indexer");
+  }();
+  if (!indexed)
+    return indexed.takeError();
+  for (const slang::ast::Symbol *definition :
+       languageCompilation.getDefinitions())
+    if (const auto *module = definition->as_if<slang::ast::DefinitionSymbol>();
+        module && module->definitionKind == slang::ast::DefinitionKind::Module)
+      indexed->definitions.push_back(
+          {RepresentationObjectKind::Module, std::string(module->name)});
+  llvm::sort(indexed->definitions, representationLocatorCanonicalLess);
+  return indexed;
 }
 
 } // namespace

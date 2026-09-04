@@ -1180,6 +1180,9 @@ llvm::Expected<int> run() {
   if (llvm::Error error =
           eda::synopsys::registerDesignCompilerBlockGateNetlistCandidateGenerator())
     return error;
+  if (llvm::Error error = eda::synopsys::
+          registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator())
+    return error;
   if (llvm::Error error =
           eda::open_source::registerYosysGateNetlistCandidateGenerator())
     return error;

@@ -306,6 +306,26 @@ llvm::Expected<BlobDigest> validate(SourceFacts &facts) {
 }
 
 llvm::Expected<SourceFacts>
+derive(const RtlModuleGraphProjection &graph,
+       const RtlModuleGraphSourceBinding &source, std::size_t definition,
+       const RtlDomainPortNames &ports,
+       const std::optional<fabric::ClockDomainContractRecord> &clock) {
+  auto closure = deriveRtlBlockClosure(graph, source, definition, ports);
+  if (!closure)
+    return closure.takeError();
+  auto projected = projectRtlBlockClosureSource(*closure, graph, source);
+  if (!projected)
+    return projected.takeError();
+  SourceFacts facts{std::move(*projected),
+                    {closure->clockPort, closure->resetPort},
+                    closure->clockPort ? clock : std::nullopt};
+  auto identity = validate(facts);
+  if (!identity)
+    return identity.takeError();
+  return facts;
+}
+
+llvm::Expected<SourceFacts>
 derive(const FinalizedConfigurationABI &configurationAbi,
        const FinalizedHardwareImplementation &implementation,
        std::size_t definition, const BlobStore &blobs) {
@@ -325,21 +345,21 @@ derive(const FinalizedConfigurationABI &configurationAbi,
       configurationAbi, implementation.implementation().interfaces());
   if (!domain)
     return domain.takeError();
-  auto closure = deriveRtlBlockClosure(**graph, *bound, definition,
-                                       {domain->clockPort, domain->resetPort});
-  if (!closure)
-    return closure.takeError();
-  auto projected = projectRtlBlockClosureSource(*closure, **graph, *bound);
-  if (!projected)
-    return projected.takeError();
-  SourceFacts facts{std::move(*projected),
-                    {closure->clockPort, closure->resetPort},
-                    closure->clockPort ? std::optional(domain->clock)
-                                       : std::nullopt};
-  auto identity = validate(facts);
-  if (!identity)
-    return identity.takeError();
-  return facts;
+  return derive(**graph, *bound, definition,
+                {domain->clockPort, domain->resetPort}, domain->clock);
+}
+
+llvm::Error verifySourceIdentity(const SourceFacts &facts,
+                                 const FinalizedRtlBlockSource &source) {
+  auto text = encode(facts);
+  if (!text)
+    return text.takeError();
+  const auto identity = finalizeArtifactIdentity(
+      rtlBlockSourceSchema, CanonicalSemanticBytes(std::vector<std::uint8_t>(
+                                text->begin(), text->end())));
+  if (identity != source.reference().artifact)
+    return invalid("source Artifact is not the selected block of this parent");
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -409,16 +429,22 @@ llvm::Error verifyPortableRtlBlockSourceDerivation(
   auto derived = derive(configurationAbi, implementation, definition, blobs);
   if (!derived)
     return derived.takeError();
-  auto text = encode(*derived);
-  if (!text)
-    return text.takeError();
-  const auto identity = finalizeArtifactIdentity(
-      rtlBlockSourceSchema, CanonicalSemanticBytes(std::vector<std::uint8_t>(
-                                text->begin(), text->end())));
-  if (identity != source.reference().artifact)
-    return invalid("source Artifact is not the selected block of this parent "
-                   "implementation");
-  return llvm::Error::success();
+  return verifySourceIdentity(*derived, source);
+}
+
+llvm::Error
+verifyRtlBlockSourceSubgraphDerivation(const FinalizedRtlBlockSource &parent,
+                                       std::size_t definition,
+                                       const FinalizedRtlBlockSource &source) {
+  const auto &projection = parent.projection();
+  auto bound = bindRtlModuleGraphSource(projection.graph, projection.source);
+  if (!bound)
+    return bound.takeError();
+  auto derived = derive(projection.graph, *bound, definition,
+                        parent.domainPorts(), parent.clock());
+  if (!derived)
+    return derived.takeError();
+  return verifySourceIdentity(*derived, source);
 }
 
 } // namespace loom::hardware::rtl

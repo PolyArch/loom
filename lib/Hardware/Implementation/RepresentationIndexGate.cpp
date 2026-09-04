@@ -55,28 +55,45 @@ private:
                                      RepresentationObjectKind terminalKind,
                                      llvm::StringSet<> &terminalPaths) {
     for (const slang::ast::Symbol *portMember : body.getPortList()) {
-      if (portMember->kind == slang::ast::SymbolKind::MultiPort)
-        return unsupportedIndex(
-            "gate terminals backed by multiple expressions are outside the "
-            "descriptor");
       if (portMember->kind == slang::ast::SymbolKind::InterfacePort)
         return unsupportedIndex(
             "gate interface terminals are outside the descriptor");
-      const auto *port = portMember->as_if<slang::ast::PortSymbol>();
-      if (!port)
+      const slang::ast::Type *type = nullptr;
+      slang::ast::ArgumentDirection portDirection;
+      if (const auto *port = portMember->as_if<slang::ast::PortSymbol>()) {
+        if (port->isNullPort)
+          return unsupportedIndex("null gate terminals are outside the descriptor");
+        type = &port->getType();
+        portDirection = port->direction;
+      } else if (const auto *aggregate =
+                     portMember->as_if<slang::ast::MultiPortSymbol>()) {
+        // A public aggregate has one fixed bit-stream interface only when all
+        // of its ordered internal port expressions have the same direction.
+        // Slang owns the concatenation order and resulting packed type.
+        if (aggregate->ports.empty() ||
+            llvm::any_of(aggregate->ports, [&](const auto *part) {
+              return part->isNullPort || part->direction != aggregate->direction;
+            }))
+          return unsupportedIndex(
+              "empty or mixed-direction aggregate gate terminals are outside "
+              "the descriptor");
+        type = &aggregate->getType();
+        portDirection = aggregate->direction;
+      } else {
         return unsupportedIndex(
             "gate module terminal kind is outside the descriptor");
-      if (port->name.empty() || port->isNullPort)
+      }
+      if (portMember->name.empty())
         return unsupportedIndex(
             "unnamed or null gate terminals are outside the descriptor");
-      auto direction = signalDirection(port->direction, "gate terminal");
+      auto direction = signalDirection(portDirection, "gate terminal");
       if (!direction)
         return direction.takeError();
-      auto width = packedIntegralWidth(port->getType(), "gate terminal");
+      auto width = packedIntegralWidth(*type, "gate terminal");
       if (!width)
         return width.takeError();
 
-      const std::string terminalPath = childPath(path, port->name);
+      const std::string terminalPath = childPath(path, portMember->name);
       terminalPaths.insert(terminalPath);
       if (llvm::Error error = catalog_.addEntry(
               {terminalKind, terminalPath},
@@ -120,10 +137,18 @@ private:
             RepresentationObjectFacts{RepresentationObjectKind::Cell,
                                       std::nullopt}))
       return error;
+    if (atRootModule_)
+      catalog_.addRootModuleInstance({RepresentationObjectKind::Cell, cellPath},
+                                     instance.getDefinition().name);
     const slang::ast::InstanceBodySymbol &body =
         instance.getCanonicalBody() ? *instance.getCanonicalBody()
                                     : instance.body;
-    return collectModuleBody(body, cellPath, RepresentationObjectKind::Pin);
+    const bool wasRoot = atRootModule_;
+    atRootModule_ = false;
+    llvm::Error result =
+        collectModuleBody(body, cellPath, RepresentationObjectKind::Pin);
+    atRootModule_ = wasRoot;
+    return result;
   }
 
   llvm::Error
@@ -144,6 +169,10 @@ private:
             RepresentationObjectFacts{RepresentationObjectKind::Cell,
                                       std::nullopt}))
       return error;
+    if (atRootModule_)
+      catalog_.addRootModuleInstance(
+          {RepresentationObjectKind::Cell, childPath(path, instance.name)},
+          instance.definitionName);
     return catalog_.addUnresolvedModule(instance.definitionName);
   }
 
@@ -283,6 +312,7 @@ private:
   }
 
   RawIndexBuilder catalog_;
+  bool atRootModule_ = true;
 };
 
 } // namespace

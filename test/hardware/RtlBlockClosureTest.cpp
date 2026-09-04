@@ -20,6 +20,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
+#include "Hardware/Implementation/RepresentationIndex.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/RtlBlockSource.h"
 #include "Hardware/RTL/RtlModuleGraph.h"
@@ -32,6 +33,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -250,6 +252,14 @@ Fixture buildFixture(const std::filesystem::path &root, Shape shape) {
     require(test, static_cast<bool>(wrongParent),
             "source Artifact admitted a different parent block association");
     llvm::consumeError(std::move(wrongParent));
+    auto wideSource =
+        take(test, finalizePortableRtlBlockSource(
+                       abi, implementation, *fixture.wideSwitch, store, blobs));
+    require(test, wideSource.reference() != imported.reference(),
+            "changing the block port width reused a source Artifact");
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            (root / "wide-source-ref.json").string(), wideSource.reference()))
+      fail(test, llvm::toString(std::move(error)));
   }
 
   if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
@@ -258,15 +268,65 @@ Fixture buildFixture(const std::filesystem::path &root, Shape shape) {
   // A whole hierarchy must validate its root interface without confusing
   // nested RTL ports with ports on the block boundary.
   auto parentSource = take(
-      test, finalizePortableRtlBlockSource(abi, implementation,
-                                          fixture.graph.topModule, store,
-                                          blobs));
+      test, finalizePortableRtlBlockSource(
+                abi, implementation, fixture.graph.topModule, store, blobs));
   if (llvm::Error error = verifyPortableRtlBlockSourceDerivation(
           parentSource, abi, implementation, fixture.graph.topModule, blobs))
     fail(test, llvm::toString(std::move(error)));
+  const auto &parentProjection = parentSource.projection();
+  for (const auto &dependency :
+       fixture.graph.modules[fixture.graph.topModule].dependencies) {
+    auto directSource = take(test, finalizePortableRtlBlockSource(
+                                      abi, implementation,
+                                      dependency.targetModule, store, blobs));
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            (root / ("direct-child-source-" + directSource.top().str() +
+                     ".json")).string(),
+            directSource.reference()))
+      fail(test, llvm::toString(std::move(error)));
+  }
+  const auto child = std::find_if(
+      parentProjection.graph.modules.begin(),
+      parentProjection.graph.modules.end(), [&](const auto &definition) {
+        return definition.emittedName == imported.top();
+      });
+  require(test, child != parentProjection.graph.modules.end(),
+          "parent source lost the independently derived narrow child");
+  const auto childOrdinal = static_cast<std::size_t>(
+      std::distance(parentProjection.graph.modules.begin(), child));
+  if (llvm::Error error = verifyRtlBlockSourceSubgraphDerivation(
+          parentSource, childOrdinal, imported))
+    fail(test, llvm::toString(std::move(error)));
+  llvm::Error wrongSubgraph = verifyRtlBlockSourceSubgraphDerivation(
+      parentSource, parentProjection.graph.topModule, imported);
+  require(test, static_cast<bool>(wrongSubgraph),
+          "a parent source was mistaken for its narrower child source");
+  llvm::consumeError(std::move(wrongSubgraph));
+  const auto format = take(
+      test, loom::hardware::RepresentationFormatDescriptorRef::get(
+                loom::hardware::RepresentationFormatKind::SystemVerilogRtl));
+  const auto parsed =
+      take(test, loom::hardware::indexProspectiveRepresentation(
+                     format,
+                     {loom::hardware::RepresentationObjectKind::Module,
+                      parentSource.top().str()},
+                     {{loom::hardware::PayloadRole::RtlSource,
+                       "rtl/parent.sv",
+                       {reinterpret_cast<const std::uint8_t *>(
+                            parentProjection.source.data()),
+                        parentProjection.source.size()}}}));
+  std::uint64_t expectedInstances = 0;
+  for (const auto &dependency :
+       parentProjection.graph.modules[parentProjection.graph.topModule]
+           .dependencies)
+    expectedInstances += dependency.multiplicity;
+  require(test,
+          parsed.concreteModuleDefinitions().size() ==
+                  parentProjection.graph.modules.size() &&
+              parsed.rootModuleInstanceBindings().size() == expectedInstances,
+          "Slang module inventory differs from the exact CIRCT parent graph");
   if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
-          (root / "parent-source-ref.json").string(),
-          parentSource.reference()))
+          (root / "parent-source-ref.json").string(), parentSource.reference()))
     fail(test, llvm::toString(std::move(error)));
   return fixture;
 }

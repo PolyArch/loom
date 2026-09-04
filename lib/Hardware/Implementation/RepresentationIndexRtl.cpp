@@ -126,10 +126,18 @@ private:
             RepresentationObjectFacts{RepresentationObjectKind::Instance,
                                       std::nullopt}))
       return error;
+    if (atRootModule_)
+      catalog_.addRootModuleInstance(
+          {RepresentationObjectKind::Instance, instancePath},
+          instance.getDefinition().name);
     const slang::ast::InstanceBodySymbol &body =
         instance.getCanonicalBody() ? *instance.getCanonicalBody()
                                     : instance.body;
-    return collectInstanceBody(body, instancePath);
+    const bool wasRoot = atRootModule_;
+    atRootModule_ = false;
+    llvm::Error result = collectInstanceBody(body, instancePath);
+    atRootModule_ = wasRoot;
+    return result;
   }
 
   llvm::Error
@@ -151,6 +159,10 @@ private:
             RepresentationObjectFacts{RepresentationObjectKind::Instance,
                                       std::nullopt}))
       return error;
+    if (atRootModule_)
+      catalog_.addRootModuleInstance(
+          {RepresentationObjectKind::Instance, childPath(path, instance.name)},
+          instance.definitionName);
     return catalog_.addUnresolvedModule(instance.definitionName);
   }
 
@@ -238,6 +250,7 @@ private:
   }
 
   RawIndexBuilder catalog_;
+  bool atRootModule_ = true;
 };
 
 } // namespace

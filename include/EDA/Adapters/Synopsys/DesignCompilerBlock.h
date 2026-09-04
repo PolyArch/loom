@@ -8,6 +8,9 @@ namespace loom::eda::synopsys {
 
 inline constexpr dse::CandidateGeneratorKind
     designCompilerBlockGateNetlistCandidateGeneratorKind(0x53444342);
+inline constexpr dse::CandidateGeneratorKind
+    designCompilerHierarchicalBlockGateNetlistCandidateGeneratorKind(
+        0x53444350);
 
 const dse::CandidateGeneratorDescriptor &
 designCompilerBlockGateNetlistCandidateGeneratorDescriptor();
@@ -18,6 +21,21 @@ bindDesignCompilerBlockGateNetlistInputs(
     const ArtifactRootReference &implementationPlatform);
 llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveDesignCompilerBlockGateNetlistBinding(
+    const ResolvedDesignCompilerGateNetlistConfigView &config);
+
+/// Synthesizes the parent-local logic against one immutable mapped product
+/// per distinct direct child in the exact reusable source graph.
+const dse::CandidateGeneratorDescriptor &
+designCompilerHierarchicalBlockGateNetlistCandidateGeneratorDescriptor();
+llvm::Error
+registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator();
+llvm::Expected<std::vector<dse::CandidateGeneratorInputBinding>>
+bindDesignCompilerHierarchicalBlockGateNetlistInputs(
+    const ArtifactRootReference &blockSource,
+    const ArtifactRootReference &implementationPlatform,
+    llvm::ArrayRef<ArtifactRootReference> compiledChildren);
+llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
+resolveDesignCompilerHierarchicalBlockGateNetlistBinding(
     const ResolvedDesignCompilerGateNetlistConfigView &config);
 
 /// Includes the vendor-owned mapped library contract validation in addition

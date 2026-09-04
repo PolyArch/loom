@@ -91,7 +91,9 @@ indexRepresentation(RepresentationFormatDescriptorRef formatRef,
                                                  std::move(entry.facts)});
   return RepresentationIndex(formatRef, *raw->rootVariant, raw->stage,
                              exactRoot, std::move(entries),
-                             std::move(raw->unresolved));
+                             std::move(raw->unresolved),
+                             std::move(raw->definitions),
+                             std::move(raw->rootInstances));
 }
 
 llvm::Expected<RepresentationIndex> indexProspectiveRepresentation(
@@ -119,7 +121,9 @@ llvm::Expected<RepresentationIndex> indexProspectiveRepresentation(
                                                  std::move(entry.facts)});
   return RepresentationIndex(formatRef, *raw->rootVariant, raw->stage,
                              exactRoot, std::move(entries),
-                             std::move(raw->unresolved));
+                             std::move(raw->unresolved),
+                             std::move(raw->definitions),
+                             std::move(raw->rootInstances));
 }
 
 llvm::Expected<RepresentationIndex>

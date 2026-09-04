@@ -603,6 +603,52 @@ void prospectiveBytesUseTheExactGateIndexer(const std::filesystem::path &root) {
           "prospective payload bytes changed the exact top boundary");
 }
 
+void aggregatePortsRetainTheirPublicBoundary(const std::filesystem::path &root) {
+  const llvm::StringRef source = R"(
+module child(a, .bundle({high, low}));
+  input [3:0] a;
+  output [1:0] high, low;
+  assign high = a[3:2];
+  assign low = a[1:0];
+endmodule
+module top(a, y);
+  input [3:0] a;
+  output [3:0] y;
+  child u(.a(a), .bundle(y));
+endmodule
+)";
+  auto index = take(__func__, tryBuildGateIndex(root, "aggregate-port", source));
+  requireFacts(__func__, index, {RepresentationObjectKind::Pin, "top.u.bundle"},
+               terminalFacts(RepresentationObjectKind::Pin,
+                             RepresentationSignalDirection::Output, 4));
+  for (llvm::StringRef name : {"top.u.high", "top.u.low"})
+    requireFacts(__func__, index, {RepresentationObjectKind::Net, name.str()},
+                 objectFacts(RepresentationObjectKind::Net));
+  const auto blobRoot = root / "aggregate-root-blobs";
+  std::filesystem::create_directories(blobRoot);
+  BlobStore blobs(blobRoot.string());
+  auto aggregateRoot = take(
+      __func__, indexRepresentation(gateFormat(__func__),
+                                    {RepresentationObjectKind::Module, "child"},
+                                    putSources(__func__, blobs,
+                                               {{"aggregate.v", source}}),
+                                    blobs));
+  require(__func__, aggregateRoot.rootBoundaryPorts() ==
+                        std::vector<RepresentationBoundaryPort>{
+                            {{RepresentationObjectKind::Port, "child.a"},
+                             {RepresentationSignalDirection::Input, 4}},
+                            {{RepresentationObjectKind::Port, "child.bundle"},
+                             {RepresentationSignalDirection::Output, 4}}},
+          "aggregate internals changed the public root interface");
+  expectUnsupported(__func__, tryBuildGateIndex(root, "mixed-port", R"(
+module top(.mixed({a, y}));
+  input a;
+  output y;
+  assign y = a;
+endmodule
+)"));
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -621,6 +667,7 @@ int main(int argc, char **argv) {
   structuralGateRejectionsCoverTheWholePayload(root);
   warningsAndAuthoringOrderAreNonsemantic(root);
   prospectiveBytesUseTheExactGateIndexer(root);
+  aggregatePortsRetainTheirPublicBoundary(root);
   std::filesystem::remove_all(root);
   return EXIT_SUCCESS;
 }

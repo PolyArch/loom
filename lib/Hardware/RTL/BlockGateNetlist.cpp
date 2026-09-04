@@ -151,7 +151,7 @@ llvm::Error validate(const BlockGateNetlistDraft &draft,
     if (!verified)
       return verified.takeError();
   }
-  if (netlists != 1 || constraints != (constraint.empty() ? 0u : 1u) ||
+  if (netlists == 0 || constraints != (constraint.empty() ? 0u : 1u) ||
       (contract->blackBoxContractRequired && !blackBox))
     return invalid(
         "netlist, constraint or mapped-library payload closure is incomplete");

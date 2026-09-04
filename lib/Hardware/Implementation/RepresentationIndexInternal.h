@@ -55,6 +55,8 @@ struct RawIndex final {
   std::optional<RepresentationPhysicalStage> stage;
   std::vector<RawIndexEntry> entries;
   std::vector<RepresentationLocator> unresolved;
+  std::vector<RepresentationLocator> definitions;
+  std::vector<RepresentationModuleInstanceBinding> rootInstances;
 };
 
 class RawIndexBuilder final {
@@ -65,6 +67,8 @@ public:
   llvm::Error addEntry(RepresentationLocator locator,
                        RepresentationObjectFacts facts);
   llvm::Error addUnresolvedModule(std::string_view definitionName);
+  void addRootModuleInstance(RepresentationLocator instance,
+                             std::string_view definitionName);
   llvm::Expected<RawIndex> finish();
 
 private:

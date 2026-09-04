@@ -243,10 +243,19 @@ index input and must resolve to exactly one module definition. Its ordinary
 object facts contain only that top and admitted objects in its reachable
 elaborated hierarchy, plus the canonical Module locators required by its
 unresolved-definition inventory. An unreferenced definition neither enters the
-index nor creates an external-definition requirement. The top cannot be
+ordinary object catalog nor creates an external-definition requirement. The top cannot be
 inferred from a filename, source order, first definition, or frontend-selected
 root. A frontend-created top instance is not a second indexed object; the exact
 root is classified only as `Module`.
+
+The same Slang compilation also projects the complete concrete module
+definition inventory and the exact root's direct module-instance bindings.
+These are distinct from ordinary occurrence object facts: the definition
+inventory includes unreferenced definitions so a consumer can validate a union
+of immutable mapped payload units before selecting its complete parent root.
+Direct root bindings include named scalar generate scopes and stop at each
+nested module boundary. They do not introduce another serialized hierarchy
+owner or a second HDL parser.
 
 The two HDL descriptors admit only hierarchy paths expressible by their
 locator grammar.
@@ -301,6 +310,16 @@ comparison, logical, conditional, call, cast, or streaming operators are typed
 `Unsupported`. A named or unnamed built-in primitive occurrence is covered by
 that primitive exclusion alone; a syntactically unnamed module instance is a
 language error, not a subset violation.
+
+A named gate port may expose a concatenation of internal port expressions
+when every component has the same direction and the complete port has one
+fixed positive packed-integral width. Slang owns the ordered concatenation and
+its resulting public bit-stream type. The index records one public `Port` or
+`Pin` under that external name; differently named internal component nets
+remain `Net` objects. A mixed-direction aggregate cannot be represented by one
+direction and is `Unsupported`. This admits the explicit aggregate ports that
+DC emits for packed multidimensional RTL interfaces without changing the
+locator grammar or treating internal scalar names as public boundary ports.
 
 One index operation evaluates two descriptor-owned logical relations over one
 shared set of parse trees, followed by admission and index construction:
