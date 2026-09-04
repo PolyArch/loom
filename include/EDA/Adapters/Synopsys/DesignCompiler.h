@@ -23,6 +23,13 @@ namespace loom::eda::synopsys {
 inline constexpr llvm::StringLiteral designCompilerGateNetlistOutputPath =
     "outputs/design-compiler-gate-netlist.v";
 
+// Native DC exports retain execution metadata, including a date header. Exact
+// cache replay preserves one product; independent fresh runs can have distinct
+// raw payload and Artifact identities even when their mapped logic agrees.
+inline constexpr dse::CandidateGeneratorDeterminism
+    designCompilerCandidateGeneratorDeterminism =
+        dse::CandidateGeneratorDeterminism::IndependentReplicates;
+
 inline constexpr dse::CandidateGeneratorKind
     designCompilerGateNetlistCandidateGeneratorKind(0x53444347);
 

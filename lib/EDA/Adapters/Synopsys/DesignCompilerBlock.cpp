@@ -72,7 +72,7 @@ const CandidateGeneratorDescriptor descriptor{
     ResolvedDseConfigViewContract{
         resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(),
         validateConfig},
-    CandidateGeneratorDeterminism::Deterministic,
+    designCompilerCandidateGeneratorDeterminism,
     work,
     nullptr,
     ProviderForm::ExternalPrepareImport};
@@ -87,7 +87,7 @@ const CandidateGeneratorDescriptor parentDescriptor{
     ResolvedDseConfigViewContract{
         resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(),
         validateConfig},
-    CandidateGeneratorDeterminism::Deterministic,
+    designCompilerCandidateGeneratorDeterminism,
     work,
     nullptr,
     ProviderForm::ExternalPrepareImport};

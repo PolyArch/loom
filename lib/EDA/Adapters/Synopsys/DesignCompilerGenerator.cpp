@@ -204,7 +204,7 @@ const CandidateGeneratorDescriptor descriptor{
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{schemaBytes(), validateConfig},
-    CandidateGeneratorDeterminism::Deterministic,
+      designCompilerCandidateGeneratorDeterminism,
     workUnits,
     nullptr,
     ProviderForm::ExternalPrepareImport,

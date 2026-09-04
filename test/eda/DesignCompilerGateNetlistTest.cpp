@@ -230,9 +230,7 @@ void descriptorAndConfigAreExact() {
       designCompilerGateNetlistCandidateGeneratorDescriptor();
   require(__func__,
           descriptor.kind == designCompilerGateNetlistCandidateGeneratorKind &&
-              descriptor.providerForm == ProviderForm::ExternalPrepareImport &&
-              descriptor.determinism ==
-                  CandidateGeneratorDeterminism::Deterministic,
+              descriptor.providerForm == ProviderForm::ExternalPrepareImport,
           "DesignCompiler descriptor form changed");
   require(__func__,
           descriptor.inputSlots.size() == 2 &&

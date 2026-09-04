@@ -668,6 +668,14 @@ source association and account for its glue, interconnect, clock tree, routing,
 macro blockage, dynamic power, and root timing before publishing whole-root
 physical results.
 
+The full, block and hierarchical Design Compiler generators share the
+`IndependentReplicates` determinism contract. Native exports retain execution
+metadata, including a date header, so independent fresh executions may produce
+different raw payload and Artifact identities. The original bytes remain
+immutable. An exact ExternalTool cache hit reuses the selected export and
+therefore preserves its Artifact identity; it does not prove fresh-execution
+reproducibility.
+
 The registered hierarchical block generator additionally consumes the exact
 set of compiled direct-child products. The parent source graph owns the child
 definitions and occurrence multiplicities. Preparation cold-verifies each
