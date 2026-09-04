@@ -1,6 +1,7 @@
 add_library(LoomDSEFeedback
   ../HardwareMutationRepairRecord.cpp
   ../JointHardwareReopen.cpp
+  ../JointHardwareSpectrum.cpp
   ../JointHardwareReopenCandidate.cpp
   ../JointHardwareReopenExecution.cpp
   ../JointHardwareRuntimeRepair.cpp

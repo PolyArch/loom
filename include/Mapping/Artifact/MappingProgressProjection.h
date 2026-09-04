@@ -36,7 +36,6 @@ enum class MappingProgressClosureReason : std::uint8_t {
   FiniteBufferRecurrenceNotEstablished,
   ClosedBufferDependencyCycle,
   BufferDependencyNotEstablished,
-  ReconvergentCapacityShortfall,
   ReconvergentCapacityNotEstablished,
 };
 
@@ -232,27 +231,21 @@ enum class MappingRouteProgressObligationKind : std::uint8_t {
   FiniteBufferRecurrence,
 };
 
-enum class MappingReconvergentCapacityProofKind : std::uint8_t {
-  Proven,
-  ProofNotEstablished,
-};
-
 /// One exact capacity obligation of one selected FIFO shared slot pool under
 /// the durable-acceptance transfer subdomain. `queueClasses` names every
 /// strict-global or tag-local order class sharing this one physical capacity
-/// owner; it never partitions `selectedCapacity`. `minimumLegalCapacity` is
-/// the number of distinct producer bindings that can each own one active
-/// resident token. `routeAnchors` names the selected traversals from which the
-/// obligation is rebuilt. The kind is the proof state and the minimum is
-/// present exactly when proven. This value is not a persisted proof label.
+/// owner; it never partitions `selectedCapacity`. `sufficientCapacity` is an
+/// occupancy upper bound under that subdomain, present only when established.
+/// It can discharge capacity waits, but exceeding the selected pool cannot
+/// prove a necessary minimum depth or a closed wait. `routeAnchors` names the
+/// selected traversals from which the obligation is rebuilt. This value is
+/// not a persisted proof label.
 struct MappingReconvergentCapacityObligation final {
   ::loom::fabric::FabricFifoOccurrenceRef owner;
   std::vector<MappingStaticQueueClass> queueClasses;
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> routeAnchors;
   std::uint64_t selectedCapacity = 0;
-  std::optional<std::uint64_t> minimumLegalCapacity;
-  MappingReconvergentCapacityProofKind kind =
-      MappingReconvergentCapacityProofKind::ProofNotEstablished;
+  std::optional<std::uint64_t> sufficientCapacity;
 };
 
 /// One physical progress obligation rebuilt from the selected route trees and

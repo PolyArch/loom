@@ -8,9 +8,9 @@
 #include "DSE/SpatialRuntimeFeedback.h"
 #include "DSE/SpatialTransportCegar.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
-#include "PnR/SpatialProgressState.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialMappingWarmSeed.h"
+#include "PnR/SpatialProgressState.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -174,9 +174,10 @@ selectJointRepairMappingByQuality(
     llvm::ArrayRef<JointDesignExecution> executions,
     const JointBoundedQualityPolicy &quality, const ArtifactStore &artifacts);
 
-llvm::Expected<std::uint64_t> deriveApplicationRuntimeResourceCoreCost(
-    const JointDesignExecution &execution,
-    const ArtifactRootReference &mapping, const ArtifactStore &artifacts);
+llvm::Expected<std::uint64_t>
+deriveApplicationRuntimeResourceCoreCost(const JointDesignExecution &execution,
+                                         const ArtifactRootReference &mapping,
+                                         const ArtifactStore &artifacts);
 
 struct JointResourceTimeAdjacentRepair final {
   ArtifactRootReference parentMapping;
@@ -332,7 +333,7 @@ executeSpatialFifoHardwareFeedbackReopen(
 /// spatial-microarchitecture generator; this adapter owns no Fabric writer.
 llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
 deriveSpatialCapacityHardwareReopenDomains(
-    const pnr::SpatialFifoCapacityShortfall &feedback);
+    const pnr::SpatialFifoCapacitySuggestion &feedback);
 
 /// Materializes the bounded Temporal operand-buffer child set admitted by one
 /// exact queue-level closed-wait witness. Incomplete, ambiguous, or analytic

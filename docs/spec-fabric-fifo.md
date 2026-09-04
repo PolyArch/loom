@@ -248,9 +248,10 @@ closed-wait certificate an offer the port actually made.
 The virtual-channel discipline partitions dequeue order, never capacity. The
 static reconvergent-capacity obligation of a `per_tag_virtual_channel`
 occurrence names every resident tag class but compares one selected pool
-against one proven minimum, so a pool smaller than the number of nets that can
-each hold one resident token is a proven `ReconvergentCapacityShortfall`
-closed wait even when the per-tag classes remove every order cycle.
+against one sufficient occupancy bound. Falling below that bound retains
+Mapping proof debt and a quantitative search gap; it cannot establish a
+necessary minimum or a reachable closed wait. Queue-order and capacity
+obligations remain separate.
 
 Fabric-to-RTL implements the same capability and selected-mode behavior. It
 compares the actual tag bits of resident entries, selects the arrival-oldest

@@ -483,10 +483,9 @@ internal(InternalSpatialPnrGenerationReason reason,
 
 llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                 SpatialPnrGenerationAccounting &target) {
-  if (llvm::Error error =
-          checkedAdd(source.acceptedActionCount,
-                     target.annealingAcceptedActions,
-                     "annealing accepted Actions"))
+  if (llvm::Error error = checkedAdd(source.acceptedActionCount,
+                                     target.annealingAcceptedActions,
+                                     "annealing accepted Actions"))
     return error;
   return checkedAdd(source.adoptedLocalTransfers, target.adoptedLocalTransfers,
                     "adopted local transfers");
@@ -647,11 +646,11 @@ void preferPreparedRestart(const SpatialRestartResult &candidate,
     selected = &candidate;
 }
 
-llvm::Expected<std::optional<SpatialFifoCapacityShortfall>>
+llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
 projectFifoCapacityShortfall(const SpatialRestartResult *restart) {
   if (!restart || !restart->candidate)
-    return std::optional<SpatialFifoCapacityShortfall>();
-  return projectSpatialFifoCapacityShortfall(*restart->candidate);
+    return std::optional<SpatialFifoCapacitySuggestion>();
+  return projectSpatialFifoCapacitySuggestion(*restart->candidate);
 }
 
 SpatialRestartResult restartInternal(InternalSpatialPnrGenerationReason reason,
@@ -1055,10 +1054,9 @@ SpatialRestartResult runSpatialRestartImpl(
       const std::uint64_t remainingSolverCalls =
           search.exactRepair.maxSolverCalls - accounting.exactRepairSolverCalls;
       reporter.restartClock();
-      auto repaired =
-          repair.repair(*seed->candidate, attempt, remainingSolverCalls,
-                        exactRepairStream, workLedger, std::nullopt,
-                        executionControl);
+      auto repaired = repair.repair(*seed->candidate, attempt,
+                                    remainingSolverCalls, exactRepairStream,
+                                    workLedger, std::nullopt, executionControl);
       reporter.phase(reporter.exactRepairNanoseconds);
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
@@ -1854,8 +1852,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     if (!progress)
       return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
                       accounting, progress.takeError());
-    if (progress->kind != ::loom::mapping::MappingProgressClosureKind::
-                              ProvenNoClosedWaitSet) {
+    if (progress->kind !=
+        ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet) {
       proofNotEstablished = true;
       if (staticProgressDiagnostic.empty())
         staticProgressDiagnostic =
@@ -1917,8 +1915,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
                     accounting, fifoCapacityShortfall.takeError());
   emitInvocationAccounting(
       accounting,
-      proofNotEstablished
-          ? mapping_debug::ClosureStatus::ProofNotEstablished
+      proofNotEstablished ? mapping_debug::ClosureStatus::ProofNotEstablished
       : semanticLimitReached
           ? mapping_debug::ClosureStatus::SemanticLimitReached
           : mapping_debug::ClosureStatus::ProofNotEstablished,
@@ -1930,8 +1927,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           ? IncompleteSpatialPnrGenerationReason::SemanticLimitReached
           : IncompleteSpatialPnrGenerationReason::ProofNotEstablished,
       accounting,
-      !staticProgressDiagnostic.empty()
-          ? std::move(staticProgressDiagnostic)
+      !staticProgressDiagnostic.empty() ? std::move(staticProgressDiagnostic)
       : !representative
           ? "no fixed restart reached independent final verification"
           : representative->diagnostic,

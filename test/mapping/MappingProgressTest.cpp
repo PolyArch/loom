@@ -378,7 +378,8 @@ module {
   if (!admissible(chain, completePrefix, *last, {}))
     fail("complete causal prefix was rejected");
 
-  auto externalDependencyModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+  auto externalDependencyModule =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   dataflow.thread private @ready domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
@@ -397,7 +398,7 @@ module {
   }
 }
 )mlir",
-                                                                  &context);
+                                              &context);
   if (!externalDependencyModule)
     fail("cannot parse external-dependency fixture");
   auto externalArtifact =
@@ -451,7 +452,7 @@ module {
   }
 }
 )mlir",
-                                                          &context);
+                                                                  &context);
   if (!storedWaitModule)
     fail("cannot parse stored-wait fixture");
   auto storedWaitArtifact =
@@ -549,17 +550,32 @@ void orderedRuntimeHeadsRequireCompleteExactPairing() {
   const loom::fabric::InstructionContextRef dormantContext{pe, 3};
   dormantProjection.pairings.push_back(
       {{dormantContext, fu, llvm::APInt(4, 9)}, {0, 1}, {}, {0, 1}});
-  auto dormantHeads = std::vector<loom::mapping::SpatialPeOperandRuntimeHeadView>{
-      {{context, 0, 0}, fu, tag, 0, 2, 1, 0, 10, 4, 7, true},
-      {{context, 0, 1}, fu, tag, 1, 2, 1, 0, 11, 5, 7, true},
-      {{dormantContext, 0, 0}, fu, llvm::APInt(4, 9), 0, 2, 0, 0,
-       std::numeric_limits<std::uint64_t>::max(),
-       std::numeric_limits<std::uint64_t>::max(),
-       std::numeric_limits<std::uint64_t>::max(), true},
-      {{dormantContext, 0, 1}, fu, llvm::APInt(4, 9), 1, 2, 0, 0,
-       std::numeric_limits<std::uint64_t>::max(),
-       std::numeric_limits<std::uint64_t>::max(),
-       std::numeric_limits<std::uint64_t>::max(), true}};
+  auto dormantHeads =
+      std::vector<loom::mapping::SpatialPeOperandRuntimeHeadView>{
+          {{context, 0, 0}, fu, tag, 0, 2, 1, 0, 10, 4, 7, true},
+          {{context, 0, 1}, fu, tag, 1, 2, 1, 0, 11, 5, 7, true},
+          {{dormantContext, 0, 0},
+           fu,
+           llvm::APInt(4, 9),
+           0,
+           2,
+           0,
+           0,
+           std::numeric_limits<std::uint64_t>::max(),
+           std::numeric_limits<std::uint64_t>::max(),
+           std::numeric_limits<std::uint64_t>::max(),
+           true},
+          {{dormantContext, 0, 1},
+           fu,
+           llvm::APInt(4, 9),
+           1,
+           2,
+           0,
+           0,
+           std::numeric_limits<std::uint64_t>::max(),
+           std::numeric_limits<std::uint64_t>::max(),
+           std::numeric_limits<std::uint64_t>::max(),
+           true}};
   const auto dormant = take(loom::mapping::deriveSpatialPeOperandRuntimeWitness(
       dormantProjection, dormantHeads));
   if (dormant.status !=
@@ -594,9 +610,9 @@ MappingStaticWaitNode actorNode(std::uint64_t actorId) {
   return dataflow::ActorRef{identity(31), dataflow::ActorId(actorId)};
 }
 
-MappingBufferDependencyEdge
-waitEdge(MappingStaticWaitNode from, MappingStaticWaitNode to,
-         MappingBufferDependencyEdgeKind kind) {
+MappingBufferDependencyEdge waitEdge(MappingStaticWaitNode from,
+                                     MappingStaticWaitNode to,
+                                     MappingBufferDependencyEdgeKind kind) {
   return MappingBufferDependencyEdge{std::move(from), std::move(to), kind, 0,
                                      std::nullopt};
 }
@@ -612,13 +628,15 @@ struct HolFixture final {
     const MappingStaticWaitNode q = globalQueueNode(7);
     const MappingStaticWaitNode q2 = globalQueueNode(8);
     return {
-        waitEdge(actorNode(2), q, MappingBufferDependencyEdgeKind::
-                                      ActorInputJoin), // C2 joins net2
+        waitEdge(
+            actorNode(2), q,
+            MappingBufferDependencyEdgeKind::ActorInputJoin), // C2 joins net2
         waitEdge(q, actorNode(1),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // queue head release waits on C1
-        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
-                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(actorNode(1), q2,
+                 MappingBufferDependencyEdgeKind::
+                     OutputCausalRelease), // C1 releases netX
         waitEdge(q2, actorNode(2),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // queue 8 head release waits on C2
@@ -632,13 +650,15 @@ struct HolFixture final {
     const MappingStaticWaitNode qT2 = tagQueueNode(7, 5);
     const MappingStaticWaitNode q2 = globalQueueNode(8);
     return {
-        waitEdge(actorNode(2), qT2, MappingBufferDependencyEdgeKind::
-                                        ActorInputJoin), // C2 joins net2
+        waitEdge(
+            actorNode(2), qT2,
+            MappingBufferDependencyEdgeKind::ActorInputJoin), // C2 joins net2
         waitEdge(qT1, actorNode(1),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // tag-3 channel head release waits on C1
-        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
-                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(actorNode(1), q2,
+                 MappingBufferDependencyEdgeKind::
+                     OutputCausalRelease), // C1 releases netX
         waitEdge(q2, actorNode(2),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // queue 8 head release waits on C2
@@ -651,13 +671,15 @@ struct HolFixture final {
     const MappingStaticWaitNode q = tagQueueNode(7, 3);
     const MappingStaticWaitNode q2 = globalQueueNode(8);
     return {
-        waitEdge(actorNode(2), q, MappingBufferDependencyEdgeKind::
-                                      ActorInputJoin), // C2 joins net2
+        waitEdge(
+            actorNode(2), q,
+            MappingBufferDependencyEdgeKind::ActorInputJoin), // C2 joins net2
         waitEdge(q, actorNode(1),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // queue head release waits on C1
-        waitEdge(actorNode(1), q2, MappingBufferDependencyEdgeKind::
-                                       OutputCausalRelease), // C1 releases netX
+        waitEdge(actorNode(1), q2,
+                 MappingBufferDependencyEdgeKind::
+                     OutputCausalRelease), // C1 releases netX
         waitEdge(q2, actorNode(2),
                  MappingBufferDependencyEdgeKind::
                      ActorInputJoin), // queue 8 head release waits on C2
@@ -694,8 +716,7 @@ module {
   const auto closureOf = [&](std::vector<MappingBufferDependencyEdge> edges) {
     loom::mapping::MappingProgressProjection candidate = projection;
     candidate.bufferDependencyEdges = std::move(edges);
-    return take(
-        loom::mapping::deriveMappingProgressClosure(model, candidate));
+    return take(loom::mapping::deriveMappingProgressClosure(model, candidate));
   };
   const auto provenCycle = [](const loom::mapping::MappingProgressClosure
                                   &closure) {
@@ -711,14 +732,13 @@ module {
            closure.reason == loom::mapping::MappingProgressClosureReason::
                                  BufferDependencyNotEstablished;
   };
-  const auto capacityNotEstablished =
-      [](const loom::mapping::MappingProgressClosure &closure) {
-        return closure.kind == loom::mapping::MappingProgressClosureKind::
-                                   ProofNotEstablished &&
-               closure.reason ==
-                   loom::mapping::MappingProgressClosureReason::
-                       ReconvergentCapacityNotEstablished;
-      };
+  const auto capacityNotEstablished = [](const loom::mapping::
+                                             MappingProgressClosure &closure) {
+    return closure.kind ==
+               loom::mapping::MappingProgressClosureKind::ProofNotEstablished &&
+           closure.reason == loom::mapping::MappingProgressClosureReason::
+                                 ReconvergentCapacityNotEstablished;
+  };
 
   // A cross-tag order cycle through one shared strict queue is a proven
   // closed wait.
@@ -757,18 +777,16 @@ module {
                                      llvm::APInt(4, 5)}},
             {},
             selectedCapacity,
-            2,
-            loom::mapping::MappingReconvergentCapacityProofKind::Proven}};
-    return take(
-        loom::mapping::deriveMappingProgressClosure(model, candidate));
+            2}};
+    return take(loom::mapping::deriveMappingProgressClosure(model, candidate));
   };
   const auto undersized = virtualChannelPool(1);
   if (undersized.kind !=
-          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       undersized.reason != loom::mapping::MappingProgressClosureReason::
-                               ReconvergentCapacityShortfall ||
+                               ReconvergentCapacityNotEstablished ||
       undersized.capacityShortfall != 1)
-    fail("an undersized virtual-channel pool was not a proven closed wait");
+    fail("a pool below the sufficient bound did not retain proof debt");
   if (virtualChannelPool(2).kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("a sufficient virtual-channel pool lost its liveness verdict");
@@ -785,8 +803,9 @@ module {
 
   // A capacity edge inside an order cycle also stays unestablished.
   std::vector<MappingBufferDependencyEdge> mixed = fixture.strictEdges();
-  mixed.push_back(waitEdge(globalQueueNode(7), globalQueueNode(8),
-                           MappingBufferDependencyEdgeKind::DownstreamCapacity));
+  mixed.push_back(
+      waitEdge(globalQueueNode(7), globalQueueNode(8),
+               MappingBufferDependencyEdgeKind::DownstreamCapacity));
   if (!capacityNotEstablished(closureOf(mixed)))
     fail("capacity-carrying order cycle was reported without a capacity proof");
 
@@ -802,8 +821,7 @@ module {
                                   llvm::APInt(1, 0)}},
          {},
          4,
-         2,
-         loom::mapping::MappingReconvergentCapacityProofKind::Proven});
+         2});
   if (!provenCycle(take(loom::mapping::deriveMappingProgressClosure(
           model, mixedWithCapacity))))
     fail("a discharged capacity edge erased a mandatory order cycle");
@@ -820,8 +838,8 @@ module {
   // An indeterminate construction is unestablished, never a proven cycle.
   loom::mapping::MappingProgressProjection indeterminate = projection;
   indeterminate.bufferDependencyEdges = std::nullopt;
-  if (!notEstablished(take(loom::mapping::deriveMappingProgressClosure(
-          model, indeterminate))))
+  if (!notEstablished(take(
+          loom::mapping::deriveMappingProgressClosure(model, indeterminate))))
     fail("an indeterminate construction was not reported as unestablished");
 
   // The route-obligation family keeps precedence: an unestablished finite
@@ -836,39 +854,36 @@ module {
       take(loom::mapping::deriveMappingProgressClosure(model, shared));
   if (sharedClosure.kind !=
           loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
-      sharedClosure.reason !=
-          loom::mapping::MappingProgressClosureReason::
-              FiniteBufferRecurrenceNotEstablished)
+      sharedClosure.reason != loom::mapping::MappingProgressClosureReason::
+                                  FiniteBufferRecurrenceNotEstablished)
     fail("finite buffer recurrence lost its precedence over the buffer "
          "dependency closure");
 }
 
 void reconvergentCapacityClosure() {
   using loom::mapping::MappingReconvergentCapacityObligation;
-  using loom::mapping::MappingReconvergentCapacityProofKind;
   const auto globalObligation = [](std::uint64_t fifo, std::uint64_t selected,
-                                   std::optional<std::uint64_t> minimum,
-                                   MappingReconvergentCapacityProofKind kind) {
+                                   std::optional<std::uint64_t> sufficient) {
     return MappingReconvergentCapacityObligation{
         loom::fabric::FabricFifoOccurrenceRef(fifo),
         {MappingStaticQueueClass{MappingStaticQueueClassKind::Global,
                                  llvm::APInt(1, 0)}},
         {},
-        selected, minimum, kind};
+        selected,
+        sufficient};
   };
-  const auto sharedTagObligation = [](
-                                       std::uint64_t fifo,
-                                       std::uint64_t selected,
-                                       std::optional<std::uint64_t> minimum,
-                                       MappingReconvergentCapacityProofKind
-                                           kind) {
+  const auto sharedTagObligation = [](std::uint64_t fifo,
+                                      std::uint64_t selected,
+                                      std::optional<std::uint64_t> sufficient) {
     return MappingReconvergentCapacityObligation{
         loom::fabric::FabricFifoOccurrenceRef(fifo),
         {MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
                                  llvm::APInt(4, 3)},
          MappingStaticQueueClass{MappingStaticQueueClassKind::PhysicalTag,
                                  llvm::APInt(4, 5)}},
-        {}, selected, minimum, kind};
+        {},
+        selected,
+        sufficient};
   };
 
   mlir::DialectRegistry registry;
@@ -902,54 +917,44 @@ module {
             loom::mapping::deriveMappingProgressClosure(model, candidate));
       };
 
-  // A proven minimum above the selected pool is a proven shortfall: the
-  // single-queue bubble deadlock needs no dependency cycle.
-  const auto shortfall = closureOf({globalObligation(
-      7, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  // A sufficient bound above the selected pool does not prove a closed wait.
+  // The gap remains proof debt and a search measure.
+  const auto shortfall = closureOf({globalObligation(7, 1, 2)});
   if (shortfall.kind !=
-          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       shortfall.reason != loom::mapping::MappingProgressClosureReason::
-                              ReconvergentCapacityShortfall)
-    fail("a proven capacity shortfall was not reported");
+                              ReconvergentCapacityNotEstablished)
+    fail("an unmet sufficient bound was not reported as proof debt");
   const auto shortfallObjective =
       loom::mapping::projectMappingProgressObjective(shortfall);
-  if (shortfallObjective.hardViolationCount != 1 ||
-      shortfallObjective.proofDebtWitnessCount != 0 ||
+  if (shortfallObjective.hardViolationCount != 0 ||
+      shortfallObjective.proofDebtWitnessCount != 1 ||
       shortfallObjective.capacityShortfall != 1)
     fail("capacity shortfall produced the wrong objective projection");
 
-  // A proven minimum within the selected pool discharges the obligation.
-  if (closureOf({globalObligation(7, 16, 2,
-                                  MappingReconvergentCapacityProofKind::Proven)})
-          .kind !=
+  // An established sufficient bound within the pool discharges the obligation.
+  if (closureOf({globalObligation(7, 16, 2)}).kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("a sufficient capacity was reported as a shortfall");
 
   // Tag-local order classes share one physical slot pool. They therefore
   // produce one owner obligation and one capacity comparison, never one depth
   // per tag.
-  const auto sharedPoolShortfall = closureOf({sharedTagObligation(
-      9, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  const auto sharedPoolShortfall = closureOf({sharedTagObligation(9, 1, 2)});
   if (sharedPoolShortfall.kind !=
-          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       sharedPoolShortfall.reason !=
           loom::mapping::MappingProgressClosureReason::
-              ReconvergentCapacityShortfall)
+              ReconvergentCapacityNotEstablished)
     fail("tag-local classes did not share their FIFO capacity owner");
-  if (closureOf({sharedTagObligation(
-                     9, 2, 2,
-                     MappingReconvergentCapacityProofKind::Proven)})
-          .kind !=
+  if (closureOf({sharedTagObligation(9, 2, 2)}).kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("a sufficient shared virtual-channel pool was rejected");
 
   // Two obligations for one FIFO would create competing capacity owners.
   loom::mapping::MappingProgressProjection duplicateOwner = projection;
-  duplicateOwner.reconvergentCapacityObligations = {
-      globalObligation(7, 4, 1,
-                       MappingReconvergentCapacityProofKind::Proven),
-      globalObligation(7, 4, 1,
-                       MappingReconvergentCapacityProofKind::Proven)};
+  duplicateOwner.reconvergentCapacityObligations = {globalObligation(7, 4, 1),
+                                                    globalObligation(7, 4, 1)};
   auto duplicateClosure =
       loom::mapping::deriveMappingProgressClosure(model, duplicateOwner);
   if (duplicateClosure)
@@ -958,9 +963,7 @@ module {
 
   // An unproven selected queue class is progress debt even without a known
   // dependency cycle. It cannot pass the static publication gate.
-  const auto unproven = closureOf({globalObligation(
-      7, 1, std::nullopt,
-      MappingReconvergentCapacityProofKind::ProofNotEstablished)});
+  const auto unproven = closureOf({globalObligation(7, 1, std::nullopt)});
   if (unproven.kind !=
           loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       unproven.reason != loom::mapping::MappingProgressClosureReason::
@@ -981,27 +984,19 @@ module {
                MappingBufferDependencyEdgeKind::DownstreamCapacity),
       waitEdge(globalQueueNode(8), globalQueueNode(7),
                MappingBufferDependencyEdgeKind::DownstreamCapacity)};
-  const auto resolvedThrough = [&](std::vector<MappingReconvergentCapacityObligation>
-                                       obligations) {
-    loom::mapping::MappingProgressProjection candidate = projection;
-    candidate.bufferDependencyEdges = capacityCycle;
-    candidate.reconvergentCapacityObligations = std::move(obligations);
-    return take(
-        loom::mapping::deriveMappingProgressClosure(model, candidate));
-  };
-  if (resolvedThrough({globalObligation(7, 4, 2,
-                                        MappingReconvergentCapacityProofKind::
-                                            Proven),
-                       globalObligation(8, 4, 1,
-                                        MappingReconvergentCapacityProofKind::
-                                            Proven)})
+  const auto resolvedThrough =
+      [&](std::vector<MappingReconvergentCapacityObligation> obligations) {
+        loom::mapping::MappingProgressProjection candidate = projection;
+        candidate.bufferDependencyEdges = capacityCycle;
+        candidate.reconvergentCapacityObligations = std::move(obligations);
+        return take(
+            loom::mapping::deriveMappingProgressClosure(model, candidate));
+      };
+  if (resolvedThrough({globalObligation(7, 4, 2), globalObligation(8, 4, 1)})
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("proven-sufficient members did not resolve the capacity component");
-  if (resolvedThrough({globalObligation(
-                          7, 4, 2,
-                          MappingReconvergentCapacityProofKind::Proven)})
-          .kind !=
+  if (resolvedThrough({globalObligation(7, 4, 2)}).kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("one sufficient destination pool did not break the capacity cycle");
   const auto unprovenMember = resolvedThrough({});
@@ -1011,13 +1006,12 @@ module {
                                    ReconvergentCapacityNotEstablished)
     fail("an undischargeable capacity cycle was resolved");
 
-  // A proven shortfall on a component member still reports the shortfall.
-  const auto memberShortfall = resolvedThrough({globalObligation(
-      7, 1, 2, MappingReconvergentCapacityProofKind::Proven)});
+  // An unmet sufficient bound on a component member remains proof debt.
+  const auto memberShortfall = resolvedThrough({globalObligation(7, 1, 2)});
   if (memberShortfall.kind !=
-          loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet ||
+          loom::mapping::MappingProgressClosureKind::ProofNotEstablished ||
       memberShortfall.reason != loom::mapping::MappingProgressClosureReason::
-                                    ReconvergentCapacityShortfall)
+                                    ReconvergentCapacityNotEstablished)
     fail("a member shortfall was hidden by the component mediation");
 }
 

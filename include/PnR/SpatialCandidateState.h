@@ -361,8 +361,8 @@ public:
   const HandshakeCandidateState &handshake() const { return *handshake_; }
   /// Whether the selected register-FIFO disposition of `logicalNet` activates
   /// a fragment on the current handshake cycle witness.
-  bool registerFifoTransferContributesToHandshakeCycle(
-      PnrIndex logicalNet) const;
+  bool
+  registerFifoTransferContributesToHandshakeCycle(PnrIndex logicalNet) const;
   /// The lowest logical net whose selected register-FIFO disposition lies on
   /// the current handshake cycle witness, or the invalid ordinal when the
   /// witness passes through no register-FIFO pairing. Routing that net
@@ -386,7 +386,7 @@ public:
     return progressState_.hardProgressViolation();
   }
   std::uint64_t progressProofDebtWitnessCount() const {
-    return progressState_.capacityProofDebtWitnessCount();
+    return progressState_.proofDebtWitnessCount();
   }
   std::uint64_t progressCapacityShortfall() const {
     return progressState_.capacityShortfall();

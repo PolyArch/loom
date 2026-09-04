@@ -167,7 +167,7 @@ struct IncompleteSpatialPnrGeneration final {
   /// candidate. This is present only for a proven FIFO shared-pool shortfall;
   /// it is not a Mapping artifact or a claim that the fixed Fabric is
   /// infeasible.
-  std::optional<SpatialFifoCapacityShortfall> fifoCapacityShortfall =
+  std::optional<SpatialFifoCapacitySuggestion> fifoCapacityShortfall =
       std::nullopt;
 };
 

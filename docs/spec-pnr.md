@@ -1052,8 +1052,10 @@ at most one resident token to a FIFO shared pool, including a distance-one
 initialized-feedback token. The canonical owner-local capacity obligation is
 the number of distinct selected logical nets, while StrictFifo or tag-local VC
 classes independently determine dequeue order. A selected pool below that
-bound is `ProvenClosedWaitSet(reconvergent_capacity_shortfall)` because the
-proof cannot remove downstream-capacity waits. A sufficient pool removes those
+sufficient bound is `ProofNotEstablished(reconvergent_capacity_not_established)`:
+failure to meet a sufficient bound does not establish a necessary minimum or
+a reachable closed wait. The positive gap is retained only as a search measure
+and a hardware-depth proposal. A sufficient pool removes those
 capacity edges from the closed-wait graph; it does not excuse a remaining
 global-HOL or same-tag order cycle.
 
@@ -1199,8 +1201,9 @@ ordinal order:
 `HardProgressViolation` is derived only from `ProvenClosedWaitSet`.
 `ProgressProofDebt` is derived only from `ProofNotEstablished`; it remains a
 temporary search violation and must be zero at publication. The capacity
-shortfall is nonzero only when an exact static capacity proof exceeds the
-selected shared pool. Route-anchor count is the number of distinct selected
+shortfall is the positive difference between an established sufficient bound
+and the selected shared pool. It is not a hard violation or an infeasibility
+certificate. Route-anchor count is the number of distinct selected
 physical traversals in the chosen hard or unestablished witness. These values
 are one projection of `MappingProgressClosure`; a PnR consumer cannot infer
 them independently from raw shared-FIFO incidence.

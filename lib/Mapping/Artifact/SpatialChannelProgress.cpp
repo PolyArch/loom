@@ -897,8 +897,10 @@ projectSpatialBufferDependencyEdges(
     if (selectedGraphEntities.count(graph->entity.value()) == 0)
       continue;
     auto logicalNet = llvm::find((*inventory)->logicalNets, group.logicalNet);
-    if (logicalNet == (*inventory)->logicalNets.end())
+    if (logicalNet == (*inventory)->logicalNets.end()) {
       (*inventory)->logicalNets.push_back(group.logicalNet);
+      logicalNet = std::prev((*inventory)->logicalNets.end());
+    }
     const std::uint64_t netOrdinal = static_cast<std::uint64_t>(
         std::distance((*inventory)->logicalNets.begin(), logicalNet));
     for (const SpatialPeOperandQueueMatchView &match : group.matches) {
@@ -1020,7 +1022,7 @@ deriveMappingReconvergentCapacityProof(
     // own dequeue order, but they share this one physical capacity bound.
     const bool proven =
         established[ordinal] && pool.has_value() && !owner.logicalNets.empty();
-    const std::optional<std::uint64_t> minimum =
+    const std::optional<std::uint64_t> sufficient =
         proven ? std::optional<std::uint64_t>(owner.logicalNets.size())
                : std::nullopt;
     std::vector<MappingStaticQueueClass> queueClasses;
@@ -1032,13 +1034,8 @@ deriveMappingReconvergentCapacityProof(
     for (const auto &[key, anchor] : owner.routeAnchors)
       routeAnchors.push_back(anchor);
     MappingReconvergentCapacityObligation obligation{
-        owner.owner,
-        std::move(queueClasses),
-        std::move(routeAnchors),
-        pool.value_or(0),
-        minimum,
-        proven ? MappingReconvergentCapacityProofKind::Proven
-               : MappingReconvergentCapacityProofKind::ProofNotEstablished};
+        owner.owner, std::move(queueClasses), std::move(routeAnchors),
+        pool.value_or(0), sufficient};
     obligations.push_back(std::move(obligation));
   }
   return obligations;

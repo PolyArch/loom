@@ -343,10 +343,6 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
       return invalid("reconvergent capacity repeats a shared FIFO owner");
     if (obligation.queueClasses.empty())
       return invalid("reconvergent capacity owner has no queue class");
-    const bool proven =
-        obligation.kind == MappingReconvergentCapacityProofKind::Proven;
-    if (proven != obligation.minimumLegalCapacity.has_value())
-      return invalid("reconvergent capacity proof state and minimum differ");
     std::optional<std::string> previousClass;
     bool global = false;
     for (const MappingStaticQueueClass &queueClass : obligation.queueClasses) {
@@ -410,16 +406,14 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
       if (edge.kind == MappingBufferDependencyEdgeKind::DownstreamCapacity) {
         const auto *storage =
             std::get_if<MappingStorageQueueProgressNode>(&edge.to);
-        if (storage &&
-            llvm::any_of(
-                projection.reconvergentCapacityObligations,
-                [&](const auto &obligation) {
-                  return obligation.owner == storage->owner &&
-                         obligation.kind ==
-                             MappingReconvergentCapacityProofKind::Proven &&
-                         *obligation.minimumLegalCapacity <=
-                             obligation.selectedCapacity;
-                }))
+        if (storage && llvm::any_of(projection.reconvergentCapacityObligations,
+                                    [&](const auto &obligation) {
+                                      return obligation.owner ==
+                                                 storage->owner &&
+                                             obligation.sufficientCapacity &&
+                                             *obligation.sufficientCapacity <=
+                                                 obligation.selectedCapacity;
+                                    }))
           continue;
       }
       const std::uint32_t from = nodeOrdinals[staticWaitNodeKey(edge.from)];
@@ -541,27 +535,25 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     }
   }
 
-  // Retain the owner-local capacity verdicts. Discharged edges were removed
-  // before SCC construction; a remaining capacity component still lacks a
-  // sufficient bound and cannot establish progress.
+  // Failure to meet a sufficient bound is proof debt, not evidence that this
+  // capacity is necessarily too small. Retain the gap as a search measure;
+  // only an independently reconstructed closed wait can be a hard violation.
   for (const MappingReconvergentCapacityObligation &obligation :
        projection.reconvergentCapacityObligations) {
-    if (obligation.kind == MappingReconvergentCapacityProofKind::Proven &&
-        obligation.minimumLegalCapacity &&
-        *obligation.minimumLegalCapacity > obligation.selectedCapacity)
+    if (obligation.sufficientCapacity &&
+        *obligation.sufficientCapacity > obligation.selectedCapacity)
       return MappingProgressClosure{
-          MappingProgressClosureKind::ProvenClosedWaitSet,
-          MappingProgressClosureReason::ReconvergentCapacityShortfall,
+          MappingProgressClosureKind::ProofNotEstablished,
+          MappingProgressClosureReason::ReconvergentCapacityNotEstablished,
           {},
           {},
-          *obligation.minimumLegalCapacity - obligation.selectedCapacity,
+          *obligation.sufficientCapacity - obligation.selectedCapacity,
           obligation.routeAnchors.size()};
   }
   const auto unproven = llvm::find_if(
       projection.reconvergentCapacityObligations,
       [](const MappingReconvergentCapacityObligation &obligation) {
-        return obligation.kind ==
-               MappingReconvergentCapacityProofKind::ProofNotEstablished;
+        return !obligation.sufficientCapacity;
       });
   if (unproven != projection.reconvergentCapacityObligations.end())
     return MappingProgressClosure{
@@ -847,8 +839,6 @@ mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason) {
     return "closed_buffer_dependency_cycle";
   case MappingProgressClosureReason::BufferDependencyNotEstablished:
     return "buffer_dependency_not_established";
-  case MappingProgressClosureReason::ReconvergentCapacityShortfall:
-    return "reconvergent_capacity_shortfall";
   case MappingProgressClosureReason::ReconvergentCapacityNotEstablished:
     return "reconvergent_capacity_not_established";
   }

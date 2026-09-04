@@ -341,10 +341,9 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   addedSwitchHandshakeFragments_.clear();
   if (switchProjectionScratch_ &&
       detail::hasSpatialTemporalSwitchHandshakeDomain(problem))
-    if (llvm::Error error = switchProjectionScratch_->
-            prepareFragmentStorage(newSwitchHandshakeDomainFragments_,
-                                   removedSwitchHandshakeFragments_,
-                                   addedSwitchHandshakeFragments_))
+    if (llvm::Error error = switchProjectionScratch_->prepareFragmentStorage(
+            newSwitchHandshakeDomainFragments_,
+            removedSwitchHandshakeFragments_, addedSwitchHandshakeFragments_))
       return error;
   traversalDeltaMarks_.assign(traversalCount, 0);
   traversalRemoved_.assign(traversalCount, 0);
@@ -819,8 +818,8 @@ SpatialCandidateState::snapshotFullyRouted() const {
                                reversePath.rend());
     }
     const auto values = tagValues(logicalNet);
-    snapshot.routeTagValues.insert(snapshot.routeTagValues.end(), values.begin(),
-                                   values.end());
+    snapshot.routeTagValues.insert(snapshot.routeTagValues.end(),
+                                   values.begin(), values.end());
     snapshot.routeTagValueOffsets.push_back(snapshot.routeTagValues.size());
   }
   return snapshot;
@@ -1224,8 +1223,8 @@ llvm::Error SpatialCandidateState::rebuildRuntimeCounterexampleState(
     PnrIndex trueCount = 0;
     for (PnrIndex local = 0; local < clause.literalCount; ++local) {
       const PnrIndex literalOrdinal = clause.literalOffset + local;
-      auto holds = runtimeCounterexampleLiteralHolds(
-          literals[literalOrdinal], routes, tagValues);
+      auto holds = runtimeCounterexampleLiteralHolds(literals[literalOrdinal],
+                                                     routes, tagValues);
       if (!holds)
         return holds.takeError();
       runtimeCounterexampleLiteralHolds_[literalOrdinal] = *holds;
@@ -1436,7 +1435,7 @@ SpatialCandidateState::projectVerifiedRoutes(
       tagUnassignedCount,
       tagConflictCount,
       hardProgressViolation,
-      progressState_.capacityProofDebtWitnessCount(),
+      progressState_.proofDebtWitnessCount(),
       progressState_.capacityShortfall(),
       progressState_.capacityObligationRouteAnchorCount(),
       *noGoodViolation,
@@ -1562,8 +1561,7 @@ llvm::Error SpatialCandidateState::verifyHandshakeProjection() const {
     if (option >= problem_->localTransfers().options().size())
       return candidateError("register-FIFO handshake option is out of range");
     const auto &transfer = problem_->localTransfers().options()[option];
-    if (llvm::Error error =
-            addFragments(localTransferFragments(index, option)))
+    if (llvm::Error error = addFragments(localTransferFragments(index, option)))
       return error;
     if (transfer.writeTraversal >= expectedTraversals.size() ||
         transfer.readTraversal >= expectedTraversals.size())

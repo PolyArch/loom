@@ -362,8 +362,8 @@ void writeMicroarchitectureBody(
             writer.u64(value.capacityBytes);
           } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
             writer.u32(value.depth);
-          } else if constexpr (std::is_same_v<
-                                   Value, ChangeFifoQueueDiscipline>) {
+          } else if constexpr (std::is_same_v<Value,
+                                              ChangeFifoQueueDiscipline>) {
             writer.u32(static_cast<std::uint32_t>(value.discipline));
           } else if constexpr (std::is_same_v<Value, ResizeSwitchRouteTable>) {
             writer.u32(value.entries);
@@ -1173,8 +1173,8 @@ expandSpatialMicroarchitectureDecisionDomains(
             return requireValues(value.capacitiesBytes, "microarchitecture");
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             return requireValues(value.depths, "microarchitecture");
-          else if constexpr (std::is_same_v<
-                                 Value, ChangeFifoQueueDisciplineDomain>)
+          else if constexpr (std::is_same_v<Value,
+                                            ChangeFifoQueueDisciplineDomain>)
             return requireValues(value.disciplines, "microarchitecture");
           else if constexpr (std::is_same_v<Value,
                                             ResizeSwitchRouteTableDomain>)
@@ -1229,8 +1229,8 @@ expandSpatialMicroarchitectureDecisionDomains(
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             for (auto depth : value.depths)
               decisions.push_back(ResizeFifo{value.target, depth});
-          else if constexpr (std::is_same_v<
-                                 Value, ChangeFifoQueueDisciplineDomain>)
+          else if constexpr (std::is_same_v<Value,
+                                            ChangeFifoQueueDisciplineDomain>)
             for (auto discipline : value.disciplines)
               decisions.push_back(
                   ChangeFifoQueueDiscipline{value.target, discipline});
@@ -1260,21 +1260,22 @@ expandSpatialMicroarchitectureDecisionDomains(
                                writeMicroarchitectureBody);
 }
 
-llvm::Expected<ResizeFifoDomain> deriveFifoCapacityDepthDomain(
-    loom::fabric::FabricFifoOccurrenceRef owner,
-    std::uint64_t selectedCapacity, std::uint64_t minimumLegalCapacity) {
+llvm::Expected<ResizeFifoDomain>
+deriveFifoCapacityDepthDomain(loom::fabric::FabricFifoOccurrenceRef owner,
+                              std::uint64_t selectedCapacity,
+                              std::uint64_t sufficientCapacity) {
   constexpr std::uint64_t maximumDepth =
       static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
-  if (selectedCapacity == 0 || minimumLegalCapacity <= selectedCapacity ||
-      minimumLegalCapacity > maximumDepth)
+  if (selectedCapacity == 0 || sufficientCapacity <= selectedCapacity ||
+      sufficientCapacity > maximumDepth)
     return invalid("FIFO capacity feedback is outside the positive hardware "
                    "depth domain");
   std::vector<std::uint32_t> depths = {
-      1, 2, static_cast<std::uint32_t>(minimumLegalCapacity)};
-  const std::uint64_t deeper =
-      minimumLegalCapacity <= maximumDepth / 2 ? minimumLegalCapacity * 2
-                                               : maximumDepth;
-  if (deeper <= minimumLegalCapacity)
+      1, 2, static_cast<std::uint32_t>(sufficientCapacity)};
+  const std::uint64_t deeper = sufficientCapacity <= maximumDepth / 2
+                                   ? sufficientCapacity * 2
+                                   : maximumDepth;
+  if (deeper <= sufficientCapacity)
     return invalid("FIFO capacity feedback has no deeper control");
   depths.push_back(static_cast<std::uint32_t>(deeper));
   llvm::sort(depths);
@@ -1623,7 +1624,7 @@ void addModuleRoot(std::vector<loom::fabric::FabricModulePhysicalOwnerRef> &out,
 
 HardwareImpactProjection
 projectHardwareImpact(const SpatialTopologyCandidateDecision &candidate,
-    std::optional<ArtifactRootReference> child) {
+                      std::optional<ArtifactRootReference> child) {
   HardwareImpactProjection impact{
       candidate.parent, std::move(child), {}, {}, {}, {}};
   impact.tech.kind = HardwareMappingImpactKind::Rebase;
@@ -1696,9 +1697,10 @@ HardwareImpactProjection projectHardwareImpact(
           impact.locality = HardwareMutationLocality::LocalCone;
           addModuleRoot(impact.tech.realizationRoots, decision.target);
           addModuleRoot(impact.spatial.placementRoots, decision.target);
-        } else if constexpr (
-            std::is_same_v<Decision, ChangeFifoBypassCapability> ||
-            std::is_same_v<Decision, ChangeFifoQueueDiscipline>) {
+        } else if constexpr (std::is_same_v<Decision,
+                                            ChangeFifoBypassCapability> ||
+                             std::is_same_v<Decision,
+                                            ChangeFifoQueueDiscipline>) {
           impact.family = HardwareMutationFamily::SpatialFifo;
           impact.locality = HardwareMutationLocality::LocalCone;
           impact.spatial.kind = HardwareMappingImpactKind::Reopen;
@@ -1725,7 +1727,7 @@ HardwareImpactProjection projectHardwareImpact(
                         std::is_same_v<Decision, ChangePeKind>)
             impact.family = HardwareMutationFamily::FuCapability;
           else if constexpr (std::is_same_v<Decision,
-                                             ChangeSwitchModeOrScheduleCapacity>)
+                                            ChangeSwitchModeOrScheduleCapacity>)
             impact.family = HardwareMutationFamily::SpatialSwitch;
           else
             impact.family = HardwareMutationFamily::SpatialMemory;
@@ -1743,7 +1745,7 @@ HardwareImpactProjection projectHardwareImpact(
 
 HardwareImpactProjection
 projectHardwareImpact(const SystemCompositionCandidateDecision &candidate,
-    std::optional<ArtifactRootReference> child) {
+                      std::optional<ArtifactRootReference> child) {
   HardwareImpactProjection impact{
       candidate.parent, std::move(child), {}, {}, {}, {}};
   impact.family = HardwareMutationFamily::SystemAccCore;
@@ -1801,7 +1803,7 @@ projectHardwareImpact(const SystemCompositionCandidateDecision &candidate,
               [&](const auto &attachment) {
                 using Attachment = std::decay_t<decltype(attachment)>;
                 if constexpr (std::is_same_v<Attachment,
-                                  ChangeSpatialMemoryAttachment>) {
+                                             ChangeSpatialMemoryAttachment>) {
                   impact.system.memoryRoots.push_back(
                       attachment.spatialEndpoint);
                   impact.system.serviceRoots.push_back(

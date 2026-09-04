@@ -362,9 +362,10 @@ expandSpatialMicroarchitectureDecisionDomains(
 /// Canonical global-depth comparison for a proven shared-pool shortfall.
 /// The domain contains depth one, depth two, the proven minimum, and one
 /// deeper control, with semantic duplicates removed.
-llvm::Expected<ResizeFifoDomain> deriveFifoCapacityDepthDomain(
-    loom::fabric::FabricFifoOccurrenceRef owner,
-    std::uint64_t selectedCapacity, std::uint64_t minimumLegalCapacity);
+llvm::Expected<ResizeFifoDomain>
+deriveFifoCapacityDepthDomain(loom::fabric::FabricFifoOccurrenceRef owner,
+                              std::uint64_t selectedCapacity,
+                              std::uint64_t sufficientCapacity);
 
 llvm::Expected<std::vector<SystemCompositionDecision>>
 expandSystemCompositionDecisionDomains(

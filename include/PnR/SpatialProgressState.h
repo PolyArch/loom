@@ -1,13 +1,13 @@
 #ifndef LOOM_PNR_SPATIALPROGRESSSTATE_H
 #define LOOM_PNR_SPATIALPROGRESSSTATE_H
 
-#include "Fabric/Identity/FabricRefs.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Identity/FabricRefs.h"
 #include "PnR/PhysicalTagKeyedMap.h"
 #include "PnR/PnrIndex.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -43,16 +43,18 @@ struct SpatialFiniteBufferConflictWitness final {
   std::vector<SpatialProgressRouteAnchor> routeAnchors;
 };
 
-struct SpatialFifoCapacityShortfall final {
+/// A search proposal derived from a sufficient occupancy bound, not a proof
+/// that the current hardware depth is infeasible.
+struct SpatialFifoCapacitySuggestion final {
   ::loom::fabric::FabricFifoOccurrenceRef owner;
   std::uint64_t selectedCapacity = 0;
-  std::uint64_t minimumLegalCapacity = 0;
+  std::uint64_t sufficientCapacity = 0;
   std::vector<::dataflow::CanonicalGraphProducerEndpointRef> logicalNets;
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> routeAnchors;
 };
 
-llvm::Expected<std::optional<SpatialFifoCapacityShortfall>>
-projectSpatialFifoCapacityShortfall(const SpatialCandidateState &candidate);
+llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
+projectSpatialFifoCapacitySuggestion(const SpatialCandidateState &candidate);
 
 /// One FIFO shared-pool use of one logical net, rebuilt by walking every
 /// producer-to-sink channel of that net. Channel count is distinct from route
@@ -109,8 +111,8 @@ public:
   std::uint64_t routeDependencyViolationCount() const {
     return routeDependencyViolationCount_;
   }
-  std::uint64_t capacityProofDebtWitnessCount() const {
-    return capacityProofDebtWitnessCount_;
+  std::uint64_t proofDebtWitnessCount() const {
+    return capacityProofDebtWitnessCount_ + capacityShortfallOwnerCount_;
   }
   std::uint64_t capacityShortfallOwnerCount() const {
     return capacityShortfallOwnerCount_;
@@ -123,9 +125,8 @@ public:
     return capacityObligationRouteAnchorCount_;
   }
   bool capacityProofDebtOwner(PnrIndex owner) const {
-    return owner < ownerCount_ &&
-           (capacityProofDebtOwnerBits_[owner / 64] &
-            (std::uint64_t{1} << (owner % 64))) != 0;
+    return owner < ownerCount_ && (capacityProofDebtOwnerBits_[owner / 64] &
+                                   (std::uint64_t{1} << (owner % 64))) != 0;
   }
   bool capacityShortfallOwner(PnrIndex owner) const {
     return owner < ownerCount_ && ownerCapacityShortfall(owner) != 0;
@@ -136,7 +137,7 @@ public:
   /// the router prices foreign residency as negotiable congestion. Only route
   /// dependency violations remain hard progress violations.
   std::uint64_t hardProgressViolation() const {
-    return routeDependencyViolationCount_ + capacityShortfallOwnerCount_;
+    return routeDependencyViolationCount_;
   }
   PnrIndex finiteBufferOwnerLogicalNetCount(PnrIndex owner) const;
   bool finiteBufferOwnerConflicts(PnrIndex owner) const;
@@ -149,8 +150,8 @@ public:
   std::optional<PnrIndex> firstCapacityShortfallOwner() const;
   llvm::Error
   enumerateCapacityShortfallOwners(std::vector<PnrIndex> &owners) const;
-  std::uint64_t logicalNetRouteDependencyViolationCount(
-      PnrIndex logicalNet) const;
+  std::uint64_t
+  logicalNetRouteDependencyViolationCount(PnrIndex logicalNet) const;
   std::size_t retainedStorageBytes() const;
   const SpatialProgressStatistics &statistics() const { return statistics_; }
 
@@ -158,8 +159,9 @@ public:
                                   PnrIndex removed, PnrIndex added);
   void revertTraversalDelta(PnrIndex logicalNet, PnrIndex traversal,
                             PnrIndex removed, PnrIndex added) noexcept;
-  llvm::Error refreshLogicalNetRouteDependencies(
-      const SpatialCandidateState &candidate, PnrIndex logicalNet);
+  llvm::Error
+  refreshLogicalNetRouteDependencies(const SpatialCandidateState &candidate,
+                                     PnrIndex logicalNet);
   void restoreLogicalNetRouteDependencyCount(PnrIndex logicalNet,
                                              std::uint64_t count) noexcept;
   llvm::Expected<SpatialProgressNetCapacityProjection>
@@ -182,8 +184,7 @@ public:
       const SpatialCandidateState &candidate, PnrIndex owner,
       SpatialFiniteBufferConflictWitness &witness) const;
   /// Checks the dense incremental representation without reading RouteTrees.
-  llvm::Error
-  verifyCachedState(const SpatialCandidateState &candidate) const;
+  llvm::Error verifyCachedState(const SpatialCandidateState &candidate) const;
   /// Reconstructs progress facts from RouteTrees and runs the independent
   /// closed-wait verifier after checking the cached representation.
   llvm::Error verify(const SpatialCandidateState &candidate) const;
@@ -207,8 +208,9 @@ private:
         netRouteDependencyViolationCounts_(
             std::move(netRouteDependencyViolationCounts)) {}
 
-  llvm::Expected<std::uint64_t> projectLogicalNetRouteDependencies(
-      const SpatialCandidateState &candidate, PnrIndex logicalNet) const;
+  llvm::Expected<std::uint64_t>
+  projectLogicalNetRouteDependencies(const SpatialCandidateState &candidate,
+                                     PnrIndex logicalNet) const;
   llvm::Error applyNetCapacityProjection(
       const SpatialProgressNetCapacityProjection &projection, bool add);
   llvm::Error rebuildCapacityOwnerWitness(

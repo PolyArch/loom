@@ -231,14 +231,12 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateProgressWitnessCount(
   std::vector<std::uint8_t> indeterminateQueueClass(ownerCount, 0);
   const auto nets = candidate.problem().transfers().logicalNets();
   for (PnrIndex logicalNet = 0; logicalNet < nets.size(); ++logicalNet) {
-    auto capacity =
-        projectSpatialNetCapacityProofInputs(candidate, logicalNet);
+    auto capacity = projectSpatialNetCapacityProofInputs(candidate, logicalNet);
     if (!capacity)
       return capacity.takeError();
     for (const SpatialProgressOwnerCapacityUse &use : capacity->owners) {
       if (use.owner >= ownerCount ||
-          selectedNets[use.owner] ==
-              std::numeric_limits<std::uint64_t>::max())
+          selectedNets[use.owner] == std::numeric_limits<std::uint64_t>::max())
         return invalid("cold capacity proof aggregate exceeds u64");
       ++selectedNets[use.owner];
       repeated[use.owner] |= use.repeatedWithinChannel;
@@ -251,14 +249,13 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateProgressWitnessCount(
     const bool virtualChannel =
         candidate.problem().progressIndex().ownerQueueDisciplines()[owner] ==
         ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
-    const bool debt = selectedNets[owner] != 0 &&
-                      (repeated[owner] ||
-                       (virtualChannel && indeterminateQueueClass[owner]));
+    const bool debt =
+        selectedNets[owner] != 0 &&
+        (repeated[owner] || (virtualChannel && indeterminateQueueClass[owner]));
     const bool shortfall =
-        !debt && selectedNets[owner] >
-                     candidate.problem()
-                         .progressIndex()
-                         .ownerSharedSlotCapacities()[owner];
+        !debt && selectedNets[owner] > candidate.problem()
+                                           .progressIndex()
+                                           .ownerSharedSlotCapacities()[owner];
     if (debt || shortfall) {
       if (count == std::numeric_limits<std::uint64_t>::max())
         return invalid("cold capacity proof witness count exceeds u64");
@@ -290,12 +287,12 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateProgressWitnessCount(
   return count;
 }
 
-llvm::Expected<std::optional<SpatialFifoCapacityShortfall>>
-loom::pnr::projectSpatialFifoCapacityShortfall(
+llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
+loom::pnr::projectSpatialFifoCapacitySuggestion(
     const SpatialCandidateState &candidate) {
   const auto owner = candidate.progress().firstCapacityShortfallOwner();
   if (!owner)
-    return std::optional<SpatialFifoCapacityShortfall>();
+    return std::optional<SpatialFifoCapacitySuggestion>();
   const auto capacities =
       candidate.problem().progressIndex().ownerSharedSlotCapacities();
   if (*owner >= capacities.size())
@@ -307,14 +304,14 @@ loom::pnr::projectSpatialFifoCapacityShortfall(
       shortfall > std::numeric_limits<std::uint64_t>::max() - selected)
     return invalid("capacity feedback has an invalid shortfall");
   SpatialFiniteBufferConflictWitness witness;
-  if (llvm::Error error = candidate.rebuildCapacityShortfallWitness(
-          *owner, witness))
+  if (llvm::Error error =
+          candidate.rebuildCapacityShortfallWitness(*owner, witness))
     return std::move(error);
 
-  SpatialFifoCapacityShortfall feedback;
+  SpatialFifoCapacitySuggestion feedback;
   feedback.owner = witness.owner;
   feedback.selectedCapacity = selected;
-  feedback.minimumLegalCapacity = selected + shortfall;
+  feedback.sufficientCapacity = selected + shortfall;
   const auto logicalNets = candidate.problem().transfers().logicalNets();
   feedback.logicalNets.reserve(witness.competingLogicalNets.size());
   for (PnrIndex logicalNet : witness.competingLogicalNets) {
@@ -339,7 +336,7 @@ loom::pnr::projectSpatialFifoCapacityShortfall(
     (void)key;
     feedback.routeAnchors.push_back(anchor);
   }
-  return std::optional<SpatialFifoCapacityShortfall>(std::move(feedback));
+  return std::optional<SpatialFifoCapacitySuggestion>(std::move(feedback));
 }
 
 llvm::Expected<SpatialProgressNetCapacityProjection>
@@ -404,8 +401,7 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
                                      PnrIndex node) -> llvm::Error {
       if (traversal >= problem.routing().traversals().size())
         return invalid("capacity proof input selects a foreign traversal");
-      const PnrIndex owner =
-          problem.progressIndex().traversalOwner(traversal);
+      const PnrIndex owner = problem.progressIndex().traversalOwner(traversal);
       if (owner == getInvalidPnrIndex())
         return llvm::Error::success();
       if (owner >= problem.progressIndex().ownerQueueDisciplines().size())
@@ -459,8 +455,7 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
       if (node.parentArc >= problem.routing().routingArcs().size())
         return invalid("capacity proof channel parent arc is out of range");
       if (llvm::Error error = appendTraversal(
-              problem.routing().routingArcs()[node.parentArc].traversal,
-              *slot))
+              problem.routing().routingArcs()[node.parentArc].traversal, *slot))
         return std::move(error);
       auto parent = parentSlot(tree, *slot);
       if (!parent)
@@ -474,8 +469,7 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
       return sinkAttachment.takeError();
     if ((*sinkAttachment)->localTraversal)
       if (llvm::Error error =
-              appendTraversal(*(*sinkAttachment)->localTraversal,
-                              sinkSlot))
+              appendTraversal(*(*sinkAttachment)->localTraversal, sinkSlot))
         return std::move(error);
 
     auto dependencies =
@@ -505,30 +499,29 @@ loom::pnr::projectSpatialNetCapacityProofInputs(
       }
       use.repeated |= channel.traversals.size() > 1;
       use.queueClassIndeterminate |= channel.queueClassIndeterminate;
-      use.queueClasses.insert(use.queueClasses.end(),
-                              std::make_move_iterator(
-                                  channel.queueClasses.begin()),
-                              std::make_move_iterator(channel.queueClasses.end()));
+      use.queueClasses.insert(
+          use.queueClasses.end(),
+          std::make_move_iterator(channel.queueClasses.begin()),
+          std::make_move_iterator(channel.queueClasses.end()));
     }
   }
 
   SpatialProgressNetCapacityProjection result;
   result.owners.reserve(uses.size());
   for (MutableUse &use : uses) {
-    llvm::sort(use.queueClasses, [](const llvm::APInt &lhs,
-                                    const llvm::APInt &rhs) {
-      return ::fabric::comparePhysicalTagValues(lhs, rhs) < 0;
-    });
+    llvm::sort(use.queueClasses,
+               [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
+                 return ::fabric::comparePhysicalTagValues(lhs, rhs) < 0;
+               });
     use.queueClasses.erase(
         std::unique(use.queueClasses.begin(), use.queueClasses.end(),
                     [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
                       return ::fabric::comparePhysicalTagValues(lhs, rhs) == 0;
                     }),
         use.queueClasses.end());
-    result.owners.push_back({use.owner, use.channels,
-                             use.initializedFeedbackChannels, use.repeated,
-                             use.queueClassIndeterminate,
-                             std::move(use.queueClasses)});
+    result.owners.push_back(
+        {use.owner, use.channels, use.initializedFeedbackChannels, use.repeated,
+         use.queueClassIndeterminate, std::move(use.queueClasses)});
   }
   return result;
 }

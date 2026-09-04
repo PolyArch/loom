@@ -21,6 +21,22 @@
 
 namespace loom::dse::joint_reopen_detail {
 
+struct FinalizedMappingHardwareSpectrum final {
+  std::vector<JointDesignExecution> verified;
+  std::vector<JointDesignInvocationManifestReference> invocations;
+  std::uint64_t attemptedSystems = 0;
+  bool incomplete = false;
+};
+
+llvm::Expected<FinalizedMappingHardwareSpectrum>
+exploreFinalizedMappingHardwareSpectrum(
+    const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
+    const JointDesignExecution &parentExecution,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const PlanExecutionPolicy *executionPolicy);
+
 llvm::Error invalid(const llvm::Twine &message);
 
 struct JointSoftwareCoverage final {
