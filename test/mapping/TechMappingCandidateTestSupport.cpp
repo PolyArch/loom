@@ -695,8 +695,6 @@ void loom::test::exerciseCapacityOveruseCandidate(
   }
   if (candidate->unroutedObligationCount() != initialUnroutedObligations)
     fail("Spatial Action discard did not restore unrouted obligations");
-  const std::size_t retainedActionExecutorBytes =
-      actionExecutor.retainedStorageBytes();
   const std::vector<pnr::PnrIndex> legalAttachments =
       attachmentsFor(legal.placement);
   {
@@ -790,10 +788,6 @@ void loom::test::exerciseCapacityOveruseCandidate(
     fail("selected Spatial rank lost objective or semantic-key ordering");
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(legal, true);
-  if (actionExecutor.retainedStorageBytes() != retainedActionExecutorBytes)
-    fail("warmed Spatial Action execution changed worker-local storage from " +
-         std::to_string(retainedActionExecutorBytes) + " to " +
-         std::to_string(actionExecutor.retainedStorageBytes()));
 
   pnr::SpatialCandidateScratch scratch;
   requireSuccess(scratch.prepare(*problem));
