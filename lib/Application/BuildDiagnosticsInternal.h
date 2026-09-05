@@ -29,6 +29,10 @@ inline constexpr llvm::StringLiteral applicationPairDispositionSchemaIdentity =
     "loom.application_pair_disposition";
 inline constexpr llvm::StringLiteral applicationPairDispositionSchemaVersion =
     "1.2";
+inline constexpr llvm::StringLiteral applicationRuntimeBindingSchemaIdentity =
+    "loom.application_runtime_manifest_binding";
+inline constexpr llvm::StringLiteral applicationRuntimeBindingSchemaVersion =
+    "1.1";
 
 llvm::StringRef spelling(dse::JointDesignAttemptDisposition value);
 llvm::StringRef spelling(dse::JointDesignQualityDisposition value);

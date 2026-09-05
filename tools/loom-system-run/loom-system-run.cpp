@@ -1246,8 +1246,8 @@ llvm::Error publishProductOracleEvidence(
       loom::defaultResolvedConfig(), artifacts, blobs);
   if (!prepared)
     return prepared.takeError();
-  auto evidence = loom::application::evaluateProductOracle(
-      *prepared, artifacts, blobs);
+  auto evidence = loom::evaluation::evaluateRequest(
+      prepared->request, prepared->resolution, artifacts, blobs);
   if (!evidence)
     return evidence.takeError();
   const auto *completed =

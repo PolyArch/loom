@@ -14,6 +14,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from loom_evidence_portfolio import (  # noqa: E402
+    RUNTIME_BINDING_SCHEMA,
+    RUNTIME_BINDING_VERSION,
     collect_portfolio_inventory,
     decode_artifact_root_hex as decode_root_hex,
     validate_resource_time_mapping_repair_transition,
@@ -97,8 +99,8 @@ def validate_identity_binding(
     require(len(bindings) == 1, "expected one application runtime manifest binding")
     binding = bindings[0]
     require(
-        binding.get("schema") == "loom.application_runtime_manifest_binding"
-        and binding.get("version") == "1.1",
+        binding.get("schema") == RUNTIME_BINDING_SCHEMA
+        and binding.get("version") == RUNTIME_BINDING_VERSION,
         "application runtime manifest binding has the wrong schema",
     )
     decision = pair_evidence.get("pair_decision")

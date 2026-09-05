@@ -102,7 +102,8 @@ const RuntimeProviderDescriptor descriptor{
     true,
     false,
     false,
-    true};
+    true,
+    std::nullopt};
 
 } // namespace
 

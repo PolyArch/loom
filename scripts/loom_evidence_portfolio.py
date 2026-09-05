@@ -98,6 +98,23 @@ PAIR_DISPOSITION_SCHEMA = _owned_projection_literal(
 PAIR_DISPOSITION_VERSION = _owned_projection_literal(
     "applicationPairDispositionSchemaVersion"
 )
+RUNTIME_BINDING_SCHEMA = _owned_projection_literal(
+    "applicationRuntimeBindingSchemaIdentity"
+)
+RUNTIME_BINDING_VERSION = _owned_projection_literal(
+    "applicationRuntimeBindingSchemaVersion"
+)
+_runtime_manifest_schema = re.search(
+    r'\bapplicationRuntimeManifestSchema\s*\{\s*"([^"]+)",\s*'
+    r'SchemaVersion\{(\d+),\s*(\d+)\}\s*\}',
+    (_ROOT / "include/Application/RuntimeManifest.h").read_text(encoding="utf-8"),
+)
+if _runtime_manifest_schema is None:
+    raise RuntimeError("application runtime manifest schema owner is malformed")
+RUNTIME_MANIFEST_SCHEMA = _runtime_manifest_schema[1]
+RUNTIME_MANIFEST_VERSION = (
+    f"{_runtime_manifest_schema[2]}.{_runtime_manifest_schema[3]}"
+)
 
 
 def _integer(value: Any) -> int | None:
@@ -1334,8 +1351,8 @@ def validate_portfolio_product_execution(
     for binding in candidate_bindings:
         if (
             binding.get("schema")
-            != "loom.application_runtime_manifest_binding"
-            or binding.get("version") != "1.0"
+            != RUNTIME_BINDING_SCHEMA
+            or binding.get("version") != RUNTIME_BINDING_VERSION
             or binding.get("domain") != "application_runtime_manifest"
         ):
             reasons.append("runtime_manifest_binding_schema_invalid")
@@ -1353,8 +1370,8 @@ def validate_portfolio_product_execution(
         decoded = decode_artifact_root_hex(binding.get("runtime_manifest"))
         if (
             decoded is None
-            or decoded.get("schema") != "loom.application.runtime_manifest"
-            or decoded.get("schema_version") != "5.0"
+            or decoded.get("schema") != RUNTIME_MANIFEST_SCHEMA
+            or decoded.get("schema_version") != RUNTIME_MANIFEST_VERSION
         ):
             reasons.append("runtime_manifest_root_invalid")
             continue

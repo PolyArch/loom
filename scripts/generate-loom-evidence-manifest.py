@@ -19,6 +19,7 @@ from typing import Any
 from loom_evidence_portfolio import (
     PAIR_DISPOSITION_SCHEMA,
     PAIR_EVIDENCE_SCHEMA,
+    RUNTIME_BINDING_SCHEMA,
     collect_portfolio_inventory,
     evaluate_portfolio,
 )
@@ -303,7 +304,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                     execution_matrix_observations.append(observation)
         if (
             payload.get("schema")
-            == "loom.application_runtime_manifest_binding"
+            == RUNTIME_BINDING_SCHEMA
             and payload.get("domain") == "application_runtime_manifest"
         ):
             application_runtime_manifest_bindings.append(payload)

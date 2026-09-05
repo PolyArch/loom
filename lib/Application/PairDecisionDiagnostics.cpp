@@ -502,8 +502,10 @@ void emitApplicationRuntimeManifestDiagnostics(
       DiagnosticVerbosity::Summary, InvocationDiagnosticStage::Deployment,
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
-        payload["schema"] = "loom.application_runtime_manifest_binding";
-        payload["version"] = "1.1";
+        payload["schema"] =
+            diagnostics_detail::applicationRuntimeBindingSchemaIdentity;
+        payload["version"] =
+            diagnostics_detail::applicationRuntimeBindingSchemaVersion;
         payload["domain"] = "application_runtime_manifest";
         payload["runtime_manifest"] = encodeRoot(manifest.reference());
         payload["pair_identity"] =

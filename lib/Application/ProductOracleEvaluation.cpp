@@ -403,20 +403,4 @@ prepareProductOracleEvaluation(
       evaluation::FindingRequestOrdinal(0)};
 }
 
-llvm::Expected<evaluation::EvaluationEvidence>
-evaluateProductOracle(const PreparedProductOracleEvaluation &prepared,
-                      const ArtifactStore &artifacts,
-                      const BlobStore &blobs) {
-  evaluation::RequestVerifier verifier(prepared.resolution, artifacts, blobs);
-  if (llvm::Error error = verifier.verify(prepared.request))
-    return std::move(error);
-  auto result = evaluation::evaluate(prepared.request, prepared.resolution,
-                                     artifacts, blobs);
-  if (!result)
-    return result.takeError();
-  return evaluation::EvaluationEvidence::get(
-      prepared.request, std::move(result->outputBindings),
-      std::move(result->outcome), prepared.resolution, artifacts, blobs);
-}
-
 } // namespace loom::application

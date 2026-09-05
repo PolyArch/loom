@@ -87,7 +87,8 @@ const runtime::RuntimeProviderDescriptor descriptor{
     true,
     false,
     false,
-    false};
+    false,
+    std::nullopt};
 
 } // namespace
 

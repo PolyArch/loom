@@ -28,11 +28,6 @@ prepareProductOracleEvaluation(
     const ResolvedConfig &config, const ArtifactStore &artifacts,
     const BlobStore &blobs);
 
-llvm::Expected<evaluation::EvaluationEvidence>
-evaluateProductOracle(
-    const PreparedProductOracleEvaluation &prepared,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
-
 } // namespace loom::application
 
 #endif // LOOM_APPLICATION_PRODUCTORACLEEVALUATION_H
