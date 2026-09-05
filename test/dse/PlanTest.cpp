@@ -69,6 +69,9 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> sourceInputs = {
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> candidateInputs =
     {{{CandidateGeneratorInputSlotRef(0), "parent", PlanValueRole::CandidateSet,
        &candidateSchema, PlanValueCardinality::FiniteSet}}};
+constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> requiredInputs =
+    {{{CandidateGeneratorInputSlotRef(0), "parent", PlanValueRole::CandidateSet,
+       &candidateSchema, PlanValueCardinality::NonEmptySet}}};
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputs = {{{
     CandidateGeneratorOutputSlotRef(0),
     "candidate",
@@ -112,6 +115,18 @@ const CandidateGeneratorDescriptor unavailableGenerator{
     "test.plan.unavailable",
     "loom.test.plan.unavailable.v1",
     candidateInputs,
+    outputs,
+    ResolvedDseConfigViewContract{configSchema, validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
+    {},
+    {},
+    ProviderForm::InProcess};
+
+const CandidateGeneratorDescriptor requiredConsumer{
+    CandidateGeneratorKind(0x7fff1003),
+    "test.plan.required_parent",
+    "loom.test.plan.required_parent.v1",
+    requiredInputs,
     outputs,
     ResolvedDseConfigViewContract{configSchema, validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
@@ -570,6 +585,37 @@ void exerciseOrderedTypedUseDef() {
           std::vector<ArtifactRootReference>{generated.front()} ||
       sourceObservedOutputMaximum != std::optional<std::uint64_t>(2))
     fail("bounded output join did not canonicalize, deduplicate, and truncate");
+
+  if (llvm::Error error =
+          registerCandidateGeneratorDescriptor(requiredConsumer))
+    fail(llvm::toString(std::move(error)));
+  std::vector<DsePlanNodeDefinition> requiredJoin = {
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(requiredConsumer.reference(),
+               {BoundedPlanOutputJoin{
+                   {PlanOutputRef{0, 0}}, 1, 2, {generated.front()}}},
+               digest)};
+  auto requiredView =
+      resolveView(requiredJoin, objectiveCatalogs, qualityGates);
+  auto requiredExecution = take(executeDsePlan(requiredView, store, blobs));
+  const auto *requiredIncomplete =
+      std::get_if<IncompleteDsePlanExecution>(&requiredExecution);
+  const auto *requiredInvocation =
+      requiredIncomplete ? requiredIncomplete->incompleteGenerateInvocation()
+                         : nullptr;
+  if (!requiredInvocation || requiredIncomplete->nodeOrdinal() != 1 ||
+      requiredInvocation->inputBindings.front().artifacts.size() != 1)
+    fail("nonempty bounded union did not reach its required consumer");
+  std::get<BoundedPlanOutputJoin>(
+      std::get<GeneratePlanNodeDefinition>(requiredJoin.back())
+          .inputBindings[0])
+      .exactArtifacts.clear();
+  auto unprovenNonempty =
+      ResolvedDsePlan::get(requiredJoin, {}, objectiveCatalogs, qualityGates);
+  if (unprovenNonempty)
+    fail("potentially empty union satisfied a required consumer");
+  requireErrorContains(unprovenNonempty.takeError(), "cardinality");
 
   std::vector<DsePlanNodeDefinition> duplicateJoin = {
       makeNode(sourceGenerator.reference(),

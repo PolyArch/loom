@@ -192,14 +192,16 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
     if (join.exactArtifacts.size() > join.maximumArtifacts)
       return invalid("bounded output join exact artifacts exceed its bound");
     std::optional<PlanValueDescriptor> joined;
+    bool guaranteesArtifact = !join.exactArtifacts.empty();
     for (PlanOutputRef output : join.outputs) {
       auto descriptor =
           resolvePriorOutput(output, nodeIndex, nodes, outputOffsets, outputs);
       if (!descriptor)
         return descriptor.takeError();
+      guaranteesArtifact |=
+          planCardinalityBounds((*descriptor)->cardinality).minimum != 0;
       if (!joined) {
         joined = **descriptor;
-        joined->cardinality = PlanValueCardinality::FiniteSet;
         continue;
       }
       if ((*descriptor)->role != joined->role ||
@@ -209,6 +211,16 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
           (*descriptor)->calibrationPartitionRole !=
               joined->calibrationPartitionRole)
         return invalid("bounded output join mixes incompatible plan values");
+    }
+    if (joined) {
+      // Deduplication can collapse every nonempty producer to one root, but
+      // a positive retention bound cannot turn a nonempty union into empty.
+      joined->cardinality =
+          join.maximumArtifacts == 1
+              ? (guaranteesArtifact ? PlanValueCardinality::ExactlyOne
+                                    : PlanValueCardinality::ZeroOrOne)
+              : (guaranteesArtifact ? PlanValueCardinality::NonEmptySet
+                                    : PlanValueCardinality::FiniteSet);
     }
     if (joined && !compatible(*joined, expected[inputIndex]))
       return invalid("bounded output join role, artifact schema, or "
