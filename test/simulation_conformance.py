@@ -687,7 +687,7 @@ def validate_cgra_tech_mapping_result(
 
 
 def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
-    if not isinstance(value, Mapping) or set(value) != {
+    required_fields = {
         "completion_goal",
         "configured_seed_attempts",
         "outcome",
@@ -695,8 +695,17 @@ def validate_cgra_pnr_result(value: object, *, require_completed: bool) -> str:
         "infeasibility_proof",
         "candidates",
         "work_units",
-    }:
+    }
+    optional_timing_fields = {"deadline_ns", "deadline_overrun_ns"}
+    if (
+        not isinstance(value, Mapping)
+        or not required_fields.issubset(value)
+        or not set(value).issubset(required_fields | optional_timing_fields)
+    ):
         raise ValueError("CGRA PnR result has the wrong shape")
+    for field in optional_timing_fields:
+        if field in value:
+            _nonnegative_integer(value[field], f"CGRA PnR {field}")
     if value["completion_goal"] != "exhaust_configured_work":
         raise ValueError("CGRA qualification used a prefix PnR completion goal")
     configured_seed_attempts = _nonnegative_integer(
@@ -864,10 +873,57 @@ def _validate_cgra_profiles(
     resolved_config_identities: set[str] = set()
     fabric_identities: set[str] = set()
     for profile in profiles:
-        if not isinstance(profile, Mapping) or set(profile) != expected_profile_fields:
+        optional_profile_fields = {
+            "spatial_candidate_screening",
+            "phase_ledger",
+        }
+        if (
+            not isinstance(profile, Mapping)
+            or not expected_profile_fields.issubset(profile)
+            or not set(profile).issubset(expected_profile_fields | optional_profile_fields)
+        ):
             raise ValueError("CGRA profile has the wrong shape")
         if profile["schema"] != "loom.cgra_budget_profile.5":
             raise ValueError("CGRA profile has the wrong schema")
+        screening = profile.get("spatial_candidate_screening")
+        if screening is not None:
+            if not isinstance(screening, list):
+                raise ValueError("CGRA candidate screening is not a list")
+            for entry in screening:
+                if not isinstance(entry, Mapping) or set(entry) != {
+                    "spatial_mapping",
+                    "buffered_fifo_traversals",
+                    "bypass_fifo_traversals",
+                    "retired",
+                    "closed_wait_actor_cycle_edges",
+                    "closed_wait_pending_transfers",
+                    "closed_wait_certificate_edges",
+                    "closed_wait_certificate_closed",
+                    "closed_wait_proof_failure",
+                }:
+                    raise ValueError("CGRA candidate screening entry has the wrong shape")
+                _validate_artifact_reference(
+                    entry["spatial_mapping"],
+                    "CGRA screened SpatialMapping",
+                    _MAPPING_SCHEMA,
+                )
+                if not isinstance(entry["retired"], bool):
+                    raise ValueError("CGRA screening retirement flag is not boolean")
+        ledger = profile.get("phase_ledger")
+        if ledger is not None:
+            if not isinstance(ledger, list):
+                raise ValueError("CGRA phase ledger is not a list")
+            for entry in ledger:
+                if not isinstance(entry, Mapping) or set(entry) != {
+                    "phase", "wall_nanoseconds", "process_cpu_nanoseconds"
+                }:
+                    raise ValueError("CGRA phase ledger entry has the wrong shape")
+                if not isinstance(entry["phase"], str) or not entry["phase"]:
+                    raise ValueError("CGRA phase ledger has no phase name")
+                _nonnegative_integer(entry["wall_nanoseconds"], "CGRA phase wall time")
+                _nonnegative_integer(
+                    entry["process_cpu_nanoseconds"], "CGRA phase process time"
+                )
         workload = profile["workload"]
         if not isinstance(workload, str) or workload in by_workload:
             raise ValueError("CGRA profile workload is absent or duplicated")
