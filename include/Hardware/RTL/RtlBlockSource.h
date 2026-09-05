@@ -82,6 +82,13 @@ verifyRtlBlockSourceSubgraphDerivation(const FinalizedRtlBlockSource &parent,
                                        std::size_t definition,
                                        const FinalizedRtlBlockSource &source);
 
+/// Extracts one complete definition closure from an already validated source.
+/// Retains its inherited domain contract without replaying the original RTL;
+/// the deriving invocation retains the exact parent Source association.
+llvm::Expected<FinalizedRtlBlockSource> finalizeRtlBlockSourceSubgraph(
+    const FinalizedRtlBlockSource &parent, std::size_t definition,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 /// Checks stored framing, all definition source digests and exact dependency
 /// references, canonical content names/order, root interface, and domain
 /// geometry. This validates the reusable block itself; associating it with a

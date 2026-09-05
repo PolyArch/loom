@@ -302,6 +302,23 @@ Fixture buildFixture(const std::filesystem::path &root, Shape shape) {
   if (llvm::Error error = verifyRtlBlockSourceSubgraphDerivation(
           parentSource, childOrdinal, imported))
     fail(test, llvm::toString(std::move(error)));
+  const auto subgraphInputs = take(
+      test,
+      loom::dse::bindRtlBlockSourceSubgraphInputs(parentSource.reference()));
+  const auto subgraphBinding =
+      take(test, loom::dse::resolveRtlBlockSourceSubgraphBinding(childOrdinal));
+  const auto subgraphResult =
+      take(test, loom::dse::invokeCandidateGenerator(
+                     subgraphInputs, subgraphBinding, store, blobs));
+  const auto *subgraphCompleted =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &subgraphResult.outcome);
+  require(
+      test,
+      subgraphCompleted && subgraphCompleted->outputBindings.size() == 1 &&
+          subgraphCompleted->outputBindings.front().artifacts ==
+              std::vector<loom::ArtifactRootReference>{imported.reference()},
+      "transitive source derivation changed the direct portable closure");
   llvm::Error wrongSubgraph = verifyRtlBlockSourceSubgraphDerivation(
       parentSource, parentProjection.graph.topModule, imported);
   require(test, static_cast<bool>(wrongSubgraph),

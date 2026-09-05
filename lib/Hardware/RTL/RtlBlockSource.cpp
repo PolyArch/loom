@@ -362,6 +362,36 @@ llvm::Error verifySourceIdentity(const SourceFacts &facts,
   return llvm::Error::success();
 }
 
+llvm::Expected<SourceFacts>
+deriveSubgraph(const FinalizedRtlBlockSource &parent, std::size_t definition) {
+  const auto &projection = parent.projection();
+  auto bound = bindRtlModuleGraphSource(projection.graph, projection.source);
+  if (!bound)
+    return bound.takeError();
+  return derive(projection.graph, *bound, definition, parent.domainPorts(),
+                parent.clock());
+}
+
+llvm::Expected<FinalizedRtlBlockSource> publish(const SourceFacts &facts,
+                                                const ArtifactStore &artifacts,
+                                                const BlobStore &blobs) {
+  auto published = blobs.put(bytesOf(facts.projection.source));
+  if (!published)
+    return published.takeError();
+  auto text = encode(facts);
+  if (!text)
+    return text.takeError();
+  auto artifact =
+      artifacts.put(rtlBlockSourceSchema,
+                    CanonicalSemanticBytes(
+                        std::vector<std::uint8_t>(text->begin(), text->end())));
+  if (!artifact)
+    return artifact.takeError();
+  return importRtlBlockSource({rtlBlockSourceSchema.identity.str(),
+                               rtlBlockSourceSchema.version, *artifact},
+                              artifacts, blobs);
+}
+
 } // namespace
 
 std::string FinalizedRtlBlockSource::generationConstraint() const {
@@ -403,22 +433,7 @@ llvm::Expected<FinalizedRtlBlockSource> finalizePortableRtlBlockSource(
   auto derived = derive(configurationAbi, implementation, definition, blobs);
   if (!derived)
     return derived.takeError();
-  const SourceFacts &facts = *derived;
-  auto published = blobs.put(bytesOf(facts.projection.source));
-  if (!published)
-    return published.takeError();
-  auto text = encode(facts);
-  if (!text)
-    return text.takeError();
-  auto artifact =
-      artifacts.put(rtlBlockSourceSchema,
-                    CanonicalSemanticBytes(
-                        std::vector<std::uint8_t>(text->begin(), text->end())));
-  if (!artifact)
-    return artifact.takeError();
-  return importRtlBlockSource({rtlBlockSourceSchema.identity.str(),
-                               rtlBlockSourceSchema.version, *artifact},
-                              artifacts, blobs);
+  return publish(*derived, artifacts, blobs);
 }
 
 llvm::Error verifyPortableRtlBlockSourceDerivation(
@@ -447,15 +462,19 @@ llvm::Error
 verifyRtlBlockSourceSubgraphDerivation(const FinalizedRtlBlockSource &parent,
                                        std::size_t definition,
                                        const FinalizedRtlBlockSource &source) {
-  const auto &projection = parent.projection();
-  auto bound = bindRtlModuleGraphSource(projection.graph, projection.source);
-  if (!bound)
-    return bound.takeError();
-  auto derived = derive(projection.graph, *bound, definition,
-                        parent.domainPorts(), parent.clock());
+  auto derived = deriveSubgraph(parent, definition);
   if (!derived)
     return derived.takeError();
   return verifySourceIdentity(*derived, source);
+}
+
+llvm::Expected<FinalizedRtlBlockSource> finalizeRtlBlockSourceSubgraph(
+    const FinalizedRtlBlockSource &parent, std::size_t definition,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto derived = deriveSubgraph(parent, definition);
+  if (!derived)
+    return derived.takeError();
+  return publish(*derived, artifacts, blobs);
 }
 
 } // namespace loom::hardware::rtl

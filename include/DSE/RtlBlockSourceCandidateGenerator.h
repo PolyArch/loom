@@ -7,6 +7,8 @@ namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
     rtlBlockSourceCandidateGeneratorKind(0x52425352);
+inline constexpr CandidateGeneratorKind
+    rtlBlockSourceSubgraphCandidateGeneratorKind(0x52425347);
 
 const CandidateGeneratorDescriptor &
 rtlBlockSourceCandidateGeneratorDescriptor();
@@ -18,6 +20,17 @@ bindRtlBlockSourceInputs(const ArtifactRootReference &implementation);
 /// HardwareImplementation. The binding owns its canonical scalar encoding.
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveRtlBlockSourceBinding(std::uint64_t definition);
+
+/// The selected ordinal belongs to the normalized graph of an exact Source.
+/// This preserves the parent derivation while avoiding a whole-RTL replay for
+/// each member of a bottom-up implementation plan.
+const CandidateGeneratorDescriptor &
+rtlBlockSourceSubgraphCandidateGeneratorDescriptor();
+llvm::Error registerRtlBlockSourceSubgraphCandidateGenerator();
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindRtlBlockSourceSubgraphInputs(const ArtifactRootReference &source);
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveRtlBlockSourceSubgraphBinding(std::uint64_t definition);
 
 /// Replays the exact extraction relation before a parent consumes a reused
 /// result. Uses the same provider binding and hardware-owned derivation.

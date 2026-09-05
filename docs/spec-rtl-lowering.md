@@ -627,14 +627,31 @@ emission ranges, preserves comments and strings, and rejects reserved-name
 collisions; it does not discover a second hierarchy from SystemVerilog.
 
 `RtlBlockSource` (`loom.rtl_block_source` version 1.0) is the hardware-owned
-reusable source Artifact. Its only construction path accepts an exact portable
+reusable source Artifact. Root construction accepts an exact portable
 HardwareImplementation, its ConfigurationABI, and a selected definition from
-that implementation's canonical graph. Construction replays the portable
+that implementation's canonical graph. It replays the portable
 publisher, normalizes the complete closure, and publishes its exact source
 blob, definition DAG, interface, and threaded domain contract. The System
 clock contract owns the constraint; block SDC is a derived rendering. A
 clockless block carries no period. The structural closure identity is distinct
 from the period-sensitive source Artifact identity.
+
+The registered `rtl.block_subgraph_source` derivation selects one normalized
+definition from an exact parent Source. It uses the same closure derivation,
+publication, and cold validation owners and inherits the parent's domain
+contract. Its invocation retains the exact parent Source; the parent Source's
+own derivation retains the original implementation. This transitive extraction
+avoids replaying the entire original RTL for each definition.
+
+`buildFpaPhysicalImplementationPlan` derives the canonical portable hierarchy
+once when authoring the physical stage. Its finite plan derives the root Source,
+then the normalized definition DAG in dependency order, synthesizing each
+distinct definition against immutable mapped direct children. The existing
+Yosys portable association publishes the complete mapped root before the
+existing OpenROAD routing stage. The independent whole-root Yosys generator
+remains the explicitly flattened baseline; the campaign has no flattening
+fallback. Ground-truth collection continues to require an admitted routed
+implementation and exact measurement inputs.
 
 Cold import verifies the source blob, framing, definition references and
 multiplicities, normalized content names and ordering, root port geometry

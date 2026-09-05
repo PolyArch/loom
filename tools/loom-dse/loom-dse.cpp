@@ -1378,7 +1378,7 @@ llvm::Expected<int> run() {
             *technologyLef,
             *cellLef,
             *liberty},
-        *config, artifacts);
+        *config, artifacts, blobs);
     if (!plan)
       return plan.takeError();
     semanticInputs->insert(semanticInputs->end(), plan->semanticInputs.begin(),

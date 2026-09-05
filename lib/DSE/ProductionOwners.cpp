@@ -53,6 +53,7 @@ llvm::Error registerProductionDseOwners() {
       &registerSystemCompositionCandidateGenerator,
       &registerPortableSpatialCoreRtlCandidateGenerator,
       &registerRtlBlockSourceCandidateGenerator,
+      &registerRtlBlockSourceSubgraphCandidateGenerator,
       &registerFpaGbdtTrainingCandidateGenerator,
       &registerSystemRuntimeGbdtTrainingCandidateGenerator,
       &registerStructuredEvaluationPromotionAcquisition,

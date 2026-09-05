@@ -14,6 +14,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 } // namespace loom
 
 namespace loom::dse {
@@ -21,9 +22,10 @@ namespace loom::dse {
 /// The offline physical-implementation request of the FPA ground-truth
 /// campaign. Every System root is lowered to one portable SpatialCore RTL
 /// implementation per AccCore occurrence; every exact RTL implementation root
-/// is synthesized to a standard-cell gate netlist and routed by the pinned
-/// OpenROAD provider on one ASIC target. The two stages are separate plans
-/// because the synthesis slot admits exactly one exact implementation. The
+/// is synthesized bottom-up through its canonical occurrence-free definition
+/// DAG and routed by the pinned OpenROAD provider on one ASIC target. The two
+/// stages are separate plans because hierarchy derivation requires one exact
+/// RTL implementation. The
 /// technology files enter the plan only through their exact content
 /// fingerprints; the machine-local paths stay in the local tool configuration.
 struct FpaPhysicalImplementationRequest final {
@@ -69,7 +71,8 @@ struct FpaPhysicalImplementationPlan final {
 llvm::Expected<FpaPhysicalImplementationPlan>
 buildFpaPhysicalImplementationPlan(FpaPhysicalImplementationRequest request,
                                    const ResolvedConfig &baseConfig,
-                                   const ArtifactStore &artifactStore);
+                                   const ArtifactStore &artifactStore,
+                                   const BlobStore &blobStore);
 
 } // namespace loom::dse
 
