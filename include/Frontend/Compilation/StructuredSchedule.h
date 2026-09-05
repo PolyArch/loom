@@ -77,6 +77,11 @@ struct StructuredScheduleDecision final {
 struct MaterializedStructuredScheduleCandidate final {
   StructuredProgramCandidate structuredProgram;
   std::optional<StructuredEntityRef> trackedSpatialRegion;
+  /// Invocation-local roots introduced by a reconstructed polyhedral
+  /// schedule. They let the finite schedule search compose a second atomic
+  /// decision with exactly the transformed loop rather than an unrelated
+  /// sibling. The decision lineage remains the persistent owner.
+  std::vector<StructuredEntityRef> transformedScheduleRoots;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 

@@ -6,6 +6,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Frontend/Lowering/ExactMemRefLayout.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
@@ -17,6 +18,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
@@ -26,6 +28,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
@@ -779,8 +782,8 @@ struct PolyhedralStructure final {
 
 bool isAccessOperation(mlir::Operation *operation) {
   return llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
-                   mlir::affine::AffineLoadOp, mlir::affine::AffineStoreOp>(
-      operation);
+                   mlir::affine::AffineLoadOp, mlir::affine::AffineStoreOp,
+                   mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(operation);
 }
 
 bool isAffineSupportOperation(mlir::Operation *operation) {
@@ -1047,6 +1050,334 @@ bool valueDefinedInside(mlir::Value value, mlir::Operation *root) {
   return region == &rootRegion || rootRegion.isAncestor(region);
 }
 
+std::vector<std::pair<std::uint64_t, std::uint64_t>>
+appendScalarDependences(llvm::ArrayRef<mlir::Operation *> statements,
+                        StructuredPolyhedralScopView &result) {
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> dependences;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> statementOrdinals;
+  for (auto [ordinal, statement] : llvm::enumerate(statements))
+    statementOrdinals.try_emplace(statement, ordinal);
+  for (auto [destination, statement] : llvm::enumerate(statements)) {
+    for (mlir::Value operand : statement->getOperands()) {
+      auto resultValue = llvm::dyn_cast<mlir::OpResult>(operand);
+      if (!resultValue)
+        continue;
+      auto source = statementOrdinals.find(resultValue.getOwner());
+      if (source == statementOrdinals.end() || source->second == destination)
+        continue;
+      const std::pair<std::uint64_t, std::uint64_t> edge{source->second,
+                                                         destination};
+      if (llvm::is_contained(dependences, edge))
+        continue;
+      dependences.push_back(edge);
+      result.dependences.push_back(
+          {StructuredPolyhedralDependenceKind::ScalarSsa, edge.first,
+           edge.second, std::nullopt});
+    }
+  }
+  return dependences;
+}
+
+llvm::Expected<StructuredPolyhedralScopAnalysisOutcome> finishPolyhedralScop(
+    const StructuredEntityRef &loopReference,
+    StructuredPolyhedralScopView result,
+    llvm::ArrayRef<mlir::affine::FlatAffineValueConstraints> statementDomains,
+    llvm::ArrayRef<detail::PolyhedralDependenceRelation> providerDependences,
+    llvm::ArrayRef<std::uint64_t> tileFactors,
+    const llvm::DenseMap<mlir::Value, StructuredEntityRef> &valueReferences,
+    mlir::Operation *projectedRoot) {
+  std::vector<detail::PolyhedralStatementDomain> providerStatements;
+  providerStatements.reserve(statementDomains.size());
+  for (auto [ordinal, domain] : llvm::enumerate(statementDomains))
+    providerStatements.push_back({ordinal, &domain});
+  auto providerOutcome = detail::computePinnedIslSchedule(
+      providerStatements, providerDependences, tileFactors);
+  if (!providerOutcome)
+    return providerOutcome.takeError();
+  if (auto *providerRefusal =
+          std::get_if<detail::PolyhedralScheduleProviderRefusalKind>(
+              &*providerOutcome)) {
+    StructuredScopRefusalKind refusal =
+        StructuredScopRefusalKind::ProviderScheduleNotEstablished;
+    if (*providerRefusal ==
+        detail::PolyhedralScheduleProviderRefusalKind::DomainNotAdmitted)
+      refusal = StructuredScopRefusalKind::ProviderDomainNotAdmitted;
+    else if (*providerRefusal == detail::PolyhedralScheduleProviderRefusalKind::
+                                     OperationBudgetExhausted)
+      refusal = StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
+    return refusePolyhedral(loopReference, refusal,
+                            result.dependenceQueryCount);
+  }
+  detail::PolyhedralScheduleProviderView &providerSchedule =
+      std::get<detail::PolyhedralScheduleProviderView>(*providerOutcome);
+  if (providerSchedule.statementSchedules.size() != result.statements.size() ||
+      llvm::any_of(providerSchedule.tiledSchedules, [&](const auto &tiled) {
+        return tiled.schedule.statementSchedules.size() !=
+               result.statements.size();
+      }))
+    return invalid("Polly/ISL schedule changed statement cardinality");
+  if (providerSchedule.parameters.size() != providerSchedule.parameterCount)
+    return invalid("Polly/ISL schedule changed parameter cardinality");
+  result.parameters.reserve(providerSchedule.parameters.size());
+  for (mlir::Value parameter : providerSchedule.parameters) {
+    if (!projectedRoot || valueDefinedInside(parameter, projectedRoot))
+      return refusePolyhedral(
+          loopReference,
+          StructuredScopRefusalKind::PolyhedralMaterializationUnavailable,
+          result.dependenceQueryCount);
+    auto reference = valueReference(parameter, valueReferences);
+    if (!reference)
+      return reference.takeError();
+    result.parameters.push_back(*reference);
+  }
+  result.schedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
+                     providerSchedule.form,
+                     providerSchedule.parameterCount,
+                     providerDependences.size(),
+                     providerSchedule.scheduleBandCount,
+                     providerSchedule.scheduleDimensionCount,
+                     providerSchedule.coincidentDimensionCount,
+                     std::move(providerSchedule.statementSchedules)};
+  result.tiledSchedules = std::move(providerSchedule.tiledSchedules);
+  return StructuredPolyhedralScopAnalysisOutcome(std::move(result));
+}
+
+struct RaisedPointerAccess final {
+  lowering::ExactPointerPointAccess projection;
+  std::uint64_t statementOrdinal = 0;
+};
+
+std::optional<StructuredScopRefusalKind>
+classifyRaisedPointerAccess(mlir::Operation *operation, mlir::scf::ForOp loop,
+                            std::uint64_t statementOrdinal,
+                            RaisedPointerAccess &result) {
+  auto outcome = lowering::projectExactPointerPointAccess(
+      operation, loop.getOperation(), [&](mlir::Value coordinate) {
+        return coordinate == loop.getInductionVar();
+      });
+  if (auto *projection =
+          std::get_if<lowering::ExactPointerPointAccess>(&outcome)) {
+    result = {*projection, statementOrdinal};
+    return std::nullopt;
+  }
+  switch (std::get<lowering::ExactPointerPointAccessRefusal>(outcome)) {
+  case lowering::ExactPointerPointAccessRefusal::UnsupportedEffect:
+    return StructuredScopRefusalKind::UnsupportedEffect;
+  case lowering::ExactPointerPointAccessRefusal::NonDirectInboundsAddress:
+    return StructuredScopRefusalKind::NonContiguousAccess;
+  case lowering::ExactPointerPointAccessRefusal::AddressRelationNotEstablished:
+    return StructuredScopRefusalKind::AccessRelationProofNotEstablished;
+  case lowering::ExactPointerPointAccessRefusal::NonLocalRoot:
+    return StructuredScopRefusalKind::NonLocalMemoryRoot;
+  case lowering::ExactPointerPointAccessRefusal::NotMemoryAccess:
+  case lowering::ExactPointerPointAccessRefusal::UnsupportedElementType:
+    return StructuredScopRefusalKind::UnsupportedOperation;
+  }
+  llvm_unreachable("unknown exact pointer point-access refusal");
+}
+
+StructuredPolyhedralRelationView identityRelation() {
+  StructuredPolyhedralRelationView relation;
+  relation.sourceDimensionCount = 1;
+  relation.destinationDimensionCount = 1;
+  relation.constraints.push_back(
+      {StructuredPolyhedralConstraintKind::Equality, {-1, 1, 0}});
+  return relation;
+}
+
+llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>
+analyzeRaisedPointerScop(
+    const StructuredEntityRef &loopReference, mlir::scf::ForOp loop,
+    const PolyhedralStructure &structure,
+    const llvm::DenseMap<mlir::Operation *, StructuredEntityRef>
+        &operationReferences,
+    const llvm::DenseMap<mlir::Value, StructuredEntityRef>
+        &sourceValueReferences,
+    llvm::ArrayRef<std::uint64_t> tileFactors) {
+  if (structure.loops.size() != 1 || structure.maximumLoopDepth != 1 ||
+      structure.imperfectNest || !loop.getInitArgs().empty() ||
+      loop.getUnsignedCmp())
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
+  auto inductionType =
+      llvm::dyn_cast<mlir::IntegerType>(loop.getInductionVar().getType());
+  auto indexWidth = getIndexBitWidth(loop);
+  if (!indexWidth)
+    return indexWidth.takeError();
+  if (!inductionType || !inductionType.isSignless() ||
+      inductionType.getWidth() != 64 || *indexWidth != 64)
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+  const std::optional<std::int64_t> lower =
+      mlir::getConstantIntValue(loop.getLowerBound());
+  const std::optional<std::int64_t> upper =
+      mlir::getConstantIntValue(loop.getUpperBound());
+  const std::optional<std::int64_t> step =
+      mlir::getConstantIntValue(loop.getStep());
+  if (!lower || !upper || !step || *step != 1 || *upper <= *lower)
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
+  if (*lower == std::numeric_limits<std::int64_t>::min())
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+  const __int128 tripCount =
+      static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
+  if (tripCount <= 0 ||
+      tripCount >
+          static_cast<__int128>(std::numeric_limits<std::uint64_t>::max()))
+    return refusePolyhedral(
+        loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+
+  llvm::SmallVector<mlir::Value, 1> domainValues{loop.getInductionVar()};
+  mlir::affine::FlatAffineValueConstraints domain(
+      1, 0, 0, llvm::ArrayRef<mlir::Value>(domainValues));
+  domain.addBound(mlir::presburger::BoundType::LB, 0, *lower);
+  domain.addBound(mlir::presburger::BoundType::UB, 0, *upper - 1);
+
+  std::vector<RaisedPointerAccess> accesses;
+  llvm::DenseSet<mlir::Operation *> admittedAddresses;
+  for (auto [ordinal, statement] : llvm::enumerate(structure.statements)) {
+    if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp,
+                  mlir::affine::AffineLoadOp, mlir::affine::AffineStoreOp>(
+            statement.operation))
+      return refusePolyhedral(loopReference,
+                              StructuredScopRefusalKind::UnsupportedEffect);
+    if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(
+            statement.operation))
+      continue;
+    RaisedPointerAccess access;
+    if (auto refusal = classifyRaisedPointerAccess(statement.operation, loop,
+                                                   ordinal, access))
+      return refusePolyhedral(loopReference, *refusal);
+    admittedAddresses.insert(access.projection.address.getOperation());
+    accesses.push_back(std::move(access));
+  }
+  if (accesses.empty())
+    return refusePolyhedral(
+        loopReference,
+        StructuredScopRefusalKind::AccessRelationProofNotEstablished);
+  for (const PolyhedralStatementRecord &statement : structure.statements) {
+    auto address = llvm::dyn_cast<mlir::LLVM::GEPOp>(statement.operation);
+    if (!address)
+      continue;
+    if (!admittedAddresses.contains(address.getOperation()) ||
+        llvm::any_of(address->getUsers(), [&](mlir::Operation *user) {
+          if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(user))
+            return load.getAddr() != address.getResult();
+          if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(user))
+            return store.getAddr() != address.getResult();
+          return true;
+        }))
+      return refusePolyhedral(loopReference,
+                              StructuredScopRefusalKind::UnsupportedOperation);
+  }
+
+  StructuredPolyhedralScopView result(loopReference);
+  result.loopCount = 1;
+  result.maximumLoopDepth = 1;
+  result.imperfectNest = false;
+  result.statements.reserve(structure.statements.size());
+  std::vector<mlir::affine::FlatAffineValueConstraints> statementDomains(
+      structure.statements.size(), domain);
+  for (auto [ordinal, statement] : llvm::enumerate(structure.statements)) {
+    auto operationReference = operationReferences.find(statement.operation);
+    if (operationReference == operationReferences.end())
+      return invalid("raised pointer statement has no operation entity");
+    auto frozen = freezeSet(statementDomains[ordinal], sourceValueReferences);
+    if (!frozen)
+      return frozen.takeError();
+    result.statements.push_back(
+        {operationReference->second, std::move(*frozen)});
+  }
+
+  for (const RaisedPointerAccess &access : accesses) {
+    auto operationReference =
+        operationReferences.find(access.projection.operation);
+    if (operationReference == operationReferences.end())
+      return invalid("raised pointer access has no operation entity");
+    auto memoryReference =
+        valueReference(access.projection.root, sourceValueReferences);
+    if (!memoryReference)
+      return memoryReference.takeError();
+    result.accesses.push_back(
+        {operationReference->second, *memoryReference, access.statementOrdinal,
+         access.projection.writes ? StructuredPolyhedralAccessKind::Write
+                                  : StructuredPolyhedralAccessKind::Read,
+         access.projection.elementBytes, identityRelation(),
+         static_cast<std::uint64_t>(tripCount)});
+  }
+
+  struct DependenceProof final {
+    StructuredPolyhedralDependenceKind kind =
+        StructuredPolyhedralDependenceKind::ReadAfterWrite;
+    std::uint64_t source = 0;
+    std::uint64_t destination = 0;
+    mlir::affine::FlatAffineValueConstraints relation{2, 0, 0};
+  };
+  std::vector<DependenceProof> memoryDependences;
+  for (std::size_t lhs = 0; lhs != accesses.size(); ++lhs) {
+    for (std::size_t rhs = lhs + 1; rhs != accesses.size(); ++rhs) {
+      if (!accesses[lhs].projection.writes && !accesses[rhs].projection.writes)
+        continue;
+      if (result.dependenceQueryCount == maximumDependenceQueries)
+        return refusePolyhedral(
+            loopReference,
+            StructuredScopRefusalKind::ProviderScheduleBudgetExhausted,
+            result.dependenceQueryCount);
+      ++result.dependenceQueryCount;
+      const lowering::ExactPointerPointAccessPairKind pair =
+          lowering::classifyExactPointerPointAccessPair(
+              accesses[lhs].projection, accesses[rhs].projection);
+      if (pair == lowering::ExactPointerPointAccessPairKind::NoDependence)
+        continue;
+      if (pair ==
+          lowering::ExactPointerPointAccessPairKind::ByteRelationNotEstablished)
+        return refusePolyhedral(
+            loopReference,
+            StructuredScopRefusalKind::AccessRelationProofNotEstablished,
+            result.dependenceQueryCount);
+      if (pair ==
+          lowering::ExactPointerPointAccessPairKind::AliasNotEstablished)
+        return refusePolyhedral(
+            loopReference, StructuredScopRefusalKind::AliasProofNotEstablished,
+            result.dependenceQueryCount);
+      DependenceProof dependence;
+      dependence.kind = dependenceKind(accesses[lhs].projection.writes,
+                                       accesses[rhs].projection.writes);
+      dependence.source = accesses[lhs].statementOrdinal;
+      dependence.destination = accesses[rhs].statementOrdinal;
+      dependence.relation.setValue(0, loop.getInductionVar());
+      dependence.relation.setValue(1, loop.getInductionVar());
+      dependence.relation.addEquality({1, -1, 0});
+      auto frozen =
+          freezeRelation(dependence.relation, 1, 1, sourceValueReferences);
+      if (!frozen)
+        return frozen.takeError();
+      result.dependences.push_back({dependence.kind, dependence.source,
+                                    dependence.destination,
+                                    std::move(*frozen)});
+      memoryDependences.push_back(std::move(dependence));
+    }
+  }
+
+  llvm::SmallVector<mlir::Operation *> statementOperations;
+  statementOperations.reserve(structure.statements.size());
+  for (const PolyhedralStatementRecord &statement : structure.statements)
+    statementOperations.push_back(statement.operation);
+  auto scalarDependences = appendScalarDependences(statementOperations, result);
+  std::vector<detail::PolyhedralDependenceRelation> providerDependences;
+  providerDependences.reserve(memoryDependences.size() +
+                              scalarDependences.size());
+  for (const DependenceProof &dependence : memoryDependences)
+    providerDependences.push_back({dependence.source, dependence.destination, 1,
+                                   1, &dependence.relation});
+  for (const auto &[source, destination] : scalarDependences)
+    providerDependences.push_back({source, destination, 1, 1, nullptr});
+  return finishPolyhedralScop(loopReference, std::move(result),
+                              statementDomains, providerDependences,
+                              tileFactors, sourceValueReferences, nullptr);
+}
+
 } // namespace
 
 llvm::Expected<StructuredScopAnalysisOutcome>
@@ -1132,10 +1463,20 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
           detail::maximumPinnedIslStatementCount)
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+  const bool hasRaisedPointerAccess =
+      llvm::any_of(sourceStructure.statements, [](const auto &statement) {
+        return llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(
+            statement.operation);
+      });
   for (const PolyhedralStatementRecord &statement :
        sourceStructure.statements) {
     if (!isAccessOperation(statement.operation))
       continue;
+    if (llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(statement.operation))
+      continue;
+    if (hasRaisedPointerAccess)
+      return refusePolyhedral(loopReference,
+                              StructuredScopRefusalKind::UnsupportedEffect);
     auto memoryType = llvm::dyn_cast<mlir::MemRefType>(
         accessMemory(statement.operation).getType());
     if (!memoryType || !lowering::isProvablyInjectiveMemRefLayout(memoryType))
@@ -1152,6 +1493,16 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
   for (const StructuredEntity &candidate :
        candidateView->entities(StructuredEntityKind::Value))
     sourceValueReferences.try_emplace(candidate.value, candidate.reference);
+
+  if (hasRaisedPointerAccess) {
+    auto scfLoop = llvm::dyn_cast<mlir::scf::ForOp>(sourceLoop);
+    if (!scfLoop)
+      return refusePolyhedral(
+          loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+    return analyzeRaisedPointerScop(loopReference, scfLoop, sourceStructure,
+                                    operationReferences, sourceValueReferences,
+                                    tileFactors);
+  }
 
   mlir::IRMapping mapping;
   auto privateClone =
@@ -1380,33 +1731,15 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     }
   }
 
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> scalarDependences;
-  llvm::DenseMap<mlir::Operation *, std::uint64_t> statementOrdinals;
-  for (auto [ordinal, statement] : llvm::enumerate(statements))
-    statementOrdinals.try_emplace(statement.projected, ordinal);
-  for (auto [destination, statement] : llvm::enumerate(statements)) {
-    for (mlir::Value operand : statement.projected->getOperands()) {
-      auto resultValue = llvm::dyn_cast<mlir::OpResult>(operand);
-      if (!resultValue)
-        continue;
-      auto source = statementOrdinals.find(resultValue.getOwner());
-      if (source == statementOrdinals.end() || source->second == destination)
-        continue;
-      const std::pair<std::uint64_t, std::uint64_t> edge{source->second,
-                                                         destination};
-      if (llvm::is_contained(scalarDependences, edge))
-        continue;
-      scalarDependences.push_back(edge);
-      result.dependences.push_back(
-          {StructuredPolyhedralDependenceKind::ScalarSsa, edge.first,
-           edge.second, std::nullopt});
-    }
+  llvm::SmallVector<mlir::Operation *> statementOperations;
+  statementOperations.reserve(statements.size());
+  std::vector<mlir::affine::FlatAffineValueConstraints> providerDomains;
+  providerDomains.reserve(statements.size());
+  for (const StatementProof &statement : statements) {
+    statementOperations.push_back(statement.projected);
+    providerDomains.push_back(statement.domain);
   }
-
-  std::vector<detail::PolyhedralStatementDomain> providerStatements;
-  providerStatements.reserve(statements.size());
-  for (auto [ordinal, statement] : llvm::enumerate(statements))
-    providerStatements.push_back({ordinal, &statement.domain});
+  auto scalarDependences = appendScalarDependences(statementOperations, result);
   std::vector<detail::PolyhedralDependenceRelation> providerDependences;
   providerDependences.reserve(memoryDependences.size() +
                               scalarDependences.size());
@@ -1420,55 +1753,9 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     providerDependences.push_back(
         {source, destination, statements[source].domain.getNumDimVars(),
          statements[destination].domain.getNumDimVars(), nullptr});
-  auto providerOutcome = detail::computePinnedIslSchedule(
-      providerStatements, providerDependences, tileFactors);
-  if (!providerOutcome)
-    return providerOutcome.takeError();
-  if (auto *providerRefusal =
-          std::get_if<detail::PolyhedralScheduleProviderRefusalKind>(
-              &*providerOutcome)) {
-    StructuredScopRefusalKind refusal =
-        StructuredScopRefusalKind::ProviderScheduleNotEstablished;
-    if (*providerRefusal ==
-        detail::PolyhedralScheduleProviderRefusalKind::DomainNotAdmitted)
-      refusal = StructuredScopRefusalKind::ProviderDomainNotAdmitted;
-    else if (*providerRefusal == detail::PolyhedralScheduleProviderRefusalKind::
-                                     OperationBudgetExhausted)
-      refusal = StructuredScopRefusalKind::ProviderScheduleBudgetExhausted;
-    return refusePolyhedral(loopReference, refusal,
-                            result.dependenceQueryCount);
-  }
-  detail::PolyhedralScheduleProviderView &providerSchedule =
-      std::get<detail::PolyhedralScheduleProviderView>(*providerOutcome);
-  if (providerSchedule.statementSchedules.size() != statements.size() ||
-      llvm::any_of(providerSchedule.tiledSchedules, [&](const auto &tiled) {
-        return tiled.schedule.statementSchedules.size() != statements.size();
-      }))
-    return invalid("Polly/ISL schedule changed statement cardinality");
-  if (providerSchedule.parameters.size() != providerSchedule.parameterCount)
-    return invalid("Polly/ISL schedule changed parameter cardinality");
-  result.parameters.reserve(providerSchedule.parameters.size());
-  for (mlir::Value parameter : providerSchedule.parameters) {
-    if (valueDefinedInside(parameter, projectedLoop->getOperation()))
-      return refusePolyhedral(
-          loopReference,
-          StructuredScopRefusalKind::PolyhedralMaterializationUnavailable,
-          result.dependenceQueryCount);
-    auto reference = valueReference(parameter, projectedValueReferences);
-    if (!reference)
-      return reference.takeError();
-    result.parameters.push_back(*reference);
-  }
-  result.schedule = {StructuredPolyhedralProviderKind::PinnedPollyIsl,
-                     providerSchedule.form,
-                     providerSchedule.parameterCount,
-                     providerDependences.size(),
-                     providerSchedule.scheduleBandCount,
-                     providerSchedule.scheduleDimensionCount,
-                     providerSchedule.coincidentDimensionCount,
-                     std::move(providerSchedule.statementSchedules)};
-  result.tiledSchedules = std::move(providerSchedule.tiledSchedules);
-  return StructuredPolyhedralScopAnalysisOutcome(std::move(result));
+  return finishPolyhedralScop(
+      loopReference, std::move(result), providerDomains, providerDependences,
+      tileFactors, projectedValueReferences, projectedLoop->getOperation());
 }
 
 } // namespace loom::frontend

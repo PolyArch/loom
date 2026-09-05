@@ -300,7 +300,10 @@ analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
 /// Extracts one bounded exact affine/Presburger region rooted at a top-level
 /// structured loop. Multi-statement, multi-loop, and imperfect nests are
 /// admitted when all statement domains, accesses, aliases, and dependences are
-/// exactly representable by the shared MLIR and pinned Polly/ISL providers.
+/// exactly representable by the shared MLIR and pinned Polly/ISL providers. A
+/// single signed, unit-step i64 SCF loop with direct scalar LLVM accesses has a
+/// closed DataLayout-aware pointer spelling; forms outside that spelling are
+/// typed refusals rather than approximate affine projections.
 /// The caller names the tile factors whose tiled provider schedules the view
 /// must also freeze; the schedule owner defines that finite factor domain.
 llvm::Expected<StructuredPolyhedralScopAnalysisOutcome>

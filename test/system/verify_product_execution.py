@@ -81,7 +81,7 @@ def validate_identity_binding(
     pair_evidence: dict[str, Any],
     manifest: dict[str, Any],
     required: bool,
-) -> None:
+) -> dict[str, Any] | None:
     """Binds the pair decision to the executed Deployment through the published
     application runtime manifest: the decision's identities must equal the
     manifest's, and the execution manifest must name the manifest's Deployment,
@@ -92,7 +92,7 @@ def validate_identity_binding(
         if payload.get("domain") == "application_runtime_manifest"
     ]
     if not bindings and not required:
-        return
+        return None
     require(len(bindings) == 1, "expected one application runtime manifest binding")
     binding = bindings[0]
     require(
@@ -119,6 +119,12 @@ def validate_identity_binding(
             "application runtime manifest " + binding_field
             + " is not bound to the pair decision",
         )
+    require(
+        isinstance(binding.get("selected_plan_ordinal"), int)
+        and binding["selected_plan_ordinal"]
+        == pair_evidence.get("selected_plan_ordinal"),
+        "application runtime manifest selected plan is not bound to the pair decision",
+    )
     for manifest_field, binding_field in (
         ("deployment", "deployment"),
         ("workload", "activation_workload"),
@@ -170,6 +176,7 @@ def validate_identity_binding(
             selected_repair is None,
             "non-hardware runtime manifest selects a repair record",
         )
+    return binding
 
 
 def validate_context(
@@ -246,10 +253,41 @@ def root_identity(encoded_root: str) -> str:
 def validate_schedule_lineage(
     events: list[dict[str, Any]],
     pair_decision: dict[str, Any],
-    required_kind: str,
+    required_edges: list[tuple[str, int]],
 ) -> dict[str, Any]:
-    """Joins one Structured schedule proposal to the Mapping work recorded
-    against the selected compilation that carries it."""
+    """Joins one ordered Structured schedule path to verified Mapping work."""
+    require(required_edges, "the required Schedule lineage path is empty")
+    candidates = pair_decision.get("candidates")
+    require(isinstance(candidates, list), "the pair decision inventory is absent")
+    selected_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("selected") is True
+    ]
+    require(
+        len(selected_candidates) == 1,
+        "the pair decision has no unique selected candidate",
+    )
+    selected_candidate = selected_candidates[0]
+    require(
+        selected_candidate.get("candidate_identity")
+        == pair_decision.get("selected_candidate_identity"),
+        "the candidate inventory selection disagrees with the pair decision",
+    )
+    selected_program = selected_candidate.get("structured_program")
+    selected_dataflow = selected_candidate.get("canonical_dataflow")
+    selected_planning_record = selected_candidate.get("planning_record_ordinal")
+    require(
+        isinstance(selected_program, str)
+        and isinstance(selected_dataflow, str)
+        and isinstance(selected_planning_record, int)
+        and not isinstance(selected_planning_record, bool)
+        and selected_planning_record >= 0,
+        "the selected candidate lacks its exact planning lineage",
+    )
+    selected_program_identity = root_identity(selected_program)
+    selected_dataflow_identity = root_identity(selected_dataflow)
+
     frontend_rows = matching_payloads(
         events, stage="dataflow_lowering", event="candidate"
     )
@@ -257,56 +295,114 @@ def validate_schedule_lineage(
         row
         for row in frontend_rows
         if row.get("operation") == "structured_schedule_candidate"
-        and row.get("decision_kind") == required_kind
     ]
-    require(proposals, f"the Schedule generator published no {required_kind} child")
-    lineage_rows = [
-        row
-        for row in frontend_rows
-        if row.get("operation") == "selected_candidate_lineage"
-        and any(
-            isinstance(decision, dict) and decision.get("kind") == required_kind
-            for decision in row.get("schedule_decisions", [])
+    proposal_edges = {
+        (
+            row.get("decision_kind"),
+            row.get("factor"),
+            row.get("parent"),
+            row.get("child"),
         )
-    ]
-    require(lineage_rows, f"no selected compilation carries a {required_kind} decision")
-    proposal_children = {row.get("child") for row in proposals}
-    require(
-        any(
-            decision.get("child") in proposal_children
-            for row in lineage_rows
-            for decision in row.get("schedule_decisions", [])
-            if isinstance(decision, dict) and decision.get("kind") == required_kind
-        ),
-        "the selected lineage does not name a published schedule child",
+        for row in proposals
+    }
+    matched_rows: list[dict[str, Any]] = []
+    for row in frontend_rows:
+        if (
+            row.get("operation") != "selected_candidate_lineage"
+            or row.get("planning_record_ordinal") != selected_planning_record
+            or row.get("structured_program") != selected_program_identity
+            or row.get("canonical_dataflow") != selected_dataflow_identity
+        ):
+            continue
+        decisions = row.get("schedule_decisions", [])
+        if not isinstance(decisions, list):
+            continue
+        for start in range(len(decisions) - len(required_edges) + 1):
+            path = decisions[start : start + len(required_edges)]
+            if not all(isinstance(edge, dict) for edge in path):
+                continue
+            if any(
+                edge.get("kind") != kind or edge.get("factor") != factor
+                for edge, (kind, factor) in zip(path, required_edges, strict=True)
+            ):
+                continue
+            if any(
+                path[index - 1].get("child") != path[index].get("parent")
+                for index in range(1, len(path))
+            ):
+                continue
+            if any(
+                (
+                    edge.get("kind"),
+                    edge.get("factor"),
+                    edge.get("parent"),
+                    edge.get("child"),
+                )
+                not in proposal_edges
+                for edge in path
+            ):
+                continue
+            matched_rows.append(row)
+            break
+    expected_path = " -> ".join(
+        f"{kind}:{factor}" for kind, factor in required_edges
     )
-    programs = {row.get("structured_program") for row in lineage_rows}
-    candidates = [
-        candidate
-        for candidate in pair_decision.get("candidates", [])
-        if isinstance(candidate, dict)
-        and isinstance(candidate.get("structured_program"), str)
-        and root_identity(candidate["structured_program"]) in programs
-    ]
-    require(candidates, "the pair decision inventory lost the schedule-derived candidate")
     require(
-        any(candidate.get("entered_mapping") is True for candidate in candidates),
-        "the schedule-derived candidate never entered Mapping",
+        matched_rows,
+        f"no selected compilation carries published Schedule path {expected_path}",
     )
-    verified = [
+    require(
+        selected_candidate.get("entered_mapping") is True,
+        "the selected schedule-derived candidate never entered Mapping",
+    )
+    selected_plan = selected_candidate.get("plan_ordinal")
+    selected_hint = pair_decision.get("selected_schedule_hint_digest")
+    selected_mapping = pair_decision.get("selected_system_mapping")
+    selected_system = pair_decision.get("selected_system")
+    completed = [
         observation
-        for candidate in candidates
-        for observation in candidate.get("mapping_observations", [])
+        for observation in selected_candidate.get("mapping_observations", [])
         if isinstance(observation, dict)
         and observation.get("mapping_disposition") == "verified"
+        and observation.get("runtime_disposition") == "completed"
+        and observation.get("plan_ordinal") == selected_plan
+        and observation.get("schedule_hint_digest") == selected_hint
+        and observation.get("system") == selected_system
+        and selected_mapping in observation.get("system_mappings", [])
+        and isinstance(observation.get("runtime_evidence"), list)
+        and observation["runtime_evidence"]
+        and isinstance(observation.get("oracle_evidence"), list)
+        and observation["oracle_evidence"]
     ]
-    require(verified, "the schedule-derived candidate has no verified Mapping observation")
+    require(
+        len(completed) == 1,
+        "the selected schedule-derived candidate has no unique completed runtime and oracle observation",
+    )
     return {
-        "decision_kind": required_kind,
-        "proposal_count": len(proposals),
-        "selected": any(candidate.get("selected") is True for candidate in candidates),
-        "verified_observation_count": len(verified),
+        "decision_path": [
+            {"kind": kind, "factor": factor} for kind, factor in required_edges
+        ],
+        "proposal_count": len(proposal_edges),
+        "selected": True,
+        "selected_candidate_identity": selected_candidate["candidate_identity"],
+        "selected_plan_ordinal": selected_plan,
+        "verified_observation_count": len(completed),
     }
+
+
+def parse_schedule_edge(value: str) -> tuple[str, int]:
+    kind, separator, encoded_factor = value.partition(":")
+    if not separator or not kind:
+        raise argparse.ArgumentTypeError(
+            "Schedule edge must use KIND:FACTOR spelling"
+        )
+    try:
+        factor = int(encoded_factor)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("Schedule edge factor is not an integer") from error
+    if factor < 0:
+        raise argparse.ArgumentTypeError("Schedule edge factor must be nonnegative")
+    return kind, factor
 
 
 def validate_mapping_work(
@@ -1328,9 +1424,12 @@ def main() -> None:
     parser.add_argument("--require-packed-switch-row", action="store_true")
     parser.add_argument("--require-temporal-dispatch", action="store_true")
     parser.add_argument(
-        "--require-schedule-decision",
-        help="a Structured schedule decision kind that one selected compilation "
-        "must carry into verified Mapping work",
+        "--require-schedule-edge",
+        action="append",
+        default=[],
+        type=parse_schedule_edge,
+        help="one ordered KIND:FACTOR Structured schedule edge that the selected "
+        "compilation must carry into verified Mapping work",
     )
     parser.add_argument("--dense-coordinate-rank", type=int)
     parser.add_argument("--require-unique-dense-coordinates", action="store_true")
@@ -1408,11 +1507,12 @@ def main() -> None:
         )
     if arguments.require_spatial_unconditional_handshake:
         validate_spatial_unconditional_handshake(events)
-    if arguments.require_schedule_decision is not None:
+    lineage = None
+    if arguments.require_schedule_edge:
         lineage = validate_schedule_lineage(
             events,
             pair_evidence.get("pair_decision", {}),
-            arguments.require_schedule_decision,
+            arguments.require_schedule_edge,
         )
         print(json.dumps({"schedule_lineage": lineage}, sort_keys=True))
     manifest = read_json(arguments.manifest)
@@ -1437,12 +1537,22 @@ def main() -> None:
         arguments.require_mapped_rtl,
         arguments.expected_fifo_queue_discipline,
     )
-    validate_identity_binding(
+    binding = validate_identity_binding(
         events,
         pair_evidence,
         manifest,
-        arguments.portfolio_application is not None,
+        arguments.portfolio_application is not None
+        or bool(arguments.require_schedule_edge),
     )
+    if lineage is not None:
+        require(
+            binding is not None
+            and binding.get("selected_candidate_identity")
+            == lineage["selected_candidate_identity"]
+            and binding.get("selected_plan_ordinal")
+            == lineage["selected_plan_ordinal"],
+            "execution manifest does not name the selected schedule-derived candidate",
+        )
 
 
 if __name__ == "__main__":

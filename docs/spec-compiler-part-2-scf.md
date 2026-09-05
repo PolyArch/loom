@@ -740,6 +740,29 @@ Otherwise unproved nonidentity layouts, dynamic strides, zero strides, and
 overlapping strides receive `PhysicalLayoutProofNotEstablished`. The source
 memref remains the sole physical-layout owner; no second physical dependence
 relation is constructed.
+
+The admitted raised-pointer boundary is one additional closed spelling of the
+same general SCoP, not a second dependence domain. Its root is one signed
+`scf.for` with a lossless 64-bit integer induction variable, constant bounds,
+and unit step. Each memory statement is a scalar, nonvolatile, nonatomic LLVM
+load or store whose address is one direct inbounds, single-index GEP. The GEP
+index is exactly the induction variable, and the shared DataLayout address
+resolver must prove zero bias and one access-element stride from a root outside
+the loop. SCoP admission and independent parallelization consume this one
+byte-aware projection. A same-root write-bearing pair is iteration-local only
+when both accesses prove the identical byte partition; unequal access widths
+receive `AccessRelationProofNotEstablished`. Different roots use the common
+`MemoryProvenance` distinctness proof. Mixed memref/pointer effects, pointer
+chains, non-scalar accesses, unknown roots or layouts, other index expressions,
+and every non-lossless loop form remain typed refusals. The materializer
+reconstructs the frozen coordinate as the source `i64` before cloning its
+statements. When the enclosing ownership decision selected `RootRelative`,
+each admitted load/store retains that owner's `loom.root_relative_address`
+marker; only then is its direct GEP removable address support rather than an
+independent Fabric compute actor. A `PointerAddressed` candidate retains the
+ordinary GEP Fabric gate. This spelling does not admit general pointer SCoPs,
+loop-carried reductions, or broader polyhedral parallelism.
+
 Polly/ISL consumes only the frozen MLIR-owned domains and dependence relations
 and returns exact typed schedule maps. No provider object, textual ISL
 spelling, or alternate dependence relation persists beyond the analysis call.
@@ -868,6 +891,13 @@ The reduced value is one direct contiguous load and the combiner is the only
 compute statement. Multiple recurrences, mapped reductions, non-neutral
 initializers, writes, and reductions with another result consumer are outside
 this domain and receive a typed local refusal.
+
+Schedule composition does not invent another reduction domain. Re-enumerating
+an immutable child retains the same `StructuredReductionSchedule` coordinate
+for an untouched exact-vector loop, so one replayable candidate lineage may
+first strip-mine and independently parallelize another admitted SCoP and then
+materialize that reduction coordinate. The parallel decision proves only its
+selected loop; it never reclassifies the reduction loop as independent.
 
 Selected proposal materialization applies the pinned MLIR Affine vectorizer to
 a private clone and lowers its loop and reduction image through pinned upstream
@@ -1031,7 +1061,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v13`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v14`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

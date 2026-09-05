@@ -1,5 +1,7 @@
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 
+#include "Frontend/Analysis/MemoryProvenance.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -651,6 +653,79 @@ std::optional<ResolvedLinearMemoryAddress>
 resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType) {
   return resolveLinearMemoryAddressImpl(pointer, accessType, std::nullopt,
                                         [](mlir::Value) { return false; });
+}
+
+ExactPointerPointAccessOutcome projectExactPointerPointAccess(
+    mlir::Operation *operation, mlir::Operation *enclosingRoot,
+    llvm::function_ref<bool(mlir::Value)> isPointCoordinate) {
+  mlir::Value pointer;
+  mlir::Type accessType;
+  bool writes = false;
+  if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation)) {
+    if (load.getVolatile_() ||
+        load.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
+      return ExactPointerPointAccessRefusal::UnsupportedEffect;
+    pointer = load.getAddr();
+    accessType = load.getType();
+  } else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation)) {
+    if (store.getVolatile_() ||
+        store.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
+      return ExactPointerPointAccessRefusal::UnsupportedEffect;
+    pointer = store.getAddr();
+    accessType = store.getValue().getType();
+    writes = true;
+  } else {
+    return ExactPointerPointAccessRefusal::NotMemoryAccess;
+  }
+  if (!accessType.isIntOrFloat())
+    return ExactPointerPointAccessRefusal::UnsupportedElementType;
+
+  auto address = pointer.getDefiningOp<mlir::LLVM::GEPOp>();
+  if (!address ||
+      !mlir::LLVM::bitEnumContainsAny(
+          address.getNoWrapFlags(), mlir::LLVM::GEPNoWrapFlags::inboundsFlag) ||
+      address.getRawConstantIndices().size() != 1 ||
+      address.getRawConstantIndices().front() !=
+          mlir::LLVM::GEPOp::kDynamicIndex ||
+      !llvm::hasSingleElement(address.getDynamicIndices()))
+    return ExactPointerPointAccessRefusal::NonDirectInboundsAddress;
+
+  auto resolved = resolveLinearPointerAddress(pointer, accessType);
+  if (!resolved || resolved->gepsLeafToRoot.size() != 1 ||
+      resolved->gepsLeafToRoot.front() != address.getOperation() ||
+      resolved->root != address.getBase() || resolved->addressBitWidth != 64 ||
+      resolved->terms.size() != 1 ||
+      !isPointCoordinate(resolved->terms.front().index) ||
+      resolved->terms.front().byteStride <= 0 || resolved->byteBias != 0 ||
+      resolved->elementBias != 0 ||
+      resolved->elementAllocByteCount != resolved->accessByteCount ||
+      static_cast<std::uint64_t>(resolved->terms.front().byteStride) !=
+          resolved->elementAllocByteCount)
+    return ExactPointerPointAccessRefusal::AddressRelationNotEstablished;
+
+  mlir::Region *rootRegion = resolved->root.getParentRegion();
+  if (enclosingRoot && enclosingRoot->getNumRegions() != 0 && rootRegion) {
+    mlir::Region &enclosingRegion = enclosingRoot->getRegion(0);
+    if (rootRegion == &enclosingRegion ||
+        enclosingRegion.isAncestor(rootRegion))
+      return ExactPointerPointAccessRefusal::NonLocalRoot;
+  }
+  return ExactPointerPointAccess{operation, resolved->root, address, writes,
+                                 resolved->elementAllocByteCount};
+}
+
+ExactPointerPointAccessPairKind
+classifyExactPointerPointAccessPair(const ExactPointerPointAccess &lhs,
+                                    const ExactPointerPointAccess &rhs) {
+  if (!lhs.writes && !rhs.writes)
+    return ExactPointerPointAccessPairKind::NoDependence;
+  if (lhs.root == rhs.root)
+    return lhs.elementBytes == rhs.elementBytes
+               ? ExactPointerPointAccessPairKind::SameRootIterationLocal
+               : ExactPointerPointAccessPairKind::ByteRelationNotEstablished;
+  return frontend::analysis::haveProvenDistinctMemoryRoots(lhs.root, rhs.root)
+             ? ExactPointerPointAccessPairKind::NoDependence
+             : ExactPointerPointAccessPairKind::AliasNotEstablished;
 }
 
 std::optional<ResolvedLinearMemoryAddress>

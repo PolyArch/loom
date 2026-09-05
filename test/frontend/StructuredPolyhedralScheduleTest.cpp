@@ -4,10 +4,12 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Frontend/Compilation/StructuredScop.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Raising/Passes.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "StructuredPolyhedralMaterializer.h"
@@ -21,6 +23,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -69,7 +72,8 @@ mlir::MLIRContext &context() {
     registry.insert<dataflow::DataflowDialect, loom::LoomDialect,
                     mlir::affine::AffineDialect, mlir::arith::ArithDialect,
                     mlir::DLTIDialect, mlir::func::FuncDialect,
-                    mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
+                    mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect,
+                    mlir::vector::VectorDialect>();
     registry.insert<mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -172,6 +176,82 @@ scfLoopReferences(const loom::frontend::StructuredProgramCandidate &candidate) {
   if (!outer || !inner)
     fail("fixture lost its exact SCF loop references");
   return {*outer, *inner};
+}
+
+loom::frontend::StructuredEntityRef singleScfRootReference(
+    const loom::frontend::StructuredProgramCandidate &candidate) {
+  auto view = take(candidate.view());
+  std::optional<loom::frontend::StructuredEntityRef> root;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
+    if (!loop || loop->getParentOfType<mlir::scf::ForOp>())
+      continue;
+    if (root)
+      fail("fixture has more than one SCF root");
+    root = entity.reference;
+  }
+  if (!root)
+    fail("fixture lost its SCF root");
+  return *root;
+}
+
+loom::frontend::StructuredEntityRef scfRootByReductionState(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    bool hasReductionState) {
+  auto view = take(candidate.view());
+  std::optional<loom::frontend::StructuredEntityRef> root;
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
+    if (!loop || loop->getParentOfType<mlir::scf::ForOp>())
+      continue;
+    const bool loopHasReductionState = !loop.getInitArgs().empty();
+    if (loopHasReductionState != hasReductionState)
+      continue;
+    if (root)
+      fail("fixture has an ambiguous SCF reduction-state root");
+    root = entity.reference;
+  }
+  if (!root)
+    fail("fixture lost its SCF reduction-state root");
+  return *root;
+}
+
+loom::frontend::StructuredEntityRef llvmFunctionReference(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef name) {
+  auto view = take(candidate.view());
+  for (const loom::frontend::StructuredEntity &entity :
+       view.entities(loom::frontend::StructuredEntityKind::Operation)) {
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity.operation);
+    if (function && function.getSymName() == name)
+      return entity.reference;
+  }
+  fail("fixture lost LLVM function " + name.str());
+}
+
+loom::frontend::StructuredProgramCandidate materializeRootRelativeOwnership(
+    const loom::frontend::StructuredProgramCandidate &parent,
+    llvm::StringRef functionName) {
+  const loom::frontend::StructuredEntityRef scope =
+      llvmFunctionReference(parent, functionName);
+  auto domain = take(
+      loom::frontend::enumerateSpatialOwnershipDecisionDomain(parent, scope));
+  auto selected = llvm::find_if(
+      domain, [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
+        return point.rootRelativeIndexWidth() == 64 &&
+               !point.forallOwnershipShape &&
+               !point.directCallSpecializationShape &&
+               !point.directCallInlining;
+      });
+  if (selected == domain.end())
+    fail("ownership domain omitted the exact root-relative address decision");
+  auto materialized =
+      take(loom::frontend::materializeStructuredSpatialOwnershipDecision(
+          parent, {scope}, *selected));
+  return std::move(materialized.structuredProgram);
 }
 
 void physicalLayoutInjectivityIsRequired() {
@@ -815,13 +895,450 @@ module attributes {dlti.dl_spec = #layout} {
   loom::frontend::StructuredScheduleDecision foreignFactor{
       root, loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule,
       3, std::nullopt};
-  auto foreignChild = take(loom::frontend::materializeStructuredScheduleDecision(
-      parent, foreignFactor));
+  auto foreignChild =
+      take(loom::frontend::materializeStructuredScheduleDecision(
+          parent, foreignFactor));
   llvm::Error foreignError = loom::frontend::verifyStructuredScheduleDerivation(
       parent, fabric, foreignFactor, foreignChild.structuredProgram);
   if (!foreignError)
     fail("lineage accepted a tile factor outside the enumerated domain");
   llvm::consumeError(std::move(foreignError));
+}
+
+void raisedPointerScopTilesAndParallelizes(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  constexpr llvm::StringLiteral source = R"mlir(
+module {
+  llvm.func internal @kernel(%input: !llvm.ptr, %output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %input_element = llvm.getelementptr inbounds %input[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %value = llvm.load %input_element : !llvm.ptr -> i32
+      %incremented = arith.addi %value, %value : i32
+      %output_element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %incremented, %output_element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  llvm.func @entry() -> i32 {
+    %c1 = arith.constant 1 : i64
+    %input = llvm.alloca %c1 x !llvm.array<8 x i32>
+        : (i64) -> !llvm.ptr
+    %output = llvm.alloca %c1 x !llvm.array<8 x i32>
+        : (i64) -> !llvm.ptr
+    llvm.call @kernel(%input, %output) : (!llvm.ptr, !llvm.ptr) -> ()
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir";
+  auto parent =
+      materializeRootRelativeOwnership(parseProgram(source), "kernel");
+  const loom::frontend::StructuredEntityRef root =
+      singleScfRootReference(parent);
+  const std::vector<std::uint64_t> factors = {2, 4};
+  auto analysis = take(
+      loom::frontend::analyzeStructuredPolyhedralScop(parent, root, factors));
+  const auto *scop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(&analysis);
+  if (!scop || scop->loopCount != 1 || scop->maximumLoopDepth != 1 ||
+      scop->imperfectNest || scop->accesses.size() != 2 ||
+      scop->tiledSchedules.size() != factors.size())
+    fail("the closed raised-pointer loop did not enter the general SCoP");
+  if (scop->accesses[0].memory == scop->accesses[1].memory ||
+      llvm::any_of(scop->accesses, [](const auto &access) {
+        return access.elementBytes != 4 ||
+               access.constantFootprintElementUpperBound != 8 ||
+               access.relation.sourceDimensionCount != 1 ||
+               access.relation.destinationDimensionCount != 1 ||
+               access.relation.constraints.size() != 1 ||
+               access.relation.constraints.front().kind !=
+                   loom::frontend::StructuredPolyhedralConstraintKind::
+                       Equality ||
+               access.relation.constraints.front().coefficients !=
+                   std::vector<std::int64_t>{-1, 1, 0};
+      }))
+    fail("the raised-pointer access projection changed its exact roots");
+
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 1));
+  auto tiled = llvm::find_if(domain.proposals, [&](const auto &proposal) {
+    const auto &decision = proposal.decision();
+    return decision.loop == root &&
+           decision.kind == loom::frontend::StructuredScheduleDecisionKind::
+                                PolyhedralSchedule &&
+           decision.factor == 2;
+  });
+  if (tiled == domain.proposals.end())
+    fail("the raised-pointer SCoP published no factor-two tiled proposal");
+  auto tiledChild = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *tiled, fabric));
+  if (tiledChild.transformedScheduleRoots.empty())
+    fail("the tiled child lost its transformed root projection");
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          parent, fabric, tiled->decision(), tiledChild.structuredProgram))
+    fail("the raised-pointer tiled edge did not replay: " +
+         llvm::toString(std::move(error)));
+
+  auto parallelDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          tiledChild.structuredProgram, fabric, 1,
+          tiledChild.transformedScheduleRoots.front()));
+  auto parallel =
+      llvm::find_if(parallelDomain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      });
+  if (parallel == parallelDomain.proposals.end())
+    fail("the tiled child did not independently prove its outer tile loop");
+  auto parallelChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          tiledChild.structuredProgram, *parallel, fabric));
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          tiledChild.structuredProgram, fabric, parallel->decision(),
+          parallelChild.structuredProgram))
+    fail("the raised-pointer parallel edge did not replay: " +
+         llvm::toString(std::move(error)));
+  std::size_t forallCount = 0;
+  std::size_t i64GepCount = 0;
+  parallelChild.structuredProgram.module().walk(
+      [&](mlir::Operation *operation) {
+        forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
+        if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation))
+          i64GepCount +=
+              llvm::hasSingleElement(gep.getDynamicIndices()) &&
+              gep.getDynamicIndices().front().getType().isInteger(64);
+      });
+  if (forallCount != 1 || i64GepCount != 2)
+    fail("tiled parallel materialization lost its i64 pointer coordinates");
+
+  auto sameRoot = materializeRootRelativeOwnership(parseProgram(R"mlir(
+module {
+  llvm.func internal @same_root(%state: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %first = arith.constant 1 : i32
+    %second = arith.constant 2 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %first, %address : i32, !llvm.ptr
+      llvm.store %second, %address : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  llvm.func @entry() -> i32 {
+    %c1 = arith.constant 1 : i64
+    %state = llvm.alloca %c1 x !llvm.array<8 x i32>
+        : (i64) -> !llvm.ptr
+    llvm.call @same_root(%state) : (!llvm.ptr) -> ()
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+}
+)mlir"),
+                                                   "same_root");
+  const loom::frontend::StructuredEntityRef sameRootLoop =
+      singleScfRootReference(sameRoot);
+  const std::vector<std::uint64_t> sameRootFactors = {2};
+  auto sameRootAnalysis = take(loom::frontend::analyzeStructuredPolyhedralScop(
+      sameRoot, sameRootLoop, sameRootFactors));
+  const auto *sameRootScop =
+      std::get_if<loom::frontend::StructuredPolyhedralScopView>(
+          &sameRootAnalysis);
+  if (!sameRootScop || sameRootScop->tiledSchedules.empty())
+    fail("same-root pointer stores did not enter the general SCoP");
+  auto writeAfterWrite =
+      llvm::find_if(sameRootScop->dependences, [](const auto &dependence) {
+        return dependence.kind ==
+               loom::frontend::StructuredPolyhedralDependenceKind::
+                   WriteAfterWrite;
+      });
+  if (writeAfterWrite == sameRootScop->dependences.end() ||
+      !writeAfterWrite->relation ||
+      writeAfterWrite->relation->sourceDimensionCount != 1 ||
+      writeAfterWrite->relation->destinationDimensionCount != 1 ||
+      writeAfterWrite->relation->constraints.size() != 1 ||
+      writeAfterWrite->relation->constraints.front().kind !=
+          loom::frontend::StructuredPolyhedralConstraintKind::Equality ||
+      writeAfterWrite->relation->constraints.front().coefficients !=
+          std::vector<std::int64_t>{1, -1, 0})
+    fail("same-root pointer stores lost their exact dependence relation");
+  auto sameRootDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(sameRoot,
+                                                                fabric, 1));
+  if (llvm::none_of(sameRootDomain.proposals, [&](const auto &proposal) {
+        const auto &decision = proposal.decision();
+        return decision.loop == sameRootLoop &&
+               decision.kind ==
+                   loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      }))
+    fail("same-root point stores lost their independent iteration proof");
+
+  const auto requireRefusal =
+      [&](llvm::StringRef body,
+          loom::frontend::StructuredScopRefusalKind expected) {
+        auto candidate = parseProgram(body);
+        auto outcome = take(loom::frontend::analyzeStructuredPolyhedralScop(
+            candidate, singleScfRootReference(candidate)));
+        const auto *refusal =
+            std::get_if<loom::frontend::StructuredScopRefusal>(&outcome);
+        if (!refusal || refusal->kind != expected)
+          fail("a raised-pointer exclusion lost its typed refusal");
+        return candidate;
+      };
+  requireRefusal(
+      R"mlir(
+module {
+  llvm.func @minimum_lower_bound(%output: !llvm.ptr) {
+    %minimum = arith.constant -9223372036854775808 : i64
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %minimum to %c0 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::ProviderDomainNotAdmitted);
+  requireRefusal(R"mlir(
+module {
+  llvm.func @volatile_store(%output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store volatile %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+                 loom::frontend::StructuredScopRefusalKind::UnsupportedEffect);
+  requireRefusal(
+      R"mlir(
+module {
+  llvm.func @not_inbounds(%output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %element = llvm.getelementptr %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::NonContiguousAccess);
+  requireRefusal(
+      R"mlir(
+module {
+  llvm.func @unknown_alias(%input: !llvm.ptr, %output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %input_element = llvm.getelementptr inbounds %input[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %value = llvm.load %input_element : !llvm.ptr -> i32
+      %output_element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %output_element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished);
+  requireRefusal(R"mlir(
+module {
+  llvm.func @overlapping_bytes(%output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+                 loom::frontend::StructuredScopRefusalKind::
+                     AccessRelationProofNotEstablished);
+
+  auto mixedWidth = requireRefusal(R"mlir(
+module {
+  llvm.func @mixed_width_partition(%state: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %narrow_address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %narrow = llvm.load %narrow_address : !llvm.ptr -> i32
+      %wide = arith.extsi %narrow : i32 to i64
+      %wide_address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+      llvm.store %wide, %wide_address : i64, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                   loom::frontend::StructuredScopRefusalKind::
+                                       AccessRelationProofNotEstablished);
+  const loom::frontend::StructuredEntityRef mixedWidthRoot =
+      singleScfRootReference(mixedWidth);
+  auto mixedWidthView = take(mixedWidth.view());
+  auto mixedWidthEntity = take(mixedWidthView.resolve(mixedWidthRoot));
+  auto mixedWidthLoop =
+      llvm::dyn_cast_or_null<mlir::scf::ForOp>(mixedWidthEntity.operation);
+  if (!mixedWidthLoop ||
+      loom::raising::proveIndependentIterations(mixedWidthLoop) ==
+          loom::raising::ParallelDependenceResult::ProvenIndependent)
+    fail("mixed-width byte partitions acquired a parallel proof");
+}
+
+void reductionCoordinateComposesWithTiledParallelLineage(
+    const loom::fabric::FinalizedFabricRoot &fabric) {
+  auto parent = materializeRootRelativeOwnership(parseProgram(R"mlir(
+module {
+  llvm.func internal @point_kernel(%state: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %address : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  llvm.func @entry() -> i32 {
+    %c1 = arith.constant 1 : i64
+    %state = llvm.alloca %c1 x !llvm.array<8 x i32>
+        : (i64) -> !llvm.ptr
+    llvm.call @point_kernel(%state) : (!llvm.ptr) -> ()
+    %zero = arith.constant 0 : i32
+    llvm.return %zero : i32
+  }
+
+  func.func @reduction(%input: memref<16xi32>) -> i32 {
+    %aligned = memref.assume_alignment %input, 64 : memref<16xi32>
+    %zero = arith.constant 0 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %sum = scf.for %i = %c0 to %c16 step %c1
+        iter_args(%acc = %zero) -> i32 {
+      %value = memref.load %aligned[%i] : memref<16xi32>
+      %next = arith.addi %acc, %value : i32
+      scf.yield %next : i32
+    }
+    return %sum : i32
+  }
+}
+)mlir"),
+                                                 "point_kernel");
+  const loom::frontend::StructuredEntityRef pointRoot =
+      scfRootByReductionState(parent, false);
+  auto domain = take(
+      loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
+  auto tiled = llvm::find_if(domain.proposals, [&](const auto &proposal) {
+    const auto &decision = proposal.decision();
+    return decision.loop == pointRoot &&
+           decision.kind == loom::frontend::StructuredScheduleDecisionKind::
+                                PolyhedralSchedule &&
+           decision.factor == 2;
+  });
+  if (tiled == domain.proposals.end())
+    fail("reduction composition fixture lost its polyhedral prefix");
+  auto tiledChild = take(loom::frontend::materializeStructuredScheduleProposal(
+      parent, *tiled, fabric));
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          parent, fabric, tiled->decision(), tiledChild.structuredProgram))
+    fail("reduction composition tile edge did not replay: " +
+         llvm::toString(std::move(error)));
+  if (tiledChild.transformedScheduleRoots.size() != 1)
+    fail("reduction composition tile has no unique transformed root");
+
+  auto parallelDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          tiledChild.structuredProgram, fabric, 1,
+          tiledChild.transformedScheduleRoots.front()));
+  auto parallel =
+      llvm::find_if(parallelDomain.proposals, [](const auto &proposal) {
+        return proposal.decision().kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      });
+  if (parallel == parallelDomain.proposals.end())
+    fail("reduction composition fixture lost its independent tile proof");
+  auto parallelChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          tiledChild.structuredProgram, *parallel, fabric));
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          tiledChild.structuredProgram, fabric, parallel->decision(),
+          parallelChild.structuredProgram))
+    fail("reduction composition parallel edge did not replay: " +
+         llvm::toString(std::move(error)));
+
+  const loom::frontend::StructuredEntityRef reductionRoot =
+      scfRootByReductionState(parallelChild.structuredProgram, true);
+  auto reductionDomain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(
+          parallelChild.structuredProgram, fabric, 8));
+  auto reduction = llvm::find_if(reductionDomain.proposals, [&](const auto
+                                                                    &proposal) {
+    const auto &decision = proposal.decision();
+    return decision.loop == reductionRoot && decision.vector &&
+           decision.kind ==
+               loom::frontend::StructuredScheduleDecisionKind::Vectorize &&
+           decision.vector->shape == std::vector<std::uint64_t>{2} &&
+           decision.vector->tailPolicy ==
+               loom::frontend::StructuredVectorTailPolicy::Exact &&
+           decision.vector->reductionSchedule ==
+               loom::frontend::StructuredReductionSchedule::IntegerAssociative;
+  });
+  if (reduction == reductionDomain.proposals.end())
+    fail("tiled parallel frontier lost its exact reduction coordinate");
+  auto reductionChild =
+      take(loom::frontend::materializeStructuredScheduleProposal(
+          parallelChild.structuredProgram, *reduction, fabric));
+  if (llvm::Error error = loom::frontend::verifyStructuredScheduleDerivation(
+          parallelChild.structuredProgram, fabric, reduction->decision(),
+          reductionChild.structuredProgram))
+    fail("reduction composition vector edge did not replay: " +
+         llvm::toString(std::move(error)));
+
+  std::size_t forallCount = 0;
+  reductionChild.structuredProgram.module().walk(
+      [&](mlir::Operation *operation) {
+        forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
+      });
+  if (forallCount != 1)
+    fail("composed schedule lineage lost its independent parallel sibling");
 }
 
 void refusalDispositionPreservesIncompleteProofs() {
@@ -1075,6 +1592,8 @@ module {
     fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
   tiledPolyhedralSchedulesMaterializeAndReplay(fabric);
+  raisedPointerScopTilesAndParallelizes(fabric);
+  reductionCoordinateComposesWithTiledParallelLineage(fabric);
   imperfectGeneralScheduleMaterializes(fabric);
   generalAnalysisOwnsVectorDomainFallback(fabric);
   llvm::sys::fs::remove_directories(directory);
