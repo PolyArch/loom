@@ -1060,6 +1060,8 @@ void completeCandidateRoundTrip(
       const auto delta = take(move.summarizeCurrentTagAssignmentDelta());
       requireSuccess(tagCosts.synchronizeTagProjection(delta, {}));
       verifyTagDomainIncidence(*candidate, tagCosts);
+      requireSuccess(move.commit());
+      requireSuccess(tagCosts.commitTagProjectionDelta());
       const auto coldCosts =
           take(loom::pnr::SpatialRouteCostState::create(*candidate));
       for (loom::pnr::PnrIndex net = 0;
@@ -1067,8 +1069,6 @@ void completeCandidateRoundTrip(
         if (!llvm::equal(tagCosts.logicalNetTagDomainUses(net),
                          coldCosts.logicalNetTagDomainUses(net)))
           fail("incremental row regrouping changed domain incidence or cost");
-      requireSuccess(move.commit());
-      requireSuccess(tagCosts.commitTagProjectionDelta());
       requireSuccess(candidate->verify());
     };
     applyTag(*replacement);
