@@ -381,7 +381,8 @@ lowerLogicalChannels(mlir::ModuleOp module,
       uniqueMlirSymbolName(module, "__loom_logical_channel_create"),
       uniqueMlirSymbolName(module, "__loom_logical_channel_rate"),
       uniqueMlirSymbolName(module, "__loom_logical_channel_send"),
-      uniqueMlirSymbolName(module, "__loom_logical_channel_receive")};
+      uniqueMlirSymbolName(module, "__loom_logical_channel_receive"),
+      static_cast<std::uint64_t>(creates.size())};
   mlir::OpBuilder declarations(module.getContext());
   declarations.setInsertionPointToStart(module.getBody());
   mlir::Type i64 = declarations.getI64Type();
@@ -389,7 +390,7 @@ lowerLogicalChannels(mlir::ModuleOp module,
   mlir::Type voidType = mlir::LLVM::LLVMVoidType::get(module.getContext());
   mlir::LLVM::LLVMFuncOp::create(
       declarations, module.getLoc(), names.create,
-      mlir::LLVM::LLVMFunctionType::get(i64, {i64, i64}));
+      mlir::LLVM::LLVMFunctionType::get(i64, {i64, i64, i64}));
   mlir::LLVM::LLVMFuncOp::create(
       declarations, module.getLoc(), names.rate,
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, i64, i64, i64}));
@@ -402,7 +403,7 @@ lowerLogicalChannels(mlir::ModuleOp module,
                                         {i64, i64, pointer, i64}));
 
   llvm::DenseMap<mlir::Value, mlir::Value> handles;
-  for (dataflow::ChannelCreateOp create : creates) {
+  for (const auto [lineageOrdinal, create] : llvm::enumerate(creates)) {
     auto count = projection.receiverCounts.find(create.getChannel());
     auto producer = projection.producerMessageCounts.find(create.getChannel());
     auto consumers = projection.consumerMessageCounts.find(create.getChannel());
@@ -411,10 +412,14 @@ lowerLogicalChannels(mlir::ModuleOp module,
         consumers == projection.consumerMessageCounts.end() ||
         consumers->second.size() != count->second)
       return invalid("logical channel has no receiver endpoint");
-    // The proven flat producer count of the channel's single generation is
-    // also its bounded message capacity: every send precedes every receive in
-    // the serialized projection, so the bound is exact and never blocks.
+    // The exact channel-create SSA lineage owns one execution-local slot. Its
+    // finite count applies independently to every dynamic invocation and is
+    // also the bounded message capacity: no generation can retain more than
+    // its total producer count, so the bound is exact and never blocks.
     mlir::OpBuilder builder(create);
+    mlir::Value lineage = mlir::LLVM::ConstantOp::create(
+        builder, create.getLoc(), i64,
+        builder.getI64IntegerAttr(lineageOrdinal));
     mlir::Value countValue = mlir::LLVM::ConstantOp::create(
         builder, create.getLoc(), i64,
         builder.getI64IntegerAttr(count->second));
@@ -423,7 +428,7 @@ lowerLogicalChannels(mlir::ModuleOp module,
         builder.getI64IntegerAttr(producer->second));
     auto call = mlir::LLVM::CallOp::create(
         builder, create.getLoc(), mlir::TypeRange{i64}, names.create,
-        mlir::ValueRange{countValue, producerCount});
+        mlir::ValueRange{lineage, countValue, producerCount});
     handles.try_emplace(create.getChannel(), call.getResult());
     for (const auto indexed : llvm::enumerate(consumers->second)) {
       mlir::Value consumerOrdinal = mlir::LLVM::ConstantOp::create(

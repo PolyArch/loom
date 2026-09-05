@@ -55,12 +55,11 @@ struct MemoryTargetPlan final {
 struct NativeExecutionContext final {
   struct LogicalChannel final {
     std::optional<loom::runtime::OrderedChannelABI> abi;
-    /// The proven flat producer count of the one generation; it is also the
-    /// bounded message capacity the ABI instance was created with.
+    /// The proven flat producer count of each complete invocation of this
+    /// exact channel-create lineage; it is also the bounded message capacity
+    /// the ABI instance was created with.
     std::uint64_t producerMessageCount = 0;
     std::vector<std::optional<std::uint64_t>> consumerMessageCounts;
-    bool generationOpened = false;
-    bool generationJoined = false;
   };
 
   std::vector<AlignedByteStorage> objects;
@@ -83,6 +82,7 @@ struct NativeChannelCallbackNames final {
   std::string rate;
   std::string send;
   std::string receive;
+  std::uint64_t lineageCount = 0;
 };
 
 struct SelectedWholeProgramProjection final {
@@ -117,6 +117,11 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
                   const StructuredProgramSimulationRuntimeInput &input,
                   llvm::ArrayRef<MemoryTargetPlan> plans,
                   const NativeExecutionContext &capture);
+
+llvm::Error failLogicalChannelExecution(NativeExecutionContext &capture,
+                                        llvm::Error failure);
+
+llvm::Error finishLogicalChannelExecution(NativeExecutionContext &capture);
 
 llvm::Expected<SelectedWholeProgramProjection>
 projectSelectedWholeProgram(mlir::ModuleOp module);

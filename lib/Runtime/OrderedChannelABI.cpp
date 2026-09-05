@@ -342,6 +342,17 @@ OrderedChannelABI::nextReceiveSequence(std::uint32_t consumerOrdinal) const {
   return nextReceiveSequences_[consumerOrdinal];
 }
 
+llvm::Expected<bool>
+OrderedChannelABI::consumerFinished(std::uint32_t consumerOrdinal) const {
+  if (llvm::Error error = validateConsumer(consumerOrdinal))
+    return std::move(error);
+  return finishedConsumers_[consumerOrdinal];
+}
+
+bool OrderedChannelABI::generationJoined() const {
+  return generationState_ == GenerationState::Complete;
+}
+
 void OrderedChannelABI::reclaimAcknowledgedPrefix() {
   while (!messages_.empty()) {
     const Message &message = messages_.front();

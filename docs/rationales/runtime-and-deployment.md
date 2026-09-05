@@ -207,6 +207,14 @@ message would contaminate the payload type and multicast sequence. Resetting
 only after join or cancellation lets a physical service be reused without
 making its generation ordinal a new channel, route, or Mapping identity.
 
+The serial host oracle can prove a complete finite count for each dynamic use
+of one exact channel-create lineage, so it reuses one bounded ABI instance by
+joining and resetting between those uses. The gem5 Spatial provider instead
+learns stream lengths while executing the invocation; it keeps one one-shot
+sequence and does not claim the reusable profile. These are distinct execution
+profiles over the same Dataflow correspondence, not alternative channel
+identities.
+
 A resource-time decision similarly cannot infer a Mapping from runtime queue
 state. Keeping a finite graph with PnR lets its independent verifier remain the
 only legality authority; Runtime supplies only an explicit exact child choice
