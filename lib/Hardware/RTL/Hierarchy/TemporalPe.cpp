@@ -1519,42 +1519,55 @@ llvm::Expected<PeModule> buildTemporalPeModule(
         std::vector<ResultRouteSignals> resultRoutes;
         resultRoutes.reserve(fuOutputs.size());
         for (const FuOutputRuntime &output : fuOutputs) {
-          std::vector<mlir::Value> active;
-          std::vector<mlir::Value> route;
-          std::vector<mlir::Value> discard;
-          std::vector<mlir::Value> target;
-          std::vector<mlir::Value> tag;
-          active.reserve(layout.contextCount);
-          route.reserve(layout.contextCount);
-          discard.reserve(layout.contextCount);
-          target.reserve(layout.contextCount);
-          tag.reserve(layout.contextCount);
+          std::vector<mlir::Value> resultRows;
+          resultRows.reserve(layout.contextCount);
           for (std::uint32_t context = 0; context != layout.contextCount;
                ++context) {
             const InstructionRowSignals &row = rows[context];
             const SelectorSignals &selector = row.results[output.output];
-            active.push_back(
+            mlir::Value active =
                 andValues(bodyBuilder, location,
                           {row.active, equals(bodyBuilder, location,
-                                              row.selectedFu, output.fu)}));
-            route.push_back(selector.route);
-            discard.push_back(selector.discard);
-            target.push_back(selector.target);
-            tag.push_back(selector.tag);
+                                              row.selectedFu, output.fu)});
+            resultRows.push_back(circt::comb::ConcatOp::create(
+                bodyBuilder, location,
+                llvm::ArrayRef<mlir::Value>{active, selector.route,
+                                           selector.discard, selector.target,
+                                           selector.tag}));
           }
+          // Keep the existing priority, invalid-index default, and bitwise
+          // four-state merge while selecting all fields of one result row.
+          mlir::Value selectedRow =
+              selectValue(bodyBuilder, location, output.context, resultRows);
+          const SelectorSignals &prototype =
+              rows.front().results[output.output];
+          // Physical singleton selectors still carry an i1 zero even when
+          // their serialized configuration field requires no bits.
+          const unsigned selectedTagWidth =
+              mlir::cast<mlir::IntegerType>(prototype.tag.getType()).getWidth();
+          const unsigned targetWidth =
+              mlir::cast<mlir::IntegerType>(prototype.target.getType())
+                  .getWidth();
+          const unsigned targetOffset = selectedTagWidth;
+          const unsigned discardOffset = targetOffset + targetWidth;
+          const unsigned routeOffset = discardOffset + 1;
+          const unsigned activeOffset = routeOffset + 1;
           mlir::Value selectedActive =
-              selectValue(bodyBuilder, location, output.context, active);
+              extract(bodyBuilder, location, selectedRow, activeOffset, 1);
           resultRoutes.push_back(
               {selectedActive,
-               andValues(bodyBuilder, location,
-                         {selectedActive, selectValue(bodyBuilder, location,
-                                                      output.context, route)}),
                andValues(
                    bodyBuilder, location,
-                   {selectedActive, selectValue(bodyBuilder, location,
-                                                output.context, discard)}),
-               selectValue(bodyBuilder, location, output.context, target),
-               selectValue(bodyBuilder, location, output.context, tag)});
+                   {selectedActive, extract(bodyBuilder, location, selectedRow,
+                                            routeOffset, 1)}),
+               andValues(
+                   bodyBuilder, location,
+                   {selectedActive, extract(bodyBuilder, location, selectedRow,
+                                            discardOffset, 1)}),
+               extract(bodyBuilder, location, selectedRow, targetOffset,
+                       targetWidth),
+               extract(bodyBuilder, location, selectedRow, 0,
+                       selectedTagWidth)});
         }
 
         std::vector<std::optional<mlir::Value>> adaptedFuOutputData(
