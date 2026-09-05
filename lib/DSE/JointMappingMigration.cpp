@@ -420,6 +420,19 @@ jointMappingReuseDispositionSpelling(JointMappingReuseDisposition disposition) {
   llvm_unreachable("unknown joint Mapping reuse disposition");
 }
 
+llvm::StringRef jointSystemMappingReuseDispositionSpelling(
+    JointSystemMappingReuseDisposition disposition) {
+  switch (disposition) {
+  case JointSystemMappingReuseDisposition::Preserved:
+    return "preserved";
+  case JointSystemMappingReuseDisposition::Reopened:
+    return "reopened";
+  case JointSystemMappingReuseDisposition::ColdFallback:
+    return "cold_fallback";
+  }
+  llvm_unreachable("unknown System Mapping reuse disposition");
+}
+
 llvm::Error validateJointMappingRebaseAccounting(
     const JointMappingRebaseAccounting &accounting) {
   const auto closedSum = [](std::initializer_list<std::uint64_t> values)

@@ -1375,12 +1375,19 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
               const auto nodes = candidate.serviceRouteNodes().slice(
                   route->nodeOffset, route->nodeCount);
               if constexpr (std::is_same_v<T, SystemWholeLegRoutingAction>) {
+                const auto &topology = candidate.problem().routingTopology();
+                // Exclude a selected routing choice. Removing the fixed
+                // endpoint attachment disconnects every route from its source.
                 const auto selected =
-                    llvm::find_if(nodes, [](const auto &node) {
-                      return node.incomingTraversal != getInvalidPnrIndex();
+                    llvm::find_if(nodes, [&](const auto &node) {
+                      return node.incomingTraversal != getInvalidPnrIndex() &&
+                             topology.traversals()[node.incomingTraversal]
+                                     .reference.kind() ==
+                                 fabric::FabricPhysicalTraversalKind::
+                                     SystemTransferPatternLeg;
                     });
                 if (selected == nodes.end())
-                  return invalid("WholeLeg Action has no current traversal");
+                  return invalid("WholeLeg Action has no current routing choice");
                 exclusion = SystemServiceRouteTraversalExclusion{
                     value.leg, selected->incomingTraversal};
               } else if constexpr (std::is_same_v<

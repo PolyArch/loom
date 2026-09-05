@@ -784,6 +784,10 @@ deriveSelectedHandshakeReachability(
 llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view);
 
+// Reject unconditional cycles before publishing a Fabric artifact.
+llvm::Error
+validateUnconditionalHandshakeClosure(const FabricArtifactView &view);
+
 } // namespace loom::fabric
 
 #endif // LOOM_FABRIC_IDENTITY_FABRICHANDSHAKE_H

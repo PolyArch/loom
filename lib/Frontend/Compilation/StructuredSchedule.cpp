@@ -1,3 +1,4 @@
+#include "Frontend/Lowering/LoopIndependence.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 
 #include "StructuredPolyhedralMaterializer.h"
@@ -208,8 +209,8 @@ llvm::SmallVector<mlir::scf::ForOp> rectangularNest(mlir::scf::ForOp root) {
 llvm::SmallVector<mlir::scf::ForOp>
 rectangularParallelNest(mlir::scf::ForOp root) {
   llvm::SmallVector<mlir::scf::ForOp> result = rectangularNest(root);
-  return raising::proveIndependentIterations(result) ==
-                 raising::ParallelDependenceResult::ProvenIndependent
+  return lowering::proveIndependentIterations(result) ==
+                 lowering::ParallelDependenceResult::ProvenIndependent
              ? result
              : llvm::SmallVector<mlir::scf::ForOp>{};
 }
@@ -463,10 +464,10 @@ llvm::Error interchangeScfLoops(mlir::scf::ForOp outer,
 llvm::Error applyInterchange(mlir::scf::ForOp outer) {
   mlir::scf::ForOp inner;
   if (!isPerfectAdjacentNest(outer, inner) ||
-      raising::proveIndependentIterations(outer) !=
-          raising::ParallelDependenceResult::ProvenIndependent ||
-      raising::proveIndependentIterations(inner) !=
-          raising::ParallelDependenceResult::ProvenIndependent)
+      lowering::proveIndependentIterations(outer) !=
+          lowering::ParallelDependenceResult::ProvenIndependent ||
+      lowering::proveIndependentIterations(inner) !=
+          lowering::ParallelDependenceResult::ProvenIndependent)
     return invalid("interchange preconditions are not satisfied");
 
   return interchangeScfLoops(outer, inner);
@@ -1485,10 +1486,10 @@ enumerateStructuredScheduleDecisions(
       if (llvm::Error error = recordCoordinates(1))
         return std::move(error);
       const bool independentNest =
-          raising::proveIndependentIterations(scfLoop) ==
-              raising::ParallelDependenceResult::ProvenIndependent &&
-          raising::proveIndependentIterations(inner) ==
-              raising::ParallelDependenceResult::ProvenIndependent;
+          lowering::proveIndependentIterations(scfLoop) ==
+              lowering::ParallelDependenceResult::ProvenIndependent &&
+          lowering::proveIndependentIterations(inner) ==
+              lowering::ParallelDependenceResult::ProvenIndependent;
       if (independentNest)
         appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Interchange, 0,
@@ -1515,8 +1516,8 @@ enumerateStructuredScheduleDecisions(
     if (scfLoop.getInitArgs().empty()) {
       if (llvm::Error error = recordCoordinates(1))
         return std::move(error);
-      if (raising::proveIndependentIterations(scfLoop) ==
-          raising::ParallelDependenceResult::ProvenIndependent)
+      if (lowering::proveIndependentIterations(scfLoop) ==
+          lowering::ParallelDependenceResult::ProvenIndependent)
         appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Parallelize, 0,
                            std::nullopt});
@@ -1526,8 +1527,8 @@ enumerateStructuredScheduleDecisions(
     if (rectangular.size() >= 2) {
       if (llvm::Error error = recordCoordinates(1))
         return std::move(error);
-      if (raising::proveIndependentIterations(rectangular) ==
-          raising::ParallelDependenceResult::ProvenIndependent)
+      if (lowering::proveIndependentIterations(rectangular) ==
+          lowering::ParallelDependenceResult::ProvenIndependent)
         appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::ParallelizeNest, 0,
                            std::nullopt});

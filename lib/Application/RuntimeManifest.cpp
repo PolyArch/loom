@@ -1213,7 +1213,7 @@ llvm::Error canonicalizeReferenceSet(
     ApplicationRuntimeManifestErrorReason reason =
         ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch) {
   llvm::sort(references, artifactRootReferenceLess);
-  for (std::size_t index = 1; index != references.size(); ++index)
+  for (std::size_t index = 1; index < references.size(); ++index)
     if (references[index - 1] == references[index])
       return reject(reason, name + " repeats one Artifact root");
   return llvm::Error::success();
@@ -1224,7 +1224,7 @@ llvm::Error canonicalizeDigestSet(std::vector<ComponentViewDigest> &digests,
   llvm::sort(digests, [](const auto &lhs, const auto &rhs) {
     return lhs.bytes() < rhs.bytes();
   });
-  for (std::size_t index = 1; index != digests.size(); ++index)
+  for (std::size_t index = 1; index < digests.size(); ++index)
     if (digests[index - 1] == digests[index])
       return reject(
           ApplicationRuntimeManifestErrorReason::PairDecisionIncomplete,
@@ -1239,7 +1239,7 @@ llvm::Error canonicalizeReplayCases(
       return artifactRootReferenceLess(lhs.workload, rhs.workload);
     return artifactRootReferenceLess(lhs.runtimeInput, rhs.runtimeInput);
   });
-  for (std::size_t index = 1; index != replayCases.size(); ++index)
+  for (std::size_t index = 1; index < replayCases.size(); ++index)
     if (replayCases[index - 1] == replayCases[index])
       return reject(
           ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,

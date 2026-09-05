@@ -620,7 +620,7 @@ verifySystemPnrWorkAccounting(const SystemPnrGenerationAccounting &accounting,
   return llvm::Error::success();
 }
 
-static /// One isolated fresh System restart slot. The slot performs initialization,
+/// One isolated fresh System restart slot. The slot performs initialization,
 /// annealing, the strict final closure and candidate invariant verification;
 /// draft materialization, finalization and publication stay in the ordinal
 /// reduction so scheduling cannot reorder store effects.

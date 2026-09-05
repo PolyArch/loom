@@ -110,6 +110,10 @@ llvm::Expected<SpatialFifoRuntimeFeedback> deriveSpatialFifoRuntimeFeedback(
         return std::move(error);
       if (!mapping::spatialMappingUsesFifoOccurrence(spatial->view(), fifo))
         return invalid("FIFO runtime feedback names an unselected occurrence");
+      const auto port = module->view().transportEndpointDataPath(
+          {fabric::FabricTransportEndpointOwnerRef::of(fifo), 0});
+      if (!port || port->kind != ::fabric::DataPathKind::BitsTag)
+        return invalid("cross-tag FIFO feedback names an untagged occurrence");
       const auto discipline = module->view().fifoQueueDiscipline(fifo);
       if (!discipline)
         return invalid("FIFO runtime feedback lost its queue discipline");

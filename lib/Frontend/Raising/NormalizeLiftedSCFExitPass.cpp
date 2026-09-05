@@ -17,7 +17,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -301,9 +301,9 @@ struct NormalizeLiftedSCFExitPass
 
   void runOnOperation() final {
     ::llvm::SmallVector<::mlir::scf::ConditionOp> conditions;
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          (void)loom::raising::forEachOwnedOperation(
+          (void)loom::frontend::analysis::forEachOwnedOperation(
               region, [&](::mlir::Operation *op) {
                 if (auto condition =
                         ::mlir::dyn_cast<::mlir::scf::ConditionOp>(op))

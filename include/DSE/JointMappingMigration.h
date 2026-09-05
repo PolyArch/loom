@@ -96,6 +96,15 @@ llvm::Error validateJointMappingRebaseAccounting(
 std::uint64_t projectJointHardwareInvalidationRootCount(
     llvm::ArrayRef<struct HardwareImpactProjection> impacts);
 
+enum class JointSystemMappingReuseDisposition : std::uint8_t {
+  Preserved,
+  Reopened,
+  ColdFallback,
+};
+
+llvm::StringRef jointSystemMappingReuseDispositionSpelling(
+    JointSystemMappingReuseDisposition disposition);
+
 struct JointMappingRebaseResult final {
   JointDesignMappingSeed seed;
   JointMappingRebaseAccounting accounting;

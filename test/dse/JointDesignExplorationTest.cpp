@@ -2,9 +2,11 @@
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/HardwareDecision.h"
+#include "DSE/HardwareMutationRepairRecord.h"
 #include "DSE/JointHardwareReopen.h"
 #include "DSE/JointMappingMigration.h"
 #include "DSE/ResolvedConfigView.h"
@@ -425,7 +427,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         std::nullopt,
         std::nullopt,
         bundle.reference(),
-        {}};
+        {},
+        std::nullopt};
     const auto qualityPolicyExecution =
         take(loom::dse::PlanExecutionPolicy::get(
             32, take(loom::dse::SiteResourceClaim::get(1, 0, 0))));
@@ -712,13 +715,12 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     repairExecutions[0].summary.selectedMapping.reset();
     repairExecutions[0].summary.selectedPlanOrdinal.reset();
     for (loom::dse::JointDesignQualityObservation &observation :
-         repairExecutions[0].summary.qualityObservations)
-      if (observation.candidate == firstRepairMapping) {
-        observation.objectiveCodes.clear();
-        observation.incompleteReason =
-            loom::dse::JointDesignQualityIncompleteReason::Unsupported;
-        observation.provenance.rawMeasures.clear();
-      }
+         repairExecutions[0].summary.qualityObservations) {
+      observation.objectiveCodes.clear();
+      observation.incompleteReason =
+          loom::dse::JointDesignQualityIncompleteReason::Unsupported;
+      observation.provenance.rawMeasures.clear();
+    }
     repairExecutions[1]
         .summary.qualityObservations.front()
         .provenance.resourceCoreCost.reset();
@@ -731,7 +733,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         llvm::toString(missingLaterResource.takeError());
     if (!llvm::StringRef(missingLaterResourceError)
              .contains("lost its exact resource count"))
-      fail("repair quality runtime provenance rejection lost its reason");
+      fail("repair quality runtime provenance rejection lost its reason: " +
+           missingLaterResourceError);
     for (auto indexed : llvm::enumerate(repairExecutions))
       indexed.value().summary =
           std::move(savedRuntimeSummaries[indexed.index()]);
@@ -914,8 +917,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     if (spatial.view().fabricIdentity() != targetModule.view().identity())
       continue;
     for (const auto fifo : targetModule.view().fifoOccurrences())
-      if (loom::mapping::spatialMappingUsesFifoOccurrence(spatial.view(),
-                                                          fifo)) {
+      if (loom::mapping::spatialMappingUsesFifoOccurrence(spatial.view(), fifo)) {
         feedbackSpatialMapping = reference;
         feedbackFifo = fifo;
         break;
@@ -1265,21 +1267,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   consumerWait.to = orderWait.from;
   consumerWait.kind = ClosedWait::WaitEdgeKind::StorageConsumer;
   crossTagFifoWait.waitCertificate = {orderWait, consumerWait};
-  const auto crossTagFeedback =
-      take(loom::dse::deriveSpatialFifoRuntimeFeedback(
-          mappings.front(), *feedbackSpatialMapping, crossTagFifoWait, store));
-  if (crossTagFeedback.disposition !=
-          loom::dse::SpatialFifoRuntimeFeedbackDisposition::Exact ||
-      crossTagFeedback.reason != loom::dse::SpatialFifoRuntimeFeedbackReason::
-                                     ExactCrossTagGlobalHolCycle ||
-      crossTagFeedback.currentQueueDiscipline !=
-          ::fabric::FifoQueueDiscipline::StrictFifo ||
-      crossTagFeedback.candidateQueueDiscipline !=
-          ::fabric::FifoQueueDiscipline::PerTagVirtualChannel ||
-      crossTagFeedback.disciplineTargets !=
-          std::vector<loom::fabric::FabricFifoOccurrenceRef>{*feedbackFifo} ||
-      crossTagFeedback.minimumCandidateDepth)
-    fail("cross-tag global HOL did not admit the VC hardware candidate");
+  const auto feedbackPort = targetModule.view().transportEndpointDataPath(
+      {loom::fabric::FabricTransportEndpointOwnerRef::of(*feedbackFifo), 0});
+  if (!feedbackPort || feedbackPort->kind != ::fabric::DataPathKind::Bits)
+    fail("FIFO negative witness fixture did not select an untagged route");
+  auto crossTagFeedback = loom::dse::deriveSpatialFifoRuntimeFeedback(
+      mappings.front(), *feedbackSpatialMapping, crossTagFifoWait, store);
+  if (crossTagFeedback)
+    fail("cross-tag witness admitted a discipline change on an untagged FIFO");
+  llvm::consumeError(crossTagFeedback.takeError());
   if (qualityRuns("fifo")) {
     if (!incompleteRepairQuality)
       fail("quality-promotion fixture lost its incomplete repair policy");
@@ -1372,43 +1368,6 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         fail("FIFO hardware repair Mapping names the parent System");
     }
 
-    llvm::SmallString<128> disciplineJournal(temporary.path());
-    llvm::sys::path::append(disciplineJournal,
-                            "fifo-discipline-recipe-feedback");
-    const auto disciplineRepair =
-        take(loom::dse::executeSpatialFifoHardwareFeedbackReopen(
-            plan, parentExecution, policy, crossTagFeedback,
-            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
-                 "loom.test.spatial_fifo_recipe_feedback.v1")),
-             disciplineJournal.str().str(),
-             {},
-             loom::dse::JointDesignStoppingPolicy::FirstVerified,
-             std::nullopt,
-             std::nullopt,
-             take(loom::dse::SiteCapacity::get(2, 0, 0)),
-             take(loom::dse::PlanExecutionPolicy::get(
-                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
-            store, blobs));
-    if (disciplineRepair.childSystems.size() != 1 ||
-        disciplineRepair.repairRecords.size() != 1 ||
-        disciplineRepair.executions.size() != 1 ||
-        disciplineRepair.reuseDispositions !=
-            std::vector<loom::dse::JointMappingReuseDisposition>{
-                loom::dse::JointMappingReuseDisposition::ColdFallback})
-      fail("global FIFO recipe feedback lost its durable cold repair");
-    const auto disciplineRecord =
-        take(loom::dse::importHardwareMutationRepairRecord(
-            disciplineRepair.repairRecords.front(), store));
-    if (disciplineRecord.record().parentSystem != system ||
-        disciplineRecord.record().childSystem !=
-            disciplineRepair.childSystems.front() ||
-        disciplineRecord.record().impacts.size() != 1 ||
-        disciplineRecord.record().impacts.front().family !=
-            loom::dse::HardwareMutationFamily::SpatialFifo ||
-        disciplineRecord.record().impacts.front().locality !=
-            loom::dse::HardwareMutationLocality::GlobalReopen ||
-        disciplineRecord.record().incremental.mappings.empty())
-      fail("global FIFO recipe repair record lost its typed execution");
   }
   auto incompleteFifoWait = exactFifoWait;
   incompleteFifoWait.transferWaitCycle.clear();

@@ -113,6 +113,7 @@ add_library(LoomApplicationBuild
   PairDecisionDiagnostics.cpp
   DeploymentBuild.cpp
   ExecutionGlue.cpp
+  SpatialInvocationPlan.cpp
   MappingExecution.cpp
   PairDecision.cpp
   ProductBuild.cpp

@@ -100,38 +100,22 @@ encodeObjectiveObservation(const ApplicationObjectiveObservation &observation) {
 llvm::json::Object
 encodePortfolioInput(const SelectedApplicationInput &selection,
                      ApplicationPortfolioExecutionBinding binding) {
+  llvm::json::Object canonical = projectSelectedApplicationInputJson(selection);
   llvm::json::Object result;
-  result["application_identity"] = selection.applicationIdentity;
-  result["input_name"] = selection.input.name;
-  result["source_kind"] = toString(selection.source.kind);
-  result["source_root"] = selection.source.root;
-  result["build_entry"] = selection.build.entry;
-  result["language"] = toString(selection.build.language);
-  llvm::json::Array sources;
-  for (const std::string &source : selection.build.sources)
-    sources.push_back(source);
-  result["sources"] = std::move(sources);
-  llvm::json::Array compilerOptions;
-  for (const std::string &option : selection.build.compilerOptions)
-    compilerOptions.push_back(option);
-  result["compiler_options"] = std::move(compilerOptions);
-  llvm::json::Array inputCompilerOptions;
-  for (const std::string &option : selection.input.compilerOptions)
-    inputCompilerOptions.push_back(option);
-  result["input_compiler_options"] = std::move(inputCompilerOptions);
-  llvm::json::Array linkOptions;
-  for (const std::string &option : selection.build.linkOptions)
-    linkOptions.push_back(option);
-  result["link_options"] = std::move(linkOptions);
-  llvm::json::Array operatorProtocolSymbols;
-  for (const std::string &symbol : selection.build.operatorProtocolSymbols)
-    operatorProtocolSymbols.push_back(symbol);
-  result["operator_protocol_symbols"] = std::move(operatorProtocolSymbols);
-  result["declared_workload"] = selection.input.workload;
-  result["declared_runtime_input"] = selection.input.runtimeInput;
-  result["declared_oracle"] =
-      llvm::json::Object{{"kind", toString(selection.input.oracle.kind)},
-                         {"entry", selection.input.oracle.entry}};
+  for (llvm::StringRef field : {"application_identity", "input_name",
+                                "cached_inputs", "input_compiler_options"})
+    result[field] = std::move(*canonical.get(field));
+  const auto &source = *canonical.getObject("source");
+  result["source_kind"] = *source.get("kind");
+  result["source_root"] = *source.get("root");
+  const auto &build = *canonical.getObject("build");
+  result["build_entry"] = *build.get("entry");
+  for (llvm::StringRef field : {"language", "sources", "compiler_options",
+                                "link_options", "operator_protocol_symbols"})
+    result[field] = *build.get(field);
+  result["declared_workload"] = std::move(*canonical.get("workload"));
+  result["declared_runtime_input"] = std::move(*canonical.get("runtime_input"));
+  result["declared_oracle"] = std::move(*canonical.get("oracle"));
   llvm::json::Object declaredProfile{
       {"warmup_samples", selection.input.profile.warmupSamples},
       {"measured_samples", selection.input.profile.measuredSamples},
@@ -142,13 +126,6 @@ encodePortfolioInput(const SelectedApplicationInput &selection,
     declaredProfile["maximum_simulated_ticks"] =
         *selection.input.profile.maximumSimulatedTicks;
   result["declared_profile"] = std::move(declaredProfile);
-  llvm::json::Array cachedInputs;
-  for (const CachedInput &input : selection.cachedInputs)
-    cachedInputs.push_back(
-        llvm::json::Object{{"logical_name", input.logicalName},
-                           {"path", input.path},
-                           {"sha256", formatBlobDigestHex(input.digest)}});
-  result["cached_inputs"] = std::move(cachedInputs);
   result["execution_binding"] = toString(binding);
   result["execution_binding_established"] =
       binding ==

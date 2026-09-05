@@ -368,23 +368,17 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         parent, proposal, *exactFabric, spatialRegion, provenance);
     if (!child) {
       bool rejected = false;
-      llvm::Error retained = llvm::Error::success();
       llvm::Error unhandled = llvm::handleErrors(
           child.takeError(),
           [&](const frontend::StructuredScheduleProposalRefusal &error) {
             rejected = true;
             recordScopRefusal(error.loop(), error.kind());
           },
-          [&](const frontend::SpatialOwnershipCandidateRejection &error) {
+          [&](const frontend::SpatialOwnershipCandidateRejection &error)
+              -> llvm::Error {
             rejected = true;
-            if (invocation)
-              retained = detail::StructuredOwnershipInvocationAccess::
-                  recordFinalizationRejection(
-                      *invocation, rejectionOwner,
-                      {error.kind(), error.message(), error.memoryContract()});
-            if (!logical)
-              return;
-            switch (error.kind()) {
+            if (logical)
+              switch (error.kind()) {
             case frontend::SpatialOwnershipCandidateRejectionKind::
                 NonFinalizable:
               ++nonFinalizableLogicalDomainCount;
@@ -393,12 +387,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 ExactFabricInadmissible:
               ++exactFabricRejectedLogicalDomainCount;
               break;
-            }
+              }
+            if (invocation)
+              return detail::StructuredOwnershipInvocationAccess::
+                  recordFinalizationRejection(
+                      *invocation, rejectionOwner,
+                      {error.kind(), error.message(), error.memoryContract()});
+            return llvm::Error::success();
           });
       if (unhandled)
-        return llvm::joinErrors(std::move(unhandled), std::move(retained));
-      if (retained)
-        return std::move(retained);
+        return std::move(unhandled);
       if (!rejected)
         return invalid(
             "schedule candidate failed without a classified outcome");

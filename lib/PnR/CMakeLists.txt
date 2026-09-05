@@ -47,6 +47,7 @@ add_mlir_library(LoomPnR
   SpatialPnrCapacityIndex.cpp
   SpatialPathFinderDiagnostics.cpp
   SpatialPathFinderRouter.cpp
+  SpatialPathFinderAnalysis.cpp
   SpatialPathFinderRoutingRegion.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrMemoryIndex.cpp
@@ -92,6 +93,7 @@ add_mlir_library(LoomPnR
   System/SystemCandidateServiceResolver.cpp
   System/SystemCapacityProjection.cpp
   System/ResourceTimeTransition.cpp
+  System/ResourceTimeTransitionValidation.cpp
   System/ResourceTimeTransitionGraph.cpp
   System/SystemMappingConePreservation.cpp
   System/SystemMappingMigration.cpp

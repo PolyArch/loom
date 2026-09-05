@@ -72,7 +72,6 @@ tryHardwareFeedbackReopen(
   const dse::JointDesignExecution *currentFailure = &failedExecution;
   const dse::JointDesignExplorationPlan *currentPlan = &plan;
   const bool parentHasNoMappingFrontier = mappingCount(failedExecution) == 0;
-  bool currentFailureIsTechGate = false;
   std::optional<dse::JointDesignExecution> latestFailed;
   std::optional<dse::JointDesignExplorationPlan> latestFailedPlan;
   std::optional<std::vector<ArtifactRootReference>> reusableSpatialMappings;
@@ -210,12 +209,12 @@ tryHardwareFeedbackReopen(
     std::optional<JointMappingRebaseResult> rebased;
     const auto mappingReuseStart = std::chrono::steady_clock::now();
     if (!accCoreOnlyGrowth) {
-      if (currentFailureIsTechGate) {
+      if (mappingCount(*currentFailure) == 0) {
         rebased = JointMappingRebaseResult{
             {},
             {},
             {{JointMappingRebaseFailureReason::MissingParentFrontier,
-              std::nullopt, "parent execution stopped at the Tech gate"}},
+              std::nullopt, "parent execution has no finalized Mapping"}},
             JointMappingReuseDisposition::ColdFallback};
       } else {
         auto projected = rebaseJointMappingFrontier(
@@ -368,7 +367,6 @@ tryHardwareFeedbackReopen(
         latestFailedPlan = std::move(*reopenPlan);
         currentFailure = &*latestFailed;
         currentPlan = &*latestFailedPlan;
-        currentFailureIsTechGate = true;
         break;
       }
 
@@ -403,7 +401,6 @@ tryHardwareFeedbackReopen(
         latestFailedPlan = std::move(*reopenPlan);
         currentFailure = &*latestFailed;
         currentPlan = &*latestFailedPlan;
-        currentFailureIsTechGate = true;
         break;
       }
       gateSeed.techMappings = std::move(*boundedTechMappings);
@@ -634,7 +631,6 @@ tryHardwareFeedbackReopen(
     latestFailedPlan = std::move(*reopenPlan);
     currentFailure = &*latestFailed;
     currentPlan = &*latestFailedPlan;
-    currentFailureIsTechGate = false;
   }
   if (latestFailed) {
     if (llvm::Error error = attachSupportingInvocations(*latestFailed))

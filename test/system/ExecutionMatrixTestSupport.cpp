@@ -539,7 +539,9 @@ buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   };
   auto hardware = eda::test::buildMappedSpatialHardwareFixture(
       test, dataflow, *context, artifacts, blobs,
-      deployment::test::MappedSpatialSystemSpec{paired ? 1U : 4U, true, true},
+      deployment::test::MappedSpatialSystemSpec{
+          paired ? 1U : 4U, true,
+          deployment::test::MappedSystemMemoryTopology::Shared},
       eda::test::MappedRtlFixtureTopology::HeterogeneousPortable,
       eda::test::MappedRtlRouteCoverage::AnyLegal,
       eda::test::MappedSystemInterconnect::Gem5EventTransport,

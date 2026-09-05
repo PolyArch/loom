@@ -31,10 +31,16 @@ enum class MappedSystemTransportMode : std::uint8_t {
   MappingSelected,
 };
 
+enum class MappedSystemMemoryTopology : std::uint8_t {
+  None,
+  Shared,
+  PerAccCore,
+};
+
 struct MappedSpatialSystemSpec final {
   std::uint32_t accCoreCount = 2;
   bool alternateInstructionMicroarchitectures = false;
-  bool attachSystemMemory = false;
+  MappedSystemMemoryTopology memoryTopology = MappedSystemMemoryTopology::None;
   fabric::ResetInitialState resetInitialState =
       fabric::ResetInitialState::Asserted;
   MappedSystemTransportMode transportMode =
@@ -124,11 +130,6 @@ FinalizedDeployment buildMappedSystemDeployment(
     llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
     BlobStore &blobs, const TemporaryTree &tree);
-
-fabric::FinalizedFabricRoot buildMappedSpatialSystem(
-    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
-    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
-    bool attachSystemMemory);
 
 fabric::FinalizedFabricRoot buildMappedSpatialSystem(
     llvm::StringRef test, const fabric::FinalizedFabricRoot &module,

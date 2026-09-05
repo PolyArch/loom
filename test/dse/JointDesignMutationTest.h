@@ -11,7 +11,7 @@ class BlobStore;
 struct ResolvedConfig;
 namespace dse {
 class JointDesignPolicy;
-struct JointDesignExecution;
+class JointDesignExecution;
 struct JointDesignExplorationPlan;
 } // namespace dse
 } // namespace loom

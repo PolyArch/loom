@@ -38,7 +38,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactRewrite.h"
 #include "ExactStandardSpelling.h"
 
@@ -603,7 +603,7 @@ struct LLVMArithToArithPass
         ctx);
     ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
           loom::raising::applyExactPatternsOnce(region, frozen);
           return ::mlir::success();

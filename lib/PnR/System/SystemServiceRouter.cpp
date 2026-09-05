@@ -963,6 +963,11 @@ loom::pnr::detail::buildSystemServiceRoutes(
         if (!upgrades)
           return upgrades.takeError();
         for (const AtomicPatternUpgrade &upgrade : *upgrades) {
+          if (request.exclusion && request.exclusion->leg == legOrdinal &&
+              llvm::any_of(upgrade.childReplacements, [&](const auto &child) {
+                return child.second == request.exclusion->traversal;
+              }))
+            continue;
           if (rootedSubtreeNode && upgrade.node != *rootedSubtreeNode &&
               upgrade.node < retainedNodeCount)
             continue;

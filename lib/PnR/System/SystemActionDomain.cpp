@@ -101,7 +101,14 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
     if (llvm::any_of(nodes, [](const SystemServiceRouteNodeSelection &node) {
           return node.incomingTraversal != getInvalidPnrIndex();
         })) {
-      routingChoices_.emplace_back(SystemWholeLegRoutingAction{route.leg});
+      if (llvm::any_of(nodes, [&](const auto &node) {
+            return node.incomingTraversal != getInvalidPnrIndex() &&
+                   problem.routingTopology().traversals()[node.incomingTraversal]
+                           .reference.kind() ==
+                       fabric::FabricPhysicalTraversalKind::
+                           SystemTransferPatternLeg;
+          }))
+        routingChoices_.emplace_back(SystemWholeLegRoutingAction{route.leg});
       const auto sinks = candidate.serviceRouteSinks().slice(route.sinkOffset,
                                                              route.sinkCount);
       for (PnrIndex sink = 0; sink < sinks.size(); ++sink)

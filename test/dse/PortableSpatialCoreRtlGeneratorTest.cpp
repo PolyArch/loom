@@ -82,7 +82,8 @@ makeUnsupportedResetSystem(const loom::fabric::FinalizedFabricRoot &module,
                            const loom::ArtifactStore &store) {
   loom::deployment::test::MappedSpatialSystemSpec spec;
   spec.accCoreCount = 1;
-  spec.attachSystemMemory = true;
+  spec.memoryTopology =
+      loom::deployment::test::MappedSystemMemoryTopology::Shared;
   spec.resetInitialState = loom::fabric::ResetInitialState::Deasserted;
   return loom::deployment::test::buildMappedSpatialSystem(
       "unsupported-reset-system", module, {}, store, spec);

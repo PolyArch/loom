@@ -27,7 +27,7 @@ struct ResolvedConfig;
 namespace loom::dse {
 class JointDesignPolicy;
 struct JointBoundedQualityPolicy;
-struct JointDesignExecution;
+class JointDesignExecution;
 struct JointDesignExplorationPlan;
 } // namespace loom::dse
 

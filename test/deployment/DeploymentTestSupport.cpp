@@ -342,7 +342,7 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
             take(test, routers[ordinal].output(1)),
             take(test, routers[(ordinal + 1) % routers.size()].input(1))));
 
-  if (spec.attachSystemMemory) {
+  if (spec.memoryTopology != MappedSystemMemoryTopology::None) {
     auto indexWidths = take(
         test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
     auto memory =
@@ -352,11 +352,17 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
                             128, std::nullopt, 4, std::move(indexWidths)},
                         128},
                        rate));
-    auto memoryService = take(test, system.addMemoryService(memory.contract));
-    auto memoryEndpoint = take(
-        test, system.addServiceEndpoint(memoryService, memory.capabilities));
-    clockMembers.push_back(memoryService.domainMember());
-    clockMembers.push_back(memoryEndpoint.domainMember());
+    const std::size_t memoryCount =
+        spec.memoryTopology == MappedSystemMemoryTopology::Shared ? 1
+                                                                  : cores.size();
+    std::vector<adg::SystemServiceEndpoint> memoryEndpoints;
+    for (std::size_t ordinal = 0; ordinal != memoryCount; ++ordinal) {
+      auto memoryService = take(test, system.addMemoryService(memory.contract));
+      memoryEndpoints.push_back(take(
+          test, system.addServiceEndpoint(memoryService, memory.capabilities)));
+      clockMembers.push_back(memoryService.domainMember());
+      clockMembers.push_back(memoryEndpoints.back().domainMember());
+    }
 
     const auto moduleTemplate = module.view().moduleRootTemplate();
     require(test, moduleTemplate.has_value(),
@@ -395,11 +401,17 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     const std::size_t requestOrdinal =
         widestTransportOrdinal(fabric::FabricPortDirection::Output);
 
-    std::vector<adg::SystemTransportEndpoint> providerRequests;
-    std::vector<adg::SystemTransportEndpoint> providerResponses;
-    for (const adg::AccCore &core : cores) {
+    std::vector<std::vector<adg::SystemTransportEndpoint>> providerRequests(
+        memoryCount);
+    std::vector<std::vector<adg::SystemTransportEndpoint>> providerResponses(
+        memoryCount);
+    for (std::size_t ordinal = 0; ordinal != cores.size(); ++ordinal) {
+      const auto &core = cores[ordinal];
+      const std::size_t memoryOrdinal =
+          spec.memoryTopology == MappedSystemMemoryTopology::Shared ? 0 : ordinal;
       auto manager = take(test, core.spatialMemoryManager(0));
-      requireSuccess(test, system.attachSpatialMemory(manager, memoryEndpoint));
+      requireSuccess(test, system.attachSpatialMemory(
+                               manager, memoryEndpoints[memoryOrdinal]));
       auto transport =
           take(test, system.addTransportResource(
                          {{carrier}, {carrier}, transportContract}));
@@ -420,16 +432,18 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
         requireSuccess(test, system.attachServiceLegCarriers(manager, kind, 1,
                                                              {response}));
       }
-      providerRequests.push_back(providerRequest);
-      providerResponses.push_back(providerResponse);
+      providerRequests[memoryOrdinal].push_back(providerRequest);
+      providerResponses[memoryOrdinal].push_back(providerResponse);
     }
-    auto subordinate = take(test, memoryEndpoint.memory());
-    for (auto kind : {dataflow::semantics::ServiceKind::MemoryRead,
-                      dataflow::semantics::ServiceKind::MemoryWrite}) {
-      requireSuccess(test, system.attachServiceLegCarriers(subordinate, kind, 0,
-                                                           providerRequests));
-      requireSuccess(test, system.attachServiceLegCarriers(subordinate, kind, 1,
-                                                           providerResponses));
+    for (std::size_t ordinal = 0; ordinal != memoryCount; ++ordinal) {
+      auto subordinate = take(test, memoryEndpoints[ordinal].memory());
+      for (auto kind : {dataflow::semantics::ServiceKind::MemoryRead,
+                        dataflow::semantics::ServiceKind::MemoryWrite}) {
+        requireSuccess(test, system.attachServiceLegCarriers(
+                                 subordinate, kind, 0, providerRequests[ordinal]));
+        requireSuccess(test, system.attachServiceLegCarriers(
+                                 subordinate, kind, 1, providerResponses[ordinal]));
+      }
     }
   }
 
@@ -779,13 +793,10 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
           "minimal fixture has fewer AccCores than root threads");
   std::vector<fabric::AccCoreOccurrenceRef> rootTargets;
   rootTargets.reserve(dataflow.rootThreadLaunches().size());
-  if (reverseRootTargets)
-    rootTargets.insert(rootTargets.end(),
-                       cores.end() - dataflow.rootThreadLaunches().size(),
-                       cores.end());
-  else
-    rootTargets.insert(rootTargets.end(), cores.begin(),
-                       cores.begin() + dataflow.rootThreadLaunches().size());
+  // Retarget roots within the same implemented core inventory. A transition
+  // changes the Mapping; it does not install hardware for formerly unbound cores.
+  rootTargets.insert(rootTargets.end(), cores.begin(),
+                     cores.begin() + dataflow.rootThreadLaunches().size());
   if (reverseRootTargets)
     std::reverse(rootTargets.begin(), rootTargets.end());
   const auto systemMapping =
@@ -1120,15 +1131,6 @@ FinalizedDeployment buildMappedSystemDeployment(
                                               std::move(hardwareBindings)},
                      *finalLinkedModule, artifacts, blobs));
   return deployment;
-}
-
-fabric::FinalizedFabricRoot buildMappedSpatialSystem(
-    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
-    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
-    bool attachSystemMemory) {
-  return buildMappedSpatialSystem(
-      test, module, messagePayloads, artifacts,
-      MappedSpatialSystemSpec{2, false, attachSystemMemory});
 }
 
 fabric::FinalizedFabricRoot buildMappedSpatialSystem(

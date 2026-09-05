@@ -970,34 +970,48 @@ int main() {
   const auto objective =
       take(problem->objectiveProgram().evaluate(*distinctOwners));
   loom::pnr::SystemActionProbeAccounting rerouteWork;
-  auto rerouted = take(loom::pnr::probeSystemAction(
+  auto rerouted = loom::pnr::probeSystemAction(
       distinctOwners, objective, loom::pnr::SystemMappingAction{*reroute},
-      rerouteWork));
-  require(rerouteWork.assignmentAttempts == 0 &&
-              rerouteWork.negotiationIterations != 0 &&
-              rerouted.mutation.domain ==
-                  loom::pnr::SystemActionMutationDomain::TransportRouting &&
-              rerouted.mutation.threadDecisions.empty() &&
-              rerouted.mutation.graphDecisions.empty() &&
-              rerouted.mutation.serviceLegs ==
-                  std::vector<loom::pnr::PnrIndex>{*channelLeg} &&
-              rerouted.mutation.serviceTargets.empty() &&
-              rerouted.mutation.instructionResourceUses.empty() &&
-              rerouted.mutation.serviceResourceUses.empty() &&
-              rerouted.candidate->threadChoices() ==
-                  distinctOwners->threadChoices() &&
-              rerouted.candidate->graphChoices() ==
-                  distinctOwners->graphChoices(),
-          "whole-leg repair changed state outside the shared channel route");
-  if (llvm::Error error = rerouted.candidate->verify())
+      rerouteWork);
+  require(!rerouted, "ring routing silently restored an excluded broadcast leg");
+  bool intrinsicallyInvalid = false;
+  if (llvm::Error error = llvm::handleErrors(
+          rerouted.takeError(),
+          [&](const loom::pnr::SystemActionTransitionFailure &failure) {
+            intrinsicallyInvalid =
+                failure.kind() ==
+                loom::pnr::SystemActionTransitionFailureKind::IntrinsicInvalid;
+          }))
     fail(llvm::toString(std::move(error)));
+  require(intrinsicallyInvalid && rerouteWork.assignmentAttempts == 0 &&
+              rerouteWork.negotiationIterations != 0,
+          "mandatory ring branch exclusion lost its routing refusal");
+  if (llvm::Error error = distinctOwners->verify())
+    fail(llvm::toString(std::move(error)));
+
+  // The ring has one broadcast route for these fixed endpoints. Moving only
+  // the producer gives a legal changed service that is still shared with the
+  // preserved consumer, so a producer-only migration cone must reject it.
+  std::vector<loom::pnr::PnrIndex> changedThreadChoices(
+      distinctOwners->threadChoices().begin(),
+      distinctOwners->threadChoices().end());
+  for (const auto &[ordinal, decision] :
+       llvm::enumerate(problem->threadDecisions())) {
+    if (decision.root != *producerRoot)
+      continue;
+    const auto domain = problem->threadChoiceCatalogOrdinals(ordinal);
+    require(domain.size() > 1, "producer fixture has no alternate owner");
+    changedThreadChoices[ordinal] =
+        (changedThreadChoices[ordinal] + 1) % domain.size();
+  }
+  auto movedProducer = take(loom::pnr::initializeSystemCandidate(
+      problem, changedThreadChoices, distinctOwners->graphChoices()));
   auto preservedParent = take(loom::pnr::finalizeSystemMappingCandidate(
       *distinctOwners, dataflow, system, constraints.view(), store, context));
   auto changedSharedService = take(loom::pnr::finalizeSystemMappingCandidate(
-      *rerouted.candidate, dataflow, system, constraints.view(), store,
-      context));
+      *movedProducer, dataflow, system, constraints.view(), store, context));
   require(preservedParent.reference() != changedSharedService.reference(),
-          "whole-leg repair reproduced the unchanged SystemMapping");
+          "producer move reproduced the unchanged SystemMapping");
   auto importedPreservedParent = take(
       loom::mapping::importSystemMapping(preservedParent.reference(), store));
   auto importedChangedSharedService = take(loom::mapping::importSystemMapping(

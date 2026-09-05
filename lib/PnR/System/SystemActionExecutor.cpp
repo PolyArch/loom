@@ -53,7 +53,9 @@ bool sameRoute(const SystemCandidateState &lhs, const SystemCandidateState &rhs,
                PnrIndex leg) {
   const SystemServiceRouteSelection *left = findRoute(lhs, leg);
   const SystemServiceRouteSelection *right = findRoute(rhs, leg);
-  if (!left || !right || left->rootEndpoint != right->rootEndpoint ||
+  if (!left || !right)
+    return left == right;
+  if (left->rootEndpoint != right->rootEndpoint ||
       left->nodeCount != right->nodeCount ||
       left->sinkCount != right->sinkCount)
     return false;

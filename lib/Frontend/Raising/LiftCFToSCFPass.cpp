@@ -88,7 +88,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "PreservedHints.h"
 
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
@@ -985,7 +985,7 @@ struct LiftCFToSCFPass
     // then-current original, which already holds the structured descendant, so
     // publishing the ancestor cannot overwrite the descendant's structure.
     ::llvm::SmallVector<RegionPlan, 4> plans;
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
           LoopHintMap regionAnnotations;
           OrphanLoopHintBlocks orphanHints;

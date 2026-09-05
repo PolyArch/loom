@@ -336,13 +336,13 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
 
   auto indexWidths =
       take(test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
-  adg::ManagerMemoryParameters memoryParameters;
-  memoryParameters.interface = {
+  adg::MemoryInterfaceParameters memoryInterface = {
       adg::MemoryAccessDomainParameters{128, std::nullopt, 4,
                                         std::move(indexWidths)},
       64, 128};
-  adg::MemorySpec memory =
-      take(test, adg::makeHybrid32ManagerMemory(std::move(memoryParameters)));
+  adg::MemorySpec memory = take(
+      test, adg::makeHybrid32ManagerMemory(
+                {std::move(memoryInterface), std::nullopt}));
 
   std::vector<adg::PortType> moduleInputs(directNetworkInputCount, payload);
   moduleInputs.push_back(payload);
@@ -1502,7 +1502,9 @@ buildMappedRtlRequestFixture(llvm::StringRef test,
   auto hardware = buildMappedSpatialHardwareFixture(
       test, dataflow, dataflowContext, artifacts, blobs,
       deployment::test::MappedSpatialSystemSpec{
-          2, false, topology != MappedRtlFixtureTopology::Minimal},
+          2, false, topology == MappedRtlFixtureTopology::Minimal
+                        ? deployment::test::MappedSystemMemoryTopology::None
+                        : deployment::test::MappedSystemMemoryTopology::Shared},
       topology);
   const ArtifactRootReference dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));

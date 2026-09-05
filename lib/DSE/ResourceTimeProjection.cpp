@@ -82,14 +82,6 @@ void appendDataflowRoots(
     appendBlob(bytes, root);
 }
 
-void appendRoots(std::vector<std::uint8_t> &bytes,
-                 llvm::ArrayRef<ArtifactRootReference> roots) {
-  std::vector<ArtifactRootReference> canonical(roots.begin(), roots.end());
-  llvm::sort(canonical, artifactRootReferenceLess);
-  appendU64(bytes, canonical.size());
-  for (const auto &root : canonical)
-    appendRoot(bytes, root);
-}
 
 } // namespace
 

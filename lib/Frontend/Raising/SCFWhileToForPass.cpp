@@ -33,7 +33,7 @@
 #include "Frontend/Raising/CountedLoopProjection.h"
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactRewrite.h"
 #include "PreservedHints.h"
 
@@ -261,7 +261,7 @@ struct SCFWhileToForPass
             ctx);
     ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         module, [&](::mlir::Region &region) {
           loom::raising::applyExactPatternsOnce(region, frozen);
           return ::mlir::success();

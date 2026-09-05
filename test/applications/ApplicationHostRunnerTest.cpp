@@ -146,6 +146,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
 }
 
 std::string cachedFixtureManifest(llvm::StringRef digestHex,
+                                  llvm::StringRef expectedOutput,
                                   std::uint64_t warmupSamples,
                                   std::uint64_t measuredSamples) {
   return R"json({
@@ -176,7 +177,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
       "cached_inputs": ["payload"],
       "compiler_options": [],
       "oracle": {"kind": "exact", "entry": "expected.txt", "sha256": ")json" +
-         digest("expected\n") + R"json(", "encoding": "utf8"},
+         digest(expectedOutput) + R"json(", "encoding": "utf8"},
       "profile": {
         "warmup_samples": )json" +
          std::to_string(warmupSamples) + R"json(,
@@ -407,7 +408,7 @@ void exerciseSourceUnavailable(const TemporaryTree &tree) {
   writeFile(tree.path("source/main.c"), "int main(void) { return 0; }\n");
   writeFile(tree.path("expected.txt"), "expected\n");
   ApplicationManifest manifest = take(parseApplicationManifest(
-      cachedFixtureManifest(std::string(64, '0'), 1, 2)));
+      cachedFixtureManifest(std::string(64, '0'), "expected\n", 1, 2)));
   ApplicationHostRunReport report = take(runApplicationInputOnHost(
       manifest,
       ApplicationHostRunRequest{"host-fixture", "fixture", tree.path().string(),
@@ -459,9 +460,10 @@ void exerciseAdmittedCacheAbi(const TemporaryTree &tree,
       ") != 0) return 4; printf(\"%s\\n%s\\n%s\\n\", argv[1], argv[2], "
       "argv[3]); return 0; }\n";
   writeFile(tree.path("source/main.c"), source);
-  writeFile(tree.path("expected.txt"), admittedPath + "\n2\n3\n");
+  const std::string expectedOutput = admittedPath + "\n2\n3\n";
+  writeFile(tree.path("expected.txt"), expectedOutput);
   ApplicationManifest manifest = take(
-      parseApplicationManifest(cachedFixtureManifest(digest(payload), 2, 3)));
+      parseApplicationManifest(cachedFixtureManifest(digest(payload), expectedOutput, 2, 3)));
   ApplicationHostRunReport report = take(runApplicationInputOnHost(
       manifest,
       ApplicationHostRunRequest{"host-fixture", "fixture", tree.path().string(),
@@ -515,7 +517,8 @@ void exerciseTinyMl(llvm::StringRef manifestPath,
               report.compileExitStatus == 0 &&
               report.executionExitStatus == 0 &&
               report.hostWallTimeNanoseconds.has_value(),
-          "real TinyML host selection did not pass its exact oracle");
+          "real TinyML host selection did not pass its exact oracle: " +
+              serialize(report));
   require(report.selection.cachedInputs.size() == 2 &&
               report.selection.cachedInputs[0].logicalName == "model" &&
               report.selection.cachedInputs[1].logicalName == "smoke-dataset" &&

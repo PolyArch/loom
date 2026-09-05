@@ -56,6 +56,9 @@ struct ApplicationSpatialInvocationPlan final {
     std::vector<std::uint32_t> resultBitCounts;
     std::vector<std::uint64_t> resultRootOperandOrdinals;
     std::vector<Site> sites;
+
+    llvm::Expected<std::uint64_t>
+    dispatchOperandOrdinal(std::uint64_t rootOperandOrdinal) const;
   };
 
   struct Callable final {

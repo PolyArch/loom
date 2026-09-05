@@ -254,9 +254,17 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
         });
     return CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt};
   }
-  if (code == std::make_error_code(std::errc::timed_out))
+  if (code == std::make_error_code(std::errc::timed_out)) {
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "structured_functional_replay";
+          fields["closure_status"] = "cancelled_or_timeout";
+          fields["diagnostic"] = message;
+        });
     return CachedReplayResult{ReplayResultKind::CancelledOrTimeout,
                               std::nullopt};
+  }
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }

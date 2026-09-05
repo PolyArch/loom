@@ -1,3 +1,4 @@
+#include "Frontend/Lowering/LoopIndependence.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Analysis/DenseParallelMemoryProjection.h"
 #include "Frontend/Analysis/MemoryProvenance.h"
@@ -932,6 +933,11 @@ struct ParallelCheckInfo {
     return info.unmodeledWrite->emitError(
         "loom-lower-graph-memory: parallel lane effect has no disjoint, "
         "atomic, reduction, or ordered proof");
+
+  if (auto forall = ::mlir::dyn_cast<::mlir::scf::ForallOp>(info.op))
+    if (::loom::lowering::proveIndependentIterations(forall) ==
+        ::loom::lowering::ParallelDependenceResult::ProvenIndependent)
+      return ::mlir::success();
 
   bool anyWrite =
       ::llvm::any_of(info.accesses, [](const ParallelMemoryAccess &access) {

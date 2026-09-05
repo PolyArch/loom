@@ -1910,4 +1910,61 @@ deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
       context->unconditionalDependencyArcs().end());
 }
 
+llvm::Error
+validateUnconditionalHandshakeClosure(const FabricArtifactView &view) {
+  auto arcs = deriveUnconditionalHandshakeDependencyArcs(view);
+  if (!arcs)
+    return arcs.takeError();
+
+  struct KeyedArc final {
+    std::vector<std::uint8_t> source;
+    std::vector<std::uint8_t> destination;
+  };
+  std::vector<KeyedArc> keyedArcs;
+  keyedArcs.reserve(arcs->size());
+  std::set<std::vector<std::uint8_t>> orderedSignals;
+  for (const HandshakeDependencyArc &arc : *arcs) {
+    KeyedArc keyed{detail::handshakeSignalKey(arc.source),
+                   detail::handshakeSignalKey(arc.destination)};
+    orderedSignals.insert(keyed.source);
+    orderedSignals.insert(keyed.destination);
+    keyedArcs.push_back(std::move(keyed));
+  }
+  std::map<std::vector<std::uint8_t>, std::uint32_t> signalOrdinals;
+  for (const std::vector<std::uint8_t> &signal : orderedSignals)
+    signalOrdinals.emplace(signal,
+                           static_cast<std::uint32_t>(signalOrdinals.size()));
+
+  std::vector<std::vector<std::uint32_t>> adjacency(signalOrdinals.size());
+  std::vector<std::uint32_t> indegree(signalOrdinals.size(), 0);
+  std::set<std::pair<std::uint32_t, std::uint32_t>> uniqueArcs;
+  for (const KeyedArc &arc : keyedArcs) {
+    const std::uint32_t source = signalOrdinals.at(arc.source);
+    const std::uint32_t destination = signalOrdinals.at(arc.destination);
+    if (!uniqueArcs.emplace(source, destination).second)
+      continue;
+    adjacency[source].push_back(destination);
+    ++indegree[destination];
+  }
+
+  std::vector<std::uint32_t> ready;
+  ready.reserve(signalOrdinals.size());
+  for (std::uint32_t signal = 0; signal < indegree.size(); ++signal)
+    if (indegree[signal] == 0)
+      ready.push_back(signal);
+  std::size_t retired = 0;
+  while (!ready.empty()) {
+    const std::uint32_t signal = ready.back();
+    ready.pop_back();
+    ++retired;
+    for (std::uint32_t dependent : adjacency[signal])
+      if (--indegree[dependent] == 0)
+        ready.push_back(dependent);
+  }
+  if (retired != signalOrdinals.size())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+        "fabric_artifact_invalid: UnconditionalCombinationalHandshakeCycle");
+  return llvm::Error::success();
+}
+
 } // namespace loom::fabric

@@ -4,6 +4,7 @@
 #include "BuildDiagnosticsInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
 #include "Common/InvocationDiagnosticLog.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/PreMappingEvidence.h"

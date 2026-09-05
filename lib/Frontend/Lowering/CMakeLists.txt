@@ -2,6 +2,7 @@ add_mlir_library(LoomFrontendLowering
   CanonicalDataflowLowering.cpp
   ExactMemRefLayout.cpp
   GraphMemoryAddressing.cpp
+  LoopIndependence.cpp
   GraphParallelLowering.cpp
   GraphRegionAdmission.cpp
   GraphRegionLowering.cpp

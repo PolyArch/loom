@@ -146,17 +146,17 @@ void spectrumSelectionProjection() {
               loom::dse::VerifiedResourceTimeSpectrum{root, root, {scenario}}},
           loom::dse::ResourceTimeSpectrumFunnelAccounting{}}};
   require(!classifyResourceTimeSelectionOutcome(verified,
-                                                SpectrumClass::Intermediate),
+                                                SpectrumClass::Intermediate, root),
           "verified requested endpoint was rejected");
   require(classifyResourceTimeSelectionOutcome(verified,
-                                               SpectrumClass::MaxSpatial) ==
+                                               SpectrumClass::MaxSpatial, root) ==
               PairDisposition::UnsupportedSemantic,
           "verified non-endpoint schedule lost its unsupported outcome");
   std::array<std::uint8_t, loom::ComponentViewDigest::byteSize> digestBytes{};
   const loom::ComponentViewDigest digest =
       take(loom::ComponentViewDigest::fromBytes(digestBytes));
-  ApplicationIncrementalMappingObservation mismatchedRepair(root, root, digest,
-                                                            digest);
+  loom::application::ApplicationIncrementalMappingObservation mismatchedRepair(
+      root, root, digest, digest);
   mismatchedRepair.spectrumEndpoint =
       loom::dse::PreMappingSpectrumEndpoint::MaxSpatial;
   mismatchedRepair.coldSelectionSpectrum = *verified;
@@ -285,7 +285,8 @@ void qualityDispositionProjection() {
       {},
       {},
       {},
-      {}};
+      {},
+      std::nullopt};
   const std::array cases = {
       std::pair{QualityDisposition::Unsupported,
                 PairDisposition::UnsupportedSemantic},
@@ -381,6 +382,8 @@ void qualityDispositionProjection() {
   };
   ApplicationIncrementalMappingObservation incompleteRepair(root, root, digest,
                                                             digest);
+  incompleteRepair.spectrumEndpoint =
+      prepared.resourceTimePolicy.spectrumEndpoint;
   incompleteRepair.coldSelectionSpectrum = unsupportedSpectrum();
   incompleteRepair.incrementalSelectionSpectrum = unsupportedSpectrum();
   const std::array repairObservations = {std::move(incompleteRepair)};

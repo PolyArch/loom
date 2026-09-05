@@ -1,3 +1,4 @@
+#include "Frontend/Lowering/LoopIndependence.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -1004,17 +1005,17 @@ module {
           parallelChild.structuredProgram))
     fail("the raised-pointer parallel edge did not replay: " +
          llvm::toString(std::move(error)));
-  std::size_t forallCount = 0;
+  std::size_t threadDomainCount = 0;
   std::size_t i64GepCount = 0;
   parallelChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
-        forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
+        threadDomainCount += llvm::isa<dataflow::ThreadOp>(operation);
         if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation))
           i64GepCount +=
               llvm::hasSingleElement(gep.getDynamicIndices()) &&
               gep.getDynamicIndices().front().getType().isInteger(64);
       });
-  if (forallCount != 1 || i64GepCount != 2)
+  if (threadDomainCount != 1 || i64GepCount != 2)
     fail("tiled parallel materialization lost its i64 pointer coordinates");
 
   auto sameRoot = materializeRootRelativeOwnership(parseProgram(R"mlir(
@@ -1091,12 +1092,17 @@ module {
         const auto *refusal =
             std::get_if<loom::frontend::StructuredScopRefusal>(&outcome);
         if (!refusal || refusal->kind != expected)
-          fail("a raised-pointer exclusion lost its typed refusal");
+          fail((llvm::Twine("raised-pointer exclusion expected ") +
+               loom::frontend::structuredScopRefusalKindSpelling(expected) +
+               ", observed " +
+               (refusal ? loom::frontend::structuredScopRefusalKindSpelling(
+                              refusal->kind)
+                        : "admitted")).str());
         return candidate;
       };
   requireRefusal(
       R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @minimum_lower_bound(%output: !llvm.ptr) {
     %minimum = arith.constant -9223372036854775808 : i64
     %c0 = arith.constant 0 : i64
@@ -1113,7 +1119,7 @@ module {
 )mlir",
       loom::frontend::StructuredScopRefusalKind::ProviderDomainNotAdmitted);
   requireRefusal(R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @volatile_store(%output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1131,7 +1137,7 @@ module {
                  loom::frontend::StructuredScopRefusalKind::UnsupportedEffect);
   requireRefusal(
       R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @not_inbounds(%output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1149,7 +1155,7 @@ module {
       loom::frontend::StructuredScopRefusalKind::NonContiguousAccess);
   requireRefusal(
       R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @unknown_alias(%input: !llvm.ptr, %output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1168,7 +1174,7 @@ module {
 )mlir",
       loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished);
   requireRefusal(R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @overlapping_bytes(%output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1187,7 +1193,7 @@ module {
                      AccessRelationProofNotEstablished);
 
   auto mixedWidth = requireRefusal(R"mlir(
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @mixed_width_partition(%state: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1214,8 +1220,8 @@ module {
   auto mixedWidthLoop =
       llvm::dyn_cast_or_null<mlir::scf::ForOp>(mixedWidthEntity.operation);
   if (!mixedWidthLoop ||
-      loom::raising::proveIndependentIterations(mixedWidthLoop) ==
-          loom::raising::ParallelDependenceResult::ProvenIndependent)
+      loom::lowering::proveIndependentIterations(mixedWidthLoop) ==
+          loom::lowering::ParallelDependenceResult::ProvenIndependent)
     fail("mixed-width byte partitions acquired a parallel proof");
 }
 
@@ -1332,12 +1338,12 @@ module {
     fail("reduction composition vector edge did not replay: " +
          llvm::toString(std::move(error)));
 
-  std::size_t forallCount = 0;
+  std::size_t threadDomainCount = 0;
   reductionChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
-        forallCount += llvm::isa<mlir::scf::ForallOp>(operation);
+        threadDomainCount += llvm::isa<dataflow::ThreadOp>(operation);
       });
-  if (forallCount != 1)
+  if (threadDomainCount != 1)
     fail("composed schedule lineage lost its independent parallel sibling");
 }
 

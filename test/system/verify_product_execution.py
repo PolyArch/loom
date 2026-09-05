@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from loom_evidence_portfolio import (  # noqa: E402
     RUNTIME_BINDING_SCHEMA,
     RUNTIME_BINDING_VERSION,
+    RUNTIME_MANIFEST_SCHEMA,
+    RUNTIME_MANIFEST_VERSION,
     collect_portfolio_inventory,
     decode_artifact_root_hex as decode_root_hex,
     validate_resource_time_mapping_repair_transition,
@@ -730,16 +732,16 @@ def validate_mapping_work(
                     observation.get("value") is None,
                     "unsupported objective dimension was encoded as zero",
                 )
-    initial_system_invocations = join.get("system_pnr_invocation_count")
+    system_invocations = join.get("system_pnr_invocation_count")
     verified_alternatives = join.get("verified_alternatives")
     transitions = join.get("application_incremental_mapping_transitions")
     require(
-        isinstance(initial_system_invocations, int)
-        and initial_system_invocations > 0
+        isinstance(system_invocations, int)
+        and system_invocations > 0
         and isinstance(verified_alternatives, int)
         and verified_alternatives > 0
         and isinstance(join.get("system_pnr_dispatch_count"), int)
-        and join["system_pnr_dispatch_count"] >= initial_system_invocations
+        and join["system_pnr_dispatch_count"] >= system_invocations
         and isinstance(transitions, list),
         "System invocation ledger disagrees with the application join",
     )
@@ -795,31 +797,33 @@ def validate_mapping_work(
         and len(verified_plan_ordinals) <= published_slots,
         "verified Mapping inventory does not reconcile with published roots",
     )
-    if transitions:
-        # Incremental hardware-reopen work runs under the first-verified
-        # product goal, where every System row publishes exactly one
-        # candidate: one row per verified alternative plus a cold and an
-        # incremental row per transition.
-        require(
-            len(system) == verified_alternatives + 2 * len(transitions),
-            "verified System rows do not reconcile with cold and incremental"
-            " work",
-        )
-    else:
-        # A provider publication is a concrete SystemMapping slot. One
-        # verified planning alternative may publish more than one root, and a
-        # runtime-qualified tail may contribute roots from several invocations;
-        # compare the aggregate only as a bound while the candidate inventory
-        # above checks the exact plan and root witnesses.
-        require(
-            verified_alternatives <= published_slots,
-            "verified System alternatives exceed published roots",
-        )
+    # A repair may stop in its lower prerequisites before System PnR, and
+    # completed invocations can publish multiple roots. Reconcile the actual
+    # provider ledger with observed search rows instead of inventing two
+    # System searches per transition.
+    repair_system_invocations = sum(
+        transition[f"{side}_provider_work"]["system_pnr_invocations"]
+        for transition in transitions
+        for side in ("cold", "incremental")
+    )
+    require(
+        len(system) == system_invocations
+        and repair_system_invocations <= system_invocations,
+        "System rows do not reconcile with aggregate and repair provider work",
+    )
+    require(
+        verified_alternatives <= published_slots,
+        "verified System alternatives exceed published roots",
+    )
     incremental_system_rows = [
         row for row in system if row.get("migration_seed_attempt_slots") == 1
     ]
     require(
-        len(incremental_system_rows) == len(transitions)
+        len(incremental_system_rows)
+        == sum(
+            transition["incremental_provider_work"]["system_pnr_invocations"]
+            for transition in transitions
+        )
         and all(
             row.get("migration_seed_prepared") == 1 for row in incremental_system_rows
         ),
@@ -1108,9 +1112,9 @@ def validate_manifest(
         validate_reference(manifest.get(field), field)
     require(
         manifest["application_runtime_manifest"].get("schema")
-        == "loom.application.runtime_manifest"
+        == RUNTIME_MANIFEST_SCHEMA
         and manifest["application_runtime_manifest"].get("schema_version")
-        == "5.0",
+        == RUNTIME_MANIFEST_VERSION,
         "execution workspace names the wrong Application runtime manifest",
     )
     if require_mapped_rtl:

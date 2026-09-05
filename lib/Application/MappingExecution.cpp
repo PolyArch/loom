@@ -821,7 +821,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                                       dse::CandidateGeneratorIncompleteReason::
                                           ProofNotEstablished)
                                 : std::nullopt,
-                            childMappings});
+                            childMappings, std::nullopt});
         if (selectedExecution || qualityIncomplete ||
             (qualitySelection &&
              qualitySelection->executionOrdinal != childOrdinal) ||

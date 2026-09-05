@@ -28,7 +28,7 @@ entry:
 
 loop:
   %iv = phi i64 [ 0, %entry ], [ %next, %loop ]
-  %address = getelementptr i32, ptr %output, i64 %iv
+  %address = getelementptr inbounds i32, ptr %output, i64 %iv
   store i32 0, ptr %address, align 4
   %next = add nuw nsw i64 %iv, 1
   %done = icmp eq i64 %next, 8

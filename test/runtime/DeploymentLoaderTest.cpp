@@ -212,7 +212,7 @@ const RuntimeProviderDescriptor &nonPortableRuntimeProviderDescriptor() {
       portable.supportsHardwareReportedIdentity,
       portable.supportsTrustedImmutableIdentity,
       portable.supportsAtomicProgrammingMulticast,
-      portable.supportsPreparedActivationReplacement};
+      portable.supportsPreparedActivationReplacement, std::nullopt};
   return descriptor;
 }
 
@@ -227,7 +227,7 @@ const RuntimeProviderDescriptor &unicastRuntimeProviderDescriptor() {
       multicast.supportsHardwareReportedIdentity,
       multicast.supportsTrustedImmutableIdentity,
       false,
-      multicast.supportsPreparedActivationReplacement};
+      multicast.supportsPreparedActivationReplacement, std::nullopt};
   return descriptor;
 }
 

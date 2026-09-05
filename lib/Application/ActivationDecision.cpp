@@ -1062,7 +1062,7 @@ canonicalizeScheduleHints(std::vector<dse::ResourceTimeScheduleHint> &hints) {
       return keys[lhs].digest.bytes() < keys[rhs].digest.bytes();
     return keys[lhs].bytes < keys[rhs].bytes;
   });
-  for (std::size_t index = 1; index != order.size(); ++index)
+  for (std::size_t index = 1; index < order.size(); ++index)
     if (keys[order[index - 1]].digest == keys[order[index]].digest)
       return reject(ApplicationActivationDecisionErrorReason::ScheduleMismatch,
                     keys[order[index - 1]].bytes == keys[order[index]].bytes

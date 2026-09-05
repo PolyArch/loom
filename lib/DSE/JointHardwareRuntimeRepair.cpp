@@ -477,21 +477,6 @@ executeResourceTimeAdjacentMappingRepair(
     incrementalPrerequisiteReasons.push_back(incomplete->reason());
   lowerExecution->summary.incrementalReopenWallTimeNanoseconds =
       lowerExecution->summary.executionWallTimeNanoseconds;
-  auto correspondence =
-      pnr::SystemExecutionBindingCorrespondence::getIdentity(system, artifacts);
-  if (!correspondence)
-    return correspondence.takeError();
-  auto context = deriveSystemMappingMigrationContext(*childPlan);
-  if (!context)
-    return context.takeError();
-  auto seed = pnr::finalizeSystemMappingMigrationSeed(
-      *parentMapping, *correspondence, *context, parentCone->reopenedRoots,
-      artifacts);
-  if (!seed)
-    return seed.takeError();
-  if (llvm::Error error = bindFinalizedSystemMappingMigrationSeed(
-          *childPlan, seed->reference(), artifacts))
-    return std::move(error);
   if (!incrementalPrerequisiteReasons.empty()) {
     const std::vector<ArtifactRootReference> coldMappings =
         mappingRoots(*coldExecution);
@@ -505,7 +490,7 @@ executeResourceTimeAdjacentMappingRepair(
       return incrementalVerification.takeError();
     return JointResourceTimeAdjacentRepair{
         *parentMapping,
-        seed->reference(),
+        std::nullopt,
         std::move(*childPlan),
         coldExecution->summary.selectedMapping,
         std::nullopt,
@@ -532,6 +517,22 @@ executeResourceTimeAdjacentMappingRepair(
     return hybridSpatialMappings.takeError();
   if (llvm::Error error = bindImmutableSpatialMappingFrontier(
           *childPlan, *hybridSpatialMappings, artifacts))
+    return std::move(error);
+
+  auto correspondence =
+      pnr::SystemExecutionBindingCorrespondence::getIdentity(system, artifacts);
+  if (!correspondence)
+    return correspondence.takeError();
+  auto context = deriveSystemMappingMigrationContext(*childPlan);
+  if (!context)
+    return context.takeError();
+  auto seed = pnr::finalizeSystemMappingMigrationSeed(
+      *parentMapping, *correspondence, *context, parentCone->reopenedRoots,
+      artifacts);
+  if (!seed)
+    return seed.takeError();
+  if (llvm::Error error = bindFinalizedSystemMappingMigrationSeed(
+          *childPlan, seed->reference(), artifacts))
     return std::move(error);
 
   std::uint64_t lowerDispatches =
@@ -996,19 +997,6 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
 }
 
 } // namespace
-
-llvm::StringRef jointSystemMappingReuseDispositionSpelling(
-    JointSystemMappingReuseDisposition disposition) {
-  switch (disposition) {
-  case JointSystemMappingReuseDisposition::Preserved:
-    return "preserved";
-  case JointSystemMappingReuseDisposition::Reopened:
-    return "reopened";
-  case JointSystemMappingReuseDisposition::ColdFallback:
-    return "cold_fallback";
-  }
-  llvm_unreachable("unknown System Mapping reuse disposition");
-}
 
 static llvm::Expected<JointHardwareMutationChild>
 materializeJointModuleGrowthChild(HardwareRecipeGrowth growth,

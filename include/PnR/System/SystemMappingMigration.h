@@ -48,6 +48,8 @@ inline constexpr ArtifactSchemaDescriptor
 
 class SystemMappingMigrationContext final {
 public:
+  // This frontier contains eligible lower Mapping candidates, including
+  // unselected alternatives. The seed's parent owns the selected bindings.
   static llvm::Expected<SystemMappingMigrationContext>
   get(ArtifactRootReference childConstraints,
       std::vector<ArtifactRootReference> spatialMappings,

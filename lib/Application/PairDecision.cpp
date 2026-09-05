@@ -690,9 +690,13 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.cgraCycles,
           outcome.resourceCoreCost,
           std::nullopt,
-          std::nullopt};
-      mappingObservation.hardwareMutationRepairRecord =
-          outcome.hardwareMutationRepairRecord;
+          std::nullopt,
+          std::nullopt,
+          dse::ResourceTimeEstimateSupport::Unsupported,
+          dse::ResourceTimeEstimateSupport::Unsupported,
+          std::nullopt,
+          std::nullopt,
+          outcome.hardwareMutationRepairRecord};
       for (const dse::ResourceTimeCandidateFunnelEvaluation &evaluation :
            prepared.resourceTimeFunnel.evaluations) {
         if (evaluation.candidateIdentity != *planning.candidateIdentity)

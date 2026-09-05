@@ -187,7 +187,8 @@ deriveApplicationRuntimeResourceCoreCost(const JointDesignExecution &execution,
 
 struct JointResourceTimeAdjacentRepair final {
   ArtifactRootReference parentMapping;
-  ArtifactRootReference migrationSeed;
+  /// Present after the lower frontier has completed and can bind System PnR.
+  std::optional<ArtifactRootReference> migrationSeed;
   JointDesignExplorationPlan plan;
   std::optional<ArtifactRootReference> coldMapping;
   std::optional<ArtifactRootReference> incrementalMapping;
@@ -297,15 +298,6 @@ llvm::Expected<JointHardwareMutationChild>
 composeJointHardwareMutationChildren(JointHardwareMutationChild first,
                                      JointHardwareMutationChild second,
                                      const ArtifactStore &artifacts);
-
-enum class JointSystemMappingReuseDisposition : std::uint8_t {
-  Preserved,
-  Reopened,
-  ColdFallback,
-};
-
-llvm::StringRef jointSystemMappingReuseDispositionSpelling(
-    JointSystemMappingReuseDisposition disposition);
 
 /// Paired proof for one typed hardware mutation. The cold and preserve-first
 /// plans execute in independent journals and PnR sessions against the same

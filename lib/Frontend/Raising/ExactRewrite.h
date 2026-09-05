@@ -1,7 +1,7 @@
 #ifndef LOOM_LIB_FRONTEND_RAISING_EXACTREWRITE_H
 #define LOOM_LIB_FRONTEND_RAISING_EXACTREWRITE_H
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Region.h"
@@ -19,7 +19,7 @@ inline void collectOwnedOperationsPostOrder(
     ::llvm::SmallVectorImpl<::mlir::Operation *> &candidates) {
   for (::mlir::Block &block : region) {
     for (::mlir::Operation &op : block) {
-      if (isCallableOp(&op))
+      if (::loom::frontend::analysis::isCallableOp(&op))
         continue;
       for (::mlir::Region &nested : op.getRegions())
         collectOwnedOperationsPostOrder(nested, candidates);

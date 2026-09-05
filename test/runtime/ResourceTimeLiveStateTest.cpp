@@ -52,8 +52,8 @@ void requireSuccess(llvm::StringRef test, llvm::Error error) {
 
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mapping::MappingDialect,
-                  fabric::FabricDialect, mlir::arith::ArithDialect,
+  registry.insert<dataflow::DataflowDialect, ::mapping::MappingDialect,
+                  ::fabric::FabricDialect, mlir::arith::ArithDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect,
                   mlir::LLVM::LLVMDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -67,7 +67,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
       %start: none, %increment: i32, %memory: memref<16xi32>) -> i32
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %address = arith.constant 0 : index
+    %address = dataflow.constant %start {const_value = 0 : index} : index
     %prior, %read = dataflow.load %memory[%address] %start : memref<16xi32>
     %updated = arith.addi %prior, %increment : i32
     %stored = dataflow.store %memory[%address] %updated %read : memref<16xi32>
@@ -166,11 +166,11 @@ deriveOrderedRoots(llvm::StringRef test,
     events.push_back(dataflow::rootThreadCompletionEventFamily(root.ref));
   }
   const auto progress =
-      take(test, mapping::freezeMappingProgressModel(dataflow, events));
+      take(test, loom::mapping::freezeMappingProgressModel(dataflow, events));
   const auto precedes = [&](dataflow::RootThreadLaunchRef lhs,
                             dataflow::RootThreadLaunchRef rhs) {
     return take(test,
-                mapping::mappingEventPrecedes(
+                loom::mapping::mappingEventPrecedes(
                     progress, dataflow::rootThreadCompletionEventFamily(lhs),
                     dataflow::rootThreadStartEventFamily(rhs)));
   };
@@ -197,13 +197,13 @@ deriveOrderedRoots(llvm::StringRef test,
   return {roots[0], roots[1], roots[2]};
 }
 
-std::vector<fabric::AccCoreOccurrenceRef>
+std::vector<loom::fabric::AccCoreOccurrenceRef>
 rootTargets(llvm::StringRef test,
             const dataflow::CanonicalDataflowProgramView &dataflow,
-            const OrderedRoots &roots, fabric::AccCoreOccurrenceRef sentinel,
-            fabric::AccCoreOccurrenceRef producer,
-            fabric::AccCoreOccurrenceRef consumer) {
-  std::vector<fabric::AccCoreOccurrenceRef> result;
+            const OrderedRoots &roots, loom::fabric::AccCoreOccurrenceRef sentinel,
+            loom::fabric::AccCoreOccurrenceRef producer,
+            loom::fabric::AccCoreOccurrenceRef consumer) {
+  std::vector<loom::fabric::AccCoreOccurrenceRef> result;
   result.reserve(dataflow.rootThreadLaunches().size());
   for (const auto &root : dataflow.rootThreadLaunches()) {
     if (root.ref == roots.sentinel)
@@ -219,10 +219,10 @@ rootTargets(llvm::StringRef test,
   return result;
 }
 
-fabric::FabricPhysicalOccurrenceOwnerRef
-physicalCore(llvm::StringRef test, fabric::AccCoreOccurrenceRef core) {
-  return take(test, fabric::FabricPhysicalOccurrenceOwnerRef::create(
-                        fabric::FabricInventoryOwnerRef::of(core)));
+loom::fabric::FabricPhysicalOccurrenceOwnerRef
+physicalCore(llvm::StringRef test, loom::fabric::AccCoreOccurrenceRef core) {
+  return take(test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+                        loom::fabric::FabricInventoryOwnerRef::of(core)));
 }
 
 std::vector<ArtifactIdentity> implementationIdentities(
@@ -266,25 +266,22 @@ std::vector<ArtifactIdentity> implementationIdentities(
 pnr::ResourceTimeTransition
 makeTransitionDraft(const ArtifactRootReference &dataflow,
                     const OrderedRoots &roots,
-                    const mapping::FinalizedSystemMapping &parentMapping,
+                    const loom::mapping::FinalizedSystemMapping &parentMapping,
                     const deployment::FinalizedDeployment &parentDeployment,
-                    const mapping::FinalizedSystemMapping &childMapping,
+                    const loom::mapping::FinalizedSystemMapping &childMapping,
                     const deployment::FinalizedDeployment &childDeployment,
-                    fabric::AccCoreOccurrenceRef producerCore,
-                    fabric::AccCoreOccurrenceRef consumerCore) {
-  pnr::ResourceTimeTransition transition;
-  transition.trigger =
-      dataflow::rootThreadCompletionEventFamily(roots.producer);
-  transition.safePoint = pnr::ResourceTimeSafePointReference{
-      dataflow, pnr::ResourceTimeSafePointKind::Completion};
-  transition.parent = {parentMapping.reference(), parentDeployment.reference()};
-  transition.child = {childMapping.reference(), childDeployment.reference()};
-  transition.beforeActive = {
-      {roots.producer, {physicalCore("makeTransitionDraft", producerCore)}}};
-  transition.afterActive = {
-      {roots.consumer, {physicalCore("makeTransitionDraft", consumerCore)}}};
-  transition.completedBefore = {roots.sentinel};
-  return transition;
+                    loom::fabric::AccCoreOccurrenceRef producerCore,
+                    loom::fabric::AccCoreOccurrenceRef consumerCore) {
+  return {
+      dataflow::rootThreadCompletionEventFamily(roots.producer),
+      pnr::ResourceTimeSafePointReference{
+          dataflow, pnr::ResourceTimeSafePointKind::Completion},
+      {parentMapping.reference(), parentDeployment.reference()},
+      {childMapping.reference(), childDeployment.reference()},
+      {{roots.producer, {physicalCore("makeTransitionDraft", producerCore)}}},
+      {{roots.consumer, {physicalCore("makeTransitionDraft", consumerCore)}}},
+      {roots.sentinel},
+      {}, {}, {}, {}, {}, {}};
 }
 
 template <typename T>
@@ -343,9 +340,12 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
 
   const auto hardware = eda::test::buildMappedSpatialHardwareFixture(
       test, dataflowArtifact, context, artifacts, blobs,
-      deployment::test::MappedSpatialSystemSpec{2});
+      deployment::test::MappedSpatialSystemSpec{
+          2, false, deployment::test::MappedSystemMemoryTopology::PerAccCore,
+          loom::fabric::ResetInitialState::Asserted,
+          deployment::test::MappedSystemTransportMode::FixedLocal});
   const auto system =
-      take(test, fabric::requireSystemRoot(hardware.system.view()));
+      take(test, loom::fabric::requireSystemRoot(hardware.system.view()));
   const auto cores = system.artifact().accCoreOccurrences();
   deployment::test::require(test, cores.size() == 2,
                             "replay System does not have two AccCores");
@@ -354,7 +354,7 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
   const auto parentTargets =
       rootTargets(test, dataflow, roots, cores[1], cores[0], cores[0]);
   const auto childTargets =
-      rootTargets(test, dataflow, roots, cores[0], cores[0], cores[1]);
+      rootTargets(test, dataflow, roots, cores[0], cores[1], cores[1]);
   const auto parentMapping = deployment::test::buildMappedSystemMapping(
       test, dataflowArtifact, hardware.system, spatialMappings, artifacts,
       parentTargets);
@@ -512,6 +512,8 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
 
   const auto orderedDataflowArtifact =
       buildOrderedChannelDataflow(test, context);
+  const auto orderedDataflowReference = take(
+      test, dataflow::publishCanonicalDataflow(orderedDataflowArtifact, artifacts));
   const auto orderedDataflow = take(test, orderedDataflowArtifact.view());
   const auto orderedRoots = deriveOrderedRoots(test, orderedDataflow);
   const auto orderedParentTargets = rootTargets(
@@ -530,9 +532,6 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
   const auto orderedChild = deployment::test::buildMappedSystemDeployment(
       test, orderedDataflowArtifact, hardware.system, orderedChildMapping,
       hardware.implementations, {}, artifacts, blobs, tree);
-  const ArtifactRootReference orderedDataflowReference{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version, orderedDataflow.identity()};
   expectTransitionRefusal(
       test,
       pnr::finalizeResourceTimeTransition(

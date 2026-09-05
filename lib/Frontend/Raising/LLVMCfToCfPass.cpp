@@ -25,7 +25,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactRewrite.h"
 #include "PreservedHints.h"
 
@@ -155,7 +155,7 @@ struct LLVMCfToCfPass
     patterns.add<LLVMBrToCfBr, LLVMCondBrToCfCondBr, LLVMSwitchToCfSwitch>(ctx);
     ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
           loom::raising::applyExactPatternsOnce(region, frozen);
           return ::mlir::success();

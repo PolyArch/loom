@@ -142,31 +142,8 @@ createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 // runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 
-enum class ParallelDependenceResult : std::uint8_t {
-  ProvenIndependent,
-  ProvenDependent,
-  ProofNotEstablished,
-};
-
-/// The single typed owner of SCF iteration-independence admission. Unknown
-/// facts are deliberately distinct from a proven dependence so callers can
-/// preserve serial semantics without treating conservative rejection as an
-/// error.
-ParallelDependenceResult proveIndependentIterations(::mlir::scf::ForOp loop);
-
-ParallelDependenceResult
-proveIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest);
-
-/// Compatibility predicate for callers that only need the positive admission
-/// bit. The typed `proveIndependentIterations` result remains authoritative.
-bool hasProvenIndependentIterations(::mlir::scf::ForOp loop);
-
-/// Compatibility predicate for a complete rectangular loop nest. Unknown
-/// layout, aliasing, or coordinate facts remain serial.
-bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest);
-
 /// Materializes the same exact conservative parallelization recognized by
-/// hasProvenIndependentIterations as one scf.for-to-scf.forall rewrite.
+/// lowering::proveIndependentIterations as one scf.for-to-scf.forall rewrite.
 /// Failure leaves the loop unchanged.
 ::mlir::LogicalResult
 materializeIndependentLoopAsForall(::mlir::scf::ForOp loop);

@@ -182,7 +182,9 @@ executeSpatialTransportRuntimeRepair(
     return invalid("CEGAR replay did not reproduce the supplied promotion");
   result.candidatesPlanned = cegar->iterations.size();
   result.candidatesReserved = result.candidatesPlanned;
-  for (const auto [ordinal, iteration] : llvm::enumerate(cegar->iterations)) {
+  for (const auto &indexed : llvm::enumerate(cegar->iterations)) {
+    const auto ordinal = indexed.index();
+    const auto &iteration = indexed.value();
     result.constraintSets.push_back(iteration.accumulatedConstraints);
     result.warmSeedAccounting = iteration.warmSeed;
     result.exactRepair = iteration.repair;

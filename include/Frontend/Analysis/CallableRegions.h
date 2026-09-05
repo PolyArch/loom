@@ -1,5 +1,5 @@
-#ifndef LOOM_LIB_FRONTEND_RAISING_CALLABLEREGIONS_H
-#define LOOM_LIB_FRONTEND_RAISING_CALLABLEREGIONS_H
+#ifndef LOOM_FRONTEND_ANALYSIS_CALLABLEREGIONS_H
+#define LOOM_FRONTEND_ANALYSIS_CALLABLEREGIONS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -10,7 +10,7 @@
 #include "llvm/ADT/STLFunctionalExtras.h"
 
 namespace loom {
-namespace raising {
+namespace frontend::analysis {
 
 // True when `op` is a callable whose own region is the subject of a separate
 // region-level raising decision. An S0 program contains exactly two callable
@@ -94,7 +94,7 @@ inline ::mlir::WalkResult forEachOwnedOperation(
       });
 }
 
-} // namespace raising
+} // namespace frontend::analysis
 } // namespace loom
 
-#endif // LOOM_LIB_FRONTEND_RAISING_CALLABLEREGIONS_H
+#endif // LOOM_FRONTEND_ANALYSIS_CALLABLEREGIONS_H

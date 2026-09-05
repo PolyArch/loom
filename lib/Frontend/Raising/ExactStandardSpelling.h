@@ -1,7 +1,7 @@
 #ifndef LOOM_LIB_FRONTEND_RAISING_EXACTSTANDARDSPELLING_H
 #define LOOM_LIB_FRONTEND_RAISING_EXACTSTANDARDSPELLING_H
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -143,7 +143,7 @@ inline bool statesFloatingPolicy(::mlir::LLVM::LLVMFuncOp funcOp) {
 // standard operation cannot restate.
 inline bool enclosingFloatingPolicyBlocksRewrite(::mlir::Operation *op) {
   auto funcOp = ::mlir::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(
-      getNearestCallableOp(op));
+      ::loom::frontend::analysis::getNearestCallableOp(op));
   return funcOp && statesFloatingPolicy(funcOp);
 }
 

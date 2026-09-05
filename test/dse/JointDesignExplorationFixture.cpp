@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -78,7 +79,8 @@ mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
   registry
       .insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-              mlir::DLTIDialect, mlir::func::FuncDialect, loom::LoomDialect>();
+              mlir::DLTIDialect, mlir::func::FuncDialect,
+              mlir::LLVM::LLVMDialect, loom::LoomDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -101,13 +103,13 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
         : (none, i32) -> (i32, none)
     dataflow.thread.yield %done : none
   }
-  func.func private @host() {
+  llvm.func internal @host() {
     %value = arith.constant )mlir" +
                              std::to_string(constant) + R"mlir( : i32
     %extent = arith.constant 4 : index
     %thread = dataflow.thread.launch @worker(%value) grid(%extent)
         : (i32) -> !dataflow.thread_token
-    return
+    llvm.return
   }
 }
 
@@ -386,8 +388,10 @@ void exerciseAdjacentResourceTimeMappingRepair(
   if (!adjacentExecution.invocationRunKey() ||
       *adjacentExecution.invocationRunKey() != adjacentClosure.runKey().bytes())
     fail("adjacent repair closure omitted its invocation semantic input");
+  if (!adjacentRepair.migrationSeed)
+    fail("completed adjacent repair omitted its finalized migration seed");
   const auto adjacentSeed = take(pnr::importSystemMappingMigrationSeed(
-      adjacentRepair.migrationSeed, store));
+      *adjacentRepair.migrationSeed, store));
   if (adjacentSeed.reopenedRoots() !=
           llvm::ArrayRef<::dataflow::RootThreadLaunchRef>(adjacentRoots) ||
       adjacentRepair.coldExecution.summary.techMappingDispatchCount == 0 ||

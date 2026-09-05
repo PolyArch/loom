@@ -68,7 +68,7 @@ except (OSError, loom_gem5_build.BuildError):
 # pass through before the probe runs, because a tool launcher such as VCS
 # resolves its installation from them.
 llvm_config.with_system_environment(
-    ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
+    ["HOME", "INCLUDE", "LIB", "TMP", "TEMP", "TMPDIR",
      "JOBS", "LOOM_TEST_JOBS",
      "LOOM_EXTERNAL_TOOL_CACHE_ROOT", "LOOM_VERBOSE_LEVEL",
      "LOOM_NATIVE_RUNNER_JOBS", "LOCALDOMAIN", "LM_LICENSE_FILE",
@@ -191,6 +191,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "test", "mapping"),
     os.path.join(config.loom_obj_root, "test", "pnr"),
     os.path.join(config.loom_obj_root, "test", "simulator"),
+    os.path.join(config.loom_obj_root, "test", "runtime"),
     os.path.join(config.loom_obj_root, "test", "system"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,

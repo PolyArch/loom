@@ -34,7 +34,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactStandardSpelling.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -164,9 +164,9 @@ struct MaterializeFMulAddPass
     }
 
     ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          (void)loom::raising::forEachOwnedOperation(
+          (void)loom::frontend::analysis::forEachOwnedOperation(
               region, [&](::mlir::Operation *op) {
                 appendRepresentable(op, selected);
                 return ::mlir::WalkResult::advance();
@@ -207,7 +207,7 @@ void materializeFMulAddInOperation(::mlir::Operation &root,
   ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;
   root.walk<::mlir::WalkOrder::PreOrder>(
       [&](::mlir::Operation *operation) -> ::mlir::WalkResult {
-        if (operation != &root && isCallableOp(operation))
+        if (operation != &root && ::loom::frontend::analysis::isCallableOp(operation))
           return ::mlir::WalkResult::skip();
         appendRepresentable(operation, selected);
         return ::mlir::WalkResult::advance();

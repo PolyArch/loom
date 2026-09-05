@@ -10,7 +10,7 @@
 
 #include "Frontend/Raising/Passes.h"
 
-#include "CallableRegions.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactRewrite.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -176,7 +176,7 @@ struct DeduplicateSCFWhileStatePass final
     ::mlir::RewritePatternSet patterns(&getContext());
     patterns.add<DeduplicateSCFWhileState>(&getContext());
     ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
-    (void)loom::raising::forEachCallableRegion(
+    (void)loom::frontend::analysis::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
           loom::raising::applyExactPatternsOnce(region, frozen);
           return ::mlir::success();

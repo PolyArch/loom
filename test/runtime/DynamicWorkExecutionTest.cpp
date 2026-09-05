@@ -337,7 +337,8 @@ void dynamicWorkTraversesMappingAndJoins() {
   const std::array<mlir::Type, 2> messagePayloads{
       mlir::NoneType::get(&context), mlir::IntegerType::get(&context, 32)};
   auto system = loom::deployment::test::buildMappedSpatialSystem(
-      test, spatialCore, messagePayloads, artifacts, false);
+      test, spatialCore, messagePayloads, artifacts,
+      loom::deployment::test::MappedSpatialSystemSpec{});
   auto systemMapping = loom::deployment::test::buildMappedSystemMapping(
       test, dataflow, system, {spatialMapping}, artifacts);
 

@@ -875,7 +875,8 @@ execute(Engine engine, llvm::StringRef workspace,
     return spatialInvocations.takeError();
   return CompletedRun{
       engine,       std::move(*requestRef), std::move(*evidenceRef),
-      executionRef, std::move(*imported),   std::move(*spatialInvocations)};
+      executionRef, std::move(*imported),   std::move(*spatialInvocations),
+      std::nullopt, std::nullopt};
 }
 
 using loom::system_run::SpatialInvocationCase;

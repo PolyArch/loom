@@ -1088,14 +1088,8 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       "changed-programming fixture selected another child Mapping");
   auto changedProgrammingDraft = draft;
   changedProgrammingDraft.child.deployment = changedProgramming.reference();
-  const auto changedProgrammingTransition =
-      take(test, pnr::finalizeResourceTimeTransition(
-                     std::move(changedProgrammingDraft), artifacts, blobs));
-  deployment::test::require(
-      test,
-      changedProgrammingTransition.reprogrammingTimePicoseconds.value_or(0) !=
-          0,
-      "changed configuration words have no provider-derived cost");
+  requireFinalizationFailure(std::move(changedProgrammingDraft),
+                             "hardware_binding_changed");
 
   auto wrongTrigger = transition;
   wrongTrigger.trigger = dataflow::rootThreadStartEventFamily(root);
