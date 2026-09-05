@@ -1125,6 +1125,20 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
     std::uint64_t dequeues = 0;
     std::uint64_t publications = 0;
   };
+  std::optional<std::uint64_t> pendingProducer;
+  const auto checkProducer = [&]() {
+    if (!pendingProducer)
+      return;
+    const auto residency = transport.storageResidencyDiagnostics(0);
+    const bool accepted = llvm::any_of(residency, [&](const auto &entry) {
+      return entry.producerActorOrdinal == semanticOrdinal(left) &&
+             entry.occurrenceOrdinal == *pendingProducer;
+    });
+    require(transport.actorSourcesAvailable(semanticOrdinal(left)) == accepted,
+            "retirement of an older token changed the pending producer gate");
+    if (accepted)
+      pendingProducer.reset();
+  };
   const auto runToQuiescence = [&]() {
     EpochObservation observed;
     for (unsigned iteration = 0; iteration != 64; ++iteration) {
@@ -1141,6 +1155,7 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
         auto frame = take(physical.advance());
         require(frame.has_value(), "virtual-channel physical event vanished");
         (void)take(transport.acceptPhysicalEvents(*frame));
+        checkProducer();
         continue;
       }
       auto frame = take(transport.advance());
@@ -1162,6 +1177,7 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
       if (commitRequested)
         observed.offerAdvancesSinceLastCommit = 0;
       observed.publications += frame->publications.size();
+      checkProducer();
     }
     fail("virtual-channel rotation did not reach quiescence within the "
          "frame budget");
@@ -1229,6 +1245,63 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
           "the remaining channel did not close its own rotation");
   require(!transport.nextCoordinate() && !physical.nextCoordinate(),
           "the remaining refused channel kept rotating");
+  // Another occurrence reuses the exact route while its oldest token remains
+  // resident. A third waits upstream of the full pool. Old retirement must
+  // preserve that pending result until its own durable handoff.
+  for (std::uint64_t occurrence = 1; occurrence != storage.capacity;
+       ++occurrence) {
+    require(transport.actorSourcesAvailable(semanticOrdinal(left)),
+            "durable enqueue retained an end-to-end producer gate");
+    pendingProducer = occurrence;
+    emissions.clear();
+    emissions.push_back(
+        {semanticOrdinal(left), occurrence, 0, 0, token(11 + 11 * occurrence)});
+    if (llvm::Error error = transport.acceptActorEmissions(
+            coordinate(40 + occurrence * 20), emissions))
+      fail(llvm::toString(std::move(error)));
+    const EpochObservation resident = runToQuiescence();
+    require(resident.enqueues == 1 && resident.dequeues == 0 &&
+                resident.publications == 0 && !pendingProducer,
+            "repeated producer did not hand off into the nonfull FIFO");
+    const auto entries = transport.storageResidencyDiagnostics(0);
+    require(entries.size() == occurrence + 1,
+            "repeated occurrence overwrote resident traversal state");
+    for (auto [index, entry] : llvm::enumerate(entries))
+      require(entry.occurrenceOrdinal == index &&
+                  entry.producerActorOrdinal == semanticOrdinal(left),
+              "FIFO occurrence order or producer identity changed");
+  }
+  pendingProducer = storage.capacity;
+  emissions.clear();
+  emissions.push_back({semanticOrdinal(left), storage.capacity, 0, 0,
+                       token(11 + 11 * storage.capacity)});
+  if (llvm::Error error =
+          transport.acceptActorEmissions(coordinate(160), emissions))
+    fail(llvm::toString(std::move(error)));
+  const EpochObservation full = runToQuiescence();
+  require(full.enqueues == 0 && full.dequeues == 0 && pendingProducer &&
+              !transport.actorSourcesAvailable(semanticOrdinal(left)),
+          "full FIFO admitted a token or released its pending producer");
+  // Drain each occurrence exactly once, preserving same-tag FIFO order and
+  // releasing all occurrence state and downstream reservations.
+  for (std::uint64_t occurrence = 0; occurrence != storage.capacity + 1;
+       ++occurrence) {
+    leftSink.pop_front();
+    if (llvm::Error error =
+            transport.retryBlocked(coordinate(200 + occurrence * 20)))
+      fail(llvm::toString(std::move(error)));
+    const EpochObservation drained = runToQuiescence();
+    require(drained.dequeues == 1 && drained.publications == 1 &&
+                leftSink.size() == 1 &&
+                take(tokenBitPattern(leftSink.front(),
+                                     mlir::IntegerType::get(&context(), 32))) ==
+                    llvm::APInt(32, 11 + 11 * occurrence),
+            "overlapping occurrences did not drain exactly once in FIFO order");
+  }
+  require(transport.storageResidencyDiagnostics(0).empty() &&
+              transport.pendingTransferDiagnostics().empty() &&
+              !transport.hasBlockedTransfers() && !pendingProducer,
+          "draining overlapping occurrences retained transport state");
 }
 
 } // namespace

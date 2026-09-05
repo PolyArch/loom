@@ -326,7 +326,8 @@ private:
     std::uint64_t nextProducerSequenceOrdinal = 0;
     bool discard = false;
     bool sourceReserved = false;
-    bool active = false;
+    /// A result is pending only until every sink accepts a durable handoff.
+    bool producerPending = false;
   };
 
   enum class TraversalNodeKind : std::uint8_t {
@@ -351,6 +352,31 @@ private:
     std::vector<std::uint32_t> terminalSinks;
     std::vector<std::uint64_t> downstreamStorageNodes;
     std::vector<std::uint32_t> unbufferedDescendantSinks;
+  };
+
+  enum class TraversalNodeState : std::uint8_t {
+    Idle,
+    Scheduled,
+    Requested,
+    WaitingStorage,
+    Queued,
+    Permitted,
+  };
+
+  struct TraversalState final {
+    std::uint32_t remainingPredecessors = 0;
+    TraversalNodeState state = TraversalNodeState::Idle;
+    bool storageReserved = false;
+  };
+
+  struct TraversalOccurrence final {
+    std::uint64_t transferSlot = 0;
+    std::uint64_t nodeOrdinal = 0;
+
+    bool operator==(const TraversalOccurrence &other) const {
+      return transferSlot == other.transferSlot &&
+             nodeOrdinal == other.nodeOrdinal;
+    }
   };
 
   struct InFlight final {
@@ -383,6 +409,9 @@ private:
     std::vector<bool> readySinks;
     std::uint32_t readySinkCount = 0;
     std::vector<PublicationState> publications;
+    /// Mutable route state belongs to this token occurrence. The selected DAG
+    /// remains shared while earlier occurrences reside beyond durable storage.
+    std::vector<TraversalState> traversals;
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
@@ -442,15 +471,6 @@ private:
     std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
   };
 
-  enum class TraversalNodeState : std::uint8_t {
-    Idle,
-    Scheduled,
-    Requested,
-    WaitingStorage,
-    Queued,
-    Permitted,
-  };
-
   struct StorageBinding final {
     StorageBinding(CgraTransportStorageRuntime state,
                    CgraTraversalStorageKind storageKind,
@@ -466,8 +486,8 @@ private:
     /// The OfferAdvance arbitration action of a virtual channel queue;
     /// invalid for a strict queue.
     std::uint64_t offerAdvanceAction = invalidCgraTransportOrdinal;
-    std::vector<std::uint64_t> pendingEnqueueNodes;
-    std::vector<std::uint64_t> pendingDequeueNodes;
+    std::vector<TraversalOccurrence> pendingEnqueueNodes;
+    std::vector<TraversalOccurrence> pendingDequeueNodes;
     bool independentReadWriteServices = false;
     bool eventScheduled = false;
     std::uint8_t activeActionCount = 0;
@@ -484,7 +504,6 @@ private:
   struct StorageFrameCommit final {
     std::optional<CgraTransportStorageEntry> enqueue;
     std::optional<CgraTransportStorageEntry> expectedDequeue;
-    std::uint64_t enqueueNode = invalidCgraTransportOrdinal;
     std::uint64_t dequeueNode = invalidCgraTransportOrdinal;
     std::uint8_t retireCount = 0;
     bool touched = false;
@@ -550,6 +569,11 @@ private:
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorInputQueueBindings);
 
+  bool ownsTraversal(std::uint64_t slot, std::uint64_t nodeOrdinal) const;
+  TraversalState &traversalState(std::uint64_t slot, std::uint64_t nodeOrdinal);
+  const TraversalState &traversalState(std::uint64_t slot,
+                                       std::uint64_t nodeOrdinal) const;
+  void completeSource(InFlight &transfer);
   std::uint64_t allocate(std::uint64_t bindingOrdinal,
                          std::uint64_t occurrenceOrdinal,
                          std::uint64_t producerSequenceOrdinal, Token token);
@@ -624,10 +648,6 @@ private:
   std::vector<OperandQueueBinding> operandQueues_;
   std::vector<StorageFrameCommit> storageFrameCommits_;
   std::vector<std::uint64_t> touchedStorageFrameCommits_;
-  std::vector<std::uint32_t> traversalRemainingPredecessors_;
-  std::vector<TraversalNodeState> traversalNodeStates_;
-  std::vector<std::uint64_t> traversalNodeTransferSlots_;
-  std::vector<bool> traversalStorageReserved_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   std::vector<llvm::SmallVector<std::uint64_t, 2>> actorSourceBindingOrdinals_;
@@ -648,6 +668,7 @@ private:
   /// input awaiting the channel's next token awaits exactly this producer
   /// occurrence.
   std::vector<std::uint64_t> channelArrivalCounts_;
+  /// Indexed by in-flight transfer slot, including overlapping occurrences.
   llvm::SmallBitVector blocked_;
   std::vector<std::uint64_t> nextActionOccurrence_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>

@@ -82,6 +82,16 @@ one-enqueue/one-dequeue service contract, and canonical grant state. The
 simulator must not supply the former implicit depth 2 or any other capacity,
 port, or priority default.
 
+A producer result becomes available again after every sink has accepted its
+first durable handoff, including enqueue into selected transport storage. Its
+previous token may remain resident or continue through downstream traversals.
+Each dynamic token occurrence therefore owns its traversal progress, pending
+storage operations, downstream reservations, and blocked-publication state;
+the selected route DAG is immutable and shared. Retirement of an older token
+cannot clear a newer producer reservation or alter another occurrence's route
+state. Queue capacity and Fabric arbitration govern these overlapping tokens;
+the simulator adds no end-to-end credit or one-resident-token-per-net limit.
+
 At quiescence, each selected operand queue reports its exact FIFO head
 provenance as producer binding, occurrence, ordered producer-sequence position,
 and Physical Tag, plus QueueKey, concrete FU, allocation unit, occupancy,

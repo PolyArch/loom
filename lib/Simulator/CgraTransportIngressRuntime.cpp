@@ -33,11 +33,52 @@ nextPeClockBoundary(const SpatialEventCoordinate &coordinate) {
 
 } // namespace
 
+bool CgraTransportRuntime::ownsTraversal(std::uint64_t slot,
+                                         std::uint64_t nodeOrdinal) const {
+  if (slot >= inFlight_.size() || !inFlight_[slot].active)
+    return false;
+  const TransferBinding &binding = bindings_[inFlight_[slot].bindingOrdinal];
+  return nodeOrdinal >= binding.traversalNodeOffset &&
+         nodeOrdinal - binding.traversalNodeOffset < binding.traversalNodeCount;
+}
+
+CgraTransportRuntime::TraversalState &
+CgraTransportRuntime::traversalState(std::uint64_t slot,
+                                     std::uint64_t nodeOrdinal) {
+  assert(ownsTraversal(slot, nodeOrdinal) &&
+         "CGRA traversal state must name its token occurrence");
+  InFlight &transfer = inFlight_[slot];
+  return transfer.traversals[nodeOrdinal - bindings_[transfer.bindingOrdinal]
+                                               .traversalNodeOffset];
+}
+
+const CgraTransportRuntime::TraversalState &
+CgraTransportRuntime::traversalState(std::uint64_t slot,
+                                     std::uint64_t nodeOrdinal) const {
+  assert(ownsTraversal(slot, nodeOrdinal) &&
+         "CGRA traversal state must name its token occurrence");
+  const InFlight &transfer = inFlight_[slot];
+  return transfer.traversals[nodeOrdinal - bindings_[transfer.bindingOrdinal]
+                                               .traversalNodeOffset];
+}
+
+void CgraTransportRuntime::completeSource(InFlight &transfer) {
+  TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+  assert(!transfer.producerCompletionReported && binding.producerPending &&
+         !binding.sourceReserved &&
+         "CGRA durable handoff must release its pending producer exactly once");
+  transfer.producerCompletionReported = true;
+  binding.producerPending = false;
+  if (binding.semanticActorOrdinal &&
+      actorSourcesAvailable(*binding.semanticActorOrdinal))
+    state_->nextActorCandidates.set(*binding.semanticActorOrdinal);
+}
+
 std::uint64_t CgraTransportRuntime::allocate(
     std::uint64_t bindingOrdinal, std::uint64_t occurrenceOrdinal,
     std::uint64_t producerSequenceOrdinal, Token token) {
   assert(bindingOrdinal < bindings_.size() &&
-         !bindings_[bindingOrdinal].active &&
+         !bindings_[bindingOrdinal].producerPending &&
          "CGRA transport allocation requires a validated source");
   assert(activeTransferCount_ != std::numeric_limits<std::uint64_t>::max() &&
          "preflighted active transfer count must fit u64");
@@ -45,6 +86,7 @@ std::uint64_t CgraTransportRuntime::allocate(
   if (freeSlots_.empty()) {
     slot = inFlight_.size();
     inFlight_.emplace_back();
+    blocked_.resize(inFlight_.size());
   } else {
     slot = freeSlots_.back();
     freeSlots_.pop_back();
@@ -61,16 +103,12 @@ std::uint64_t CgraTransportRuntime::allocate(
   transfer.permittedSinkTerminals.assign(binding.sinkCount, 0);
   transfer.readySinks.assign(binding.sinkCount, false);
   transfer.publications.resize(binding.publicationCount);
+  transfer.traversals.resize(binding.traversalNodeCount);
+  for (std::uint32_t local = 0; local != binding.traversalNodeCount; ++local)
+    transfer.traversals[local].remainingPredecessors =
+        traversalNodes_[binding.traversalNodeOffset + local].predecessorCount;
   inFlight_[slot] = std::move(transfer);
-  for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
-       nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
-       ++nodeOrdinal) {
-    traversalRemainingPredecessors_[nodeOrdinal] =
-        traversalNodes_[nodeOrdinal].predecessorCount;
-    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Idle;
-    traversalNodeTransferSlots_[nodeOrdinal] = slot;
-  }
-  binding.active = true;
+  binding.producerPending = true;
   binding.sourceReserved = false;
   ++activeTransferCount_;
   return slot;
@@ -312,12 +350,12 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
         {emission.semanticActorOrdinal, emission.resultOrdinal});
     if (binding == actorSourceBindings_.end())
       return invalid("CGRA actor emission has no selected transfer binding");
-    if (bindings_[binding->second].active)
+    if (bindings_[binding->second].producerPending)
       return invalid(llvm::Twine("CGRA actor ") +
                      llvm::Twine(emission.semanticActorOrdinal) +
                      " occurrence " + llvm::Twine(emission.occurrenceOrdinal) +
                      " result " + llvm::Twine(emission.resultOrdinal) +
-                     " reuses active transport binding " +
+                     " reuses a transport source awaiting durable acceptance " +
                      llvm::Twine(binding->second));
     if (!uniqueBindings.insert(binding->second).second)
       return invalid("CGRA actor emission batch repeats a source binding");
@@ -341,9 +379,9 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
     auto binding = ingressSourceBindings_.find(emission.argumentOrdinal);
     if (binding == ingressSourceBindings_.end())
       return invalid("CGRA graph ingress has no selected transfer binding");
-    if (bindings_[binding->second].active ||
+    if (bindings_[binding->second].producerPending ||
         !uniqueBindings.insert(binding->second).second)
-      return invalid("CGRA graph ingress batch reuses an in-flight source");
+      return invalid("CGRA graph ingress batch reuses a pending source");
     transfers.push_back(
         {binding->second, emission.occurrenceOrdinal, &emission.token});
   }
@@ -357,7 +395,7 @@ CgraTransportRuntime::canAcceptGraphIngress(unsigned argumentOrdinal) const {
     return invalid("CGRA graph ingress has no selected transfer binding");
   if (binding->second >= bindings_.size())
     return invalid("CGRA graph ingress binding exceeds the transport plan");
-  return !bindings_[binding->second].active;
+  return !bindings_[binding->second].producerPending;
 }
 
 bool CgraTransportRuntime::actorSourcesAvailable(
@@ -367,7 +405,7 @@ bool CgraTransportRuntime::actorSourcesAvailable(
   for (std::uint64_t binding :
        actorSourceBindingOrdinals_[semanticActorOrdinal])
     if (binding >= bindings_.size() || bindings_[binding].sourceReserved ||
-        bindings_[binding].active)
+        bindings_[binding].producerPending)
       return false;
   return true;
 }
@@ -380,19 +418,13 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
   auto operandAdmission = nextPeClockBoundary(coordinate);
   if (!operandAdmission)
     return operandAdmission.takeError();
-  for (int binding = blocked_.find_first(); binding >= 0;
-       binding = blocked_.find_next(binding)) {
-    std::optional<std::uint64_t> slot;
-    for (auto &&[ordinal, inFlight] : llvm::enumerate(inFlight_))
-      if (inFlight.active &&
-          inFlight.bindingOrdinal == static_cast<std::uint64_t>(binding)) {
-        slot = ordinal;
-        break;
-      }
-    if (!slot)
+  for (int slot = blocked_.find_first(); slot >= 0;
+       slot = blocked_.find_next(slot)) {
+    if (static_cast<std::size_t>(slot) >= inFlight_.size() ||
+        !inFlight_[slot].active)
       return invalid("CGRA blocked transfer has no in-flight token");
-    blocked_.reset(binding);
-    InFlight &inFlight = inFlight_[*slot];
+    blocked_.reset(slot);
+    InFlight &inFlight = inFlight_[slot];
     const TransferBinding &selected = bindings_[inFlight.bindingOrdinal];
     bool retryCapacity = false;
     bool retryPublication = false;
@@ -411,17 +443,17 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
                   .consumedPhysicalUseCount;
     }
     if (retryPublication && !inFlight.publicationScheduled) {
-      if (llvm::Error error = schedulePublication(*slot, *publication))
+      if (llvm::Error error = schedulePublication(slot, *publication))
         return error;
     }
     if (retryCapacity && !inFlight.arrivalScheduled) {
-      if (llvm::Error error = scheduleArrival(*slot, *operandAdmission))
+      if (llvm::Error error = scheduleArrival(slot, *operandAdmission))
         return error;
     }
     for (std::uint64_t node = selected.traversalNodeOffset;
          node != selected.traversalNodeOffset + selected.traversalNodeCount;
          ++node) {
-      const TraversalNodeState state = traversalNodeStates_[node];
+      const TraversalNodeState state = traversalState(slot, node).state;
       if (state != TraversalNodeState::WaitingStorage &&
           state != TraversalNodeState::Queued)
         continue;

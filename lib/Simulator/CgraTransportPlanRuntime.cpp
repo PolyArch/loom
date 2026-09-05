@@ -212,7 +212,6 @@ CgraTransportRuntime::CgraTransportRuntime(
       actorSourceBindings_(std::move(actorSourceBindings)),
       ingressSourceBindings_(std::move(ingressSourceBindings)),
       actorInputQueueBindings_(std::move(actorInputQueueBindings)),
-      blocked_(bindings_.size()),
       nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {
   actorSourceBindingOrdinals_.resize(state.execution->actorPlans.size());
   for (const auto &[key, binding] : actorSourceBindings_) {
@@ -232,11 +231,6 @@ CgraTransportRuntime::CgraTransportRuntime(
   tagVirtualChannelKeys_ =
       internPhysicalTagChannelRanks(plan.transport.physicalTags);
   channelArrivalCounts_.assign(state.channelSlots.size(), 0);
-  traversalRemainingPredecessors_.resize(traversalNodes_.size());
-  traversalNodeStates_.resize(traversalNodes_.size(), TraversalNodeState::Idle);
-  traversalNodeTransferSlots_.resize(traversalNodes_.size(),
-                                     invalidCgraTransportOrdinal);
-  traversalStorageReserved_.resize(traversalNodes_.size(), false);
   for (const TraversalNodeBinding &origin : traversalNodes_) {
     if (origin.kind != TraversalNodeKind::BufferedStorage ||
         origin.storageOrdinal >= storages_.size())

@@ -46,11 +46,10 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         storageOrdinal, owner.bindingOrdinal, owner.occurrenceOrdinal,
         head.traversalNodeOrdinal};
   };
-  for (const InFlight &transfer : inFlight_) {
+  for (auto [slot, transfer] : llvm::enumerate(inFlight_)) {
     if (!transfer.active)
       continue;
-    const bool blocked = transfer.bindingOrdinal < blocked_.size() &&
-                         blocked_.test(transfer.bindingOrdinal);
+    const bool blocked = blocked_.test(slot);
     const bool operandCapacityReserved =
         llvm::any_of(transfer.publications,
                      [](const auto &state) { return state.capacityReserved; });
@@ -120,7 +119,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
       for (std::uint64_t node = binding.traversalNodeOffset;
            node != binding.traversalNodeOffset + binding.traversalNodeCount;
            ++node) {
-        const TraversalNodeState state = traversalNodeStates_[node];
+        const TraversalNodeState state = traversalState(slot, node).state;
         if (state != TraversalNodeState::WaitingStorage &&
             state != TraversalNodeState::Queued)
           continue;
@@ -178,7 +177,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
             diagnostic.blockingDownstreamStorageCapacity =
                 downstreamStorage.queue.capacity();
             diagnostic.blockingDownstreamStorageReserved =
-                traversalStorageReserved_[downstream];
+                traversalState(slot, downstream).storageReserved;
             diagnostic.blockingDownstreamStorageHead =
                 storageHead(boundary.storageOrdinal);
           }

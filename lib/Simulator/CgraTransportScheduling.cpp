@@ -89,8 +89,8 @@ llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
   for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
        nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
        ++nodeOrdinal) {
-    if (traversalNodeStates_[nodeOrdinal] != TraversalNodeState::Idle ||
-        traversalRemainingPredecessors_[nodeOrdinal] != 0)
+    if (traversalState(slot, nodeOrdinal).state != TraversalNodeState::Idle ||
+        traversalState(slot, nodeOrdinal).remainingPredecessors != 0)
       continue;
     const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
     if (node.kind != TraversalNodeKind::PhysicalAction) {
@@ -109,10 +109,11 @@ llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
       if (!buffered && !registerWrite && !registerRead)
         return invalid("CGRA traversal disagrees with its storage owner");
       if (registerRead)
-        storage.pendingDequeueNodes.push_back(nodeOrdinal);
+        storage.pendingDequeueNodes.push_back({slot, nodeOrdinal});
       else
-        storage.pendingEnqueueNodes.push_back(nodeOrdinal);
-      traversalNodeStates_[nodeOrdinal] = TraversalNodeState::WaitingStorage;
+        storage.pendingEnqueueNodes.push_back({slot, nodeOrdinal});
+      traversalState(slot, nodeOrdinal).state =
+          TraversalNodeState::WaitingStorage;
       // A newly pending traversal is an external readiness change for this
       // queue: a virtual-channel probe epoch restarts.
       storage.offerRefusalsSinceCommit = 0;
@@ -125,8 +126,8 @@ llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
         {{coordinate, nodeOrdinal, inFlight.occurrenceOrdinal,
           static_cast<std::uint32_t>(nodeOrdinal -
                                      binding.traversalNodeOffset)},
-         nodeOrdinal});
-    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Scheduled;
+         slot});
+    traversalState(slot, nodeOrdinal).state = TraversalNodeState::Scheduled;
     scheduled = true;
   }
   return scheduled;

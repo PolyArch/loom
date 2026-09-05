@@ -363,7 +363,7 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
       if (binding->second >= bindings_.size())
         return invalid("CGRA actor commit has an invalid transport source");
       if (bindings_[binding->second].sourceReserved ||
-          bindings_[binding->second].active)
+          bindings_[binding->second].producerPending)
         return invalid(llvm::Twine("CGRA actor ") +
                        llvm::Twine(event.semanticActorOrdinal) +
                        " occurrence " + llvm::Twine(event.occurrenceOrdinal) +
