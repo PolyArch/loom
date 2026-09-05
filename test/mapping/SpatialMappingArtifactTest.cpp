@@ -448,6 +448,30 @@ void operandPairingPressureIsIncremental(
   requireSuccess(candidate.verify());
 }
 
+void verifyTagDomainIncidence(
+    const loom::pnr::SpatialCandidateState &candidate,
+    const loom::pnr::SpatialRouteCostState &costs) {
+  using namespace loom::pnr;
+  for (PnrIndex logicalNet = 0;
+       logicalNet < candidate.problem().transfers().logicalNets().size();
+       ++logicalNet) {
+    std::vector<PnrIndex> domains;
+    for (PnrIndex segment = 0;
+         segment < candidate.tagSegments(logicalNet).size(); ++segment) {
+      const auto selected = candidate.tagSegmentDomains(logicalNet, segment);
+      domains.insert(domains.end(), selected.begin(), selected.end());
+    }
+    llvm::sort(domains);
+    domains.erase(std::unique(domains.begin(), domains.end()), domains.end());
+    const auto uses = costs.logicalNetTagDomainUses(logicalNet);
+    if (domains.size() != uses.size() ||
+        !llvm::equal(domains, uses, [](PnrIndex domain, const auto &use) {
+          return domain == use.domain;
+        }))
+      fail("marginal row cost changed selected tag-domain membership");
+  }
+}
+
 enum class TemporalSwitchRouteFixture : std::uint8_t {
   None,
   PackedRows,
@@ -736,6 +760,39 @@ void completeCandidateRoundTrip(
       }
       if (candidate->tagConflictCount() == 0)
         fail("conflicting tag fixture did not construct a collision");
+      if (switchPackingFabric) {
+        verifyTagDomainIncidence(*candidate, costs);
+        std::optional<loom::pnr::PnrIndex> sharedConflictNet;
+        for (loom::pnr::PnrIndex logicalNet : logicalNets)
+          for (const auto &use : costs.logicalNetTagDomainUses(logicalNet))
+            if (use.marginalResidentCount == 0 &&
+                costs.tagDomainConflictCount(use.domain) != 0)
+              sharedConflictNet = logicalNet;
+        if (!sharedConflictNet ||
+            !costs.logicalNetHasTagPressure(*sharedConflictNet))
+          fail("shared conflicting row lost its participating logical net");
+        loom::pnr::SpatialPathFinderRouterScratch regionalRouter;
+        requireSuccess(regionalRouter.prepare(*problem));
+        auto regionalMove = take(candidate->beginMove(candidateScratch));
+        auto regional = regionalRouter.routeToClosureInMove(
+            regionalMove, *candidate, costs,
+            {pnrConfig.policy().search.routing.endpointExpansionLimit, 2, 1, 1},
+            {&*sharedConflictNet, 1}, {},
+            loom::pnr::SpatialRoutingClosureRequirement::ExactRegional, 1);
+        if (regional)
+          fail("one-net regional closure ignored its shared row conflict");
+        bool expandedPastLimit = false;
+        llvm::handleAllErrors(
+            regional.takeError(),
+            [&](const loom::pnr::SpatialPathFinderClosureFailure &failure) {
+              expandedPastLimit = failure.kind() ==
+                  loom::pnr::SpatialPathFinderClosureFailure::Kind::RegionalLimit;
+            });
+        if (!expandedPastLimit)
+          fail("shared row did not expand the exact regional conflict closure");
+        regionalMove.rollback();
+        requireSuccess(costs.resetFromCandidate());
+      }
       const std::vector<loom::pnr::RouteCost> baselineTagCosts(
           costs.currentArcCosts().begin(), costs.currentArcCosts().end());
       requireSuccess(costs.advancePathFinderIteration());
@@ -991,6 +1048,8 @@ void completeCandidateRoundTrip(
 
     loom::pnr::SpatialCandidateScratch switchScratch;
     requireSuccess(switchScratch.prepare(*problem));
+    auto tagCosts = take(loom::pnr::SpatialRouteCostState::create(*candidate));
+    verifyTagDomainIncidence(*candidate, tagCosts);
     const auto applyTag = [&](const llvm::APInt &value) {
       auto move = take(candidate->beginMove(switchScratch));
       requireSuccess(move.setPhysicalTagValue(logicalNet, localSegment, value));
@@ -998,7 +1057,18 @@ void completeCandidateRoundTrip(
       if (take(move.close()) != projection.selectedHandshakeAcyclic)
         fail("incremental switch regrouping disagreed with its route "
              "projection");
+      const auto delta = take(move.summarizeCurrentTagAssignmentDelta());
+      requireSuccess(tagCosts.synchronizeTagProjection(delta, {}));
+      verifyTagDomainIncidence(*candidate, tagCosts);
+      const auto coldCosts =
+          take(loom::pnr::SpatialRouteCostState::create(*candidate));
+      for (loom::pnr::PnrIndex net = 0;
+           net < problem->transfers().logicalNets().size(); ++net)
+        if (!llvm::equal(tagCosts.logicalNetTagDomainUses(net),
+                         coldCosts.logicalNetTagDomainUses(net)))
+          fail("incremental row regrouping changed domain incidence or cost");
       requireSuccess(move.commit());
+      requireSuccess(tagCosts.commitTagProjectionDelta());
       requireSuccess(candidate->verify());
     };
     applyTag(*replacement);

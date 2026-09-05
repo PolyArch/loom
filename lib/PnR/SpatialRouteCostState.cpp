@@ -517,9 +517,10 @@ llvm::Error
 SpatialRouteCostState::stageTagUses(llvm::ArrayRef<SpatialTagDomainUse> uses,
                                     bool restore) {
   for (const SpatialTagDomainUse &use : uses) {
-    if (use.domain >= workingTagDomainUsage_.size() ||
-        use.marginalResidentCount == 0)
+    if (use.domain >= workingTagDomainUsage_.size())
       return routeCostStateError("logical-net tag use is out of range");
+    if (use.marginalResidentCount == 0)
+      continue;
     if (tagDomainUpdateEpochs_[use.domain] != updateEpoch_) {
       tagDomainUpdateEpochs_[use.domain] = updateEpoch_;
       stagedTagDomainUsage_[use.domain] = workingTagDomainUsage_[use.domain];
@@ -1029,12 +1030,11 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
       const PnrIndex domain = segmentDomains[incidence];
       if (domain >= domains.size())
         return routeCostStateError("prospective tag domain is out of range");
+      touchDomain(domain);
       if (domains[domain].kind !=
           ::loom::fabric::FabricPhysicalTagMatchDomainKind::
-              TemporalSwitchTable) {
-        touchDomain(domain);
+              TemporalSwitchTable)
         ++rows.updateMarginalRows[domain];
-      }
     }
 
   using Demand = detail::SpatialTemporalSwitchSegmentDemand;
@@ -1124,8 +1124,7 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
   llvm::sort(rows.updateTouchedDomains);
   rows.updateUses.clear();
   for (PnrIndex domain : rows.updateTouchedDomains)
-    if (rows.updateMarginalRows[domain] != 0)
-      rows.updateUses.push_back({domain, rows.updateMarginalRows[domain]});
+    rows.updateUses.push_back({domain, rows.updateMarginalRows[domain]});
   if (llvm::Error error = replaceSelectedTagUses(rows.updateUses))
     return error;
   switchRows_->demandScratch.recycle(
@@ -1260,7 +1259,7 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
       const PnrIndex domain = summary.netDomainUseDomains[incidence];
       const std::uint64_t count =
           summary.netDomainMarginalResidentCounts[incidence];
-      if (domain >= domainCount || count == 0)
+      if (domain >= domainCount)
         return routeCostStateError("tag projection use is out of range");
       uses.push_back({domain, count});
     }

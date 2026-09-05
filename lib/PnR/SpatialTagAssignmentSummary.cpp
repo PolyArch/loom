@@ -20,6 +20,23 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  message.str().c_str());
 }
 
+// Domain membership is independent of the marginal rows removed with one
+// net. A shared row can cost zero while still coupling every participating net.
+void completeTagDomainIncidence(
+    const SpatialTagNetState &net,
+    llvm::ArrayRef<::loom::fabric::FabricPhysicalTagMatchDomainView> domains,
+    std::map<PnrIndex, std::uint64_t> &marginalRows) {
+  for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
+    for (PnrIndex domain : tagSegmentDomains(net, segment)) {
+      std::uint64_t &count = marginalRows[domain];
+      if (!net.values[segment] ||
+          domains[domain].kind !=
+              ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                  TemporalSwitchTable)
+        ++count;
+    }
+}
+
 } // namespace
 
 std::uint64_t loom::pnr::detail::tagDomainConflictCount(
@@ -89,16 +106,8 @@ loom::pnr::detail::summarizeTagAssignmentState(
         net.values, [](const auto &value) { return !value.has_value(); }));
     summary.netTagValues.insert(summary.netTagValues.end(), net.values.begin(),
                                 net.values.end());
-    for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
-      for (PnrIndex domain : tagSegmentDomains(net, segment))
-        if (!net.values[segment] ||
-            matchDomains[domain].kind !=
-                ::loom::fabric::FabricPhysicalTagMatchDomainKind::
-                    TemporalSwitchTable)
-          ++marginalRows[logicalNet][domain];
+    completeTagDomainIncidence(net, matchDomains, marginalRows[logicalNet]);
     for (const auto &[domain, count] : marginalRows[logicalNet]) {
-      if (count == 0)
-        continue;
       summary.netDomainUseDomains.push_back(domain);
       summary.netDomainMarginalResidentCounts.push_back(count);
     }
@@ -188,16 +197,8 @@ loom::pnr::detail::summarizeTagAssignmentDelta(
     delta.netUnassignedCounts.push_back(unassigned);
     delta.netTagValues.insert(delta.netTagValues.end(), net.values.begin(),
                               net.values.end());
-    for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
-      for (PnrIndex domain : tagSegmentDomains(net, segment))
-        if (!net.values[segment] ||
-            matchDomains[domain].kind !=
-                ::loom::fabric::FabricPhysicalTagMatchDomainKind::
-                    TemporalSwitchTable)
-          ++marginalRows[local][domain];
+    completeTagDomainIncidence(net, matchDomains, marginalRows[local]);
     for (const auto &[domain, count] : marginalRows[local]) {
-      if (count == 0)
-        continue;
       delta.netDomainUseDomains.push_back(domain);
       delta.netDomainMarginalResidentCounts.push_back(count);
     }

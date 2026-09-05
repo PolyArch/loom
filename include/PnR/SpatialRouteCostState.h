@@ -21,6 +21,8 @@ namespace detail {
 struct SpatialRouteCostSwitchRowState;
 }
 
+/// One selected domain membership and its marginal row cost. A zero cost
+/// preserves membership for conflict detection and regional dependency closure.
 struct SpatialTagDomainUse final {
   PnrIndex domain = 0;
   std::uint64_t marginalResidentCount = 0;

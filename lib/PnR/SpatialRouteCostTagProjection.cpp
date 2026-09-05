@@ -187,7 +187,7 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
       const PnrIndex domain = delta.netDomainUseDomains[incidence];
       const std::uint64_t count =
           delta.netDomainMarginalResidentCounts[incidence];
-      if (domain >= domainCount || count == 0) {
+      if (domain >= domainCount) {
         llvm::Error error =
             routeCostStateError("tag projection delta use is out of range");
         llvm::Error rollback = rollbackTagProjectionDelta();

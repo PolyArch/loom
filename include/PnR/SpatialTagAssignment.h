@@ -82,6 +82,8 @@ struct SpatialTagAssignmentSummary final {
   std::uint64_t residentCapacityOveruse = 0;
   std::vector<std::uint64_t> domainResidentCounts;
   std::vector<std::uint64_t> domainConflictCounts;
+  /// Complete domain incidence; marginal resident counts may be zero for
+  /// shared rows. Membership is derived from selected tag continuity.
   std::vector<std::size_t> netDomainUseOffsets;
   std::vector<PnrIndex> netDomainUseDomains;
   std::vector<std::uint64_t> netDomainMarginalResidentCounts;
@@ -99,6 +101,8 @@ struct SpatialTagAssignmentDelta final {
   std::vector<std::uint64_t> domainResidentCounts;
   std::vector<std::uint64_t> domainConflictCounts;
   std::vector<PnrIndex> logicalNets;
+  /// Complete domain incidence; marginal resident counts may be zero for
+  /// shared rows. Membership is derived from selected tag continuity.
   std::vector<std::size_t> netDomainUseOffsets;
   std::vector<PnrIndex> netDomainUseDomains;
   std::vector<std::uint64_t> netDomainMarginalResidentCounts;
