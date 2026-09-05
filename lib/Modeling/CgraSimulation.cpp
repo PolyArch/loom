@@ -270,7 +270,7 @@ const ResolvedModelConfigViewContract kConfigView{
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "cgra_simulator",
-    "loom.cgra_simulator.exact_mapping.v2",
+    "loom.cgra_simulator.exact_mapping.v3",
     caseSignatureRef(),
     {},
     kMetricCapabilities,

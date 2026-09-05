@@ -825,7 +825,7 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        ProviderForm::ExternalPrepareImport},
       {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemCgra),
        "gem5_system_cgra",
-       "loom.gem5.system_cgra.v1",
+       "loom.gem5.system_cgra.v2",
        caseRef(kSystemCase),
        {},
        kRuntimeMetric,

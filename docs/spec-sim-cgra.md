@@ -92,6 +92,13 @@ cannot clear a newer producer reservation or alter another occurrence's route
 state. Queue capacity and Fabric arbitration govern these overlapping tokens;
 the simulator adds no end-to-end credit or one-resident-token-per-net limit.
 
+The CGRA and gem5 System-CGRA model implementation identities change with this
+execution rule. The System external-tool semantic contract and runtime model
+ground-truth target key derive the implementation identity from the registered
+model descriptor; they cannot reuse the prior implementation's tool result or
+mix its calibration target with the corrected model's target. Artifact and
+configuration schemas remain unchanged.
+
 At quiescence, each selected operand queue reports its exact FIFO head
 provenance as producer binding, occurrence, ordered producer-sequence position,
 and Physical Tag, plus QueueKey, concrete FU, allocation unit, occupancy,
