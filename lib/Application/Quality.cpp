@@ -43,6 +43,8 @@ struct ApplicationFpaCompletedObservation final {
 struct ApplicationFpaIncompleteObservation final {
   dse::JointDesignQualityIncompleteReason reason;
   ArtifactRootReference evidence;
+  dse::JointDesignCalibratedModelSupport modelSupport =
+      dse::JointDesignCalibratedModelSupport::NotEvaluated;
 };
 
 using ApplicationFpaObservation =
@@ -64,6 +66,20 @@ bool dispatchDeadlineReached(const dse::PlanExecutionPolicy &policy) {
                         static_cast<std::uint64_t>(now);
 }
 
+llvm::Expected<std::vector<evaluation::EvaluationCondition>>
+applicationFpaConditions(
+    const ArtifactRootReference &system,
+    llvm::ArrayRef<evaluation::EvaluationCondition> operatingConditions) {
+  std::vector<evaluation::EvaluationCondition> conditions(
+      operatingConditions.begin(), operatingConditions.end());
+  if (llvm::Error error = dse::rebindCandidateConditionTargets(
+          conditions,
+          evaluation::models::canonicalDataflowFabricAnalyticFabricRole(),
+          system))
+    return std::move(error);
+  return conditions;
+}
+
 llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
     const ArtifactRootReference &dataflow, const ArtifactRootReference &system,
     const evaluation::models::EdaPredictionModelWeight &weight,
@@ -73,16 +89,12 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
   // Operating conditions are authored against the product System; every
   // hardware candidate is evaluated under the same conditions rebound to its
   // own Fabric root, so an alternative System never inherits a foreign anchor.
-  std::vector<evaluation::EvaluationCondition> conditions(
-      operatingConditions.begin(), operatingConditions.end());
-  if (llvm::Error error = dse::rebindCandidateConditionTargets(
-          conditions,
-          evaluation::models::canonicalDataflowFabricAnalyticFabricRole(),
-          system))
-    return std::move(error);
+  auto conditions = applicationFpaConditions(system, operatingConditions);
+  if (!conditions)
+    return conditions.takeError();
   auto prepared =
       evaluation::models::prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
-          dataflow, system, weight, conditions, config, artifacts, blobs);
+          dataflow, system, weight, *conditions, config, artifacts, blobs);
   if (!prepared)
     return prepared.takeError();
   auto evaluated = evaluation::evaluateRequest(
@@ -93,24 +105,45 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
   if (!evidence)
     return evidence.takeError();
 
+  auto imported = evaluation::importEvaluationEvidence(
+      *evidence, prepared->resolution, artifacts, blobs);
+  if (!imported)
+    return invalid("published calibrated FPA Evidence failed strict import: " +
+                   llvm::toString(imported.takeError()));
+  if (imported->requestRef() !=
+          evaluation::evaluationRequestReference(prepared->request) ||
+      imported->outcomeKind() != evaluated->outcomeKind())
+    return invalid("strict calibrated FPA Evidence changed its Request or "
+                   "outcome");
+
   if (std::holds_alternative<evaluation::UnsupportedEvidence>(
-          evaluated->outcome()))
+          imported->outcome())) {
+    auto inference = evaluation::models::inferCanonicalDataflowFabricFpa(
+        dataflow, system, weight, *conditions, artifacts, blobs);
+    if (!inference)
+      return inference.takeError();
+    if (!std::holds_alternative<evaluation::OutOfDomainModelParameterInference>(
+            inference->outcome))
+      return invalid("unsupported calibrated FPA Evidence was not produced "
+                     "by typed out-of-domain inference");
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::Unsupported,
-        std::move(*evidence)};
+        std::move(*evidence),
+        dse::JointDesignCalibratedModelSupport::OutOfDomain};
+  }
   if (std::holds_alternative<evaluation::ExecutionFailedEvidence>(
-          evaluated->outcome()))
+          imported->outcome()))
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::ExecutionFailed,
         std::move(*evidence)};
   if (std::holds_alternative<evaluation::CancelledOrTimeoutEvidence>(
-          evaluated->outcome()))
+          imported->outcome()))
     return ApplicationFpaIncompleteObservation{
         dse::JointDesignQualityIncompleteReason::CancelledOrTimeout,
         std::move(*evidence)};
 
   const auto *completed =
-      std::get_if<evaluation::CompletedEvidence>(&evaluated->outcome());
+      std::get_if<evaluation::CompletedEvidence>(&imported->outcome());
   if (!completed || completed->metricResults.size() != 4 ||
       prepared->request.metricRequests().size() != 4)
     return invalid("calibrated FPA Evidence has a foreign metric shape");
@@ -132,12 +165,66 @@ llvm::Expected<ApplicationFpaObservation> acquireFpaObservation(
     if (zeroComparison < 0 || (zeroComparison == 0 && ordinal < 2))
       return ApplicationFpaIncompleteObservation{
           dse::JointDesignQualityIncompleteReason::ProofNotEstablished,
-          std::move(*evidence)};
+          std::move(*evidence),
+          dse::JointDesignCalibratedModelSupport::InDomain};
     values[ordinal] = resolvedObjectiveDecimal(decimal->coefficient(),
                                                decimal->base10Exponent());
   }
   return ApplicationFpaCompletedObservation{std::move(values),
                                             std::move(*evidence)};
+}
+
+llvm::Error validateApplicationFpaEvidenceJoin(
+    const ArtifactRootReference &dataflow, const ArtifactRootReference &system,
+    const std::optional<ArtifactRootReference> &weightReference,
+    llvm::ArrayRef<evaluation::EvaluationCondition> operatingConditions,
+    const ResolvedConfig &config,
+    const dse::JointDesignQualityObservation &observation,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const dse::JointDesignCalibratedModelSupport modelSupport =
+      observation.provenance.calibratedModelSupport;
+  if (modelSupport == dse::JointDesignCalibratedModelSupport::NotEvaluated)
+    return llvm::Error::success();
+  if (!observation.evidence || !weightReference)
+    return invalid("calibrated application quality lost its FPA Evidence or "
+                   "weight");
+  auto weight = evaluation::models::importEdaPredictionModelWeight(
+      *weightReference, artifacts, blobs);
+  if (!weight)
+    return weight.takeError();
+  auto conditions = applicationFpaConditions(system, operatingConditions);
+  if (!conditions)
+    return conditions.takeError();
+  auto prepared =
+      evaluation::models::prepareCanonicalDataflowFabricCalibratedFpaEvaluation(
+          dataflow, system, *weight, *conditions, config, artifacts, blobs);
+  if (!prepared)
+    return prepared.takeError();
+  auto strict = evaluation::importEvaluationEvidence(
+      *observation.evidence, prepared->resolution, artifacts, blobs);
+  if (!strict)
+    return invalid("application FPA Evidence failed strict import: " +
+                   llvm::toString(strict.takeError()));
+  const evaluation::EvidenceOutcomeKind expectedOutcome =
+      modelSupport == dse::JointDesignCalibratedModelSupport::OutOfDomain
+          ? evaluation::EvidenceOutcomeKind::Unsupported
+          : evaluation::EvidenceOutcomeKind::Completed;
+  if (strict->requestRef() !=
+          evaluation::evaluationRequestReference(prepared->request) ||
+      strict->outcomeKind() != expectedOutcome)
+    return invalid("application FPA Evidence changed its exact Request, "
+                   "weight, System, or outcome");
+  if (modelSupport == dse::JointDesignCalibratedModelSupport::OutOfDomain) {
+    auto inference = evaluation::models::inferCanonicalDataflowFabricFpa(
+        dataflow, system, *weight, *conditions, artifacts, blobs);
+    if (!inference)
+      return inference.takeError();
+    if (!std::holds_alternative<evaluation::OutOfDomainModelParameterInference>(
+            inference->outcome))
+      return invalid("application FPA Evidence claimed out-of-domain support "
+                     "for an in-domain request");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<dse::CandidateMeasureObjectiveDimension>
@@ -197,13 +284,69 @@ llvm::Error detail::recordApplicationQualityInvocation(
     dse::JointDesignExecution &execution, std::uint64_t planOrdinalBase,
     std::vector<ApplicationPairQualityInvocationRecord> &invocations) {
   dse::JointDesignExecutionSummary &summary = execution.summary;
+  const auto invocationRunKey = execution.invocationRunKey();
+  const std::uint64_t promotedParents =
+      static_cast<std::uint64_t>(llvm::count_if(
+          summary.hardwarePromotionObservations,
+          [](const dse::JointHardwarePromotionObservation &observation) {
+            return observation.promotedToExactMapping;
+          }));
+  if (summary.hardwareParentPromotions != promotedParents)
+    return invalid("hardware-promotion count disagrees with its invocation "
+                   "observations");
+  if (!invocationRunKey)
+    return invalid("application quality invocation has no invocation manifest "
+                   "run key");
+  for (const dse::JointDesignAttemptRecord &attempt : summary.attempts) {
+    if (!attempt.hardwarePromotionParentSystem)
+      continue;
+    const std::size_t parentCount = llvm::count_if(
+        summary.hardwarePromotionObservations,
+        [&](const dse::JointHardwarePromotionObservation &observation) {
+          return observation.promotedToExactMapping &&
+                 observation.planOrdinal == attempt.planOrdinal &&
+                 observation.system == *attempt.hardwarePromotionParentSystem;
+        });
+    if (parentCount != 1)
+      return invalid("hardware-promotion Mapping attempt has no unique "
+                     "invocation-local parent observation");
+  }
+  for (const dse::JointHardwarePromotionObservation &observation :
+       summary.hardwarePromotionObservations) {
+    if (!observation.promotedToExactMapping)
+      continue;
+    const bool attemptedChild = llvm::any_of(
+        summary.attempts, [&](const dse::JointDesignAttemptRecord &attempt) {
+          return attempt.planOrdinal == observation.planOrdinal &&
+                 attempt.hardwarePromotionParentSystem == observation.system &&
+                 attempt.system != observation.system;
+        });
+    if (!attemptedChild)
+      return invalid("hardware-promotion observation has no invocation-local "
+                     "child Mapping attempt");
+  }
+  if (summary.selectedPlanOrdinal.has_value() !=
+      summary.selectedMapping.has_value())
+    return invalid("application quality invocation has an incomplete selected "
+                   "Mapping join");
+  if (summary.selectedMapping) {
+    const std::size_t selectedAttemptCount = llvm::count_if(
+        summary.attempts, [&](const dse::JointDesignAttemptRecord &attempt) {
+          return attempt.planOrdinal == *summary.selectedPlanOrdinal &&
+                 llvm::is_contained(attempt.systemMappings,
+                                    *summary.selectedMapping);
+        });
+    if (selectedAttemptCount != 1)
+      return invalid("application quality invocation selected Mapping has no "
+                     "unique invocation-local attempt");
+  }
   invocations.push_back(ApplicationPairQualityInvocationRecord{
-      planOrdinalBase, execution.invocationRunKey(), summary.qualityDisposition,
+      planOrdinalBase, *invocationRunKey, summary.qualityDisposition,
       summary.qualityIncompleteCandidate,
       summary.qualityObjectiveDimensionLabels, summary.qualityObservations,
       summary.hardwarePromotionObjectiveDimensionLabels,
-      summary.hardwarePromotionObservations, summary.selectedPlanOrdinal,
-      summary.selectedMapping});
+      summary.hardwarePromotionObservations, summary.hardwareParentPromotions,
+      summary.attempts, summary.selectedPlanOrdinal, summary.selectedMapping});
   for (dse::JointHardwarePromotionObservation &observation :
        summary.hardwarePromotionObservations) {
     if (observation.planOrdinal >
@@ -249,10 +392,12 @@ detail::chooseApplicationRepairByQuality(
 
 llvm::Expected<detail::ApplicationRuntimeValidation>
 detail::projectApplicationQualityRuntime(
+    const PreparedApplicationBuild &prepared,
+    const PreparedApplicationMappingAlternative &alternative,
     const dse::JointDesignExecution &execution,
     const ArtifactRootReference &mapping,
     const dse::JointBoundedQualityPolicy &quality,
-    const ArtifactStore &artifacts) {
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (!quality.objectiveProgram ||
       quality.provenanceDomain !=
           dse::JointDesignQualityProvenanceDomain::ApplicationRuntime ||
@@ -260,32 +405,31 @@ detail::projectApplicationQualityRuntime(
           quality.objectiveDimensionLabels)
     return invalid("application runtime projection has a foreign objective "
                    "domain");
-  const auto matching = llvm::find_if(
-      execution.summary.qualityObservations,
-      [&](const dse::JointDesignQualityObservation &observation) {
-        return observation.candidate == mapping;
-      });
+  const auto matching =
+      llvm::find_if(execution.summary.qualityObservations,
+                    [&](const dse::JointDesignQualityObservation &observation) {
+                      return observation.candidate == mapping;
+                    });
   if (matching == execution.summary.qualityObservations.end())
     return invalid("application runtime projection has no quality "
                    "observation");
   if (llvm::count_if(execution.summary.qualityObservations,
                      [&](const auto &observation) {
-                       return observation.candidate ==
-                              mapping;
+                       return observation.candidate == mapping;
                      }) != 1)
     return invalid("application runtime projection has duplicate Mapping "
                    "observations");
-  if (llvm::Error error = dse::validateJointDesignQualityProvenanceDomain(
-          quality, matching->provenance,
-          !matching->incompleteReason.has_value()))
-    return std::move(error);
+  auto runtimeDisposition =
+      classifyApplicationQualityRuntime(quality, *matching);
+  if (!runtimeDisposition)
+    return runtimeDisposition.takeError();
   if (matching->incompleteReason) {
     if (execution.summary.selectedMapping ||
         execution.summary.qualityIncompleteCandidate != mapping)
       return invalid("application runtime incomplete observation disagrees "
                      "with its summary");
-    const auto summaryReason = [&]()
-        -> std::optional<dse::JointDesignQualityIncompleteReason> {
+    const auto summaryReason =
+        [&]() -> std::optional<dse::JointDesignQualityIncompleteReason> {
       switch (execution.summary.qualityDisposition) {
       case dse::JointDesignQualityDisposition::Unsupported:
         return dse::JointDesignQualityIncompleteReason::Unsupported;
@@ -318,26 +462,10 @@ detail::projectApplicationQualityRuntime(
       return invalid("application runtime complete observation disagrees with "
                      "its summary");
   }
-  ApplicationMappingRuntimeDisposition disposition =
-      ApplicationMappingRuntimeDisposition::Completed;
   if (matching->incompleteReason) {
     if (!matching->objectiveCodes.empty())
       return invalid("application runtime incomplete observation retained an "
                      "objective");
-    switch (*matching->incompleteReason) {
-    case dse::JointDesignQualityIncompleteReason::Unsupported:
-      disposition = ApplicationMappingRuntimeDisposition::Unsupported;
-      break;
-    case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
-      disposition = ApplicationMappingRuntimeDisposition::ProofNotEstablished;
-      break;
-    case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
-      disposition = ApplicationMappingRuntimeDisposition::ExecutionFailed;
-      break;
-    case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
-      disposition = ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-      break;
-    }
   } else {
     if (matching->provenance.rawMeasures.size() !=
         quality.objectiveDimensionLabels.size())
@@ -352,12 +480,12 @@ detail::projectApplicationQualityRuntime(
   std::optional<std::uint64_t> resourceCoreCost =
       matching->provenance.resourceCoreCost;
   if (!matching->provenance.rawMeasures.empty()) {
-    dfgCycles = std::get<ResolvedObjectiveInteger>(
-                    matching->provenance.rawMeasures[0])
-                    .magnitude;
-    cgraCycles = std::get<ResolvedObjectiveInteger>(
-                     matching->provenance.rawMeasures[1])
-                     .magnitude;
+    dfgCycles =
+        std::get<ResolvedObjectiveInteger>(matching->provenance.rawMeasures[0])
+            .magnitude;
+    cgraCycles =
+        std::get<ResolvedObjectiveInteger>(matching->provenance.rawMeasures[1])
+            .magnitude;
   }
   for (const ArtifactRootReference &reference :
        matching->provenance.supportingEvidence) {
@@ -366,9 +494,15 @@ detail::projectApplicationQualityRuntime(
         reference.schemaVersion !=
             evaluation::EvaluationEvidence::artifactSchema.version)
       return invalid("application runtime projection has foreign Evidence");
-    auto stored = artifacts.get(reference);
+    auto stored = evaluation::importEvaluationEvidenceDependencyProjection(
+        reference, artifacts);
     if (!stored)
       return stored.takeError();
+    if (matching->provenance.runtimeCompletion ==
+            dse::JointDesignQualityRuntimeCompletion::Completed &&
+        stored->outcomeKind != evaluation::EvidenceOutcomeKind::Completed)
+      return invalid("completed application runtime retained non-completed "
+                     "supporting Evidence");
   }
   if (matching->evidence) {
     if (matching->evidence->schemaIdentity !=
@@ -377,16 +511,49 @@ detail::projectApplicationQualityRuntime(
             evaluation::EvaluationEvidence::artifactSchema.version)
       return invalid("application runtime projection has foreign primary "
                      "Evidence");
-    auto stored = artifacts.get(*matching->evidence);
+    auto stored = evaluation::importEvaluationEvidenceDependencyProjection(
+        *matching->evidence, artifacts);
     if (!stored)
       return stored.takeError();
   }
   for (const ArtifactRootReference &reference :
        matching->provenance.verificationEvidence)
-    if (!llvm::is_contained(matching->provenance.supportingEvidence,
-                            reference))
+    if (!llvm::is_contained(matching->provenance.supportingEvidence, reference))
       return invalid("application runtime verification Evidence is outside "
                      "the acquired runtime Evidence");
+  auto importedMapping = loom::mapping::importSystemMapping(mapping, artifacts);
+  if (!importedMapping)
+    return importedMapping.takeError();
+  if (importedMapping->view().dataflowIdentity() !=
+      alternative.dataflow.artifact)
+    return invalid("application runtime Evidence names a foreign Dataflow");
+  auto software = findPreparedSoftware(prepared, alternative.dataflow.artifact);
+  if (!software)
+    return software.takeError();
+  if (matching->provenance.runtimeCompletion ==
+      dse::JointDesignQualityRuntimeCompletion::Completed) {
+    auto spatialMappings =
+        importedMapping->view().executionBindings().spatialMappingImports();
+    auto evidenceJoin = resolveApplicationRuntimeEvidenceJoin(
+        matching->provenance.supportingEvidence,
+        matching->provenance.verificationEvidence, alternative.dataflow,
+        spatialMappings, (*software)->replayCases, artifacts, blobs);
+    if (!evidenceJoin)
+      return evidenceJoin.takeError();
+    if (!dfgCycles || !cgraCycles || *dfgCycles != evidenceJoin->dfgCycles ||
+        *cgraCycles != evidenceJoin->cgraCycles)
+      return invalid("application runtime measures disagree with their strict "
+                     "Evidence imports");
+  }
+  const ArtifactRootReference system{
+      fabric::fabricArtifactSchema.identity.str(),
+      fabric::fabricArtifactSchema.version,
+      importedMapping->view().fabricIdentity()};
+  if (llvm::Error error = validateApplicationFpaEvidenceJoin(
+          alternative.dataflow, system, prepared.edaPredictionModelWeight,
+          prepared.fpaOperatingConditions, alternative.plan.resolvedConfig,
+          *matching, artifacts, blobs))
+    return std::move(error);
   if (matching->provenance.spatialFifoFeedback &&
       matching->provenance.spatialFifoFeedback->parentMapping != mapping)
     return invalid("application FIFO feedback names a foreign Mapping");
@@ -400,7 +567,7 @@ detail::projectApplicationQualityRuntime(
       *matching->provenance.spatialTransportFeedback->parentMapping != mapping)
     return invalid("application transport feedback names a foreign Mapping");
   return ApplicationRuntimeValidation{
-      disposition,
+      *runtimeDisposition,
       matching->provenance.supportingEvidence,
       dfgCycles,
       cgraCycles,
@@ -410,6 +577,43 @@ detail::projectApplicationQualityRuntime(
       matching->provenance.verificationEvidence,
       resourceCoreCost,
       std::nullopt};
+}
+
+llvm::Expected<ApplicationMappingRuntimeDisposition>
+detail::classifyApplicationQualityRuntime(
+    const dse::JointBoundedQualityPolicy &quality,
+    const dse::JointDesignQualityObservation &observation) {
+  if (quality.provenanceDomain !=
+      dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
+    return invalid("application runtime classification has a foreign quality "
+                   "domain");
+  if (llvm::Error error = dse::validateJointDesignQualityProvenanceDomain(
+          quality, observation.provenance,
+          !observation.incompleteReason.has_value()))
+    return std::move(error);
+  if (observation.provenance.calibratedModelSupport ==
+          dse::JointDesignCalibratedModelSupport::OutOfDomain &&
+      observation.incompleteReason !=
+          dse::JointDesignQualityIncompleteReason::Unsupported)
+    return invalid("out-of-domain application quality has a foreign "
+                   "incomplete disposition");
+  if (observation.provenance.runtimeCompletion ==
+      dse::JointDesignQualityRuntimeCompletion::Completed)
+    return ApplicationMappingRuntimeDisposition::Completed;
+  if (!observation.incompleteReason)
+    return invalid("application quality observation has neither completed "
+                   "runtime nor an incomplete disposition");
+  switch (*observation.incompleteReason) {
+  case dse::JointDesignQualityIncompleteReason::Unsupported:
+    return ApplicationMappingRuntimeDisposition::Unsupported;
+  case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
+    return ApplicationMappingRuntimeDisposition::ProofNotEstablished;
+  case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
+    return ApplicationMappingRuntimeDisposition::ExecutionFailed;
+  case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
+    return ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
+  }
+  llvm_unreachable("unknown application quality disposition");
 }
 
 llvm::Expected<dse::JointBoundedQualityPolicy>
@@ -503,13 +707,22 @@ makeApplicationBoundedQualityPolicy(
                     runtimeVerificationEvidence.end()),
         runtimeVerificationEvidence.end());
     const auto runtimeProvenance =
-        [&](std::vector<ResolvedObjectiveScalar> measures = {}) {
+        [&](std::vector<ResolvedObjectiveScalar> measures = {},
+            dse::JointDesignCalibratedModelSupport modelSupport =
+                dse::JointDesignCalibratedModelSupport::NotEvaluated) {
           return dse::JointDesignQualityProvenance{
-              std::move(measures), runtimeEvidence,
-              runtimeVerificationEvidence, runtime->spatialFifoFeedback,
+              std::move(measures),
+              runtimeEvidence,
+              runtimeVerificationEvidence,
+              runtime->spatialFifoFeedback,
               runtime->spatialOperandQueueFeedback,
               runtime->spatialTransportFeedback,
-              runtime->resourceCoreCost};
+              runtime->resourceCoreCost,
+              runtime->disposition ==
+                      ApplicationMappingRuntimeDisposition::Completed
+                  ? dse::JointDesignQualityRuntimeCompletion::Completed
+                  : dse::JointDesignQualityRuntimeCompletion::NotEstablished,
+              modelSupport};
         };
     switch (runtime->disposition) {
     case ApplicationMappingRuntimeDisposition::Completed:
@@ -552,6 +765,8 @@ makeApplicationBoundedQualityPolicy(
         resolvedObjectiveInteger(static_cast<std::uint64_t>(
             imported->system.view().accCoreOccurrences().size()))};
     std::optional<ArtifactRootReference> fpaEvidence;
+    dse::JointDesignCalibratedModelSupport modelSupport =
+        dse::JointDesignCalibratedModelSupport::NotEvaluated;
     if (fpaWeight) {
       if (dispatchDeadlineReached(executionPolicy))
         return dse::JointDesignQualityAcquisition{
@@ -570,15 +785,17 @@ makeApplicationBoundedQualityPolicy(
       if (auto *incomplete =
               std::get_if<ApplicationFpaIncompleteObservation>(&*fpa))
         return dse::JointDesignQualityAcquisition{
-            dse::IncompleteJointDesignQuality{incomplete->reason,
-                                              execution.summary.selectedMapping,
-                                              incomplete->evidence,
-                                              runtimeProvenance(measures)}};
+            dse::IncompleteJointDesignQuality{
+                incomplete->reason, execution.summary.selectedMapping,
+                incomplete->evidence,
+                runtimeProvenance(std::move(measures),
+                                  incomplete->modelSupport)}};
       auto completed =
           std::get<ApplicationFpaCompletedObservation>(std::move(*fpa));
       measures.insert(measures.end(), completed.values.begin(),
                       completed.values.end());
       fpaEvidence = std::move(completed.evidence);
+      modelSupport = dse::JointDesignCalibratedModelSupport::InDomain;
     }
     dse::ObjectiveVector objective = sharedProgram->makeVector();
     if (llvm::Error error =
@@ -590,7 +807,7 @@ makeApplicationBoundedQualityPolicy(
         std::vector<dse::JointDesignQualityCandidate>{
             {{*execution.summary.selectedMapping, std::move(objective)},
              std::move(fpaEvidence),
-             runtimeProvenance(std::move(measures))}}};
+             runtimeProvenance(std::move(measures), modelSupport)}}};
   };
 
   if (fpaWeight) {
@@ -640,8 +857,19 @@ makeApplicationBoundedQualityPolicy(
           if (auto *incomplete =
                   std::get_if<ApplicationFpaIncompleteObservation>(&*fpa))
             return dse::JointDesignQualityAcquisition{
-                dse::IncompleteJointDesignQuality{incomplete->reason, system,
-                                                  incomplete->evidence}};
+                dse::IncompleteJointDesignQuality{
+                    incomplete->reason, system, incomplete->evidence,
+                    dse::JointDesignQualityProvenance{
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        dse::JointDesignQualityRuntimeCompletion::
+                            NotEstablished,
+                        incomplete->modelSupport}}};
           auto completed =
               std::get<ApplicationFpaCompletedObservation>(std::move(*fpa));
           dse::ObjectiveVector objective = sharedPromotionProgram->makeVector();
@@ -651,10 +879,18 @@ makeApplicationBoundedQualityPolicy(
             return std::move(error);
           return dse::JointDesignQualityAcquisition{
               std::vector<dse::JointDesignQualityCandidate>{
-                  {{system, std::move(objective)}, completed.evidence,
+                  {{system, std::move(objective)},
+                   completed.evidence,
                    {std::vector<ResolvedObjectiveScalar>(
                         completed.values.begin(), completed.values.end()),
-                    {}, {}}}}};
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    dse::JointDesignQualityRuntimeCompletion::NotEstablished,
+                    dse::JointDesignCalibratedModelSupport::InDomain}}}};
         }};
 
     result.semanticInputs.push_back(fpaWeight->reference());

@@ -16,7 +16,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from loom_evidence_portfolio import collect_portfolio_inventory, evaluate_portfolio
+from loom_evidence_portfolio import (
+    PAIR_DISPOSITION_SCHEMA,
+    PAIR_EVIDENCE_SCHEMA,
+    collect_portfolio_inventory,
+    evaluate_portfolio,
+)
 
 
 FU_REVERSE_SYNTHESIS_PROJECTION_KIND = "fu_reverse_synthesis_workflow"
@@ -567,8 +572,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             evaluation_timings.append(payload["evaluation_timing"])
         if payload.get("schema") in {
-            "loom.application_pair_evidence",
-            "loom.application_pair_disposition",
+            PAIR_EVIDENCE_SCHEMA,
+            PAIR_DISPOSITION_SCHEMA,
         } and isinstance(payload.get("pair_decision"), dict):
             application_pair_evidence.append(payload)
         if payload.get("operation") == "simulation_cycle_breakdown":
@@ -1035,12 +1040,12 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     full_pair_decisions = {
         json.dumps(evidence["pair_decision"], sort_keys=True)
         for evidence in application_pair_evidence
-        if evidence.get("schema") == "loom.application_pair_evidence"
+        if evidence.get("schema") == PAIR_EVIDENCE_SCHEMA
     }
     application_pair_evidence = [
         evidence
         for evidence in application_pair_evidence
-        if evidence.get("schema") == "loom.application_pair_evidence"
+        if evidence.get("schema") == PAIR_EVIDENCE_SCHEMA
         or json.dumps(evidence["pair_decision"], sort_keys=True)
         not in full_pair_decisions
     ]

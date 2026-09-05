@@ -1456,7 +1456,8 @@ def evaluate_portfolio(
         "portfolio_acceptance_holds": not manifest_errors
         and all_selection_gates_hold
         and all(canonical_witnesses.values())
-        and tinyml_profile_holds,
+        and tinyml_profile_holds
+        and funnel_exact_comparison_sample_holds,
     }
     return {
         "manifest_errors": manifest_errors,

@@ -206,10 +206,10 @@ mappingRoots(const dse::JointDesignExecution &execution) {
 void mergeMappedPairs(dse::JointDesignExecution &target,
                       const dse::JointDesignExecution &source) {
   for (const dse::JointMappedPair &candidate : source.mappedPairs) {
-    auto retained = llvm::find_if(
-        target.mappedPairs, [&](const dse::JointMappedPair &existing) {
-          return existing.pair == candidate.pair;
-        });
+    auto retained = llvm::find_if(target.mappedPairs,
+                                  [&](const dse::JointMappedPair &existing) {
+                                    return existing.pair == candidate.pair;
+                                  });
     if (retained == target.mappedPairs.end()) {
       target.mappedPairs.push_back(candidate);
       continue;
@@ -229,11 +229,11 @@ firstMapping(const dse::JointDesignExecution &execution) {
   return std::nullopt;
 }
 
-llvm::Error
-recordJointAttempt(std::vector<dse::JointDesignAttemptRecord> &records,
-                   std::uint64_t planOrdinal,
-                   const ArtifactRootReference &fallbackSystem,
-                   const dse::JointDesignExecution &execution) {
+llvm::Error recordJointAttempt(
+    std::vector<dse::JointDesignAttemptRecord> &records,
+    std::uint64_t planOrdinal, const ArtifactRootReference &fallbackSystem,
+    const dse::JointDesignExecution &execution,
+    std::optional<ArtifactRootReference> hardwarePromotionParentSystem) {
   ArtifactRootReference system = fallbackSystem;
   for (const dse::JointMappedPair &pair : execution.mappedPairs) {
     if (system != fallbackSystem && pair.pair.system != system)
@@ -254,8 +254,12 @@ recordJointAttempt(std::vector<dse::JointDesignAttemptRecord> &records,
     incompleteNodeOrdinal = incomplete->nodeOrdinal();
     incompleteReason = incomplete->reason();
   }
+  if (hardwarePromotionParentSystem && system == *hardwarePromotionParentSystem)
+    return invalid("hardware-promotion attempt did not materialize a child "
+                   "System");
   records.push_back({planOrdinal, system, disposition, incompleteNodeOrdinal,
-                     std::move(incompleteReason), std::move(mappings)});
+                     std::move(incompleteReason), std::move(mappings),
+                     std::move(hardwarePromotionParentSystem)});
   return llvm::Error::success();
 }
 
@@ -1149,14 +1153,13 @@ llvm::Expected<MaterializedModuleGrowth>
 materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs) {
-  const unsigned decisionKinds = !growth.instructionStoreResizes.empty() +
-                                 growth.fifoResize.has_value() +
-                                 growth.fifoBypassChange.has_value() +
-                                 growth.fifoDisciplineChange.has_value() +
-                                 growth.operandBufferModeChange.has_value() +
-                                 growth.operandBufferResize.has_value() +
-                                 growth.moduleDecision.has_value() +
-                                 growth.topologyDecision.has_value();
+  const unsigned decisionKinds =
+      !growth.instructionStoreResizes.empty() + growth.fifoResize.has_value() +
+      growth.fifoBypassChange.has_value() +
+      growth.fifoDisciplineChange.has_value() +
+      growth.operandBufferModeChange.has_value() +
+      growth.operandBufferResize.has_value() +
+      growth.moduleDecision.has_value() + growth.topologyDecision.has_value();
   if (!growth.techModule || decisionKinds != 1 || growth.addedContexts != 0 ||
       growth.addedGateways != 0 || growth.addedAccCores != 0)
     return invalid("typed Module growth received a mixed or empty change");

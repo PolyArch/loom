@@ -208,7 +208,7 @@ TinyML member's smoke and validation profiles are directly executable by its
 bounded host runner but each returns `loom_portfolio_profile_unsupported` from
 the current product source-binding path.
 
-The versioned `loom.application_pair_decision` 1.2 projection records the
+The `loom.application_pair_decision` version `1.2` projection records the
 resolved application identity, input name, source/build selection,
 input-specific compiler options, declared workload and runtime-input names,
 declared oracle and bounded profile, and referenced cache digests. Its typed
@@ -278,7 +278,8 @@ A successful decision is published inside
 `loom.application_pair_evidence` version `1.2`. That envelope is the canonical
 join of candidate and analytic-gate inventories, actual Tech/Spatial/System
 work, selected Mapping checkpoint, failure-cone counters, work ledgers,
-Mapping outcome inventory, and the pair decision. A pre-admission or causal
+Mapping outcome inventory, exact promoted-parent hardware attempt lineage,
+and the pair decision. A pre-admission or causal
 failure uses `loom.application_pair_disposition` version `1.2` and retains the
 same typed decision without fabricating Mapping work.
 Each Mapping observation names `runtime_mapping` only when its runtime fields
@@ -291,6 +292,13 @@ The successful envelope's repair-record inventory is derived from the same
 manifest names the same unique record. Omitting a unique record that selects
 the activation SystemMapping is invalid; a general hardware-frontier selection
 and every non-hardware disposition name no selected repair record.
+
+Promotion lineage is invocation-scoped. Each `quality_invocations` entry owns
+one InvocationManifest run key, local plan-ordinal base, promotion count,
+promotion observations, and the attempts they caused. Consumers must complete
+the parent-to-child join inside that entry; aggregate Mapping attempts are not a
+substitute for an invocation identity. Version `1.2` is the compatible extension
+of `1.1` that adds the invocation-local promotion count and attempt inventory.
 
 Every objective dimension is a non-negative integer in a fixed unit owned by
 `ApplicationObjectiveDimension`. Host-only work, DFG and CGRA cycles,

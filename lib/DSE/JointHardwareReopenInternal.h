@@ -107,6 +107,21 @@ struct TechGateExecution final {
   bool coversRequiredGraphs = false;
 };
 
+struct FinalizedMappingHardwareAttempt final {
+  ArtifactRootReference system;
+  JointDesignExecution execution;
+};
+
+struct FinalizedMappingHardwareSpectrum final {
+  /// Every child System that entered ordinary Mapping. Failed and incomplete
+  /// attempts remain necessary promotion provenance even though only a
+  /// verified Mapping can re-enter bounded-quality selection.
+  std::vector<FinalizedMappingHardwareAttempt> attempts;
+  std::vector<JointDesignInvocationManifestReference> invocations;
+  std::uint64_t attemptedSystems = 0;
+  bool incomplete = false;
+};
+
 llvm::Expected<JointSoftwareCoverage>
 projectJointSoftwareCoverage(const JointDesignExplorationPlan &plan,
                              const ArtifactStore &artifacts);
@@ -135,10 +150,11 @@ void mergeMappedPairs(JointDesignExecution &target,
 std::optional<ArtifactRootReference>
 firstMapping(const JointDesignExecution &execution);
 
-llvm::Error recordJointAttempt(std::vector<JointDesignAttemptRecord> &records,
-                               std::uint64_t planOrdinal,
-                               const ArtifactRootReference &fallbackSystem,
-                               const JointDesignExecution &execution);
+llvm::Error recordJointAttempt(
+    std::vector<JointDesignAttemptRecord> &records, std::uint64_t planOrdinal,
+    const ArtifactRootReference &fallbackSystem,
+    const JointDesignExecution &execution,
+    std::optional<ArtifactRootReference> hardwarePromotionParentSystem = {});
 
 llvm::Error bindImmutableSpatialMappingFrontier(
     JointDesignExplorationPlan &plan,
@@ -203,6 +219,29 @@ llvm::Expected<MaterializedHardwareCandidate>
 materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                               const ArtifactStore &artifacts,
                               const BlobStore &blobs);
+
+llvm::Expected<FinalizedMappingHardwareSpectrum>
+exploreFinalizedMappingHardwareSpectrum(
+    const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
+    const JointDesignExecution &parentExecution,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const JointHardwareReopenRequest &request, SiteScheduler &scheduler,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const PlanExecutionPolicy *executionPolicy);
+
+llvm::Expected<std::optional<JointDesignExecution>> tryHardwareFeedbackReopen(
+    const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
+    const JointDesignExecution &failedExecution,
+    std::optional<JointDesignExecution> &lastFailedExecution,
+    std::uint64_t planOrdinal,
+    std::vector<JointDesignAttemptRecord> &attemptRecords,
+    JointDesignExecutionSummary &accounting,
+    std::vector<JointDesignInvocationManifestReference> &encounteredInvocations,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const JointHardwareReopenRequest &request, SiteScheduler &scheduler,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<ArtifactRootReference> hardwarePromotionParentSystem,
+    const PlanExecutionPolicy *executionPolicy);
 
 } // namespace loom::dse::joint_reopen_detail
 

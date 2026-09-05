@@ -239,7 +239,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   std::vector<ApplicationPairQualityInvocationRecord> qualityInvocations;
   std::uint64_t attemptedSoftwarePlans = 0;
   std::uint64_t hardwareReopenSearches = 0;
-  std::uint64_t hardwareParentPromotions = 0;
   std::uint64_t hardwareReopensDeferredByQuality = 0;
   std::uint64_t hardwareReopensWithheldWithoutExactFeedback = 0;
   std::uint64_t hardwareRepairProbeLimit = 0;
@@ -524,7 +523,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         request.boundedQuality->provenanceDomain ==
             dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
       return detail::projectApplicationQualityRuntime(
-          execution, mapping, *request.boundedQuality, artifacts);
+          prepared, alternative, execution, mapping, *request.boundedQuality,
+          artifacts, blobs);
     return detail::validateApplicationMappingRuntime(
         prepared, alternative, execution, request.executionPolicy, artifacts,
         blobs);
@@ -544,7 +544,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       return std::move(error);
     attemptedSoftwarePlans += execution->summary.attemptedSoftwarePlans;
     hardwareReopenSearches += execution->summary.hardwareReopenSearches;
-    hardwareParentPromotions += execution->summary.hardwareParentPromotions;
     hardwareReopensDeferredByQuality +=
         execution->summary.hardwareReopensDeferredByQuality;
     hardwareReopensWithheldWithoutExactFeedback +=
@@ -875,8 +874,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
               request.boundedQuality->provenanceDomain ==
                   dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
             auto runtime = detail::projectApplicationQualityRuntime(
+                prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
                 owner, *qualityIncomplete->incomplete.candidate,
-                *request.boundedQuality, artifacts);
+                *request.boundedQuality, artifacts, blobs);
             if (!runtime)
               return runtime.takeError();
             projected = std::move(*runtime);
@@ -1349,22 +1349,6 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   }
   if (!selectedExecution)
     return invalid("joint Mapping execution produced no bounded outcome");
-  const auto qualityRuntimeDisposition =
-      [](const std::optional<dse::JointDesignQualityIncompleteReason> &reason) {
-        if (!reason)
-          return ApplicationMappingRuntimeDisposition::Completed;
-        switch (*reason) {
-        case dse::JointDesignQualityIncompleteReason::Unsupported:
-          return ApplicationMappingRuntimeDisposition::Unsupported;
-        case dse::JointDesignQualityIncompleteReason::ProofNotEstablished:
-          return ApplicationMappingRuntimeDisposition::ProofNotEstablished;
-        case dse::JointDesignQualityIncompleteReason::ExecutionFailed:
-          return ApplicationMappingRuntimeDisposition::ExecutionFailed;
-        case dse::JointDesignQualityIncompleteReason::CancelledOrTimeout:
-          return ApplicationMappingRuntimeDisposition::CancelledOrTimeout;
-        }
-        llvm_unreachable("unknown application quality disposition");
-      };
   for (ApplicationMappingCandidateOutcome &outcome : outcomes) {
     const dse::JointDesignQualityObservation *projected = nullptr;
     std::size_t matchingObservationCount = 0;
@@ -1388,14 +1372,19 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       continue;
     outcome.qualityObjectiveCodes = projected->objectiveCodes;
     if (outcome.runtimeDisposition ==
-        ApplicationMappingRuntimeDisposition::NotRequested)
-      outcome.runtimeDisposition =
-          qualityRuntimeDisposition(projected->incompleteReason);
+            ApplicationMappingRuntimeDisposition::NotRequested &&
+        request.boundedQuality &&
+        request.boundedQuality->provenanceDomain ==
+            dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+      auto runtimeDisposition = detail::classifyApplicationQualityRuntime(
+          *request.boundedQuality, *projected);
+      if (!runtimeDisposition)
+        return runtimeDisposition.takeError();
+      outcome.runtimeDisposition = *runtimeDisposition;
+    }
   }
   selectedExecution->summary.attemptedSoftwarePlans = attemptedSoftwarePlans;
   selectedExecution->summary.hardwareReopenSearches = hardwareReopenSearches;
-  selectedExecution->summary.hardwareParentPromotions =
-      hardwareParentPromotions;
   selectedExecution->summary.hardwareReopensDeferredByQuality =
       hardwareReopensDeferredByQuality;
   selectedExecution->summary.hardwareReopensWithheldWithoutExactFeedback =

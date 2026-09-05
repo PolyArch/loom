@@ -42,6 +42,8 @@ void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
 void addOptionalRoot(llvm::json::Object &object, llvm::StringRef key,
                      const std::optional<ArtifactRootReference> &value);
 llvm::json::Object
+encodeJointDesignAttempt(const dse::JointDesignAttemptRecord &attempt);
+llvm::json::Object
 encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance);
 llvm::json::Object
 encodePairDecision(const ApplicationPairDecisionRecord &decision);

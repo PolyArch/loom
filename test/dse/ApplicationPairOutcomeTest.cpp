@@ -1,10 +1,12 @@
 #include "BuildInternal.h"
+#include "QualityInternal.h"
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/ResolvedConfigView.h"
+#include "Evaluation/Evidence.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
@@ -297,7 +299,8 @@ void qualityDispositionProjection() {
     loom::dse::JointDesignExecutionSummary summary;
     summary.qualityDisposition = quality;
     loom::dse::JointDesignExecution execution{
-        take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+        take(loom::dse::executeDsePlan(view, artifacts, blobs)),
+        {},
         std::move(summary)};
     const ApplicationPairDecisionRecord decision =
         build_detail::deriveApplicationPairDecision(prepared, {}, execution, {},
@@ -310,7 +313,8 @@ void qualityDispositionProjection() {
   conflictingSummary.qualityDisposition =
       QualityDisposition::CancelledOrTimeout;
   loom::dse::JointDesignExecution conflictingExecution{
-      take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
+      take(loom::dse::executeDsePlan(view, artifacts, blobs)),
+      {},
       std::move(conflictingSummary)};
   ApplicationPairQualityInvocationRecord invocation;
   invocation.qualityDisposition = QualityDisposition::Unsupported;
@@ -412,6 +416,127 @@ void qualityDispositionProjection() {
       "absent post-plan evidence masked the exact incomplete-plan reason");
 }
 
+void qualityRuntimeCompletionProjection() {
+  using loom::application::ApplicationMappingRuntimeDisposition;
+  using loom::application::detail::classifyApplicationQualityRuntime;
+  using loom::dse::JointDesignQualityIncompleteReason;
+  using loom::dse::JointDesignQualityProvenanceDomain;
+  using loom::dse::JointDesignQualityRuntimeCompletion;
+
+  std::array<std::uint8_t, loom::ArtifactIdentity::byteSize> rootBytes{};
+  rootBytes.back() = 3;
+  const loom::ArtifactRootReference mapping{
+      "loom.test.application_runtime_quality",
+      {1, 0},
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+  rootBytes.back() = 4;
+  const loom::ArtifactRootReference runtimeEvidence{
+      loom::evaluation::EvaluationEvidence::artifactSchema.identity.str(),
+      loom::evaluation::EvaluationEvidence::artifactSchema.version,
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+  rootBytes.back() = 5;
+  const loom::ArtifactRootReference verificationEvidence{
+      loom::evaluation::EvaluationEvidence::artifactSchema.identity.str(),
+      loom::evaluation::EvaluationEvidence::artifactSchema.version,
+      take(loom::ArtifactIdentity::fromBytes(rootBytes))};
+
+  loom::dse::JointBoundedQualityPolicy runtimeQuality;
+  runtimeQuality.provenanceDomain =
+      JointDesignQualityProvenanceDomain::ApplicationRuntime;
+  runtimeQuality.objectiveDimensionLabels = {"dfg_cycles", "cgra_cycles",
+                                             "acc_core_count"};
+
+  loom::dse::JointDesignQualityObservation fpaRefusal{
+      mapping,
+      {},
+      JointDesignQualityIncompleteReason::Unsupported,
+      std::nullopt,
+      {{loom::resolvedObjectiveInteger(7), loom::resolvedObjectiveInteger(11),
+        loom::resolvedObjectiveInteger(2)},
+       {runtimeEvidence, verificationEvidence},
+       {verificationEvidence},
+       {},
+       {},
+       {},
+       2,
+       JointDesignQualityRuntimeCompletion::Completed,
+       loom::dse::JointDesignCalibratedModelSupport::OutOfDomain}};
+  require(take(classifyApplicationQualityRuntime(runtimeQuality, fpaRefusal)) ==
+              ApplicationMappingRuntimeDisposition::Completed,
+          "FPA refusal erased completed Application runtime");
+
+  loom::dse::JointDesignQualityObservation runtimeRefusal{
+      mapping,
+      {},
+      JointDesignQualityIncompleteReason::Unsupported,
+      std::nullopt,
+      {{}, {}, {}, {}, {}, {}, 2}};
+  require(
+      take(classifyApplicationQualityRuntime(runtimeQuality, runtimeRefusal)) ==
+          ApplicationMappingRuntimeDisposition::Unsupported,
+      "runtime refusal was not retained independently of quality");
+
+  auto missingMeasures = fpaRefusal;
+  missingMeasures.provenance.rawMeasures.clear();
+  auto missingMeasuresResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingMeasures);
+  require(!missingMeasuresResult,
+          "completed runtime accepted missing runtime measures");
+  llvm::consumeError(missingMeasuresResult.takeError());
+
+  auto missingResource = fpaRefusal;
+  missingResource.provenance.resourceCoreCost.reset();
+  auto missingResourceResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingResource);
+  require(!missingResourceResult,
+          "completed runtime accepted missing resource ownership");
+  llvm::consumeError(missingResourceResult.takeError());
+
+  auto missingEvidence = fpaRefusal;
+  missingEvidence.provenance.supportingEvidence.clear();
+  missingEvidence.provenance.verificationEvidence.clear();
+  auto missingEvidenceResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingEvidence);
+  require(!missingEvidenceResult,
+          "completed runtime accepted missing supporting Evidence");
+  llvm::consumeError(missingEvidenceResult.takeError());
+
+  auto missingOracle = fpaRefusal;
+  missingOracle.provenance.verificationEvidence.clear();
+  auto missingOracleResult =
+      classifyApplicationQualityRuntime(runtimeQuality, missingOracle);
+  require(!missingOracleResult,
+          "completed runtime accepted missing verification Evidence");
+  llvm::consumeError(missingOracleResult.takeError());
+
+  auto oracleOnly = fpaRefusal;
+  oracleOnly.provenance.supportingEvidence = {verificationEvidence};
+  auto oracleOnlyResult =
+      classifyApplicationQualityRuntime(runtimeQuality, oracleOnly);
+  require(!oracleOnlyResult,
+          "completed runtime accepted verification Evidence without an "
+          "independent runtime witness");
+  llvm::consumeError(oracleOnlyResult.takeError());
+
+  auto ownerlessMeasures = fpaRefusal;
+  ownerlessMeasures.provenance.runtimeCompletion =
+      JointDesignQualityRuntimeCompletion::NotEstablished;
+  auto ownerlessMeasuresResult =
+      classifyApplicationQualityRuntime(runtimeQuality, ownerlessMeasures);
+  require(!ownerlessMeasuresResult,
+          "runtime measures established completion without their owner");
+  llvm::consumeError(ownerlessMeasuresResult.takeError());
+
+  auto objectiveOnly = runtimeQuality;
+  objectiveOnly.provenanceDomain =
+      JointDesignQualityProvenanceDomain::ObjectiveOnly;
+  auto foreignDomain =
+      classifyApplicationQualityRuntime(objectiveOnly, fpaRefusal);
+  require(!foreignDomain,
+          "ObjectiveOnly quality manufactured an Application runtime result");
+  llvm::consumeError(foreignDomain.takeError());
+}
+
 } // namespace
 
 int main() {
@@ -420,5 +545,6 @@ int main() {
   incompleteCausePriority();
   noFeasibleOutcomePreservesTypedCause();
   qualityDispositionProjection();
+  qualityRuntimeCompletionProjection();
   return 0;
 }

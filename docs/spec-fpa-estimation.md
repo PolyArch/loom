@@ -361,6 +361,31 @@ claim. Runtime-qualified tail invocations retain their own InvocationManifest
 run key and local plan-ordinal base; their observations are never folded into
 the final invocation's `JointDesignExecutionSummary`.
 
+A weighted product invocation uses `bounded_quality`; a first-verified
+invocation is not an FPA finalist join. Acceptance requires a nonempty hardware
+promotion inventory with at least one `promoted_to_exact_mapping` observation,
+the exact four FPA objective labels, one owner-recorded hardware attempt from
+that promoted parent to the selected child System and Mapping, calibrated
+selected physical objectives, and a subsequently executed Deployment. The
+number of promoted observations must equal the promotion work counter within
+the same InvocationManifest run key and local plan-ordinal domain. Merely
+accepting an FPA option, joining attempts from another invocation, or emitting
+an empty promotion array does not establish promotion.
+
+An FPA refusal after completed DFG and CGRA replay remains a quality-domain
+refusal. The Mapping runtime disposition stays `completed` when its three
+runtime measures, supporting runtime Evidence, and an independently verified
+comparison Evidence are present; the FPA quality observation retains
+`unsupported`, its model Evidence, and the out-of-domain support spelling.
+This prevents a physical-model refusal from launching an unrelated
+runtime-witness repair. A weighted OOD replay is
+observable only when one joined Mapping observation retains the predicted and
+measured makespans, exact recomputed error, runtime and native-oracle Evidence,
+and the FPA refusal Evidence. These typed records expose the required identities
+for a canonical artifact replay. Report shape and process exit status are not
+Evidence oracles; the portfolio evaluator does not claim this witness until a
+resolver imports those roots and independently verifies the join.
+
 Runtime-feedback repair plans use that same bounded-quality policy before a
 repair Mapping may re-enter Application validation. Each child invocation
 retains its own quality and hardware-promotion observations. The shared
