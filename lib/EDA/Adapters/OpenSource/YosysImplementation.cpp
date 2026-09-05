@@ -1,11 +1,11 @@
-#include "EDA/Adapters/Synopsys/DesignCompilerBlock.h"
+#include "EDA/Adapters/OpenSource/YosysBlock.h"
 
 #include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "EDA/Adapters/PortableGateImplementation.h"
 
 #include <array>
 
-namespace loom::eda::synopsys {
+namespace loom::eda::open_source {
 namespace {
 
 using namespace dse;
@@ -13,7 +13,7 @@ using namespace hardware;
 using namespace hardware::rtl;
 
 constexpr llvm::StringLiteral configSchema =
-    "loom.eda.synopsys.design_compiler.portable_gate_implementation.config.1";
+    "loom.eda.open_source.yosys.portable_gate_implementation.config.1";
 constexpr CandidateGeneratorInputSlotRef implementationInput(0);
 constexpr CandidateGeneratorInputSlotRef blockInput(1);
 constexpr CandidateGeneratorOutputSlotRef implementationOutput(0);
@@ -33,8 +33,7 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> work{
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "design_compiler_implementation_invalid: " +
-                                     message);
+                                 "yosys_implementation_invalid: " + message);
 }
 
 llvm::ArrayRef<std::uint8_t> schemaBytes() {
@@ -50,10 +49,9 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 }
 
 const CandidateGeneratorDescriptor descriptor{
-    designCompilerPortableGateImplementationCandidateGeneratorKind,
-    "synopsys.design_compiler.portable_gate_implementation",
-    "loom.eda.synopsys.design_compiler.portable_gate_implementation.generator."
-    "v1",
+    yosysPortableGateImplementationCandidateGeneratorKind,
+    "open_source.yosys.portable_gate_implementation",
+    "loom.eda.open_source.yosys.portable_gate_implementation.generator.v1",
     inputs,
     outputs,
     ResolvedDseConfigViewContract{schemaBytes(), validateConfig},
@@ -87,11 +85,11 @@ invoke(llvm::ArrayRef<CandidateGeneratorInputBinding> input,
       input[implementationInput.ordinal()].artifacts.front(), artifacts, blobs);
   if (!implementation)
     return implementation.takeError();
-  auto block = importDesignCompilerBlockGateNetlist(
+  auto block = importYosysBlockGateNetlist(
       input[blockInput.ordinal()].artifacts.front(), artifacts, blobs);
   if (!block)
     return block.takeError();
-  auto contracts = makeSynopsysStandardCellContractCatalog();
+  auto contracts = makeYosysStandardCellContractCatalog();
   if (!contracts)
     return contracts.takeError();
   auto published = associatePortableBlockGateNetlist(
@@ -115,23 +113,22 @@ const CandidateGeneratorProvider provider{
 } // namespace
 
 const CandidateGeneratorDescriptor &
-designCompilerPortableGateImplementationCandidateGeneratorDescriptor() {
+yosysPortableGateImplementationCandidateGeneratorDescriptor() {
   return descriptor;
 }
 
-llvm::Error
-registerDesignCompilerPortableGateImplementationCandidateGenerator() {
+llvm::Error registerYosysPortableGateImplementationCandidateGenerator() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(descriptor))
     return error;
   return registerCandidateGeneratorProvider(provider);
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindDesignCompilerPortableGateImplementationInputs(
+bindYosysPortableGateImplementationInputs(
     const ArtifactRootReference &implementation,
     const ArtifactRootReference &blockNetlist) {
   if (llvm::Error error =
-          registerDesignCompilerPortableGateImplementationCandidateGenerator())
+          registerYosysPortableGateImplementationCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> input{
       {implementationInput, {implementation}}, {blockInput, {blockNetlist}}};
@@ -142,9 +139,9 @@ bindDesignCompilerPortableGateImplementationInputs(
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveDesignCompilerPortableGateImplementationBinding() {
+resolveYosysPortableGateImplementationBinding() {
   if (llvm::Error error =
-          registerDesignCompilerPortableGateImplementationCandidateGenerator())
+          registerYosysPortableGateImplementationCandidateGenerator())
     return std::move(error);
   auto digest = computeComponentViewDigest(schemaBytes(), {});
   if (!digest)
@@ -153,4 +150,4 @@ resolveDesignCompilerPortableGateImplementationBinding() {
                                                 *digest);
 }
 
-} // namespace loom::eda::synopsys
+} // namespace loom::eda::open_source

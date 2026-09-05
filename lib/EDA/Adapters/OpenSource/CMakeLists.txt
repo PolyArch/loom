@@ -55,6 +55,7 @@ add_library(LoomEDAOpenSource
   Yosys.cpp
   YosysBlock.cpp
   YosysGateNetlist.cpp
+  YosysImplementation.cpp
   YosysSynthesisInvocation.cpp
 )
 
@@ -65,6 +66,7 @@ target_include_directories(LoomEDAOpenSource PUBLIC
 target_link_libraries(LoomEDAOpenSource PUBLIC
   LoomDSECandidateGenerator
   LoomEDAAsicContracts
+  LoomEDAPortableGatePublication
   LoomExternalTool
   LoomHardwareImplementation
   LoomHardwareRTL

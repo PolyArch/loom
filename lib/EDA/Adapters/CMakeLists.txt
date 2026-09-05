@@ -11,6 +11,20 @@ target_link_libraries(LoomEDAAsicContracts PUBLIC
   LLVMSupport
 )
 
+add_library(LoomEDAPortableGatePublication
+  PortableGateImplementation.cpp
+)
+
+target_include_directories(LoomEDAPortableGatePublication PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomEDAPortableGatePublication PUBLIC
+  LoomEDAAsicContracts
+  LoomHardwareRTL
+  LLVMSupport
+)
+
 add_library(LoomEDAFpgaPublication
   FpgaImplementationPublication.cpp
 )

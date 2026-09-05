@@ -1194,6 +1194,9 @@ llvm::Expected<int> run() {
           registerYosysHierarchicalBlockGateNetlistCandidateGenerator())
     return error;
   if (llvm::Error error =
+          eda::open_source::registerYosysPortableGateImplementationCandidateGenerator())
+    return error;
+  if (llvm::Error error =
           eda::open_source::registerYosysGateNetlistCandidateGenerator())
     return error;
   if (llvm::Error error =

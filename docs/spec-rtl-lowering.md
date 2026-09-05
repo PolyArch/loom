@@ -669,9 +669,11 @@ source association and account for its glue, interconnect, clock tree, routing,
 macro blockage, dynamic power, and root timing before publishing whole-root
 physical results.
 
-The registered `synopsys.design_compiler.portable_gate_implementation`
-association consumes the original portable HardwareImplementation and a
-complete mapped root BlockGateNetlist. It replays the root source against the
+The registered `synopsys.design_compiler.portable_gate_implementation` and
+`open_source.yosys.portable_gate_implementation` associations consume the original portable HardwareImplementation and a
+complete mapped root BlockGateNetlist. Each performs its vendor-specific
+strict block import before the shared `associatePortableBlockGateNetlist`
+owner replays the root source against the
 exact canonical top, rebinds only direct public port locators to the normalized
 root, and validates their indexed direction and width. The existing
 HardwareImplementation publisher retains the original Fabric, SpatialCore

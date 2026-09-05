@@ -36,6 +36,20 @@ llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
 resolveYosysHierarchicalBlockGateNetlistBinding(
     const ResolvedYosysGateNetlistConfigView &config);
 
+/// Associates the exact portable RTL root with its complete Yosys block
+/// product.
+inline constexpr dse::CandidateGeneratorKind
+    yosysPortableGateImplementationCandidateGeneratorKind(0x59535949);
+const dse::CandidateGeneratorDescriptor &
+yosysPortableGateImplementationCandidateGeneratorDescriptor();
+llvm::Error registerYosysPortableGateImplementationCandidateGenerator();
+llvm::Expected<std::vector<dse::CandidateGeneratorInputBinding>>
+bindYosysPortableGateImplementationInputs(
+    const ArtifactRootReference &implementation,
+    const ArtifactRootReference &blockNetlist);
+llvm::Expected<dse::ResolvedCandidateGeneratorBinding>
+resolveYosysPortableGateImplementationBinding();
+
 /// Includes the vendor-owned mapped library contract validation in addition
 /// to the hardware-owned source/technology/interface closure importer.
 llvm::Expected<hardware::rtl::FinalizedBlockGateNetlist>
