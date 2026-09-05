@@ -1241,6 +1241,16 @@ cannot depend on temperature accepting temporary route or capacity cost.
 System projects structural zero because it does not own Spatial local-transfer
 decisions.
 
+Maintained handshake diagnostics distinguish a materialized candidate cycle
+from a cycle in an independently reconstructed provisional selection. Both
+report arc and node ordinals in the same frozen projection index, marked by
+`arc_numbering = frozen_projection`, with contributors derived from the exact
+active fragment set. Verbosity two retains the bounded candidate witness;
+verbosity three includes complete candidate and projected witnesses. The
+projected witness comes from the existing independent reconstruction used to
+check dense scratch, so it cannot quote a previous candidate's graph. Disabled
+diagnostics introduce no witness reconstruction or output.
+
 `SharedOperandIngressPressure` is the sum, over Dataflow-owned co-firing input
 groups, of independently produced Temporal operand members beyond the number
 of distinct selected physical ingresses. Repeated consumers of one logical

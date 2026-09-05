@@ -5,6 +5,7 @@ add_mlir_library(LoomPnR
   ExpNegativeQ64Table.cpp
   FrozenConstraintIndex.cpp
   HandshakeCandidateState.cpp
+  HandshakeCycleDiagnostics.cpp
   HandshakeProjection.cpp
   InitializerChoiceOrder.cpp
   InitializerRelationSolver.cpp

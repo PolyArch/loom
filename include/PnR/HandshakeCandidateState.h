@@ -183,6 +183,9 @@ public:
   std::size_t activeArcContributionCount() const;
   bool acyclic() const;
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
+  /// Emits the visible candidate's witness at the maintained diagnostic level.
+  /// Frozen arc identities distinguish it from provisional route projections.
+  void emitCycleDiagnostic() const;
   HandshakeActiveDemandStatistics materializationStatistics() const;
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;
   llvm::ArrayRef<PnrIndex> topologicalRanks() const;

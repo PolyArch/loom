@@ -1,6 +1,7 @@
 #include "PnR/HandshakeCandidateState.h"
 
 #include "Common/MappingDebugLog.h"
+#include "HandshakeCycleDiagnostics.h"
 #include "HandshakeProjectionInternal.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -947,6 +948,15 @@ llvm::Expected<bool> loom::pnr::independentlyVerifyHandshakeProjectionAcyclic(
   auto graph = materializeHandshakeGraph(index, selection->activeFragments);
   if (!graph)
     return graph.takeError();
+  if (!graph->cycleWitness.empty() &&
+      ::loom::mapping_debug::enabled(::loom::mapping_debug::Level::Detail)) {
+    std::vector<PnrIndex> frozenWitness;
+    for (PnrIndex arc : graph->cycleWitness)
+      frozenWitness.push_back(graph->arcFrozenIds[arc]);
+    detail::emitHandshakeCycleDiagnostic(
+        index, detail::HandshakeCycleOrigin::Projection, frozenWitness,
+        selection->activeFragments, selection->fragmentRefcounts);
+  }
   return graph->cycleWitness.empty();
 }
 
@@ -1080,6 +1090,21 @@ llvm::ArrayRef<PnrIndex> HandshakeCandidateState::cycleWitness() const {
   if (activeTransaction_ && activeTransaction_->pendingGraph_)
     return activeTransaction_->pendingGraph_->cycleWitness;
   return graph_->cycleWitness;
+}
+
+void HandshakeCandidateState::emitCycleDiagnostic() const {
+  if (!::loom::mapping_debug::enabled(::loom::mapping_debug::Level::Decision))
+    return;
+  const detail::MaterializedHandshakeGraph &visible =
+      activeTransaction_ && activeTransaction_->pendingGraph_
+          ? *activeTransaction_->pendingGraph_
+          : *graph_;
+  std::vector<PnrIndex> frozenWitness;
+  for (PnrIndex arc : visible.cycleWitness)
+    frozenWitness.push_back(visible.arcFrozenIds[arc]);
+  detail::emitHandshakeCycleDiagnostic(
+      *index_, detail::HandshakeCycleOrigin::Candidate, frozenWitness,
+      activeFragments_, fragmentRefcounts_);
 }
 
 PnrIndex HandshakeCandidateState::traversalRefcount(PnrIndex traversal) const {
