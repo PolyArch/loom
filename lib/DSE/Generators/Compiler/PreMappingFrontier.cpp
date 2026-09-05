@@ -344,6 +344,21 @@ llvm::StringRef toString(PreMappingSpectrumClass value) {
   llvm_unreachable("unknown pre-Mapping spectrum class");
 }
 
+std::optional<PreMappingSpectrumClass>
+spectrumClassForEndpoint(PreMappingSpectrumEndpoint endpoint) {
+  switch (endpoint) {
+  case PreMappingSpectrumEndpoint::Automatic:
+    return std::nullopt;
+  case PreMappingSpectrumEndpoint::MaxTemporal:
+    return PreMappingSpectrumClass::MaxTemporal;
+  case PreMappingSpectrumEndpoint::MaxSpatial:
+    return PreMappingSpectrumClass::MaxSpatial;
+  case PreMappingSpectrumEndpoint::Intermediate:
+    return PreMappingSpectrumClass::Intermediate;
+  }
+  llvm_unreachable("unknown pre-Mapping spectrum endpoint");
+}
+
 llvm::StringRef toString(PreMappingLogicalDomainSupport value) {
   switch (value) {
   case PreMappingLogicalDomainSupport::Exact:

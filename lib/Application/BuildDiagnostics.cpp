@@ -204,6 +204,8 @@ encodeQualityProvenance(const dse::JointDesignQualityProvenance &provenance) {
 
 using diagnostics_detail::addOptionalRoot;
 using diagnostics_detail::addOptionalUnsigned;
+using diagnostics_detail::applicationPairEvidenceSchemaIdentity;
+using diagnostics_detail::applicationPairEvidenceSchemaVersion;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -280,6 +282,68 @@ mappingProviderWork(const ApplicationMappingProviderWorkObservation &work) {
       {"tech_mapping_journal_replays", work.techMappingJournalReplays},
       {"spatial_pnr_journal_replays", work.spatialPnrJournalReplays},
       {"system_pnr_journal_replays", work.systemPnrJournalReplays}};
+}
+
+llvm::json::Array
+mappingCandidateRoots(llvm::ArrayRef<ArtifactRootReference> candidates) {
+  llvm::json::Array result;
+  for (const ArtifactRootReference &candidate : candidates)
+    result.push_back(encodeRoot(candidate));
+  return result;
+}
+
+llvm::json::Value resourceTimeSelectionSpectrum(
+    const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum) {
+  if (!spectrum)
+    return llvm::json::Value(nullptr);
+  const dse::ResourceTimeSpectrumFunnelAccounting &accounting =
+      spectrum->accounting;
+  llvm::json::Object result{
+      {"hint_candidates", accounting.hintCandidates},
+      {"matching_mapping_checks", accounting.matchingMappingChecks},
+      {"independently_imported_mappings",
+       accounting.independentlyImportedMappings},
+      {"materialized_scenarios", accounting.materializedScenarios},
+      {"unmatched_hints", accounting.unmatchedHints},
+      {"transition_unsupported_hints", accounting.transitionUnsupportedHints},
+      {"transition_proof_failures", accounting.transitionProofFailures},
+      {"verified_scenarios", accounting.verifiedScenarios},
+      {"mapping_import_requests", accounting.mappingImportRequests},
+      {"mapping_import_cache_hits", accounting.mappingImportCacheHits},
+      {"mapping_import_cache_misses", accounting.mappingImportCacheMisses},
+      {"mapping_import_retained_bytes", accounting.mappingImportRetainedBytes},
+      {"mapping_progress_qualified", accounting.mappingProgressQualified},
+      {"mapping_progress_proof_not_established",
+       accounting.mappingProgressProofNotEstablished},
+      {"elapsed_nanoseconds", accounting.elapsedNanoseconds}};
+  if (const auto *incomplete = std::get_if<dse::IncompleteResourceTimeSpectrum>(
+          &spectrum->verification)) {
+    result["disposition"] =
+        dse::resourceTimeSpectrumIncompleteReasonSpelling(incomplete->reason);
+    result["diagnostic"] = incomplete->diagnostic;
+    result["incomplete_independently_imported_mappings"] =
+        incomplete->independentlyImportedMappingCount;
+    result["dataflow"] = nullptr;
+    result["fabric"] = nullptr;
+    result["scenarios"] = llvm::json::Array{};
+  } else {
+    const auto &verified =
+        std::get<dse::VerifiedResourceTimeSpectrum>(spectrum->verification);
+    result["disposition"] = "verified";
+    result["diagnostic"] = nullptr;
+    result["incomplete_independently_imported_mappings"] = nullptr;
+    result["dataflow"] = encodeRoot(verified.dataflow);
+    result["fabric"] = encodeRoot(verified.fabric);
+    llvm::json::Array scenarios;
+    for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
+         verified.scenarios)
+      scenarios.push_back(llvm::json::Object{
+          {"scenario_ordinal", scenario.scenarioOrdinal},
+          {"spectrum_class", dse::toString(scenario.spectrumClass)},
+          {"system_mappings", mappingCandidateRoots(scenario.systemMappings)}});
+    result["scenarios"] = std::move(scenarios);
+  }
+  return result;
 }
 
 llvm::json::Object
@@ -899,8 +963,8 @@ void emitApplicationMappingDiagnostics(
         const dse::JointDesignExecutionSummary &summary =
             execution.execution.summary;
         llvm::json::Object payload;
-        payload["schema"] = "loom.application_pair_evidence";
-        payload["version"] = "1.1";
+        payload["schema"] = applicationPairEvidenceSchemaIdentity;
+        payload["version"] = applicationPairEvidenceSchemaVersion;
         payload["domain"] = "application_mapping_join";
         if (execution.provenance.pairDecision)
           payload["pair_decision"] =
@@ -1172,6 +1236,46 @@ void emitApplicationMappingDiagnostics(
             transition["cold_mapping"] = encodeRoot(*observation.coldMapping);
           else
             transition["cold_mapping"] = nullptr;
+          transition["cold_mapping_candidates"] =
+              mappingCandidateRoots(observation.coldMappingCandidates);
+          transition["incremental_mapping_candidates"] =
+              mappingCandidateRoots(observation.incrementalMappingCandidates);
+          transition["cold_eligible_mappings"] =
+              mappingCandidateRoots(observation.coldEligibleMappings);
+          transition["incremental_eligible_mappings"] =
+              mappingCandidateRoots(observation.incrementalEligibleMappings);
+          transition["cold_selection_spectrum"] =
+              resourceTimeSelectionSpectrum(observation.coldSelectionSpectrum);
+          transition["incremental_selection_spectrum"] =
+              resourceTimeSelectionSpectrum(
+                  observation.incrementalSelectionSpectrum);
+          llvm::json::Array coldExecutionIncompleteReasons;
+          for (const dse::DsePlanIncompleteReason &reason :
+               observation.coldExecutionIncompleteReasons)
+            coldExecutionIncompleteReasons.push_back(dse::toString(reason));
+          transition["cold_execution_incomplete_reasons"] =
+              std::move(coldExecutionIncompleteReasons);
+          llvm::json::Array incrementalExecutionIncompleteReasons;
+          for (const dse::DsePlanIncompleteReason &reason :
+               observation.incrementalExecutionIncompleteReasons)
+            incrementalExecutionIncompleteReasons.push_back(
+                dse::toString(reason));
+          transition["incremental_execution_incomplete_reasons"] =
+              std::move(incrementalExecutionIncompleteReasons);
+          transition["spectrum_endpoint"] =
+              dse::toString(observation.spectrumEndpoint);
+          transition["cold_runtime_disposition"] =
+              spelling(observation.coldRuntimeDisposition);
+          transition["incremental_runtime_disposition"] =
+              spelling(observation.incrementalRuntimeDisposition);
+          transition["cold_runtime_evidence"] =
+              mappingCandidateRoots(observation.coldRuntimeEvidence);
+          transition["cold_oracle_evidence"] =
+              mappingCandidateRoots(observation.coldOracleEvidence);
+          transition["incremental_runtime_evidence"] =
+              mappingCandidateRoots(observation.incrementalRuntimeEvidence);
+          transition["incremental_oracle_evidence"] =
+              mappingCandidateRoots(observation.incrementalOracleEvidence);
           transition["parent_plan_ordinal"] = observation.parentPlanOrdinal;
           transition["child_plan_ordinal"] = observation.childPlanOrdinal;
           transition["parent_schedule_hint_digest"] =
@@ -1182,6 +1286,13 @@ void emitApplicationMappingDiagnostics(
           transition["mapping_reuse_disposition"] =
               dse::jointMappingReuseDispositionSpelling(
                   observation.reuseDisposition);
+          llvm::json::Array reopenedRoots;
+          for (const dataflow::RootThreadLaunchRef root :
+               observation.reopenedRoots)
+            reopenedRoots.push_back(llvm::json::Object{
+                {"artifact", formatArtifactIdentityHex(root.artifact)},
+                {"entity", root.entity.value()}});
+          transition["reopened_roots"] = std::move(reopenedRoots);
           transition["reopened_root_count"] = observation.reopenedRoots.size();
           transition["preserved_tech_mappings"] =
               observation.preservedTechMappings;
@@ -1325,8 +1436,12 @@ void emitApplicationMappingDiagnostics(
               else
                 ++mappingIntermediateCount;
             if (outcome.runtimeDisposition ==
-                ApplicationMappingRuntimeDisposition::Completed) {
-              for (const auto &scenario : verified->scenarios)
+                    ApplicationMappingRuntimeDisposition::Completed &&
+                outcome.runtimeMapping) {
+              for (const auto &scenario : verified->scenarios) {
+                if (!llvm::is_contained(scenario.systemMappings,
+                                        *outcome.runtimeMapping))
+                  continue;
                 if (scenario.spectrumClass ==
                     dse::PreMappingSpectrumClass::MaxTemporal)
                   ++runtimeTemporalCount;
@@ -1335,6 +1450,7 @@ void emitApplicationMappingDiagnostics(
                   ++runtimeSpatialCount;
                 else
                   ++runtimeIntermediateCount;
+              }
             }
           }
         }
@@ -1433,6 +1549,7 @@ void emitApplicationMappingDiagnostics(
           payload["system"] = encodeRoot(outcome.system);
           payload["disposition"] = spelling(outcome.disposition);
           payload["runtime_disposition"] = spelling(outcome.runtimeDisposition);
+          addOptionalRoot(payload, "runtime_mapping", outcome.runtimeMapping);
           addOptionalRoot(payload, "hardware_mutation_repair_record",
                           outcome.hardwareMutationRepairRecord);
           addOptionalUnsigned(payload, "dfg_cycles", outcome.dfgCycles);

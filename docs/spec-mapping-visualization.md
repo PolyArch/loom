@@ -183,9 +183,15 @@ it. Each non-original System has its own deterministic Fabric projection. The
 bundle also carries the runtime manifest's canonical hardware-mutation
 repair-record inventory and nullable exact selected record. For resource-time
 repair, visualization uses the Mapping-migration owner's cone partition:
-cone-external parent mappings must remain exact and every replacement mapping
-must be confined to a reopened root. Visualization does not independently
-redefine that partition.
+cone-external thread and graph execution relations, lower Mappings, service
+plans and routes, and ResourceUses must remain exact, and every replacement
+Mapping must be confined to a reopened root. Visualization does not
+independently redefine that partition.
+
+Version 1.5 adds the exact cold and incremental runtime Evidence and oracle
+Evidence roots to each resource-time repair and includes those roots in the
+bundle's canonical runtime-Evidence inventory. Version 1.4 did not carry that
+independent runtime join.
 
 Version 1.5 admits the `copied` logical-memory migration spelling and its
 provider-derived nonzero migration and reprogramming costs. The bundle remains

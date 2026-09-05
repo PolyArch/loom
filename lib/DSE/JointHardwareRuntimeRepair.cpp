@@ -3,6 +3,7 @@
 #include "JointHardwareReopenInternal.h"
 
 #include "JointHardwareReopenExecution.h"
+#include "ResourceTimeAdjacentMappingSelection.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
@@ -301,6 +302,33 @@ void mergeLowerMappingExecutionAccounting(
 
 } // namespace
 
+std::vector<::dataflow::RootThreadLaunchRef> deriveSystemPartitionDelta(
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> parent,
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> child) {
+  std::vector<::dataflow::RootThreadLaunchRef> changed;
+  for (const pnr::SystemBindingPartitionIntent &parentPartition : parent) {
+    const auto childPartition =
+        llvm::find_if(child, [&](const auto &candidate) {
+          return candidate.root == parentPartition.root;
+        });
+    if (childPartition == child.end() ||
+        childPartition->partitionCount != parentPartition.partitionCount)
+      changed.push_back(parentPartition.root);
+  }
+  for (const pnr::SystemBindingPartitionIntent &childPartition : child)
+    if (llvm::none_of(parent, [&](const auto &candidate) {
+          return candidate.root == childPartition.root;
+        }))
+      changed.push_back(childPartition.root);
+  llvm::sort(changed, [](const auto &lhs, const auto &rhs) {
+    if (lhs.artifact != rhs.artifact)
+      return lhs.artifact.bytes() < rhs.artifact.bytes();
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+  return changed;
+}
+
 llvm::Expected<JointResourceTimeAdjacentRepair>
 executeResourceTimeAdjacentMappingRepair(
     const JointDesignExplorationPlan &parentPlan,
@@ -308,6 +336,7 @@ executeResourceTimeAdjacentMappingRepair(
     const JointDesignPolicy &policy,
     llvm::ArrayRef<pnr::SystemBindingPartitionIntent> childPartitions,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    JointResourceTimeMappingVerifier mappingVerifier,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
   if (llvm::Error error = registerProductionDseOwners())
@@ -328,6 +357,22 @@ executeResourceTimeAdjacentMappingRepair(
     return invalid("resource-time repair has no typed invalidation root");
   if (parentPlan.pairOutputs.size() != 1)
     return invalid("resource-time repair requires one exact parent pair");
+  const std::vector<::dataflow::RootThreadLaunchRef> partitionDelta =
+      deriveSystemPartitionDelta(parentPlan.systemBindingPartitions,
+                                 childPartitions);
+  std::vector<::dataflow::RootThreadLaunchRef> canonicalReopenedRoots(
+      reopenedRoots.begin(), reopenedRoots.end());
+  llvm::sort(canonicalReopenedRoots, [](const auto &lhs, const auto &rhs) {
+    if (lhs.artifact != rhs.artifact)
+      return lhs.artifact.bytes() < rhs.artifact.bytes();
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  if (std::adjacent_find(canonicalReopenedRoots.begin(),
+                         canonicalReopenedRoots.end()) !=
+          canonicalReopenedRoots.end() ||
+      canonicalReopenedRoots != partitionDelta)
+    return invalid("resource-time repair roots differ from the exact "
+                   "System partition delta");
   std::optional<ArtifactRootReference> parentMapping;
   if (parentExecution.summary.selectedMapping)
     parentMapping = *parentExecution.summary.selectedMapping;
@@ -352,7 +397,9 @@ executeResourceTimeAdjacentMappingRepair(
   ResolvedConfig childConfig = parentPlan.resolvedConfig;
   childConfig.dse.planNodes.clear();
   childConfig.dse.systemPnr.search.completionGoal =
-      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+      request.stoppingPolicy == JointDesignStoppingPolicy::FirstVerified
+          ? ResolvedPnrCompletionGoal::ExhaustConfiguredWork
+          : ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto childPlan = buildJointDesignExplorationPlan(
       {{software.workloads}, {system}}, *timing, *repairPolicy, childConfig,
       artifacts, nullptr, childPartitions);
@@ -395,6 +442,21 @@ executeResourceTimeAdjacentMappingRepair(
   auto coldExecution = executeIndependent(coldPlan, coldRequest);
   if (!coldExecution)
     return coldExecution.takeError();
+  std::optional<ResourceTimeSpectrumFunnelResult> coldSelectionSpectrum;
+  std::vector<ArtifactRootReference> coldEligibleMappings;
+  std::vector<DsePlanIncompleteReason> coldExecutionIncompleteReasons;
+  if (request.stoppingPolicy == JointDesignStoppingPolicy::FirstVerified) {
+    auto selected = selectResourceTimePartitionMapping(
+        *coldExecution, software.dataflow, system, childPartitions,
+        reopenedRoots, nullptr, {}, request.spectrumEndpoint,
+        JointResourceTimeMappingRepairSide::Cold, mappingVerifier, artifacts);
+    if (!selected)
+      return selected.takeError();
+    coldSelectionSpectrum = std::move(selected->spectrum);
+    coldEligibleMappings = std::move(selected->eligibleMappings);
+    coldExecutionIncompleteReasons =
+        std::move(selected->executionIncompleteReasons);
+  }
   coldExecution->summary.coldReopenWallTimeNanoseconds =
       coldExecution->summary.executionWallTimeNanoseconds;
 
@@ -409,18 +471,12 @@ executeResourceTimeAdjacentMappingRepair(
   }();
   if (!lowerExecution)
     return lowerExecution.takeError();
-  auto reopenedSpatialMappings = resolveReopenedRootLowerMappingFrontier(
-      *lowerPlan, *lowerExecution);
-  if (!reopenedSpatialMappings)
-    return reopenedSpatialMappings.takeError();
-  auto hybridSpatialMappings = materializeHybridSpatialMappingFrontier(
-      *childPlan, *reopenedSpatialMappings, *parentCone, artifacts);
-  if (!hybridSpatialMappings)
-    return hybridSpatialMappings.takeError();
-  if (llvm::Error error = bindImmutableSpatialMappingFrontier(
-          *childPlan, *hybridSpatialMappings, artifacts))
-    return std::move(error);
-
+  std::vector<DsePlanIncompleteReason> incrementalPrerequisiteReasons;
+  if (const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(
+          &lowerExecution->planExecution))
+    incrementalPrerequisiteReasons.push_back(incomplete->reason());
+  lowerExecution->summary.incrementalReopenWallTimeNanoseconds =
+      lowerExecution->summary.executionWallTimeNanoseconds;
   auto correspondence =
       pnr::SystemExecutionBindingCorrespondence::getIdentity(system, artifacts);
   if (!correspondence)
@@ -435,6 +491,47 @@ executeResourceTimeAdjacentMappingRepair(
     return seed.takeError();
   if (llvm::Error error = bindFinalizedSystemMappingMigrationSeed(
           *childPlan, seed->reference(), artifacts))
+    return std::move(error);
+  if (!incrementalPrerequisiteReasons.empty()) {
+    const std::vector<ArtifactRootReference> coldMappings =
+        mappingRoots(*coldExecution);
+    auto coldVerification = independentlyVerifyChildMappings(
+        coldMappings, software.dataflow, system, artifacts);
+    if (!coldVerification)
+      return coldVerification.takeError();
+    auto incrementalVerification = independentlyVerifyChildMappings(
+        {}, software.dataflow, system, artifacts);
+    if (!incrementalVerification)
+      return incrementalVerification.takeError();
+    return JointResourceTimeAdjacentRepair{
+        *parentMapping,
+        seed->reference(),
+        std::move(*childPlan),
+        coldExecution->summary.selectedMapping,
+        std::nullopt,
+        std::move(coldSelectionSpectrum),
+        std::nullopt,
+        std::move(coldEligibleMappings),
+        {},
+        std::move(coldExecutionIncompleteReasons),
+        std::move(incrementalPrerequisiteReasons),
+        std::move(*coldExecution),
+        std::move(*lowerExecution),
+        std::nullopt,
+        JointMappingReuseDisposition::ColdFallback,
+        std::move(*coldVerification),
+        std::move(*incrementalVerification)};
+  }
+  auto reopenedSpatialMappings =
+      resolveReopenedRootLowerMappingFrontier(*lowerPlan, *lowerExecution);
+  if (!reopenedSpatialMappings)
+    return reopenedSpatialMappings.takeError();
+  auto hybridSpatialMappings = materializeHybridSpatialMappingFrontier(
+      *childPlan, *reopenedSpatialMappings, *parentCone, artifacts);
+  if (!hybridSpatialMappings)
+    return hybridSpatialMappings.takeError();
+  if (llvm::Error error = bindImmutableSpatialMappingFrontier(
+          *childPlan, *hybridSpatialMappings, artifacts))
     return std::move(error);
 
   std::uint64_t lowerDispatches =
@@ -451,6 +548,23 @@ executeResourceTimeAdjacentMappingRepair(
   auto execution = executeIndependent(*childPlan, systemRequest);
   if (!execution)
     return execution.takeError();
+  std::optional<ResourceTimeSpectrumFunnelResult> incrementalSelectionSpectrum;
+  std::vector<ArtifactRootReference> incrementalEligibleMappings;
+  std::vector<DsePlanIncompleteReason> incrementalExecutionIncompleteReasons;
+  if (request.stoppingPolicy == JointDesignStoppingPolicy::FirstVerified) {
+    auto selected = selectResourceTimePartitionMapping(
+        *execution, software.dataflow, system, childPartitions, reopenedRoots,
+        &importedParentMapping->view(), incrementalPrerequisiteReasons,
+        request.spectrumEndpoint,
+        JointResourceTimeMappingRepairSide::Incremental, mappingVerifier,
+        artifacts);
+    if (!selected)
+      return selected.takeError();
+    incrementalSelectionSpectrum = std::move(selected->spectrum);
+    incrementalEligibleMappings = std::move(selected->eligibleMappings);
+    incrementalExecutionIncompleteReasons =
+        std::move(selected->executionIncompleteReasons);
+  }
   std::vector<JointDesignInvocationManifestReference> lowerInvocations;
   if (llvm::Error error = retainJointDesignExecutionInvocations(
           lowerInvocations, *lowerExecution))
@@ -515,15 +629,18 @@ executeResourceTimeAdjacentMappingRepair(
         mapping::importSystemMapping(*incrementalMapping, artifacts);
     if (!importedChildMapping)
       return importedChildMapping.takeError();
+    auto preserved = pnr::preservesSystemMappingMigrationCone(
+        importedParentMapping->view(), importedChildMapping->view(),
+        parentCone->reopenedRoots, artifacts);
+    if (!preserved)
+      return preserved.takeError();
+    if (!*preserved)
+      return invalid("resource-time System repair changed an exact "
+                     "cone-external System selection");
     auto childCone = pnr::projectSystemMappingMigrationConePartition(
         importedChildMapping->view(), parentCone->reopenedRoots, artifacts);
     if (!childCone)
       return childCone.takeError();
-    if (childCone->preservedSpatialMappings !=
-            parentCone->preservedSpatialMappings ||
-        childCone->preservedTechMappings != parentCone->preservedTechMappings)
-      return invalid("resource-time System repair changed its preserved "
-                     "lower-Mapping cone");
     execution->summary.repairedSpatialMappings =
         childCone->reopenedSpatialMappings.size();
     execution->summary.repairedTechMappings =
@@ -573,16 +690,24 @@ executeResourceTimeAdjacentMappingRepair(
                            ? JointMappingReuseDisposition::LocalRepair
                            : JointMappingReuseDisposition::Preserved;
   }
-  return JointResourceTimeAdjacentRepair{*parentMapping,
-                                         seed->reference(),
-                                         std::move(*childPlan),
-                                         coldMapping,
-                                         incrementalMapping,
-                                         std::move(*coldExecution),
-                                         std::move(*execution),
-                                         reuseDisposition,
-                                         std::move(*coldVerification),
-                                         std::move(*incrementalVerification)};
+  return JointResourceTimeAdjacentRepair{
+      *parentMapping,
+      seed->reference(),
+      std::move(*childPlan),
+      coldMapping,
+      incrementalMapping,
+      std::move(coldSelectionSpectrum),
+      std::move(incrementalSelectionSpectrum),
+      std::move(coldEligibleMappings),
+      std::move(incrementalEligibleMappings),
+      std::move(coldExecutionIncompleteReasons),
+      std::move(incrementalExecutionIncompleteReasons),
+      std::move(*coldExecution),
+      std::move(*lowerExecution),
+      std::optional<JointDesignExecution>(std::move(*execution)),
+      reuseDisposition,
+      std::move(*coldVerification),
+      std::move(*incrementalVerification)};
 }
 
 namespace {

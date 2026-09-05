@@ -10,6 +10,7 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/CGRASimulator.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -56,6 +57,25 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     const PreparedApplicationMappingAlternative &alternative,
     const dse::JointDesignExecution &execution,
     const dse::PlanExecutionPolicy &executionPolicy,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
+struct ApplicationRuntimeEvidenceJoin final {
+  std::uint64_t dfgCycles = 0;
+  std::uint64_t cgraCycles = 0;
+};
+
+/// Strictly resolves the runtime Evidence of one exact application Mapping.
+/// The supporting set must cover the source-backed DFG and CGRA executions,
+/// while the oracle subset must contain an independently imported completed
+/// SimulationComparison with an AbsentFinding result. Cycle totals are
+/// re-derived from those strict imports rather than trusted from diagnostics.
+llvm::Expected<ApplicationRuntimeEvidenceJoin>
+resolveApplicationRuntimeEvidenceJoin(
+    llvm::ArrayRef<ArtifactRootReference> runtimeEvidence,
+    llvm::ArrayRef<ArtifactRootReference> oracleEvidence,
+    const ArtifactRootReference &dataflow,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference> replayCases,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::application::detail

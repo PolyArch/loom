@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -200,6 +201,10 @@ struct ApplicationResourceTimeRepairEvidence final {
   std::uint64_t incrementalVerifierWork = 0;
   ApplicationMappingProviderWorkObservation coldProviderWork;
   ApplicationMappingProviderWorkObservation incrementalProviderWork;
+  std::vector<ArtifactRootReference> coldRuntimeEvidence;
+  std::vector<ArtifactRootReference> coldOracleEvidence;
+  std::vector<ArtifactRootReference> incrementalRuntimeEvidence;
+  std::vector<ArtifactRootReference> incrementalOracleEvidence;
   std::optional<std::uint64_t> coldDfgCycles;
   std::optional<std::uint64_t> coldCgraCycles;
   std::optional<std::uint64_t> incrementalDfgCycles;
@@ -366,6 +371,10 @@ struct ApplicationPairMappingObservation final {
       ApplicationMappingRuntimeDisposition::NotRequested;
   std::optional<dse::DsePlanIncompleteReason> incompleteReason;
   std::vector<ArtifactRootReference> systemMappings;
+  /// Exact SystemMapping whose application runtime fields were observed.
+  /// This is absent when runtime did not execute; the surrounding frontier is
+  /// never used as a substitute for this identity.
+  std::optional<ArtifactRootReference> runtimeMapping;
   std::vector<ArtifactRootReference> runtimeEvidence;
   /// Completed SimulationComparison Evidence against the source-backed native
   /// oracle. Runtime Evidence remains the owner; this is its typed subset.
@@ -515,6 +524,13 @@ struct ApplicationPairDecisionRecord final {
   /// the Mapping. Equivalent schedule hints share one Mapping plan, so the
   /// selected plan and Mapping alone do not name one observation.
   std::optional<ComponentViewDigest> selectedScheduleHintDigest;
+  /// Derived visibility for adjacent resource-time Mapping repairs. These
+  /// fields do not change the selected parent application's disposition and
+  /// do not claim that Deployment-level transition finalization succeeded.
+  std::uint64_t resourceTimeMappingRepairAttemptCount = 0;
+  std::uint64_t resourceTimeMappingRepairVerifiedCount = 0;
+  std::optional<dse::DsePlanIncompleteReason>
+      resourceTimeMappingRepairIncompleteReason;
   bool hostOnlyBaselineComplete = false;
   bool finalApplicationQorComplete = false;
   std::optional<std::string> detail;
@@ -542,6 +558,7 @@ struct ApplicationMappingCandidateOutcome final {
   std::optional<std::uint64_t> incompleteNodeOrdinal;
   std::optional<dse::DsePlanIncompleteReason> incompleteReason;
   std::vector<ArtifactRootReference> systemMappings;
+  std::optional<ArtifactRootReference> runtimeMapping;
   /// The exact planning record used to admit this Mapping attempt. Keeping
   /// this invocation evidence beside the outcome prevents reports from
   /// reconstructing candidate provenance by array position.
@@ -577,10 +594,40 @@ struct ApplicationIncrementalMappingObservation final {
   ArtifactRootReference childSystem;
   std::optional<ArtifactRootReference> childMapping;
   std::optional<ArtifactRootReference> coldMapping;
+  std::vector<ArtifactRootReference> coldMappingCandidates;
+  std::vector<ArtifactRootReference> incrementalMappingCandidates;
+  std::optional<dse::ResourceTimeSpectrumFunnelResult> coldSelectionSpectrum;
+  std::optional<dse::ResourceTimeSpectrumFunnelResult>
+      incrementalSelectionSpectrum;
+  std::vector<dse::DsePlanIncompleteReason> coldExecutionIncompleteReasons;
+  std::vector<dse::DsePlanIncompleteReason>
+      incrementalExecutionIncompleteReasons;
+  std::vector<ArtifactRootReference> coldEligibleMappings;
+  std::vector<ArtifactRootReference> incrementalEligibleMappings;
+  dse::PreMappingSpectrumEndpoint spectrumEndpoint =
+      dse::PreMappingSpectrumEndpoint::Automatic;
+  ApplicationMappingRuntimeDisposition coldRuntimeDisposition =
+      ApplicationMappingRuntimeDisposition::NotRequested;
+  ApplicationMappingRuntimeDisposition incrementalRuntimeDisposition =
+      ApplicationMappingRuntimeDisposition::NotRequested;
+  std::vector<ArtifactRootReference> coldRuntimeEvidence;
+  std::vector<ArtifactRootReference> coldOracleEvidence;
+  std::vector<ArtifactRootReference> incrementalRuntimeEvidence;
+  std::vector<ArtifactRootReference> incrementalOracleEvidence;
   std::uint64_t parentPlanOrdinal = 0;
   std::uint64_t childPlanOrdinal = 0;
   ComponentViewDigest parentScheduleHintDigest;
   ComponentViewDigest childScheduleHintDigest;
+
+  ApplicationIncrementalMappingObservation(
+      ArtifactRootReference parentMapping, ArtifactRootReference childSystem,
+      ComponentViewDigest parentScheduleHintDigest,
+      ComponentViewDigest childScheduleHintDigest)
+      : parentMapping(std::move(parentMapping)),
+        childSystem(std::move(childSystem)),
+        parentScheduleHintDigest(std::move(parentScheduleHintDigest)),
+        childScheduleHintDigest(std::move(childScheduleHintDigest)) {}
+
   std::vector<dataflow::RootThreadLaunchRef> reopenedRoots;
   dse::JointMappingReuseDisposition reuseDisposition =
       dse::JointMappingReuseDisposition::ColdFallback;

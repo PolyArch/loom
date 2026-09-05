@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 
@@ -62,12 +63,41 @@ PRE_ADMISSION_CONTRACT = "pre_mapping_owner_verified_v1"
 # closes a join.
 MANIFEST_JOIN_COMPLETE = "owner_scoped_planning_closure"
 MANIFEST_JOIN_PRE_ADMISSION = "owner_verified_pre_admission"
-PAIR_DECISION_SCHEMA = "loom.application_pair_decision"
-PAIR_DECISION_VERSION = "1.1"
-PAIR_EVIDENCE_SCHEMA = "loom.application_pair_evidence"
-PAIR_DISPOSITION_SCHEMA = "loom.application_pair_disposition"
-PAIR_DISPOSITION_VERSION = "1.0"
-PAIR_EVIDENCE_VERSION = "1.1"
+
+_ROOT = Path(__file__).resolve().parents[1]
+_PAIR_DIAGNOSTIC_OWNER = (
+    _ROOT / "lib/Application/BuildDiagnosticsInternal.h"
+).read_text(encoding="utf-8")
+
+
+def _owned_projection_literal(name: str) -> str:
+    value = re.search(
+        rf'\b{re.escape(name)}\s*=\s*"([^"]+)"',
+        _PAIR_DIAGNOSTIC_OWNER,
+    )
+    if value is None:
+        raise RuntimeError("application pair diagnostic ABI owner is malformed")
+    return value.group(1)
+
+
+PAIR_DECISION_SCHEMA = _owned_projection_literal(
+    "applicationPairDecisionSchemaIdentity"
+)
+PAIR_DECISION_VERSION = _owned_projection_literal(
+    "applicationPairDecisionSchemaVersion"
+)
+PAIR_EVIDENCE_SCHEMA = _owned_projection_literal(
+    "applicationPairEvidenceSchemaIdentity"
+)
+PAIR_EVIDENCE_VERSION = _owned_projection_literal(
+    "applicationPairEvidenceSchemaVersion"
+)
+PAIR_DISPOSITION_SCHEMA = _owned_projection_literal(
+    "applicationPairDispositionSchemaIdentity"
+)
+PAIR_DISPOSITION_VERSION = _owned_projection_literal(
+    "applicationPairDispositionSchemaVersion"
+)
 
 
 def _integer(value: Any) -> int | None:
@@ -80,21 +110,243 @@ def _digest(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def _artifact_root(value: Any) -> bool:
+def decode_artifact_root_hex(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, str) or len(value) % 2 != 0:
-        return False
+        return None
     try:
         encoded = bytes.fromhex(value)
     except ValueError:
-        return False
+        return None
     if len(encoded) < 4 + 1 + 4 + 4 + 32:
-        return False
+        return None
     schema_length = int.from_bytes(encoded[:4], "big")
     expected_size = 4 + schema_length + 4 + 4 + 32
     if schema_length == 0 or len(encoded) != expected_size:
-        return False
+        return None
     schema = encoded[4 : 4 + schema_length]
-    return all(0x21 <= byte <= 0x7E for byte in schema)
+    if not all(0x21 <= byte <= 0x7E for byte in schema):
+        return None
+    return {
+        "schema": schema.decode("ascii"),
+        "schema_version": (
+            f"{int.from_bytes(encoded[4 + schema_length : 8 + schema_length], 'big')}."
+            f"{int.from_bytes(encoded[8 + schema_length : 12 + schema_length], 'big')}"
+        ),
+        "artifact": encoded[12 + schema_length :].hex(),
+    }
+
+
+def _artifact_root(value: Any) -> bool:
+    return decode_artifact_root_hex(value) is not None
+
+
+def _selection_spectrum_valid(spectrum: Any) -> bool:
+    if spectrum is None:
+        return True
+    if not isinstance(spectrum, dict):
+        return False
+    disposition = spectrum.get("disposition")
+    scenarios = spectrum.get("scenarios")
+    if disposition == "verified":
+        return (
+            _artifact_root(spectrum.get("dataflow"))
+            and _artifact_root(spectrum.get("fabric"))
+            and isinstance(scenarios, list)
+            and bool(scenarios)
+            and all(
+                isinstance(scenario, dict)
+                and scenario.get("spectrum_class")
+                in {"max_temporal", "max_spatial", "intermediate"}
+                and isinstance(scenario.get("system_mappings"), list)
+                and bool(scenario["system_mappings"])
+                and all(_artifact_root(mapping) for mapping in scenario["system_mappings"])
+                for scenario in scenarios
+            )
+        )
+    return (
+        disposition
+        in {"unsupported", "proof_not_established", "cancelled_or_timeout"}
+        and isinstance(spectrum.get("diagnostic"), str)
+        and bool(spectrum["diagnostic"])
+        and scenarios == []
+        and spectrum.get("dataflow") is None
+        and spectrum.get("fabric") is None
+    )
+
+
+def _selection_spectrum_admits(
+    spectrum: Any, mapping: str, endpoint: str
+) -> bool:
+    if not isinstance(spectrum, dict) or spectrum.get("disposition") != "verified":
+        return False
+    scenarios = spectrum.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        return False
+    requested_class = None if endpoint == "automatic" else endpoint
+    return any(
+        isinstance(scenario, dict)
+        and isinstance(scenario.get("system_mappings"), list)
+        and mapping in scenario["system_mappings"]
+        and (
+            requested_class is None
+            or scenario.get("spectrum_class") == requested_class
+        )
+        for scenario in scenarios
+    )
+
+
+def validate_resource_time_mapping_repair_transition(
+    transition: Any,
+) -> tuple[bool, list[str]]:
+    """Derive one adjacent Mapping-repair status from its exact side evidence."""
+    errors: list[str] = []
+    if not isinstance(transition, dict):
+        return False, ["not_object"]
+    endpoint = transition.get("spectrum_endpoint")
+    if endpoint not in {"automatic", "max_temporal", "max_spatial", "intermediate"}:
+        errors.append("spectrum_endpoint_invalid")
+        endpoint = "automatic"
+    root_arrays = (
+        "cold_mapping_candidates",
+        "incremental_mapping_candidates",
+        "cold_eligible_mappings",
+        "incremental_eligible_mappings",
+        "cold_runtime_evidence",
+        "cold_oracle_evidence",
+        "incremental_runtime_evidence",
+        "incremental_oracle_evidence",
+    )
+    reason_arrays = (
+        "cold_execution_incomplete_reasons",
+        "incremental_execution_incomplete_reasons",
+    )
+    for field in root_arrays:
+        values = transition.get(field)
+        if (
+            not isinstance(values, list)
+            or any(not _artifact_root(value) for value in values)
+            or len(values) != len(set(values))
+        ):
+            errors.append(f"{field}_invalid")
+    for field in reason_arrays:
+        values = transition.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            errors.append(f"{field}_invalid")
+
+    reopened_roots = transition.get("reopened_roots")
+    reopened_keys: list[tuple[str, int]] = []
+    if isinstance(reopened_roots, list):
+        for root in reopened_roots:
+            if (
+                not isinstance(root, dict)
+                or not _digest(root.get("artifact"))
+                or _integer(root.get("entity")) is None
+                or root["entity"] < 0
+            ):
+                errors.append("reopened_root_invalid")
+                continue
+            reopened_keys.append((root["artifact"], root["entity"]))
+    if (
+        not isinstance(reopened_roots, list)
+        or not reopened_roots
+        or transition.get("reopened_root_count") != len(reopened_roots)
+        or len(reopened_keys) != len(set(reopened_keys))
+    ):
+        errors.append("reopened_roots_invalid")
+
+    runtime_dispositions = {
+        "not_requested",
+        "completed",
+        "unsupported",
+        "proof_not_established",
+        "execution_failed",
+        "cancelled_or_timeout",
+    }
+    side_status: list[bool] = []
+    for mode, mapping_field in (("cold", "cold_mapping"),
+                                ("incremental", "child_mapping")):
+        candidates = transition.get(f"{mode}_mapping_candidates")
+        eligible = transition.get(f"{mode}_eligible_mappings")
+        reasons = transition.get(f"{mode}_execution_incomplete_reasons")
+        runtime = transition.get(f"{mode}_runtime_evidence")
+        oracle = transition.get(f"{mode}_oracle_evidence")
+        spectrum = transition.get(f"{mode}_selection_spectrum")
+        mapping = transition.get(mapping_field)
+        disposition = transition.get(f"{mode}_runtime_disposition")
+        if disposition not in runtime_dispositions:
+            errors.append(f"{mode}_runtime_disposition_invalid")
+        if not _selection_spectrum_valid(spectrum):
+            errors.append(f"{mode}_selection_spectrum_invalid")
+        if isinstance(candidates, list) and isinstance(eligible, list) and any(
+            value not in candidates for value in eligible
+        ):
+            errors.append(f"{mode}_eligible_mapping_foreign")
+        if isinstance(runtime, list) and isinstance(oracle, list) and any(
+            value not in runtime for value in oracle
+        ):
+            errors.append(f"{mode}_oracle_evidence_foreign")
+        if isinstance(runtime, list):
+            for evidence in runtime:
+                decoded = decode_artifact_root_hex(evidence)
+                if (
+                    decoded is not None
+                    and (
+                        decoded["schema"] != "evaluation.evidence"
+                        or decoded["schema_version"] != "1.0"
+                    )
+                ):
+                    errors.append(f"{mode}_runtime_evidence_schema_invalid")
+        if mapping is not None and not _artifact_root(mapping):
+            errors.append(f"{mode}_mapping_invalid")
+        if isinstance(reasons, list) and reasons:
+            if (
+                mapping is not None
+                or spectrum is not None
+                or disposition != "not_requested"
+                or runtime
+                or oracle
+            ):
+                errors.append(f"{mode}_incomplete_plan_has_post_plan_evidence")
+        elif mapping is not None and (
+            not isinstance(candidates, list)
+            or mapping not in candidates
+            or not isinstance(eligible, list)
+            or mapping not in eligible
+            or not _selection_spectrum_admits(spectrum, mapping, endpoint)
+        ):
+            errors.append(f"{mode}_selected_mapping_unproven")
+        side_status.append(
+            isinstance(reasons, list)
+            and not reasons
+            and isinstance(candidates, list)
+            and mapping in candidates
+            and isinstance(eligible, list)
+            and mapping in eligible
+            and disposition == "completed"
+            and isinstance(runtime, list)
+            and bool(runtime)
+            and isinstance(oracle, list)
+            and bool(oracle)
+            and _selection_spectrum_admits(spectrum, mapping, endpoint)
+        )
+    derived_verified = len(side_status) == 2 and all(side_status)
+    if transition.get("verified") is not derived_verified:
+        errors.append("verified_flag_mismatch")
+    if derived_verified:
+        if (
+            transition.get("disposition") != "verified"
+            or transition.get("incomplete_reason") is not None
+        ):
+            errors.append("verified_disposition_invalid")
+    elif (
+        transition.get("disposition") != "incomplete"
+        or not isinstance(transition.get("incomplete_reason"), str)
+        or not transition["incomplete_reason"]
+    ):
+        errors.append("incomplete_disposition_invalid")
+    return derived_verified, errors
 
 
 def _artifact_root_list(value: Any) -> bool:
@@ -698,6 +950,50 @@ def validate_portfolio_pair(
         not isinstance(decision.get("detail"), str) or not decision["detail"]
     ):
         typed_reasons.append("typed_failure_detail_missing")
+    repair_attempts = _integer(
+        decision.get("resource_time_mapping_repair_attempt_count")
+    )
+    verified_repairs = _integer(
+        decision.get("resource_time_mapping_repair_verified_count")
+    )
+    repair_incomplete = decision.get(
+        "resource_time_mapping_repair_incomplete_reason"
+    )
+    if (
+        repair_attempts is None
+        or repair_attempts < 0
+        or verified_repairs is None
+        or verified_repairs < 0
+        or verified_repairs > repair_attempts
+        or (
+            verified_repairs == repair_attempts
+            and repair_incomplete is not None
+        )
+        or (
+            verified_repairs < repair_attempts
+            and (not isinstance(repair_incomplete, str) or not repair_incomplete)
+        )
+    ):
+        typed_reasons.append("resource_time_mapping_repair_summary_invalid")
+    repair_transitions = evidence.get("application_incremental_mapping_transitions")
+    if has_mapping_evidence:
+        if not isinstance(repair_transitions, list):
+            typed_reasons.append("resource_time_mapping_repair_rows_missing")
+        else:
+            row_results = [
+                validate_resource_time_mapping_repair_transition(transition)
+                for transition in repair_transitions
+            ]
+            if any(errors for _, errors in row_results):
+                typed_reasons.append("resource_time_mapping_repair_row_invalid")
+            if (
+                repair_attempts != len(repair_transitions)
+                or verified_repairs
+                != sum(1 for verified, _ in row_results if verified)
+            ):
+                typed_reasons.append("resource_time_mapping_repair_rows_mismatch")
+    elif repair_attempts != 0 or verified_repairs != 0:
+        typed_reasons.append("resource_time_mapping_repair_rows_unowned")
 
     if (
         selection.get("execution_binding") != "canonical_simulation_and_oracle"
@@ -762,6 +1058,29 @@ def validate_portfolio_pair(
             candidate.get("objective"), "candidate_objective"
         )
         typed_reasons.extend(candidate_reasons)
+        observations = candidate.get("mapping_observations")
+        if candidate.get("entered_mapping") is True and (
+            not isinstance(observations, list) or not observations
+        ):
+            typed_reasons.append("mapping_observation_inventory_missing")
+        if isinstance(observations, list):
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    typed_reasons.append("mapping_observation_invalid")
+                    continue
+                runtime_mapping = observation.get("runtime_mapping")
+                runtime_disposition = observation.get("runtime_disposition")
+                system_mappings = observation.get("system_mappings")
+                if not (
+                    runtime_disposition == "not_requested"
+                    and runtime_mapping is None
+                ) and not (
+                    runtime_disposition != "not_requested"
+                    and _artifact_root(runtime_mapping)
+                    and isinstance(system_mappings, list)
+                    and runtime_mapping in system_mappings
+                ):
+                    typed_reasons.append("mapping_runtime_owner_invalid")
         if candidate.get("selected") is True:
             selected_candidates.append(candidate)
     planning_count = _integer(decision.get("planning_record_count"))
@@ -800,7 +1119,7 @@ def validate_portfolio_pair(
                 and observation.get("plan_ordinal") == selected_plan
                 and observation.get("schedule_hint_digest") == selected_hint
                 and isinstance(observation.get("system_mappings"), list)
-                and selected_mapping in observation["system_mappings"]
+                and observation.get("runtime_mapping") == selected_mapping
             ]
             if isinstance(observations, list)
             else []
@@ -818,6 +1137,8 @@ def validate_portfolio_pair(
                 or not _artifact_root(selected_observation.get("system"))
                 or not _digest(selected_observation.get("schedule_hint_digest"))
                 or not _artifact_root_list(selected_observation.get("system_mappings"))
+                or selected_mapping not in selected_observation["system_mappings"]
+                or not _artifact_root(selected_observation.get("runtime_mapping"))
                 or not _artifact_root_list(selected_observation.get("runtime_evidence"))
                 or not _artifact_root_list(selected_observation.get("oracle_evidence"))
             ):

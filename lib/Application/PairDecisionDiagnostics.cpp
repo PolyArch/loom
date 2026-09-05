@@ -15,6 +15,10 @@
 namespace loom::application {
 using diagnostics_detail::addOptionalRoot;
 using diagnostics_detail::addOptionalUnsigned;
+using diagnostics_detail::applicationPairDecisionSchemaIdentity;
+using diagnostics_detail::applicationPairDecisionSchemaVersion;
+using diagnostics_detail::applicationPairDispositionSchemaIdentity;
+using diagnostics_detail::applicationPairDispositionSchemaVersion;
 using diagnostics_detail::encodeObjectiveScalar;
 using diagnostics_detail::encodePairDecision;
 using diagnostics_detail::encodeQualityProvenance;
@@ -188,8 +192,8 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
     addOptionalRoot(result, "evidence", observation.evidence);
     return result;
   };
-  llvm::json::Object result{{"schema", "loom.application_pair_decision"},
-                            {"version", "1.1"}};
+  llvm::json::Object result{{"schema", applicationPairDecisionSchemaIdentity},
+                            {"version", applicationPairDecisionSchemaVersion}};
   if (decision.portfolioInput)
     result["portfolio_input"] = encodePortfolioInput(
         *decision.portfolioInput, decision.portfolioExecutionBinding);
@@ -317,6 +321,15 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
         formatComponentViewDigestHex(*decision.selectedScheduleHintDigest);
   else
     result["selected_schedule_hint_digest"] = nullptr;
+  result["resource_time_mapping_repair_attempt_count"] =
+      decision.resourceTimeMappingRepairAttemptCount;
+  result["resource_time_mapping_repair_verified_count"] =
+      decision.resourceTimeMappingRepairVerifiedCount;
+  result["resource_time_mapping_repair_incomplete_reason"] =
+      decision.resourceTimeMappingRepairIncompleteReason
+          ? llvm::json::Value(dse::toString(
+                *decision.resourceTimeMappingRepairIncompleteReason))
+          : llvm::json::Value(nullptr);
   llvm::json::Array candidates;
   for (const ApplicationPairCandidateRecord &candidate : decision.candidates) {
     llvm::json::Object encoded;
@@ -392,6 +405,7 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
       for (const ArtifactRootReference &reference : observation.systemMappings)
         mappings.push_back(encodeRoot(reference));
       mapping["system_mappings"] = std::move(mappings);
+      addOptionalRoot(mapping, "runtime_mapping", observation.runtimeMapping);
       addOptionalRoot(mapping, "hardware_mutation_repair_record",
                       observation.hardwareMutationRepairRecord);
       llvm::json::Array runtimeEvidence;
@@ -464,8 +478,8 @@ void emitApplicationPairDecisionDiagnostics(
       DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
       InvocationDiagnosticEvent::Statistics, [&] {
         llvm::json::Object payload;
-        payload["schema"] = "loom.application_pair_disposition";
-        payload["version"] = "1.0";
+        payload["schema"] = applicationPairDispositionSchemaIdentity;
+        payload["version"] = applicationPairDispositionSchemaVersion;
         payload["domain"] = "application_pair_decision";
         payload["pair_decision"] = encodePairDecision(decision);
         return llvm::json::Value(std::move(payload));

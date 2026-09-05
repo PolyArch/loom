@@ -7,6 +7,7 @@ add_library(LoomDSEFeedback
   ../JointHardwareRuntimeRepair.cpp
   ../JointMappingMigration.cpp
   ../JointRepairQuality.cpp
+  ../ResourceTimeAdjacentMappingSelection.cpp
   SpatialFifoRuntimeFeedback.cpp
   SpatialOperandQueueRuntimeFeedback.cpp
   SpatialTransportRuntimeFeedback.cpp

@@ -109,8 +109,8 @@ void spectrumSelectionProjection() {
           "automatic spectrum selection required absent evidence");
   require(classifyResourceTimeSelectionOutcome(std::nullopt,
                                                SpectrumClass::MaxTemporal) ==
-              PairDisposition::MappingProofNotEstablished,
-          "explicit endpoint without evidence lost its proof gap");
+              PairDisposition::UnsupportedSemantic,
+          "explicit endpoint without evidence lost its unsupported outcome");
 
   const std::array incompleteCases = {
       std::pair{SpectrumReason::Unsupported,
@@ -137,6 +137,7 @@ void spectrumSelectionProjection() {
       take(loom::ArtifactIdentity::fromBytes(bytes))};
   loom::dse::VerifiedResourceTimeSpectrumScenario scenario;
   scenario.spectrumClass = SpectrumClass::Intermediate;
+  scenario.systemMappings = {root};
   std::optional<loom::dse::ResourceTimeSpectrumFunnelResult> verified{
       loom::dse::ResourceTimeSpectrumFunnelResult{
           loom::dse::ResourceTimeSpectrumVerification{
@@ -147,8 +148,27 @@ void spectrumSelectionProjection() {
           "verified requested endpoint was rejected");
   require(classifyResourceTimeSelectionOutcome(verified,
                                                SpectrumClass::MaxSpatial) ==
-              PairDisposition::MappingProofNotEstablished,
-          "verified non-endpoint schedule satisfied a different request");
+              PairDisposition::UnsupportedSemantic,
+          "verified non-endpoint schedule lost its unsupported outcome");
+  std::array<std::uint8_t, loom::ComponentViewDigest::byteSize> digestBytes{};
+  const loom::ComponentViewDigest digest =
+      take(loom::ComponentViewDigest::fromBytes(digestBytes));
+  ApplicationIncrementalMappingObservation mismatchedRepair(root, root, digest,
+                                                            digest);
+  mismatchedRepair.spectrumEndpoint =
+      loom::dse::PreMappingSpectrumEndpoint::MaxSpatial;
+  mismatchedRepair.coldSelectionSpectrum = *verified;
+  mismatchedRepair.incrementalSelectionSpectrum = *verified;
+  const ApplicationIncrementalMappingOutcome mismatchedOutcome =
+      deriveIncrementalMappingOutcome(mismatchedRepair);
+  require(
+      !mismatchedOutcome.verified && mismatchedOutcome.incompleteReason &&
+          std::holds_alternative<loom::dse::CandidateGeneratorIncompleteReason>(
+              *mismatchedOutcome.incompleteReason) &&
+          std::get<loom::dse::CandidateGeneratorIncompleteReason>(
+              *mismatchedOutcome.incompleteReason) ==
+              loom::dse::CandidateGeneratorIncompleteReason::Unsupported,
+      "adjacent endpoint mismatch lost its typed unsupported outcome");
 }
 
 void incompleteCausePriority() {
@@ -280,7 +300,7 @@ void qualityDispositionProjection() {
         take(loom::dse::executeDsePlan(view, artifacts, blobs)), {},
         std::move(summary)};
     const ApplicationPairDecisionRecord decision =
-        build_detail::deriveApplicationPairDecision(prepared, {}, execution,
+        build_detail::deriveApplicationPairDecision(prepared, {}, execution, {},
                                                     {});
     require(decision.disposition == expected,
             "summary quality disposition was not used by the pair owner");
@@ -297,10 +317,99 @@ void qualityDispositionProjection() {
   const std::array invocations = {std::move(invocation)};
   const ApplicationPairDecisionRecord invocationDecision =
       build_detail::deriveApplicationPairDecision(
-          prepared, {}, conflictingExecution, invocations);
+          prepared, {}, conflictingExecution, {}, invocations);
   require(invocationDecision.disposition ==
               PairDisposition::UnsupportedSemantic,
           "summary quality disposition overrode its invocation owner");
+
+  prepared.resourceTimePolicy.spectrumEndpoint =
+      loom::dse::PreMappingSpectrumEndpoint::MaxSpatial;
+  loom::dse::VerifiedResourceTimeSpectrumScenario nonEndpointScenario;
+  nonEndpointScenario.spectrumClass =
+      loom::dse::PreMappingSpectrumClass::Intermediate;
+  nonEndpointScenario.systemMappings = {root};
+  std::optional<loom::dse::ResourceTimeSpectrumFunnelResult>
+      nonEndpointSpectrum{loom::dse::ResourceTimeSpectrumFunnelResult{
+          loom::dse::ResourceTimeSpectrumVerification{
+              loom::dse::VerifiedResourceTimeSpectrum{
+                  root, root, {std::move(nonEndpointScenario)}}},
+          loom::dse::ResourceTimeSpectrumFunnelAccounting{}}};
+  const std::vector<ApplicationMappingCandidateOutcome> nonEndpointOutcomes = {
+      ApplicationMappingCandidateOutcome{
+          0,
+          0,
+          digest,
+          root,
+          root,
+          loom::dse::JointDesignAttemptDisposition::Verified,
+          std::nullopt,
+          std::nullopt,
+          {root},
+          std::nullopt,
+          std::nullopt,
+          {},
+          ApplicationMappingRuntimeDisposition::NotRequested,
+          {},
+          {},
+          std::move(nonEndpointSpectrum),
+          std::nullopt,
+          std::nullopt,
+          std::nullopt,
+          {},
+          std::nullopt,
+          std::nullopt}};
+  loom::dse::JointDesignExecution nonEndpointExecution{
+      take(loom::dse::executeDsePlan(view, artifacts, blobs)), {}, {}};
+  const ApplicationPairDecisionRecord nonEndpointDecision =
+      build_detail::deriveApplicationPairDecision(prepared, nonEndpointOutcomes,
+                                                  nonEndpointExecution, {}, {});
+  require(nonEndpointDecision.disposition ==
+              PairDisposition::UnsupportedSemantic,
+          "not-requested runtime masked a completed endpoint mismatch");
+
+  const auto unsupportedSpectrum = [] {
+    return loom::dse::ResourceTimeSpectrumFunnelResult{
+        loom::dse::ResourceTimeSpectrumVerification{
+            loom::dse::IncompleteResourceTimeSpectrum{
+                loom::dse::ResourceTimeSpectrumIncompleteReason::Unsupported,
+                "typed Mapping rejection", 0}},
+        loom::dse::ResourceTimeSpectrumFunnelAccounting{}};
+  };
+  ApplicationIncrementalMappingObservation incompleteRepair(root, root, digest,
+                                                            digest);
+  incompleteRepair.coldSelectionSpectrum = unsupportedSpectrum();
+  incompleteRepair.incrementalSelectionSpectrum = unsupportedSpectrum();
+  const std::array repairObservations = {std::move(incompleteRepair)};
+  const ApplicationPairDecisionRecord repairDecision =
+      build_detail::deriveApplicationPairDecision(
+          prepared, {}, conflictingExecution, repairObservations, invocations);
+  require(
+      repairDecision.resourceTimeMappingRepairAttemptCount == 1 &&
+          repairDecision.resourceTimeMappingRepairVerifiedCount == 0 &&
+          repairDecision.resourceTimeMappingRepairIncompleteReason &&
+          std::holds_alternative<loom::dse::CandidateGeneratorIncompleteReason>(
+              *repairDecision.resourceTimeMappingRepairIncompleteReason) &&
+          std::get<loom::dse::CandidateGeneratorIncompleteReason>(
+              *repairDecision.resourceTimeMappingRepairIncompleteReason) ==
+              loom::dse::CandidateGeneratorIncompleteReason::Unsupported,
+      "pair decision lost an adjacent Mapping repair's typed outcome");
+
+  ApplicationIncrementalMappingObservation planIncompleteRepair(root, root,
+                                                                digest, digest);
+  planIncompleteRepair.coldExecutionIncompleteReasons.push_back(
+      loom::dse::CandidateGeneratorIncompleteReason::Unsupported);
+  planIncompleteRepair.incrementalExecutionIncompleteReasons.push_back(
+      loom::dse::CandidateGeneratorIncompleteReason::Unsupported);
+  const build_detail::ApplicationIncrementalMappingOutcome planOutcome =
+      build_detail::deriveIncrementalMappingOutcome(planIncompleteRepair);
+  require(
+      !planOutcome.verified && planOutcome.incompleteReason &&
+          std::holds_alternative<loom::dse::CandidateGeneratorIncompleteReason>(
+              *planOutcome.incompleteReason) &&
+          std::get<loom::dse::CandidateGeneratorIncompleteReason>(
+              *planOutcome.incompleteReason) ==
+              loom::dse::CandidateGeneratorIncompleteReason::Unsupported,
+      "absent post-plan evidence masked the exact incomplete-plan reason");
 }
 
 } // namespace

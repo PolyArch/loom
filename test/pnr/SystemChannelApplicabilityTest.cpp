@@ -23,9 +23,11 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/System/SystemActionDomain.h"
+#include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemMappingMaterializer.h"
+#include "PnR/System/SystemMappingMigration.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -946,6 +948,71 @@ int main() {
           "distinct owners did not materialize two route branches");
   require(sameOwner->serviceRoutes()[*channelLeg].sinkCount == 1,
           "same-owner consumer points did not collapse to one route branch");
+
+  const auto producerRoot =
+      llvm::find_if(roots, [&](dataflow::RootThreadLaunchRef root) {
+        return root != *consumerRoot;
+      });
+  require(producerRoot != roots.end(),
+          "channel fixture did not identify its producer root");
+  loom::pnr::SystemActionDomainScratch routingDomain;
+  if (llvm::Error error = routingDomain.rebuild(*distinctOwners))
+    fail(llvm::toString(std::move(error)));
+  const auto reroute = llvm::find_if(
+      routingDomain.view().routingChoices,
+      [&](const loom::pnr::SystemTransportRoutingAction &action) {
+        const auto *whole =
+            std::get_if<loom::pnr::SystemWholeLegRoutingAction>(&action);
+        return whole && whole->leg == *channelLeg;
+      });
+  require(reroute != routingDomain.view().routingChoices.end(),
+          "shared channel route exposes no whole-leg repair Action");
+  const auto objective =
+      take(problem->objectiveProgram().evaluate(*distinctOwners));
+  loom::pnr::SystemActionProbeAccounting rerouteWork;
+  auto rerouted = take(loom::pnr::probeSystemAction(
+      distinctOwners, objective, loom::pnr::SystemMappingAction{*reroute},
+      rerouteWork));
+  require(rerouteWork.assignmentAttempts == 0 &&
+              rerouteWork.negotiationIterations != 0 &&
+              rerouted.mutation.domain ==
+                  loom::pnr::SystemActionMutationDomain::TransportRouting &&
+              rerouted.mutation.threadDecisions.empty() &&
+              rerouted.mutation.graphDecisions.empty() &&
+              rerouted.mutation.serviceLegs ==
+                  std::vector<loom::pnr::PnrIndex>{*channelLeg} &&
+              rerouted.mutation.serviceTargets.empty() &&
+              rerouted.mutation.instructionResourceUses.empty() &&
+              rerouted.mutation.serviceResourceUses.empty() &&
+              rerouted.candidate->threadChoices() ==
+                  distinctOwners->threadChoices() &&
+              rerouted.candidate->graphChoices() ==
+                  distinctOwners->graphChoices(),
+          "whole-leg repair changed state outside the shared channel route");
+  if (llvm::Error error = rerouted.candidate->verify())
+    fail(llvm::toString(std::move(error)));
+  auto preservedParent = take(loom::pnr::finalizeSystemMappingCandidate(
+      *distinctOwners, dataflow, system, constraints.view(), store, context));
+  auto changedSharedService = take(loom::pnr::finalizeSystemMappingCandidate(
+      *rerouted.candidate, dataflow, system, constraints.view(), store,
+      context));
+  require(preservedParent.reference() != changedSharedService.reference(),
+          "whole-leg repair reproduced the unchanged SystemMapping");
+  auto importedPreservedParent = take(
+      loom::mapping::importSystemMapping(preservedParent.reference(), store));
+  auto importedChangedSharedService = take(loom::mapping::importSystemMapping(
+      changedSharedService.reference(), store));
+  const std::array reopenedProducerRoots{*producerRoot};
+  require(take(loom::pnr::preservesSystemMappingMigrationCone(
+              importedPreservedParent.view(), importedPreservedParent.view(),
+              reopenedProducerRoots, store)),
+          "unchanged Mapping did not preserve its cone-external closure");
+  require(
+      !take(loom::pnr::preservesSystemMappingMigrationCone(
+          importedPreservedParent.view(), importedChangedSharedService.view(),
+          reopenedProducerRoots, store)),
+      "producer reopen admitted a changed service shared with a preserved "
+      "consumer root");
 
   auto materialized = take(
       loom::pnr::materializeSystemCandidateDraft(*distinctOwners, context));

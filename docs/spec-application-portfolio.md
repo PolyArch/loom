@@ -208,7 +208,7 @@ TinyML member's smoke and validation profiles are directly executable by its
 bounded host runner but each returns `loom_portfolio_profile_unsupported` from
 the current product source-binding path.
 
-The versioned `loom.application_pair_decision` 1.1 projection records the
+The versioned `loom.application_pair_decision` 1.2 projection records the
 resolved application identity, input name, source/build selection,
 input-specific compiler options, declared workload and runtime-input names,
 declared oracle and bounded profile, and referenced cache digests. Its typed
@@ -222,12 +222,29 @@ that state. The decision names the selected System, the selected Mapping, and
 the resource-time schedule finalist (`selected_schedule_hint_digest`) whose
 verified observation selected them. Equivalent schedule hints share one
 Mapping plan and are each verified against the same Mapping, so the plan and
-Mapping alone do not identify one observation; the finalist digest does. When
-a hardware-alternative observation comes from an executed mutation repair, it
+Mapping alone do not identify one observation; the finalist digest does. The
+decision also derives the attempted and verified adjacent resource-time
+Mapping-repair counts and the highest-priority typed incomplete reason from
+the retained repair observations. This status remains separate from the
+selected parent's application disposition and from the later Deployment-level
+transition finalizer. Each observation retains its exact spectrum endpoint,
+generated and eligible Mapping frontiers, per-side plan-incomplete reasons,
+runtime disposition, runtime Evidence roots, and oracle Evidence roots. A side
+is verified only when its exact Mapping and requested class occur in one
+verified spectrum scenario, its provider plan completed, and its completed
+runtime Evidence is joined to the declared oracle Evidence. When a
+hardware-alternative observation comes from an
+executed mutation repair, it
 also names that exact durable record. General hardware-frontier exploration
 has no parent Mapping repair and therefore names no such record. A
 pre-admission or unsupported profile decision remains `declared_only` and
 cannot be interpreted as correctness Evidence.
+
+Version 1.2 adds that derived resource-time Mapping-repair summary to version
+1.1. The counters and typed reason are presentation-only projections of the
+retained application observations; they do not enter pair identity, Mapping
+selection, or transition legality. The enclosing successful evidence envelope
+moves to 1.2 for the same additive projection.
 
 A complete bounded front-end that retains no candidate because the exact
 Fabric refused every representable ownership coordinate publishes
@@ -258,12 +275,15 @@ activation runtime input is verifiably bound to the pair decision's exact
 identities without decoding the package.
 
 A successful decision is published inside
-`loom.application_pair_evidence` version `1.1`. That envelope is the canonical
+`loom.application_pair_evidence` version `1.2`. That envelope is the canonical
 join of candidate and analytic-gate inventories, actual Tech/Spatial/System
 work, selected Mapping checkpoint, failure-cone counters, work ledgers,
 Mapping outcome inventory, and the pair decision. A pre-admission or causal
-failure uses `loom.application_pair_disposition` version `1.0` and retains the
+failure uses `loom.application_pair_disposition` version `1.2` and retains the
 same typed decision without fabricating Mapping work.
+Each Mapping observation names `runtime_mapping` only when its runtime fields
+were measured for that exact SystemMapping. The surrounding generated Mapping
+frontier cannot stand in for this identity.
 The successful envelope's repair-record inventory is derived from the same
 `loom.application.activation_decision` 2.0 owner projected by runtime manifest
 6.0. When the selected

@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from loom_evidence_portfolio import (  # noqa: E402
     collect_portfolio_inventory,
+    decode_artifact_root_hex as decode_root_hex,
+    validate_resource_time_mapping_repair_transition,
     validate_portfolio_pair,
 )
 
@@ -63,35 +65,15 @@ def matching_payloads(
     ]
 
 
-def decode_root_hex(encoded: Any) -> dict[str, Any] | None:
-    """Decodes the canonical hex spelling of one artifact root reference.
-
-    The spelling is u32be(schema length), the ASCII schema, u32be(major),
-    u32be(minor), and the 32-byte artifact identity; the decoded form matches
-    the reference objects of the execution manifest.
-    """
-    if not isinstance(encoded, str):
-        return None
-    try:
-        raw = bytes.fromhex(encoded)
-    except ValueError:
-        return None
-    if len(raw) < 4:
-        return None
-    length = int.from_bytes(raw[:4], "big")
-    if len(raw) != 4 + length + 4 + 4 + 32:
-        return None
-    try:
-        schema = raw[4 : 4 + length].decode("ascii")
-    except UnicodeDecodeError:
-        return None
-    major = int.from_bytes(raw[4 + length : 8 + length], "big")
-    minor = int.from_bytes(raw[8 + length : 12 + length], "big")
-    return {
-        "schema": schema,
-        "schema_version": f"{major}.{minor}",
-        "artifact": raw[12 + length :].hex(),
-    }
+def validate_incremental_mapping_transition(transition: Any) -> bool:
+    derived_verified, errors = validate_resource_time_mapping_repair_transition(
+        transition
+    )
+    require(
+        not errors,
+        "incremental transition is invalid: " + ", ".join(errors),
+    )
+    return derived_verified
 
 
 def validate_identity_binding(
@@ -166,7 +148,7 @@ def validate_identity_binding(
             and observation.get("plan_ordinal") == candidate.get("plan_ordinal")
             and observation.get("schedule_hint_digest")
             == decision.get("selected_schedule_hint_digest")
-            and selected_mapping in observation.get("system_mappings", [])
+            and observation.get("runtime_mapping") == selected_mapping
         ]
         require(len(selected_observations) == 1, "hardware alternative has no unique Mapping observation")
         observed_repair = selected_observations[0].get(
@@ -540,6 +522,20 @@ def validate_mapping_work(
                     isinstance(observation.get("system_mappings"), list),
                     "candidate Mapping observation lacks Mapping witness list",
                 )
+                runtime_mapping = observation.get("runtime_mapping")
+                runtime_disposition = observation.get("runtime_disposition")
+                require(
+                    (
+                        runtime_disposition == "not_requested"
+                        and runtime_mapping is None
+                    )
+                    or (
+                        runtime_disposition != "not_requested"
+                        and decode_root_hex(runtime_mapping) is not None
+                        and runtime_mapping in observation["system_mappings"]
+                    ),
+                    "candidate runtime fields have no exact Mapping owner",
+                )
                 require(
                     observation.get("mapping_disposition")
                     in {"verified", "proven_no_feasible_candidate", "incomplete"},
@@ -576,7 +572,7 @@ def validate_mapping_work(
         if isinstance(observation, dict)
         and observation.get("plan_ordinal") == selected_plan
         and observation.get("schedule_hint_digest") == selected_hint
-        and selected_mapping in observation.get("system_mappings", [])
+        and observation.get("runtime_mapping") == selected_mapping
     ]
     require(
         len(selected_observations) == 1,
@@ -587,6 +583,8 @@ def validate_mapping_work(
     require(
         selected_observation.get("mapping_disposition") == "verified"
         and selected_observation.get("runtime_disposition") == "completed"
+        and selected_observation.get("runtime_mapping") == selected_mapping
+        and selected_mapping in selected_observation.get("system_mappings", [])
         and isinstance(selected_observation.get("runtime_evidence"), list)
         and selected_observation["runtime_evidence"]
         and isinstance(selected_observation.get("oracle_evidence"), list)
@@ -645,13 +643,32 @@ def validate_mapping_work(
         and isinstance(transitions, list),
         "System invocation ledger disagrees with the application join",
     )
-    for transition in transitions:
-        require(
-            isinstance(transition, dict)
-            and isinstance(transition.get("cold_mapping"), str)
-            and isinstance(transition.get("child_mapping"), str),
-            "incremental transition lacks cold and repaired Mapping witnesses",
-        )
+    verified_transition_count = sum(
+        1
+        for transition in transitions
+        if validate_incremental_mapping_transition(transition)
+    )
+    repair_attempt_count = pair_decision.get(
+        "resource_time_mapping_repair_attempt_count"
+    )
+    repair_verified_count = pair_decision.get(
+        "resource_time_mapping_repair_verified_count"
+    )
+    repair_incomplete_reason = pair_decision.get(
+        "resource_time_mapping_repair_incomplete_reason"
+    )
+    require(
+        repair_attempt_count == len(transitions)
+        and repair_verified_count == verified_transition_count
+        and (repair_incomplete_reason is None)
+        == (verified_transition_count == len(transitions))
+        and (
+            repair_incomplete_reason is None
+            or isinstance(repair_incomplete_reason, str)
+            and bool(repair_incomplete_reason)
+        ),
+        "Mapping repair summary does not reconcile with its transition rows",
+    )
     verified_plan_ordinals = {
         observation.get("plan_ordinal")
         for candidate in pair_decision["candidates"]

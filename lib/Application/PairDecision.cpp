@@ -283,48 +283,123 @@ mapQualityDispositionToPairDisposition(
   llvm_unreachable("unknown joint quality disposition");
 }
 
-std::optional<dse::PreMappingSpectrumClass>
-requestedResourceTimeSpectrumClass(dse::PreMappingSpectrumEndpoint endpoint) {
-  switch (endpoint) {
-  case dse::PreMappingSpectrumEndpoint::Automatic:
-    return std::nullopt;
-  case dse::PreMappingSpectrumEndpoint::MaxTemporal:
-    return dse::PreMappingSpectrumClass::MaxTemporal;
-  case dse::PreMappingSpectrumEndpoint::MaxSpatial:
-    return dse::PreMappingSpectrumClass::MaxSpatial;
-  case dse::PreMappingSpectrumEndpoint::Intermediate:
-    return dse::PreMappingSpectrumClass::Intermediate;
-  }
-  llvm_unreachable("unknown resource-time spectrum endpoint");
-}
-
 std::optional<ApplicationPairDecisionDisposition>
 classifyResourceTimeSelectionOutcome(
     const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
-    std::optional<dse::PreMappingSpectrumClass> requestedClass) {
+    std::optional<dse::PreMappingSpectrumClass> requestedClass,
+    const std::optional<ArtifactRootReference> &runtimeMapping) {
   if (!requestedClass)
     return std::nullopt;
-  if (!spectrum)
-    return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
-  if (const auto *incomplete = std::get_if<dse::IncompleteResourceTimeSpectrum>(
-          &spectrum->verification)) {
-    switch (incomplete->reason) {
-    case dse::ResourceTimeSpectrumIncompleteReason::Unsupported:
-      return ApplicationPairDecisionDisposition::UnsupportedSemantic;
-    case dse::ResourceTimeSpectrumIncompleteReason::ProofNotEstablished:
-      return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
-    case dse::ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout:
-      return ApplicationPairDecisionDisposition::CancelledOrTimeout;
-    }
-    llvm_unreachable("unknown resource-time spectrum incomplete reason");
-  }
-  const auto &verified =
-      std::get<dse::VerifiedResourceTimeSpectrum>(spectrum->verification);
-  if (llvm::any_of(verified.scenarios, [&](const auto &scenario) {
-        return scenario.spectrumClass == *requestedClass;
-      }))
+  const auto reason = resourceTimeSelectionIncompleteReason(
+      spectrum, requestedClass, runtimeMapping);
+  if (!reason)
     return std::nullopt;
-  return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+  return mapIncompleteReasonToPairDisposition(
+      dse::DsePlanIncompleteReason{*reason});
+}
+
+void retainPrioritizedIncompleteReason(
+    std::optional<dse::DsePlanIncompleteReason> &retained,
+    dse::DsePlanIncompleteReason reason) {
+  if (!retained) {
+    retained = std::move(reason);
+    return;
+  }
+  const std::array causes = {mapIncompleteReasonToPairDisposition(*retained),
+                             mapIncompleteReasonToPairDisposition(reason)};
+  if (causes.front() != causes.back() &&
+      prioritizeIncompletePairDisposition(causes, false) == causes.back())
+    retained = std::move(reason);
+}
+
+ApplicationIncrementalMappingOutcome deriveIncrementalMappingOutcome(
+    const ApplicationIncrementalMappingObservation &observation) {
+  const std::optional<dse::PreMappingSpectrumClass> requestedClass =
+      dse::spectrumClassForEndpoint(observation.spectrumEndpoint);
+  const auto spectrumAdmits =
+      [&](const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
+          const std::optional<ArtifactRootReference> &mapping) {
+        if (!mapping || !spectrum)
+          return false;
+        return mapping && spectrum &&
+               dse::resourceTimeSpectrumAdmitsMappingClass(*spectrum, *mapping,
+                                                           requestedClass);
+      };
+  const auto runtimeEvidenceClosed =
+      [](llvm::ArrayRef<ArtifactRootReference> runtimeEvidence,
+         llvm::ArrayRef<ArtifactRootReference> oracleEvidence) {
+        return !runtimeEvidence.empty() && !oracleEvidence.empty() &&
+               llvm::all_of(oracleEvidence, [&](const auto &oracle) {
+                 return llvm::is_contained(runtimeEvidence, oracle);
+               });
+      };
+  const auto retainedEligibleMapping =
+      [](const std::optional<ArtifactRootReference> &mapping,
+         llvm::ArrayRef<ArtifactRootReference> candidates,
+         llvm::ArrayRef<ArtifactRootReference> eligible) {
+        return mapping && llvm::is_contained(candidates, *mapping) &&
+               llvm::is_contained(eligible, *mapping);
+      };
+  const bool coldVerified =
+      observation.coldExecutionIncompleteReasons.empty() &&
+      retainedEligibleMapping(observation.coldMapping,
+                              observation.coldMappingCandidates,
+                              observation.coldEligibleMappings) &&
+      observation.coldRuntimeDisposition ==
+          ApplicationMappingRuntimeDisposition::Completed &&
+      runtimeEvidenceClosed(observation.coldRuntimeEvidence,
+                            observation.coldOracleEvidence) &&
+      spectrumAdmits(observation.coldSelectionSpectrum,
+                     observation.coldMapping);
+  const bool incrementalVerified =
+      observation.incrementalExecutionIncompleteReasons.empty() &&
+      retainedEligibleMapping(observation.childMapping,
+                              observation.incrementalMappingCandidates,
+                              observation.incrementalEligibleMappings) &&
+      observation.incrementalRuntimeDisposition ==
+          ApplicationMappingRuntimeDisposition::Completed &&
+      runtimeEvidenceClosed(observation.incrementalRuntimeEvidence,
+                            observation.incrementalOracleEvidence) &&
+      spectrumAdmits(observation.incrementalSelectionSpectrum,
+                     observation.childMapping);
+  if (coldVerified && incrementalVerified)
+    return {dse::JointDesignAttemptDisposition::Verified, std::nullopt, true};
+
+  std::optional<dse::DsePlanIncompleteReason> retained;
+  const auto retainSide =
+      [&](const std::optional<ArtifactRootReference> &mapping,
+          llvm::ArrayRef<dse::DsePlanIncompleteReason> executionReasons,
+          const std::optional<dse::ResourceTimeSpectrumFunnelResult> &spectrum,
+          ApplicationMappingRuntimeDisposition runtimeDisposition) {
+        for (const dse::DsePlanIncompleteReason &reason : executionReasons)
+          retainPrioritizedIncompleteReason(retained, reason);
+        if (!executionReasons.empty())
+          return;
+        const auto spectrumReason = resourceTimeSelectionIncompleteReason(
+            spectrum, requestedClass, mapping);
+        if (spectrumReason)
+          retainPrioritizedIncompleteReason(retained, *spectrumReason);
+        else if (!spectrumAdmits(spectrum, mapping))
+          retainPrioritizedIncompleteReason(
+              retained,
+              dse::CandidateGeneratorIncompleteReason::ProofNotEstablished);
+        if (mapping)
+          if (auto runtimeReason =
+                  resourceTimeRuntimeIncompleteReason(runtimeDisposition))
+            retainPrioritizedIncompleteReason(retained, *runtimeReason);
+      };
+  retainSide(
+      observation.coldMapping, observation.coldExecutionIncompleteReasons,
+      observation.coldSelectionSpectrum, observation.coldRuntimeDisposition);
+  retainSide(observation.childMapping,
+             observation.incrementalExecutionIncompleteReasons,
+             observation.incrementalSelectionSpectrum,
+             observation.incrementalRuntimeDisposition);
+  if (!retained)
+    retainPrioritizedIncompleteReason(
+        retained, dse::CandidateGeneratorIncompleteReason::ProofNotEstablished);
+  return {dse::JointDesignAttemptDisposition::Incomplete, std::move(retained),
+          false};
 }
 
 ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
@@ -449,6 +524,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const PreparedApplicationBuild &prepared,
     const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
     const dse::JointDesignExecution &execution,
+    llvm::ArrayRef<ApplicationIncrementalMappingObservation>
+        incrementalMappingObservations,
     llvm::ArrayRef<ApplicationPairQualityInvocationRecord> qualityInvocations) {
   const dse::JointDesignExecutionSummary &summary = execution.summary;
   const auto invocationRunKey = execution.invocationRunKey();
@@ -523,8 +600,33 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   result.hardwarePromotionObservations = summary.hardwarePromotionObservations;
   result.qualityInvocations.assign(qualityInvocations.begin(),
                                    qualityInvocations.end());
+  for (const ApplicationIncrementalMappingObservation &observation :
+       incrementalMappingObservations) {
+    ++result.resourceTimeMappingRepairAttemptCount;
+    if (observation.spectrumEndpoint !=
+        prepared.resourceTimePolicy.spectrumEndpoint) {
+      retainPrioritizedIncompleteReason(
+          result.resourceTimeMappingRepairIncompleteReason,
+          dse::CandidateGeneratorIncompleteReason::ExecutionFailed);
+      continue;
+    }
+    const ApplicationIncrementalMappingOutcome outcome =
+        deriveIncrementalMappingOutcome(observation);
+    if (outcome.verified) {
+      ++result.resourceTimeMappingRepairVerifiedCount;
+      continue;
+    }
+    if (outcome.incompleteReason)
+      retainPrioritizedIncompleteReason(
+          result.resourceTimeMappingRepairIncompleteReason,
+          *outcome.incompleteReason);
+    else
+      retainPrioritizedIncompleteReason(
+          result.resourceTimeMappingRepairIncompleteReason,
+          dse::CandidateGeneratorIncompleteReason::ProofNotEstablished);
+  }
   const std::optional<dse::PreMappingSpectrumClass> requestedSpectrumClass =
-      requestedResourceTimeSpectrumClass(
+      dse::spectrumClassForEndpoint(
           prepared.resourceTimePolicy.spectrumEndpoint);
   result.candidates.reserve(prepared.candidateInventory.size());
   for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
@@ -570,7 +672,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           summary.selectedPlanOrdinal &&
           *summary.selectedPlanOrdinal == outcome.planOrdinal &&
           summary.selectedMapping &&
-          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping);
+          outcome.runtimeMapping == summary.selectedMapping;
       ApplicationPairMappingObservation mappingObservation{
           outcome.planOrdinal,
           outcome.resourceTimeScheduleHintDigest,
@@ -579,6 +681,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           outcome.runtimeDisposition,
           outcome.incompleteReason,
           outcome.systemMappings,
+          outcome.runtimeMapping,
           outcome.runtimeEvidence,
           outcome.oracleEvidence,
           outcome.dfgCycles,
@@ -615,9 +718,12 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                 (requestedSpectrumClass &&
                  scenario.spectrumClass == *requestedSpectrumClass))
               candidate.verifiedSpectrum = scenario.spectrumClass;
-            if (!mappingObservation.verifiedSpectrum ||
-                (requestedSpectrumClass &&
-                 scenario.spectrumClass == *requestedSpectrumClass))
+            if ((!outcome.runtimeMapping ||
+                 llvm::is_contained(scenario.systemMappings,
+                                    *outcome.runtimeMapping)) &&
+                (!mappingObservation.verifiedSpectrum ||
+                 (requestedSpectrumClass &&
+                  scenario.spectrumClass == *requestedSpectrumClass)))
               mappingObservation.verifiedSpectrum = scenario.spectrumClass;
           }
         } else
@@ -713,11 +819,17 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
               selected->planningRecordOrdinal &&
           summary.selectedPlanOrdinal &&
           outcome.planOrdinal == *summary.selectedPlanOrdinal &&
+          outcome.planOrdinal < prepared.mappingAlternatives.size() &&
           summary.selectedMapping &&
-          llvm::is_contained(outcome.systemMappings,
-                             *summary.selectedMapping) &&
-          !classifyResourceTimeSelectionOutcome(outcome.resourceTimeSpectrum,
-                                                requestedSpectrumClass)) {
+          outcome.runtimeMapping == summary.selectedMapping &&
+          ((!requestedSpectrumClass &&
+            outcome.resourceTimeScheduleHintDigest ==
+                prepared.mappingAlternatives[outcome.planOrdinal]
+                    .resourceTimeScheduleHintDigest) ||
+           (requestedSpectrumClass && outcome.resourceTimeSpectrum &&
+            dse::resourceTimeSpectrumAdmitsMappingClass(
+                *outcome.resourceTimeSpectrum, *summary.selectedMapping,
+                requestedSpectrumClass)))) {
         result.selectedSystem = outcome.system;
         result.selectedSystemMapping = summary.selectedMapping;
         if (!result.selectedScheduleHintDigest)
@@ -870,21 +982,34 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
           incompleteCauses.push_back(
               mapIncompleteReasonToPairDisposition(*attempt.incompleteReason));
       for (const ApplicationMappingCandidateOutcome &outcome : outcomes) {
+        std::optional<ApplicationPairDecisionDisposition> spectrumDisposition;
+        if (outcome.runtimeDisposition ==
+                ApplicationMappingRuntimeDisposition::Completed ||
+            (outcome.runtimeDisposition ==
+                 ApplicationMappingRuntimeDisposition::NotRequested &&
+             !outcome.systemMappings.empty()))
+          spectrumDisposition = classifyResourceTimeSelectionOutcome(
+              outcome.resourceTimeSpectrum, requestedSpectrumClass,
+              outcome.runtimeMapping);
+        if (spectrumDisposition)
+          incompleteCauses.push_back(*spectrumDisposition);
+        if (outcome.disposition ==
+                dse::JointDesignAttemptDisposition::Incomplete &&
+            outcome.incompleteReason)
+          incompleteCauses.push_back(
+              mapIncompleteReasonToPairDisposition(*outcome.incompleteReason));
         if (outcome.runtimeDisposition !=
             ApplicationMappingRuntimeDisposition::Completed) {
           if (outcome.runtimeDisposition !=
                   ApplicationMappingRuntimeDisposition::NotRequested ||
               (outcome.disposition ==
                    dse::JointDesignAttemptDisposition::Verified &&
-               !outcome.systemMappings.empty()))
+               !outcome.systemMappings.empty() && !spectrumDisposition))
             if (auto disposition = mapRuntimeDispositionToPairDisposition(
                     outcome.runtimeDisposition))
               incompleteCauses.push_back(*disposition);
           continue;
         }
-        if (auto disposition = classifyResourceTimeSelectionOutcome(
-                outcome.resourceTimeSpectrum, requestedSpectrumClass))
-          incompleteCauses.push_back(*disposition);
       }
       for (const ApplicationPairQualityInvocationRecord &invocation :
            qualityInvocations)

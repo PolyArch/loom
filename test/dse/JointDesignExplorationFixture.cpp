@@ -3,6 +3,8 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/JointHardwareReopen.h"
+#include "DSE/ResourceTimeFrontier.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameter.h"
@@ -12,6 +14,8 @@
 #include "Frontend/IR/LoomOps.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "PnR/System/SystemMappingMigration.h"
+#include "ResourceTimeAdjacentMappingSelection.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -23,9 +27,13 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -228,6 +236,404 @@ bool everyCoreIsUsed(const ArtifactRootReference &systemReference,
       [&](fabric::AccCoreOccurrenceRef core) {
         return used.count(key(fabric::canonicalFabricBytes(core))) != 0;
       });
+}
+
+llvm::Expected<ResourceTimeSpectrumFunnelResult>
+verifyAdjacentResourceTimeSchedule(
+    const ArtifactRootReference &dataflowReference,
+    const fabric::FabricSystemRootView &system,
+    ::dataflow::RootThreadLaunchRef root, std::uint64_t resourceCount,
+    llvm::ArrayRef<ArtifactRootReference> mappings, bool rejectResourceCount,
+    const ArtifactStore &store) {
+  if (resourceCount == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "adjacent schedule has no resource");
+  auto dataflowArtifact =
+      dataflow::importCanonicalDataflow(dataflowReference, store);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto projection = projectResourceTimeDataflow(*dataflow, system, "host", 100);
+  if (!projection)
+    return projection.takeError();
+  if (projection->regions.size() != 1 || projection->regionBounds.size() != 1 ||
+      projection->regions.front().region != root)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "adjacent schedule lost its resource-time projection");
+
+  const ResourceTimeRegionFeature &region = projection->regions.front();
+  auto speedupPoint =
+      llvm::find_if(region.speedupCurve, [&](const auto &point) {
+        return point.resourceUnits == std::vector<std::uint64_t>{resourceCount};
+      });
+  if (speedupPoint == region.speedupCurve.end() ||
+      speedupPoint->executionTimePicoseconds == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "adjacent schedule has no exact requested-resource point");
+  const std::uint64_t speedupPointOrdinal =
+      speedupPoint - region.speedupCurve.begin();
+  const std::uint64_t executionTime = speedupPoint->executionTimePicoseconds;
+
+  ResourceTimeScheduleHint hint;
+  hint.actions = {{ResourceTimeActionKind::AdmitRegion,
+                   root,
+                   speedupPointOrdinal,
+                   0,
+                   0,
+                   {},
+                   {},
+                   {}},
+                  {ResourceTimeActionKind::AdvanceEvent,
+                   std::nullopt,
+                   std::nullopt,
+                   0,
+                   executionTime,
+                   {root},
+                   {},
+                   {}}};
+  hint.states = {{0, {}, {root}, {}, executionTime},
+                 {0,
+                  {{root, speedupPointOrdinal, speedupPoint->resourceUnits,
+                    executionTime}},
+                  {},
+                  {},
+                  executionTime},
+                 {executionTime, {}, {}, {root}, executionTime}};
+  hint.estimatedMakespanPicoseconds = executionTime;
+  hint.optimisticMakespanLowerBoundPicoseconds = executionTime;
+  hint.peakConcurrentRegions = 1;
+  hint.totalAllocatedResourceTime = executionTime * resourceCount;
+  hint.support = speedupPoint->support;
+
+  auto bounds = projection->regionBounds;
+  if (rejectResourceCount) {
+    bounds.front().maximumUsefulResourceUnits = resourceCount - 1;
+    bounds.front().minimumFeasibleResourceUnits = 1;
+    bounds.front().minimumSupport = ResourceTimeEstimateSupport::Exact;
+  }
+  return verifyResourceTimeMappingFinalists(
+      {hint}, projection->regions, bounds, mappings, store, {},
+      ResourceTimeConcurrencyBounds{1, 1, ResourceTimeEstimateSupport::Exact});
+}
+
+void exerciseAdjacentResourceTimeMappingRepair(
+    llvm::StringRef temporaryPath, const JointDesignExplorationPlan &plan,
+    const JointDesignExecution &parentExecution,
+    const JointDesignPolicy &policy, ::dataflow::RootThreadLaunchRef mappedRoot,
+    const ArtifactRootReference &systemReference,
+    const fabric::FabricSystemRootView &system,
+    const ArtifactRootReference &alternateSystem,
+    const ArtifactRootReference &parentMapping, bool runBoundedQuality,
+    const JointBoundedQualityPolicy *incompleteQualityPolicy,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  llvm::SmallString<128> adjacentJournal(temporaryPath);
+  llvm::sys::path::append(adjacentJournal, "adjacent-resource-time");
+  const std::array adjacentPartitions = {
+      pnr::SystemBindingPartitionIntent{mappedRoot, 2}};
+  const std::array adjacentRoots = {mappedRoot};
+  JointHardwareReopenRequest adjacentRequest{
+      take(DseProducerSemanticBuildIdentity::get(
+          "loom.test.resource_time_adjacent.v1")),
+      adjacentJournal.str().str(),
+      {},
+      JointDesignStoppingPolicy::FirstVerified,
+      std::nullopt,
+      std::nullopt,
+      take(SiteCapacity::get(2, 0, 0)),
+      take(PlanExecutionPolicy::get(2, take(SiteResourceClaim::get(1, 0, 0))))};
+  adjacentRequest.invocationSemanticInputs = {alternateSystem};
+  const auto verifyAdjacentSchedule =
+      [&](llvm::ArrayRef<ArtifactRootReference> candidates,
+          bool rejectByResourceBound)
+      -> llvm::Expected<ResourceTimeSpectrumFunnelResult> {
+    return verifyAdjacentResourceTimeSchedule(
+        plan.frontier.pairs.front().software.dataflow, system, mappedRoot,
+        adjacentPartitions.front().partitionCount, candidates,
+        rejectByResourceBound, store);
+  };
+  std::vector<ArtifactRootReference> acceptedAdjacentMappings;
+  std::uint64_t coldAdjacentVerifications = 0;
+  std::uint64_t incrementalAdjacentVerifications = 0;
+  const auto verifyAdjacentMapping =
+      [&](JointResourceTimeMappingRepairSide side,
+          llvm::ArrayRef<ArtifactRootReference> candidates)
+      -> llvm::Expected<ResourceTimeSpectrumFunnelResult> {
+    if (side == JointResourceTimeMappingRepairSide::Cold)
+      ++coldAdjacentVerifications;
+    else
+      ++incrementalAdjacentVerifications;
+    acceptedAdjacentMappings.insert(acceptedAdjacentMappings.end(),
+                                    candidates.begin(), candidates.end());
+    return verifyAdjacentSchedule(candidates, false);
+  };
+  auto adjacentRepair = take(executeResourceTimeAdjacentMappingRepair(
+      plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
+      verifyAdjacentMapping, std::move(adjacentRequest), store, blobs));
+  if (!adjacentRepair.incrementalExecution)
+    fail("adjacent resource-time repair omitted its System execution");
+  auto &adjacentExecution = *adjacentRepair.incrementalExecution;
+  std::vector<ArtifactRootReference> adjacentSemanticInputs =
+      projectJointDesignSemanticInputs(adjacentRepair.plan);
+  adjacentSemanticInputs.push_back(alternateSystem);
+  const auto adjacentClosure = take(DseRunClosure::get(
+      take(DseProducerSemanticBuildIdentity::get(
+          "loom.test.resource_time_adjacent.v1")),
+      adjacentSemanticInputs, adjacentRepair.plan.resolvedConfig, {}, store));
+  if (!adjacentExecution.invocationRunKey() ||
+      *adjacentExecution.invocationRunKey() != adjacentClosure.runKey().bytes())
+    fail("adjacent repair closure omitted its invocation semantic input");
+  const auto adjacentSeed = take(pnr::importSystemMappingMigrationSeed(
+      adjacentRepair.migrationSeed, store));
+  if (adjacentSeed.reopenedRoots() !=
+          llvm::ArrayRef<::dataflow::RootThreadLaunchRef>(adjacentRoots) ||
+      adjacentRepair.coldExecution.summary.techMappingDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.spatialPnrDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.systemPnrDispatchCount == 0 ||
+      adjacentRepair.coldExecution.summary.coldReopenWallTimeNanoseconds !=
+          adjacentRepair.coldExecution.summary.executionWallTimeNanoseconds ||
+      adjacentRepair.coldExecution.summary
+              .incrementalReopenWallTimeNanoseconds != 0 ||
+      adjacentExecution.summary.techMappingDispatchCount == 0 ||
+      adjacentExecution.summary.spatialPnrDispatchCount == 0 ||
+      adjacentExecution.summary.systemPnrDispatchCount != 1 ||
+      adjacentExecution.summary.incrementalReopenWallTimeNanoseconds !=
+          adjacentExecution.summary.executionWallTimeNanoseconds ||
+      adjacentExecution.summary.coldReopenWallTimeNanoseconds != 0 ||
+      adjacentExecution.summary.preservedTechMappings != 0 ||
+      adjacentExecution.summary.preservedSpatialMappings != 0 ||
+      adjacentRepair.reuseDisposition !=
+          JointMappingReuseDisposition::ColdFallback ||
+      adjacentRepair.plan.resolvedConfig.dse.systemPnr.search.completionGoal !=
+          ResolvedPnrCompletionGoal::ExhaustConfiguredWork)
+    fail("adjacent resource-time finalist retained a reopened root Mapping");
+  std::vector<ArtifactRootReference> adjacentMappings;
+  for (const auto &pair : adjacentExecution.mappedPairs)
+    adjacentMappings.insert(adjacentMappings.end(), pair.systemMappings.begin(),
+                            pair.systemMappings.end());
+  llvm::sort(adjacentMappings, artifactRootReferenceLess);
+  adjacentMappings.erase(
+      std::unique(adjacentMappings.begin(), adjacentMappings.end()),
+      adjacentMappings.end());
+  std::vector<ArtifactRootReference> coldAdjacentMappings;
+  for (const auto &pair : adjacentRepair.coldExecution.mappedPairs)
+    coldAdjacentMappings.insert(coldAdjacentMappings.end(),
+                                pair.systemMappings.begin(),
+                                pair.systemMappings.end());
+  llvm::sort(coldAdjacentMappings, artifactRootReferenceLess);
+  coldAdjacentMappings.erase(
+      std::unique(coldAdjacentMappings.begin(), coldAdjacentMappings.end()),
+      coldAdjacentMappings.end());
+  if (adjacentMappings.empty() ||
+      llvm::is_contained(adjacentMappings, parentMapping))
+    fail("adjacent resource-time repair did not publish a distinct Mapping");
+  if (coldAdjacentMappings.empty() || !adjacentRepair.coldMapping ||
+      !adjacentRepair.incrementalMapping ||
+      !llvm::is_contained(coldAdjacentMappings, *adjacentRepair.coldMapping) ||
+      !llvm::is_contained(adjacentMappings,
+                          *adjacentRepair.incrementalMapping) ||
+      !llvm::is_contained(acceptedAdjacentMappings,
+                          *adjacentRepair.coldMapping) ||
+      !llvm::is_contained(acceptedAdjacentMappings,
+                          *adjacentRepair.incrementalMapping) ||
+      coldAdjacentVerifications == 0 || incrementalAdjacentVerifications == 0 ||
+      !adjacentRepair.coldSelectionSpectrum ||
+      !adjacentRepair.incrementalSelectionSpectrum ||
+      !std::holds_alternative<VerifiedResourceTimeSpectrum>(
+          adjacentRepair.coldSelectionSpectrum->verification) ||
+      !std::holds_alternative<VerifiedResourceTimeSpectrum>(
+          adjacentRepair.incrementalSelectionSpectrum->verification) ||
+      !llvm::is_contained(adjacentRepair.coldEligibleMappings,
+                          *adjacentRepair.coldMapping) ||
+      !llvm::is_contained(adjacentRepair.incrementalEligibleMappings,
+                          *adjacentRepair.incrementalMapping))
+    fail("adjacent resource-time repair did not publish a paired cold and "
+         "incremental Mapping accepted by its caller-owned oracle");
+  auto adjacentMapping = take(
+      mapping::importSystemMapping(*adjacentRepair.incrementalMapping, store));
+  if (adjacentMapping.view().dataflowIdentity() !=
+          plan.frontier.pairs.front().software.dataflow.artifact ||
+      adjacentMapping.view().fabricIdentity() != systemReference.artifact)
+    fail("adjacent resource-time repair changed immutable owners");
+  auto adjacentDataflowArtifact = take(dataflow::importCanonicalDataflow(
+      plan.frontier.pairs.front().software.dataflow, store));
+  auto adjacentDataflow = take(adjacentDataflowArtifact.view());
+  auto adjacentContexts = take(mapping::projectSystemExecutionContexts(
+      adjacentDataflow, adjacentMapping.view().executionBindings()));
+  auto adjacentResources = take(
+      pnr::projectResourceTimeMappingResources(adjacentContexts, mappedRoot));
+  auto coldAdjacentMapping =
+      take(mapping::importSystemMapping(*adjacentRepair.coldMapping, store));
+  auto coldAdjacentContexts = take(mapping::projectSystemExecutionContexts(
+      adjacentDataflow, coldAdjacentMapping.view().executionBindings()));
+  auto coldAdjacentResources = take(pnr::projectResourceTimeMappingResources(
+      coldAdjacentContexts, mappedRoot));
+  if (adjacentResources.size() != adjacentPartitions.front().partitionCount ||
+      coldAdjacentResources.size() != adjacentPartitions.front().partitionCount)
+    fail("adjacent resource-time repair did not remap the reopened root to "
+         "its requested resource count");
+  const auto rejectAdjacentMapping =
+      [&](JointResourceTimeMappingRepairSide,
+          llvm::ArrayRef<ArtifactRootReference> candidates) {
+        return verifyAdjacentSchedule(candidates, true);
+      };
+  const auto rejectedSelection =
+      take(joint_reopen_detail::selectResourceTimePartitionMapping(
+          adjacentRepair.coldExecution,
+          plan.frontier.pairs.front().software.dataflow, systemReference,
+          adjacentPartitions, adjacentRoots, nullptr, {},
+          PreMappingSpectrumEndpoint::Automatic,
+          JointResourceTimeMappingRepairSide::Cold, rejectAdjacentMapping,
+          store));
+  const auto *rejectedSpectrum =
+      rejectedSelection.spectrum
+          ? std::get_if<IncompleteResourceTimeSpectrum>(
+                &rejectedSelection.spectrum->verification)
+          : nullptr;
+  if (rejectedSelection.mapping ||
+      adjacentRepair.coldExecution.summary.selectedMapping ||
+      !rejectedSpectrum ||
+      rejectedSpectrum->reason !=
+          ResourceTimeSpectrumIncompleteReason::ProofNotEstablished ||
+      rejectedSelection.eligibleMappings.empty() ||
+      !llvm::all_of(rejectedSelection.eligibleMappings,
+                    [&](const auto &mapping) {
+                      return llvm::is_contained(coldAdjacentMappings, mapping);
+                    }))
+    fail("adjacent resource-time selection lost its typed no-match frontier");
+
+  std::uint64_t endpointMismatchVerifications = 0;
+  const auto verifyEndpointMismatch =
+      [&](JointResourceTimeMappingRepairSide,
+          llvm::ArrayRef<ArtifactRootReference> candidates) {
+        ++endpointMismatchVerifications;
+        return verifyAdjacentSchedule(candidates, false);
+      };
+  const auto endpointMismatch =
+      take(joint_reopen_detail::selectResourceTimePartitionMapping(
+          adjacentRepair.coldExecution,
+          plan.frontier.pairs.front().software.dataflow, systemReference,
+          adjacentPartitions, adjacentRoots, nullptr, {},
+          PreMappingSpectrumEndpoint::MaxSpatial,
+          JointResourceTimeMappingRepairSide::Cold, verifyEndpointMismatch,
+          store));
+  const auto *mismatchedSpectrum =
+      endpointMismatch.spectrum ? std::get_if<VerifiedResourceTimeSpectrum>(
+                                      &endpointMismatch.spectrum->verification)
+                                : nullptr;
+  if (endpointMismatch.mapping ||
+      adjacentRepair.coldExecution.summary.selectedMapping ||
+      endpointMismatchVerifications == 0 || !mismatchedSpectrum ||
+      mismatchedSpectrum->scenarios.empty() ||
+      !llvm::all_of(mismatchedSpectrum->scenarios,
+                    [](const auto &scenario) {
+                      return scenario.spectrumClass ==
+                             PreMappingSpectrumClass::Intermediate;
+                    }) ||
+      endpointMismatch.eligibleMappings !=
+          adjacentRepair.coldEligibleMappings ||
+      !endpointMismatch.executionIncompleteReasons.empty())
+    fail("adjacent resource-time selection accepted a mismatched endpoint");
+
+  const auto forgeImportAccounting =
+      [&](JointResourceTimeMappingRepairSide,
+          llvm::ArrayRef<ArtifactRootReference> candidates)
+      -> llvm::Expected<ResourceTimeSpectrumFunnelResult> {
+    auto result = verifyAdjacentSchedule(candidates, false);
+    if (!result)
+      return result.takeError();
+    result->accounting.independentlyImportedMappings = 0;
+    return result;
+  };
+  auto malformedSelection =
+      joint_reopen_detail::selectResourceTimePartitionMapping(
+          adjacentRepair.coldExecution,
+          plan.frontier.pairs.front().software.dataflow, systemReference,
+          adjacentPartitions, adjacentRoots, nullptr, {},
+          PreMappingSpectrumEndpoint::Automatic,
+          JointResourceTimeMappingRepairSide::Cold, forgeImportAccounting,
+          store);
+  if (malformedSelection)
+    fail("adjacent resource-time selection accepted forged import "
+         "accounting");
+  llvm::consumeError(malformedSelection.takeError());
+
+  std::uint64_t cancellationVerifications = 0;
+  const auto cancelSelection = [&](JointResourceTimeMappingRepairSide,
+                                   llvm::ArrayRef<ArtifactRootReference>)
+      -> llvm::Expected<ResourceTimeSpectrumFunnelResult> {
+    ++cancellationVerifications;
+    return ResourceTimeSpectrumFunnelResult{
+        ResourceTimeSpectrumVerification{IncompleteResourceTimeSpectrum{
+            ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout,
+            "adjacent resource-time selection cancelled", 0}},
+        ResourceTimeSpectrumFunnelAccounting{}};
+  };
+  const auto cancelledSelection =
+      take(joint_reopen_detail::selectResourceTimePartitionMapping(
+          adjacentRepair.coldExecution,
+          plan.frontier.pairs.front().software.dataflow, systemReference,
+          adjacentPartitions, adjacentRoots, nullptr, {},
+          PreMappingSpectrumEndpoint::Automatic,
+          JointResourceTimeMappingRepairSide::Cold, cancelSelection, store));
+  const auto *cancelledSpectrum =
+      cancelledSelection.spectrum
+          ? std::get_if<IncompleteResourceTimeSpectrum>(
+                &cancelledSelection.spectrum->verification)
+          : nullptr;
+  if (cancelledSelection.mapping ||
+      adjacentRepair.coldExecution.summary.selectedMapping ||
+      cancellationVerifications != 1 || !cancelledSpectrum ||
+      cancelledSpectrum->reason !=
+          ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout ||
+      cancelledSelection.eligibleMappings !=
+          adjacentRepair.coldEligibleMappings ||
+      !cancelledSelection.executionIncompleteReasons.empty())
+    fail("adjacent resource-time cancellation lost its exact frontier");
+
+  if (runBoundedQuality) {
+    if (!incompleteQualityPolicy)
+      fail("quality-promotion fixture lost its incomplete repair policy");
+    llvm::SmallString<128> incompleteAdjacentJournal(temporaryPath);
+    llvm::sys::path::append(incompleteAdjacentJournal,
+                            "adjacent-resource-time-quality-incomplete");
+    JointHardwareReopenRequest incompleteAdjacentRequest{
+        take(DseProducerSemanticBuildIdentity::get(
+            "loom.test.resource_time_adjacent.quality_incomplete.v1")),
+        incompleteAdjacentJournal.str().str(),
+        {},
+        JointDesignStoppingPolicy::BoundedQuality,
+        *incompleteQualityPolicy,
+        std::nullopt,
+        take(SiteCapacity::get(2, 0, 0)),
+        take(PlanExecutionPolicy::get(2,
+                                      take(SiteResourceClaim::get(1, 0, 0))))};
+    const auto incompleteAdjacent =
+        take(executeResourceTimeAdjacentMappingRepair(
+            plan, parentExecution, policy, adjacentPartitions, adjacentRoots,
+            verifyAdjacentMapping, std::move(incompleteAdjacentRequest), store,
+            blobs));
+    if (!incompleteAdjacent.incrementalExecution)
+      fail("bounded incomplete adjacent repair omitted its System execution");
+    const auto retainsMappedPair = [](const auto &execution) {
+      return llvm::any_of(execution.mappedPairs, [](const auto &pair) {
+        return !pair.systemMappings.empty();
+      });
+    };
+    for (const auto *execution : {&incompleteAdjacent.coldExecution,
+                                  &*incompleteAdjacent.incrementalExecution})
+      if (!retainsMappedPair(*execution) ||
+          execution->summary.qualityDisposition !=
+              JointDesignQualityDisposition::Unsupported ||
+          execution->summary.selectedMapping ||
+          execution->summary.selectedPlanOrdinal)
+        fail("bounded incomplete adjacent repair retained a selected Mapping");
+    if (incompleteAdjacent.coldMapping || incompleteAdjacent.incrementalMapping)
+      fail("bounded incomplete adjacent repair published a Mapping join");
+  }
 }
 
 } // namespace loom::dse::joint_test
