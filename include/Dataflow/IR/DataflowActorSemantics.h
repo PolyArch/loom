@@ -437,7 +437,9 @@ inline GateCase selectGateCase(GateSemanticState state, bool phase) {
   llvm_unreachable("gate semantic state and phase select no case");
 }
 
-enum class ParallelizeInput : std::uint8_t { Phase, Data };
+// Keep enum values equal to the operand ordinals in DataflowOps.td:
+// parallelize(data, phase).
+enum class ParallelizeInput : std::uint8_t { Data = 0, Phase = 1 };
 
 struct ParallelizeSemanticState {
   std::uint64_t pendingItems = 0;
@@ -456,7 +458,9 @@ ParallelizeTransition evaluateParallelizeTransition(
     const ParallelizeSemanticState &state, std::uint64_t vectorLength,
     std::optional<bool> scalarPhase, bool dataAvailable);
 
-enum class SerializeInput : std::uint8_t { Phase, Vector, Mask };
+// Keep enum values equal to the operand ordinals in DataflowOps.td:
+// serialize(vector, mask, phase).
+enum class SerializeInput : std::uint8_t { Vector = 0, Mask = 1, Phase = 2 };
 
 struct SerializeTransition {
   SemanticFiringDecision firing;

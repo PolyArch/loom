@@ -44,14 +44,20 @@ void parallelizeOwnsOrderedCloseGroups() {
           "parallelize accumulate manufactured a result group");
   require(cases[1].productionGroups.size() == 1,
           "parallelize full case lost its result group");
+  require(cases[1].consumedInputs == llvm::ArrayRef<std::uint32_t>({0, 1}),
+          "parallelize active case consumed the wrong operands");
   requireOnce(cases[1].productionGroups[0], {0, 1, 2},
               "parallelize full group changed");
   require(cases[2].productionGroups.size() == 1,
           "parallelize empty close lost its terminal group");
+  require(cases[2].consumedInputs == llvm::ArrayRef<std::uint32_t>({1}),
+          "parallelize close consumed the wrong operand");
   requireOnce(cases[2].productionGroups[0], {2},
               "parallelize empty close group changed");
   require(cases[3].productionGroups.size() == 2,
           "parallelize partial close is not a two-group production");
+  require(cases[3].consumedInputs == llvm::ArrayRef<std::uint32_t>({1}),
+          "parallelize partial close consumed the wrong operands");
   requireOnce(cases[3].productionGroups[0], {0, 1, 2},
               "parallelize partial payload group changed");
   requireOnce(cases[3].productionGroups[1], {2},
@@ -71,12 +77,14 @@ void serializeOwnsMaskOrderedRepetition() {
   const auto *repeat =
       std::get_if<ActorResultProductionForEachDefinedOneLane>(&active.repeat);
   require(active.activeResults == llvm::ArrayRef<std::uint32_t>({0, 1}) &&
-              repeat && repeat->maskInputOrdinal == 2,
+              repeat && repeat->maskInputOrdinal == 1,
           "serialize active group lost its mask-ordered repetition");
   require(cases[0].activeResults == llvm::ArrayRef<std::uint32_t>({0, 1}),
           "serialize legacy active-result union changed");
   require(cases[1].productionGroups.size() == 1,
           "serialize close lost its terminal group");
+  require(cases[1].consumedInputs == llvm::ArrayRef<std::uint32_t>({2}),
+          "serialize close consumed the wrong operand");
   requireOnce(cases[1].productionGroups[0], {1},
               "serialize close group changed");
 }
