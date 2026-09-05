@@ -929,7 +929,7 @@ llvm::Error writeBundle(llvm::StringRef destination,
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "loom.visualization_bundle");
-      json.attribute("version", "1.4");
+      json.attribute("version", "1.5");
       json.attributeObject("fabric", [&] {
         writeArtifactRootReferenceJsonFields(json, system.reference());
       });

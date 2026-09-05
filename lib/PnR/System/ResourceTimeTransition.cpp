@@ -15,6 +15,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "Runtime/RuntimePlatformBinding.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -23,6 +24,8 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
+#include <map>
 #include <optional>
 #include <system_error>
 #include <type_traits>
@@ -159,7 +162,7 @@ llvm::Expected<std::vector<std::uint8_t>> configurationImageStateBytes(
 
 struct DeploymentConfigurationState final {
   std::vector<std::uint8_t> complete;
-  std::vector<std::uint8_t> hardwareProgramming;
+  std::vector<std::uint8_t> hardwareBindings;
 };
 
 llvm::Expected<DeploymentConfigurationState> deploymentConfigurationStateBytes(
@@ -210,21 +213,21 @@ llvm::Expected<DeploymentConfigurationState> deploymentConfigurationStateBytes(
 
   const llvm::json::Value *hardwareBindings = root->get("hardware_bindings");
   if (!hardwareBindings)
-    return invalid("Deployment hardware-programming closure is incomplete");
+    return invalid("Deployment hardware-binding closure is incomplete");
   llvm::SmallString<2048> hardwareStorage;
   llvm::raw_svector_ostream hardwareOutput(hardwareStorage);
   llvm::json::OStream hardwareJson(hardwareOutput);
   hardwareJson.object([&] {
     hardwareJson.attribute("hardware_bindings", *hardwareBindings);
   });
-  std::vector<std::uint8_t> hardwareProgramming;
-  appendBlob(hardwareProgramming, llvm::ArrayRef<std::uint8_t>(
-                                       reinterpret_cast<const std::uint8_t *>(
-                                           hardwareStorage.data()),
-                                       hardwareStorage.size()));
-  appendBlob(hardwareProgramming, *images);
+  std::vector<std::uint8_t> hardwareBindingBytes;
+  appendBlob(hardwareBindingBytes,
+             llvm::ArrayRef<std::uint8_t>(
+                 reinterpret_cast<const std::uint8_t *>(hardwareStorage.data()),
+                 hardwareStorage.size()));
+
   return DeploymentConfigurationState{std::move(complete),
-                                      std::move(hardwareProgramming)};
+                                      std::move(hardwareBindingBytes)};
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -296,7 +299,7 @@ llvm::Error refuseUnownedLiveState(
 }
 
 constexpr llvm::StringLiteral memoryBindingDescriptor{
-    "loom.resource_time.memory_binding.v1"};
+    "loom.resource_time.memory_binding.v2"};
 
 ::dataflow::LogicalMemoryRootRef
 logicalMemoryRootOf(const ::dataflow::LogicalMemoryRootOrViewRef &memory) {
@@ -311,108 +314,479 @@ logicalMemoryRootOf(const ::dataflow::LogicalMemoryRootOrViewRef &memory) {
       memory);
 }
 
-/// Digest of every exact physical memory target one endpoint binds for one
-/// logical memory root: the view or root, its byte interval, the memory
-/// service region, and the service transform path.
-llvm::Expected<ComponentViewDigest> memoryBindingDigest(
-    const ::loom::mapping::FinalizedSystemMapping &mapping,
-    ::dataflow::LogicalMemoryRootRef root, bool &bound) {
-  std::vector<std::vector<std::uint8_t>> rows;
-  for (const auto &realization : mapping.view().serviceRealizations())
-    for (const auto &plan : realization.plans)
-      for (const auto &target : plan.memoryTargets) {
-        if (logicalMemoryRootOf(target.element.logicalMemory) != root)
-          continue;
-        std::vector<std::uint8_t> row;
-        std::visit(
-            [&](const auto &memory) {
-              using Memory = std::decay_t<decltype(memory)>;
-              if constexpr (std::is_same_v<Memory,
-                                           ::dataflow::LogicalMemoryRootRef>) {
-                appendU64(row, 0);
-                appendU64(row, memory.entity.value());
-              } else {
-                appendU64(row, 1);
-                appendU64(row, memory.root.entity.value());
-                appendU64(row, memory.viewOrdinal);
-              }
-            },
-            target.element.logicalMemory);
-        std::visit(
-            [&](const auto &interval) {
-              using Interval = std::decay_t<decltype(interval)>;
-              if constexpr (std::is_same_v<
-                                Interval,
-                                ::loom::mapping::SpatialMemoryByteRangeView>) {
-                appendU64(row, 1);
-                appendU64(row, interval.offsetBytes);
-                appendU64(row, interval.sizeBytes);
-              } else {
-                appendU64(row, 0);
-              }
-            },
-            target.element.interval);
-        appendBlob(row, ::loom::fabric::canonicalFabricBytes(
-                            target.element.serviceRegion));
-        appendU64(row, target.element.transformPath.size());
-        for (const auto &transform : target.element.transformPath)
-          appendBlob(row, ::loom::fabric::canonicalFabricBytes(transform));
-        rows.push_back(std::move(row));
-      }
-  bound = !rows.empty();
-  llvm::sort(rows);
-  std::vector<std::uint8_t> bytes;
-  appendU64(bytes, rows.size());
-  for (const auto &row : rows)
-    appendBlob(bytes, row);
-  return computeComponentViewDigest(
-      {reinterpret_cast<const std::uint8_t *>(memoryBindingDescriptor.data()),
-       memoryBindingDescriptor.size()},
-      bytes);
+void appendMemoryInterval(
+    std::vector<std::uint8_t> &bytes,
+    const ::loom::mapping::SpatialMemoryIntervalView &interval) {
+  if (const auto *range =
+          std::get_if<::loom::mapping::SpatialMemoryByteRangeView>(&interval)) {
+    appendU64(bytes, 1);
+    appendU64(bytes, range->offsetBytes);
+    appendU64(bytes, range->sizeBytes);
+    return;
+  }
+  appendU64(bytes, 0);
 }
 
-/// Derives the live-state correspondence of every logical memory root. A
-/// memory bound to identical physical targets at both endpoints is retained
-/// in place at exact zero cost; every other case is a typed refusal because
-/// no migration executor exists.
-llvm::Expected<std::vector<ResourceTimeLogicalMemoryCorrespondence>>
-deriveLogicalMemoryCorrespondence(
+llvm::Expected<std::vector<std::uint8_t>>
+memoryTargetBytes(const ResourceTimeMemoryTarget &target) {
+  std::vector<std::uint8_t> bytes;
+  if (const auto *local =
+          std::get_if<ResourceTimeSpatialMemoryTarget>(&target)) {
+    appendU64(bytes, 0);
+    appendBlob(bytes, ::loom::fabric::canonicalFabricBytes(local->accCore));
+    appendMemoryInterval(bytes, local->interval);
+    appendBlob(bytes, ::loom::fabric::canonicalFabricBytes(
+                          local->region.serviceRegion));
+    appendU64(bytes, local->region.physicalOffsetBytes);
+    return bytes;
+  }
+  appendU64(bytes, 1);
+  const auto &system =
+      std::get<::loom::mapping::SystemMemoryRegionElementView>(target);
+  auto logical = ::dataflow::encodeDataflowReference(system.logicalMemory);
+  if (!logical)
+    return logical.takeError();
+  appendBlob(bytes, *logical);
+  appendMemoryInterval(bytes, system.interval);
+  appendBlob(bytes, ::loom::fabric::canonicalFabricBytes(system.serviceRegion));
+  appendU64(bytes, system.transformPath.size());
+  for (const auto &transform : system.transformPath)
+    appendBlob(bytes, ::loom::fabric::canonicalFabricBytes(transform));
+  return bytes;
+}
+
+bool selectionMatchesRoots(
+    const ::loom::mapping::ServicePlanSelectionAnchor &anchor,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots) {
+  return std::visit(
+      [&](const auto &typed) {
+        using Anchor = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<
+                          Anchor,
+                          ::loom::mapping::MemoryExposurePlanSelectionAnchor>) {
+          return llvm::is_contained(roots,
+                                    typed.exposure.launch.rootThreadLaunch);
+        } else {
+          return std::visit(
+              [&](const auto &member) {
+                using Member = std::decay_t<decltype(member)>;
+                if constexpr (std::is_same_v<
+                                  Member,
+                                  ::dataflow::AddressedMemoryActorMemberRef> ||
+                              std::is_same_v<Member,
+                                             ::dataflow::FenceActorMemberRef>)
+                  return llvm::is_contained(
+                      roots, member.actor.launch.rootThreadLaunch);
+                else
+                  return false;
+              },
+              typed.member);
+        }
+      },
+      anchor);
+}
+
+bool planCanBeSelected(
+    const ::loom::mapping::SystemServicePlanSelectionView &selection,
+    std::uint64_t planOrdinal) {
+  if (selection.defaultPlanOrdinal == planOrdinal)
+    return true;
+  return llvm::any_of(selection.clauses, [&](const auto &clause) {
+    return clause.target == planOrdinal;
+  });
+}
+
+llvm::Expected<ResourceTimeLogicalMemoryBindingProjection>
+projectLogicalMemoryBinding(
+    const ::loom::mapping::FinalizedSystemMapping &mapping,
+    ::dataflow::LogicalMemoryRootRef memory,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    const ArtifactStore &artifacts) {
+  const ArtifactRootReference dataflowReference{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version,
+      mapping.view().dataflowIdentity()};
+  auto dataflowArtifact =
+      ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto extent = dataflow->staticMemoryByteExtent(
+      ::dataflow::LogicalMemoryRootOrViewRef{memory});
+  if (!extent)
+    return extent.takeError();
+  auto contexts = ::loom::mapping::projectSystemExecutionContexts(
+      *dataflow, mapping.view().executionBindings());
+  if (!contexts)
+    return contexts.takeError();
+
+  std::vector<ResourceTimeMemoryTarget> candidates;
+  bool usesBoundaryProxy = false;
+  for (const auto &domain : contexts->spatialDomains) {
+    if (!llvm::is_contained(roots, domain.graph.rootThreadLaunch))
+      continue;
+    auto spatial =
+        ::loom::mapping::importSpatialMapping(domain.spatialMapping, artifacts);
+    if (!spatial)
+      return spatial.takeError();
+    for (const auto &binding : spatial->view().memoryBindings()) {
+      if (logicalMemoryRootOf(binding.logicalMemory) != memory)
+        continue;
+      if (const auto *local =
+              std::get_if<::loom::mapping::SpatialMemoryLocalRegionView>(
+                  &binding.target))
+        candidates.emplace_back(ResourceTimeSpatialMemoryTarget{
+            domain.context.accCore, binding.interval, *local});
+      else
+        usesBoundaryProxy = true;
+    }
+  }
+
+  if (usesBoundaryProxy) {
+    for (const auto &realization : mapping.view().serviceRealizations()) {
+      const auto *operation =
+          std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
+              &realization.key);
+      const auto *logical =
+          operation
+              ? std::get_if<::dataflow::LogicalMemoryRootOrViewRef>(operation)
+              : nullptr;
+      if (!logical || logicalMemoryRootOf(*logical) != memory)
+        continue;
+      for (const auto &plan : realization.plans) {
+        const bool selected =
+            llvm::any_of(realization.selections, [&](const auto &selection) {
+              return selectionMatchesRoots(selection.key.anchor, roots) &&
+                     planCanBeSelected(selection, plan.ordinal);
+            });
+        if (!selected)
+          continue;
+        for (const auto &target : plan.memoryTargets)
+          if (logicalMemoryRootOf(target.element.logicalMemory) == memory)
+            candidates.emplace_back(target.element);
+      }
+    }
+  }
+
+  std::map<std::vector<std::uint8_t>, ResourceTimeMemoryTarget> canonical;
+  for (ResourceTimeMemoryTarget &target : candidates) {
+    auto bytes = memoryTargetBytes(target);
+    if (!bytes)
+      return bytes.takeError();
+    canonical.try_emplace(std::move(*bytes), std::move(target));
+  }
+  std::vector<std::uint8_t> digestBytes;
+  appendU64(digestBytes, canonical.size());
+  std::vector<ResourceTimeMemoryTarget> targets;
+  targets.reserve(canonical.size());
+  for (auto &[bytes, target] : canonical) {
+    appendBlob(digestBytes, bytes);
+    targets.push_back(std::move(target));
+  }
+  auto digest = computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(memoryBindingDescriptor.data()),
+       memoryBindingDescriptor.size()},
+      digestBytes);
+  if (!digest)
+    return digest.takeError();
+  return ResourceTimeLogicalMemoryBindingProjection{
+      memory, *extent, std::move(targets), *digest};
+}
+
+bool targetCoversObject(const ResourceTimeMemoryTarget &target,
+                        std::uint64_t byteCount) {
+  const auto &interval = std::visit(
+      [](const auto &typed) -> const auto & { return typed.interval; }, target);
+  const auto *range =
+      std::get_if<::loom::mapping::SpatialMemoryByteRangeView>(&interval);
+  return !range || (range->offsetBytes == 0 && range->sizeBytes == byteCount);
+}
+
+struct ConfigurationImageRecord final {
+  ArtifactRootReference reference;
+  std::uint64_t payloadBitCount = 0;
+  std::vector<std::uint8_t> payload;
+};
+
+llvm::Expected<std::map<std::vector<std::uint8_t>, ConfigurationImageRecord>>
+configurationImageCatalog(
+    const ::loom::deployment::FinalizedDeployment &deployment,
+    const ArtifactStore &artifacts) {
+  std::map<std::vector<std::uint8_t>, ConfigurationImageRecord> result;
+  for (const ArtifactRootReference &reference :
+       deployment.deployment().configurationImages()) {
+    auto image = ::loom::deployment::importHardwareConfigurationImage(
+        reference, artifacts);
+    if (!image)
+      return image.takeError();
+    std::vector<std::uint8_t> key;
+    appendRoot(key, image->image().configurationAbi());
+    appendU64(key, image->image().programmingUnitId());
+    ConfigurationImageRecord record{
+        reference, image->image().payloadBitCount(),
+        std::vector<std::uint8_t>(image->image().payload().begin(),
+                                  image->image().payload().end())};
+    if (!result.try_emplace(std::move(key), std::move(record)).second)
+      return invalid("Deployment configuration repeats one programming unit");
+  }
+  return result;
+}
+
+llvm::Expected<std::optional<::loom::runtime::RuntimeProviderBinding>>
+deploymentProviderBinding(
+    const ::loom::deployment::FinalizedDeployment &deployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  std::optional<::loom::runtime::RuntimeProviderBinding> result;
+  for (const auto &hardware : deployment.deployment().hardwareBindings()) {
+    auto binding = ::loom::runtime::importRuntimePlatformBinding(
+        hardware.runtimePlatformBinding, artifacts, blobs);
+    if (!binding)
+      return binding.takeError();
+    const auto &provider = binding->binding().providerBinding();
+    if (result && !(*result == provider))
+      return invalid("Deployment hardware bindings select multiple runtime "
+                     "providers");
+    result = provider;
+  }
+  return result;
+}
+
+llvm::Expected<std::optional<::loom::runtime::RuntimeResourceTimeCostModel>>
+transitionCostModel(const ::loom::deployment::FinalizedDeployment &parent,
+                    const ::loom::deployment::FinalizedDeployment &child,
+                    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto parentProvider = deploymentProviderBinding(parent, artifacts, blobs);
+  if (!parentProvider)
+    return parentProvider.takeError();
+  auto childProvider = deploymentProviderBinding(child, artifacts, blobs);
+  if (!childProvider)
+    return childProvider.takeError();
+  if (parentProvider->has_value() != childProvider->has_value() ||
+      (parentProvider->has_value() && !(**parentProvider == **childProvider)))
+    return refuse(ResourceTimeTransitionRefusalReason::
+                      RuntimeTransitionCapabilityUnavailable,
+                  "transition endpoints select different runtime providers");
+  if (!*parentProvider)
+    return std::optional<::loom::runtime::RuntimeResourceTimeCostModel>{};
+  return (*parentProvider)->resourceTimeCostModel;
+}
+
+std::uint32_t configurationImageWord(llvm::ArrayRef<std::uint8_t> image,
+                                     std::uint64_t word) {
+  std::uint32_t result = 0;
+  for (unsigned byte = 0; byte != 4; ++byte) {
+    const std::uint64_t index = word * 4 + byte;
+    if (index < image.size())
+      result |= std::uint32_t(image[static_cast<std::size_t>(index)])
+                << (byte * 8);
+  }
+  return result;
+}
+
+llvm::Expected<std::uint64_t> scaledCost(std::uint64_t count,
+                                         std::uint64_t unitCost,
+                                         std::uint64_t fixedCost,
+                                         llvm::StringRef operation) {
+  if (unitCost == 0)
+    return invalid(operation + " cost has a zero unit price");
+  if (count >
+      (std::numeric_limits<std::uint64_t>::max() - fixedCost) / unitCost)
+    return invalid(operation + " cost exceeds the u64 picosecond domain");
+  return fixedCost + count * unitCost;
+}
+
+llvm::Expected<
+    std::pair<std::vector<ResourceTimeConfigurationImageDelta>, std::uint64_t>>
+deriveConfigurationExecutionPlan(
+    const ::loom::deployment::FinalizedDeployment &parent,
+    const ::loom::deployment::FinalizedDeployment &child,
+    const std::optional<::loom::runtime::RuntimeResourceTimeCostModel> &cost,
+    const ArtifactStore &artifacts) {
+  auto parentImages = configurationImageCatalog(parent, artifacts);
+  if (!parentImages)
+    return parentImages.takeError();
+  auto childImages = configurationImageCatalog(child, artifacts);
+  if (!childImages)
+    return childImages.takeError();
+  for (const auto &[key, parentImage] : *parentImages) {
+    (void)parentImage;
+    if (childImages->find(key) == childImages->end())
+      return refuse(
+          ResourceTimeTransitionRefusalReason::
+              RuntimeTransitionCapabilityUnavailable,
+          "parent configuration image has no child image to replace it");
+  }
+
+  std::vector<ResourceTimeConfigurationImageDelta> images;
+  std::uint64_t changedWords = 0;
+  for (const auto &[key, childImage] : *childImages) {
+    const auto parentImage = parentImages->find(key);
+    if (parentImage != parentImages->end() &&
+        parentImage->second.payloadBitCount != childImage.payloadBitCount)
+      return invalid("configuration image payload extent changes within one "
+                     "ConfigurationABI programming unit");
+    const std::uint64_t wordCount = childImage.payloadBitCount / 32 +
+                                    (childImage.payloadBitCount % 32 != 0);
+    ResourceTimeConfigurationImageDelta image{childImage.reference, {}};
+    image.changedWordOrdinals.reserve(static_cast<std::size_t>(wordCount));
+    for (std::uint64_t word = 0; word != wordCount; ++word) {
+      const bool changed =
+          parentImage == parentImages->end() ||
+          configurationImageWord(parentImage->second.payload, word) !=
+              configurationImageWord(childImage.payload, word);
+      if (changed)
+        image.changedWordOrdinals.push_back(word);
+    }
+    if (image.changedWordOrdinals.empty())
+      continue;
+    if (changedWords > std::numeric_limits<std::uint64_t>::max() -
+                           image.changedWordOrdinals.size())
+      return invalid("configuration word delta exceeds the u64 domain");
+    changedWords += image.changedWordOrdinals.size();
+    images.push_back(std::move(image));
+  }
+  if (images.empty())
+    return std::make_pair(std::move(images), std::uint64_t{0});
+  if (!cost)
+    return refuse(
+        ResourceTimeTransitionRefusalReason::
+            RuntimeTransitionCapabilityUnavailable,
+        "changed hardware programming has no runtime-provider cost model");
+  auto words = scaledCost(changedWords, cost->configurationWordPicoseconds, 0,
+                          "configuration word");
+  if (!words)
+    return words.takeError();
+  auto total = scaledCost(images.size(), cost->configurationCommitPicoseconds,
+                          *words, "configuration commit");
+  if (!total)
+    return total.takeError();
+  return std::make_pair(std::move(images), *total);
+}
+
+struct DerivedLogicalMemoryPlan final {
+  std::vector<ResourceTimeLogicalMemoryCorrespondence> correspondence;
+  std::vector<ResourceTimeLogicalMemoryCopyPlan> copies;
+  std::uint64_t migrationTimePicoseconds = 0;
+};
+
+llvm::Expected<DerivedLogicalMemoryPlan> deriveLogicalMemoryExecutionPlan(
+    const ResourceTimeTransition &transition,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::FinalizedSystemMapping &parentMapping,
     const ::loom::mapping::FinalizedSystemMapping &childMapping,
-    const ::loom::deployment::FinalizedDeployment &childDeployment) {
-  std::vector<ResourceTimeLogicalMemoryCorrespondence> correspondence;
+    const ::loom::deployment::FinalizedDeployment &childDeployment,
+    const std::optional<::loom::runtime::RuntimeResourceTimeCostModel> &cost,
+    const ArtifactStore &artifacts) {
+  std::vector<::dataflow::RootThreadLaunchRef> sourceRoots =
+      transition.completedBefore;
+  for (const ResourceTimeRegionAllocation &allocation : transition.beforeActive)
+    if (!llvm::is_contained(sourceRoots, allocation.region))
+      sourceRoots.push_back(allocation.region);
+  std::vector<::dataflow::RootThreadLaunchRef> destinationRoots;
+  for (const auto root :
+       childMapping.view().executionBindings().rootThreadLaunches())
+    if (!llvm::is_contained(sourceRoots, root))
+      destinationRoots.push_back(root);
+
+  DerivedLogicalMemoryPlan result;
   for (const auto &memory : dataflow.logicalMemoryRoots()) {
-    bool parentBound = false;
-    bool childBound = false;
-    auto parentBinding =
-        memoryBindingDigest(parentMapping, memory.ref, parentBound);
-    if (!parentBinding)
-      return parentBinding.takeError();
-    auto childBinding = memoryBindingDigest(childMapping, memory.ref, childBound);
-    if (!childBinding)
-      return childBinding.takeError();
-    if (!parentBound || !childBound)
+    auto parent = projectLogicalMemoryBinding(parentMapping, memory.ref,
+                                              sourceRoots, artifacts);
+    if (!parent)
+      return parent.takeError();
+    auto child = projectLogicalMemoryBinding(childMapping, memory.ref,
+                                             destinationRoots, artifacts);
+    if (!child)
+      return child.takeError();
+    if (child->targets.empty())
+      continue;
+    if (parent->targets.empty())
       return refuse(ResourceTimeTransitionRefusalReason::LogicalMemoryUnbound,
-                    "a logical memory has no exact memory target at one "
-                    "endpoint");
-    if (*parentBinding != *childBinding)
-      return refuse(ResourceTimeTransitionRefusalReason::LogicalMemoryRelocated,
-                    "endpoints bind a logical memory to different physical "
-                    "targets and no migration executor exists");
+                    "a live logical memory has no source target before the "
+                    "completion safe point");
     for (const auto &image : childDeployment.deployment().staticMemoryImages())
       if (image.logicalMemoryRoot() == memory.ref)
         return refuse(
             ResourceTimeTransitionRefusalReason::LogicalMemoryReinitialized,
-            "child Deployment would reinitialize a retained logical memory");
-    correspondence.push_back(
-        {memory.ref, *parentBinding, *childBinding,
-         ResourceTimeLiveStateMigration::RetainedInPlace, 0});
+            "child Deployment would reinitialize a live logical memory");
+    if (parent->digest == child->digest) {
+      result.correspondence.push_back(
+          {memory.ref, parent->digest, child->digest,
+           ResourceTimeLiveStateMigration::RetainedInPlace, 0});
+      continue;
+    }
+    if (!parent->byteCount || !child->byteCount)
+      return refuse(
+          ResourceTimeTransitionRefusalReason::LogicalMemoryExtentUnknown,
+          "relocated logical memory has no static byte extent");
+    if (*parent->byteCount == 0 || *parent->byteCount != *child->byteCount ||
+        parent->targets.size() != 1 || child->targets.size() != 1 ||
+        !targetCoversObject(parent->targets.front(), *parent->byteCount) ||
+        !targetCoversObject(child->targets.front(), *child->byteCount))
+      return refuse(
+          ResourceTimeTransitionRefusalReason::
+              LogicalMemoryCopyShapeUnsupported,
+          "logical-memory copy requires one complete equal-extent source and "
+          "destination target");
+    if (!cost)
+      return refuse(
+          ResourceTimeTransitionRefusalReason::
+              RuntimeTransitionCapabilityUnavailable,
+          "relocated logical memory has no runtime-provider copy cost model");
+    auto migration =
+        scaledCost(*parent->byteCount, cost->memoryCopyBytePicoseconds,
+                   cost->memoryCopySetupPicoseconds, "logical-memory copy");
+    if (!migration)
+      return migration.takeError();
+    if (result.migrationTimePicoseconds >
+        std::numeric_limits<std::uint64_t>::max() - *migration)
+      return invalid("logical-memory migration cost exceeds the u64 "
+                     "picosecond domain");
+    result.migrationTimePicoseconds += *migration;
+    result.correspondence.push_back({memory.ref, parent->digest, child->digest,
+                                     ResourceTimeLiveStateMigration::Copied,
+                                     *migration});
+    result.copies.push_back(ResourceTimeLogicalMemoryCopyPlan{
+        memory.ref, *parent->byteCount, parent->targets.front(),
+        child->targets.front()});
   }
-  llvm::sort(correspondence, [](const auto &lhs, const auto &rhs) {
+  llvm::sort(result.correspondence, [](const auto &lhs, const auto &rhs) {
     return lhs.memory.entity.value() < rhs.memory.entity.value();
   });
-  return correspondence;
+  llvm::sort(result.copies, [](const auto &lhs, const auto &rhs) {
+    return lhs.memory.entity.value() < rhs.memory.entity.value();
+  });
+  return result;
+}
+
+llvm::Expected<ResourceTimeTransitionExecutionPlan> deriveExecutionPlan(
+    const ResourceTimeTransition &transition,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::FinalizedSystemMapping &parentMapping,
+    const ::loom::mapping::FinalizedSystemMapping &childMapping,
+    const ::loom::deployment::FinalizedDeployment &parentDeployment,
+    const ::loom::deployment::FinalizedDeployment &childDeployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::vector<ResourceTimeLogicalMemoryCorrespondence> &correspondence) {
+  auto cost =
+      transitionCostModel(parentDeployment, childDeployment, artifacts, blobs);
+  if (!cost)
+    return cost.takeError();
+  auto configuration = deriveConfigurationExecutionPlan(
+      parentDeployment, childDeployment, *cost, artifacts);
+  if (!configuration)
+    return configuration.takeError();
+  auto logical = deriveLogicalMemoryExecutionPlan(
+      transition, dataflow, parentMapping, childMapping, childDeployment, *cost,
+      artifacts);
+  if (!logical)
+    return logical.takeError();
+  correspondence = std::move(logical->correspondence);
+  return ResourceTimeTransitionExecutionPlan{
+      std::move(configuration->first), std::move(logical->copies),
+      configuration->second, logical->migrationTimePicoseconds};
 }
 
 struct DerivedTransitionDigests final {
@@ -420,7 +794,7 @@ struct DerivedTransitionDigests final {
   ComponentViewDigest configuration;
   ComponentViewDigest routes;
   std::vector<ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
-  std::uint64_t migrationTimePicoseconds = 0;
+  ResourceTimeTransitionExecutionPlan execution;
 };
 
 bool sameRootSet(
@@ -559,21 +933,20 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
         "Dataflow event relation");
   if (llvm::Error error = refuseUnownedLiveState(*dataflowArtifact))
     return std::move(error);
-  auto logicalMemories = deriveLogicalMemoryCorrespondence(
-      *dataflow, *parentMapping, *childMapping, *childDeployment);
-  if (!logicalMemories)
-    return logicalMemories.takeError();
-  if (beforeConfiguration->hardwareProgramming !=
-      afterConfiguration->hardwareProgramming)
-    return refuse(
-        ResourceTimeTransitionRefusalReason::HardwareProgrammingChanged,
-        "changed Deployment hardware-programming state has no exact "
-        "reprogramming-time owner");
-  std::uint64_t migrationTime = 0;
-  for (const auto &memory : *logicalMemories)
-    migrationTime += memory.migrationTimePicoseconds;
+  if (beforeConfiguration->hardwareBindings !=
+      afterConfiguration->hardwareBindings)
+    return refuse(ResourceTimeTransitionRefusalReason::HardwareBindingChanged,
+                  "transition endpoints select different immutable hardware "
+                  "or runtime bindings");
+  std::vector<ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
+  auto execution = deriveExecutionPlan(
+      transition, *dataflow, *parentMapping, *childMapping, *parentDeployment,
+      *childDeployment, artifacts, blobs, logicalMemories);
+  if (!execution)
+    return execution.takeError();
   return DerivedTransitionDigests{*resources, *configuration, *routes,
-                                  std::move(*logicalMemories), migrationTime};
+                                  std::move(logicalMemories),
+                                  std::move(*execution)};
 }
 
 llvm::Error
@@ -633,6 +1006,41 @@ projectResourceTimeMappingResources(
   return resources;
 }
 
+llvm::Expected<ResourceTimeLogicalMemoryBindingProjection>
+projectResourceTimeLogicalMemoryBinding(
+    const ::loom::mapping::FinalizedSystemMapping &mapping,
+    ::dataflow::LogicalMemoryRootRef memory,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
+    const ArtifactStore &artifacts) {
+  return projectLogicalMemoryBinding(mapping, memory, roots, artifacts);
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+canonicalResourceTimeMemoryTargetBytes(const ResourceTimeMemoryTarget &target) {
+  return memoryTargetBytes(target);
+}
+
+llvm::Expected<ResourceTimeTransitionExecutionPlan>
+deriveResourceTimeTransitionExecutionPlan(
+    const ResourceTimeTransition &transition, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  if (transition.status != ResourceTimeTransitionStatus::Verified)
+    return invalid("execution plan requires a verified transition");
+  auto derived = deriveTransitionDigests(transition, artifacts, blobs);
+  if (!derived)
+    return derived.takeError();
+  if (transition.logicalMemories != derived->logicalMemories ||
+      transition.reprogrammingTimePicoseconds !=
+          std::optional<std::uint64_t>(
+              derived->execution.reprogrammingTimePicoseconds) ||
+      transition.migrationTimePicoseconds !=
+          std::optional<std::uint64_t>(
+              derived->execution.migrationTimePicoseconds))
+    return invalid("verified transition disagrees with its executable live-"
+                   "state and configuration projection");
+  return std::move(derived->execution);
+}
+
 llvm::Expected<ResourceTimeTransition>
 finalizeResourceTimeTransition(ResourceTimeTransition draft,
                                const ArtifactStore &artifacts,
@@ -657,8 +1065,9 @@ finalizeResourceTimeTransition(ResourceTimeTransition draft,
   draft.configurationDeltaDigest = digests->configuration;
   draft.routeDeltaDigest = digests->routes;
   draft.logicalMemories = std::move(digests->logicalMemories);
-  draft.reprogrammingTimePicoseconds = 0;
-  draft.migrationTimePicoseconds = digests->migrationTimePicoseconds;
+  draft.reprogrammingTimePicoseconds =
+      digests->execution.reprogrammingTimePicoseconds;
+  draft.migrationTimePicoseconds = digests->execution.migrationTimePicoseconds;
   draft.status = ResourceTimeTransitionStatus::Verified;
   if (llvm::Error error =
           verifyResourceTimeTransitionClosure(draft, artifacts, blobs))
@@ -677,15 +1086,15 @@ llvm::Error verifyResourceTimeTransitionDeltaDigests(
   if (!transition.reprogrammingTimePicoseconds ||
       !transition.migrationTimePicoseconds)
     return invalid("verified transition has no exact cost components");
-  if (*transition.reprogrammingTimePicoseconds != 0)
-    return invalid("unchanged Deployment hardware-programming state has "
-                   "nonzero "
-                   "reprogramming time");
+  if (*transition.reprogrammingTimePicoseconds !=
+      expected->execution.reprogrammingTimePicoseconds)
+    return invalid("reprogramming time disagrees with the exact changed-word "
+                   "projection");
   if (transition.logicalMemories != expected->logicalMemories)
     return invalid("live-state correspondence disagrees with endpoint memory "
                    "bindings");
   if (*transition.migrationTimePicoseconds !=
-      expected->migrationTimePicoseconds)
+      expected->execution.migrationTimePicoseconds)
     return invalid("migration time disagrees with the live-state "
                    "correspondence");
   if (!transition.resourceDeltaDigest ||

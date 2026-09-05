@@ -622,6 +622,8 @@ llvm::StringRef resourceTimeLiveStateMigrationSpelling(
   switch (migration) {
   case ResourceTimeLiveStateMigration::RetainedInPlace:
     return "retained_in_place";
+  case ResourceTimeLiveStateMigration::Copied:
+    return "copied";
   }
   llvm_unreachable("unknown resource-time live-state migration");
 }
@@ -635,12 +637,17 @@ llvm::StringRef resourceTimeTransitionRefusalReasonSpelling(
     return "dynamic_work_state";
   case ResourceTimeTransitionRefusalReason::LogicalMemoryUnbound:
     return "logical_memory_unbound";
-  case ResourceTimeTransitionRefusalReason::LogicalMemoryRelocated:
-    return "logical_memory_relocated";
+  case ResourceTimeTransitionRefusalReason::LogicalMemoryExtentUnknown:
+    return "logical_memory_extent_unknown";
+  case ResourceTimeTransitionRefusalReason::LogicalMemoryCopyShapeUnsupported:
+    return "logical_memory_copy_shape_unsupported";
   case ResourceTimeTransitionRefusalReason::LogicalMemoryReinitialized:
     return "logical_memory_reinitialized";
-  case ResourceTimeTransitionRefusalReason::HardwareProgrammingChanged:
-    return "hardware_programming_changed";
+  case ResourceTimeTransitionRefusalReason::HardwareBindingChanged:
+    return "hardware_binding_changed";
+  case ResourceTimeTransitionRefusalReason::
+      RuntimeTransitionCapabilityUnavailable:
+    return "runtime_transition_capability_unavailable";
   case ResourceTimeTransitionRefusalReason::CompletionFrontierInadmissible:
     return "completion_frontier_inadmissible";
   }
@@ -798,11 +805,20 @@ validateResourceTimeTransition(const ResourceTimeTransition &transition) {
       if (transition.logicalMemories[prior].memory == memory.memory)
         return invalid("resource-time live-state correspondence repeats a "
                        "logical memory");
-    if (memory.migration == ResourceTimeLiveStateMigration::RetainedInPlace &&
-        (memory.parentBinding != memory.childBinding ||
-         memory.migrationTimePicoseconds != 0))
-      return invalid("retained-in-place live state must keep its physical "
-                     "binding at exact zero migration cost");
+    if (memory.migration == ResourceTimeLiveStateMigration::RetainedInPlace) {
+      if (memory.parentBinding != memory.childBinding ||
+          memory.migrationTimePicoseconds != 0)
+        return invalid("retained-in-place live state must keep its physical "
+                       "binding at exact zero migration cost");
+    } else if (memory.migration == ResourceTimeLiveStateMigration::Copied) {
+      if (memory.parentBinding == memory.childBinding ||
+          memory.migrationTimePicoseconds == 0)
+        return invalid("copied live state must change physical binding at a "
+                       "nonzero migration cost");
+    } else {
+      return invalid("resource-time live-state correspondence has an unknown "
+                     "migration disposition");
+    }
   }
   if (transition.status == ResourceTimeTransitionStatus::Verified) {
     if (!transition.safePoint)

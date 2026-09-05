@@ -913,6 +913,17 @@ RuntimeProviderInstance::prepareActivation(
       "prepared activation replacement is unsupported");
 }
 
+llvm::Expected<RuntimePreparedActivationHandle>
+RuntimeProviderInstance::prepareResourceTimeTransition(
+    const RuntimeLeaseHandle &, const RuntimeExecutableRegistrationView &,
+    const RuntimeActivationView &,
+    llvm::ArrayRef<RuntimeConfigurationDeltaTarget>,
+    llvm::ArrayRef<pnr::ResourceTimeLogicalMemoryCopyPlan>) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "prepared resource-time transition is unsupported");
+}
+
 llvm::Error RuntimeProviderInstance::replaceActivationAtomically(
     const RuntimeLeaseHandle &, const RuntimePreparedActivationHandle &) {
   return llvm::createStringError(
@@ -960,7 +971,7 @@ struct ResourceTimeActivationToken final {};
 
 struct LoadedDeploymentState final {
   struct PreparedActivation final {
-    pnr::ResourceTimeTransitionEndpointReference endpoint;
+    pnr::ResourceTimeTransition transition;
     deployment::FinalizedDeployment deployment;
     RuntimePreparedActivationHandle handle;
   };
@@ -1065,14 +1076,10 @@ LoadedDeployment::prepareResourceTimeActivations(
     return activationReplacementError(reason, diagnostic);
   };
 
-  prepared.reserve(graph.endpoints.size());
-  for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
-       graph.endpoints) {
-    if (!llvm::any_of(graph.transitions,
-                      [&](const pnr::ResourceTimeTransition &transition) {
-                        return transition.child == endpoint;
-                      }))
-      continue;
+  prepared.reserve(graph.transitions.size());
+  for (const pnr::ResourceTimeTransition &transition : graph.transitions) {
+    const pnr::ResourceTimeTransitionEndpointReference &endpoint =
+        transition.child;
     if (!endpoint.deployment)
       return failPreparation(
           RuntimeActivationReplacementErrorReason::InvalidDeployment,
@@ -1104,7 +1111,8 @@ LoadedDeployment::prepareResourceTimeActivations(
     if (!registered || registered != &state_->provider->descriptor() ||
         registered->implementationSemanticIdentity !=
             allowed.implementationSemanticIdentity ||
-        registered->runtimeAbiIdentity != allowed.runtimeAbiIdentity)
+        registered->runtimeAbiIdentity != allowed.runtimeAbiIdentity ||
+        !(registered->resourceTimeCostModel == allowed.resourceTimeCostModel))
       return failPreparation(
           RuntimeActivationReplacementErrorReason::ProviderMismatch,
           "candidate Deployment selects another runtime provider");
@@ -1123,14 +1131,62 @@ LoadedDeployment::prepareResourceTimeActivations(
         deployment.reference(), closure->runtimeBindings,
         candidate.threadDispatchImage(), candidate.spatialLaunchImage(),
         candidate.admissionImage()};
-    auto handle = state_->provider->prepareActivation(state_->lease,
-                                                      registration, activation);
+    auto execution = pnr::deriveResourceTimeTransitionExecutionPlan(
+        transition, artifacts, blobs);
+    if (!execution)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "candidate transition execution projection failed: " +
+              llvm::toString(execution.takeError()));
+    auto fullConfiguration =
+        configurationTargets(deployment, *closure, artifacts);
+    if (!fullConfiguration)
+      return failPreparation(
+          RuntimeActivationReplacementErrorReason::InvalidDeployment,
+          "candidate transition configuration import failed: " +
+              llvm::toString(fullConfiguration.takeError()));
+    std::vector<RuntimeConfigurationDeltaTarget> changedConfiguration;
+    changedConfiguration.reserve(execution->configurationImages.size());
+    for (const pnr::ResourceTimeConfigurationImageDelta &delta :
+         execution->configurationImages) {
+      const auto target = llvm::find_if(
+          *fullConfiguration, [&](const RuntimeConfigurationTarget &candidate) {
+            return candidate.image == delta.childImage;
+          });
+      if (target == fullConfiguration->end())
+        return failPreparation(
+            RuntimeActivationReplacementErrorReason::InvalidDeployment,
+            "changed configuration image has no runtime target");
+      RuntimeConfigurationDeltaTarget changed{
+          target->image, target->endpoint, target->commitAddress, {}};
+      changed.changedWords.reserve(delta.changedWordOrdinals.size());
+      for (std::uint64_t ordinal : delta.changedWordOrdinals) {
+        if (ordinal >= target->words.size())
+          return failPreparation(
+              RuntimeActivationReplacementErrorReason::InvalidDeployment,
+              "changed configuration word ordinal is outside its image");
+        changed.changedWords.push_back(
+            target->words[static_cast<std::size_t>(ordinal)]);
+      }
+      if (changed.changedWords.empty())
+        return failPreparation(
+            RuntimeActivationReplacementErrorReason::InvalidDeployment,
+            "changed configuration image has no changed words");
+      changedConfiguration.push_back(std::move(changed));
+    }
+    llvm::Expected<RuntimePreparedActivationHandle> handle =
+        changedConfiguration.empty() && execution->logicalMemoryCopies.empty()
+            ? state_->provider->prepareActivation(state_->lease, registration,
+                                                  activation)
+            : state_->provider->prepareResourceTimeTransition(
+                  state_->lease, registration, activation, changedConfiguration,
+                  execution->logicalMemoryCopies);
     if (!handle)
       return failPreparation(
           RuntimeActivationReplacementErrorReason::PreparationFailed,
           "provider rejected activation preparation: " +
               llvm::toString(handle.takeError()));
-    prepared.push_back({endpoint, std::move(deployment), std::move(*handle)});
+    prepared.push_back({transition, std::move(deployment), std::move(*handle)});
   }
 
   state_->preparedActivationGraph = graph;
@@ -1165,7 +1221,7 @@ llvm::Error LoadedDeployment::activatePreparedTransition(
   auto prepared = llvm::find_if(
       state_->preparedActivations,
       [&](const detail::LoadedDeploymentState::PreparedActivation &candidate) {
-        return candidate.endpoint == transition.child;
+        return sameSelectionEdge(candidate.transition, transition);
       });
   if (prepared == state_->preparedActivations.end())
     return activationReplacementError(
@@ -1212,7 +1268,9 @@ loadDeployment(deployment::FinalizedDeployment deployment,
   if (!registeredProvider || &provider.descriptor() != registeredProvider ||
       registeredProvider->implementationSemanticIdentity !=
           allowed.implementationSemanticIdentity ||
-      registeredProvider->runtimeAbiIdentity != allowed.runtimeAbiIdentity)
+      registeredProvider->runtimeAbiIdentity != allowed.runtimeAbiIdentity ||
+      !(registeredProvider->resourceTimeCostModel ==
+        allowed.resourceTimeCostModel))
     return loadError(RuntimeLoadFailureKind::ProviderMismatch,
                      "selected provider instance is not the exact provider "
                      "allowed by Deployment");

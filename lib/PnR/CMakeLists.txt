@@ -112,6 +112,7 @@ add_mlir_library(LoomPnR
   LoomDSEObjective
   LoomMappingArtifact
   LoomPnRDerivedContextSession
+  LoomRuntimePlatformBinding
   MLIRPresburger
   LLVMSupport
 )

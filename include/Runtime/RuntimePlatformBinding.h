@@ -10,6 +10,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,7 +27,7 @@ class RuntimePlatformBindingBuilder;
 }
 
 inline constexpr ArtifactSchemaDescriptor runtimePlatformBindingSchema{
-    "loom.runtime_platform_binding", SchemaVersion{3, 1}};
+    "loom.runtime_platform_binding", SchemaVersion{4, 0}};
 
 struct HardwareReportedIdentity final {
   RuntimeProviderEndpointRef implementationIdentityEndpoint;
@@ -89,13 +90,15 @@ struct RuntimeProviderBinding final {
   RuntimeProviderDescriptorRef descriptor;
   std::string implementationSemanticIdentity;
   std::string runtimeAbiIdentity;
+  std::optional<RuntimeResourceTimeCostModel> resourceTimeCostModel;
 
   friend bool operator==(const RuntimeProviderBinding &lhs,
                          const RuntimeProviderBinding &rhs) {
     return lhs.descriptor == rhs.descriptor &&
            lhs.implementationSemanticIdentity ==
                rhs.implementationSemanticIdentity &&
-           lhs.runtimeAbiIdentity == rhs.runtimeAbiIdentity;
+           lhs.runtimeAbiIdentity == rhs.runtimeAbiIdentity &&
+           lhs.resourceTimeCostModel == rhs.resourceTimeCostModel;
   }
 };
 

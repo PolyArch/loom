@@ -26,7 +26,7 @@ using namespace detail;
 namespace {
 
 constexpr llvm::StringLiteral resourceTimeTransitionCacheDescriptor{
-    "loom.dse.resource_time_transition_cache.1"};
+    "loom.dse.resource_time_transition_cache.2"};
 constexpr llvm::StringLiteral resourceTimeAnalyticModelDescriptor{
     "loom.dse.resource_time_analytic_model.1"};
 constexpr llvm::StringLiteral resourceTimePhysicalModelSnapshotDescriptor{

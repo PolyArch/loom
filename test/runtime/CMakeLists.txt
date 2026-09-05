@@ -66,6 +66,16 @@ target_link_libraries(loom-runtime-deployment-loader-test PRIVATE
   LoomRuntimeDeploymentLoader
 )
 
+add_executable(loom-runtime-resource-time-live-state-test
+  ResourceTimeLiveStateTest.cpp
+)
+
+target_link_libraries(loom-runtime-resource-time-live-state-test PRIVATE
+  LoomApplicationDeploymentRuntime
+  LoomMappedRtlSimulationTestSupport
+  LoomRuntimeResourceTime
+)
+
 add_executable(loom-runtime-dynamic-work-test
   DynamicWorkExecutionTest.cpp
 )

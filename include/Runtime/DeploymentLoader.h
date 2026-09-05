@@ -171,6 +171,16 @@ struct RuntimeConfigurationTarget final {
   std::vector<std::uint8_t> activationEventKey;
 };
 
+/// Sparse, exact word update for one child ConfigurationABI image. This is
+/// distinct from `RuntimeConfigurationTarget`, whose `words` inventory is the
+/// complete image used by initial programming and readback.
+struct RuntimeConfigurationDeltaTarget final {
+  ArtifactRootReference image;
+  RuntimeProviderEndpointRef endpoint;
+  std::uint32_t commitAddress = 0;
+  std::vector<RuntimeConfigurationWord> changedWords;
+};
+
 struct RuntimeSpatialMemoryTarget final {
   mapping::SpatialExecutionContextKey context;
   mapping::SpatialMemoryIntervalView interval;
@@ -268,6 +278,17 @@ public:
   prepareActivation(const RuntimeLeaseHandle &lease,
                     const RuntimeExecutableRegistrationView &registration,
                     const RuntimeActivationView &activation);
+  /// Copies a child activation together with the exact configuration-word
+  /// delta and logical-memory copy plan derived from one verified edge. The
+  /// provider must read logical-memory sources only when the prepared handle
+  /// is committed, after the compiler-known safe point.
+  virtual llvm::Expected<RuntimePreparedActivationHandle>
+  prepareResourceTimeTransition(
+      const RuntimeLeaseHandle &lease,
+      const RuntimeExecutableRegistrationView &registration,
+      const RuntimeActivationView &activation,
+      llvm::ArrayRef<RuntimeConfigurationDeltaTarget> configuration,
+      llvm::ArrayRef<pnr::ResourceTimeLogicalMemoryCopyPlan> logicalMemories);
   /// Atomically switches to one prepared activation without loading artifacts,
   /// executable bytes, or runtime images. On error, the previous Deployment
   /// remains active. The prepared handle remains reusable after either result.

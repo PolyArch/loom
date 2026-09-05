@@ -266,7 +266,7 @@ failure uses `loom.application_pair_disposition` version `1.0` and retains the
 same typed decision without fabricating Mapping work.
 The successful envelope's repair-record inventory is derived from the same
 `loom.application.activation_decision` 2.0 owner projected by runtime manifest
-5.0. When the selected
+6.0. When the selected
 `hardware_dse_alternative` observation names a mutation repair, the runtime
 manifest names the same unique record. Omitting a unique record that selects
 the activation SystemMapping is invalid; a general hardware-frontier selection

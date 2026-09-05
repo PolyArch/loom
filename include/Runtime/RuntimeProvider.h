@@ -8,11 +8,33 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace loom::runtime {
+
+/// Exact provider-owned timing model for the bounded resource-time transition
+/// operations that can be prepared and committed atomically. The descriptor
+/// is the semantic owner; RuntimePlatformBinding retains a derived copy so a
+/// packaged Deployment does not depend on ambient machine configuration.
+struct RuntimeResourceTimeCostModel final {
+  std::uint64_t memoryCopySetupPicoseconds = 0;
+  std::uint64_t memoryCopyBytePicoseconds = 0;
+  std::uint64_t configurationWordPicoseconds = 0;
+  std::uint64_t configurationCommitPicoseconds = 0;
+
+  friend bool operator==(const RuntimeResourceTimeCostModel &lhs,
+                         const RuntimeResourceTimeCostModel &rhs) {
+    return lhs.memoryCopySetupPicoseconds == rhs.memoryCopySetupPicoseconds &&
+           lhs.memoryCopyBytePicoseconds == rhs.memoryCopyBytePicoseconds &&
+           lhs.configurationWordPicoseconds ==
+               rhs.configurationWordPicoseconds &&
+           lhs.configurationCommitPicoseconds ==
+               rhs.configurationCommitPicoseconds;
+  }
+};
 
 enum class RuntimeEndpointClass : std::uint32_t {
   Identity = 0,
@@ -52,6 +74,10 @@ struct RuntimeProviderDescriptor final {
   bool supportsTrustedImmutableIdentity = false;
   bool supportsAtomicProgrammingMulticast = false;
   bool supportsPreparedActivationReplacement = false;
+  /// Presence admits provider-atomic configuration and logical-memory copy
+  /// work during prepared activation replacement. Every component is
+  /// strictly positive so nonempty work has a nonzero exact cost.
+  std::optional<RuntimeResourceTimeCostModel> resourceTimeCostModel;
 };
 
 struct RuntimeProviderDescriptorRef final {

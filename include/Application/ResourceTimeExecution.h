@@ -28,7 +28,7 @@ class FinalizedApplicationRuntimeManifest;
 
 inline constexpr ArtifactSchemaDescriptor
     applicationResourceTimeExecutionTraceSchema{
-        "loom.application.resource_time_execution_trace", SchemaVersion{1, 0}};
+        "loom.application.resource_time_execution_trace", SchemaVersion{2, 0}};
 
 enum class ApplicationResourceTimeEventOutcome : std::uint8_t {
   RootStarted,

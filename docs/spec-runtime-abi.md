@@ -21,31 +21,36 @@ record or completion domain.
 The persistent runtime-owned families are:
 
 ```text
-loom.runtime_platform_binding 3.1
+loom.runtime_platform_binding 4.0
 loom.gem5_simulation_binding  2.0
 ```
 
-RuntimePlatformBinding 3.1 extends its exact dependency admission to
-`loom.hardware_implementation 4.1`, including the payload-free `FabricModel`;
-Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.1` roots. Their record
-shapes remain as specified below; no prior-version reference is reinterpreted
-with a different accepted dependency schema.
+RuntimePlatformBinding 4.0 retains the optional provider-owned
+`resource_time_cost_model` derived from the exact registered descriptor. Its
+four strictly positive components price one copy setup, each copied byte, each
+changed configuration word, and each configuration commit. This is an
+incompatible addition to 3.1. RuntimePlatformBinding still admits exact
+`loom.hardware_implementation 4.1` dependencies, including the payload-free
+`FabricModel`; Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.1` roots.
+No prior-version reference is reinterpreted with a different record shape or
+accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime-owned manifest or public manual-launch
 schema. The Application layer does publish the incompatible
-`loom.application.runtime_manifest 5.0` activation closure. It references one
+`loom.application.runtime_manifest 6.0` activation closure. It references one
 strictly imported StructuredProgram source workload/runtime pair, the exact
 source-backed Spatial replay cases, one completed pair decision, the selected
 SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
 Deployment-owned System workload/runtime pair, and an optional finite verified
-resource-time transition graph. Version 5.0 also carries the canonical set of
-durable `loom.dse.hardware_mutation_repair_record` roots produced while the
-pair was evaluated and a nullable exact selected-record root. The exact set
-and selection are owned by `loom.application.activation_decision` 2.0;
-runtime-manifest construction and strict import require their projection to
-agree with that durable activation owner. These required fields are an
-incompatible addition to 4.0; an empty set and null selection state that no
+resource-time transition graph. Version 6.0 admits the `copied` logical-memory
+migration disposition and retains its provider-derived nonzero cost; this is
+an incompatible extension of 5.0. The canonical set of durable
+`loom.dse.hardware_mutation_repair_record` roots produced while the pair was
+evaluated and a nullable exact selected-record root remain required. The
+exact set and selection are owned by `loom.application.activation_decision`
+2.0; construction and strict import require agreement with that owner.
+An empty set and null selection mean that no
 hardware-mutation repair was executed or selected. These
 references authorize no new Mapping, route, entry, or input construction at
 runtime. Strict import proves that every record has the selected Mapping's
@@ -317,15 +322,17 @@ changing a provider. `completeRootAndActivate` instead commits a selected edge
 only through the loaded Deployment that exactly matches the current endpoint.
 
 `createPrepared` independently verifies the graph against the loaded entry,
-derives the unique set of selectable child endpoints from its verified edges,
-imports their Deployment and executable closures during invocation setup, and
-requires the same registered provider descriptor, implementation semantics,
-and Runtime ABI. An entry-only graph needs no provider capability. The admitted
-no-live-state profile also requires empty parent and child static-memory images.
-The provider copies each selectable child image into a provider-owned transient
-prepared handle before the session is returned. Preparation cost is setup cost;
-it is not silently attributed to the PnR-owned reprogramming or migration
-fields.
+derives one prepared operation for every selectable verified edge, imports its
+child Deployment and executable closure during invocation setup, and requires
+the same registered provider descriptor, implementation semantics, Runtime
+ABI, and provider-derived cost model. An entry-only graph needs no provider
+capability. The admitted profile also requires empty parent and child
+static-memory images. For a zero-work edge the provider copies the child
+activation into a provider-owned transient handle. For a nonzero edge it
+additionally copies the exact child configuration-word delta and logical-memory
+source/destination plan into that handle. Logical-memory contents are not read
+during preparation. Preparation cost is setup cost; it is not silently
+attributed to the PnR-owned reprogramming or migration fields.
 
 The returned session and loaded Deployment share one transient, unforgeable
 association for that exact graph preparation. A pure selection or replay
@@ -338,17 +345,20 @@ attempt and its ordinary quiesce/reset lifecycle remains the final bounded
 cleanup owner.
 
 At a completion frontier, the combined commit path is the only owner allowed
-to select a prepared handle. Every selectable child endpoint has one reusable
-handle; this includes the entry exactly when a verified return edge targets it,
-because a monotonically growing completion frontier may revisit an earlier
-Mapping endpoint. The switch performs no Artifact or Blob import and sends no
-executable or runtime-image bytes. The provider retains the existing lease and
-hardware programming and atomically changes the active endpoint.
+to select a prepared handle. Every selectable edge has one reusable handle;
+this includes an edge returning to the entry because a monotonically growing
+completion frontier may revisit an earlier Mapping endpoint. The switch
+performs no Artifact or Blob import and sends no executable or runtime-image
+bytes. Under the existing lease, the provider reads each complete live-memory
+source, applies every exact changed configuration word and commit, writes each
+equal-extent destination, and changes the active endpoint atomically.
 Provider rejection leaves the handle reusable and the parent Deployment active,
 while the selector restores its endpoint, completion frontier, and replay log.
 The host cost of this bounded control operation remains ordinary runtime
-timing; the edge's exact zero values continue to mean zero hardware
-reprogramming and zero live-state migration, not zero CPU instruction latency.
+timing. Edge costs come only from the RuntimePlatformBinding's derived provider
+model: changed words and commits determine reprogramming time, while copy setup
+and complete byte extent determine migration time. A zero edge cost does not
+mean zero CPU instruction latency.
 Loaded Deployment teardown explicitly discards every retained handle before
 the ordinary quiesce/reset and lease release. Reset invalidates all prepared
 handles even when an earlier discard failed.
@@ -365,7 +375,10 @@ unchanged. A selected edge is committed only through
 uses graph order as policy.
 
 The joined event sequence may be published as
-`loom.application.resource_time_execution_trace` version 1.0. The trace names
+`loom.application.resource_time_execution_trace` version 2.0. Version 2.0
+requires an exact `loom.application.runtime_manifest 6.0` root and is
+incompatible with 1.0 rather than reinterpreting its accepted manifest
+dependency. The trace names
 its exact Application runtime manifest, retains the root event occurrence and
 coordinate, parent and resulting Mapping/Deployment endpoints, actual active
 and completed root sets, typed outcome, and the manifest-owned QoR evidence
@@ -405,19 +418,19 @@ decision replay. A runtime wishing to reproduce execution applies those
 validated records one at a time through a prepared session, so a provider
 failure cannot hide or discard the already accepted selector prefix.
 
-The admitted selector profile is narrower than live migration: every edge is
-a verified completion edge whose logical-memory correspondence records are all
-`retained_in_place` at exact zero cost, with exact zero reprogramming and
-migration time. The selector does not reprogram hardware, install or move
-memory, snapshot a scheduler, or move tokens or payloads; a retained memory
-stays at its physical targets because both endpoints bind it identically and
-neither activation reloads it. Prepared activation replacement does not itself
-report the completion event, start remaining child roots, or resume
+The admitted selector profile contains verified completion edges whose
+logical-memory records are either `retained_in_place` at exact zero cost or
+`copied` between one complete, statically bounded pair of distinct equal-extent
+targets at provider-derived nonzero cost. Changed child configuration images
+are reduced to exact word ordinals and have a nonzero provider-derived word and
+commit cost. The selector does not install static memory, snapshot a scheduler,
+or move tokens or channel payloads. Prepared activation replacement does not
+itself report the completion event, start remaining child roots, or resume
 DynamicWork; those actions require their existing execution owners to call the
-combined commit path and continue from the child Mapping. A graph with
-relocated live state, an explicit safe point other than canonical root
-completion, or nonzero transition work remains typed unsupported until those
-execution and persistence owners exist.
+combined commit path and continue from the child Mapping. A graph with an
+unknown or split memory extent, ordered-channel state, DynamicWork state, or an
+explicit safe point other than canonical root completion remains a typed
+refusal.
 
 The Thread Dispatch provider maintains one bounded transient record per exact
 Deployment target. Target selection addresses that record for submission and
@@ -1045,9 +1058,12 @@ mapped, and packaged disposition selected before runtime.
 root, exact dependency closure, ConfigurationABI and
 HardwareConfigurationImage relations, package projection, and finalization
 rules. Runtime consumes that exact Deployment and does not restate or repair
-its closure. The finalized Deployment must preserve the confirmed compatibility
-relation among each selected AccCore, compiler target, and target-specific
-binary.
+its closure. Runtime accepts only `loom.deployment 6.0`, whose hardware
+bindings require exact `loom.runtime_platform_binding 4.0` roots. Deployment
+6.0 is incompatible with 5.1 because the accepted child descriptor changed;
+neither version is reinterpreted as the other. The finalized Deployment must
+preserve the confirmed compatibility relation among each selected AccCore,
+compiler target, and target-specific binary.
 
 Runtime-local addresses, handles, mutable leases, and admission state do not
 enter Deployment identity. An immutable RuntimePlatformBinding referenced by
@@ -1066,6 +1082,12 @@ RuntimePlatformBinding {
     descriptor_version
     implementation_semantic_identity
     runtime_abi_identity
+    resource_time_cost_model: null | {
+      memory_copy_setup_picoseconds
+      memory_copy_byte_picoseconds
+      configuration_word_picoseconds
+      configuration_commit_picoseconds
+    }
   }
   identity_verification :
       HardwareReported { implementation_identity_endpoint_ref }
@@ -1122,6 +1144,15 @@ Deployment state model this runtime boundary only. The selected Simulation
 provider remains the sole owner of computation and functional observations;
 the FabricModel operational provider neither executes a graph nor manufactures
 simulation evidence.
+
+The test-oriented in-process operational descriptor is
+`loom.runtime.in_process` version 3.0. Its descriptor owns the deterministic
+resource-time cost model used by closure and its prepared transition operation
+atomically applies exact changed configuration words, copies complete logical
+memory objects between canonical Mapping targets, and changes the active
+Deployment. Its direct live-target operations are fixtures for the simulated
+device and are absent from the generic `RuntimeProviderInstance` and
+Deployment ABI.
 
 The payload-free mapped-RTL operational descriptor is `loom.runtime.mapped_rtl`
 version 2.0 with implementation semantic identity
