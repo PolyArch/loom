@@ -13,6 +13,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -28,7 +29,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationActivationDecisionSchema{
-    "loom.application.activation_decision", SchemaVersion{1, 0}};
+    "loom.application.activation_decision", SchemaVersion{2, 0}};
 
 enum class ApplicationActivationDecisionErrorReason : std::uint8_t {
   ForeignSchema,
@@ -40,6 +41,7 @@ enum class ApplicationActivationDecisionErrorReason : std::uint8_t {
   ScheduleMismatch,
   MappingMismatch,
   EvidenceMismatch,
+  HardwareMutationRepairMismatch,
 };
 
 class ApplicationActivationDecisionError final
@@ -95,11 +97,15 @@ struct ApplicationActivationDecisionDraft final {
   ApplicationPairDecisionDisposition disposition;
   std::vector<ArtifactRootReference> runtimeEvidence;
   std::vector<ArtifactRootReference> oracleEvidence;
+  std::optional<ArtifactRootReference> selectedHardwareMutationRepairRecord;
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords;
 };
 
 /// Immutable owner of the exact application choice which is eligible for
-/// Deployment activation. Candidate identity and schedule-hint digests are
-/// derived from their complete preimages and never encoded as second owners.
+/// Deployment activation, including the evaluated hardware-mutation repair
+/// inventory and the nullable exact repair that selected its SystemMapping.
+/// Candidate identity and schedule-hint digests are derived from their
+/// complete preimages and never encoded as second owners.
 class ApplicationActivationDecision final {
 public:
   static llvm::Expected<ApplicationActivationDecision>
@@ -146,6 +152,13 @@ public:
   llvm::ArrayRef<ArtifactRootReference> oracleEvidence() const {
     return oracleEvidence_;
   }
+  const std::optional<ArtifactRootReference> &
+  selectedHardwareMutationRepairRecord() const {
+    return selectedHardwareMutationRepairRecord_;
+  }
+  llvm::ArrayRef<ArtifactRootReference> hardwareMutationRepairRecords() const {
+    return hardwareMutationRepairRecords_;
+  }
   const CanonicalSemanticBytes &canonicalBytes() const {
     return canonicalBytes_;
   }
@@ -168,6 +181,10 @@ private:
         disposition_(draft.disposition),
         runtimeEvidence_(std::move(draft.runtimeEvidence)),
         oracleEvidence_(std::move(draft.oracleEvidence)),
+        selectedHardwareMutationRepairRecord_(
+            std::move(draft.selectedHardwareMutationRepairRecord)),
+        hardwareMutationRepairRecords_(
+            std::move(draft.hardwareMutationRepairRecords)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
   ArtifactRootReference sourceProgram_;
@@ -187,6 +204,8 @@ private:
   ApplicationPairDecisionDisposition disposition_;
   std::vector<ArtifactRootReference> runtimeEvidence_;
   std::vector<ArtifactRootReference> oracleEvidence_;
+  std::optional<ArtifactRootReference> selectedHardwareMutationRepairRecord_;
+  std::vector<ArtifactRootReference> hardwareMutationRepairRecords_;
   CanonicalSemanticBytes canonicalBytes_;
 };
 

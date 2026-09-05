@@ -331,7 +331,9 @@ accountColdFallbackCone(const JointDesignExplorationPlan &parentPlan,
   accounting.parentSpatialMappings = parentSpatial.size();
   accounting.invalidatedTechMappings = parentTech.size();
   accounting.invalidatedSpatialMappings = parentSpatial.size();
-  accounting.invalidationRootCount = invalidationRootCount(impact);
+  accounting.invalidationRootCount =
+      projectJointHardwareInvalidationRootCount(
+          llvm::ArrayRef<HardwareImpactProjection>(impact));
   for (const ArtifactRootReference &reference : parentTech) {
     auto imported = mapping::importTechMapping(reference, artifacts);
     if (!imported)
@@ -574,6 +576,17 @@ std::vector<::dataflow::RootThreadLaunchRef> projectJointSystemReopenRoots(
   return roots;
 }
 
+std::uint64_t projectJointHardwareInvalidationRootCount(
+    llvm::ArrayRef<HardwareImpactProjection> impacts) {
+  if (impacts.empty())
+    return 0;
+  if (impacts.size() == 1)
+    return invalidationRootCount(impacts.front());
+  const ArtifactRootReference &terminal =
+      impacts.back().child ? *impacts.back().child : impacts.back().parent;
+  return invalidationRootCount(aggregateColdFallbackImpact(impacts, terminal));
+}
+
 llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     const JointDesignExplorationPlan &parentPlan,
     const JointDesignExecution &parentExecution,
@@ -723,7 +736,9 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
 
   result.accounting.parentTechMappings = parentTech.size();
   result.accounting.parentSpatialMappings = parentSpatial.size();
-  result.accounting.invalidationRootCount = invalidationRootCount(impact);
+  result.accounting.invalidationRootCount =
+      projectJointHardwareInvalidationRootCount(
+          llvm::ArrayRef<HardwareImpactProjection>(impact));
   if (parentTech.empty() || parentSpatial.empty()) {
     result.failures.push_back(
         {JointMappingRebaseFailureReason::MissingParentFrontier, std::nullopt,

@@ -41,6 +41,8 @@ enum class JointHardwareExplorationScope : std::uint8_t {
 struct JointSpatialFifoHardwareRepair final {
   SpatialFifoRuntimeFeedback feedback;
   std::vector<ArtifactRootReference> childSystems;
+  /// Exact durable repair record aligned with each child System and execution.
+  std::vector<ArtifactRootReference> repairRecords;
   std::vector<JointDesignExecution> executions;
   std::vector<JointMappingReuseDisposition> reuseDispositions;
   bool bypassAlternativeUnsupported = false;
@@ -55,6 +57,8 @@ struct JointSpatialFifoHardwareRepair final {
 struct JointSpatialOperandBufferHardwareRepair final {
   SpatialOperandQueueRuntimeFeedback feedback;
   std::vector<ArtifactRootReference> childSystems;
+  /// Exact durable repair record aligned with each child System and execution.
+  std::vector<ArtifactRootReference> repairRecords;
   std::vector<JointDesignExecution> executions;
   std::vector<JointMappingReuseDisposition> reuseDispositions;
   std::uint64_t candidateLimit = 0;
@@ -193,6 +197,16 @@ struct JointResourceTimeAdjacentRepair final {
   mapping::SystemMappingImportSessionStatistics incrementalVerification;
 };
 
+/// One canonical hardware CandidateDecision edge retained from the generator
+/// that materialized it. The descriptor kind selects the existing typed
+/// lineage-payload owner; no repair-local decision codec is introduced.
+struct HardwareMutationDecisionLineage final {
+  CandidateGeneratorKind owner;
+  ArtifactRootReference output;
+  std::vector<ArtifactRootReference> parents;
+  std::vector<std::uint8_t> ownerPayload;
+};
+
 /// One already-materialized hardware child and the exact lineage needed to
 /// project its parent Mapping frontier. Candidate generators remain the sole
 /// owners of child identity and impact; this value only joins their outputs to
@@ -207,6 +221,7 @@ struct JointHardwareMutationChild final {
   /// conservative cold fallback until a composed parent-to-child entity
   /// correspondence is available.
   std::vector<HardwareImpactProjection> impacts;
+  std::vector<HardwareMutationDecisionLineage> decisionLineage;
 };
 
 /// Materializes one exact Module rewrite through the canonical candidate
@@ -300,11 +315,13 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
 
 /// Executes one already-promoted adjacent resource-time state on the same
 /// immutable System. It executes one independent cold Mapping and one
-/// preserve-first Mapping for the same child partitions. Tech and Spatial
-/// frontiers are retained only by the latter, while the typed Dataflow root
-/// delta is bound to the existing System preserve-first initializer. This
-/// function does not construct a ResourceTimeTransition or claim a safe point,
-/// Deployment delta, migration cost, or endpoint class.
+/// preserve-first Mapping for the same child partitions. The preserve-first
+/// path first materializes TechMapping and SpatialMapping candidates for the
+/// reopened roots, joins them with the exact cone-external SpatialMapping
+/// frontier, and then runs a System-only plan with that exact lower frontier
+/// and the typed migration seed. This function does not construct a
+/// ResourceTimeTransition or claim a safe point, Deployment delta, migration
+/// cost, or endpoint class.
 llvm::Expected<JointResourceTimeAdjacentRepair>
 executeResourceTimeAdjacentMappingRepair(
     const JointDesignExplorationPlan &parentPlan,
@@ -384,12 +401,15 @@ struct JointRepairWorkLedger final {
 /// The two repair families one witness set admits, each with its own ledger.
 /// Mapping repair rebuilds the Mapping on the immutable parent System;
 /// hardware reopen materializes typed System children. `childSystems` is
-/// aligned with `executions` across both families.
+/// aligned with `executions` and `hardwareMutationRepairRecords` across both
+/// families. Mapping-only children deliberately carry no hardware record.
 struct JointRuntimeWitnessRepair final {
   std::optional<JointSpatialTransportMappingRepair> mappingRepair;
   std::optional<JointSpatialFifoHardwareRepair> fifoReopen;
   std::optional<JointSpatialOperandBufferHardwareRepair> operandBufferReopen;
   std::vector<ArtifactRootReference> childSystems;
+  std::vector<std::optional<ArtifactRootReference>>
+      hardwareMutationRepairRecords;
   std::vector<JointDesignExecution> executions;
   JointRepairWorkLedger mappingRepairLedger;
   JointRepairWorkLedger hardwareReopenLedger;

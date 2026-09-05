@@ -47,9 +47,7 @@ void emitDeploymentPackageOperationStatistics(
 /// Deployment from an otherwise empty ArtifactStore and BlobStore.
 class DeploymentPackageClosure final {
 public:
-  llvm::ArrayRef<ArtifactRootReference> artifacts() const {
-    return artifacts_;
-  }
+  llvm::ArrayRef<ArtifactRootReference> artifacts() const { return artifacts_; }
   llvm::ArrayRef<BlobDigest> blobs() const { return blobs_; }
 
 private:
@@ -63,6 +61,12 @@ private:
   friend llvm::Expected<DeploymentPackageClosure>
   deriveDeploymentPackageClosure(const FinalizedDeployment &,
                                  const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<DeploymentPackageClosure>
+  deriveSystemMappingPackageClosure(const ArtifactRootReference &,
+                                    const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<DeploymentPackageClosure>
+  deriveLowerMappingPackageClosure(const ArtifactRootReference &,
+                                   const ArtifactStore &, const BlobStore &);
 };
 
 /// Strictly derives the package closure from an already imported Deployment.
@@ -72,6 +76,23 @@ llvm::Expected<DeploymentPackageClosure>
 deriveDeploymentPackageClosure(const FinalizedDeployment &deployment,
                                const ArtifactStore &artifacts,
                                const BlobStore &blobs);
+
+/// The exact content-addressed object closure required to import one
+/// SystemMapping from an otherwise empty ArtifactStore. This is the canonical
+/// Mapping-closure projection shared by Deployment and application evidence.
+llvm::Expected<DeploymentPackageClosure>
+deriveSystemMappingPackageClosure(const ArtifactRootReference &mapping,
+                                  const ArtifactStore &artifacts,
+                                  const BlobStore &blobs);
+
+/// The exact content-addressed object closure required to import one strict
+/// TechMapping or SpatialMapping root from an otherwise empty ArtifactStore.
+/// Mapping owns the closed root-kind distinction; this package owner performs
+/// the corresponding dependency walk once.
+llvm::Expected<DeploymentPackageClosure>
+deriveLowerMappingPackageClosure(const ArtifactRootReference &mapping,
+                                 const ArtifactStore &artifacts,
+                                 const BlobStore &blobs);
 
 /// Publishes the exact Deployment execution closure as a content-addressed
 /// directory. The output path is an invocation binding and never contributes

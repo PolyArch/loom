@@ -38,13 +38,70 @@ def main() -> int:
     bundle = read_object(arguments.bundle)
     if bundle.get("schema") != "loom.visualization_bundle":
         raise ValueError("visualization bundle has the wrong schema")
-    if bundle.get("version") != "1.3":
+    if bundle.get("version") != "1.4":
         raise ValueError("visualization bundle has the wrong version")
     if bundle.get("fabric") != fabric:
         raise ValueError("visualization bundle names a different Fabric root")
     for field in ("tech_mappings", "spatial_mappings", "system_mappings"):
         if not isinstance(bundle.get(field), list) or not bundle[field]:
             raise ValueError(f"visualization bundle has no {field}")
+    selected_system = bundle.get("selected_system")
+    if not isinstance(selected_system, dict) or not isinstance(
+        selected_system.get("artifact"), str
+    ):
+        raise ValueError("visualization bundle has no selected System")
+    mapping_domains = bundle.get("mapping_domains")
+    if not isinstance(mapping_domains, list) or not mapping_domains:
+        raise ValueError("visualization bundle has no Mapping domains")
+    domain_systems: set[str] = set()
+    flattened = {
+        "tech_mappings": set(),
+        "spatial_mappings": set(),
+        "system_mappings": set(),
+    }
+    for domain in mapping_domains:
+        if not isinstance(domain, dict) or not isinstance(domain.get("system"), dict):
+            raise ValueError("visualization Mapping domain has no System")
+        if any(
+            not isinstance(domain["system"].get(field), str)
+            for field in ("schema", "schema_version", "artifact")
+        ):
+            raise ValueError("visualization Mapping domain has an invalid System")
+        system_key = canonical_key(domain["system"])
+        if system_key in domain_systems:
+            raise ValueError("visualization repeats a Mapping System domain")
+        domain_systems.add(system_key)
+        expected_projection = (
+            "fabric"
+            if domain["system"] == bundle["fabric"]
+            else f"fabric-{domain['system'].get('artifact')}"
+        )
+        if domain.get("fabric_projection") != expected_projection:
+            raise ValueError("visualization Mapping domain has the wrong projection")
+        for suffix in ("mlir", "html"):
+            if not (
+                arguments.bundle.parent / f"{expected_projection}.{suffix}"
+            ).is_file():
+                raise ValueError("visualization Mapping domain projection is missing")
+        for field in flattened:
+            values = domain.get(field)
+            if not isinstance(values, list) or (
+                field == "system_mappings" and not values
+            ):
+                raise ValueError(f"visualization Mapping domain has no {field}")
+            keys = [canonical_key(value) for value in values]
+            if any(
+                not isinstance(value, dict)
+                or not isinstance(value.get("artifact"), str)
+                for value in values
+            ) or len(set(keys)) != len(keys):
+                raise ValueError(
+                    f"visualization Mapping domain has invalid {field}"
+                )
+            flattened[field].update(keys)
+    for field, values in flattened.items():
+        if values != {canonical_key(value) for value in bundle[field]}:
+            raise ValueError(f"visualization {field} is not its domain union")
     deployment = bundle.get("deployment")
     if not isinstance(deployment, dict) or deployment.get("schema") != (
         "loom.deployment"
@@ -56,7 +113,12 @@ def main() -> int:
         "verified_feasible_but_not_beneficial",
         "hardware_dse_alternative",
     }
-    if not isinstance(pair, dict) or pair.get("disposition") not in successful:
+    if (
+        not isinstance(pair, dict)
+        or pair.get("schema") != "loom.application_pair_decision"
+        or pair.get("version") != "1.1"
+        or pair.get("disposition") not in successful
+    ):
         raise ValueError("visualization bundle has no successful pair decision")
     if pair.get("quality_disposition") not in {
         "not_requested",
@@ -92,6 +154,64 @@ def main() -> int:
     }
     if selected_mapping not in selected_attempt_mappings:
         raise ValueError("selected SystemMapping has no exact attempt join")
+    pair_selected_system = pair.get("selected_system")
+    if (
+        not isinstance(pair_selected_system, str)
+        or not pair_selected_system.endswith(selected_system["artifact"])
+    ):
+        raise ValueError("pair decision and bundle select different Systems")
+    selected_domains = [
+        domain
+        for domain in mapping_domains
+        if domain["system"] == selected_system
+        and any(
+            isinstance(mapping, dict)
+            and isinstance(mapping.get("artifact"), str)
+            and selected_mapping.endswith(mapping["artifact"])
+            for mapping in domain["system_mappings"]
+        )
+    ]
+    if len(selected_domains) != 1:
+        raise ValueError("selected Mapping has no unique System domain")
+
+    repair_records = bundle.get("hardware_mutation_repair_records")
+    selected_repair = bundle.get("selected_hardware_mutation_repair_record")
+    if not isinstance(repair_records, list) or any(
+        not isinstance(record, dict)
+        or not isinstance(record.get("artifact"), str)
+        for record in repair_records
+    ) or len({canonical_key(record) for record in repair_records}) != len(
+        repair_records
+    ):
+        raise ValueError("visualization bundle has no repair-record inventory")
+    if pair["disposition"] == "hardware_dse_alternative":
+        selected_observations = [
+            observation
+            for candidate in selected_candidates
+            for observation in candidate.get("mapping_observations", [])
+            if isinstance(observation, dict)
+            and observation.get("schedule_hint_digest")
+            == pair.get("selected_schedule_hint_digest")
+            and selected_mapping in observation.get("system_mappings", [])
+        ]
+        if len(selected_observations) != 1:
+            raise ValueError("selected repair record has no unique Mapping observation")
+        observed_repair = selected_observations[0].get(
+            "hardware_mutation_repair_record"
+        )
+        if observed_repair is None:
+            if selected_repair is not None:
+                raise ValueError("selected repair record changed across projections")
+        elif (
+            not isinstance(observed_repair, str)
+            or not isinstance(selected_repair, dict)
+            or not isinstance(selected_repair.get("artifact"), str)
+            or selected_repair not in repair_records
+            or not observed_repair.endswith(selected_repair["artifact"])
+        ):
+            raise ValueError("selected repair record changed across projections")
+    elif selected_repair is not None:
+        raise ValueError("non-hardware selection names a selected repair record")
     for field in ("resource_time_endpoints", "resource_time_transitions"):
         if not isinstance(bundle.get(field), list):
             raise ValueError(f"visualization bundle has no {field} array")

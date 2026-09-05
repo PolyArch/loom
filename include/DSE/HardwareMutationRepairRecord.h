@@ -23,13 +23,15 @@ class ArtifactStore;
 namespace loom::dse {
 
 inline constexpr ArtifactSchemaDescriptor hardwareMutationRepairRecordSchema{
-    "loom.dse.hardware_mutation_repair_record", SchemaVersion{1, 0}};
+    "loom.dse.hardware_mutation_repair_record", SchemaVersion{2, 0}};
 
-/// The affected Mapping cones of one typed hardware mutation component. It is
-/// the impact projection without candidate lineage; the decision that
-/// produced the child remains the lineage owner.
+/// The affected Mapping cones of one typed hardware mutation component.
+/// Parent and Module correspondence are derived on strict import from the
+/// canonical candidate-decision lineage rather than serialized twice.
 struct HardwareMutationImpactRecord final {
+  ArtifactRootReference parent;
   std::optional<ArtifactRootReference> child;
+  std::vector<loom::fabric::FabricModuleEntityCorrespondence> moduleEntities;
   HardwareMutationFamily family = HardwareMutationFamily::SpatialTopology;
   HardwareMutationLocality locality = HardwareMutationLocality::Unchanged;
   TechMappingImpactProjection tech;
@@ -61,16 +63,18 @@ struct HardwareMutationRepairQualityObservation final {
 };
 
 /// Durable per-family evidence of one typed hardware mutation repair: the
-/// exact parent Mapping and System, the child System, every component
-/// impact cone, the typed reuse dispositions with their rebase accounting and
-/// failures, the independently verified cold and preserve-first Mapping roots
-/// with their dispatch and verifier accounting, and the quality observations
-/// of the preserve-first execution. The executor publishes it; a test
-/// summary or debug event is not a substitute.
+/// exact parent Mapping and System, the child System, every canonical
+/// candidate-decision edge and its derived component impact cone, the typed
+/// reuse dispositions with their rebase accounting and failures, the
+/// independently verified cold and preserve-first Mapping roots with their
+/// dispatch and verifier accounting, and the quality observations of the
+/// preserve-first execution. The executor publishes it; a test summary or
+/// debug event is not a substitute.
 struct HardwareMutationRepairRecord final {
   ArtifactRootReference parentMapping;
   ArtifactRootReference parentSystem;
   ArtifactRootReference childSystem;
+  std::vector<HardwareMutationDecisionLineage> decisionLineage;
   std::vector<HardwareMutationImpactRecord> impacts;
   JointMappingReuseDisposition mappingReuseDisposition =
       JointMappingReuseDisposition::ColdFallback;

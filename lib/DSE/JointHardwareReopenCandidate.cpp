@@ -1042,6 +1042,7 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
       std::nullopt,
       {},
       std::nullopt,
+      {},
       growth.resizedInstructionStoreCount,
       growth.maximumInstructionStoreCapacity,
       growth.addedContexts,
@@ -1074,6 +1075,7 @@ struct MaterializedModuleGrowth final {
   ArtifactRootReference reference;
   std::vector<pnr::SystemModuleCorrespondence> correspondence;
   std::optional<HardwareImpactProjection> impact;
+  HardwareMutationDecisionLineage decisionLineage;
 };
 
 /// Materializes one exact Module topology rewrite through the canonical
@@ -1136,7 +1138,11 @@ llvm::Expected<MaterializedModuleGrowth> materializeTypedModuleTopologyGrowth(
   if (child->view().rootKind() != fabric::FabricRootKind::Module)
     return invalid("typed Module topology growth published a non-Module child");
   return MaterializedModuleGrowth{
-      childReference, {{parentModule, childReference}}, std::move(impact)};
+      childReference,
+      {{parentModule, childReference}},
+      std::move(impact),
+      {spatialTopologyCandidateGeneratorKind, lineage.output, lineage.parents,
+       lineage.ownerPayload}};
 }
 
 llvm::Expected<MaterializedModuleGrowth>
@@ -1288,9 +1294,12 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     return child.takeError();
   if (child->view().rootKind() != fabric::FabricRootKind::Module)
     return invalid("typed Module growth published a non-Module child");
-  return MaterializedModuleGrowth{childReference,
-                                  {{*growth.techModule, childReference}},
-                                  std::move(impact)};
+  return MaterializedModuleGrowth{
+      childReference,
+      {{*growth.techModule, childReference}},
+      std::move(impact),
+      {spatialMicroarchitectureCandidateGeneratorKind, lineage.output,
+       lineage.parents, lineage.ownerPayload}};
 }
 
 using SystemEntityCorrespondence = fabric::FabricSystemEntityCorrespondence;
@@ -1368,6 +1377,8 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
   auto module = materializeTypedModuleGrowth(growth, artifacts, blobs);
   if (!module)
     return module.takeError();
+  std::vector<HardwareMutationDecisionLineage> decisionLineage;
+  decisionLineage.push_back(std::move(module->decisionLineage));
   auto parentModules = projectJointDesignTargetModules(parentSystem, artifacts);
   if (!parentModules)
     return parentModules.takeError();
@@ -1440,6 +1451,9 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
         impact.system.kind != HardwareMappingImpactKind::Reopen ||
         impact.system.executionRoots.empty())
       return invalid("System Module replacement has no typed impact");
+    decisionLineage.push_back(
+        {systemCompositionCandidateGeneratorKind, lineage.output,
+         lineage.parents, lineage.ownerPayload});
     if (index == 0) {
       composedEntities = decision->entities;
       composedPatterns = decision->transferPatterns;
@@ -1489,6 +1503,7 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
                                        std::move(*correspondence),
                                        std::move(module->correspondence),
                                        std::move(mappingImpact),
+                                       std::move(decisionLineage),
                                        growth.resizedInstructionStoreCount,
                                        growth.maximumInstructionStoreCapacity,
                                        growth.addedContexts,
@@ -1598,6 +1613,9 @@ materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                                        std::move(*correspondence),
                                        {},
                                        std::nullopt,
+                                       {{systemCompositionCandidateGeneratorKind,
+                                         lineage.output, lineage.parents,
+                                         lineage.ownerPayload}},
                                        growth.resizedInstructionStoreCount,
                                        growth.maximumInstructionStoreCapacity,
                                        growth.addedContexts,

@@ -89,6 +89,7 @@ struct MaterializedHardwareCandidate final {
       executionBindingCorrespondence;
   std::vector<pnr::SystemModuleCorrespondence> moduleCorrespondences;
   std::optional<HardwareImpactProjection> mappingImpact;
+  std::vector<HardwareMutationDecisionLineage> decisionLineage;
   std::uint64_t resizedInstructionStoreCount = 0;
   std::uint64_t maximumInstructionStoreCapacity = 0;
   std::uint64_t addedContexts = 0;

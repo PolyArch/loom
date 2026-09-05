@@ -12,8 +12,8 @@
 #include "Deployment/Deployment.h"
 #include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
-#include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/CgraClosedWait.h"
+#include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Request.h"
@@ -318,9 +318,9 @@ template <typename Ref>
 void writeDataflowReference(llvm::json::OStream &json,
                             const ArtifactIdentity &artifact,
                             const Ref &reference) {
-  auto local = llvm::cantFail(
-      dataflow::encodeDataflowReference(artifact, reference),
-      "validated Dataflow reference must encode");
+  auto local =
+      llvm::cantFail(dataflow::encodeDataflowReference(artifact, reference),
+                     "validated Dataflow reference must encode");
   json.object([&] {
     json.attribute("artifact", formatArtifactIdentityHex(artifact));
     json.attribute("local", formatArtifactLocalPayloadHex(local));
@@ -558,8 +558,9 @@ void writeTransition(llvm::json::OStream &json,
                          formatComponentViewDigestHex(memory.parentBinding));
           json.attribute("child_binding",
                          formatComponentViewDigestHex(memory.childBinding));
-          json.attribute("migration", pnr::resourceTimeLiveStateMigrationSpelling(
-                                          memory.migration));
+          json.attribute(
+              "migration",
+              pnr::resourceTimeLiveStateMigrationSpelling(memory.migration));
           json.attribute("migration_time_ps", memory.migrationTimePicoseconds);
         });
     });
@@ -652,11 +653,11 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
     const llvm::json::Object *memoryObject = indexed.value().getAsObject();
     if (!memoryObject)
       return malformed(memoryContext + " must be an object");
-    if (llvm::Error error = rejectUnknownFields(
-            *memoryObject,
-            {"memory", "parent_binding", "child_binding", "migration",
-             "migration_time_ps"},
-            memoryContext))
+    if (llvm::Error error =
+            rejectUnknownFields(*memoryObject,
+                                {"memory", "parent_binding", "child_binding",
+                                 "migration", "migration_time_ps"},
+                                memoryContext))
       return std::move(error);
     const llvm::json::Value *memoryValue = memoryObject->get("memory");
     if (!memoryValue)
@@ -690,8 +691,7 @@ parseTransition(const llvm::json::Value &value, const llvm::Twine &context) {
       return migrationTime.takeError();
     logicalMemories.push_back(
         {std::move(memory->reference), **parentBinding, **childBinding,
-         pnr::ResourceTimeLiveStateMigration::RetainedInPlace,
-         *migrationTime});
+         pnr::ResourceTimeLiveStateMigration::RetainedInPlace, *migrationTime});
   }
   auto resourceDelta = parseOptionalDigest(*object, "resource_delta", context);
   if (!resourceDelta)
@@ -897,6 +897,10 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
                    draft.runtimeRequestDependencies);
     writeRootArray(json, "runtime_evidence", draft.runtimeEvidence);
     writeRootArray(json, "oracle_evidence", draft.oracleEvidence);
+    writeOptionalRoot(json, "selected_hardware_mutation_repair_record",
+                      draft.selectedHardwareMutationRepairRecord);
+    writeRootArray(json, "hardware_mutation_repair_records",
+                   draft.hardwareMutationRepairRecords);
     json.attributeBegin("transition_graph");
     if (draft.transitionGraph)
       writeGraph(json, *draft.transitionGraph);
@@ -916,31 +920,34 @@ parseDraft(llvm::StringRef text) {
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
     return malformed("runtime manifest root must be an object");
-  if (llvm::Error error = rejectUnknownFields(*root,
-                                              {"schema",
-                                               "schema_version",
-                                               "source_program",
-                                               "fabric",
-                                               "workload",
-                                               "runtime_input",
-                                               "source_backed_replay_cases",
-                                               "activation_decision",
-                                               "pair_identity",
-                                               "invocation_run_key",
-                                               "pair_disposition",
-                                               "selected_candidate",
-                                               "selected_plan",
-                                               "selected_schedule_hints",
-                                               "selected_system",
-                                               "selected_mapping",
-                                               "deployment",
-                                               "activation_workload",
-                                               "activation_runtime_input",
-                                               "runtime_request_dependencies",
-                                               "runtime_evidence",
-                                               "oracle_evidence",
-                                               "transition_graph"},
-                                              "runtime manifest"))
+  if (llvm::Error error =
+          rejectUnknownFields(*root,
+                              {"schema",
+                               "schema_version",
+                               "source_program",
+                               "fabric",
+                               "workload",
+                               "runtime_input",
+                               "source_backed_replay_cases",
+                               "activation_decision",
+                               "pair_identity",
+                               "invocation_run_key",
+                               "pair_disposition",
+                               "selected_candidate",
+                               "selected_plan",
+                               "selected_schedule_hints",
+                               "selected_system",
+                               "selected_mapping",
+                               "deployment",
+                               "activation_workload",
+                               "activation_runtime_input",
+                               "runtime_request_dependencies",
+                               "runtime_evidence",
+                               "oracle_evidence",
+                               "selected_hardware_mutation_repair_record",
+                               "hardware_mutation_repair_records",
+                               "transition_graph"},
+                              "runtime manifest"))
     return std::move(error);
   auto schema = requireString(*root, "schema", "runtime manifest");
   if (!schema)
@@ -1046,6 +1053,14 @@ parseDraft(llvm::StringRef text) {
       parseRootArray(*root, "oracle_evidence", "runtime manifest");
   if (!oracleEvidence)
     return oracleEvidence.takeError();
+  auto selectedHardwareMutationRepairRecord = parseOptionalRoot(
+      *root, "selected_hardware_mutation_repair_record", "runtime manifest");
+  if (!selectedHardwareMutationRepairRecord)
+    return selectedHardwareMutationRepairRecord.takeError();
+  auto hardwareMutationRepairRecords = parseRootArray(
+      *root, "hardware_mutation_repair_records", "runtime manifest");
+  if (!hardwareMutationRepairRecords)
+    return hardwareMutationRepairRecords.takeError();
   const llvm::json::Value *graphValue = root->get("transition_graph");
   if (!graphValue)
     return malformed("runtime manifest transition_graph is required");
@@ -1060,38 +1075,40 @@ parseDraft(llvm::StringRef text) {
       return parsed.takeError();
     graph = std::move(*parsed);
   }
-  return ApplicationRuntimeManifestDraft{std::move(*source),
-                                         std::move(*fabric),
-                                         std::move(*workload),
-                                         std::move(*runtimeInput),
-                                         std::move(*replayCases),
-                                         std::move(*activationDecision),
-                                         *pairIdentity,
-                                         runKey,
-                                         *disposition,
-                                         *candidate,
-                                         *plan,
-                                         std::move(*scheduleHints),
-                                         std::move(*selectedSystem),
-                                         std::move(*mapping),
-                                         std::move(*deployment),
-                                         std::move(*activationWorkload),
-                                         std::move(*activationRuntimeInput),
-                                         std::move(*runtimeRequestDependencies),
-                                         std::move(*runtimeEvidence),
-                                         std::move(*oracleEvidence),
-                                         std::move(graph)};
+  return ApplicationRuntimeManifestDraft{
+      std::move(*source),
+      std::move(*fabric),
+      std::move(*workload),
+      std::move(*runtimeInput),
+      std::move(*replayCases),
+      std::move(*activationDecision),
+      *pairIdentity,
+      runKey,
+      *disposition,
+      *candidate,
+      *plan,
+      std::move(*scheduleHints),
+      std::move(*selectedSystem),
+      std::move(*mapping),
+      std::move(*deployment),
+      std::move(*activationWorkload),
+      std::move(*activationRuntimeInput),
+      std::move(*runtimeRequestDependencies),
+      std::move(*runtimeEvidence),
+      std::move(*oracleEvidence),
+      std::move(*selectedHardwareMutationRepairRecord),
+      std::move(*hardwareMutationRepairRecords),
+      std::move(graph)};
 }
 
-llvm::Error
-canonicalizeReferenceSet(std::vector<ArtifactRootReference> &references,
-                         llvm::StringRef name) {
+llvm::Error canonicalizeReferenceSet(
+    std::vector<ArtifactRootReference> &references, llvm::StringRef name,
+    ApplicationRuntimeManifestErrorReason reason =
+        ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch) {
   llvm::sort(references, artifactRootReferenceLess);
   for (std::size_t index = 1; index != references.size(); ++index)
     if (references[index - 1] == references[index])
-      return reject(
-          ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
-          name + " repeats one Artifact root");
+      return reject(reason, name + " repeats one Artifact root");
   return llvm::Error::success();
 }
 
@@ -1159,7 +1176,12 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
       decision.runtimeEvidence() !=
           llvm::ArrayRef<ArtifactRootReference>(draft.runtimeEvidence) ||
       decision.oracleEvidence() !=
-          llvm::ArrayRef<ArtifactRootReference>(draft.oracleEvidence))
+          llvm::ArrayRef<ArtifactRootReference>(draft.oracleEvidence) ||
+      decision.selectedHardwareMutationRepairRecord() !=
+          draft.selectedHardwareMutationRepairRecord ||
+      decision.hardwareMutationRepairRecords() !=
+          llvm::ArrayRef<ArtifactRootReference>(
+              draft.hardwareMutationRepairRecords))
     return reject(
         ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
         "activation decision differs from the selected runtime execution");
@@ -1771,6 +1793,12 @@ ApplicationRuntimeManifest::get(ApplicationRuntimeManifestDraft draft,
     return std::move(error);
   if (llvm::Error error =
           canonicalizeReferenceSet(draft.oracleEvidence, "oracle Evidence"))
+    return std::move(error);
+  if (llvm::Error error =
+          canonicalizeReferenceSet(draft.hardwareMutationRepairRecords,
+                                   "hardware mutation repair records",
+                                   ApplicationRuntimeManifestErrorReason::
+                                       HardwareMutationRepairMismatch))
     return std::move(error);
   if (llvm::Error error = verifyManifestDraft(draft, artifacts, blobs))
     return std::move(error);

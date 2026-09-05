@@ -3366,16 +3366,13 @@ full FIFO, the first proposal is one additional slot; this is a repair probe,
 not proof that one slot is sufficient. `ChangeFifoBypassCapability` may add one
 alternative only when the existing Fabric admits the bypass traversal. A
 cross-tag global head-of-line witness names every StrictFifo occurrence whose
-certificate edge waits for one tag behind the head of another. When the
-parent System is the exact output of its resolved builtin recipe, the
-`ChangeFifoQueueDiscipline` alternative changes the recipe variable
-`interconnect_fifo_queue_discipline` and rematerializes the System through
-the ordinary template generator, so parent and child differ in that one
-recipe variable and the child maps cold; a witnessed occurrence set on any
-other System is rewritten occurrence by occurrence as consecutive exact
-Module rewrites with composed lineage into one child. The
-ordinary `SpatialMicroarchitectureCandidateGenerator` and
-`HardwareImpactProjection` own these changes; runtime owns neither a second
+certificate edge waits for one tag behind the head of another. Its
+`ChangeFifoQueueDiscipline` alternative rewrites that exact occurrence set
+through consecutive Spatial-microarchitecture candidate decisions and the
+ordinary Module-to-System replacement path. Their lineage composes into one
+child, and the global Spatial reopen makes the preserve-first plan a typed
+cold fallback. The ordinary candidate generators, `HardwareImpactProjection`,
+and the shared mutation executor own the change; runtime owns neither a second
 Fabric writer nor a Mapping exception.
 
 FIFO semantics remain owner-defined. A depth-one registered FIFO may enqueue
@@ -3426,7 +3423,7 @@ time classes, and a missing or incomplete side cannot publish a verified
 paired observation.
 
 Every executed hardware mutation repair (`executeJointHardwareMutationRepair`)
-publishes one durable `loom.dse.hardware_mutation_repair_record` 1.0 artifact
+publishes one durable `loom.dse.hardware_mutation_repair_record` 2.0 artifact
 and names it in its `joint_hardware_mutation_repair` observation. The record
 carries the exact parent Mapping and System, the child System, every
 component impact cone (typed family, locality, Tech realization roots, Spatial
@@ -3436,12 +3433,33 @@ System reuse dispositions with their rebase failures and complete accounting,
 the independently verified cold and preserve-first Mapping roots with
 provider dispatch, journal replay, wall-time, and verifier accounting, and
 the quality observations of the preserve-first execution. Strict import
-replays the canonical encoding. The dedicated mutation families
+replays the canonical encoding, every descriptor-owned candidate-decision
+payload and its exact materialized output, the decision-derived impact cones,
+lower-Mapping and System ownership, the closed rebase and provider ledgers,
+deterministic independent-import accounting, ordered System-child lineage,
+and membership of every quality candidate in the preserve-first Mapping set.
+The dedicated mutation families
 `spatial_topology` (Module topology rewrite through the topology candidate
 generator), `instruction_capacity` (Temporal instruction-store resize), and
 `system_instruction_context` (InstructionCore realization selection) use the
 same executor and record as the FU, memory, FIFO, operand-buffer, switch,
 SpatialCore, AccCore, transport, service, and combined families.
+Application mapping provenance supplies the canonical set of these record
+roots to `loom.application.activation_decision` 2.0, which is the durable
+application owner of the exact evaluated set and nullable selected record.
+Runtime manifest 5.0 is a checked projection of that owner, and Application
+package closure carries the set and the complete parent/child System and
+SystemMapping closures. Removing the DSE journal or build store therefore
+cannot erase the mutation evidence selected or rejected while the pair was
+evaluated.
+
+The mutation record does not name a `FinalizedDeployment` or a
+`ResourceTimeTransition`. Runtime manifest 5.0 joins only the selected repair
+record to its selected Mapping and Deployment. The current resource-time
+transition owner requires both endpoint SystemMappings to name the same
+immutable Fabric, so a parent-to-hardware-child transition is rejected rather
+than inferred. Per-family Deployment and transition closure therefore requires
+a future typed cross-System transition contract.
 
 The rebase ledger must account for the System layer separately from lower
 Mapping layers. For every parent SystemMapping it records parent, preserved,

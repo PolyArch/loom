@@ -90,6 +90,12 @@ jointMappingReuseDispositionSpelling(JointMappingReuseDisposition disposition);
 llvm::Error validateJointMappingRebaseAccounting(
     const JointMappingRebaseAccounting &accounting);
 
+/// Projects the canonical unique hardware-root inventory charged to one
+/// mutation lineage. Composed impacts use the same cold-fallback aggregation
+/// as rebase accounting; durable evidence must reuse this owner.
+std::uint64_t projectJointHardwareInvalidationRootCount(
+    llvm::ArrayRef<struct HardwareImpactProjection> impacts);
+
 struct JointMappingRebaseResult final {
   JointDesignMappingSeed seed;
   JointMappingRebaseAccounting accounting;

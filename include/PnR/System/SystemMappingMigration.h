@@ -73,6 +73,42 @@ private:
   ComponentViewDigest resolvedPnrConfigDigest_;
 };
 
+/// Exact lower-Mapping and System-binding partition induced by a typed root
+/// reopen set. A lower Mapping used by any preserved graph binding belongs to
+/// the preserved side, even when a reopened binding also names it; only
+/// mappings used exclusively by reopened roots belong to the reopened side.
+/// A graph definition reached from both root sets is likewise preserved.
+/// This is the canonical projection for repair execution and derived product
+/// evidence.
+struct SystemMappingMigrationConePartition final {
+  std::vector<::dataflow::RootThreadLaunchRef> reopenedRoots;
+  std::vector<::dataflow::GraphRef> preservedGraphs;
+  std::vector<::dataflow::GraphRef> reopenedGraphs;
+  std::vector<ArtifactRootReference> preservedTechMappings;
+  std::vector<ArtifactRootReference> reopenedTechMappings;
+  std::vector<ArtifactRootReference> preservedSpatialMappings;
+  std::vector<ArtifactRootReference> reopenedSpatialMappings;
+  std::uint64_t preservedThreadBindings = 0;
+  std::uint64_t reopenedThreadBindings = 0;
+  std::uint64_t preservedGraphBindings = 0;
+  std::uint64_t reopenedGraphBindings = 0;
+
+  std::uint64_t preservedSystemBindings() const {
+    return preservedThreadBindings + preservedGraphBindings;
+  }
+  std::uint64_t reopenedSystemBindings() const {
+    return reopenedThreadBindings + reopenedGraphBindings;
+  }
+  bool admitsReplacementGraphs(
+      llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) const;
+};
+
+llvm::Expected<SystemMappingMigrationConePartition>
+projectSystemMappingMigrationConePartition(
+    const ::loom::mapping::SystemMappingView &mapping,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const ArtifactStore &store);
+
 enum class ResourceTimeTransitionStatus : std::uint8_t {
   Verified,
   Unsupported,

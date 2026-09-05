@@ -1,5 +1,7 @@
 #include "Application/ActivationDecision.h"
 
+#include "ActivationRepairLineage.h"
+
 #include "Application/Build.h"
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
@@ -414,6 +416,13 @@ void encodeRoots(Encoder &encoder,
     encoder.root(root);
 }
 
+void encodeOptionalRoot(Encoder &encoder,
+                        const std::optional<ArtifactRootReference> &reference) {
+  encoder.u32(reference ? 1 : 0);
+  if (reference)
+    encoder.root(*reference);
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 decodeRoots(Decoder &decoder, llvm::StringRef field) {
   auto count = decoder.count((field + " count").str());
@@ -428,6 +437,21 @@ decodeRoots(Decoder &decoder, llvm::StringRef field) {
     roots.push_back(std::move(*root));
   }
   return roots;
+}
+
+llvm::Expected<std::optional<ArtifactRootReference>>
+decodeOptionalRoot(Decoder &decoder, llvm::StringRef field) {
+  auto present = decoder.u32((field + " presence").str());
+  if (!present)
+    return present.takeError();
+  if (*present > 1)
+    return malformed(field + " has a noncanonical presence tag");
+  if (*present == 0)
+    return std::optional<ArtifactRootReference>{};
+  auto root = decoder.root(field);
+  if (!root)
+    return root.takeError();
+  return std::optional<ArtifactRootReference>(std::move(*root));
 }
 
 llvm::Expected<ComponentViewDigest> decodeDigest(Decoder &decoder,
@@ -504,6 +528,8 @@ encodeDecision(const ApplicationActivationDecisionDraft &draft) {
   encoder.u32(static_cast<std::uint32_t>(draft.disposition));
   encodeRoots(encoder, draft.runtimeEvidence);
   encodeRoots(encoder, draft.oracleEvidence);
+  encodeOptionalRoot(encoder, draft.selectedHardwareMutationRepairRecord);
+  encodeRoots(encoder, draft.hardwareMutationRepairRecords);
   return encoder.take();
 }
 
@@ -691,6 +717,13 @@ decodeDecision(llvm::ArrayRef<std::uint8_t> bytes,
   auto oracleEvidence = decodeRoots(decoder, "oracle Evidence");
   if (!oracleEvidence)
     return oracleEvidence.takeError();
+  auto selectedRepair =
+      decodeOptionalRoot(decoder, "selected hardware mutation repair record");
+  if (!selectedRepair)
+    return selectedRepair.takeError();
+  auto repairRecords = decodeRoots(decoder, "hardware mutation repair records");
+  if (!repairRecords)
+    return repairRecords.takeError();
   if (!decoder.atEnd())
     return malformed("activation decision has trailing bytes");
 
@@ -718,7 +751,9 @@ decodeDecision(llvm::ArrayRef<std::uint8_t> bytes,
       std::move(*selectedMapping),
       static_cast<ApplicationPairDecisionDisposition>(*disposition),
       std::move(*runtimeEvidence),
-      std::move(*oracleEvidence)};
+      std::move(*oracleEvidence),
+      std::move(*selectedRepair),
+      std::move(*repairRecords)};
 }
 
 template <typename Range, typename Less>
@@ -1598,6 +1633,9 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
     return reject(ApplicationActivationDecisionErrorReason::MappingMismatch,
                   "selected SystemMapping differs from the selected System or "
                   "CanonicalDataflow");
+  if (llvm::Error error =
+          activation_detail::validateHardwareMutationRepairs(draft, artifacts))
+    return error;
 
   if (draft.sourceBackedReplayCases.empty())
     return reject(ApplicationActivationDecisionErrorReason::DependencyMismatch,
@@ -1735,6 +1773,9 @@ ApplicationActivationDecision::get(ApplicationActivationDecisionDraft draft,
   if (llvm::Error error =
           canonicalizeRoots(draft.oracleEvidence, "oracle Evidence"))
     return std::move(error);
+  if (llvm::Error error = canonicalizeRoots(draft.hardwareMutationRepairRecords,
+                                            "hardware mutation repair records"))
+    return std::move(error);
   if (llvm::Error error = validateDecision(draft, artifacts, blobs))
     return std::move(error);
   std::vector<std::uint8_t> encoded = encodeDecision(draft);
@@ -1764,6 +1805,10 @@ projectApplicationActivationDecisionDependencies(
   for (const ArtifactRootReference &evidence : decision.runtimeEvidence())
     if (llvm::Error error =
             addEvidenceDependencies(projection, evidence, artifacts))
+      return std::move(error);
+  for (const ArtifactRootReference &repair :
+       decision.hardwareMutationRepairRecords())
+    if (llvm::Error error = addDependencyRoot(projection, repair, artifacts))
       return std::move(error);
   auto invocation = dse::importJointDesignInvocationManifest(
       decision.dseInvocation(), artifacts, blobs);

@@ -224,7 +224,7 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
 }
 
 llvm::Error validateLineagePayload(
-    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
     llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto decision = adoptSpatialMicroarchitectureDecision(bytes);
   if (!decision)
@@ -239,6 +239,27 @@ llvm::Error validateLineagePayload(
     return error;
   if (decision->entities.empty())
     return invalid("microarchitecture lineage has no Module correspondence");
+  loom::adg::DesignBuilder design(store);
+  auto builder = design.deriveSpatialCore(*parent);
+  if (!builder)
+    return builder.takeError();
+  if (llvm::Error error = applyDecision(*builder, decision->decision))
+    return error;
+  if (llvm::Error error = builder->closeDerived())
+    return error;
+  auto expected =
+      std::move(design).deriveSpatialCoreIdentityWithCorrespondence();
+  if (!expected)
+    return expected.takeError();
+  if (expected->identity != output.artifact ||
+      expected->entities != decision->entities)
+    return invalid(
+        "microarchitecture decision does not reproduce its exact output");
+  auto child = loom::fabric::importEntireFabricRoot(output, store);
+  if (!child)
+    return child.takeError();
+  if (llvm::Error error = validateHardwareTopologyQuality(child->view()))
+    return error;
   return llvm::Error::success();
 }
 

@@ -29,6 +29,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <iterator>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -47,6 +49,20 @@ void canonicalize(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);
   references.erase(std::unique(references.begin(), references.end()),
                    references.end());
+}
+
+struct MappingDomain final {
+  ArtifactRootReference system;
+  std::vector<ArtifactRootReference> techMappings;
+  std::vector<ArtifactRootReference> spatialMappings;
+  std::vector<ArtifactRootReference> systemMappings;
+};
+
+std::string fabricProjectionName(const ArtifactRootReference &system,
+                                 const ArtifactRootReference &pairFabric) {
+  if (system == pairFabric)
+    return "fabric";
+  return "fabric-" + formatArtifactIdentityHex(system.artifact);
 }
 
 template <typename T>
@@ -193,21 +209,6 @@ measureIndependentSystemMappingImport(const ArtifactRootReference &reference,
     return visualizationError(
         "independently replayed repair Mapping has foreign owners");
   return session.statistics();
-}
-
-llvm::Expected<std::vector<ArtifactIdentity>> deriveTechMappingIdentities(
-    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &artifacts) {
-  std::vector<ArtifactIdentity> identities;
-  for (const ArtifactRootReference &reference : spatialMappings) {
-    auto spatial = mapping::importSpatialMapping(reference, artifacts);
-    if (!spatial)
-      return spatial.takeError();
-    const ArtifactIdentity identity = spatial->view().techMappingIdentity();
-    if (!llvm::is_contained(identities, identity))
-      identities.push_back(identity);
-  }
-  return identities;
 }
 
 void writeReferenceArray(llvm::json::OStream &json, llvm::StringRef name,
@@ -716,46 +717,38 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
       return visualizationError("resource-time repair verifier metrics do "
                                 "not reproduce from exact Mapping roots");
 
-    const auto &parentBindings = parentMapping->view().executionBindings();
-    const auto &childBindings = childMapping->view().executionBindings();
-    if (!sameUnorderedValues(parentBindings.spatialMappingImports(),
-                             childBindings.spatialMappingImports()))
-      return visualizationError("resource-time repair changed its immutable "
-                                "SpatialMapping frontier");
-    auto parentTech = deriveTechMappingIdentities(
-        parentBindings.spatialMappingImports(), artifacts);
-    if (!parentTech)
-      return visualizationError("cannot derive parent TechMapping inventory: " +
-                                llvm::toString(parentTech.takeError()));
-    auto childTech = deriveTechMappingIdentities(
-        childBindings.spatialMappingImports(), artifacts);
-    if (!childTech)
-      return visualizationError("cannot derive child TechMapping inventory: " +
-                                llvm::toString(childTech.takeError()));
-    if (!sameUnorderedValues(llvm::ArrayRef(*parentTech),
-                             llvm::ArrayRef(*childTech)) ||
-        evidence.repair.preservedSpatialMappings !=
-            parentBindings.spatialMappingImports().size() ||
-        evidence.repair.preservedTechMappings != parentTech->size() ||
-        evidence.repair.repairedSpatialMappings != 0 ||
-        evidence.repair.repairedTechMappings != 0)
-      return visualizationError("resource-time Mapping preservation metrics "
-                                "do not reconcile with exact artifacts");
-    const std::uint64_t reopenedBindings =
-        llvm::count_if(parentBindings.threadBindings(),
-                       [&](const auto &row) {
-                         return llvm::is_contained(
-                             evidence.repair.reopenedRoots, row.key);
-                       }) +
-        llvm::count_if(parentBindings.graphBindings(), [&](const auto &row) {
-          return llvm::is_contained(evidence.repair.reopenedRoots,
-                                    row.key.rootThreadLaunch);
-        });
-    const std::uint64_t totalBindings = parentBindings.threadBindings().size() +
-                                        parentBindings.graphBindings().size();
-    if (evidence.repair.reopenedSystemBindings != reopenedBindings ||
+    auto parentCone = pnr::projectSystemMappingMigrationConePartition(
+        parentMapping->view(), evidence.repair.reopenedRoots, artifacts);
+    if (!parentCone)
+      return visualizationError(
+          "cannot derive the parent resource-time Mapping cone: " +
+          llvm::toString(parentCone.takeError()));
+    auto childCone = pnr::projectSystemMappingMigrationConePartition(
+        childMapping->view(), evidence.repair.reopenedRoots, artifacts);
+    if (!childCone)
+      return visualizationError(
+          "cannot derive the child resource-time Mapping cone: " +
+          llvm::toString(childCone.takeError()));
+    if (parentCone->preservedSpatialMappings !=
+            childCone->preservedSpatialMappings ||
+        parentCone->preservedTechMappings !=
+            childCone->preservedTechMappings)
+      return visualizationError("resource-time repair changed a cone-external "
+                                "lower Mapping");
+    if (evidence.repair.preservedSpatialMappings !=
+            parentCone->preservedSpatialMappings.size() ||
+        evidence.repair.preservedTechMappings !=
+            parentCone->preservedTechMappings.size() ||
+        evidence.repair.repairedSpatialMappings !=
+            childCone->reopenedSpatialMappings.size() ||
+        evidence.repair.repairedTechMappings !=
+            childCone->reopenedTechMappings.size())
+      return visualizationError("resource-time Mapping cone metrics do not "
+                                "reconcile with exact artifacts");
+    if (evidence.repair.reopenedSystemBindings !=
+            parentCone->reopenedSystemBindings() ||
         evidence.repair.preservedSystemBindings !=
-            totalBindings - reopenedBindings)
+            parentCone->preservedSystemBindings())
       return visualizationError("resource-time repair binding metrics do not "
                                 "reconcile with the parent Mapping");
     dse::JointMappingReuseDisposition expectedReuse =
@@ -828,49 +821,92 @@ llvm::Error writeBundle(llvm::StringRef destination,
   canonicalize(structuredPrograms);
   canonicalize(dataflows);
 
-  std::vector<ArtifactRootReference> systemMappings;
-  std::vector<ArtifactRootReference> spatialMappings;
-  std::vector<ArtifactRootReference> techMappings;
+  const ApplicationRuntimeManifest &runtimeManifest =
+      deployment.runtimeManifest.manifest();
+  if (runtimeManifest.fabric() != system.reference())
+    return visualizationError(
+        "visualization pair Fabric differs from the runtime manifest");
+
+  std::vector<MappingDomain> mappingDomains;
   std::vector<ArtifactRootReference> runtimeEvidence;
   for (const ApplicationMappingCandidateOutcome &outcome :
        execution.candidateOutcomes) {
-    systemMappings.insert(systemMappings.end(), outcome.systemMappings.begin(),
-                          outcome.systemMappings.end());
     runtimeEvidence.insert(runtimeEvidence.end(),
                            outcome.runtimeEvidence.begin(),
                            outcome.runtimeEvidence.end());
+    if (outcome.systemMappings.empty())
+      continue;
+    auto domain = llvm::find_if(mappingDomains, [&](const auto &candidate) {
+      return candidate.system == outcome.system;
+    });
+    if (domain == mappingDomains.end()) {
+      mappingDomains.push_back({outcome.system, {}, {}, {}});
+      domain = std::prev(mappingDomains.end());
+    }
+    for (const ArtifactRootReference &reference : outcome.systemMappings) {
+      auto imported = mapping::importSystemMapping(reference, artifacts);
+      if (!imported)
+        return visualizationError("cannot strictly import a SystemMapping: " +
+                                  llvm::toString(imported.takeError()));
+      if (imported->view().fabricIdentity() != outcome.system.artifact ||
+          imported->view().dataflowIdentity() != outcome.dataflow.artifact)
+        return visualizationError(
+            "SystemMapping disagrees with its candidate outcome owners");
+      domain->systemMappings.push_back(reference);
+      domain->spatialMappings.insert(
+          domain->spatialMappings.end(),
+          imported->view().executionBindings().spatialMappingImports().begin(),
+          imported->view().executionBindings().spatialMappingImports().end());
+    }
+  }
+  canonicalize(runtimeEvidence);
+  for (MappingDomain &domain : mappingDomains) {
+    canonicalize(domain.systemMappings);
+    canonicalize(domain.spatialMappings);
+    for (const ArtifactRootReference &reference : domain.spatialMappings) {
+      auto imported = mapping::importSpatialMapping(reference, artifacts);
+      if (!imported)
+        return visualizationError("cannot strictly import a SpatialMapping: " +
+                                  llvm::toString(imported.takeError()));
+      domain.techMappings.push_back(
+          {mapping::mappingArtifactSchema.identity.str(),
+           mapping::mappingArtifactSchema.version,
+           imported->view().techMappingIdentity()});
+    }
+    canonicalize(domain.techMappings);
+    for (const ArtifactRootReference &reference : domain.techMappings) {
+      auto imported = mapping::importTechMapping(reference, artifacts);
+      if (!imported)
+        return visualizationError("cannot strictly import a TechMapping: " +
+                                  llvm::toString(imported.takeError()));
+    }
+  }
+  llvm::sort(mappingDomains, [](const auto &lhs, const auto &rhs) {
+    return artifactRootReferenceLess(lhs.system, rhs.system);
+  });
+  if (mappingDomains.empty() ||
+      llvm::none_of(mappingDomains, [&](const auto &domain) {
+        return domain.system == runtimeManifest.selectedSystem() &&
+               llvm::is_contained(domain.systemMappings,
+                                   runtimeManifest.selectedMapping());
+      }))
+    return visualizationError(
+        "selected SystemMapping has no owning visualization domain");
+
+  std::vector<ArtifactRootReference> systemMappings;
+  std::vector<ArtifactRootReference> spatialMappings;
+  std::vector<ArtifactRootReference> techMappings;
+  for (const MappingDomain &domain : mappingDomains) {
+    systemMappings.insert(systemMappings.end(), domain.systemMappings.begin(),
+                          domain.systemMappings.end());
+    spatialMappings.insert(spatialMappings.end(), domain.spatialMappings.begin(),
+                           domain.spatialMappings.end());
+    techMappings.insert(techMappings.end(), domain.techMappings.begin(),
+                        domain.techMappings.end());
   }
   canonicalize(systemMappings);
-  canonicalize(runtimeEvidence);
-  for (const ArtifactRootReference &reference : systemMappings) {
-    auto imported = mapping::importSystemMapping(reference, artifacts);
-    if (!imported)
-      return visualizationError("cannot strictly import a SystemMapping: " +
-                                llvm::toString(imported.takeError()));
-    if (imported->view().fabricIdentity() != system.reference().artifact)
-      return visualizationError("SystemMapping names a foreign Fabric");
-    spatialMappings.insert(
-        spatialMappings.end(),
-        imported->view().executionBindings().spatialMappingImports().begin(),
-        imported->view().executionBindings().spatialMappingImports().end());
-  }
   canonicalize(spatialMappings);
-  for (const ArtifactRootReference &reference : spatialMappings) {
-    auto imported = mapping::importSpatialMapping(reference, artifacts);
-    if (!imported)
-      return visualizationError("cannot strictly import a SpatialMapping: " +
-                                llvm::toString(imported.takeError()));
-    techMappings.push_back({mapping::mappingArtifactSchema.identity.str(),
-                            mapping::mappingArtifactSchema.version,
-                            imported->view().techMappingIdentity()});
-  }
   canonicalize(techMappings);
-  for (const ArtifactRootReference &reference : techMappings) {
-    auto imported = mapping::importTechMapping(reference, artifacts);
-    if (!imported)
-      return visualizationError("cannot strictly import a TechMapping: " +
-                                llvm::toString(imported.takeError()));
-  }
   for (const ArtifactRootReference &reference : runtimeEvidence) {
     auto evidence = artifacts.get(reference);
     if (!evidence)
@@ -893,9 +929,27 @@ llvm::Error writeBundle(llvm::StringRef destination,
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "loom.visualization_bundle");
-      json.attribute("version", "1.3");
+      json.attribute("version", "1.4");
       json.attributeObject("fabric", [&] {
         writeArtifactRootReferenceJsonFields(json, system.reference());
+      });
+      json.attributeObject("selected_system", [&] {
+        writeArtifactRootReferenceJsonFields(json,
+                                             runtimeManifest.selectedSystem());
+      });
+      json.attributeArray("mapping_domains", [&] {
+        for (const MappingDomain &domain : mappingDomains)
+          json.object([&] {
+            writeReference(json, "system", domain.system);
+            json.attribute("fabric_projection",
+                           fabricProjectionName(domain.system,
+                                                system.reference()));
+            writeReferenceArray(json, "tech_mappings", domain.techMappings);
+            writeReferenceArray(json, "spatial_mappings",
+                                domain.spatialMappings);
+            writeReferenceArray(json, "system_mappings",
+                                domain.systemMappings);
+          });
       });
       writeReferenceArray(json, "structured_programs", structuredPrograms);
       writeReferenceArray(json, "canonical_dataflows", dataflows);
@@ -903,6 +957,13 @@ llvm::Error writeBundle(llvm::StringRef destination,
       writeReferenceArray(json, "spatial_mappings", spatialMappings);
       writeReferenceArray(json, "system_mappings", systemMappings);
       writeReferenceArray(json, "runtime_evidence", runtimeEvidence);
+      if (runtimeManifest.selectedHardwareMutationRepairRecord())
+        writeReference(json, "selected_hardware_mutation_repair_record",
+                       *runtimeManifest.selectedHardwareMutationRepairRecord());
+      else
+        json.attribute("selected_hardware_mutation_repair_record", nullptr);
+      writeReferenceArray(json, "hardware_mutation_repair_records",
+                          runtimeManifest.hardwareMutationRepairRecords());
       json.attribute("pair_decision", projectApplicationPairDecisionJson(
                                           *execution.provenance.pairDecision));
       json.attributeObject("configuration_abi", [&] {
@@ -1098,6 +1159,30 @@ llvm::Error exportProductVisualization(
   if (llvm::Error error =
           adg::exportFabricDesign(system, artifacts, fabricBase))
     return visualizationError(llvm::toString(std::move(error)));
+
+  std::vector<ArtifactRootReference> mappingSystems = {
+      system.reference(), deployment.runtimeManifest.manifest().selectedSystem()};
+  for (const ApplicationMappingCandidateOutcome &outcome :
+       mapping.candidateOutcomes)
+    if (!outcome.systemMappings.empty())
+      mappingSystems.push_back(outcome.system);
+  canonicalize(mappingSystems);
+  for (const ArtifactRootReference &reference : mappingSystems) {
+    if (reference == system.reference())
+      continue;
+    auto imported = fabric::importEntireFabricRoot(reference, artifacts);
+    if (!imported)
+      return visualizationError("cannot import a Mapping-domain System: " +
+                                llvm::toString(imported.takeError()));
+    if (imported->view().rootKind() != fabric::FabricRootKind::System)
+      return visualizationError("Mapping domain names a non-System Fabric");
+    llvm::SmallString<256> domainBase(destination);
+    llvm::sys::path::append(
+        domainBase, fabricProjectionName(reference, system.reference()));
+    if (llvm::Error error =
+            adg::exportFabricDesign(*imported, artifacts, domainBase))
+      return visualizationError(llvm::toString(std::move(error)));
+  }
   return writeBundle(destination, system, prepared, mapping, deployment,
                      artifacts, blobs);
 }

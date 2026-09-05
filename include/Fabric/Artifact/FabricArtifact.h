@@ -242,6 +242,14 @@ struct FinalizedFabricModuleProjection final {
   std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
 };
 
+/// Read-only canonical identity and occurrence correspondence for one derived
+/// Module. This is the non-publishing counterpart of
+/// `FinalizedFabricModuleProjection` used by durable-lineage verification.
+struct DerivedFabricModuleIdentityProjection final {
+  ArtifactIdentity identity;
+  std::vector<FabricModuleEntityCorrespondence> entities;
+};
+
 struct FabricSystemEntityReference final {
   FabricEntityKind kind = FabricEntityKind::FabricModuleTemplate;
   FabricEntityId id = 0;
@@ -287,6 +295,15 @@ struct FinalizedFabricSystemProjection final {
   std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
 };
 
+/// Read-only canonical identity and correspondence for one derived System.
+/// The projection is computed by the same canonical-labeling owner as
+/// finalization without publishing the derived object.
+struct DerivedFabricSystemIdentityProjection final {
+  ArtifactIdentity identity;
+  std::vector<FabricSystemEntityCorrespondence> entities;
+  std::vector<FabricSystemTransferPatternCorrespondence> transferPatterns;
+};
+
 /// Finalizes one complete Module authoring root and publishes its single
 /// canonical loom.fabric object after strict independent reimport succeeds.
 llvm::Expected<FinalizedFabricRoot>
@@ -303,6 +320,12 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
 /// Validation and replay use the same canonicalization and strict import path
 /// as finalization while retaining read-only ArtifactStore behavior.
 llvm::Expected<ArtifactIdentity> deriveFabricRootIdentity(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store);
+
+llvm::Expected<DerivedFabricModuleIdentityProjection>
+deriveFabricModuleIdentityWithCorrespondence(
     ::fabric::ModuleOp source,
     const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
     const ArtifactStore &store);
@@ -334,6 +357,12 @@ llvm::Expected<ArtifactIdentity>
 deriveFabricRootIdentity(::fabric::SystemOp source,
                          llvm::ArrayRef<ArtifactRootReference> importedModules,
                          const ArtifactStore &store);
+
+llvm::Expected<DerivedFabricSystemIdentityProjection>
+deriveFabricSystemIdentityWithCorrespondence(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store);
 
 /// Finalizes one System and publishes the complete transient correspondence
 /// produced by the same canonical-labeling transaction.

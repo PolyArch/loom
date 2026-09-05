@@ -782,6 +782,16 @@ llvm::Expected<FinalizedSpatialMapping>
 importSpatialMapping(const ArtifactRootReference &reference,
                      const ArtifactStore &store);
 
+/// The closed lower-Mapping root domain used by Mapping-frontier repair.
+/// Strict import determines the canonical root operation; callers never infer
+/// Tech versus Spatial ownership from a failure reason or diagnostic text.
+using FinalizedLowerMapping =
+    std::variant<FinalizedTechMapping, FinalizedSpatialMapping>;
+
+llvm::Expected<FinalizedLowerMapping>
+importLowerMapping(const ArtifactRootReference &reference,
+                   const ArtifactStore &store);
+
 /// Rebinds one verified Spatial selection to exact child Tech/Module owners
 /// and proves it again against the child constraints and handshake model.
 llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(

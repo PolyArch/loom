@@ -63,10 +63,11 @@ PRE_ADMISSION_CONTRACT = "pre_mapping_owner_verified_v1"
 MANIFEST_JOIN_COMPLETE = "owner_scoped_planning_closure"
 MANIFEST_JOIN_PRE_ADMISSION = "owner_verified_pre_admission"
 PAIR_DECISION_SCHEMA = "loom.application_pair_decision"
-PAIR_DECISION_VERSION = "1.0"
+PAIR_DECISION_VERSION = "1.1"
 PAIR_EVIDENCE_SCHEMA = "loom.application_pair_evidence"
 PAIR_DISPOSITION_SCHEMA = "loom.application_pair_disposition"
-PAIR_EVIDENCE_VERSION = "1.0"
+PAIR_DISPOSITION_VERSION = "1.0"
+PAIR_EVIDENCE_VERSION = "1.1"
 
 
 def _integer(value: Any) -> int | None:
@@ -496,12 +497,14 @@ def _validate_pair_evidence_envelope(
     reasons: list[str] = []
     schema = evidence.get("schema")
     version = evidence.get("version")
-    if version != PAIR_EVIDENCE_VERSION:
-        reasons.append("pair_evidence_version_invalid")
     if schema == PAIR_DISPOSITION_SCHEMA:
+        if version != PAIR_DISPOSITION_VERSION:
+            reasons.append("pair_disposition_version_invalid")
         if evidence.get("domain") != "application_pair_decision":
             reasons.append("pair_disposition_domain_invalid")
         return reasons, False
+    if version != PAIR_EVIDENCE_VERSION:
+        reasons.append("pair_evidence_version_invalid")
     if schema != PAIR_EVIDENCE_SCHEMA:
         reasons.append("pair_evidence_schema_invalid")
         return reasons, False
@@ -653,6 +656,14 @@ def validate_portfolio_pair(
         evidence, decision
     )
     typed_reasons.extend(envelope_reasons)
+    repair_records = evidence.get("hardware_mutation_repair_records")
+    if has_mapping_evidence and (
+        not isinstance(repair_records, list)
+        or any(not _artifact_root(record) for record in repair_records)
+        or repair_records != sorted(set(repair_records))
+    ):
+        typed_reasons.append("hardware_mutation_repair_inventory_invalid")
+        repair_records = []
     if not isinstance(application, str) or not isinstance(input_name, str):
         typed_reasons.append("invalid_selection")
     if expected is None:
@@ -815,6 +826,16 @@ def validate_portfolio_pair(
                 typed_reasons.append("selected_system_mismatch")
             if not _artifact_root(selected_mapping):
                 typed_reasons.append("selected_mapping_mismatch")
+            selected_repair = selected_observation.get(
+                "hardware_mutation_repair_record"
+            )
+            if selected_repair is not None:
+                if (
+                    disposition != "hardware_dse_alternative"
+                    or not _artifact_root(selected_repair)
+                    or selected_repair not in repair_records
+                ):
+                    typed_reasons.append("selected_hardware_repair_mismatch")
             if disposition in SUCCESS_DISPOSITIONS:
                 objective_by_dimension = {
                     observation.get("dimension"): observation

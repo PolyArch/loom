@@ -1,5 +1,4 @@
 #include "DSE/JointDesignExploration.h"
-#include "JointDesignExplorationFixture.h"
 #include "ADG/Builtin.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
@@ -13,6 +12,7 @@
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Deployment/Package.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelParameterBundle.h"
@@ -26,6 +26,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "JointDesignExplorationFixture.h"
 #include "JointHardwareReopenExecution.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -42,7 +43,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -133,7 +136,8 @@ void requireMutationDispositionCoverage() {
   bool coldFallback = false;
   for (const MutationFamilyContract &contract : mutationFamilyContracts) {
     lowerLayerPreservation |=
-        contract.rebase != loom::dse::JointMappingReuseDisposition::ColdFallback;
+        contract.rebase !=
+        loom::dse::JointMappingReuseDisposition::ColdFallback;
     systemPreservation |=
         contract.system ==
         loom::dse::JointSystemMappingReuseDisposition::Preserved;
@@ -161,8 +165,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                               llvm::StringRef qualitySection,
                               llvm::StringRef mutationFamily) {
   const auto qualityRuns = [qualitySection](llvm::StringRef section) {
-    return qualitySection == allMutationFamilies ||
-           qualitySection == section;
+    return qualitySection == allMutationFamilies || qualitySection == section;
   };
   // One import session for the whole anchor, matching what the loom-dse and
   // loom-system-run entry points install; nested production sessions defer to
@@ -211,6 +214,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   const loom::dse::JointDesignPolicy policy =
       take(loom::dse::JointDesignPolicy::get(2, 1, 1, 2, 32));
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.hardwareTarget = {loom::adg::builtinSmallTarget.templateIdentity.str(),
+                           {loom::adg::builtinSmallTarget.schemaMajor,
+                            loom::adg::builtinSmallTarget.schemaMinor},
+                           loom::adg::builtinSmallTarget.scale};
   config.dse.techMapping.candidatePublicationLimit = 4;
   auto plan = take(loom::dse::buildJointDesignExplorationPlan(
       {{{firstWorkload}, {secondWorkload}}, {system}}, timingProfileRoots,
@@ -305,8 +312,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     quality.objectiveDimensionLabels = {"mapping_quality"};
     quality.paretoDimensions = {0};
     quality.finalTotalOrdering = 0;
-    quality.acquire = [sharedObjectiveProgram,
-                       count = qualityAcquisitionCount](
+    quality.acquire = [sharedObjectiveProgram, count = qualityAcquisitionCount](
                           const loom::dse::JointDesignExecution &result,
                           std::uint64_t planOrdinal)
         -> llvm::Expected<loom::dse::JointDesignQualityAcquisition> {
@@ -350,7 +356,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           return loom::dse::JointDesignQualityAcquisition{
               std::vector<loom::dse::JointDesignQualityCandidate>{
                   {{candidate.frontier.systemFrontier.front(),
-                   std::move(objective)},
+                    std::move(objective)},
                    std::nullopt,
                    {{loom::resolvedObjectiveInteger(measures[0])}, {}, {}}}}};
         }};
@@ -653,8 +659,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     if (!foundFirstEvidenceDomain || !foundSecondEvidenceDomain)
       fail("repair quality lost its selected Mapping observation");
     auto foreignEvidenceSelection =
-        loom::dse::selectJointRepairMappingByQuality(
-            repairExecutions, repairQuality, store);
+        loom::dse::selectJointRepairMappingByQuality(repairExecutions,
+                                                     repairQuality, store);
     if (foreignEvidenceSelection)
       fail("repair quality accepted Evidence across pair domains");
     const std::string foreignEvidenceError =
@@ -669,13 +675,11 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         {0, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
         {1, loom::ResolvedObjectiveDirection::Minimize, 0, 100},
         {2, loom::ResolvedObjectiveDirection::Minimize, 0, 100}};
-    runtimeCatalogs.weightedLevels = {
-        {{{0, 1}}}, {{{1, 1}}}, {{{2, 1}}}};
+    runtimeCatalogs.weightedLevels = {{{{0, 1}}}, {{{1, 1}}}, {{{2, 1}}}};
     runtimeCatalogs.totalOrderings = {{{0, 1, 2}}};
-    auto runtimeProgram =
-        std::make_shared<const loom::dse::ObjectiveProgram>(
-            take(loom::dse::ObjectiveProgram::getCandidateMeasures(
-                runtimeCatalogs)));
+    auto runtimeProgram = std::make_shared<const loom::dse::ObjectiveProgram>(
+        take(loom::dse::ObjectiveProgram::getCandidateMeasures(
+            runtimeCatalogs)));
     loom::dse::JointBoundedQualityPolicy runtimeRepairQuality = repairQuality;
     runtimeRepairQuality.objectiveProgram = runtimeProgram;
     runtimeRepairQuality.objectiveDimensionLabels = {
@@ -706,8 +710,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     }
     repairExecutions[0].summary.qualityDisposition =
         loom::dse::JointDesignQualityDisposition::Unsupported;
-    repairExecutions[0].summary.qualityIncompleteCandidate =
-        firstRepairMapping;
+    repairExecutions[0].summary.qualityIncompleteCandidate = firstRepairMapping;
     repairExecutions[0].summary.selectedMapping.reset();
     repairExecutions[0].summary.selectedPlanOrdinal.reset();
     for (loom::dse::JointDesignQualityObservation &observation :
@@ -745,10 +748,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     repairExecutions[1].summary.qualityObservations =
         repairExecutions[0].summary.qualityObservations;
     auto &foreignPair = repairExecutions[1].mappedPairs.front().pair;
-    foreignPair.system = foreignPair.system == system ? alternateSystem : system;
-    auto foreignDomainSelection =
-        loom::dse::selectJointRepairMappingByQuality(
-            repairExecutions, repairQuality, store);
+    foreignPair.system =
+        foreignPair.system == system ? alternateSystem : system;
+    auto foreignDomainSelection = loom::dse::selectJointRepairMappingByQuality(
+        repairExecutions, repairQuality, store);
     if (foreignDomainSelection)
       fail("repair quality accepted one Mapping across pair domains");
     const std::string foreignDomainError =
@@ -792,9 +795,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     const auto laterRawMeasures = laterObservation.provenance.rawMeasures;
     laterObservation.provenance.rawMeasures = {
         loom::resolvedObjectiveInteger(99)};
-    auto invalidLaterObservation =
-        loom::dse::selectJointRepairMappingByQuality(repairExecutions,
-                                                     repairQuality, store);
+    auto invalidLaterObservation = loom::dse::selectJointRepairMappingByQuality(
+        repairExecutions, repairQuality, store);
     if (invalidLaterObservation)
       fail("repair quality returned incomplete before validating all "
            "executions");
@@ -807,10 +809,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     auto incompleteRepair = take(loom::dse::selectJointRepairMappingByQuality(
         repairExecutions, repairQuality, store));
     const auto *incomplete =
-        std::get_if<loom::dse::JointRepairQualityIncomplete>(
-            &incompleteRepair);
-    if (!incomplete ||
-        incomplete->executionOrdinal != 0 ||
+        std::get_if<loom::dse::JointRepairQualityIncomplete>(&incompleteRepair);
+    if (!incomplete || incomplete->executionOrdinal != 0 ||
         incomplete->incomplete.reason !=
             loom::dse::JointDesignQualityIncompleteReason::Unsupported ||
         incomplete->incomplete.candidate != firstRepairMapping)
@@ -927,6 +927,58 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   }
   if (!feedbackSpatialMapping || !feedbackFifo)
     fail("FIFO feedback fixture has no selected physical FIFO");
+  const auto verifyIsolatedLowerMappingClosure =
+      [&](const loom::ArtifactRootReference &mapping,
+          llvm::StringRef directoryName) {
+        auto closure = take(loom::deployment::deriveLowerMappingPackageClosure(
+            mapping, store, blobs));
+        if (!llvm::is_contained(closure.artifacts(), mapping))
+          fail("isolated lower-Mapping package lost its requested root");
+
+        const std::filesystem::path staged =
+            std::filesystem::path(temporary.path().str()) /
+            directoryName.str();
+        const std::filesystem::path stagedArtifacts = staged / "objects";
+        const std::filesystem::path stagedBlobs = staged / "blobs";
+        std::error_code stagingError;
+        std::filesystem::create_directories(stagedArtifacts, stagingError);
+        if (!stagingError)
+          std::filesystem::create_directories(stagedBlobs, stagingError);
+        if (stagingError)
+          fail("cannot create isolated lower-Mapping closure: " +
+               stagingError.message());
+        for (const loom::ArtifactRootReference &root : closure.artifacts()) {
+          std::filesystem::copy_file(
+              std::filesystem::path(temporary.path().str()) /
+                  loom::formatArtifactIdentityHex(root.artifact),
+              stagedArtifacts / loom::formatArtifactIdentityHex(root.artifact),
+              std::filesystem::copy_options::none, stagingError);
+          if (stagingError)
+            fail("cannot stage a lower-Mapping Artifact: " +
+                 stagingError.message());
+        }
+        for (const loom::BlobDigest &digest : closure.blobs()) {
+          std::filesystem::copy_file(
+              std::filesystem::path(blobPath.str().str()) /
+                  loom::formatBlobDigestHex(digest),
+              stagedBlobs / loom::formatBlobDigestHex(digest),
+              std::filesystem::copy_options::none, stagingError);
+          if (stagingError)
+            fail("cannot stage a lower-Mapping Blob: " +
+                 stagingError.message());
+        }
+        loom::ArtifactStore stagedStore(stagedArtifacts.string());
+        loom::BlobStore stagedBlobStore(stagedBlobs.string());
+        auto stagedClosure = take(
+            loom::deployment::deriveLowerMappingPackageClosure(
+                mapping, stagedStore, stagedBlobStore));
+        if (stagedClosure.artifacts() != closure.artifacts() ||
+            stagedClosure.blobs() != closure.blobs())
+          fail("isolated lower-Mapping closure changed");
+        take(loom::mapping::importLowerMapping(mapping, stagedStore));
+      };
+  verifyIsolatedLowerMappingClosure(*feedbackSpatialMapping,
+                                    "feedback-lower-mapping-closure");
   std::optional<loom::fabric::FabricPeOccurrenceRef> operandPe;
   for (const auto pe : targetModule.view().peOccurrences())
     if (targetModule.view().peSchedule(pe) == ::fabric::Schedule::Temporal) {
@@ -1013,11 +1065,11 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           repair.systemDisposition != contract.system) {
         std::string failures;
         for (const auto &failure : repair.rebase.failures)
-          failures += " failure=" +
-                      loom::dse::jointMappingRebaseFailureReasonSpelling(
-                          failure.reason)
-                          .str() +
-                      ":" + failure.diagnostic;
+          failures +=
+              " failure=" +
+              loom::dse::jointMappingRebaseFailureReasonSpelling(failure.reason)
+                  .str() +
+              ":" + failure.diagnostic;
         fail(label + " mutation reached " +
              loom::dse::jointMappingReuseDispositionSpelling(
                  repair.rebase.disposition) +
@@ -1031,7 +1083,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                  contract.system) +
              failures);
       }
-      if (contract.rebase != loom::dse::JointMappingReuseDisposition::ColdFallback &&
+      if (contract.rebase !=
+              loom::dse::JointMappingReuseDisposition::ColdFallback &&
           repair.rebase.accounting.preservedTechMappings == 0 &&
           repair.rebase.accounting.preservedSpatialMappings == 0 &&
           repair.rebase.accounting.repairedTechMappings == 0 &&
@@ -1052,7 +1105,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           loom::dse::importHardwareMutationRepairRecord(repair.record, store));
       const loom::dse::HardwareMutationRepairRecord &durable = record.record();
       if (durable.parentMapping != repair.parentMapping ||
+          durable.parentSystem != system ||
           durable.childSystem != repair.child.system ||
+          durable.decisionLineage.size() !=
+              repair.child.decisionLineage.size() ||
           durable.impacts.size() != repair.child.impacts.size() ||
           durable.mappingReuseDisposition != repair.rebase.disposition ||
           durable.systemMappingReuseDisposition != repair.systemDisposition ||
@@ -1062,12 +1118,52 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           durable.incremental.systemPnrDispatches !=
               repair.incrementalExecution.summary.systemPnrDispatchCount)
         fail(label + " mutation record disagrees with the executed repair");
+      for (const auto indexed :
+           llvm::enumerate(repair.child.decisionLineage)) {
+        const loom::dse::HardwareMutationDecisionLineage &stored =
+            durable.decisionLineage[indexed.index()];
+        const loom::dse::HardwareMutationDecisionLineage &executed =
+            indexed.value();
+        if (stored.owner != executed.owner || stored.output != executed.output ||
+            stored.parents != executed.parents ||
+            stored.ownerPayload != executed.ownerPayload)
+          fail(label + " mutation record changed its CandidateDecision edge");
+      }
       for (const auto indexed : llvm::enumerate(repair.child.impacts))
-        if (durable.impacts[indexed.index()].family !=
-                indexed.value().family ||
+        if (durable.impacts[indexed.index()].parent != indexed.value().parent ||
+            durable.impacts[indexed.index()].moduleEntities !=
+                indexed.value().moduleEntities ||
+            durable.impacts[indexed.index()].family != indexed.value().family ||
             durable.impacts[indexed.index()].locality !=
                 indexed.value().locality)
           fail(label + " mutation record lost its typed impact family");
+      for (const auto indexedFailure :
+           llvm::enumerate(durable.rebaseFailures)) {
+        const loom::dse::JointMappingRebaseFailure &failure =
+            indexedFailure.value();
+        if (!failure.parent)
+          continue;
+        auto closure = take(loom::deployment::deriveLowerMappingPackageClosure(
+            *failure.parent, store, blobs));
+        if (!llvm::is_contained(closure.artifacts(), *failure.parent))
+          fail(label + " mutation record package lost its failed Mapping");
+        auto lower =
+            take(loom::mapping::importLowerMapping(*failure.parent, store));
+        if (const auto *spatial =
+                std::get_if<loom::mapping::FinalizedSpatialMapping>(&lower)) {
+          const loom::ArtifactRootReference tech{
+              loom::mapping::mappingArtifactSchema.identity.str(),
+              loom::mapping::mappingArtifactSchema.version,
+              spatial->view().techMappingIdentity()};
+          if (!llvm::is_contained(closure.artifacts(), tech))
+            fail(label + " mutation record package lost the failed Spatial "
+                         "Mapping's Tech dependency");
+        }
+
+        verifyIsolatedLowerMappingClosure(
+            *failure.parent, "lower-mapping-closure-" + label.str() + "-" +
+                                 std::to_string(indexedFailure.index()));
+      }
       // One durable line per family so a sharded run still reports the typed
       // dispositions its family reached.
       llvm::outs() << "mutation-family " << label << " rebase="
@@ -1300,9 +1396,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                             {memoryContract->regions().front().sizeBytes + 1}},
                         targetModules));
 
-    // The three dedicated families named by the acceptance matrix: a Module
+    // Exercise the three dedicated mutation-record families: a Module
     // topology rewrite (one more FU occurrence), a Temporal instruction-store
-    // capacity change, and a System InstructionCore realization change.
+    // capacity change, and a System InstructionCore realization change. This
+    // fixture does not construct per-family Deployments or transitions.
     executeMutation(
         "spatial-topology",
         materializeTopology(
@@ -1314,16 +1411,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     const std::uint64_t instructionCapacity =
         targetModule.view().peResidentContextCount(*operandPe);
     if (instructionCapacity == 0 ||
-        instructionCapacity >=
-            static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+        instructionCapacity >= static_cast<std::uint64_t>(
+                                   std::numeric_limits<std::int32_t>::max()))
       fail("instruction-capacity fixture has no growable instruction store");
-    executeMutation(
-        "instruction-capacity",
-        materializeModule(
-            "instruction-capacity",
-            loom::dse::ResizeInstructionStoreDomain{
-                *operandPe,
-                {static_cast<std::uint32_t>(instructionCapacity + 1)}}));
+    executeMutation("instruction-capacity",
+                    materializeModule("instruction-capacity",
+                                      loom::dse::ResizeInstructionStoreDomain{
+                                          *operandPe,
+                                          {static_cast<std::uint32_t>(
+                                              instructionCapacity + 1)}}));
 
     std::optional<loom::fabric::AccCoreOccurrenceRef> realizationTarget;
     std::optional<loom::fabric::AccCoreOccurrenceRef> realizationPrototype;
@@ -1378,8 +1474,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     if (executedFamilies != expectedFamilies)
       fail("mutation family selector matched " +
            std::to_string(executedFamilies) + " of " +
-           std::to_string(expectedFamilies) + " families: " +
-           mutationFamily.str());
+           std::to_string(expectedFamilies) +
+           " families: " + mutationFamily.str());
     return;
   }
 
@@ -1424,6 +1520,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                  2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
             store, blobs));
     if (operandRepair.childSystems.empty() ||
+        operandRepair.repairRecords.size() !=
+            operandRepair.childSystems.size() ||
         operandRepair.executions.empty() ||
         operandRepair.reuseDispositions.empty())
       fail("exact operand-buffer feedback did not materialize a bounded child");
@@ -1633,12 +1731,11 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   auto crossTagFifoWait = exactFifoWait;
   using ClosedWait = loom::sim::CgraClosedWaitSetDiagnostic;
   ClosedWait::WaitEdge orderWait;
-  orderWait.from = ClosedWait::WaitOwnerKey{
-      ClosedWait::WaitActorFiringKey{0, 0}};
-  orderWait.to = ClosedWait::WaitOwnerKey{
-      ClosedWait::WaitStorageQueueKey{
-          ClosedWait::WaitStorageDomain::TraversalStorage, 0,
-          ClosedWait::WaitQueueClass::global()}};
+  orderWait.from =
+      ClosedWait::WaitOwnerKey{ClosedWait::WaitActorFiringKey{0, 0}};
+  orderWait.to = ClosedWait::WaitOwnerKey{ClosedWait::WaitStorageQueueKey{
+      ClosedWait::WaitStorageDomain::TraversalStorage, 0,
+      ClosedWait::WaitQueueClass::global()}};
   orderWait.kind = ClosedWait::WaitEdgeKind::StorageOrder;
   orderWait.fifoOccurrence = *feedbackFifo;
   orderWait.awaitedTagValue = llvm::APInt(4, 1);
@@ -1653,9 +1750,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           mappings.front(), *feedbackSpatialMapping, crossTagFifoWait, store));
   if (crossTagFeedback.disposition !=
           loom::dse::SpatialFifoRuntimeFeedbackDisposition::Exact ||
-      crossTagFeedback.reason !=
-          loom::dse::SpatialFifoRuntimeFeedbackReason::
-              ExactCrossTagGlobalHolCycle ||
+      crossTagFeedback.reason != loom::dse::SpatialFifoRuntimeFeedbackReason::
+                                     ExactCrossTagGlobalHolCycle ||
       crossTagFeedback.currentQueueDiscipline !=
           ::fabric::FifoQueueDiscipline::StrictFifo ||
       crossTagFeedback.candidateQueueDiscipline !=
@@ -1716,6 +1812,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
                  2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
             store, blobs));
     if (fifoHardwareRepair.childSystems.size() != 1 ||
+        fifoHardwareRepair.repairRecords.size() != 1 ||
         fifoHardwareRepair.executions.size() != 1 ||
         fifoHardwareRepair.reuseDispositions.size() != 1 ||
         fifoHardwareRepair.childSystems.front() == system)
@@ -1754,6 +1851,44 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           fifoHardwareRepair.childSystems.front().artifact)
         fail("FIFO hardware repair Mapping names the parent System");
     }
+
+    llvm::SmallString<128> disciplineJournal(temporary.path());
+    llvm::sys::path::append(disciplineJournal,
+                            "fifo-discipline-recipe-feedback");
+    const auto disciplineRepair =
+        take(loom::dse::executeSpatialFifoHardwareFeedbackReopen(
+            plan, parentExecution, policy, crossTagFeedback,
+            {take(loom::dse::DseProducerSemanticBuildIdentity::get(
+                 "loom.test.spatial_fifo_recipe_feedback.v1")),
+             disciplineJournal.str().str(),
+             {},
+             loom::dse::JointDesignStoppingPolicy::FirstVerified,
+             std::nullopt,
+             std::nullopt,
+             take(loom::dse::SiteCapacity::get(2, 0, 0)),
+             take(loom::dse::PlanExecutionPolicy::get(
+                 2, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+            store, blobs));
+    if (disciplineRepair.childSystems.size() != 1 ||
+        disciplineRepair.repairRecords.size() != 1 ||
+        disciplineRepair.executions.size() != 1 ||
+        disciplineRepair.reuseDispositions !=
+            std::vector<loom::dse::JointMappingReuseDisposition>{
+                loom::dse::JointMappingReuseDisposition::ColdFallback})
+      fail("global FIFO recipe feedback lost its durable cold repair");
+    const auto disciplineRecord =
+        take(loom::dse::importHardwareMutationRepairRecord(
+            disciplineRepair.repairRecords.front(), store));
+    if (disciplineRecord.record().parentSystem != system ||
+        disciplineRecord.record().childSystem !=
+            disciplineRepair.childSystems.front() ||
+        disciplineRecord.record().impacts.size() != 1 ||
+        disciplineRecord.record().impacts.front().family !=
+            loom::dse::HardwareMutationFamily::SpatialFifo ||
+        disciplineRecord.record().impacts.front().locality !=
+            loom::dse::HardwareMutationLocality::GlobalReopen ||
+        disciplineRecord.record().incremental.mappings.empty())
+      fail("global FIFO recipe repair record lost its typed execution");
   }
   auto incompleteFifoWait = exactFifoWait;
   incompleteFifoWait.transferWaitCycle.clear();
@@ -1796,23 +1931,27 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         };
     loom::dse::JointRuntimeWitnessSet witnesses;
     witnesses.fifo = exactFifoFeedback;
-    const auto withheld = [&](const loom::dse::JointRuntimeWitnessRepair &repair,
-                              llvm::StringRef gate) {
-      if (repair.fifoReopen || repair.mappingRepair ||
-          !repair.childSystems.empty() || !repair.executions.empty() ||
-          repair.hardwareReopenReservedNanoseconds != 0 ||
-          repair.hardwareReopenLedger.reserved != 0 ||
-          repair.mappingRepairLedger.candidateLimit != 0)
-        fail(gate + " admitted a runtime-witness hardware child");
-    };
-    withheld(take(loom::dse::executeJointRuntimeWitnessRepair(
-                 plan, parentExecution, policy, witnesses,
-                 parentCostNanoseconds, std::nullopt,
-                 witnessRequest("runtime-witness-fixed",
-                                loom::dse::JointHardwareExplorationScope::
-                                    FixedSystemFrontier),
-                 store, blobs)),
-             "fixed System frontier");
+    const auto withheld =
+        [&](const loom::dse::JointRuntimeWitnessRepair &repair,
+            llvm::StringRef gate) {
+          if (repair.fifoReopen || repair.mappingRepair ||
+              !repair.childSystems.empty() ||
+              !repair.hardwareMutationRepairRecords.empty() ||
+              !repair.executions.empty() ||
+              repair.hardwareReopenReservedNanoseconds != 0 ||
+              repair.hardwareReopenLedger.reserved != 0 ||
+              repair.mappingRepairLedger.candidateLimit != 0)
+            fail(gate + " admitted a runtime-witness hardware child");
+        };
+    withheld(
+        take(loom::dse::executeJointRuntimeWitnessRepair(
+            plan, parentExecution, policy, witnesses, parentCostNanoseconds,
+            std::nullopt,
+            witnessRequest(
+                "runtime-witness-fixed",
+                loom::dse::JointHardwareExplorationScope::FixedSystemFrontier),
+            store, blobs)),
+        "fixed System frontier");
     withheld(take(loom::dse::executeJointRuntimeWitnessRepair(
                  plan, parentExecution, policy, witnesses,
                  parentCostNanoseconds, std::optional<std::uint64_t>(0),
@@ -1832,6 +1971,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         admitted.hardwareReopenLedger;
     if (!admitted.fifoReopen || admitted.mappingRepair ||
         admitted.childSystems.size() != 1 || admitted.executions.size() != 1 ||
+        admitted.hardwareMutationRepairRecords.size() != 1 ||
+        !admitted.hardwareMutationRepairRecords.front() ||
         admitted.childSystems.front() == system ||
         admitted.hardwareReopenReservedNanoseconds != parentCostNanoseconds ||
         hardware.candidateLimit != 1 || hardware.planned != 1 ||
@@ -1864,8 +2005,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count());
-    const std::uint64_t farDeadline =
-        nowNanoseconds + 3'600'000'000'000ULL;
+    const std::uint64_t farDeadline = nowNanoseconds + 3'600'000'000'000ULL;
     const auto boundedPolicy = take(loom::dse::PlanExecutionPolicy::get(
         2, take(loom::dse::SiteResourceClaim::get(1, 0, 0)), std::nullopt, {},
         std::nullopt, farDeadline));
@@ -2051,15 +2191,17 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           adjacentRepair.coldExecution.summary.executionWallTimeNanoseconds ||
       adjacentRepair.coldExecution.summary
               .incrementalReopenWallTimeNanoseconds != 0 ||
-      adjacentRepair.execution.summary.techMappingDispatchCount != 0 ||
-      adjacentRepair.execution.summary.spatialPnrDispatchCount != 0 ||
+      adjacentRepair.execution.summary.techMappingDispatchCount == 0 ||
+      adjacentRepair.execution.summary.spatialPnrDispatchCount == 0 ||
       adjacentRepair.execution.summary.systemPnrDispatchCount != 1 ||
       adjacentRepair.execution.summary.incrementalReopenWallTimeNanoseconds !=
           adjacentRepair.execution.summary.executionWallTimeNanoseconds ||
       adjacentRepair.execution.summary.coldReopenWallTimeNanoseconds != 0 ||
-      adjacentRepair.execution.summary.preservedTechMappings == 0 ||
-      adjacentRepair.execution.summary.preservedSpatialMappings == 0)
-    fail("adjacent resource-time finalist did not use preserve-first repair");
+      adjacentRepair.execution.summary.preservedTechMappings != 0 ||
+      adjacentRepair.execution.summary.preservedSpatialMappings != 0 ||
+      adjacentRepair.reuseDisposition !=
+          loom::dse::JointMappingReuseDisposition::ColdFallback)
+    fail("adjacent resource-time finalist retained a reopened root Mapping");
   std::vector<loom::ArtifactRootReference> adjacentMappings;
   for (const auto &pair : adjacentRepair.execution.mappedPairs)
     adjacentMappings.insert(adjacentMappings.end(), pair.systemMappings.begin(),
@@ -2092,6 +2234,23 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
           plan.frontier.pairs.front().software.dataflow.artifact ||
       adjacentMapping.view().fabricIdentity() != system.artifact)
     fail("adjacent resource-time repair changed immutable owners");
+  auto adjacentDataflowArtifact = take(dataflow::importCanonicalDataflow(
+      plan.frontier.pairs.front().software.dataflow, store));
+  auto adjacentDataflow = take(adjacentDataflowArtifact.view());
+  auto adjacentContexts = take(loom::mapping::projectSystemExecutionContexts(
+      adjacentDataflow, adjacentMapping.view().executionBindings()));
+  std::set<std::vector<std::uint8_t>> adjacentCores;
+  for (const auto &domain : adjacentContexts.instructionDomains)
+    if (domain.root == mappedRoots.front())
+      adjacentCores.insert(loom::fabric::canonicalFabricBytes(
+          loom::fabric::AccCoreOccurrenceRef{domain.context.accCore}));
+  for (const auto &domain : adjacentContexts.spatialDomains)
+    if (domain.graph.rootThreadLaunch == mappedRoots.front())
+      adjacentCores.insert(loom::fabric::canonicalFabricBytes(
+          loom::fabric::AccCoreOccurrenceRef{domain.context.accCore}));
+  if (adjacentCores.size() != adjacentPartitions.front().partitionCount)
+    fail("adjacent resource-time repair did not remap the reopened root to "
+         "its requested resource count");
   if (qualityRuns("adjacent")) {
     if (!incompleteRepairQuality)
       fail("quality-promotion fixture lost its incomplete repair policy");
@@ -2190,7 +2349,8 @@ int main(int argc, char **argv) {
   if (mode == "mutation-matrix")
     mutationFamily = allMutationFamilies;
   else if (mode.starts_with("mutation-matrix="))
-    mutationFamily = mode.drop_front(llvm::StringRef("mutation-matrix=").size());
+    mutationFamily =
+        mode.drop_front(llvm::StringRef("mutation-matrix=").size());
   llvm::StringRef qualitySection;
   if (mode == "quality-promotion")
     qualitySection = allMutationFamilies;
@@ -2201,18 +2361,17 @@ int main(int argc, char **argv) {
       qualitySection != "promotion" && qualitySection != "operand" &&
       qualitySection != "fifo" && qualitySection != "adjacent")
     fail("unknown quality-promotion section: " + qualitySection);
-  if (argc > 2 || (argc == 2 && mutationFamily.empty() &&
-                   qualitySection.empty() && mode != "fifo-feedback" &&
-                   mode != "runtime-witness-budget" &&
-                   mode != "operand-feedback" && mode != "transport-feedback"))
+  if (argc > 2 ||
+      (argc == 2 && mutationFamily.empty() && qualitySection.empty() &&
+       mode != "fifo-feedback" && mode != "runtime-witness-budget" &&
+       mode != "operand-feedback" && mode != "transport-feedback"))
     fail("expected no workflow, fifo-feedback, runtime-witness-budget, "
          "operand-feedback, transport-feedback, quality-promotion, "
          "quality-promotion=SECTION, mutation-matrix, or "
          "mutation-matrix=FAMILY");
-  exerciseJointExploration(mode == "fifo-feedback",
-                           mode == "runtime-witness-budget",
-                           mode == "operand-feedback",
-                           mode == "transport-feedback", qualitySection,
-                           mutationFamily);
+  exerciseJointExploration(
+      mode == "fifo-feedback", mode == "runtime-witness-budget",
+      mode == "operand-feedback", mode == "transport-feedback", qualitySection,
+      mutationFamily);
   return 0;
 }

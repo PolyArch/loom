@@ -1893,6 +1893,19 @@ llvm::Expected<ArtifactIdentity> deriveFabricRootIdentity(
   return std::move(derived->identity);
 }
 
+llvm::Expected<DerivedFabricModuleIdentityProjection>
+deriveFabricModuleIdentityWithCorrespondence(
+    ::fabric::ModuleOp source,
+    const ::fabric::ModuleDomainAuthoringRelation &domainRelation,
+    const ArtifactStore &store) {
+  auto derived =
+      deriveFabricModuleCandidate(source, domainRelation, store, true, false);
+  if (!derived)
+    return derived.takeError();
+  return DerivedFabricModuleIdentityProjection{
+      std::move(derived->identity), std::move(derived->entities)};
+}
+
 llvm::Expected<FinalizedFabricModuleProjection>
 finalizeFabricModuleWithCorrespondence(
     ::fabric::ModuleOp source,
@@ -1995,6 +2008,20 @@ deriveFabricRootIdentity(::fabric::SystemOp source,
   if (!derived)
     return derived.takeError();
   return std::move(derived->identity);
+}
+
+llvm::Expected<DerivedFabricSystemIdentityProjection>
+deriveFabricSystemIdentityWithCorrespondence(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    const ArtifactStore &store) {
+  auto derived =
+      deriveFabricSystemCandidate(source, importedModules, store, true);
+  if (!derived)
+    return derived.takeError();
+  return DerivedFabricSystemIdentityProjection{
+      std::move(derived->identity), std::move(derived->entities),
+      std::move(derived->transferPatterns)};
 }
 
 llvm::Expected<FinalizedFabricSystemProjection>

@@ -113,6 +113,11 @@ def validate_identity_binding(
         return
     require(len(bindings) == 1, "expected one application runtime manifest binding")
     binding = bindings[0]
+    require(
+        binding.get("schema") == "loom.application_runtime_manifest_binding"
+        and binding.get("version") == "1.1",
+        "application runtime manifest binding has the wrong schema",
+    )
     decision = pair_evidence.get("pair_decision")
     require(isinstance(decision, dict), "identity binding has no pair decision")
     for binding_field, decision_field in (
@@ -142,6 +147,46 @@ def validate_identity_binding(
             decoded is not None and decoded == manifest.get(manifest_field),
             "execution manifest " + manifest_field
             + " is not bound to the application runtime manifest",
+        )
+    repair_records = binding.get("hardware_mutation_repair_records")
+    require(
+        isinstance(repair_records, list)
+        and repair_records == pair_evidence.get("hardware_mutation_repair_records"),
+        "runtime manifest repair inventory differs from pair evidence",
+    )
+    selected_repair = binding.get("selected_hardware_mutation_repair_record")
+    if decision.get("disposition") == "hardware_dse_alternative":
+        selected_mapping = decision.get("selected_system_mapping")
+        selected_observations = [
+            observation
+            for candidate in decision.get("candidates", [])
+            if isinstance(candidate, dict) and candidate.get("selected") is True
+            for observation in candidate.get("mapping_observations", [])
+            if isinstance(observation, dict)
+            and observation.get("plan_ordinal") == candidate.get("plan_ordinal")
+            and observation.get("schedule_hint_digest")
+            == decision.get("selected_schedule_hint_digest")
+            and selected_mapping in observation.get("system_mappings", [])
+        ]
+        require(len(selected_observations) == 1, "hardware alternative has no unique Mapping observation")
+        observed_repair = selected_observations[0].get(
+            "hardware_mutation_repair_record"
+        )
+        require(
+            observed_repair == selected_repair
+            and (
+                selected_repair is None
+                or (
+                    isinstance(selected_repair, str)
+                    and selected_repair in repair_records
+                )
+            ),
+            "hardware alternative changed its selected repair record",
+        )
+    else:
+        require(
+            selected_repair is None,
+            "non-hardware runtime manifest selects a repair record",
         )
 
 

@@ -34,20 +34,45 @@ with a different accepted dependency schema.
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime-owned manifest or public manual-launch
 schema. The Application layer does publish the incompatible
-`loom.application.runtime_manifest 2.0` activation closure. It references one
+`loom.application.runtime_manifest 5.0` activation closure. It references one
 strictly imported StructuredProgram source workload/runtime pair, the exact
 source-backed Spatial replay cases, one completed pair decision, the selected
 SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
 Deployment-owned System workload/runtime pair, and an optional finite verified
-resource-time transition graph. These references authorize no new Mapping,
-route, entry, or input construction at runtime.
+resource-time transition graph. Version 5.0 also carries the canonical set of
+durable `loom.dse.hardware_mutation_repair_record` roots produced while the
+pair was evaluated and a nullable exact selected-record root. The exact set
+and selection are owned by `loom.application.activation_decision` 2.0;
+runtime-manifest construction and strict import require their projection to
+agree with that durable activation owner. These required fields are an
+incompatible addition to 4.0; an empty set and null selection state that no
+hardware-mutation repair was executed or selected. These
+references authorize no new Mapping, route, entry, or input construction at
+runtime. Strict import proves that every record has the selected Mapping's
+Dataflow owner and belongs to a mutation lineage reachable from the original
+pair Fabric. When a `hardware_dse_alternative` was produced by an executed
+mutation repair, it names the unique reachable record whose child System and
+preserve-first child SystemMapping equal the selected owners; a general
+hardware-frontier selection has no parent-Mapping repair record and leaves the
+field null. A unique repair record that selects the activation SystemMapping
+must be named; omission is invalid. Records for evaluated but nonselected
+children remain separate provenance. Every non-hardware pair disposition
+requires a null selected record.
 
 An Application package contains the exact object/blob closure of that
-manifest and every endpoint Deployment. Execution first validates the source
-package, copies its immutable stores into a new workspace, and strictly imports
-the workspace copy in isolated import sessions. The System runner consumes the
-manifest's Deployment-owned activation roots. A command-line program-entry or
-freshly published workload/runtime pair cannot override the package.
+manifest, every endpoint Deployment, and every manifest-named hardware
+mutation repair record. Repair-record closure includes its parent and child
+Systems and the complete parent, cold, incremental, and quality-observation
+SystemMapping closures. It also strictly imports every failed Tech or Spatial
+rebase parent and includes that lower Mapping's Dataflow, Module, and upstream
+Tech dependency. Execution first validates the source package, copies its
+immutable stores into a new workspace, and strictly imports the workspace copy
+in isolated import sessions. The System runner consumes the manifest's
+Deployment-owned activation roots. A command-line program-entry or freshly
+published workload/runtime pair cannot override the package.
+The additive summary projection
+`loom.application_runtime_manifest_binding` 1.1 names the same repair-record
+set and nullable exact selected record; 1.0 carried neither field.
 
 ## Immutable Mapping Contract
 

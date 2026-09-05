@@ -65,6 +65,240 @@ independentlyVerifyChildMappings(llvm::ArrayRef<ArtifactRootReference> mappings,
                                  const ArtifactRootReference &childSystem,
                                  const ArtifactStore &artifacts);
 
+void saturatingAdd(std::uint64_t &target, std::uint64_t value);
+
+struct ReopenedRootLowerMappingPlan final {
+  JointDesignExplorationPlan plan;
+  std::vector<PlanOutputRef> spatialMappings;
+};
+
+llvm::Expected<ReopenedRootLowerMappingPlan> buildReopenedRootLowerMappingPlan(
+    const JointDesignExplorationPlan &completePlan,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const ArtifactStore &artifacts) {
+  constexpr std::size_t constraintInputOrdinal = 1;
+  if (completePlan.pairOutputs.size() != 1 || reopenedRoots.empty())
+    return invalid("reopened-root lower Mapping requires one exact pair and "
+                   "a nonempty root set");
+  const JointDesignPlanPair &completePair = completePlan.pairOutputs.front();
+  const std::uint64_t systemNodeOrdinal =
+      completePair.systemMappings.producerNodeOrdinal;
+  if (systemNodeOrdinal >= completePlan.resolvedConfig.dse.planNodes.size() ||
+      systemNodeOrdinal + 1 !=
+          completePlan.resolvedConfig.dse.planNodes.size())
+    return invalid("reopened-root lower Mapping requires a terminal System "
+                   "provider");
+  const auto *systemNode = std::get_if<GeneratePlanNodeDefinition>(
+      &completePlan.resolvedConfig.dse.planNodes[systemNodeOrdinal]);
+  if (!systemNode ||
+      systemNode->descriptor !=
+          applicationSystemPnrCandidateGeneratorDescriptor().reference())
+    return invalid("reopened-root lower Mapping has no canonical System "
+                   "provider");
+  if (completePair.techMappings.empty() ||
+      completePair.spatialMappings.empty())
+    return invalid("reopened-root lower Mapping has no generated frontier");
+
+  auto dataflowArtifact = ::dataflow::importCanonicalDataflow(
+      completePair.pair.software.dataflow, artifacts);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto systemArtifact =
+      fabric::importEntireFabricRoot(completePair.pair.system, artifacts);
+  if (!systemArtifact)
+    return systemArtifact.takeError();
+  auto system = fabric::requireSystemRoot(systemArtifact->view());
+  if (!system)
+    return system.takeError();
+  auto constraints = mapping::finalizeEmptySystemMappingConstraintSet(
+      *dataflow, *system, reopenedRoots, artifacts);
+  if (!constraints)
+    return constraints.takeError();
+
+  JointDesignExplorationPlan lowerPlan = completePlan;
+  JointDesignPlanPair &lowerPair = lowerPlan.pairOutputs.front();
+  for (const PlanOutputRef output : lowerPair.techMappings) {
+    if (output.outputSlotOrdinal != 0 ||
+        output.producerNodeOrdinal >= systemNodeOrdinal)
+      return invalid("reopened-root TechMapping output names a foreign node");
+    auto *techNode = std::get_if<GeneratePlanNodeDefinition>(
+        &lowerPlan.resolvedConfig.dse.planNodes[output.producerNodeOrdinal]);
+    if (!techNode ||
+        techNode->descriptor !=
+            applicationGraphTechMappingCandidateGeneratorDescriptor()
+                .reference() ||
+        techNode->inputBindings.size() <= constraintInputOrdinal)
+      return invalid("reopened-root lower Mapping has a noncanonical Tech "
+                     "provider");
+    techNode->inputBindings[constraintInputOrdinal] =
+        ExactPlanArtifacts{{constraints->reference()}};
+  }
+  lowerPlan.resolvedConfig.dse.planNodes.pop_back();
+  std::vector<PlanOutputRef> spatialMappings = lowerPair.spatialMappings;
+  lowerPlan.pairOutputs.clear();
+  auto admitted = projectResolvedDseConfigView(lowerPlan.resolvedConfig);
+  if (!admitted)
+    return admitted.takeError();
+  return ReopenedRootLowerMappingPlan{std::move(lowerPlan),
+                                      std::move(spatialMappings)};
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+resolveReopenedRootLowerMappingFrontier(
+    const ReopenedRootLowerMappingPlan &lowerPlan,
+    const JointDesignExecution &execution) {
+  const auto *completed =
+      std::get_if<CompletedDsePlanExecution>(&execution.planExecution);
+  if (!completed)
+    return invalid("reopened-root lower Mapping did not materialize its "
+                   "complete frontier");
+  std::vector<ArtifactRootReference> mappings;
+  for (const PlanOutputRef output : lowerPlan.spatialMappings) {
+    if (!completed->hasOutput(output))
+      return invalid("reopened-root lower Mapping omits a SpatialMapping "
+                     "output");
+    const llvm::ArrayRef<ArtifactRootReference> available =
+        completed->resolve(output);
+    mappings.insert(mappings.end(), available.begin(), available.end());
+  }
+  canonicalizeRoots(mappings);
+  if (mappings.empty())
+    return invalid("reopened-root lower Mapping frontier is empty");
+  return mappings;
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+materializeHybridSpatialMappingFrontier(
+    const JointDesignExplorationPlan &completePlan,
+    llvm::ArrayRef<ArtifactRootReference> reopenedSpatialMappings,
+    const pnr::SystemMappingMigrationConePartition &cone,
+    const ArtifactStore &artifacts) {
+  constexpr std::size_t spatialMappingInputOrdinal = 1;
+  if (completePlan.pairOutputs.size() != 1)
+    return invalid("hybrid SpatialMapping frontier requires one exact pair");
+  const JointDesignPlanPair &pair = completePlan.pairOutputs.front();
+  if (pair.systemMappings.producerNodeOrdinal >=
+      completePlan.resolvedConfig.dse.planNodes.size())
+    return invalid("hybrid SpatialMapping frontier names a foreign System "
+                   "node");
+  const auto *systemNode = std::get_if<GeneratePlanNodeDefinition>(
+      &completePlan.resolvedConfig.dse
+           .planNodes[pair.systemMappings.producerNodeOrdinal]);
+  if (!systemNode ||
+      systemNode->descriptor !=
+          applicationSystemPnrCandidateGeneratorDescriptor().reference() ||
+      systemNode->inputBindings.size() <= spatialMappingInputOrdinal)
+    return invalid("hybrid SpatialMapping frontier has no canonical System "
+                   "provider");
+  const auto *join = std::get_if<BoundedPlanOutputJoin>(
+      &systemNode->inputBindings[spatialMappingInputOrdinal]);
+  if (!join)
+    return invalid("hybrid SpatialMapping frontier has no bounded lower "
+                   "join");
+
+  std::vector<ArtifactRootReference> preserved(
+      cone.preservedSpatialMappings.begin(),
+      cone.preservedSpatialMappings.end());
+  canonicalizeRoots(preserved);
+  if (preserved.size() != cone.preservedSpatialMappings.size())
+    return invalid("hybrid SpatialMapping frontier repeats a preserved root");
+  if (preserved.size() > join->maximumArtifacts)
+    return invalid("preserved SpatialMapping cone exceeds the System join "
+                   "bound");
+  std::vector<ArtifactRootReference> reopened(reopenedSpatialMappings.begin(),
+                                               reopenedSpatialMappings.end());
+  canonicalizeRoots(reopened);
+  std::vector<ArtifactRootReference> result = preserved;
+  for (const ArtifactRootReference &mappingReference : reopened) {
+    if (result.size() >= join->maximumArtifacts)
+      break;
+    if (llvm::is_contained(result, mappingReference))
+      continue;
+    auto spatial =
+        mapping::importSpatialMapping(mappingReference, artifacts);
+    if (!spatial)
+      return spatial.takeError();
+    auto tech = mapping::importTechMapping(
+        {mapping::mappingArtifactSchema.identity.str(),
+         mapping::mappingArtifactSchema.version,
+         spatial->view().techMappingIdentity()},
+        artifacts);
+    if (!tech)
+      return tech.takeError();
+    if (!cone.admitsReplacementGraphs(tech->view().covers()))
+      continue;
+    result.push_back(mappingReference);
+  }
+  canonicalizeRoots(result);
+  if (result.empty())
+    return invalid("hybrid SpatialMapping frontier is empty");
+  return result;
+}
+
+llvm::Expected<PlanExecutionPolicy> systemOnlyExecutionPolicy(
+    const PlanExecutionPolicy &base, std::uint64_t originalSystemNodeOrdinal,
+    std::uint64_t consumedDispatches) {
+  std::vector<WorkUnitResourceBinding> systemBindings;
+  for (const WorkUnitResourceBinding &binding : base.resourceBindings()) {
+    if (binding.key.planNodeOrdinal() != originalSystemNodeOrdinal)
+      continue;
+    auto key = WorkUnitKey::get(0, binding.key.descriptor(),
+                                binding.key.stableOrdinal());
+    if (!key)
+      return key.takeError();
+    systemBindings.push_back({std::move(*key), binding.claim});
+  }
+  llvm::sort(systemBindings,
+             [](const WorkUnitResourceBinding &lhs,
+                const WorkUnitResourceBinding &rhs) {
+               return lhs.key < rhs.key;
+             });
+  std::optional<std::uint64_t> remainingDispatches;
+  if (base.maximumDispatches())
+    remainingDispatches =
+        consumedDispatches >= *base.maximumDispatches()
+            ? 0
+            : *base.maximumDispatches() - consumedDispatches;
+  return PlanExecutionPolicy::get(
+      base.workerCount(), base.inProcessClaim(), base.externalSite(),
+      systemBindings, remainingDispatches,
+      base.dispatchNotAfterUnixNanoseconds());
+}
+
+void mergeLowerMappingExecutionAccounting(
+    JointDesignExecutionSummary &systemSummary,
+    const JointDesignExecutionSummary &lowerSummary) {
+  saturatingAdd(systemSummary.techMappingInvocationCount,
+                lowerSummary.techMappingInvocationCount);
+  saturatingAdd(systemSummary.spatialPnrInvocationCount,
+                lowerSummary.spatialPnrInvocationCount);
+  saturatingAdd(systemSummary.systemPnrInvocationCount,
+                lowerSummary.systemPnrInvocationCount);
+  saturatingAdd(systemSummary.techMappingDispatchCount,
+                lowerSummary.techMappingDispatchCount);
+  saturatingAdd(systemSummary.spatialPnrDispatchCount,
+                lowerSummary.spatialPnrDispatchCount);
+  saturatingAdd(systemSummary.systemPnrDispatchCount,
+                lowerSummary.systemPnrDispatchCount);
+  saturatingAdd(systemSummary.techMappingJournalReplayCount,
+                lowerSummary.techMappingJournalReplayCount);
+  saturatingAdd(systemSummary.spatialPnrJournalReplayCount,
+                lowerSummary.spatialPnrJournalReplayCount);
+  saturatingAdd(systemSummary.systemPnrJournalReplayCount,
+                lowerSummary.systemPnrJournalReplayCount);
+  saturatingAdd(systemSummary.executionWallTimeNanoseconds,
+                lowerSummary.executionWallTimeNanoseconds);
+  if (systemSummary.timeToFirstFeasibleWallTimeNanoseconds)
+    saturatingAdd(*systemSummary.timeToFirstFeasibleWallTimeNanoseconds,
+                  lowerSummary.executionWallTimeNanoseconds);
+  if (systemSummary.timeToBestWallTimeNanoseconds)
+    saturatingAdd(*systemSummary.timeToBestWallTimeNanoseconds,
+                  lowerSummary.executionWallTimeNanoseconds);
+}
+
 } // namespace
 
 llvm::Expected<JointResourceTimeAdjacentRepair>
@@ -125,37 +359,33 @@ executeResourceTimeAdjacentMappingRepair(
   if (!childPlan)
     return childPlan.takeError();
   JointDesignExplorationPlan coldPlan = *childPlan;
-
-  auto spatialMappings =
-      resolveJointSpatialMappingFrontier(parentPlan, parentExecution);
-  if (!spatialMappings)
-    return spatialMappings.takeError();
-  if (llvm::Error error = bindImmutableSpatialMappingFrontier(
-          *childPlan, *spatialMappings, artifacts))
-    return std::move(error);
-  auto correspondence =
-      pnr::SystemExecutionBindingCorrespondence::getIdentity(system, artifacts);
-  if (!correspondence)
-    return correspondence.takeError();
-  auto context = deriveSystemMappingMigrationContext(*childPlan);
-  if (!context)
-    return context.takeError();
-  auto seed = pnr::finalizeSystemMappingMigrationSeed(
-      *parentMapping, *correspondence, *context, reopenedRoots, artifacts);
-  if (!seed)
-    return seed.takeError();
-  if (llvm::Error error = bindFinalizedSystemMappingMigrationSeed(
-          *childPlan, seed->reference(), artifacts))
-    return std::move(error);
+  auto importedParentMapping =
+      mapping::importSystemMapping(*parentMapping, artifacts);
+  if (!importedParentMapping)
+    return importedParentMapping.takeError();
+  auto parentCone = pnr::projectSystemMappingMigrationConePartition(
+      importedParentMapping->view(), reopenedRoots, artifacts);
+  if (!parentCone)
+    return parentCone.takeError();
+  auto lowerPlan = buildReopenedRootLowerMappingPlan(
+      *childPlan, parentCone->reopenedRoots, artifacts);
+  if (!lowerPlan)
+    return lowerPlan.takeError();
+  const std::uint64_t originalSystemNodeOrdinal =
+      childPlan->pairOutputs.front().systemMappings.producerNodeOrdinal;
 
   JointHardwareReopenRequest coldRequest = request;
   llvm::SmallString<256> coldJournal(coldRequest.journalRoot);
   llvm::sys::path::append(coldJournal, "cold");
   coldRequest.journalRoot = coldJournal.str().str();
-  JointHardwareReopenRequest incrementalRequest = request;
-  llvm::SmallString<256> incrementalJournal(incrementalRequest.journalRoot);
-  llvm::sys::path::append(incrementalJournal, "incremental");
-  incrementalRequest.journalRoot = incrementalJournal.str().str();
+  JointHardwareReopenRequest lowerRequest = request;
+  llvm::SmallString<256> lowerJournal(lowerRequest.journalRoot);
+  llvm::sys::path::append(lowerJournal, "incremental", "lower");
+  lowerRequest.journalRoot = lowerJournal.str().str();
+  JointHardwareReopenRequest systemRequest = request;
+  llvm::SmallString<256> systemJournal(systemRequest.journalRoot);
+  llvm::sys::path::append(systemJournal, "incremental", "system");
+  systemRequest.journalRoot = systemJournal.str().str();
   const auto executeIndependent = [&](const JointDesignExplorationPlan &plan,
                                       const JointHardwareReopenRequest &run)
       -> llvm::Expected<JointDesignExecution> {
@@ -168,9 +398,68 @@ executeResourceTimeAdjacentMappingRepair(
   coldExecution->summary.coldReopenWallTimeNanoseconds =
       coldExecution->summary.executionWallTimeNanoseconds;
 
-  auto execution = executeIndependent(*childPlan, incrementalRequest);
+  auto lowerScheduler = SiteScheduler::create(lowerRequest.siteCapacity);
+  if (!lowerScheduler)
+    return lowerScheduler.takeError();
+  llvm::Expected<JointDesignExecution> lowerExecution = [&]() {
+    loom::pnr::PnrDerivedContextSession derivedContextSession;
+    return executeJointPlan(lowerPlan->plan, lowerRequest.evidence,
+                            lowerRequest,
+                            *lowerScheduler, artifacts, blobs);
+  }();
+  if (!lowerExecution)
+    return lowerExecution.takeError();
+  auto reopenedSpatialMappings = resolveReopenedRootLowerMappingFrontier(
+      *lowerPlan, *lowerExecution);
+  if (!reopenedSpatialMappings)
+    return reopenedSpatialMappings.takeError();
+  auto hybridSpatialMappings = materializeHybridSpatialMappingFrontier(
+      *childPlan, *reopenedSpatialMappings, *parentCone, artifacts);
+  if (!hybridSpatialMappings)
+    return hybridSpatialMappings.takeError();
+  if (llvm::Error error = bindImmutableSpatialMappingFrontier(
+          *childPlan, *hybridSpatialMappings, artifacts))
+    return std::move(error);
+
+  auto correspondence =
+      pnr::SystemExecutionBindingCorrespondence::getIdentity(system, artifacts);
+  if (!correspondence)
+    return correspondence.takeError();
+  auto context = deriveSystemMappingMigrationContext(*childPlan);
+  if (!context)
+    return context.takeError();
+  auto seed = pnr::finalizeSystemMappingMigrationSeed(
+      *parentMapping, *correspondence, *context, parentCone->reopenedRoots,
+      artifacts);
+  if (!seed)
+    return seed.takeError();
+  if (llvm::Error error = bindFinalizedSystemMappingMigrationSeed(
+          *childPlan, seed->reference(), artifacts))
+    return std::move(error);
+
+  std::uint64_t lowerDispatches =
+      lowerExecution->summary.techMappingDispatchCount;
+  saturatingAdd(lowerDispatches,
+                lowerExecution->summary.spatialPnrDispatchCount);
+  saturatingAdd(lowerDispatches,
+                lowerExecution->summary.systemPnrDispatchCount);
+  auto systemPolicy = systemOnlyExecutionPolicy(
+      request.executionPolicy, originalSystemNodeOrdinal, lowerDispatches);
+  if (!systemPolicy)
+    return systemPolicy.takeError();
+  systemRequest.executionPolicy = std::move(*systemPolicy);
+  auto execution = executeIndependent(*childPlan, systemRequest);
   if (!execution)
     return execution.takeError();
+  std::vector<JointDesignInvocationManifestReference> lowerInvocations;
+  if (llvm::Error error = retainJointDesignExecutionInvocations(
+          lowerInvocations, *lowerExecution))
+    return std::move(error);
+  if (llvm::Error error = attachJointDesignSupportingInvocationManifests(
+          *execution, lowerInvocations))
+    return std::move(error);
+  mergeLowerMappingExecutionAccounting(execution->summary,
+                                       lowerExecution->summary);
   execution->summary.incrementalReopenWallTimeNanoseconds =
       execution->summary.executionWallTimeNanoseconds;
   const std::optional<ArtifactRootReference> coldMapping =
@@ -199,22 +488,64 @@ executeResourceTimeAdjacentMappingRepair(
       incrementalMappings, software.dataflow, system, artifacts);
   if (!incrementalVerification)
     return incrementalVerification.takeError();
-  std::set<ArtifactIdentity::Storage> preservedTech;
-  for (const ArtifactRootReference &reference : *spatialMappings) {
-    auto mapping = mapping::importSpatialMapping(reference, artifacts);
-    if (!mapping)
-      return mapping.takeError();
-    preservedTech.insert(mapping->view().techMappingIdentity().bytes());
+
+  execution->summary.preservedSpatialMappings =
+      parentCone->preservedSpatialMappings.size();
+  execution->summary.preservedTechMappings =
+      parentCone->preservedTechMappings.size();
+  execution->summary.invalidatedSpatialMappings =
+      parentCone->reopenedSpatialMappings.size();
+  execution->summary.invalidatedTechMappings =
+      parentCone->reopenedTechMappings.size();
+  execution->summary.invalidationRootCount = parentCone->reopenedRoots.size();
+  execution->summary.parentThreadBindingCount =
+      parentCone->preservedThreadBindings + parentCone->reopenedThreadBindings;
+  execution->summary.preservedThreadBindingCount =
+      parentCone->preservedThreadBindings;
+  execution->summary.reopenedThreadBindingCount =
+      parentCone->reopenedThreadBindings;
+  execution->summary.parentGraphBindingCount =
+      parentCone->preservedGraphBindings + parentCone->reopenedGraphBindings;
+  execution->summary.preservedGraphBindingCount =
+      parentCone->preservedGraphBindings;
+  execution->summary.reopenedGraphBindingCount =
+      parentCone->reopenedGraphBindings;
+  if (incrementalMapping) {
+    auto importedChildMapping =
+        mapping::importSystemMapping(*incrementalMapping, artifacts);
+    if (!importedChildMapping)
+      return importedChildMapping.takeError();
+    auto childCone = pnr::projectSystemMappingMigrationConePartition(
+        importedChildMapping->view(), parentCone->reopenedRoots, artifacts);
+    if (!childCone)
+      return childCone.takeError();
+    if (childCone->preservedSpatialMappings !=
+            parentCone->preservedSpatialMappings ||
+        childCone->preservedTechMappings != parentCone->preservedTechMappings)
+      return invalid("resource-time System repair changed its preserved "
+                     "lower-Mapping cone");
+    execution->summary.repairedSpatialMappings =
+        childCone->reopenedSpatialMappings.size();
+    execution->summary.repairedTechMappings =
+        childCone->reopenedTechMappings.size();
   }
-  execution->summary.preservedSpatialMappings = spatialMappings->size();
-  execution->summary.preservedTechMappings = preservedTech.size();
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] = "resource_time_adjacent_mapping_repair";
-        fields["reopened_root_count"] = reopenedRoots.size();
-        fields["preserved_tech_mappings"] = preservedTech.size();
-        fields["preserved_spatial_mappings"] = spatialMappings->size();
+        fields["reopened_root_count"] = parentCone->reopenedRoots.size();
+        fields["preserved_tech_mappings"] =
+            execution->summary.preservedTechMappings;
+        fields["preserved_spatial_mappings"] =
+            execution->summary.preservedSpatialMappings;
+        fields["repaired_tech_mappings"] =
+            execution->summary.repairedTechMappings;
+        fields["repaired_spatial_mappings"] =
+            execution->summary.repairedSpatialMappings;
+        fields["preserved_system_bindings"] =
+            parentCone->preservedSystemBindings();
+        fields["reopened_system_bindings"] =
+            parentCone->reopenedSystemBindings();
         fields["tech_mapping_dispatch_count"] =
             execution->summary.techMappingDispatchCount;
         fields["spatial_pnr_dispatch_count"] =
@@ -337,12 +668,10 @@ accountSystemColdFallback(JointMappingRebaseAccounting &accounting) {
   return validateJointMappingRebaseAccounting(accounting);
 }
 
-llvm::Expected<JointDesignExecution>
-executeIndependentMutationPlan(const JointDesignExplorationPlan &plan,
-                               const JointDesignPolicy &policy,
-                               const JointHardwareReopenRequest &request,
-                               const ArtifactStore &artifacts,
-                               const BlobStore &blobs) {
+llvm::Expected<JointDesignExecution> executeIndependentMutationPlan(
+    const JointDesignExplorationPlan &plan, const JointDesignPolicy &policy,
+    const JointHardwareReopenRequest &request, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
   loom::pnr::PnrDerivedContextSession derivedContextSession;
   return executeJointRepairPlan(plan, policy, request, artifacts, blobs);
 }
@@ -453,6 +782,7 @@ deriveReplacementModuleLineage(
 }
 
 struct TypedModuleHardwareRepair final {
+  ArtifactRootReference record;
   JointDesignExecution execution;
   JointMappingReuseDisposition disposition =
       JointMappingReuseDisposition::ColdFallback;
@@ -481,8 +811,8 @@ spatialFifoHardwareAlternatives(const SpatialFifoRuntimeFeedback &feedback) {
     alternatives.push_back(std::move(sequence));
   }
   if (feedback.minimumCandidateDepth)
-    alternatives.push_back({ResizeFifoDomain{
-        *feedback.fifo, {*feedback.minimumCandidateDepth}}});
+    alternatives.push_back(
+        {ResizeFifoDomain{*feedback.fifo, {*feedback.minimumCandidateDepth}}});
   return alternatives;
 }
 
@@ -520,7 +850,8 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
           child.reference,
           std::move(child.config),
           std::move(child.executionBindingCorrespondence),
-          {std::move(*child.mappingImpact)}},
+          {std::move(*child.mappingImpact)},
+          std::move(child.decisionLineage)},
       std::move(request), artifacts, blobs);
   if (!repair)
     return repair.takeError();
@@ -535,8 +866,8 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
         fields["reconfiguration_support"] = "unsupported";
       });
   const JointMappingReuseDisposition disposition = repair->rebase.disposition;
-  return TypedModuleHardwareRepair{std::move(repair->incrementalExecution),
-                                   disposition};
+  return TypedModuleHardwareRepair{
+      repair->record, std::move(repair->incrementalExecution), disposition};
 }
 
 } // namespace
@@ -576,7 +907,8 @@ materializeJointModuleGrowthChild(HardwareRecipeGrowth growth,
       materialized->reference,
       std::move(materialized->config),
       std::move(materialized->executionBindingCorrespondence),
-      {std::move(*materialized->mappingImpact)}};
+      {std::move(*materialized->mappingImpact)},
+      std::move(materialized->decisionLineage)};
 }
 
 llvm::Expected<JointHardwareMutationChild>
@@ -686,7 +1018,10 @@ materializeJointSystemHardwareMutation(
   return JointHardwareMutationChild{childSystem,
                                     std::move(config),
                                     std::move(correspondence),
-                                    {std::move(impact)}};
+                                    {std::move(impact)},
+                                    {{systemCompositionCandidateGeneratorKind,
+                                      lineage.output, lineage.parents,
+                                      lineage.ownerPayload}}};
 }
 
 llvm::Expected<JointHardwareMutationChild>
@@ -706,9 +1041,14 @@ composeJointHardwareMutationChildren(JointHardwareMutationChild first,
   first.impacts.insert(first.impacts.end(),
                        std::make_move_iterator(second.impacts.begin()),
                        std::make_move_iterator(second.impacts.end()));
+  first.decisionLineage.insert(
+      first.decisionLineage.end(),
+      std::make_move_iterator(second.decisionLineage.begin()),
+      std::make_move_iterator(second.decisionLineage.end()));
   return JointHardwareMutationChild{second.system, std::move(second.config),
                                     std::move(*correspondence),
-                                    std::move(first.impacts)};
+                                    std::move(first.impacts),
+                                    std::move(first.decisionLineage)};
 }
 
 llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
@@ -861,9 +1201,8 @@ llvm::Expected<JointHardwareMutationRepair> executeJointHardwareMutationRepair(
   // unseeded, so the identical plan ran twice.
   std::optional<JointDesignExecution> coldExecution;
   if (coldComparisonBaseline) {
-    auto executed = executeIndependentMutationPlan(*coldPlan, policy,
-                                                   coldRequest, artifacts,
-                                                   blobs);
+    auto executed = executeIndependentMutationPlan(
+        *coldPlan, policy, coldRequest, artifacts, blobs);
     if (!executed)
       return executed.takeError();
     coldExecution = std::move(*executed);
@@ -960,12 +1299,11 @@ executeSpatialFifoHardwareFeedbackReopen(
     const JointDesignPolicy &policy, const SpatialFifoRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
-  JointSpatialFifoHardwareRepair result{feedback, {}, {}, {}, false};
+  JointSpatialFifoHardwareRepair result{feedback, {}, {}, {}, {}, false};
   if (feedback.disposition != SpatialFifoRuntimeFeedbackDisposition::Exact)
     return result;
   if (!feedback.fifo ||
-      (!feedback.minimumCandidateDepth &&
-       !feedback.candidateQueueDiscipline))
+      (!feedback.minimumCandidateDepth && !feedback.candidateQueueDiscipline))
     return invalid("exact FIFO feedback has no physical candidate");
   if (parentPlan.pairOutputs.size() != 1 || request.journalRoot.empty())
     return invalid("FIFO hardware repair requires one exact parent pair");
@@ -1004,39 +1342,6 @@ executeSpatialFifoHardwareFeedbackReopen(
     result.candidateLimit = std::min<std::uint64_t>(
         result.candidateLimit,
         request.boundedQuality->maximumHardwareRepairProbes);
-  // A cross-tag global HOL witness on a System that is the exact output of
-  // its resolved recipe repairs the recipe variable itself: the tagged
-  // interconnect FIFO class changes discipline, so parent and child differ in
-  // `interconnect_fifo_queue_discipline` alone. Any other System keeps the
-  // per-occurrence rewrite sequence.
-  std::optional<HardwareRecipeGrowth> recipeChild;
-  if (feedback.candidateQueueDiscipline &&
-      request.hardwareExplorationScope ==
-          JointHardwareExplorationScope::BoundedHardwareReopen &&
-      parentPlan.resolvedConfig.hardwareTarget.parameters
-              .interconnectFifoQueueDiscipline == *currentDiscipline) {
-    auto scheduler = SiteScheduler::create(request.siteCapacity);
-    if (!scheduler)
-      return scheduler.takeError();
-    HardwareRecipeGrowth recipe;
-    recipe.config = parentPlan.resolvedConfig;
-    recipe.config.dse.planNodes.clear();
-    recipe.resultingContexts =
-        recipe.config.hardwareTarget.parameters.temporalResidentContexts;
-    recipe.resultingGateways =
-        recipe.config.hardwareTarget.parameters.gatewayCount;
-    recipe.resultingAccCores =
-        recipe.config.hardwareTarget.parameters.accCoreCount;
-    auto reproduced = materializeHardwareRecipeGrowth(
-        recipe, request.evidence, request, *scheduler, artifacts, blobs);
-    if (!reproduced)
-      return reproduced.takeError();
-    if (reproduced->reference == parentPair.system) {
-      recipe.config.hardwareTarget.parameters.interconnectFifoQueueDiscipline =
-          *feedback.candidateQueueDiscipline;
-      recipeChild = std::move(recipe);
-    }
-  }
   for (std::size_t ordinal = 0; ordinal != result.candidateLimit; ++ordinal) {
     if (dispatchDeadlineReached(request.executionPolicy)) {
       const std::uint64_t remaining = result.candidateLimit - ordinal;
@@ -1047,77 +1352,6 @@ executeSpatialFifoHardwareFeedbackReopen(
     }
     ++result.candidatesPlanned;
     ++result.candidatesReserved;
-    const bool disciplineAlternative =
-        !alternatives[ordinal].empty() &&
-        std::holds_alternative<ChangeFifoQueueDisciplineDomain>(
-            alternatives[ordinal].front());
-    if (disciplineAlternative && recipeChild) {
-      auto scheduler = SiteScheduler::create(request.siteCapacity);
-      if (!scheduler)
-        return scheduler.takeError();
-      auto child = materializeHardwareRecipeGrowth(
-          *recipeChild, request.evidence, request, *scheduler, artifacts,
-          blobs);
-      if (!child)
-        return child.takeError();
-      auto timing = normalizedTimingProfiles(child->reference, artifacts);
-      if (!timing)
-        return timing.takeError();
-      auto repairPolicy = JointDesignPolicy::get(
-          1, 1, 1, policy.maximumTechMappingsPerModule(),
-          policy.maximumSpatialMappingsPerPair());
-      if (!repairPolicy)
-        return repairPolicy.takeError();
-      ResolvedConfig childConfig = std::move(child->config);
-      childConfig.dse.planNodes.clear();
-      childConfig.dse.systemPnr.search.completionGoal =
-          ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-      // The discipline of every tagged FIFO changed, so no parent route or
-      // tag choice survives: the child maps cold on its own frontier.
-      auto childPlan = buildJointDesignExplorationPlan(
-          {{parentPair.software.workloads}, {child->reference}}, *timing,
-          *repairPolicy, childConfig, artifacts, nullptr,
-          parentPlan.systemBindingPartitions);
-      if (!childPlan)
-        return childPlan.takeError();
-      JointHardwareReopenRequest childRequest = request;
-      llvm::SmallString<256> childJournal(request.journalRoot);
-      llvm::sys::path::append(childJournal, "fifo-runtime-feedback-" +
-                                                std::to_string(ordinal));
-      childRequest.journalRoot = childJournal.str().str();
-      loom::pnr::PnrDerivedContextSession derivedContextSession;
-      auto execution = executeJointRepairPlan(*childPlan, *repairPolicy,
-                                              std::move(childRequest),
-                                              artifacts, blobs);
-      if (!execution)
-        return execution.takeError();
-      execution->summary.coldReopenWallTimeNanoseconds =
-          execution->summary.executionWallTimeNanoseconds;
-      const ArtifactRootReference childReference = child->reference;
-      mapping_debug::emit(
-          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-            fields["operation"] = "spatial_fifo_hardware_repair";
-            fields["alternative"] = ordinal;
-            fields["recipe_variable"] = "interconnect_fifo_queue_discipline";
-            fields["child_system"] =
-                formatArtifactIdentityHex(childReference.artifact);
-            fields["mapping_reuse_disposition"] =
-                jointMappingReuseDispositionSpelling(
-                    JointMappingReuseDisposition::ColdFallback);
-            fields["incremental_mapping_count"] =
-                mappingRoots(*execution).size();
-            fields["incremental_wall_time_ns"] =
-                execution->summary.executionWallTimeNanoseconds;
-            fields["liveness"] = "requires_child_cgra_replay";
-          });
-      ++result.candidatesConsumed;
-      result.childSystems.push_back(childReference);
-      result.reuseDispositions.push_back(
-          JointMappingReuseDisposition::ColdFallback);
-      result.executions.push_back(std::move(*execution));
-      continue;
-    }
     // One alternative materializes as one child: every rewrite of the
     // sequence is an exact Module mutation of the previous child, and the
     // lineages compose so the child keeps the complete typed impact.
@@ -1155,8 +1389,7 @@ executeSpatialFifoHardwareFeedbackReopen(
     JointHardwareReopenRequest childRequest = request;
     llvm::SmallString<256> childJournal(request.journalRoot);
     llvm::sys::path::append(childJournal,
-                            "fifo-runtime-feedback-" +
-                                std::to_string(ordinal));
+                            "fifo-runtime-feedback-" + std::to_string(ordinal));
     childRequest.journalRoot = childJournal.str().str();
     auto repaired = executeJointHardwareMutationRepair(
         parentPlan, parentExecution, policy, feedback.parentMapping,
@@ -1186,6 +1419,7 @@ executeSpatialFifoHardwareFeedbackReopen(
         });
     ++result.candidatesConsumed;
     result.childSystems.push_back(childReference);
+    result.repairRecords.push_back(repaired->record);
     result.reuseDispositions.push_back(repaired->rebase.disposition);
     result.executions.push_back(std::move(repaired->incrementalExecution));
   }
@@ -1197,6 +1431,10 @@ executeSpatialFifoHardwareFeedbackReopen(
   result.candidatesRejected += result.candidatesReserved - settled;
   if (result.candidatesPlanned != result.candidatesReserved)
     return invalid("FIFO hardware repair candidate ledger is not reserved");
+  if (result.childSystems.size() != result.repairRecords.size() ||
+      result.childSystems.size() != result.executions.size() ||
+      result.childSystems.size() != result.reuseDispositions.size())
+    return invalid("FIFO hardware repair lost durable child lineage");
   result.bypassAlternativeUnsupported = feedback.bypassCapable;
   return result;
 }
@@ -1209,7 +1447,7 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
     const SpatialOperandQueueRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
-  JointSpatialOperandBufferHardwareRepair result{feedback, {}, {}, {}};
+  JointSpatialOperandBufferHardwareRepair result{feedback, {}, {}, {}, {}};
   if (feedback.disposition !=
           SpatialOperandQueueRuntimeFeedbackDisposition::Exact ||
       !feedback.parentMapping || !feedback.owners || !feedback.repairTarget)
@@ -1319,6 +1557,7 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
           return existing == childReference;
         })) {
       result.childSystems.push_back(childReference);
+      result.repairRecords.push_back(repaired->record);
       result.reuseDispositions.push_back(repaired->disposition);
       result.executions.push_back(std::move(repaired->execution));
     }
@@ -1333,6 +1572,10 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
   if (result.candidatesPlanned != result.candidatesReserved)
     return invalid("operand-buffer hardware repair candidate ledger is not "
                    "reserved");
+  if (result.childSystems.size() != result.repairRecords.size() ||
+      result.childSystems.size() != result.executions.size() ||
+      result.childSystems.size() != result.reuseDispositions.size())
+    return invalid("operand-buffer hardware repair lost durable child lineage");
   return result;
 }
 
@@ -1355,10 +1598,9 @@ reserveDispatchWindow(const PlanExecutionPolicy &policy,
       *deadline > reservedNanoseconds ? *deadline - reservedNanoseconds : 0);
   if (reservedDeadline >= *deadline)
     return policy;
-  return PlanExecutionPolicy::get(policy.workerCount(), policy.inProcessClaim(),
-                                  policy.externalSite(),
-                                  policy.resourceBindings(),
-                                  policy.maximumDispatches(), reservedDeadline);
+  return PlanExecutionPolicy::get(
+      policy.workerCount(), policy.inProcessClaim(), policy.externalSite(),
+      policy.resourceBindings(), policy.maximumDispatches(), reservedDeadline);
 }
 
 namespace {
@@ -1379,14 +1621,33 @@ void foldRepairLedger(JointRepairWorkLedger &ledger, const Repair &repair) {
   saturatingAdd(ledger.cancelled, repair.candidatesCancelled);
 }
 
-template <typename Repair>
 llvm::Error appendRepairChildren(JointRuntimeWitnessRepair &result,
-                                 Repair &repair) {
+                                 JointSpatialTransportMappingRepair &repair) {
   if (repair.childSystems.size() != repair.executions.size())
     return invalid("runtime witness repair lost its child System domain");
   result.childSystems.insert(result.childSystems.end(),
                              repair.childSystems.begin(),
                              repair.childSystems.end());
+  result.hardwareMutationRepairRecords.insert(
+      result.hardwareMutationRepairRecords.end(), repair.childSystems.size(),
+      std::nullopt);
+  for (JointDesignExecution &child : repair.executions)
+    result.executions.push_back(std::move(child));
+  repair.executions.clear();
+  return llvm::Error::success();
+}
+
+template <typename Repair>
+llvm::Error appendRepairChildren(JointRuntimeWitnessRepair &result,
+                                 Repair &repair) {
+  if (repair.childSystems.size() != repair.executions.size() ||
+      repair.childSystems.size() != repair.repairRecords.size())
+    return invalid("runtime witness repair lost durable hardware lineage");
+  result.childSystems.insert(result.childSystems.end(),
+                             repair.childSystems.begin(),
+                             repair.childSystems.end());
+  for (const ArtifactRootReference &record : repair.repairRecords)
+    result.hardwareMutationRepairRecords.push_back(record);
   for (JointDesignExecution &child : repair.executions)
     result.executions.push_back(std::move(child));
   repair.executions.clear();
@@ -1426,9 +1687,9 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
       request.hardwareExplorationScope ==
           JointHardwareExplorationScope::BoundedHardwareReopen &&
       (!remainingHardwareRepairProbes || *remainingHardwareRepairProbes != 0);
-  const bool fifoAdmitted =
-      hardwareAdmitted && witnesses.fifo &&
-      witnesses.fifo->disposition == SpatialFifoRuntimeFeedbackDisposition::Exact;
+  const bool fifoAdmitted = hardwareAdmitted && witnesses.fifo &&
+                            witnesses.fifo->disposition ==
+                                SpatialFifoRuntimeFeedbackDisposition::Exact;
   const bool operandAdmitted =
       hardwareAdmitted && witnesses.operandQueue &&
       witnesses.operandQueue->disposition ==
@@ -1440,10 +1701,9 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
     saturatingAdd(hardwareChildCount,
                   spatialFifoHardwareAlternatives(*witnesses.fifo).size());
   if (operandAdmitted)
-    saturatingAdd(hardwareChildCount,
-                  spatialOperandBufferHardwareDecisions(
-                      *witnesses.operandQueue->repairTarget)
-                      .size());
+    saturatingAdd(hardwareChildCount, spatialOperandBufferHardwareDecisions(
+                                          *witnesses.operandQueue->repairTarget)
+                                          .size());
   if (remainingHardwareRepairProbes)
     hardwareChildCount =
         std::min(hardwareChildCount, *remainingHardwareRepairProbes);
@@ -1502,16 +1762,14 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
       [&](llvm::StringRef family) -> JointHardwareReopenRequest {
     JointHardwareReopenRequest child = familyRequest(request, family);
     if (child.boundedQuality && remainingProbes)
-      child.boundedQuality->maximumHardwareRepairProbes =
-          std::min(child.boundedQuality->maximumHardwareRepairProbes,
-                   *remainingProbes);
+      child.boundedQuality->maximumHardwareRepairProbes = std::min(
+          child.boundedQuality->maximumHardwareRepairProbes, *remainingProbes);
     return child;
   };
   const auto chargeProbes = [&](std::uint64_t reserved) {
     if (remainingProbes)
-      *remainingProbes = reserved >= *remainingProbes ? 0
-                                                      : *remainingProbes -
-                                                            reserved;
+      *remainingProbes =
+          reserved >= *remainingProbes ? 0 : *remainingProbes - reserved;
   };
   if (fifoAdmitted && !hardwareWithheldByMappingRepair &&
       (!remainingProbes || *remainingProbes != 0)) {
@@ -1540,6 +1798,9 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
     result.operandBufferReopen = std::move(*repaired);
   }
   hardwareReopenWallNanoseconds = elapsedNanoseconds(hardwareReopenStart);
+  if (result.childSystems.size() != result.executions.size() ||
+      result.childSystems.size() != result.hardwareMutationRepairRecords.size())
+    return invalid("runtime witness repair lost aligned child lineage");
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -1565,6 +1826,9 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
         fields["hardware_reopen"] = ledger(result.hardwareReopenLedger);
         fields["hardware_reopen_wall_ns"] = hardwareReopenWallNanoseconds;
         fields["child_system_count"] = result.childSystems.size();
+        fields["hardware_mutation_repair_record_count"] = llvm::count_if(
+            result.hardwareMutationRepairRecords,
+            [](const auto &record) { return record.has_value(); });
       });
   return result;
 }

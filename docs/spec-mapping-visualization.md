@@ -173,6 +173,20 @@ ordinal base. Objective codes remain opaque inputs to the shared
 `ObjectiveProgram`; visualization does not reinterpret them as physical
 measurements or combine observations from different invocation keys.
 
+Version 1.3 replaces the provisional live-work transition projection with the
+canonical logical-memory correspondence and its owner-derived migration cost.
+
+Version 1.4 retains `fabric` as the original application pair Fabric, names the
+selected System separately, and groups every TechMapping, SpatialMapping, and
+SystemMapping reference under the actual System outcome domain that contains
+it. Each non-original System has its own deterministic Fabric projection. The
+bundle also carries the runtime manifest's canonical hardware-mutation
+repair-record inventory and nullable exact selected record. For resource-time
+repair, visualization uses the Mapping-migration owner's cone partition:
+cone-external parent mappings must remain exact and every replacement mapping
+must be confined to a reopened root. Visualization does not independently
+redefine that partition.
+
 Scripts, stdout, stderr, vendor warnings, tool-native reports, diagnostic
 traces, and other raw execution material remain attempt or scratch material
 associated with the exact Request. No current raw-bundle Artifact or trace
