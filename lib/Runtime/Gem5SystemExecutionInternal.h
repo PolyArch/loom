@@ -68,6 +68,8 @@ inline constexpr llvm::StringLiteral kThreadDispatchPath =
 inline constexpr llvm::StringLiteral kAdmissionPath = "inputs/admission.bin";
 inline constexpr llvm::StringLiteral kMemoryTablePath =
     "inputs/system-memory-table.bin";
+inline constexpr llvm::StringLiteral kValueTablePath =
+    "inputs/system-value-table.bin";
 inline constexpr llvm::StringLiteral kHostResultPath = "inputs/host-result.bin";
 inline constexpr llvm::StringLiteral kHostReturnPath = "inputs/host-return.bin";
 inline constexpr std::uint64_t kGem5StartupTickBudget = 30'000'000;
@@ -165,6 +167,8 @@ struct Gem5SystemFacts final {
   std::vector<Gem5RuntimeImage> runtimeImages;
   std::uint64_t memoryInterfaceTableAddress = 0;
   std::uint64_t memoryInterfaceTableEntries = 0;
+  std::uint64_t valueTableAddress = 0;
+  std::uint64_t valueTableEntries = 0;
   std::optional<Gem5ProgramResultProjection> programResult;
   std::vector<Gem5MemoryObservationProjection> memoryObservations;
   std::uint64_t hostReturnAddress = 0;

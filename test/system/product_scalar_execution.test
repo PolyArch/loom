@@ -21,7 +21,7 @@
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
 # RUN:   --spatial-cgra-profile-output=%t.profile-alias-execution/manifest.json \
 # RUN:   --spatial-cgra-warmup-runs=1 --spatial-cgra-measurement-runs=1
-# RUN: grep '"schema": "loom.execution_matrix_workspace.1.2"' \
+# RUN: grep '"schema": "loom.execution_matrix_workspace.2.0"' \
 # RUN:   %t.profile-alias-execution/manifest.json
 # RUN: find %t.profile-alias-execution -name 'manifest.json.tmp-*' -print | count 0
 # RUN: %python %S/verify_product_execution.py \

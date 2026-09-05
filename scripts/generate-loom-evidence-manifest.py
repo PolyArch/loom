@@ -233,6 +233,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     portfolio_manifest_errors: list[str] = []
     portfolio_inventory_report_count = 0
     portfolio_host_runs: list[dict[str, Any]] = []
+    application_runtime_manifest_bindings: list[dict[str, Any]] = []
+    execution_matrix_workspaces: list[dict[str, Any]] = []
     quality_summaries: list[dict[str, Any]] = []
     quality_observations: list[dict[str, Any]] = []
     funnel_summaries: list[dict[str, Any]] = []
@@ -272,7 +274,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                     if key != "__loom_record_kind"
                 }
             )
-        if payload.get("schema") == "loom.execution_matrix_workspace.1.2":
+        if payload.get("schema") == "loom.execution_matrix_workspace.2.0":
+            execution_matrix_workspaces.append(payload)
             runs = payload.get("runs")
             if isinstance(runs, list):
                 for run in runs:
@@ -298,6 +301,12 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         if key in run
                     }
                     execution_matrix_observations.append(observation)
+        if (
+            payload.get("schema")
+            == "loom.application_runtime_manifest_binding"
+            and payload.get("domain") == "application_runtime_manifest"
+        ):
+            application_runtime_manifest_bindings.append(payload)
         if payload.get("schema") == "loom.application_portfolio_inventory":
             portfolio_inventory_report_count += 1
             inventory, errors = collect_portfolio_inventory(payload)
@@ -1057,6 +1066,8 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         portfolio_host_runs,
         application_pair_evidence,
         portfolio_manifest_errors,
+        application_runtime_manifest_bindings,
+        execution_matrix_workspaces,
     )
     return {
         "event_count": len(records),
@@ -1076,6 +1087,10 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_dispositions": dict(sorted(disposition_counts.items())),
         "application_mapping_outcomes": application_outcomes,
         "application_pair_decisions": application_pair_decisions,
+        "application_runtime_manifest_bindings": (
+            application_runtime_manifest_bindings
+        ),
+        "execution_matrix_workspaces": execution_matrix_workspaces,
         "portfolio": portfolio,
         "quality_summaries": quality_summaries,
         "quality_observations": quality_observations,

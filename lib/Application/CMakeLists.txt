@@ -31,7 +31,9 @@ add_library(LoomApplicationRuntimeManifest
   ActivationDecision.cpp
   ActivationRepairLineage.cpp
   Package.cpp
+  ProductOracleEvaluation.cpp
   RuntimeManifest.cpp
+  RuntimeProductContract.cpp
 )
 
 target_include_directories(LoomApplicationRuntimeManifest PUBLIC

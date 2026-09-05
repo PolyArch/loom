@@ -1,5 +1,7 @@
 #include "Application/RuntimeManifest.h"
 
+#include "RuntimeProductContract.h"
+
 #include "Application/ActivationDecision.h"
 #include "Application/Build.h"
 #include "Common/ArtifactFinalizer.h"
@@ -872,6 +874,96 @@ parsePairDisposition(llvm::StringRef spelling) {
   return malformed("unknown application pair disposition '" + spelling + "'");
 }
 
+llvm::Expected<ProductEntryABI> parseProductEntryAbi(llvm::StringRef spelling) {
+  if (spelling == productEntryAbiSpelling(
+                      ProductEntryABI::CachedInputsProfileOutputV1))
+    return ProductEntryABI::CachedInputsProfileOutputV1;
+  return malformed("unknown product entry ABI '" + spelling + "'");
+}
+
+void writeProductOracle(
+    llvm::json::OStream &json,
+    const std::optional<ProductOracleContract> &contract) {
+  json.attributeBegin("product_oracle");
+  if (!contract) {
+    json.value(nullptr);
+  } else {
+    json.object([&] {
+      json.attribute("entry_abi", productEntryAbiSpelling(contract->entryAbi));
+      json.attribute("entry_symbol", contract->entrySymbol);
+      json.attribute("warmup_samples", contract->warmupSamples);
+      json.attribute("measured_samples", contract->measuredSamples);
+      json.attribute("measured_output_bytes_per_sample",
+                     contract->measuredOutputBytesPerSample);
+      json.attribute("expected_output_sha256",
+                     formatBlobDigestHex(contract->expectedOutput));
+      json.attribute("output_interface_ordinal",
+                     contract->outputInterfaceOrdinal);
+    });
+  }
+  json.attributeEnd();
+}
+
+llvm::Expected<std::optional<ProductOracleContract>>
+parseProductOracle(const llvm::json::Object &root) {
+  const llvm::json::Value *value = root.get("product_oracle");
+  if (!value)
+    return malformed("runtime manifest field 'product_oracle' is required");
+  if (value->getAsNull())
+    return std::optional<ProductOracleContract>{};
+  const llvm::json::Object *object = value->getAsObject();
+  if (!object)
+    return malformed("runtime manifest product_oracle must be null or an "
+                     "object");
+  if (llvm::Error error = rejectUnknownFields(
+          *object,
+          {"entry_abi", "entry_symbol", "warmup_samples", "measured_samples",
+           "measured_output_bytes_per_sample", "expected_output_sha256",
+           "output_interface_ordinal"},
+          "runtime manifest product_oracle"))
+    return std::move(error);
+  auto abiSpelling = requireString(*object, "entry_abi",
+                                   "runtime manifest product_oracle");
+  if (!abiSpelling)
+    return abiSpelling.takeError();
+  auto abi = parseProductEntryAbi(*abiSpelling);
+  if (!abi)
+    return abi.takeError();
+  auto symbol = requireString(*object, "entry_symbol",
+                              "runtime manifest product_oracle");
+  if (!symbol)
+    return symbol.takeError();
+  auto warmup = requireUnsigned(*object, "warmup_samples",
+                                "runtime manifest product_oracle");
+  if (!warmup)
+    return warmup.takeError();
+  auto measured = requireUnsigned(*object, "measured_samples",
+                                  "runtime manifest product_oracle");
+  if (!measured)
+    return measured.takeError();
+  auto bytesPerSample = requireUnsigned(
+      *object, "measured_output_bytes_per_sample",
+      "runtime manifest product_oracle");
+  if (!bytesPerSample)
+    return bytesPerSample.takeError();
+  auto digestSpelling = requireString(*object, "expected_output_sha256",
+                                      "runtime manifest product_oracle");
+  if (!digestSpelling)
+    return digestSpelling.takeError();
+  auto digest = parseBlobDigestHex(*digestSpelling);
+  if (!digest)
+    return malformed("runtime manifest product oracle digest is invalid: " +
+                     llvm::toString(digest.takeError()));
+  auto outputInterface = requireUnsigned(
+      *object, "output_interface_ordinal",
+      "runtime manifest product_oracle");
+  if (!outputInterface)
+    return outputInterface.takeError();
+  return std::optional<ProductOracleContract>{ProductOracleContract{
+      *abi, symbol->str(), *warmup, *measured, *bytesPerSample, *digest,
+      *outputInterface}};
+}
+
 std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
@@ -910,6 +1002,7 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
                       draft.selectedHardwareMutationRepairRecord);
     writeRootArray(json, "hardware_mutation_repair_records",
                    draft.hardwareMutationRepairRecords);
+    writeProductOracle(json, draft.productOracle);
     json.attributeBegin("transition_graph");
     if (draft.transitionGraph)
       writeGraph(json, *draft.transitionGraph);
@@ -955,6 +1048,7 @@ parseDraft(llvm::StringRef text) {
                                "oracle_evidence",
                                "selected_hardware_mutation_repair_record",
                                "hardware_mutation_repair_records",
+                               "product_oracle",
                                "transition_graph"},
                               "runtime manifest"))
     return std::move(error);
@@ -1070,6 +1164,9 @@ parseDraft(llvm::StringRef text) {
       *root, "hardware_mutation_repair_records", "runtime manifest");
   if (!hardwareMutationRepairRecords)
     return hardwareMutationRepairRecords.takeError();
+  auto productOracle = parseProductOracle(*root);
+  if (!productOracle)
+    return productOracle.takeError();
   const llvm::json::Value *graphValue = root->get("transition_graph");
   if (!graphValue)
     return malformed("runtime manifest transition_graph is required");
@@ -1107,6 +1204,7 @@ parseDraft(llvm::StringRef text) {
       std::move(*oracleEvidence),
       std::move(*selectedHardwareMutationRepairRecord),
       std::move(*hardwareMutationRepairRecords),
+      std::move(*productOracle),
       std::move(graph)};
 }
 
@@ -1332,6 +1430,11 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
                   "cannot derive selected Deployment closure: " +
                       llvm::toString(deploymentClosure.takeError()));
 
+  if (draft.productOracle)
+    if (llvm::Error error = detail::verifyRuntimeProductContract(
+            *draft.productOracle, *sourceInputs, *activationInputs,
+            *importedDeployment, artifacts, blobs))
+      return error;
   if (draft.runtimeEvidence.empty() || draft.oracleEvidence.empty())
     return reject(
         ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
@@ -1733,6 +1836,14 @@ void ApplicationRuntimeManifestError::log(llvm::raw_ostream &stream) const {
 
 std::error_code ApplicationRuntimeManifestError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
+}
+
+llvm::StringRef productEntryAbiSpelling(ProductEntryABI abi) {
+  switch (abi) {
+  case ProductEntryABI::CachedInputsProfileOutputV1:
+    return "cached_inputs_profile_output_v1";
+  }
+  llvm_unreachable("unknown ProductEntryABI");
 }
 
 llvm::StringRef toString(ApplicationPairDecisionDisposition value) {

@@ -49,12 +49,15 @@ for `validation`, under a ten-second deadline. The exact smoke oracle records
 all 2,560 measured output bytes independently reproduced with both the
 `ai-edge-litert` 2.2.0 `BUILTIN_REF` kernel and its default XNNPACK delegate,
 using one thread. The validation oracle covers the next two measured samples
-after its longer warm-up. The host runner uses real-valued requantization
-compatible with those reference semantics; it does not claim bit equivalence
-to optimized fixed-point builtin or TFLite Micro kernels, or complete MLPerf
-anomaly MSE reporting. This is bounded host inference with admitted source,
-model, dataset, profile, and oracle provenance. It is not a TFLite product
-frontend and does not establish canonical Simulation or Evaluation Evidence.
+after its longer warm-up. The shared host/product implementation uses
+real-valued requantization compatible with those reference semantics; it does
+not claim bit equivalence to optimized fixed-point builtin or TFLite Micro
+kernels, or complete MLPerf anomaly MSE reporting. The product entry consumes
+the admitted model and
+dataset bytes, executes the manifest counts, and writes every measured output
+byte through the ordinary Deployment and System memory ABI. A separate
+Evaluation model compares that observation with the independently admitted
+oracle. This remains a bounded C++ application, not a TFLite product frontend.
 
 ## Manifest Contract
 
@@ -64,6 +67,8 @@ application:
 * its stable application identity and source-package root;
 * the exact build entry, language mode, source selection, and compiler and link
   options;
+* an explicit product entry symbol and measured output extent when the row has
+  a product execution ABI;
 * named workload and runtime-input selections;
 * the independent oracle or typed invariant bound to each selection;
 * the bounded warm-up, measured-sample, oracle-coverage, and execution-deadline
@@ -72,12 +77,13 @@ application:
   execution policies.
 
 The tracked JSON contract is schema `loom.application_portfolio` version
-`3.0`. Its exact structural shape is:
+`4.0`. Version 4.0 incompatibly requires a product-execution selection and a
+pinned oracle digest and encoding. Its exact structural shape is:
 
 ```text
 {
   "schema": "loom.application_portfolio",
-  "version": "3.0",
+  "version": "4.0",
   "applications": [{
     "identity": <stable logical name>,
     "source": {"kind": "gitlink" | "repository", "root": <repo path>},
@@ -87,7 +93,11 @@ The tracked JSON contract is schema `loom.application_portfolio` version
       "sources": [<source-relative translation units>],
       "compiler_options": [<argument>],
       "link_options": [<argument>],
-      "operator_protocol_symbols": [<linked symbol>]
+      "operator_protocol_symbols": [<linked symbol>],
+      "product_execution": null | {
+        "entry_symbol": <external C symbol>,
+        "measured_output_bytes_per_sample": <positive unsigned integer>
+      }
     },
     "cached_inputs": [
       {"logical_name": <name>, "path": <cache path>, "sha256": <digest>}
@@ -98,7 +108,12 @@ The tracked JSON contract is schema `loom.application_portfolio` version
       "runtime_input": <logical runtime-input selection>,
       "cached_inputs": [<cached logical name>],
       "compiler_options": [<input-specific argument>],
-      "oracle": {"kind": "exact" | "typed_invariant", "entry": <repo path>},
+      "oracle": {
+        "kind": "exact" | "typed_invariant",
+        "entry": <repo path>,
+        "sha256": <digest>,
+        "encoding": "utf8" | "hex_sample_lines"
+      },
       "profile": {
         "warmup_samples": <unsigned integer>,
         "measured_samples": <positive unsigned integer>,
@@ -127,9 +142,14 @@ option order or consumes a documented option through an existing semantic
 owner. Operator-protocol symbols are ordered, unique linked entry symbols owned
 by the build selection; their order retains the candidate preference previously
 expressed by the product invocation. A portfolio invocation cannot supply a
-competing CLI symbol list. All paths are normalized visible-ASCII relative
-paths; stable logical names use lowercase ASCII letters, digits, `.`, `_`, or
-`-`.
+competing CLI symbol list. `product_execution` is required and null for an
+ordinary host-shaped row. A non-null selection requires at least one operator
+protocol symbol, an exact `hex_sample_lines` oracle, and a positive per-sample
+output extent. Cached-input order, the selected profile, and this small
+application-specific selection mechanically derive the complete product ABI;
+the manifest does not duplicate its argument list. All paths are normalized
+visible-ASCII relative paths; stable logical names use lowercase ASCII letters,
+digits, `.`, `_`, or `-`.
 The optional execution-selection fields are interpreted in the fixed order
 `smoke`, `validation`, then `scale_eda`. Every present field has a nonempty
 exact input-name set, every name resolves within the same application, and
@@ -176,7 +196,8 @@ worktree that Git reports for the repository and validates that checkout
 against the linked worktree's own index entry.
 Repository sources, selected translation units, and oracle entries must exist
 without escaping their admitted roots. An oracle entry cannot be a selected
-program translation unit. Cache bytes must match their declared SHA-256.
+program translation unit. Cache and oracle bytes must match their declared
+SHA-256.
 Missing Gitlink checkout or cache content is typed unavailable; a wrong mode,
 revision mismatch, modified selected source, path escape, or digest mismatch
 is invalid. Admission never initializes a submodule or substitutes content.
@@ -200,13 +221,18 @@ The pair decision and product build derive operator-protocol symbols from the
 selected build. They do not accept an independent symbol list, so candidate
 discovery and the portfolio report cannot silently name different kernels.
 
-The current product source binding admits exactly zero warm-up samples and one
-measured sample. A profile with any other sample count is typed unsupported
-until an application runner executes the declared counts; the product path
-does not silently reinterpret or ignore a larger profile. Consequently, the
-TinyML member's smoke and validation profiles are directly executable by its
-bounded host runner but each returns `loom_portfolio_profile_unsupported` from
-the current product source-binding path.
+For a product row with `N` cached inputs, the selected C entry has `N`
+`(pointer, byte_count)` pairs followed by `warmup_samples`,
+`measured_samples`, `output_pointer`, and `output_byte_count`, and returns an
+`i32` status. All scalar arguments are unsigned 64-bit values. Cached bytes,
+counts, and independent zeroed output storage are owned by the Structured
+Program workload/runtime input and projected without reinterpretation into
+the Deployment Host entry and System activation. Cached interfaces are typed
+Input and the final output interface is typed Output. This
+`cached_inputs_profile_output_v1` ABI executes every declared TinyML warm-up
+and measured sample; no count is replaced by a product-local default. Oracle
+bytes never enter the runtime input, guest arguments, or candidate identity;
+only the independent Evaluation comparison receives them.
 
 The `loom.application_pair_decision` version `1.2` projection records the
 resolved application identity, input name, source/build selection,
@@ -272,7 +298,11 @@ workload and runtime input that Deployment executes; the build projects it
 once into its diagnostics (`application_runtime_manifest` statistics), so an
 execution manifest naming the same Deployment, activation workload, and
 activation runtime input is verifiably bound to the pair decision's exact
-identities without decoding the package.
+identities without decoding the package. A product manifest also binds the
+derived ABI, entry symbol, exact profile, per-sample output extent, output
+interface, and a Blob containing the decoded expected bytes. The source oracle
+file remains the manifest-owned authority; that Blob is derived only after
+digest and exact line/order/extent validation.
 
 A successful decision is published inside
 `loom.application_pair_evidence` version `1.2`. That envelope is the canonical
@@ -287,7 +317,7 @@ were measured for that exact SystemMapping. The surrounding generated Mapping
 frontier cannot stand in for this identity.
 The successful envelope's repair-record inventory is derived from the same
 `loom.application.activation_decision` 2.0 owner projected by runtime manifest
-6.0. When the selected
+7.0. When the selected
 `hardware_dse_alternative` observation names a mutation repair, the runtime
 manifest names the same unique record. Omitting a unique record that selects
 the activation SystemMapping is invalid; a general hardware-frontier selection
@@ -469,18 +499,21 @@ contract; a held-out release gate must pass before an updated parameter bundle
 is promoted.
 
 `loom-application-manifest-inspect` emits the deterministic
-`loom.application_portfolio_inventory` projection only after the canonical C++
-manifest parser accepts the source document. The evidence generator consumes
-that projection and refuses raw manifest JSON, so it cannot become a second
-manifest parser or normalize a document rejected by the semantic owner.
+`loom.application_portfolio_inventory` version `2.0` projection only after the
+canonical C++ manifest parser accepts the source document. The evidence
+generator consumes that projection and refuses raw manifest JSON, so it cannot
+become a second manifest parser or normalize a document rejected by the
+semantic owner.
 
 The derived evidence manifest joins each exact inventory row independently to
 its bounded host report and pair decision. It publishes separate host
-conformance, typed pair-disposition, and canonical application-QoR gates. An
-explicit unsupported, timeout, or proof-not-established pair closes only the
-typed disposition gate. Every non-TinyML selected row also requires canonical
-QoR; the current TinyML product-profile refusal is the sole explicit
-host-plus-typed-residual exception. The per-member evaluation records every
+conformance, typed pair-disposition, canonical application-QoR, and declared
+product-execution gates. An explicit unsupported, timeout, or
+proof-not-established pair closes only the typed disposition gate. Every
+selected row requires canonical QoR. Each TinyML row additionally joins the
+exact pair to its Application runtime manifest and requires DFG and CGRA
+System executions whose separate product-oracle Evidence reports no mismatch.
+The per-member evaluation records every
 contributing report and pair count so an untyped duplicate cannot be hidden by
 a valid row. Unsupported objective dimensions retain a null value.
 
@@ -553,13 +586,14 @@ replayed, target-conflicting, or unsupported-profile selections.
 Canonical release closure remains pair-local. The Attention, Llama kernel,
 regular `vecadd-memory`, and irregular PageRank anchors require exact manifest
 selection, completed source-backed Simulation and oracle Evidence, one
-selected Mapping candidate, host baseline, and complete application QoR. The
-bounded TinyML row independently proves its real one-warm-up/four-measured
-host profile and exact oracle, while its current product profile limit is a
-typed unsupported pair rather than fabricated Mapping or QoR. The derived
-evidence manifest verifies each host and pair projection against the exact
-manifest row, reports every tier independently, and retains null unsupported
-QoR dimensions as typed residuals. Additional runtime profile shapes require
+selected Mapping candidate, host baseline, and complete application QoR. Both
+bounded TinyML rows also execute their full one-plus-four and two-plus-two
+profiles through the product entry, observe the complete measured-output
+memory, and publish independent oracle Evidence for both System engines. The
+derived evidence manifest verifies each host and pair projection against the
+exact manifest row, reports every tier independently, and retains null
+unsupported QoR dimensions as typed residuals. Additional runtime profile
+shapes require
 production Evidence from their existing runtime, Mapping, and Evaluation
 owners before they can be selected.
 

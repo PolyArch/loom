@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_RUNTIMEMANIFEST_H
 
 #include "Common/Artifact.h"
+#include "Common/BlobDigest.h"
 #include "Common/ComponentViewDigest.h"
 #include "PnR/System/SystemMappingMigration.h"
 #include "Simulator/SourceBackedDfgValidation.h"
@@ -28,7 +29,27 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{6, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{7, 0}};
+
+/// The product entry ABI derived from one selected Application row. For N
+/// cached inputs, arguments are N (pointer, byte-count) pairs followed by
+/// warm-up count, measured count, output pointer, and output byte count. The
+/// result is i32, where zero denotes successful completion.
+enum class ProductEntryABI : std::uint8_t {
+  CachedInputsProfileOutputV1,
+};
+
+llvm::StringRef productEntryAbiSpelling(ProductEntryABI abi);
+
+struct ProductOracleContract final {
+  ProductEntryABI entryAbi = ProductEntryABI::CachedInputsProfileOutputV1;
+  std::string entrySymbol;
+  std::uint64_t warmupSamples = 0;
+  std::uint64_t measuredSamples = 0;
+  std::uint64_t measuredOutputBytesPerSample = 0;
+  BlobDigest expectedOutput;
+  std::uint64_t outputInterfaceOrdinal = 0;
+};
 
 enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   ForeignSchema,
@@ -41,6 +62,7 @@ enum class ApplicationRuntimeManifestErrorReason : std::uint8_t {
   DeploymentMismatch,
   RuntimeEvidenceMismatch,
   HardwareMutationRepairMismatch,
+  ProductContractMismatch,
   TransitionGraphMismatch,
 };
 
@@ -85,6 +107,7 @@ struct ApplicationRuntimeManifestDraft final {
   std::vector<ArtifactRootReference> oracleEvidence;
   std::optional<ArtifactRootReference> selectedHardwareMutationRepairRecord;
   std::vector<ArtifactRootReference> hardwareMutationRepairRecords;
+  std::optional<ProductOracleContract> productOracle;
   std::optional<pnr::ResourceTimeTransitionGraph> transitionGraph;
 };
 
@@ -148,6 +171,9 @@ public:
   llvm::ArrayRef<ArtifactRootReference> hardwareMutationRepairRecords() const {
     return hardwareMutationRepairRecords_;
   }
+  const std::optional<ProductOracleContract> &productOracle() const {
+    return productOracle_;
+  }
   const std::optional<pnr::ResourceTimeTransitionGraph> &
   transitionGraph() const {
     return transitionGraph_;
@@ -184,6 +210,7 @@ private:
             std::move(draft.selectedHardwareMutationRepairRecord)),
         hardwareMutationRepairRecords_(
             std::move(draft.hardwareMutationRepairRecords)),
+        productOracle_(std::move(draft.productOracle)),
         transitionGraph_(std::move(draft.transitionGraph)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
@@ -210,6 +237,7 @@ private:
   std::optional<ArtifactRootReference>
       selectedHardwareMutationRepairRecord_;
   std::vector<ArtifactRootReference> hardwareMutationRepairRecords_;
+  std::optional<ProductOracleContract> productOracle_;
   std::optional<pnr::ResourceTimeTransitionGraph> transitionGraph_;
   CanonicalSemanticBytes canonicalBytes_;
 };

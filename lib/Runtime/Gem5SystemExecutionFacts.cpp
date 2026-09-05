@@ -212,11 +212,9 @@ bool supportsSystemInvocationSurface(
   const sim::SystemSimulationWorkload &workload = *inputs.workload.system();
   const sim::SystemSimulationRuntimeInput &runtime =
       *inputs.runtimeInput.system();
-  return workload.valueInputPlan.empty() &&
-         workload.externalValueInputPlan.empty() &&
+  return workload.externalValueInputPlan.empty() &&
          workload.observableContract.externalValueOutputs.empty() &&
          workload.observableContract.externalStreamOutputs.empty() &&
-         runtime.runtimeEntryValues.empty() &&
          runtime.runtimeExternalValues.empty() &&
          runtime.externalStreamInputs.empty();
 }
@@ -1098,6 +1096,9 @@ deriveFactsUncached(const EvaluationRequest &request,
   const auto *systemWorkload = inputs.workload.system();
   if (!systemWorkload)
     return invalid("imported System workload lost its typed payload");
+  const auto *systemRuntimeInput = inputs.runtimeInput.system();
+  if (!systemRuntimeInput)
+    return invalid("imported System runtime input lost its typed payload");
   auto hostEntry = deployment::resolveDeploymentProgramEntry(
       inputs.deployment, systemWorkload->programEntryRef);
   if (!hostEntry)
@@ -1277,22 +1278,69 @@ deriveFactsUncached(const EvaluationRequest &request,
                             bytesToString(hostReturnBytes),
                             inputs.deployment.reference(), false});
 
+  auto systemShapes = sim::projectSystemSimulationBoundaryShapes(
+      inputs.deployment, systemWorkload->programEntryRef, artifacts);
+  if (!systemShapes)
+    return systemShapes.takeError();
+  if (!systemShapes->littleEndian ||
+      systemShapes->valueArguments.size() !=
+          systemWorkload->valueInputPlan.size())
+    return Gem5SystemFactsOrUnsupported{
+        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+  std::vector<std::uint8_t> valueTable{'L', 'G', 'V', 'I'};
+  appendGuestU32(valueTable, 1);
+  appendGuestU64(valueTable, systemWorkload->valueInputPlan.size());
+  for (const auto indexed :
+       llvm::enumerate(systemWorkload->valueInputPlan)) {
+    const sim::CanonicalValueSequence *value =
+        std::get_if<sim::CanonicalValueSequence>(&indexed.value());
+    if (!value) {
+      const auto runtime = std::lower_bound(
+          systemRuntimeInput->runtimeEntryValues.begin(),
+          systemRuntimeInput->runtimeEntryValues.end(), indexed.index(),
+          [](const sim::SystemRuntimeEntryValue &entry, std::size_t ordinal) {
+            return entry.valueArgumentOrdinal < ordinal;
+          });
+      if (runtime == systemRuntimeInput->runtimeEntryValues.end() ||
+          runtime->valueArgumentOrdinal != indexed.index())
+        return invalid("System value table lost a runtime argument");
+      value = &runtime->value;
+    }
+    const sim::SystemSimulationValueShape &shape =
+        systemShapes->valueArguments[indexed.index()];
+    if (shape.pointerPayload || shape.lanesPerToken != 1 ||
+        shape.laneBitWidth == 0 || shape.laneBitWidth > 64 ||
+        value->tokenCount != 1 || value->lanes.size() != 1 ||
+        value->lanes.front().state != sim::SemanticState::Defined ||
+        value->lanes.front().pointerTarget ||
+        value->lanes.front().bits.getBitWidth() != shape.laneBitWidth)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    appendGuestU64(valueTable, (shape.laneBitWidth + 7) / 8);
+    appendGuestU64(valueTable, value->lanes.front().bits.getZExtValue());
+  }
+  std::uint64_t valueTableAddress = 0;
+  if (!systemWorkload->valueInputPlan.empty()) {
+    auto address = placeRuntimeImage(kValueTablePath, valueTable.size());
+    if (!address)
+      return address.takeError();
+    valueTableAddress = *address;
+    semanticInputs.push_back({kValueTablePath.str(), bytesToString(valueTable),
+                              *request.runtimeInput(), false});
+  }
+
   std::optional<Gem5ProgramResultProjection> programResult;
   if (!systemWorkload->observableContract.valueResults.empty()) {
     if (systemWorkload->observableContract.valueResults !=
         std::vector<std::uint64_t>{0})
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto shapes = sim::projectSystemSimulationBoundaryShapes(
-        inputs.deployment, systemWorkload->programEntryRef, artifacts);
-    if (!shapes)
-      return shapes.takeError();
-    if (!shapes->littleEndian || !shapes->valueArguments.empty() ||
-        shapes->valueResults.size() != 1 ||
-        shapes->valueResults.front().pointerPayload)
+    if (systemShapes->valueResults.size() != 1 ||
+        systemShapes->valueResults.front().pointerPayload)
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    const sim::SystemSimulationValueShape shape = shapes->valueResults.front();
+    const sim::SystemSimulationValueShape shape =
+        systemShapes->valueResults.front();
     if (shape.lanesPerToken == 0 || shape.laneBitWidth == 0 ||
         shape.lanesPerToken >
             std::numeric_limits<unsigned>::max() / shape.laneBitWidth)
@@ -1311,7 +1359,8 @@ deriveFactsUncached(const EvaluationRequest &request,
                               std::string(resultBytes, '\0'),
                               *request.workload(), false});
     programResult = Gem5ProgramResultProjection{0, *resultAddress, resultBytes,
-                                                shape, shapes->littleEndian};
+                                                shape,
+                                                systemShapes->littleEndian};
   }
 
   auto threadAddress =
@@ -1486,7 +1535,7 @@ deriveFactsUncached(const EvaluationRequest &request,
   }
 
   const sim::SystemSimulationRuntimeInput &systemRuntime =
-      *inputs.runtimeInput.system();
+      *systemRuntimeInput;
   std::vector<std::uint64_t> memoryObjectAddresses;
   memoryObjectAddresses.reserve(systemRuntime.memoryObjects.size());
   for (const auto indexed : llvm::enumerate(systemRuntime.memoryObjects)) {
@@ -1649,6 +1698,8 @@ deriveFactsUncached(const EvaluationRequest &request,
                       std::move(runtimeImages),
                       memoryTableAddress,
                       systemRuntime.memoryInterfaceBindings.size(),
+                      valueTableAddress,
+                      systemWorkload->valueInputPlan.size(),
                       std::move(programResult),
                       std::move(memoryObservations),
                       *hostReturnAddress,

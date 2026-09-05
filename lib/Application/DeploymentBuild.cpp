@@ -308,6 +308,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
        selectedOutcome->oracleEvidence,
        selectedOutcome->hardwareMutationRepairRecord,
        mappingExecution.provenance.hardwareMutationRepairRecords,
+       prepared.productOracle,
        transitionGraph},
       artifacts, blobs);
   if (!manifest)
@@ -320,16 +321,22 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
   return published;
 }
 
-llvm::Expected<deployment::HostProgramEntry>
+struct DerivedHostProgramEntry final {
+  deployment::HostProgramEntry entry;
+  std::vector<deployment::HostExternalInterface> externalInterfaces;
+};
+
+llvm::Expected<DerivedHostProgramEntry>
 deriveHostProgramEntry(const PreparedApplicationSoftware &software,
-                       llvm::StringRef entrySymbol,
+                       const ApplicationSourceInvocation &sourceInvocation,
                        const ArtifactStore &artifacts) {
   auto structured = frontend::importStructuredProgram(
       software.compilation.structuredProgram, artifacts);
   if (!structured)
     return structured.takeError();
   auto references =
-      frontend::resolveDefinedLlvmCallables(*structured, {entrySymbol});
+      frontend::resolveDefinedLlvmCallables(*structured,
+                                            {sourceInvocation.entrySymbol});
   if (!references)
     return references.takeError();
   auto view = structured->view();
@@ -346,11 +353,42 @@ deriveHostProgramEntry(const PreparedApplicationSoftware &software,
   if (type.isVarArg())
     return invalid("variadic application entries are unsupported");
 
-  deployment::HostProgramEntry entry{0, entrySymbol.str(), {}, {}, {}};
-  for (mlir::Type parameter : type.getParams()) {
-    if (mlir::isa<mlir::LLVM::LLVMPointerType>(parameter))
-      return invalid(
-          "pointer application entry requires System memory ingress");
+  if (sourceInvocation.argumentPlan.size() != type.getNumParams())
+    return invalid("source invocation argument plan differs from its entry");
+  deployment::HostProgramEntry entry{0, sourceInvocation.entrySymbol, {}, {},
+                                     {}};
+  std::vector<deployment::HostExternalInterface> externalInterfaces;
+  for (const auto indexed : llvm::enumerate(type.getParams())) {
+    mlir::Type parameter = indexed.value();
+    if (mlir::isa<mlir::LLVM::LLVMPointerType>(parameter)) {
+      if (!std::holds_alternative<sim::StructuredRuntimeMemoryInput>(
+              sourceInvocation.argumentPlan[indexed.index()]))
+        return invalid("pointer application entry argument is not runtime "
+                       "memory");
+      const auto observable = llvm::find_if(
+          sourceInvocation.memoryObservables,
+          [&](const ApplicationPointerMemoryObservable &candidate) {
+            return candidate.argumentOrdinal == indexed.index();
+          });
+      const std::uint64_t interfaceOrdinal = externalInterfaces.size();
+      auto semanticType = canonicalTypeBytes(mlir::MemRefType::get(
+          {mlir::ShapedType::kDynamic},
+          mlir::IntegerType::get(parameter.getContext(), 8)));
+      if (!semanticType)
+        return semanticType.takeError();
+      externalInterfaces.push_back(
+          {interfaceOrdinal, deployment::HostExternalInterfaceKind::Memory,
+           observable == sourceInvocation.memoryObservables.end()
+               ? deployment::HostExternalInterfaceDirection::Input
+               : observable->direction,
+           std::move(*semanticType)});
+      entry.externalInterfaceOrdinals.push_back(interfaceOrdinal);
+      continue;
+    }
+    if (std::holds_alternative<sim::StructuredRuntimeMemoryInput>(
+            sourceInvocation.argumentPlan[indexed.index()]))
+      return invalid("non-pointer application entry argument is runtime "
+                     "memory");
     auto encoded = canonicalTypeBytes(parameter);
     if (!encoded)
       return encoded.takeError();
@@ -362,7 +400,8 @@ deriveHostProgramEntry(const PreparedApplicationSoftware &software,
       return encoded.takeError();
     entry.valueResultTypes.push_back(std::move(*encoded));
   }
-  return entry;
+  return DerivedHostProgramEntry{std::move(entry),
+                                 std::move(externalInterfaces)};
 }
 
 bool targetGroupContains(const InstructionCompilerTargetGroup &group,
@@ -567,14 +606,14 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return invalid("dynamic invocation repeats one root");
 
   operationBegin = MonotonicClock::now();
-  auto hostEntry = deriveHostProgramEntry(
-      **software, prepared.sourceInvocation.entrySymbol, artifacts);
+  auto hostEntry =
+      deriveHostProgramEntry(**software, prepared.sourceInvocation, artifacts);
   if (!hostEntry)
     return hostEntry.takeError();
-  hostEntry->abiSymbol = detail::applicationHostEntrySymbol.str();
+  hostEntry->entry.abiSymbol = detail::applicationHostEntrySymbol.str();
   auto hostModule = detail::materializeHostDispatchModule(
-      finalLinkedModule, imported->dataflow,
-      prepared.sourceInvocation.entrySymbol, *invocationPlan);
+      finalLinkedModule, imported->dataflow, prepared.sourceInvocation,
+      *invocationPlan);
   if (!hostModule)
     return hostModule.takeError();
   if (llvm::Error error =
@@ -601,8 +640,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   auto hostProgram =
       deployment::finalizeHostProgramLeaf({targets->host().reference(),
                                            std::move(*hostExecutable),
-                                           {std::move(*hostEntry)},
-                                           {},
+                                           {std::move(hostEntry->entry)},
+                                           std::move(hostEntry->externalInterfaces),
                                            {}},
                                           artifacts, blobs);
   if (!hostProgram)

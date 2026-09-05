@@ -21,6 +21,7 @@ enum class BuiltinEvaluationCase : std::uint32_t {
   FabricHardwareAnalysis = 10,
   SystemRuntimeModelParameterCalibration = 11,
   MappedRtlSimulation = 12,
+  ApplicationProductOracle = 13,
 };
 
 enum class BuiltinEvaluationModel : std::uint32_t {
@@ -44,6 +45,7 @@ enum class BuiltinEvaluationModel : std::uint32_t {
   Gem5SystemRtl = 19,
   OpenRoadRoutedStaticFpa = 20,
   MappedRtlSimulator = 21,
+  ApplicationProductOracle = 22,
 };
 
 constexpr EvaluationCaseKind

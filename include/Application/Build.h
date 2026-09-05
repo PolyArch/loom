@@ -49,6 +49,8 @@ inline constexpr llvm::StringLiteral applicationBuildProducerIdentity{
 struct ApplicationPointerMemoryObservable final {
   std::uint64_t argumentOrdinal = 0;
   sim::MemoryObservationForm form = sim::MemoryObservationForm::FullState;
+  deployment::HostExternalInterfaceDirection direction =
+      deployment::HostExternalInterfaceDirection::InOut;
 };
 
 /// One exact source invocation expressed in the existing Structured Program
@@ -78,6 +80,7 @@ struct ApplicationBuildRequest final {
   std::optional<SelectedApplicationInput> portfolioInput;
   std::optional<ArtifactRootReference> edaPredictionModelWeight;
   std::vector<evaluation::EvaluationCondition> fpaOperatingConditions;
+  std::optional<ProductOracleContract> productOracle;
 };
 
 struct PreparedApplicationSoftware final {
@@ -156,6 +159,7 @@ struct PreparedApplicationBuild final {
   std::optional<SelectedApplicationInput> portfolioInput;
   std::optional<ArtifactRootReference> edaPredictionModelWeight;
   std::vector<evaluation::EvaluationCondition> fpaOperatingConditions;
+  std::optional<ProductOracleContract> productOracle;
 };
 
 struct ApplicationDeploymentRequest final {

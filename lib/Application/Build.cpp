@@ -1051,7 +1051,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       std::nullopt,
       std::move(request.portfolioInput),
       std::move(edaPredictionModelWeight),
-      std::move(request.fpaOperatingConditions)};
+      std::move(request.fpaOperatingConditions),
+      std::move(request.productOracle)};
   prepared.preMappingInvocationRunKey = *completedInvocationRunKey;
   emitApplicationPlanningDiagnostics(prepared);
   return ApplicationBuildPreparationOutcome{std::move(prepared)};

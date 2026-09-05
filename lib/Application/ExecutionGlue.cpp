@@ -1134,23 +1134,50 @@ llvm::Expected<std::uint64_t> fixedStoreSize(const llvm::DataLayout &layout,
   return size.getFixedValue();
 }
 
-llvm::Error addHostEntry(llvm::Module &module, llvm::StringRef applicationEntry,
-                         llvm::GlobalVariable &dispatchBase,
-                         std::uint64_t targetCount) {
+llvm::Error addHostEntry(
+    llvm::Module &module,
+    const ApplicationSourceInvocation &sourceInvocation,
+    llvm::GlobalVariable &dispatchBase, std::uint64_t targetCount) {
   if (module.getFunction(applicationHostEntrySymbol))
     return invalid("final-linked module defines the reserved host entry");
-  llvm::Function *application = module.getFunction(applicationEntry);
+  llvm::Function *application =
+      module.getFunction(sourceInvocation.entrySymbol);
   if (!application || application->isDeclaration() || application->isVarArg() ||
-      !application->arg_empty() || application->getReturnType()->isVoidTy())
-    return invalid(
-        "initial host entry requires a nullary value-returning function");
+      application->getReturnType()->isVoidTy() ||
+      application->arg_size() != sourceInvocation.argumentPlan.size())
+    return invalid("host entry requires one exact value-returning source "
+                   "invocation");
   auto resultBytes =
       fixedStoreSize(module.getDataLayout(), application->getReturnType());
   if (!resultBytes)
     return resultBytes.takeError();
+  std::uint64_t memoryArgumentCount = 0;
+  std::uint64_t valueArgumentCount = 0;
+  for (const auto indexed : llvm::enumerate(application->args())) {
+    const bool pointer = indexed.value().getType()->isPointerTy();
+    const bool memory = std::holds_alternative<sim::StructuredRuntimeMemoryInput>(
+        sourceInvocation.argumentPlan[indexed.index()]);
+    if (pointer != memory)
+      return invalid("host entry argument kind differs from the source "
+                     "invocation");
+    if (pointer)
+      ++memoryArgumentCount;
+    else {
+      llvm::Type *type = indexed.value().getType();
+      auto bytes = fixedStoreSize(module.getDataLayout(), type);
+      if (!bytes)
+        return bytes.takeError();
+      if (!type->isIntegerTy() || *bytes > sizeof(std::uint64_t))
+        return invalid("host entry value argument is outside the LGVI scalar "
+                       "domain");
+      ++valueArgumentCount;
+    }
+  }
   llvm::Type *i64 = llvm::Type::getInt64Ty(module.getContext());
+  llvm::Type *i32 = llvm::Type::getInt32Ty(module.getContext());
   llvm::Function *entry = llvm::Function::Create(
-      llvm::FunctionType::get(i64, {i64, i64, i64, i64, i64, i64}, false),
+      llvm::FunctionType::get(
+          i64, {i64, i64, i64, i64, i64, i64, i64, i64}, false),
       llvm::GlobalValue::ExternalLinkage, applicationHostEntrySymbol, module);
   if (application->doesNotThrow())
     entry->setDoesNotThrow();
@@ -1159,17 +1186,25 @@ llvm::Error addHostEntry(llvm::Module &module, llvm::StringRef applicationEntry,
   dispatch->setName("dispatch");
   llvm::Value *actualTargets = &*argument++;
   actualTargets->setName("target_count");
-  (&*argument++)->setName("memory_table");
-  (&*argument++)->setName("memory_table_entries");
+  llvm::Value *memoryTable = &*argument++;
+  memoryTable->setName("memory_table");
+  llvm::Value *actualMemoryEntries = &*argument++;
+  actualMemoryEntries->setName("memory_table_entries");
   llvm::Value *resultAddress = &*argument++;
   resultAddress->setName("result_address");
-  llvm::Value *actualResultBytes = &*argument;
+  llvm::Value *actualResultBytes = &*argument++;
   actualResultBytes->setName("result_bytes");
+  llvm::Value *valueTable = &*argument++;
+  valueTable->setName("value_table");
+  llvm::Value *actualValueEntries = &*argument;
+  actualValueEntries->setName("value_table_entries");
 
   llvm::BasicBlock *begin =
       llvm::BasicBlock::Create(module.getContext(), "entry", entry);
-  llvm::BasicBlock *run =
-      llvm::BasicBlock::Create(module.getContext(), "run", entry);
+  llvm::BasicBlock *tables =
+      llvm::BasicBlock::Create(module.getContext(), "tables", entry);
+  llvm::BasicBlock *invoke =
+      llvm::BasicBlock::Create(module.getContext(), "invoke", entry);
   llvm::BasicBlock *failed =
       llvm::BasicBlock::Create(module.getContext(), "failed", entry);
   llvm::IRBuilder<> builder(begin);
@@ -1180,12 +1215,148 @@ llvm::Error addHostEntry(llvm::Module &module, llvm::StringRef applicationEntry,
   valid = builder.CreateAnd(
       valid, builder.CreateICmpEQ(actualResultBytes,
                                   llvm::ConstantInt::get(i64, *resultBytes)));
-  builder.CreateCondBr(valid, run, failed);
+  valid = builder.CreateAnd(
+      valid,
+      builder.CreateICmpEQ(actualMemoryEntries,
+                           llvm::ConstantInt::get(i64, memoryArgumentCount)));
+  valid = builder.CreateAnd(
+      valid,
+      builder.CreateICmpEQ(actualValueEntries,
+                           llvm::ConstantInt::get(i64, valueArgumentCount)));
+  valid = builder.CreateAnd(
+      valid,
+      memoryArgumentCount == 0
+          ? builder.CreateICmpEQ(memoryTable, llvm::ConstantInt::get(i64, 0))
+          : builder.CreateICmpNE(memoryTable,
+                                 llvm::ConstantInt::get(i64, 0)));
+  valid = builder.CreateAnd(
+      valid,
+      valueArgumentCount == 0
+          ? builder.CreateICmpEQ(valueTable, llvm::ConstantInt::get(i64, 0))
+          : builder.CreateICmpNE(valueTable, llvm::ConstantInt::get(i64, 0)));
+  builder.CreateCondBr(valid, tables, failed);
+
+  builder.SetInsertPoint(tables);
+  const auto loadAt = [&](llvm::Value *base, std::uint64_t byteOffset,
+                          llvm::Type *type) {
+    llvm::Value *address = builder.CreateAdd(
+        base, llvm::ConstantInt::get(i64, byteOffset));
+    auto *load = builder.CreateLoad(
+        type, builder.CreateIntToPtr(
+                  address, llvm::PointerType::get(module.getContext(), 0)));
+    load->setAlignment(llvm::Align(1));
+    return static_cast<llvm::Value *>(load);
+  };
+  llvm::Value *tablesValid = llvm::ConstantInt::getTrue(module.getContext());
+  if (memoryArgumentCount != 0) {
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(memoryTable, 0, i32),
+                             llvm::ConstantInt::get(i32, 0x494d474c)));
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(memoryTable, 4, i32),
+                             llvm::ConstantInt::get(i32, 1)));
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(memoryTable, 8, i64),
+                             llvm::ConstantInt::get(i64,
+                                                    memoryArgumentCount)));
+  }
+  if (valueArgumentCount != 0) {
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(valueTable, 0, i32),
+                             llvm::ConstantInt::get(i32, 0x4956474c)));
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(valueTable, 4, i32),
+                             llvm::ConstantInt::get(i32, 1)));
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(loadAt(valueTable, 8, i64),
+                             llvm::ConstantInt::get(i64,
+                                                    valueArgumentCount)));
+  }
+
+  std::vector<llvm::Value *> applicationArguments;
+  applicationArguments.reserve(application->arg_size());
+  std::uint64_t memoryOrdinal = 0;
+  std::uint64_t valueOrdinal = 0;
+  for (const auto indexed : llvm::enumerate(application->args())) {
+    llvm::Type *type = indexed.value().getType();
+    if (type->isPointerTy()) {
+      constexpr std::uint64_t kHeaderBytes = 16;
+      constexpr std::uint64_t kEntryBytes = 32;
+      const std::uint64_t offset =
+          kHeaderBytes + memoryOrdinal * kEntryBytes;
+      llvm::Value *interfaceOrdinal = loadAt(memoryTable, offset, i64);
+      llvm::Value *address = loadAt(memoryTable, offset + 8, i64);
+      llvm::Value *byteCount = loadAt(memoryTable, offset + 16, i64);
+      llvm::Value *permissions = loadAt(memoryTable, offset + 24, i32);
+      llvm::Value *reserved = loadAt(memoryTable, offset + 28, i32);
+      const auto observable = llvm::find_if(
+          sourceInvocation.memoryObservables,
+          [&](const ApplicationPointerMemoryObservable &candidate) {
+            return candidate.argumentOrdinal == indexed.index();
+          });
+      const deployment::HostExternalInterfaceDirection direction =
+          observable == sourceInvocation.memoryObservables.end()
+              ? deployment::HostExternalInterfaceDirection::Input
+              : observable->direction;
+      const std::uint32_t expectedPermissions =
+          direction == deployment::HostExternalInterfaceDirection::Input
+              ? 1
+              : direction == deployment::HostExternalInterfaceDirection::Output
+                    ? 2
+                    : 3;
+      tablesValid = builder.CreateAnd(
+          tablesValid,
+          builder.CreateICmpEQ(interfaceOrdinal,
+                               llvm::ConstantInt::get(i64, memoryOrdinal)));
+      tablesValid = builder.CreateAnd(
+          tablesValid,
+          builder.CreateICmpNE(address, llvm::ConstantInt::get(i64, 0)));
+      tablesValid = builder.CreateAnd(
+          tablesValid,
+          builder.CreateICmpNE(byteCount, llvm::ConstantInt::get(i64, 0)));
+      tablesValid = builder.CreateAnd(
+          tablesValid,
+          builder.CreateICmpEQ(
+              permissions,
+              llvm::ConstantInt::get(i32, expectedPermissions)));
+      tablesValid = builder.CreateAnd(
+          tablesValid,
+          builder.CreateICmpEQ(reserved, llvm::ConstantInt::get(i32, 0)));
+      applicationArguments.push_back(builder.CreateIntToPtr(address, type));
+      ++memoryOrdinal;
+      continue;
+    }
+    constexpr std::uint64_t kHeaderBytes = 16;
+    constexpr std::uint64_t kEntryBytes = 16;
+    const std::uint64_t offset = kHeaderBytes + valueOrdinal * kEntryBytes;
+    auto storageBytes = fixedStoreSize(module.getDataLayout(), type);
+    if (!storageBytes)
+      return storageBytes.takeError();
+    llvm::Value *byteCount = loadAt(valueTable, offset, i64);
+    llvm::Value *bits = loadAt(valueTable, offset + 8, i64);
+    tablesValid = builder.CreateAnd(
+        tablesValid,
+        builder.CreateICmpEQ(byteCount,
+                             llvm::ConstantInt::get(i64, *storageBytes)));
+    applicationArguments.push_back(
+        type->getIntegerBitWidth() == 64 ? bits
+                                         : builder.CreateTrunc(bits, type));
+    ++valueOrdinal;
+  }
+  builder.CreateCondBr(tablesValid, invoke, failed);
+
   builder.SetInsertPoint(failed);
   builder.CreateBr(failed);
-  builder.SetInsertPoint(run);
+  builder.SetInsertPoint(invoke);
   builder.CreateStore(dispatch, &dispatchBase);
-  llvm::CallInst *programResult = builder.CreateCall(application);
+  llvm::CallInst *programResult =
+      builder.CreateCall(application, applicationArguments);
   llvm::StoreInst *store = builder.CreateStore(
       programResult,
       builder.CreateIntToPtr(resultAddress,
@@ -1690,7 +1861,7 @@ deriveApplicationSpatialInvocationPlan(
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
     const dataflow::CanonicalDataflowArtifact &dataflow,
-    llvm::StringRef applicationEntry,
+    const ApplicationSourceInvocation &sourceInvocation,
     const ApplicationSpatialInvocationPlan &plan) {
   auto module = llvm::CloneModule(finalLinkedModule);
   llvm::Type *i64 = llvm::Type::getInt64Ty(module->getContext());
@@ -1868,7 +2039,7 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     ++helperOrdinal;
   }
   if (llvm::Error error =
-          addHostEntry(*module, applicationEntry, *dispatchBase, targetCount))
+          addHostEntry(*module, sourceInvocation, *dispatchBase, targetCount))
     return std::move(error);
   if (llvm::Error error = linkFreestandingRuntime(*module))
     return std::move(error);

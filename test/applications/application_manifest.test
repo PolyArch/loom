@@ -22,6 +22,7 @@
 # RUN:   %loom_external/llama2.c/run.c -lm -o %t.llama2c
 # RUN: %t.llama2c | diff -u %S/llama2c-kernels-expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
+# RUN:   -DLOOM_APPLICATION_HOST_EXECUTION=1 \
 # RUN:   %S/mlperf-tiny-anomaly/runner.cpp -o %t.tinyml
 # RUN: timeout 10s %t.tinyml \
 # RUN:   %loom_external/mlperf-tiny/benchmark/training/anomaly_detection/trained_models/ad01_int8.tflite \
@@ -72,43 +73,34 @@
 # RUN:   --portfolio-repository-root=%S/../.. \
 # RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
 # RUN:   2>&1 | FileCheck %s --check-prefix=LIBRARY-CONFLICT
-# RUN: not env LOOM_VERBOSE_LEVEL=1 %loom-application-build \
+# RUN: %loom-application-build \
 # RUN:   --driver-arguments-output=%t.profile.args \
 # RUN:   --deployment-output=%t.profile-deployment \
 # RUN:   --portfolio-manifest=%S/manifest.json \
 # RUN:   --portfolio-repository-root=%S/../.. \
 # RUN:   --portfolio-cache-root=%loom_external/.. \
 # RUN:   --portfolio-application=mlperf-tiny-anomaly-detection \
-# RUN:   --portfolio-input=smoke \
-# RUN:   > %t.profile.stdout 2> %t.profile.stderr
-# RUN: FileCheck %s --check-prefix=PROFILE < %t.profile.stderr
+# RUN:   --portfolio-input=smoke
+# RUN: tr '\0' '\n' < %t.profile.args | FileCheck %s --check-prefix=TINYML-PRODUCT
 # RUN: loom-application-manifest-inspect --manifest=%S/manifest.json \
 # RUN:   > %t.inventory.json
 # RUN: %loom-application-host-run --manifest=%S/manifest.json \
 # RUN:   --repository-root=%S/../.. --cache-root=%loom_external/.. \
 # RUN:   --application=mlperf-tiny-anomaly-detection --input=smoke \
 # RUN:   > %t.tinyml-host.json
-# RUN: %python %S/verify_portfolio_fallback.py \
-# RUN:   --inventory=%t.inventory.json --host-report=%t.tinyml-host.json \
-# RUN:   --diagnostics=%t.profile.stderr
-# RUN: not env LOOM_VERBOSE_LEVEL=1 %loom-application-build \
+# RUN: %loom-application-build \
 # RUN:   --driver-arguments-output=%t.validation-profile.args \
 # RUN:   --deployment-output=%t.validation-profile-deployment \
 # RUN:   --portfolio-manifest=%S/manifest.json \
 # RUN:   --portfolio-repository-root=%S/../.. \
 # RUN:   --portfolio-cache-root=%loom_external/.. \
 # RUN:   --portfolio-application=mlperf-tiny-anomaly-detection \
-# RUN:   --portfolio-input=validation \
-# RUN:   > %t.validation-profile.stdout 2> %t.validation-profile.stderr
-# RUN: FileCheck %s --check-prefix=PROFILE < %t.validation-profile.stderr
+# RUN:   --portfolio-input=validation
+# RUN: tr '\0' '\n' < %t.validation-profile.args | FileCheck %s --check-prefix=TINYML-PRODUCT
 # RUN: %loom-application-host-run --manifest=%S/manifest.json \
 # RUN:   --repository-root=%S/../.. --cache-root=%loom_external/.. \
 # RUN:   --application=mlperf-tiny-anomaly-detection --input=validation \
 # RUN:   > %t.tinyml-validation-host.json
-# RUN: %python %S/verify_portfolio_fallback.py \
-# RUN:   --inventory=%t.inventory.json \
-# RUN:   --host-report=%t.tinyml-validation-host.json \
-# RUN:   --diagnostics=%t.validation-profile.stderr
 
 # PORTFOLIO: {{^-o$}}
 # PORTFOLIO-NEXT: {{.*}}/linker/portfolio.elf
@@ -122,4 +114,5 @@
 # PROTOCOL-OWNER: a portfolio selection derives operator protocol symbols from the manifest
 # TARGET-CONFLICT: manifest compiler option '--target=x86_64' conflicts with product-owned compiler target policy
 # LIBRARY-CONFLICT: manifest link option '-lz' names a library unavailable to the product freestanding runtime
-# PROFILE: product source binding supports exactly zero warm-up samples and one measured sample; the bounded host profile remains independently executable
+# TINYML-PRODUCT: -Wl,--entry=loom_mlperf_tiny_anomaly
+# TINYML-PRODUCT: {{.*}}test/applications/mlperf-tiny-anomaly/runner.cpp

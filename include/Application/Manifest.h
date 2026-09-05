@@ -25,6 +25,7 @@ namespace loom::application {
 enum class SourceKind : std::uint8_t { Gitlink, Repository };
 enum class LanguageMode : std::uint8_t { C, Cxx };
 enum class OracleKind : std::uint8_t { Exact, TypedInvariant };
+enum class OracleEncoding : std::uint8_t { Utf8, HexSampleLines };
 enum class OracleCoverage : std::uint8_t { AllMeasuredSamples };
 enum class ExecutionSelection : std::uint8_t {
   Smoke,
@@ -35,6 +36,7 @@ enum class ExecutionSelection : std::uint8_t {
 llvm::StringRef toString(SourceKind kind);
 llvm::StringRef toString(LanguageMode mode);
 llvm::StringRef toString(OracleKind kind);
+llvm::StringRef toString(OracleEncoding encoding);
 llvm::StringRef toString(OracleCoverage coverage);
 llvm::StringRef toString(ExecutionSelection selection);
 
@@ -46,6 +48,15 @@ struct SourceSelection final {
   std::string root;
 };
 
+/// The product callable selected by the Application manifest. Its full ABI is
+/// derived from the selected cached-input order and execution profile; the
+/// manifest owns only the application-specific symbol and per-sample output
+/// extent.
+struct ProductExecutionSelection final {
+  std::string entrySymbol;
+  std::uint64_t measuredOutputBytesPerSample = 0;
+};
+
 struct BuildSelection final {
   std::string entry;
   LanguageMode language;
@@ -53,6 +64,7 @@ struct BuildSelection final {
   std::vector<std::string> compilerOptions;
   std::vector<std::string> linkOptions;
   std::vector<std::string> operatorProtocolSymbols;
+  std::optional<ProductExecutionSelection> productExecution;
 };
 
 struct CachedInput final {
@@ -64,6 +76,8 @@ struct CachedInput final {
 struct OracleSelection final {
   OracleKind kind;
   std::string entry;
+  BlobDigest digest;
+  OracleEncoding encoding;
 };
 
 struct WorkloadExecutionProfile final {
@@ -118,7 +132,7 @@ class ApplicationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.application_portfolio";
-  static constexpr llvm::StringLiteral schemaVersion = "3.0";
+  static constexpr llvm::StringLiteral schemaVersion = "4.0";
 
   llvm::ArrayRef<ApplicationDefinition> applications() const {
     return applications_;

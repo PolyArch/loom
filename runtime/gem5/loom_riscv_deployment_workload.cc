@@ -34,6 +34,8 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
       hostMemoryTableEntries(params.host_memory_table_entries),
       hostResultAddress(params.host_result_address),
       hostResultSize(params.host_result_size),
+      hostValueTableAddress(params.host_value_table_address),
+      hostValueTableEntries(params.host_value_table_entries),
       hostReturnAddress(params.host_return_address),
       stackBase(params.stack_base), stackStride(params.stack_stride),
       runtimeImagePaths(params.runtime_images),
@@ -44,6 +46,9 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
   fatal_if(hostEntrySymbol.empty(), "Loom host entry symbol is empty");
   fatal_if((hostResultAddress == 0) != (hostResultSize == 0),
            "Loom host result address and size are not both present or absent");
+  fatal_if((hostValueTableAddress == 0) != (hostValueTableEntries == 0),
+           "Loom host value table address and count are not both present or "
+           "absent");
   fatal_if(hostReturnAddress == 0, "Loom host return address is zero");
   fatal_if(stackStride == 0, "Loom per-CPU stack stride is zero");
   fatal_if(runtimeImagePaths.size() != runtimeImageAddresses.size(),
@@ -160,6 +165,8 @@ void LoomRiscvDeploymentWorkload::initState() {
   host->setReg(RiscvISA::int_reg::A3, hostMemoryTableEntries);
   host->setReg(RiscvISA::int_reg::A4, hostResultAddress);
   host->setReg(RiscvISA::int_reg::A5, hostResultSize);
+  host->setReg(RiscvISA::int_reg::A6, hostValueTableAddress);
+  host->setReg(RiscvISA::int_reg::A7, hostValueTableEntries);
   host->setReg(RiscvISA::int_reg::Ra, hostReturnAddress);
   host->activate();
 }

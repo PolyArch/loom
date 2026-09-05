@@ -4,6 +4,7 @@
 
 #include "Application/DeploymentRuntime.h"
 #include "Application/Package.h"
+#include "Application/ProductOracleEvaluation.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -584,6 +585,8 @@ struct CompletedRun final {
   loom::ArtifactRootReference execution;
   loom::sim::CanonicalSimulationExecution importedExecution;
   std::vector<ObservedSpatialInvocation> spatialInvocations;
+  std::optional<loom::ArtifactRootReference> productOracleRequest;
+  std::optional<loom::ArtifactRootReference> productOracleEvidence;
 };
 
 llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
@@ -603,7 +606,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Array *dispatchTargets =
       dispatch ? dispatch->getArray("targets") : nullptr;
   const auto schema = object ? object->getString("schema") : std::nullopt;
-  if (!schema || *schema != "loom.gem5_system_projection.12" || !bridges ||
+  if (!schema || *schema != "loom.gem5_system_projection.13" || !bridges ||
       bridges->empty() || !dispatchTargets || dispatchTargets->empty())
     return invalid("gem5 projection contains no Spatial bridge");
 
@@ -1210,8 +1213,7 @@ llvm::Error validateSystemResults(const CompletedRun &dfg,
   if (!loom::sim::haveExactlyEqualSystemFunctionalObservations(lhs, rhs) ||
       !lhs.externalValueOutputs.empty() || !rhs.externalValueOutputs.empty() ||
       !lhs.externalStreamOutputs.empty() ||
-      !rhs.externalStreamOutputs.empty() || !lhs.memories.empty() ||
-      !rhs.memories.empty())
+      !rhs.externalStreamOutputs.empty())
     return invalid("System DFG and CGRA functional observations differ");
   if (!haveEquivalentRootLifecycle(
           dfgSystem.progressObservations.rootLifecycle,
@@ -1231,6 +1233,40 @@ llvm::Error validateSystemResults(const CompletedRun &dfg,
     return invalid("observed result is not one defined i32");
   if (published->value.lanes.front().bits.getSExtValue() != expectedI32)
     return invalid("System result differs from the independent oracle");
+  return llvm::Error::success();
+}
+
+llvm::Error publishProductOracleEvidence(
+    const loom::application::FinalizedApplicationRuntimeManifest &manifest,
+    CompletedRun &run,
+    const loom::evaluation::CaseArtifactResolution &executionResolution,
+    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto prepared = loom::application::prepareProductOracleEvaluation(
+      manifest, run.execution, executionResolution,
+      loom::defaultResolvedConfig(), artifacts, blobs);
+  if (!prepared)
+    return prepared.takeError();
+  auto evidence = loom::application::evaluateProductOracle(
+      *prepared, artifacts, blobs);
+  if (!evidence)
+    return evidence.takeError();
+  const auto *completed =
+      std::get_if<loom::evaluation::CompletedEvidence>(&evidence->outcome());
+  if (!completed || completed->findingResults.size() != 1 ||
+      !std::holds_alternative<loom::evaluation::AbsentFinding>(
+          completed->findingResults.front().result))
+    return invalid(engineSpelling(run.engine) +
+                   " System execution differs from the product oracle");
+  auto request = loom::evaluation::publishEvaluationRequest(
+      prepared->request, artifacts);
+  if (!request)
+    return request.takeError();
+  auto published =
+      loom::evaluation::publishEvaluationEvidence(*evidence, artifacts);
+  if (!published)
+    return published.takeError();
+  run.productOracleRequest = std::move(*request);
+  run.productOracleEvidence = std::move(*published);
   return llvm::Error::success();
 }
 
@@ -1260,6 +1296,8 @@ llvm::Error validateSpatialResults(const SpatialInvocationCase &invocation,
 
 llvm::Error writeManifest(
     llvm::StringRef workspace,
+    const loom::application::FinalizedApplicationRuntimeManifest
+        &applicationManifest,
     const loom::deployment::FinalizedDeployment &deployment,
     const loom::runtime::FinalizedGem5SimulationBinding &binding,
     const PublishedInputs &inputs, const CompletedRun &dfg,
@@ -1270,17 +1308,15 @@ llvm::Error writeManifest(
     const loom::application::FinalizedApplicationResourceTimeExecutionTrace
         *resourceTimeTrace,
     const loom::deployment::FinalizedDeployment *mappedRtlDeployment) {
-  const bool includesMappedRtl =
-      llvm::any_of(spatialRuns, [](const CompletedSpatialRun &run) {
-        return run.engine == Engine::Rtl;
-      });
   std::string body;
   llvm::raw_string_ostream stream(body);
   llvm::json::OStream json(stream, 2);
   json.object([&] {
-    json.attribute("schema", includesMappedRtl
-                                 ? "loom.execution_matrix_workspace.1.3"
-                                 : "loom.execution_matrix_workspace.1.2");
+    json.attribute("schema", "loom.execution_matrix_workspace.2.0");
+    json.attributeObject("application_runtime_manifest", [&] {
+      loom::writeArtifactRootReferenceJsonFields(
+          json, applicationManifest.reference());
+    });
     json.attributeObject("deployment", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, deployment.reference());
     });
@@ -1298,6 +1334,28 @@ llvm::Error writeManifest(
     json.attributeObject("runtime_input", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, inputs.runtimeInput);
     });
+    json.attributeBegin("product_profile");
+    if (applicationManifest.manifest().productOracle()) {
+      const auto &product =
+          *applicationManifest.manifest().productOracle();
+      json.object([&] {
+        json.attribute("entry_abi",
+                       loom::application::productEntryAbiSpelling(
+                           product.entryAbi));
+        json.attribute("entry_symbol", product.entrySymbol);
+        json.attribute("warmup_samples", product.warmupSamples);
+        json.attribute("measured_samples", product.measuredSamples);
+        json.attribute("measured_output_bytes_per_sample",
+                       product.measuredOutputBytesPerSample);
+        json.attribute("expected_output_sha256",
+                       loom::formatBlobDigestHex(product.expectedOutput));
+        json.attribute("output_interface_ordinal",
+                       product.outputInterfaceOrdinal);
+      });
+    } else {
+      json.value(nullptr);
+    }
+    json.attributeEnd();
     if (const auto *synchronous = std::get_if<ResourceTimeDrive>(&drive))
       json.attributeObject("resource_time_drive", [&] {
         json.attribute("status", "synchronous");
@@ -1337,6 +1395,20 @@ llvm::Error writeManifest(
           json.attributeObject("execution", [&] {
             loom::writeArtifactRootReferenceJsonFields(json, run->execution);
           });
+          json.attributeBegin("product_oracle_request");
+          if (run->productOracleRequest)
+            loom::writeArtifactRootReferenceJson(json,
+                                                 *run->productOracleRequest);
+          else
+            json.value(nullptr);
+          json.attributeEnd();
+          json.attributeBegin("product_oracle_evidence");
+          if (run->productOracleEvidence)
+            loom::writeArtifactRootReferenceJson(json,
+                                                 *run->productOracleEvidence);
+          else
+            json.value(nullptr);
+          json.attributeEnd();
           const auto &progress =
               run->importedExecution.system()->progressObservations;
           json.attribute("entry_tick", progress.programEntryAccepted.gem5Tick);
@@ -1501,6 +1573,8 @@ llvm::Error run() {
         workspace->package.deployment();
     const loom::application::ApplicationRuntimeManifest &manifest =
         workspace->package.manifest().manifest();
+    if (manifest.productOracle() && expectedI32.getNumOccurrences() != 0)
+      return invalid("expected-i32 cannot replace a manifest product oracle");
     std::error_code directoryError;
     if (!std::filesystem::create_directory(
             std::filesystem::path(workspacePath) / "bundles", directoryError) ||
@@ -1538,6 +1612,16 @@ llvm::Error run() {
       return cgra.takeError();
     if (llvm::Error error = validateSystemResults(*dfg, *cgra))
       return error;
+    if (manifest.productOracle()) {
+      if (llvm::Error error = publishProductOracleEvidence(
+              workspace->package.manifest(), *dfg, *resolution, artifacts,
+              blobs))
+        return error;
+      if (llvm::Error error = publishProductOracleEvidence(
+              workspace->package.manifest(), *cgra, *resolution, artifacts,
+              blobs))
+        return error;
+    }
     std::optional<
         loom::application::FinalizedApplicationResourceTimeExecutionTrace>
         resourceTimeTrace;
@@ -1644,7 +1728,8 @@ llvm::Error run() {
         spatialRuns.push_back(std::move(*spatialRtl));
     }
     if (llvm::Error error = writeManifest(
-            workspacePath, deployment, *binding, *inputs, *dfg, *cgra,
+            workspacePath, workspace->package.manifest(), deployment, *binding,
+            *inputs, *dfg, *cgra,
             spatialInvocations, spatialRuns, *drive,
             resourceTimeTrace ? &*resourceTimeTrace : nullptr,
             rtlDeployment ? &*rtlDeployment : nullptr))

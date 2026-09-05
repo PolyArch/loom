@@ -32,7 +32,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.12"
+CONFIG_SCHEMA = "loom.gem5_system_projection.13"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.5"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -411,6 +411,8 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
             "entry_symbol",
             "result_address",
             "result_size",
+            "value_table_address",
+            "value_table_entries",
             "return_address",
         },
         "host",
@@ -532,6 +534,8 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         host_memory_table_entries=system_memory["interface_table_entries"],
         host_result_address=host["result_address"],
         host_result_size=host["result_size"],
+        host_value_table_address=host["value_table_address"],
+        host_value_table_entries=host["value_table_entries"],
         host_return_address=host["return_address"],
         stack_base=dispatch["stack_base"],
         stack_stride=dispatch["stack_stride"],

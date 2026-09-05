@@ -1,6 +1,6 @@
 {
   "schema": "loom.application_portfolio",
-  "version": "3.0",
+  "version": "4.0",
   "applications": [
     {
       "identity": "gapbs-pagerank",
@@ -27,7 +27,8 @@
           "test/applications/gapbs-pagerank-smoke.h"
         ],
         "link_options": [],
-        "operator_protocol_symbols": ["gapbs_pagerank_kernel"]
+        "operator_protocol_symbols": ["gapbs_pagerank_kernel"],
+        "product_execution": null
       },
       "cached_inputs": [],
       "inputs": [
@@ -39,7 +40,9 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/gapbs-pagerank-expected-smoke.txt"
+            "entry": "test/applications/gapbs-pagerank-expected-smoke.txt",
+            "sha256": "fcf4113d9c66cc069292e5d3ff141a833a54cd14c09ab6becd9f60d368797140",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -56,7 +59,9 @@
           "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=12"],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/gapbs-pagerank-expected-validation.txt"
+            "entry": "test/applications/gapbs-pagerank-expected-validation.txt",
+            "sha256": "17572435430a0b0d10454888fe189db7ce973ea148b0ab192294ad92114f77e8",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -73,7 +78,9 @@
           "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=16"],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/gapbs-pagerank-expected-scale.txt"
+            "entry": "test/applications/gapbs-pagerank-expected-scale.txt",
+            "sha256": "87c5d132c2727a34fb29294c4ad0bcd29626de76f60271cd3a460bea8edcb775",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -114,7 +121,8 @@
         "link_options": [
           "-lm"
         ],
-        "operator_protocol_symbols": ["rmsnorm", "softmax", "matmul"]
+        "operator_protocol_symbols": ["rmsnorm", "softmax", "matmul"],
+        "product_execution": null
       },
       "cached_inputs": [],
       "inputs": [
@@ -126,7 +134,9 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/llama2c-kernels-expected-smoke.txt"
+            "entry": "test/applications/llama2c-kernels-expected-smoke.txt",
+            "sha256": "1eb630dfcb51429569e33997ee068c46513754e000220a3ad314af459ee38e94",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -143,7 +153,9 @@
           "compiler_options": ["-DLOOM_LLAMA_INPUT_VARIANT=1"],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/llama2c-kernels-expected-validation.txt"
+            "entry": "test/applications/llama2c-kernels-expected-validation.txt",
+            "sha256": "8854549d35e45dd200b3e0c68579d8ec34ed23c6e4d9269daa50bd6dd3dcfb3d",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -185,7 +197,8 @@
           "project_imu",
           "fuse_attention",
           "reduce_statistics"
-        ]
+        ],
+        "product_execution": null
       },
       "cached_inputs": [],
       "inputs": [
@@ -197,7 +210,9 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt"
+            "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt",
+            "sha256": "60391957debac81ddb4eb56c0513123407d919ab323b3548b212ad4e9b06ba75",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -214,7 +229,9 @@
           "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=1"],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/loom-multisensor-attention/expected-validation.txt"
+            "entry": "test/applications/loom-multisensor-attention/expected-validation.txt",
+            "sha256": "67f9c43ad0cb02ac7aab2b14cc65ccfe5d40274a23e3d94c0fea939563b033be",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -231,7 +248,9 @@
           "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=2"],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/loom-multisensor-attention/expected-scale.txt"
+            "entry": "test/applications/loom-multisensor-attention/expected-scale.txt",
+            "sha256": "ba7966ded9eb67158f6c63e6a740a91e48f8a686c1544c923a79c241b139c97b",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -268,7 +287,11 @@
           "-fno-rtti"
         ],
         "link_options": [],
-        "operator_protocol_symbols": []
+        "operator_protocol_symbols": ["loom_mlperf_tiny_measured_batch"],
+        "product_execution": {
+          "entry_symbol": "loom_mlperf_tiny_anomaly",
+          "measured_output_bytes_per_sample": 640
+        }
       },
       "cached_inputs": [
         {
@@ -294,13 +317,16 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/mlperf-tiny-anomaly/expected-smoke.txt"
+            "entry": "test/applications/mlperf-tiny-anomaly/expected-smoke.txt",
+            "sha256": "dd3c1741afc700b2a42ce8902dd8a18ec43fbadfee39f9c06bf64122b467cc8f",
+            "encoding": "hex_sample_lines"
           },
           "profile": {
             "warmup_samples": 1,
             "measured_samples": 4,
             "oracle_coverage": "all_measured_samples",
-            "deadline_milliseconds": 10000
+            "deadline_milliseconds": 10000,
+            "maximum_simulated_ticks": 70000000000
           }
         },
         {
@@ -314,13 +340,16 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/mlperf-tiny-anomaly/expected-validation.txt"
+            "entry": "test/applications/mlperf-tiny-anomaly/expected-validation.txt",
+            "sha256": "f1bc2c6d5c498d352b62457ab4220db463aa573afb2d7c459a3299e072331d80",
+            "encoding": "hex_sample_lines"
           },
           "profile": {
             "warmup_samples": 2,
             "measured_samples": 2,
             "oracle_coverage": "all_measured_samples",
-            "deadline_milliseconds": 10000
+            "deadline_milliseconds": 10000,
+            "maximum_simulated_ticks": 70000000000
           }
         }
       ],
@@ -347,7 +376,8 @@
           "-fno-math-errno"
         ],
         "link_options": [],
-        "operator_protocol_symbols": ["vecadd_memory"]
+        "operator_protocol_symbols": ["vecadd_memory"],
+        "product_execution": null
       },
       "cached_inputs": [],
       "inputs": [
@@ -359,7 +389,9 @@
           "compiler_options": [],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/vecadd-memory/expected-smoke.txt"
+            "entry": "test/applications/vecadd-memory/expected-smoke.txt",
+            "sha256": "81125116a03032eff194e6f5d84b71fe3a53e2a703e3713a301e0f2e35d7286f",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -380,7 +412,9 @@
           ],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/vecadd-memory/expected-validation.txt"
+            "entry": "test/applications/vecadd-memory/expected-validation.txt",
+            "sha256": "ed3f48cbd5d94d315ecc733d42e4cfb4add0963b2eece2c35d525a94cd45a221",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,
@@ -401,7 +435,9 @@
           ],
           "oracle": {
             "kind": "exact",
-            "entry": "test/applications/vecadd-memory/expected-scale.txt"
+            "entry": "test/applications/vecadd-memory/expected-scale.txt",
+            "sha256": "3625877a095abc2d4c1871905210f5233931d387da8fed6cacf35660f650db46",
+            "encoding": "utf8"
           },
           "profile": {
             "warmup_samples": 0,

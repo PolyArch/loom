@@ -319,6 +319,7 @@ constructed roots use registry-3.1 refs.
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
 | 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.1`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
+| 13 | `application_product_oracle` | `0: loom.application.runtime_manifest 7.0`, `1: System SimulationExecution` | both forbidden; the execution Request must use the manifest's exact activation workload and runtime input |
 
 The matching initial model descriptors are:
 
@@ -344,6 +345,7 @@ The matching initial model descriptors are:
 | 19 | `gem5_system_rtl` | 6 | deterministic Simulation of the exact System workload with mapped RTL SpatialCore participants and one `SimulationExecution` output plus whole-case Runtime |
 | 20 | `openroad_routed_static_fpa` | 5 | OpenROAD ToolMeasurement point observations of limiting clock frequency, total area, dynamic power, and leakage power for one exact routed implementation target |
 | 21 | `mapped_rtl_simulator` | 12 | deterministic external Simulation of the exact Spatial workload on one mapped RTL implementation, with one `SimulationExecution` output and exact whole-case CycleCount |
+| 22 | `application_product_oracle` | 13 | deterministic comparison of one retired System execution's complete product status and output-memory observation with the Application runtime manifest's independent expected-output Blob, producing only the whole-case `functional_mismatch` finding |
 
 Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
@@ -369,6 +371,10 @@ or platform-specialized `Rtl` representation root whose complete
 HardwareImplementation is selected by the exact Deployment. A GateNetlist or
 another HDL fidelity requires another descriptor rather than being silently
 reinterpreted under kind 21.
+Model kind 22 has a distinct zero-field config view. Its manifest subject owns
+the expected Blob and exact product ABI; its execution subject owns the
+observed status and complete output-memory bytes. The comparison does not alter
+either input or expose expected bytes to the executed product.
 Implementation flow, library cohort, Fabric structure, and operating conditions
 remain typed features. Another physical provider registers another exact model
 descriptor. Physical execution limits remain
@@ -3476,14 +3482,14 @@ SpatialCore, AccCore, transport, service, and combined families.
 Application mapping provenance supplies the canonical set of these record
 roots to `loom.application.activation_decision` 2.0, which is the durable
 application owner of the exact evaluated set and nullable selected record.
-Runtime manifest 6.0 is a checked projection of that owner, and Application
+Runtime manifest 7.0 is a checked projection of that owner, and Application
 package closure carries the set and the complete parent/child System and
 SystemMapping closures. Removing the DSE journal or build store therefore
 cannot erase the mutation evidence selected or rejected while the pair was
 evaluated.
 
 The mutation record does not name a `FinalizedDeployment` or a
-`ResourceTimeTransition`. Runtime manifest 6.0 joins only the selected repair
+`ResourceTimeTransition`. Runtime manifest 7.0 joins only the selected repair
 record to its selected Mapping and Deployment. The current resource-time
 transition owner requires both endpoint SystemMappings to name the same
 immutable Fabric, so a parent-to-hardware-child transition is rejected rather
