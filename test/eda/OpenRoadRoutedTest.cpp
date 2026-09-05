@@ -69,11 +69,13 @@ void driverAndResultProtocolsAreStrict() {
                                        "/external/technology.lef",
                                        {"/external/cells.lef"},
                                        {"/external/cells.lib"}};
-  const std::string driver = take(
-      __func__, renderOpenRoadRoutedDriver("top", technology.placement, gate));
+  const std::string driver =
+      take(__func__, renderOpenRoadRoutedDriver("top", technology.placement,
+                                                technology.routing, gate));
   require(__func__,
-          take(__func__, renderOpenRoadRoutedDriver("top", technology.placement,
-                                                    gate)) == driver,
+          take(__func__,
+               renderOpenRoadRoutedDriver("top", technology.placement,
+                                          technology.routing, gate)) == driver,
           "identical inputs changed the routed driver");
   for (llvm::StringRef command :
        {"initialize_floorplan", "global_placement -density 0.55",
@@ -88,8 +90,8 @@ void driverAndResultProtocolsAreStrict() {
   placed.netlists.clear();
   placed.placedDatabase = "inputs/database/placed.odb";
   const std::string placedDriver =
-      take(__func__,
-           renderOpenRoadRoutedDriver("top", technology.placement, placed));
+      take(__func__, renderOpenRoadRoutedDriver("top", technology.placement,
+                                                technology.routing, placed));
   require(__func__,
           llvm::StringRef(placedDriver).contains("read_db") &&
               !llvm::StringRef(placedDriver).contains("initialize_floorplan") &&
@@ -98,16 +100,17 @@ void driverAndResultProtocolsAreStrict() {
 
   OpenRoadRoutedDriverFiles noConstraints = gate;
   noConstraints.constraints.clear();
-  expectErrorContains(
-      __func__,
-      renderOpenRoadRoutedDriver("top", technology.placement, noConstraints),
-      "constraint closure is empty");
+  expectErrorContains(__func__,
+                      renderOpenRoadRoutedDriver("top", technology.placement,
+                                                 technology.routing,
+                                                 noConstraints),
+                      "constraint closure is empty");
   OpenRoadRoutedDriverFiles ambiguous = gate;
   ambiguous.placedDatabase = "placed.odb";
-  expectErrorContains(
-      __func__,
-      renderOpenRoadRoutedDriver("top", technology.placement, ambiguous),
-      "closure is inconsistent");
+  expectErrorContains(__func__,
+                      renderOpenRoadRoutedDriver("top", technology.placement,
+                                                 technology.routing, ambiguous),
+                      "closure is inconsistent");
 
   const OpenRoadRoutedAttemptResult result = take(
       __func__, parseOpenRoadRoutedAttemptResult(

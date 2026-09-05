@@ -1,3 +1,5 @@
+#include "OpenRoadConfiguration.h"
+
 #include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
 
 #include "Common/ArtifactStore.h"
@@ -34,7 +36,7 @@ importOpenRoadRoutedInvocationImpl(
 namespace {
 
 constexpr llvm::StringLiteral kProviderIdentity =
-    "loom.openroad.routed_asic_physical.v1";
+    "loom.openroad.routed_asic_physical.v2";
 constexpr llvm::StringLiteral kNetlistOutput = "outputs/routed.v";
 constexpr llvm::StringLiteral kDefOutput = "outputs/routed.def";
 constexpr llvm::StringLiteral kResultOutput = "outputs/routed-result.json";
@@ -99,17 +101,7 @@ llvm::Error invalid(const llvm::Twine &detail) {
                                  "openroad_routed_invalid: " + detail);
 }
 
-bool isPortableIdentifier(llvm::StringRef value) {
-  const auto first = [](char character) {
-    return (character >= 'A' && character <= 'Z') ||
-           (character >= 'a' && character <= 'z') || character == '_';
-  };
-  const auto rest = [&](char character) {
-    return first(character) || (character >= '0' && character <= '9');
-  };
-  return !value.empty() && first(value.front()) &&
-         llvm::all_of(value.drop_front(), rest);
-}
+using detail::isPortableIdentifier;
 
 llvm::Expected<std::string> tclString(llvm::StringRef value,
                                       llvm::StringRef description) {
@@ -226,7 +218,7 @@ externalRequirements(const OpenRoadPlacedConfig &config) {
 }
 
 struct RoutedInvocationFacts final {
-  OpenRoadPlacedConfig config;
+  OpenRoadRoutedConfig config;
   StableExternalClosure closure;
   hardware::FinalizedHardwareImplementation source;
   platform::FinalizedImplementationPlatform platform;
@@ -272,10 +264,10 @@ llvm::Expected<RoutedInvocationFacts> invocationFacts(
   if (llvm::Error error = dse::validateCandidateGeneratorInputBindings(
           descriptor.reference(), inputs))
     return std::move(error);
-  auto config = decodeOpenRoadPlacedConfig(binding.canonicalConfigBytes());
+  auto config = decodeOpenRoadRoutedConfig(binding.canonicalConfigBytes());
   if (!config)
     return config.takeError();
-  auto closure = stableExternalClosure(*config);
+  auto closure = stableExternalClosure(config->physical);
   if (!closure)
     return closure.takeError();
   auto semanticContract =
@@ -317,7 +309,8 @@ llvm::Expected<RoutedInvocationFacts> invocationFacts(
     return invalid("input has no exact implementation platform");
   const ArtifactRootReference platformReference{
       platform::implementationPlatformSchema.identity.str(),
-      platform::implementationPlatformSchema.version, config->corner.artifact};
+      platform::implementationPlatformSchema.version,
+      config->physical.corner.artifact};
   if (*implementation.implementationPlatform() != platformReference)
     return invalid("configuration corner belongs to a foreign platform");
   auto target =
@@ -326,7 +319,7 @@ llvm::Expected<RoutedInvocationFacts> invocationFacts(
     return target.takeError();
   if (!std::holds_alternative<platform::AsicTarget>(
           target->platform().target()) ||
-      !target->platform().findTechnologyCorner(config->corner.entity))
+      !target->platform().findTechnologyCorner(config->physical.corner.entity))
     return invalid("OpenROAD route requires the selected ASIC corner");
   if (llvm::Error error =
           validateSourceExternalClosure(implementation, *closure))
@@ -401,7 +394,7 @@ llvm::Expected<RoutedInvocationFacts> invocationFacts(
   if (inputKind == OpenRoadRoutedInputKind::PlacedDatabase &&
       !facts.driverFiles.placedDatabase)
     return invalid("placed input has no database payload");
-  facts.externalRequirements = externalRequirements(facts.config);
+  facts.externalRequirements = externalRequirements(facts.config.physical);
   return facts;
 }
 
@@ -646,10 +639,11 @@ llvm::Expected<external_tool::PreparedExternalToolInvocation> prepareRegistered(
     const dse::ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &artifacts, const BlobStore &blobs,
     const external_tool::ExternalToolPreparationContext &context) {
-  auto config = decodeOpenRoadPlacedConfig(binding.canonicalConfigBytes());
+  auto config = decodeOpenRoadRoutedConfig(binding.canonicalConfigBytes());
   if (!config)
     return config.takeError();
-  auto execution = resolveOpenRoadExecution(config->providerBuild, context);
+  auto execution =
+      resolveOpenRoadExecution(config->physical.providerBuild, context);
   if (!execution)
     return execution.takeError();
   auto contracts = makeKnownAsicStandardCellContractCatalog();
@@ -711,8 +705,8 @@ openRoadRoutedCandidateGeneratorDescriptor() {
       inputs,
       outputs,
       dse::ResolvedDseConfigViewContract{
-          openRoadPlacedConfigSchemaDescriptorBytes(),
-          validateCanonicalOpenRoadPlacedConfig},
+          openRoadRoutedConfigSchemaDescriptorBytes(),
+          validateCanonicalOpenRoadRoutedConfig},
       dse::CandidateGeneratorDeterminism::Deterministic,
       workUnits,
       nullptr,
@@ -740,10 +734,13 @@ llvm::Error registerOpenRoadRoutedCandidateGenerator() {
 llvm::Expected<std::string>
 renderOpenRoadRoutedDriver(llvm::StringRef topModule,
                            const OpenRoadPlacementParameters &parameters,
+                           const OpenRoadRoutingParameters &routing,
                            const OpenRoadRoutedDriverFiles &files) {
   if (!isPortableIdentifier(topModule))
     return invalid("top module is not a portable identifier");
   if (llvm::Error error = validateOpenRoadPlacementParameters(parameters))
+    return std::move(error);
+  if (llvm::Error error = validateOpenRoadRoutingParameters(routing))
     return std::move(error);
   if (files.constraints.empty())
     return invalid("constraint closure is empty");
@@ -809,11 +806,44 @@ renderOpenRoadRoutedDriver(llvm::StringRef topModule,
     driver += kTieCellPreparation.str();
   }
   driver +=
+      "set loom_minimum_routing_layer " + routing.minimumRoutingLayer + "\n";
+  driver +=
+      "set loom_maximum_routing_layer " + routing.maximumRoutingLayer + "\n";
+  driver += R"tcl(set loom_tech [ord::get_db_tech]
+foreach loom_name [list $loom_minimum_routing_layer $loom_maximum_routing_layer] {
+  set loom_layer [$loom_tech findLayer $loom_name]
+  if {$loom_layer eq "NULL" || [$loom_layer getType] ne "ROUTING" ||
+      [$loom_layer isBackside]} {
+    error "routing bound $loom_name is not a front-side technology routing layer"
+  }
+}
+set loom_minimum [$loom_tech findLayer $loom_minimum_routing_layer]
+set loom_maximum [$loom_tech findLayer $loom_maximum_routing_layer]
+if {[$loom_minimum getRoutingLevel] > [$loom_maximum getRoutingLevel]} {
+  error {routing layer bounds are inverted in the exact technology}
+}
+set_routing_layers -signal "$loom_minimum_routing_layer-$loom_maximum_routing_layer"
+)tcl";
+  if (routing.viaAccessCutoffLayer) {
+    driver +=
+        "set loom_via_access_cutoff " + *routing.viaAccessCutoffLayer + "\n";
+    driver +=
+        R"tcl(set loom_cutoff [$loom_tech findLayer $loom_via_access_cutoff]
+if {$loom_cutoff eq "NULL" || [$loom_cutoff getType] ni {CUT ROUTING} ||
+    [$loom_cutoff isBackside]} {
+  error {via access cutoff is not a front-side technology cut or routing layer}
+}
+)tcl";
+  }
+  driver +=
       "if {[llength [all_clocks]] == 0} { error {route requires a clock} }\n";
   driver += "clock_tree_synthesis -repair_clock_nets\n";
   driver += "detailed_placement\n";
   driver += "global_route -congestion_iterations 30\n";
-  driver += "detailed_route -or_seed 1\n";
+  driver += "detailed_route -or_seed 1";
+  if (routing.viaAccessCutoffLayer)
+    driver += " -via_access_layer $loom_via_access_cutoff";
+  driver += "\n";
   driver += "write_verilog -sort " + kNetlistOutput.str() + "\n";
   driver += "write_def -version 5.8 " + kDefOutput.str() + "\n";
   driver += "set loom_result [open " + kResultOutput.str() + " w]\n";
@@ -856,16 +886,17 @@ prepareOpenRoadRoutedInvocation(
   if (!facts)
     return facts.takeError();
   if (llvm::Error error = validateOpenRoadResolvedExecution(
-          execution, facts->config.providerBuild))
+          execution, facts->config.physical.providerBuild))
     return std::move(error);
   auto externalFiles = external_tool::resolveExternalFiles(
       facts->externalRequirements, context.localConfig);
   if (!externalFiles)
     return externalFiles.takeError();
-  if (externalFiles->size() != facts->config.externalFiles.size())
+  if (externalFiles->size() != facts->config.physical.externalFiles.size())
     return invalid("resolved external-file closure has the wrong size");
   for (std::size_t index = 0; index < externalFiles->size(); ++index) {
-    const OpenRoadExternalFile &semantic = facts->config.externalFiles[index];
+    const OpenRoadExternalFile &semantic =
+        facts->config.physical.externalFiles[index];
     const external_tool::ResolvedExternalFile &resolved =
         (*externalFiles)[index];
     if (resolved.providerInputSlot != openRoadExternalFileInputSlot(semantic) ||
@@ -883,8 +914,9 @@ prepareOpenRoadRoutedInvocation(
       break;
     }
   }
-  auto driver = renderOpenRoadRoutedDriver(facts->top, facts->config.placement,
-                                           facts->driverFiles);
+  auto driver =
+      renderOpenRoadRoutedDriver(facts->top, facts->config.physical.placement,
+                                 facts->config.routing, facts->driverFiles);
   if (!driver)
     return driver.takeError();
 

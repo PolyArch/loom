@@ -28,6 +28,7 @@ struct OpenRoadTechnologyFixture final {
   std::string blackBoxContract;
   std::vector<std::string> unresolvedCellModules;
   OpenRoadPlacementParameters placement;
+  OpenRoadRoutingParameters routing;
 };
 
 OpenRoadTechnologyFixture syntheticOpenRoadTechnologyFixture();
@@ -47,6 +48,7 @@ struct OpenRoadGateFixture final {
   hardware::FinalizedHardwareImplementation gate;
   platform::FinalizedImplementationPlatform platform;
   OpenRoadPlacedConfig config;
+  OpenRoadRoutingParameters routing;
   std::filesystem::path technologyLefPath;
   std::filesystem::path cellLefPath;
   std::filesystem::path libertyPath;

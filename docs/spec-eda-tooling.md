@@ -131,6 +131,23 @@ names and tie-cell names are not independent configuration. Native insertion
 and the resulting routed netlist preserve the existing implementation and
 external-library provenance owners.
 
+Routing uses `OpenRoadRoutedConfig`, which composes the existing exact
+placement/external-file configuration with one `OpenRoadRoutingParameters`
+value. The routing value binds `minimum_routing_layer`,
+`maximum_routing_layer`, and nullable `via_access_cutoff_layer`. The native
+technology owner validates front-side routing endpoints and their order; an
+explicit cutoff must name a front-side cut or routing layer. Pins at or below
+that cutoff require via access; an absent cutoff retains the pinned native
+provider's policy. This is a result-affecting configuration and participates
+in the ordinary invocation cache identity. The routed provider implementation
+identity is `loom.openroad.routed_asic_physical.v2`; older driver behavior is
+not admitted under this identity. The independent placed provider retains its
+own configuration and identity.
+
+The FPA physical CLI requires `--fpa-routing` alongside `--fpa-placement` when
+synthesis and routing are requested. Both files author the registered semantic
+configuration; neither introduces a machine-local routing override.
+
 Vivado and Quartus Prime target the exact vendor ordering code of an
 `ImplementationPlatform`. Their verified provider build and exact device key
 own access to the bundled primitive and timing database; Loom does not import

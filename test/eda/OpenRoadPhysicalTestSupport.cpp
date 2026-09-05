@@ -220,7 +220,8 @@ OpenRoadTechnologyFixture syntheticOpenRoadTechnologyFixture() {
                                       "CoreSite",
                                       "Metal2",
                                       "Metal3",
-                                      550000}};
+                                      550000},
+          {"Metal1", "Metal3", std::nullopt}};
 }
 
 llvm::Expected<OpenRoadTechnologyFixture>
@@ -255,7 +256,8 @@ endmodule
                                   "unit",
                                   "M3",
                                   "M2",
-                                  550000}};
+                                  550000},
+      {"M1", "M9", std::nullopt}};
 }
 
 llvm::Expected<OpenRoadTechnologyFixture>
@@ -295,7 +297,8 @@ endmodule
                                   "CoreSite",
                                   "Metal3",
                                   "Metal2",
-                                  550000}};
+                                  550000},
+      {"Metal1", "Metal11", "Cont"}};
 }
 
 llvm::Expected<std::string> readText(const std::filesystem::path &path) {
@@ -469,6 +472,7 @@ llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
                              std::move(*gate),
                              std::move(*platform),
                              std::move(config),
+                             technology.routing,
                              technologyPath,
                              cellsPath,
                              libertyPath};
@@ -478,11 +482,12 @@ llvm::Expected<OpenRoadRouteHarness>
 makeOpenRoadRouteHarness(const std::filesystem::path &bundleRoot,
                          const OpenRoadGateFixture &fixture,
                          const external_tool::LocalToolConfig &localConfig) {
-  auto configBytes = encodeOpenRoadPlacedConfig(fixture.config);
+  auto configBytes =
+      encodeOpenRoadRoutedConfig({fixture.config, fixture.routing});
   if (!configBytes)
     return configBytes.takeError();
   auto configDigest = computeComponentViewDigest(
-      openRoadPlacedConfigSchemaDescriptorBytes(), *configBytes);
+      openRoadRoutedConfigSchemaDescriptorBytes(), *configBytes);
   if (!configDigest)
     return configDigest.takeError();
   auto binding = dse::ResolvedCandidateGeneratorBinding::get(

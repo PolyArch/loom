@@ -4,7 +4,7 @@
 #include "Common/ExternalFileFingerprint.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/PlanValue.h"
-#include "EDA/Adapters/OpenSource/OpenRoad.h"
+#include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "llvm/Support/Error.h"
@@ -37,6 +37,7 @@ struct FpaPhysicalImplementationRequest final {
   std::string yosysProviderBuild;
   std::string openRoadProviderBuild;
   eda::open_source::OpenRoadPlacementParameters placement;
+  eda::open_source::OpenRoadRoutingParameters routing;
   ExternalFileFingerprint technologyLef;
   ExternalFileFingerprint cellLef;
   ExternalFileFingerprint liberty;

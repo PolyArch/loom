@@ -311,6 +311,11 @@ llvm::cl::opt<std::string> fpaPlacementPath(
     llvm::cl::desc("placement parameter JSON (die/core area, site, pin layers, "
                    "density) for the routed implementation"),
     llvm::cl::value_desc("path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> fpaRoutingPath(
+    "fpa-routing",
+    llvm::cl::desc("routing policy JSON (minimum/maximum routing layers and "
+                   "optional via-access cutoff) for physical implementation"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 llvm::cl::opt<std::string> fpaTechnologyLefKey(
     "fpa-technology-lef",
     llvm::cl::desc("local external-file key of the technology LEF"),
@@ -1338,9 +1343,9 @@ llvm::Expected<int> run() {
                      "and its corners");
     if (!rtlImplementations->empty() &&
         (fpaYosysBuild.empty() || fpaOpenRoadBuild.empty() ||
-         fpaPlacementPath.empty()))
+         fpaPlacementPath.empty() || fpaRoutingPath.empty()))
       return invalid("FPA synthesis and routing require the provider builds "
-                     "and placement parameters");
+                     "and placement/routing parameters");
     eda::open_source::OpenRoadPlacementParameters placement{};
     if (!fpaPlacementPath.empty()) {
       auto placementText = llvm::MemoryBuffer::getFile(fpaPlacementPath);
@@ -1354,6 +1359,18 @@ llvm::Expected<int> run() {
         return parsed.takeError();
       placement = std::move(*parsed);
     }
+    eda::open_source::OpenRoadRoutingParameters routing{};
+    if (!fpaRoutingPath.empty()) {
+      auto routingText = llvm::MemoryBuffer::getFile(fpaRoutingPath);
+      if (!routingText)
+        return llvm::createStringError(routingText.getError(), "cannot read %s",
+                                       fpaRoutingPath.c_str());
+      auto parsed = eda::open_source::parseOpenRoadRoutingParametersJson(
+          (*routingText)->getBuffer());
+      if (!parsed)
+        return parsed.takeError();
+      routing = std::move(*parsed);
+    }
     auto technologyLef = fingerprintLocalExternalFile(*local, fpaTechnologyLefKey);
     if (!technologyLef)
       return technologyLef.takeError();
@@ -1365,19 +1382,14 @@ llvm::Expected<int> run() {
       return liberty.takeError();
     auto plan = buildFpaPhysicalImplementationPlan(
         FpaPhysicalImplementationRequest{
-            std::move(*systems),
-            std::move(*rtlImplementations),
+            std::move(*systems), std::move(*rtlImplementations),
             loom::platform::AsicTarget{fpaAsicTechnology, fpaAsicRelease},
             std::vector<std::string>(fpaTechnologyCorners.begin(),
                                      fpaTechnologyCorners.end()),
             fpaSelectedCorner.empty() ? fpaTechnologyCorners.front()
                                       : fpaSelectedCorner.getValue(),
-            fpaYosysBuild,
-            fpaOpenRoadBuild,
-            placement,
-            *technologyLef,
-            *cellLef,
-            *liberty},
+            fpaYosysBuild, fpaOpenRoadBuild, placement, routing, *technologyLef,
+            *cellLef, *liberty},
         *config, artifacts, blobs);
     if (!plan)
       return plan.takeError();

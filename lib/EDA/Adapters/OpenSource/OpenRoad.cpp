@@ -1,3 +1,5 @@
+#include "OpenRoadConfiguration.h"
+
 #include "EDA/Adapters/OpenSource/OpenRoad.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -60,17 +62,7 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "openroad_placed_invalid: " + message);
 }
 
-bool isPortableIdentifier(llvm::StringRef value) {
-  const auto isFirst = [](char character) {
-    return (character >= 'A' && character <= 'Z') ||
-           (character >= 'a' && character <= 'z') || character == '_';
-  };
-  const auto isRest = [&](char character) {
-    return isFirst(character) || (character >= '0' && character <= '9');
-  };
-  return !value.empty() && isFirst(value.front()) &&
-         llvm::all_of(value.drop_front(), isRest);
-}
+using detail::isPortableIdentifier;
 
 bool isCanonicalKey(llvm::StringRef value) {
   if (value.empty())
@@ -812,16 +804,8 @@ parsePlacementObject(const llvm::json::Object &placement) {
 }
 
 llvm::Expected<OpenRoadPlacedConfig>
-decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
-  const llvm::StringRef contents(reinterpret_cast<const char *>(bytes.data()),
-                                 bytes.size());
-  auto parsed = llvm::json::parse(contents);
-  if (!parsed)
-    return invalid("config JSON is malformed: " +
-                   llvm::toString(parsed.takeError()));
-  const llvm::json::Object *root = parsed->getAsObject();
-  if (!root)
-    return invalid("config JSON root is not an object");
+detail::parseOpenRoadPlacedConfigObject(const llvm::json::Object &object) {
+  const llvm::json::Object *root = &object;
   if (llvm::Error error =
           rejectUnknownFields(*root, "config JSON",
                               {"schema", "version", "provider_build", "corner",
@@ -903,6 +887,23 @@ decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
                                     platform::TechnologyCornerId(*cornerId)},
       *placement,
       std::move(externalFiles)});
+  if (!canonical)
+    return canonical.takeError();
+  return std::move(*canonical);
+}
+
+llvm::Expected<OpenRoadPlacedConfig>
+decodeOpenRoadPlacedConfig(llvm::ArrayRef<std::uint8_t> bytes) {
+  const llvm::StringRef contents(reinterpret_cast<const char *>(bytes.data()),
+                                 bytes.size());
+  auto parsed = llvm::json::parse(contents);
+  if (!parsed)
+    return invalid("config JSON is malformed: " +
+                   llvm::toString(parsed.takeError()));
+  const llvm::json::Object *root = parsed->getAsObject();
+  if (!root)
+    return invalid("config JSON root is not an object");
+  auto canonical = detail::parseOpenRoadPlacedConfigObject(*root);
   if (!canonical)
     return canonical.takeError();
   if (contents != serializeConfig(*canonical))

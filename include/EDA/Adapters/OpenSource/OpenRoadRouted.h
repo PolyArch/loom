@@ -7,6 +7,45 @@
 
 namespace loom::eda::open_source {
 
+/// Explicit routing policy over names owned by the exact technology LEF.
+/// Pins at or below viaAccessCutoffLayer require via access; a missing cutoff
+/// retains the pinned native provider's policy.
+struct OpenRoadRoutingParameters final {
+  std::string minimumRoutingLayer;
+  std::string maximumRoutingLayer;
+  std::optional<std::string> viaAccessCutoffLayer;
+
+  friend bool operator==(const OpenRoadRoutingParameters &lhs,
+                         const OpenRoadRoutingParameters &rhs) {
+    return lhs.minimumRoutingLayer == rhs.minimumRoutingLayer &&
+           lhs.maximumRoutingLayer == rhs.maximumRoutingLayer &&
+           lhs.viaAccessCutoffLayer == rhs.viaAccessCutoffLayer;
+  }
+};
+
+struct OpenRoadRoutedConfig final {
+  OpenRoadPlacedConfig physical;
+  OpenRoadRoutingParameters routing;
+
+  friend bool operator==(const OpenRoadRoutedConfig &lhs,
+                         const OpenRoadRoutedConfig &rhs) {
+    return lhs.physical == rhs.physical && lhs.routing == rhs.routing;
+  }
+};
+
+llvm::Error
+validateOpenRoadRoutingParameters(const OpenRoadRoutingParameters &parameters);
+llvm::Expected<OpenRoadRoutingParameters>
+parseOpenRoadRoutingParametersJson(llvm::StringRef json);
+llvm::ArrayRef<std::uint8_t> openRoadRoutedConfigSchemaDescriptorBytes();
+llvm::Expected<std::vector<std::uint8_t>>
+encodeOpenRoadRoutedConfig(const OpenRoadRoutedConfig &config);
+llvm::Expected<OpenRoadRoutedConfig>
+decodeOpenRoadRoutedConfig(llvm::ArrayRef<std::uint8_t> bytes);
+llvm::Error validateCanonicalOpenRoadRoutedConfig(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ComponentViewDigest &suppliedDigest);
+
 inline constexpr dse::CandidateGeneratorKind
     openRoadRoutedCandidateGeneratorKind(0x4f525254);
 
@@ -34,6 +73,7 @@ struct OpenRoadRoutedDriverFiles final {
 llvm::Expected<std::string>
 renderOpenRoadRoutedDriver(llvm::StringRef topModule,
                            const OpenRoadPlacementParameters &parameters,
+                           const OpenRoadRoutingParameters &routing,
                            const OpenRoadRoutedDriverFiles &files);
 
 struct OpenRoadRoutedAttemptResult final {

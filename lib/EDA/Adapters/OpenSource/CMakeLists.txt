@@ -29,6 +29,7 @@ add_library(LoomEDAOpenSource
   MappedRtlSimulation.cpp
   OpenRoad.cpp
   OpenRoadRouted.cpp
+  OpenRoadRoutedConfig.cpp
   OpenRoadStaticFpa.cpp
   Verilator.cpp
   Yosys.cpp

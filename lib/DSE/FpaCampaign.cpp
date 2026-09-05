@@ -227,22 +227,23 @@ buildFpaPhysicalImplementationPlan(FpaPhysicalImplementationRequest request,
             request.yosysProviderBuild, *corner, request.liberty);
     if (!yosysConfig)
       return yosysConfig.takeError();
-    eda::open_source::OpenRoadPlacedConfig routedConfig{
-        request.openRoadProviderBuild,
-        *corner,
-        request.placement,
-        {{eda::open_source::OpenRoadExternalFileKind::TechnologyLef,
-          kTechnologyLefLogicalName.str(), request.technologyLef},
-         {eda::open_source::OpenRoadExternalFileKind::CellLef,
-          kCellLefLogicalName.str(), request.cellLef},
-         {eda::open_source::OpenRoadExternalFileKind::Liberty,
-          kLibertyLogicalName.str(), request.liberty}}};
+    eda::open_source::OpenRoadRoutedConfig routedConfig{
+        {request.openRoadProviderBuild,
+         *corner,
+         request.placement,
+         {{eda::open_source::OpenRoadExternalFileKind::TechnologyLef,
+           kTechnologyLefLogicalName.str(), request.technologyLef},
+          {eda::open_source::OpenRoadExternalFileKind::CellLef,
+           kCellLefLogicalName.str(), request.cellLef},
+          {eda::open_source::OpenRoadExternalFileKind::Liberty,
+           kLibertyLogicalName.str(), request.liberty}}},
+        request.routing};
     auto routedBytes =
-        eda::open_source::encodeOpenRoadPlacedConfig(routedConfig);
+        eda::open_source::encodeOpenRoadRoutedConfig(routedConfig);
     if (!routedBytes)
       return routedBytes.takeError();
     auto routedDigest = computeComponentViewDigest(
-        eda::open_source::openRoadPlacedConfigSchemaDescriptorBytes(),
+        eda::open_source::openRoadRoutedConfigSchemaDescriptorBytes(),
         *routedBytes);
     if (!routedDigest)
       return routedDigest.takeError();
