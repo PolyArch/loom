@@ -1431,6 +1431,7 @@ SpatialRouteCostState::rebuildTagProjectionFromCandidate(bool resetHistory) {
             matchDomains[domain].kind ==
             ::loom::fabric::FabricPhysicalTagMatchDomainKind::
                 TemporalSwitchTable;
+        std::uint64_t &marginalCount = marginalRows[logicalNet][domain];
         if (values[segment] && packedSwitch) {
           assignedRows[domain][*values[segment]].push_back(logicalNet);
         } else {
@@ -1438,7 +1439,7 @@ SpatialRouteCostState::rebuildTagProjectionFromCandidate(bool resetHistory) {
               std::numeric_limits<std::uint64_t>::max())
             return routeCostStateError("candidate tag usage overflows u64");
           ++workingTagDomainUsage_[domain];
-          ++marginalRows[logicalNet][domain];
+          ++marginalCount;
         }
       }
     }
@@ -1461,8 +1462,7 @@ SpatialRouteCostState::rebuildTagProjectionFromCandidate(bool resetHistory) {
     uses.clear();
     uses.reserve(marginalRows[logicalNet].size());
     for (const auto &[domain, count] : marginalRows[logicalNet])
-      if (count != 0)
-        uses.push_back({domain, count});
+      uses.push_back({domain, count});
   }
   for (PnrIndex domain = 0; domain < domainCount; ++domain) {
     if (workingTagDomainUsage_[domain] !=
