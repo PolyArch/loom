@@ -44,6 +44,56 @@ constexpr llvm::StringLiteral kResultVersion = "1.0";
 constexpr llvm::StringLiteral kBlackBoxLogicalName =
     "contracts/openroad-routed-standard-cells.txt";
 
+// OpenSTA and OpenDB derive tie-cell legality from the exact bound Liberty
+// and LEF. The native floorplan/resizer commands own constant-net insertion.
+constexpr llvm::StringLiteral kTieCellPreparation = R"tcl(# Derive constant polarity and output pins from the exact loaded Liberty.
+set loom_tie_candidates [dict create 0 {} 1 {}]
+foreach loom_cell [get_lib_cells *] {
+  if {[get_property $loom_cell dont_use]} {continue}
+  set loom_master NULL
+  foreach loom_library [[ord::get_db] getLibs] {
+    set loom_master [$loom_library findMaster [get_name $loom_cell]]
+    if {$loom_master ne "NULL"} {break}
+  }
+  if {$loom_master eq "NULL"} {continue}
+  set loom_ports [get_lib_pins -of_objects $loom_cell]
+  set loom_constant_cell [expr {[llength $loom_ports] != 0}]
+  foreach loom_port $loom_ports {
+    if {[sta::liberty_port_direction $loom_port] ne "output" ||
+        [$loom_port has_members] || [$loom_port tristate_enable] ne "" ||
+        [$loom_port function] ni {0 1} ||
+        [$loom_master findMTerm [$loom_port name]] eq "NULL"} {
+      set loom_constant_cell 0
+      break
+    }
+  }
+  if {!$loom_constant_cell} {continue}
+  foreach loom_port $loom_ports {
+    dict lappend loom_tie_candidates [$loom_port function] [list [get_name $loom_cell] [$loom_port name]]
+  }
+}
+set loom_block [ord::get_db_block]
+foreach {loom_value loom_signal_type} {0 GROUND 1 POWER} {
+  set loom_needs_tie 0
+  foreach loom_net [$loom_block getNets] {
+    if {![$loom_net isSpecial] && [$loom_net getSigType] eq $loom_signal_type} {
+      set loom_needs_tie 1
+      break
+    }
+  }
+  if {!$loom_needs_tie} {continue}
+  set loom_candidates [lsort -unique [dict get $loom_tie_candidates $loom_value]]
+  if {[llength $loom_candidates] == 0} {
+    error "exact Liberty has no physical constant-$loom_value output cell"
+  }
+  set loom_tie [lindex $loom_candidates 0]
+  set loom_tie_pin [join $loom_tie /]
+  puts "LOOM_LIBERTY_TIE value=$loom_value pin=$loom_tie_pin"
+  insert_tiecells $loom_tie_pin
+  repair_tie_fanout $loom_tie_pin
+}
+)tcl";
+
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "openroad_routed_invalid: " + detail);
@@ -740,6 +790,7 @@ renderOpenRoadRoutedDriver(llvm::StringRef topModule,
               rectangle(parameters.dieArea) + "} -core_area {" +
               rectangle(parameters.coreArea) + "} -site " +
               parameters.siteName + "\n";
+    driver += kTieCellPreparation.str();
     driver += "make_tracks\n";
     driver += "place_pins -hor_layers " + parameters.horizontalPinLayer +
               " -ver_layers " + parameters.verticalPinLayer + "\n";
@@ -755,6 +806,7 @@ renderOpenRoadRoutedDriver(llvm::StringRef topModule,
     driver +=
         "foreach loom_path $loom_liberty_files { read_liberty $loom_path }\n";
     driver += "foreach loom_path $loom_constraints { read_sdc $loom_path }\n";
+    driver += kTieCellPreparation.str();
   }
   driver +=
       "if {[llength [all_clocks]] == 0} { error {route requires a clock} }\n";

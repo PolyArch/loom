@@ -120,6 +120,17 @@ coherent placed or routed database may publish the matching closed
 parasitic payload closure is materialized. A layout stream is a payload of the
 corresponding coherent physical implementation, not another representation.
 
+The OpenROAD routed driver prepares ordinary constant nets with native
+`insert_tiecells` and `repair_tie_fanout` before placement. It derives eligible
+cells from the exact bound Liberty and loaded LEF: enabled cells with scalar
+constant output functions, no functional inputs or tristate enables, and
+matching physical cell/pin definitions. The parsed output function owns the
+constant polarity. Candidate selection is deterministic, and a required
+polarity without an eligible cell fails the physical attempt. Technology
+names and tie-cell names are not independent configuration. Native insertion
+and the resulting routed netlist preserve the existing implementation and
+external-library provenance owners.
+
 Vivado and Quartus Prime target the exact vendor ordering code of an
 `ImplementationPlatform`. Their verified provider build and exact device key
 own access to the bundled primitive and timing database; Loom does not import
