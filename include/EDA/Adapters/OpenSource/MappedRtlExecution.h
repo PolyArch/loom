@@ -67,8 +67,9 @@ struct MappedRtlExecutionClosure final {
   ArtifactRootReference runtimeInput;
 };
 
-/// Exact CIRCT source closure compiled as one flat Verilator model. Source
-/// module boundaries remain ordinary RTL hierarchy, never protect-lib cuts.
+/// Exact CIRCT source closure compiled under one global Verilator scheduler.
+/// Ordinary module boundaries own separate C++ state classes, never protect-lib
+/// scheduling cuts.
 struct MappedRtlSourcePlan final {
   std::string sourcePath;
   std::string sourceSha256;
@@ -80,6 +81,7 @@ struct MappedRtlSourcePlan final {
   std::uint64_t hardwareRootTransitiveBodyLines = 0;
   std::vector<std::string> hardwareRootSourceClosureModules;
   std::string rtlLibraryDirectoryPath;
+  std::string verilatorControlPath;
   std::string manifestPath;
   std::string workDirectoryPath;
   std::string verilationMakefileName;
@@ -119,10 +121,9 @@ struct MappedRtlExecutionBundleProjection final {
 };
 
 /// The frozen mapped-RTL parallelism of an attempt that does not choose its
-/// own. Both counts are the measured operating point of the product Matmul
-/// bundle on a sixteen-core host: eight Verilation and build jobs, and eight
-/// model threads, which simulate three times faster than one thread. They are
-/// the single owner of these defaults; command-line front ends present them.
+/// own. Build jobs, concurrent participant builds, and model threads are
+/// independent resources. These constants own the defaults presented by
+/// command-line front ends; workload-specific measurements qualify their cost.
 inline constexpr std::uint64_t mappedRtlDefaultBuildJobs = 8;
 inline constexpr std::uint64_t mappedRtlDefaultBuildWorkers = 1;
 inline constexpr std::uint64_t mappedRtlDefaultModelThreads = 8;

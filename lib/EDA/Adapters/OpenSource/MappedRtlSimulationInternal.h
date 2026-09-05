@@ -173,9 +173,11 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
 /// when no bridge engine source is given; the bridged driver compiles the
 /// gem5 bridge engine as the C++ main instead. Both compile the complete flat
 /// handshake network with the same generated C++ partitioning policy.
+/// The fixed control file precedes every RTL source in either driver.
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
     const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
-    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
+    llvm::StringRef controlPath, llvm::StringRef testbenchPath,
+    llvm::StringRef simulatorExecutablePath,
     std::optional<llvm::StringRef> bridgeEngineSourcePath);
 
 /// Renders the VCS argument file of one bundle: the SystemVerilog and

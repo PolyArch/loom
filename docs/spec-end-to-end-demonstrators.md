@@ -382,8 +382,10 @@ Report full-testbench and kernel rates separately, with the exact numerator
 and measured phase denominator.
 
 Verilator freezes three commands: flat Verilation without C++ compilation,
-the split parallel C++ build, then simulation. Its exact source-plan, compiler
-partitioning and cache-identity rules are owned by
+the split parallel C++ build, then simulation. Ordinary module-owned C++ state
+classes share one global scheduler; they introduce no protected submodel or
+child convergence boundary. Its exact source-plan, compiler partitioning and
+cache-identity rules are owned by
 [Mapped RTL Verilation flow](spec-rtl-lowering.md#mapped-rtl-verilation-flow).
 The ordinary strict complete-cell research fence remains 600 seconds, 16 GiB
 aggregate memory and zero swap, with at most eight native build jobs. The

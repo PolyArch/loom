@@ -36,6 +36,10 @@ constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
 constexpr std::uint64_t kMaximumBuildWorkers = 4;
 constexpr llvm::StringLiteral kVerilatorPreamblePath =
     "drivers/verilator-preamble.sv";
+constexpr llvm::StringLiteral kVerilatorStateClassesPath =
+    "drivers/verilator-state-classes.vlt";
+constexpr llvm::StringLiteral kVerilatorStateClassesControl =
+    "`verilator_config\nno_inline -module \"*\"\n";
 constexpr llvm::StringLiteral kVerilationSelectionPolicy =
     "circt_instance_graph_flat_handshake_closure";
 
@@ -351,6 +355,7 @@ deriveVerilationSourcePlan(detail::MappedRtlInvocationFacts &facts) {
          modules[ordinal].rootMultiplicity});
   }
   plan.manifestPath = "drivers/verilator-hierarchy-plan.json";
+  plan.verilatorControlPath = kVerilatorStateClassesPath.str();
   plan.workDirectoryPath = "work/verilator";
   plan.verilationMakefileName = "V" + mappedRtlHarnessTop.str() + ".mk";
   return std::pair{std::move(derivedSources), std::move(plan)};
@@ -388,6 +393,7 @@ std::string renderVerilationSourcePlan(const MappedRtlSourcePlan &plan,
       json.attribute("framing_bytes", plan.framingByteCount);
     });
     json.attribute("rtl_library_directory", plan.rtlLibraryDirectoryPath);
+    json.attribute("verilator_control", plan.verilatorControlPath);
     json.attribute("work_directory", plan.workDirectoryPath);
     json.attribute("verilation_style", "flat");
     json.attribute("output_split_statements",
@@ -679,6 +685,10 @@ deriveMappedRtlExecutionBundleProjection(
   if (sourcePlan->first.empty())
     return invalid("CIRCT hierarchy has no reachable module source");
   sourcePlan->second.sourcePath = sourcePlan->first.front().originalPath;
+  auto controlPath =
+      namespacedBundlePath(sourcePlan->second.verilatorControlPath, *prefix);
+  if (!controlPath)
+    return controlPath.takeError();
   auto rtlLibraryDirectoryPath =
       namespacedBundlePath(sourcePlan->second.rtlLibraryDirectoryPath, *prefix);
   auto preamblePath = namespacedBundlePath(kVerilatorPreamblePath, *prefix);
@@ -699,6 +709,7 @@ deriveMappedRtlExecutionBundleProjection(
                                            : workDirectoryPath.takeError()));
   sourcePlan->second.rtlLibraryDirectoryPath =
       std::move(*rtlLibraryDirectoryPath);
+  sourcePlan->second.verilatorControlPath = std::move(*controlPath);
   sourcePlan->second.manifestPath = std::move(*sourceManifestPath);
   sourcePlan->second.workDirectoryPath = std::move(*workDirectoryPath);
   facts.rtlPaths = {*preamblePath};
@@ -706,7 +717,10 @@ deriveMappedRtlExecutionBundleProjection(
   const std::string sourceManifest =
       renderVerilationSourcePlan(sourcePlan->second, sourcePlan->first);
   std::vector<external_tool::MaterializedBundleFile> toolLocalInputs;
-  toolLocalInputs.reserve(sourcePlan->first.size() + 2);
+  toolLocalInputs.reserve(sourcePlan->first.size() + 3);
+  toolLocalInputs.push_back({sourcePlan->second.verilatorControlPath,
+                            kVerilatorStateClassesControl.str(), std::nullopt,
+                            false});
   toolLocalInputs.push_back(
       {*preamblePath, sourcePlan->second.preamble, std::nullopt, false});
   for (ParsedSource &source : sourcePlan->first) {
@@ -748,11 +762,13 @@ deriveMappedRtlExecutionBundleProjection(
   if (!testbench)
     return testbench.takeError();
   auto standalone = detail::renderMappedRtlVerilatorDriver(
-      facts, plan, *testbenchPath, *simulatorExecutablePath, std::nullopt);
+      facts, plan, sourcePlan->second.verilatorControlPath, *testbenchPath,
+      *simulatorExecutablePath, std::nullopt);
   if (!standalone)
     return standalone.takeError();
   auto bridged = detail::renderMappedRtlVerilatorDriver(
-      facts, plan, *testbenchPath, *simulatorExecutablePath,
+      facts, plan, sourcePlan->second.verilatorControlPath, *testbenchPath,
+      *simulatorExecutablePath,
       llvm::StringRef(*bridgeEngineSourcePath));
   if (!bridged)
     return bridged.takeError();

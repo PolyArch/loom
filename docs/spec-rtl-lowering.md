@@ -1127,25 +1127,59 @@ ranges, preamble and framing bytes cover the complete source. An independent
 post-export graph projection must agree on module, port, parameter, dependency
 multiplicity and reachability facts.
 
-Bundle preparation cold-rebuilds that same portable implementation and accepts
-the transient graph only when the complete HardwareImplementation and
-`RtlSource` identity are unchanged. It validates each recorded range against
+The initial correspondence check cold-rebuilds that same portable
+implementation and accepts the transient graph only when the complete
+HardwareImplementation and `RtlSource` identity are unchanged. Bundle
+preparation validates each recorded range against
 the stored source, then materializes byte-identical `<module>.sv` library
 members. No source parser or metacomment insertion discovers or changes the
 hierarchy. Missing, overlapping, foreign or digest-mismatched ranges fail
 closed. The exact source preamble is an explicit input before the harness,
 with the Hardware root resolved through the derived `-y` library.
 
+Within the existing invocation-local Artifact import scope, the canonical
+portable correspondence graph may be reused under the exact
+HardwareImplementation and ConfigurationABI references. Initial fill still
+performs the complete portable reconstruction and correspondence comparison.
+Fill and hits resolve the indirect Fabric System, imported Module and optional
+implementation-platform roots through ArtifactStore's verified immutable
+handles. Direct roots retain that same import-cache verification contract;
+resolving a retained handle does not reread its stored preimage. Every
+representation blob, including the generation constraint, is reread and
+verified on fill and hits. Receipt validation retains every support,
+Deployment, configuration, source and result check; only this immutable graph
+proof is reused. A separate import scope with no enclosing source scope
+reconstructs the graph independently; a newly opened ArtifactStore also
+acquires canonical bytes independently of prior verified handles. These are
+distinct lifetimes. No persistent graph cache, mutable simulation
+state, workload-dependent facts, or relaxed admission is introduced.
+
+The same projection materializes one fixed tool-local Verilator control file,
+`drivers/verilator-state-classes.vlt`, containing the native configuration-file
+directive and `no_inline -module "*"`. Both standalone and Gem5 drivers consume
+that file before the preamble and RTL. Gem5 applies the ordinary launch path
+namespace to the control, just as it does to the other tool-local inputs. This
+is one compilation policy, with no selectable alternative or hardware-name
+rule. The control preserves module-owned C++ state classes under the global
+scheduler; it changes no semantic RTL, derived library, preamble, or harness
+bytes within an identical path namespace.
+
 `loom.mapped_rtl_hierarchy_plan.3` records the exact source framing, complete
 CIRCT dependency DAG and source closure, per-module byte identities, paths,
-the `flat` style, generated makefile and output-split policy. Its policy is
-`circt_instance_graph_flat_handshake_closure`. There is no line budget, reuse
-threshold, selected-block cap, or hardware-name whitelist. The plan and library
-members are manifest-digested tool-local inputs, not another semantic Artifact.
+the `flat` style, exact control-file path, generated makefile and output-split
+policy. Its policy is `circt_instance_graph_flat_handshake_closure`. There is no
+line budget, reuse threshold, selected-block cap, or hardware-name whitelist.
+The plan, library members and control are manifest-digested tool-local inputs,
+not another semantic Artifact. The invocation's generated-file identity freezes
+the control contents and both argument files; no additional cache or manifest
+codec owns that configuration.
 
 Verilator 5.050 receives neither `--hierarchical` nor `--hierarchical-threads`
 and no `hier_block` metacomment. Token pools, FIFOs, switches, operations, PEs,
 boundaries, memories and controller are inside one flat SpatialCore model.
+Separate C++ state objects retain ordinary module-instance ownership; the root
+settle and runtime scheduler still schedule logic across the complete model.
+They do not create per-module convergence drivers.
 Protect-lib wrappers declare every output combinationally dependent on every
 input, which can re-close the registered cuts in the handshake network and
 introduce nested convergence. Any future hierarchical admission must show zero
@@ -1252,6 +1286,21 @@ complete-cell measurement. The 1,141 C++ files totaled 1.686 GB, with the
 largest individual file 4.90 MB. Default native grouping nevertheless combined
 them into compile units as large as 241.47 MB, establishing why disabling
 output grouping is required in addition to splitting and parallel builds.
+
+The unprotected model initially concentrated 107,145 class-type initializers
+in one generated root constructor. Clang 21 truncated its initializer count
+and produced an executable that failed before the first stage stamp. Keeping
+ordinary module-owned state with the fixed `no_inline` control avoids that
+compiler limit while retaining one global scheduler. Its complete flat
+inventory still has 39 SCCs; no protect-lib wrapper or per-module convergence
+loop is generated. All 39 SCC dumps are byte-identical between its one- and
+four-thread controls. The fresh one-thread Os build passes with the ordinary
+8 MiB compiler stack in 356.64 seconds, peaking at 2,143,506,432 bytes; its
+strict simulation passes at 220.61 testbench cycles/s. The separate four-thread
+control passes at 406.20 cycles/s. Neither rate meets the required floor, and
+separate generation/build/run measurements do not establish a complete-cell
+600-second PASS. Thread and optimization controls, convergence accounting and
+ordinary complete-cell validation remain acceptance requirements.
 
 Current flat classification, full-cell operating point and per-phase cost
 accounting must accompany the flow's acceptance evidence. Report warning

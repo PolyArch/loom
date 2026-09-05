@@ -515,10 +515,10 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
   const std::string words = "loom_cfg_program_" + std::to_string(taskOrdinal);
   // The configuration stages have very different simulation cost, so each
   // boundary is announced once at the ordinary verbosity level with its
-  // simulation time and flushed. A host-side timestamp of the announcement is
-  // then the stage boundary even under a simulator that buffers its standard
-  // output. The time is printed as an integer of the harness's femtosecond
-  // unit, because the simulators format `%t` in different units.
+  // simulation time and flushed. Simulator and command-collector buffering
+  // must be checked before interpreting host arrival times as phase walls.
+  // Integer femtoseconds give exact cycle boundaries across simulators, whose
+  // `%t` formatting uses different units.
   output << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] write_begin program="
          << taskOrdinal << " time_fs=%0d\", $time);\n"
@@ -551,13 +551,6 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
          << "'h1, 1);\n"
          << "    loom_cfg_atomic_commits_" << taskOrdinal << " = "
          << "loom_cfg_atomic_commits_" << taskOrdinal << " + 1;\n";
-  // The three configuration stages have very different simulation cost, so
-  // each boundary is announced once at the ordinary verbosity level with its
-  // simulation time and flushed, so a host-side timestamp of the announcement
-  // is the stage boundary even under a simulator that buffers its standard
-  // output, and the simulation time gives the stage its exact cycle count.
-  // The time is printed as an integer of the harness's femtosecond unit,
-  // because the simulators format `%t` in different units.
   output << "    if (loom_verbose_level >= 1) begin\n"
          << "      $display(\"[loom][rtl][stage] readback_begin program="
          << taskOrdinal << " time_fs=%0d\", $time);\n"
@@ -1107,7 +1100,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
 
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
     const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
-    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
+    llvm::StringRef controlPath, llvm::StringRef testbenchPath,
+    llvm::StringRef simulatorExecutablePath,
     std::optional<llvm::StringRef> bridgeEngineSourcePath) {
   if (facts.rtlPaths.empty() && facts.rtlLibraryDirectories.empty())
     return invalid("Verilator driver has no RTL sources");
@@ -1137,6 +1131,7 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
          << mappedRtlHarnessTop << "\n--Mdir\n"
          << simulatorExecutable.parent_path().generic_string() << "\n-o\n"
          << simulatorExecutable.filename().generic_string() << "\n";
+  output << controlPath << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   for (const std::string &path : facts.rtlLibraryDirectories)

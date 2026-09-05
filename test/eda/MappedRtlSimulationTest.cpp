@@ -577,15 +577,46 @@ void authoredLifecycleImportsExactEvidence() {
             "generated testbench omits configuration readback");
     require(take(executeExternalToolInvocationBundle(*invocation)) == 0,
             "authored Verilator lifecycle failed");
+    const EvaluationEvidence warmEvidence = take(importEvaluationModelInvocation(
+        fixture.request, fixture.resolution, *invocation, artifacts, blobs));
+    require(requireCompletedEvidence(fixture, warmEvidence, artifacts, blobs) ==
+                kExpectedMappedCycleCount,
+            "warm lifecycle changed its exact execution");
+
+    // A warm portable-correspondence proof still verifies every stored
+    // representation blob, including a non-simulator payload.
+    const auto expectMissingPayload = [&](const std::filesystem::path &path) {
+      const std::filesystem::path saved = path.string() + ".retained";
+      std::filesystem::rename(path, saved);
+      auto rejected = importEvaluationModelInvocation(
+          fixture.request, fixture.resolution, *invocation, artifacts, blobs);
+      std::filesystem::rename(saved, path);
+      if (rejected)
+        fail("warm import accepted a missing representation blob");
+      llvm::consumeError(rejected.takeError());
+    };
+    const auto &payloads =
+        fixture.implementation.implementation().representationRoot().payloads;
+    require(std::any_of(payloads.begin(), payloads.end(), [](const auto &payload) {
+              return payload.role == hardware::PayloadRole::GenerationConstraint;
+            }),
+            "portable fixture has no generation-constraint payload");
+    for (const auto &payload : payloads)
+      expectMissingPayload(blobPath / formatBlobDigestHex(payload.blobDigest));
     return PreparedLifecycle{std::move(fixture), std::move(*invocation)};
   }();
 
-  evaluation::ArtifactImportCacheScope independentReplay(artifacts, &blobs);
+  // A fresh scope reconstructs correspondence. Newly opened stores also
+  // acquire canonical bytes independently of the source store's handles.
+  ArtifactStore coldArtifacts(artifactPath.string());
+  BlobStore coldBlobs(blobPath.string());
+  evaluation::ArtifactImportCacheScope independentReplay(coldArtifacts,
+                                                       &coldBlobs);
   const EvaluationEvidence evidence = take(importEvaluationModelInvocation(
       prepared.fixture.request, prepared.fixture.resolution,
-      prepared.invocation, artifacts, blobs));
-  require(requireCompletedEvidence(prepared.fixture, evidence, artifacts,
-                                   blobs) == kExpectedMappedCycleCount,
+      prepared.invocation, coldArtifacts, coldBlobs));
+  require(requireCompletedEvidence(prepared.fixture, evidence, coldArtifacts,
+                                   coldBlobs) == kExpectedMappedCycleCount,
           "authored lifecycle changed its exact cycle count");
 }
 

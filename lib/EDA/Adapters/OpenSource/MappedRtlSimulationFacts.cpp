@@ -41,6 +41,69 @@ importCachedOne(const ArtifactRootReference &reference,
                                                  std::forward<Loader>(loader));
 }
 
+/// Reuses only the immutable portable source-correspondence proof. Exact
+/// Artifact roots resolve through the store's verified immutable handles;
+/// representation blobs are reread and verified on both fill and hits.
+llvm::Expected<
+    std::shared_ptr<const std::optional<hardware::rtl::RtlModuleGraphProjection>>>
+importCachedPortableRtlModuleGraph(
+    const FinalizedConfigurationABI &abi,
+    const FinalizedHardwareImplementation &implementation,
+    const fabric::FinalizedFabricRoot &fabricSystem,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  using Graph = std::optional<hardware::rtl::RtlModuleGraphProjection>;
+  const std::array<ArtifactRootReference, 2> references{
+      implementation.reference(), abi.reference()};
+  const auto revalidateIndirectInputs = [&]() -> llvm::Expected<std::uint64_t> {
+    // This counts validated logical input bytes, including retained Artifact
+    // handles; it does not measure bytes read from storage on this call.
+    std::uint64_t validatedInputBytes = 0;
+    const auto addBytes = [&](std::uint64_t bytes) {
+      validatedInputBytes =
+          bytes > std::numeric_limits<std::uint64_t>::max() - validatedInputBytes
+              ? std::numeric_limits<std::uint64_t>::max()
+              : validatedInputBytes + bytes;
+    };
+    const auto resolveArtifact =
+        [&](const ArtifactRootReference &reference) -> llvm::Error {
+      auto bytes = artifacts.get(reference);
+      if (!bytes)
+        return bytes.takeError();
+      addBytes(bytes->bytes().size());
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = resolveArtifact(fabricSystem.reference()))
+      return std::move(error);
+    // The imported System owns this exact dependency table. Its Module roots
+    // are fully elaborated and admit no further Artifact dependencies.
+    for (const auto &dependency : fabricSystem.directDependencies())
+      if (llvm::Error error = resolveArtifact(dependency.root))
+        return std::move(error);
+    const HardwareImplementation &hardware = implementation.implementation();
+    if (hardware.implementationPlatform())
+      if (llvm::Error error = resolveArtifact(*hardware.implementationPlatform()))
+        return std::move(error);
+    for (const ImplementationPayload &payload :
+         hardware.representationRoot().payloads) {
+      auto bytes = blobs.verify(payload.blobDigest);
+      if (!bytes)
+        return bytes.takeError();
+      addBytes(*bytes);
+    }
+    return validatedInputBytes;
+  };
+  return evaluation::importCachedArtifact<Graph>(
+      artifacts, &blobs, references,
+      [&]() -> llvm::Expected<Graph> {
+        auto verified = revalidateIndirectInputs();
+        if (!verified)
+          return verified.takeError();
+        return hardware::rtl::projectPortableSpatialCoreRtlModuleGraph(
+            abi, implementation);
+      },
+      [&](const Graph &) { return revalidateIndirectInputs(); });
+}
+
 llvm::Expected<std::shared_ptr<const sim::ImportedSpatialSimulationInputs>>
 importCachedSpatialInputs(const ArtifactRootReference &workload,
                           const ArtifactRootReference &runtimeInput,
@@ -1232,11 +1295,11 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
       });
   if (!abi)
     return abi.takeError();
-  auto rtlModuleGraph = hardware::rtl::projectPortableSpatialCoreRtlModuleGraph(
-      **abi, **implementation);
+  auto rtlModuleGraph = importCachedPortableRtlModuleGraph(
+      **abi, **implementation, **fabricSystem, artifacts, blobs);
   if (!rtlModuleGraph)
     return rtlModuleGraph.takeError();
-  if (!*rtlModuleGraph)
+  if (!**rtlModuleGraph)
     return unsupported();
 
   auto dataflow = (*inputs)->dataflow.view();
@@ -1491,7 +1554,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
                                std::move(rtlPaths),
                                {},
                                std::move(top),
-                               std::move(**rtlModuleGraph),
+                               ***rtlModuleGraph,
                                std::move(*rootPorts),
                                std::move(clockReset->first),
                                std::move(clockReset->second),
