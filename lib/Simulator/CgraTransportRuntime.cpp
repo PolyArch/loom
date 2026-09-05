@@ -1056,7 +1056,7 @@ CgraTransportRuntime::advance() {
   if (!coordinate)
     return std::optional<CgraTransportFrame>{};
 
-  CgraTransportFrame frame{*coordinate, {}, {}, {}, {}};
+  CgraTransportFrame frame{*coordinate, {}, {}, {}};
   if (isAt(requestedEvents_.nextCoordinate(), *coordinate)) {
     auto requested = requestedEvents_.popNextFrameView();
     if (!requested)
@@ -1259,24 +1259,15 @@ CgraTransportRuntime::advance() {
         rotateOffer = true;
       }
       if (!dequeue && !enqueue) {
-        for (const TraversalOccurrence &node : storage.pendingEnqueueNodes) {
-          const std::uint64_t slot = node.transferSlot;
-          blocked_.set(slot);
-          frame.blockedTransfers.push_back(inFlight_[slot].bindingOrdinal);
-        }
-        for (const TraversalOccurrence &node : storage.pendingDequeueNodes) {
-          const std::uint64_t slot = node.transferSlot;
-          blocked_.set(slot);
-          frame.blockedTransfers.push_back(inFlight_[slot].bindingOrdinal);
-        }
+        for (const TraversalOccurrence &node : storage.pendingEnqueueNodes)
+          blocked_.set(node.transferSlot);
+        for (const TraversalOccurrence &node : storage.pendingDequeueNodes)
+          blocked_.set(node.transferSlot);
         // Every entry the discipline currently offers is blocked, not only
         // the physical front, so a per-tag virtual channel reports each
         // stalled channel head rather than one arbitrary tag.
-        for (const CgraTransportStorageEntry &head : offeredEntries) {
+        for (const CgraTransportStorageEntry &head : offeredEntries)
           blocked_.set(head.transferSlot);
-          frame.blockedTransfers.push_back(
-              inFlight_[head.transferSlot].bindingOrdinal);
-        }
         if (!rotateOffer)
           continue;
       }
@@ -1540,7 +1531,6 @@ CgraTransportRuntime::advance() {
                                   binding.publicationOffset];
         state.capacityBlocked = true;
         blocked_.set(candidate.slot);
-        frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
         continue;
       }
       auto capacityReady = reserveOperandQueueCapacity(
@@ -1549,7 +1539,6 @@ CgraTransportRuntime::advance() {
         return capacityReady.takeError();
       if (!*capacityReady) {
         blocked_.set(candidate.slot);
-        frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
         continue;
       }
       transfers.push_back({candidate.slot, inFlight.bindingOrdinal,
@@ -1619,11 +1608,8 @@ CgraTransportRuntime::advance() {
           return std::move(error);
       }
       inFlight.publicationReady = false;
-      if (!inFlight.published && readyPublicationBlocked) {
-        if (!blocked_.test(event.payload))
-          frame.blockedTransfers.push_back(inFlight.bindingOrdinal);
+      if (!inFlight.published && readyPublicationBlocked)
         blocked_.set(event.payload);
-      }
     }
   }
   llvm::sort(frame.physicalEvents, [](const CgraPhysicalLifecycleEvent &lhs,

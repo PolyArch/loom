@@ -38,7 +38,6 @@ struct CgraTransportFrame final {
   llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> physicalEvents;
   llvm::SmallVector<CgraTokenPublication, 4> publications;
   llvm::SmallVector<CgraTransportCompletion, 4> completions;
-  llvm::SmallVector<std::uint64_t, 4> blockedTransfers;
 };
 
 /// One resident token of a selected traversal storage. `queuePosition` is the

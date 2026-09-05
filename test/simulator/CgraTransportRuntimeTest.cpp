@@ -441,7 +441,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       sawDequeue |= event.kind == CgraPhysicalLifecycleKind::Requested &&
                     event.actionOrdinal == 1;
     }
-    if (!frame->blockedTransfers.empty() && !sawBlocked) {
+    if (bufferedTransport.hasBlockedTransfers() && !sawBlocked) {
       require(sawEnqueue && !sawDequeue && frame->publications.empty(),
               "buffered FIFO bypassed its occupied downstream");
       sawBlocked = true;
@@ -650,7 +650,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
             "dual-port register FIFO became quiescent before blocking");
     auto frame = take(dualTransport.advance());
     require(frame.has_value(), "dual-port transport event disappeared");
-    queueBlocked = !frame->blockedTransfers.empty();
+    queueBlocked = dualTransport.hasBlockedTransfers();
   }
   require(queueBlocked,
           "full register FIFO did not preserve downstream backpressure");
@@ -763,7 +763,9 @@ void ordinaryFanoutPublicationsProgressIndependently() {
     fail(llvm::toString(std::move(error)));
   auto partial = take(transport.advance());
   require(partial && partial->publications.empty() &&
-              partial->blockedTransfers.size() == 1 &&
+              llvm::count_if(
+                  transport.pendingTransferDiagnostics(),
+                  [](const auto &pending) { return pending.blocked; }) == 1 &&
               leftChannel.size() == 1 && rightChannel.size() == 1,
           "ordinary fanout did not publish its ready branch independently");
 
@@ -886,7 +888,9 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
     fail(llvm::toString(std::move(error)));
   auto blocked = take(transport.advance());
   require(blocked && blocked->publications.empty() &&
-              blocked->blockedTransfers.size() == 1 &&
+              llvm::count_if(
+                  transport.pendingTransferDiagnostics(),
+                  [](const auto &pending) { return pending.blocked; }) == 1 &&
               leftChannel.size() == 2 && rightChannel.size() == 1,
           "full Temporal operand unit allowed partial fanout");
 
@@ -1003,8 +1007,10 @@ void temporalOperandQueueAdmissionPrioritizesComplement() {
     fail(llvm::toString(std::move(error)));
   auto frame = take(transport.advance());
   require(frame && frame->publications.size() == 1 &&
-              frame->blockedTransfers.size() == 1 && lhsChannel.size() == 1 &&
-              rhsChannel.size() == 1 &&
+              llvm::count_if(
+                  transport.pendingTransferDiagnostics(),
+                  [](const auto &pending) { return pending.blocked; }) == 1 &&
+              lhsChannel.size() == 1 && rhsChannel.size() == 1 &&
               take(tokenBitPattern(lhsChannel.front(),
                                    mlir::IntegerType::get(&context(), 32))) ==
                   llvm::APInt(32, 5) &&
