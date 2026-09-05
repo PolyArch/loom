@@ -721,6 +721,31 @@ and cache bind every child Artifact. This establishes source and composition
 provenance and structural closure, not logical equivalence or routed physical
 results.
 
+The Yosys block and hierarchical block generators consume the same hardware
+source and mapped-product schemas with the existing Yosys resolved config.
+The leaf generator requires a source with no concrete child dependencies. A
+parent requires the complete exact set of direct mapped children. The shared
+`composeBlockGateNetlistChildren` owner derives their source associations,
+technology agreement, public child interfaces, and immutable payload union
+for both vendors; vendor drivers and importers remain separate.
+
+Yosys synthesizes the parent-local source without flattening. Its native
+`read_verilog -lib -nowb` derives temporary library views from the complete
+accepted child payload bytes, and direct child instances carry native keep
+attributes. No authored empty child stub or replacement mapped payload is
+published. Import validates Yosys's observed child interfaces against the
+existing Slang index, its pre/post root port geometry and mapped-driver
+closure, then checks the complete assembled representation and exact child
+multiplicity. The complete original child payloads are retained unchanged.
+
+Yosys uses the exact Liberty content fingerprint and registered Yosys
+standard-cell contract; a Synopsys database is a different external input.
+The full and block paths share the existing tool/runtime resolver, observed
+output importer and ordinary invocation cache. Their determinism contract is
+`Deterministic`. Source-owned clock constraints remain in the product and
+invocation identity; this synthesis path does not claim clock-constrained
+optimization, achieved timing, routed physical implementation or FPA.
+
 ## Clocks, Reset, And Quiescence
 
 RTL exposes the exact Fabric clock/reset domains and only their declared

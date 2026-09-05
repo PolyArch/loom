@@ -53,7 +53,9 @@ add_library(LoomEDAOpenSource
   OpenRoadStaticFpa.cpp
   Verilator.cpp
   Yosys.cpp
+  YosysBlock.cpp
   YosysGateNetlist.cpp
+  YosysSynthesisInvocation.cpp
 )
 
 target_include_directories(LoomEDAOpenSource PUBLIC

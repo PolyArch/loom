@@ -1,5 +1,6 @@
 add_library(LoomHardwareRTL
   BlockGateNetlist.cpp
+  BlockGateNetlistComposition.cpp
   CirctConformance.cpp
   CommonSkeleton.cpp
   ConfigurationTransport.cpp

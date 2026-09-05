@@ -4,6 +4,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/JSON.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -25,8 +26,8 @@ bool isPortableIdentifier(llvm::StringRef value) {
            (character >= 'a' && character <= 'z') || character == '_';
   };
   const auto isRest = [&](char character) {
-    return isFirst(character) ||
-           (character >= '0' && character <= '9') || character == '$';
+    return isFirst(character) || (character >= '0' && character <= '9') ||
+           character == '$';
   };
   if (value.empty() || !isFirst(value.front()))
     return false;
@@ -35,11 +36,12 @@ bool isPortableIdentifier(llvm::StringRef value) {
 
 enum class YosysTokenPolicy { Quoted, AbcCompatible };
 
-llvm::Expected<std::string>
-encodeYosysToken(llvm::StringRef value, YosysTokenPolicy policy) {
+llvm::Expected<std::string> encodeYosysToken(llvm::StringRef value,
+                                             YosysTokenPolicy policy) {
   if (value.empty() || value.contains('\0') || value.contains('\n') ||
       value.contains('\r') || value.contains('"') || value.contains('\\'))
-    return invalid("Yosys token is empty or cannot be represented consistently");
+    return invalid(
+        "Yosys token is empty or cannot be represented consistently");
   const bool bare = llvm::all_of(value, [](char character) {
     return (character >= 'A' && character <= 'Z') ||
            (character >= 'a' && character <= 'z') ||
@@ -115,8 +117,7 @@ parseBits(const llvm::json::Array &bits, const llvm::Twine &context) {
     if (std::optional<std::int64_t> bit = value.getAsInteger()) {
       if (*bit < 0)
         return invalid(context + " contains a negative signal bit");
-      result.push_back(
-          YosysSignalBit{static_cast<std::uint64_t>(*bit)});
+      result.push_back(YosysSignalBit{static_cast<std::uint64_t>(*bit)});
       continue;
     }
     const std::optional<llvm::StringRef> constant = value.getAsString();
@@ -172,14 +173,17 @@ parsePortGeometry(const llvm::json::Object &port, const llvm::Twine &context) {
 
 } // namespace
 
-llvm::Expected<std::string> renderYosysSynthesisDriver(llvm::StringRef topModule) {
+llvm::Expected<std::string>
+renderYosysSynthesisDriver(llvm::StringRef topModule) {
   const std::array<std::string, 1> sources{"inputs/design.sv"};
   return renderYosysSynthesisDriver(topModule, sources, "inputs/library.lib");
 }
 
-llvm::Expected<std::string> renderYosysSynthesisDriver(
+namespace {
+
+llvm::Expected<std::string> renderSynthesisDriver(
     llvm::StringRef topModule, llvm::ArrayRef<std::string> rtlSources,
-    llvm::StringRef standardCellLiberty) {
+    llvm::StringRef standardCellLiberty, const YosysMappedChildren *children) {
   if (!isPortableIdentifier(topModule))
     return invalid("top module is not a portable HDL identifier");
   if (rtlSources.empty())
@@ -196,34 +200,85 @@ llvm::Expected<std::string> renderYosysSynthesisDriver(
       encodeYosysToken(standardCellLiberty, YosysTokenPolicy::AbcCompatible);
   if (!encodedLiberty)
     return encodedLiberty.takeError();
-  std::string driver;
+  std::string mappedLibraries, preserveInstances;
+  if (children) {
+    if (!std::is_sorted(children->netlistPaths.begin(),
+                        children->netlistPaths.end()) ||
+        std::adjacent_find(children->netlistPaths.begin(),
+                           children->netlistPaths.end()) !=
+            children->netlistPaths.end() ||
+        !std::is_sorted(children->directModuleNames.begin(),
+                        children->directModuleNames.end()) ||
+        std::adjacent_find(children->directModuleNames.begin(),
+                           children->directModuleNames.end()) !=
+            children->directModuleNames.end() ||
+        children->netlistPaths.empty() != children->directModuleNames.empty())
+      return invalid(
+          "mapped child paths and direct definitions are not canonical");
+    for (const auto &path : children->netlistPaths) {
+      auto encoded = encodeYosysToken(path, YosysTokenPolicy::Quoted);
+      if (!encoded)
+        return encoded.takeError();
+      mappedLibraries += "read_verilog -lib -nowb " + *encoded + "\n";
+    }
+    for (const auto &name : children->directModuleNames) {
+      if (!isPortableIdentifier(name) || name == topModule)
+        return invalid(
+            "mapped child definition is not distinct from the exact top");
+      preserveInstances += "setattr -set keep 1 t:" + name + "\n";
+    }
+  }
+  std::string driver = mappedLibraries;
   for (const std::string &source : encodedSources)
     driver += "read_verilog -sv " + source + "\n";
   driver += "hierarchy -check -top " + topModule.str() + "\n";
+  driver += preserveInstances;
   driver += "proc\n";
   driver += "opt\n";
   driver += "check -assert -nolatches\n";
-  driver += "write_json outputs/rtl-structure.json\n";
+  driver += "write_json " + yosysRtlStructureOutputPath.str() + "\n";
   // The SAT-based sharing pass of the default synth script is intractable on
   // SpatialCore RTL (hours and tens of gigabytes without reaching technology
   // mapping); resource sharing is a quality-of-results heuristic, not part
   // of the netlist contract, so the flow synthesizes without it.
-  driver += "synth -flatten -noshare -top " + topModule.str() + "\n";
+  driver += std::string(children ? "synth -noshare -top "
+                                 : "synth -flatten -noshare -top ") +
+            topModule.str() + "\n";
   driver += "dfflibmap -liberty " + *encodedLiberty + "\n";
   driver += "abc -liberty " + *encodedLiberty + "\n";
   driver += "read_liberty -lib " + *encodedLiberty + "\n";
   driver += "clean\n";
   driver += "check -assert -nolatches\n";
-  driver += "write_verilog -noattr -nodec -simple-lhs outputs/netlist.v\n";
+  driver += "write_verilog -noattr -nodec -simple-lhs " +
+            yosysNetlistOutputPath.str() + "\n";
   driver += "design -reset\n";
   driver += "read_liberty -lib " + *encodedLiberty + "\n";
-  driver += "read_verilog outputs/netlist.v\n";
+  driver += mappedLibraries;
+  driver += "read_verilog " + yosysNetlistOutputPath.str() + "\n";
   driver += "hierarchy -check -top " + topModule.str() + "\n";
+  driver += preserveInstances;
   driver += "proc\n";
   driver += "opt\n";
   driver += "check -assert -nolatches\n";
-  driver += "write_json outputs/netlist-structure.json\n";
+  driver += "write_json " + yosysNetlistStructureOutputPath.str() + "\n";
   return driver;
+}
+
+} // namespace
+
+llvm::Expected<std::string>
+renderYosysSynthesisDriver(llvm::StringRef topModule,
+                           llvm::ArrayRef<std::string> rtlSources,
+                           llvm::StringRef standardCellLiberty) {
+  return renderSynthesisDriver(topModule, rtlSources, standardCellLiberty,
+                               nullptr);
+}
+
+llvm::Expected<std::string> renderYosysBlockSynthesisDriver(
+    llvm::StringRef topModule, llvm::ArrayRef<std::string> rtlSources,
+    llvm::StringRef standardCellLiberty, const YosysMappedChildren &children) {
+  return renderSynthesisDriver(topModule, rtlSources, standardCellLiberty,
+                               &children);
 }
 
 llvm::Expected<YosysStructureFacts>
@@ -299,8 +354,8 @@ parseYosysStructureFacts(llvm::StringRef contents) {
         if (!directions)
           return directions.takeError();
         for (const auto &[portName, directionValue] : *directions) {
-          auto direction = parseDirection(directionValue,
-                                          context + " cell port");
+          auto direction =
+              parseDirection(directionValue, context + " cell port");
           if (!direction)
             return direction.takeError();
           cellFacts.portDirections.emplace(portName.str(), *direction);
@@ -313,9 +368,9 @@ parseYosysStructureFacts(llvm::StringRef contents) {
           const llvm::json::Array *bits = connectionValue.getAsArray();
           if (!bits)
             return invalid(context + " cell connection requires a bit array");
-          auto signalBits = parseBits(*bits, context + llvm::Twine(" cell '") +
-                                                       llvm::StringRef(cellName) +
-                                                       "' connection");
+          auto signalBits =
+              parseBits(*bits, context + llvm::Twine(" cell '") +
+                                   llvm::StringRef(cellName) + "' connection");
           if (!signalBits)
             return signalBits.takeError();
           cellFacts.connections.emplace(portName.str(), std::move(*signalBits));
@@ -367,8 +422,7 @@ validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
   const auto recordDrivers =
       [&drivers](const std::vector<YosysSignalBit> &bits) {
         for (const YosysSignalBit &bit : bits)
-          if (const std::uint64_t *net =
-                  std::get_if<std::uint64_t>(&bit.value))
+          if (const std::uint64_t *net = std::get_if<std::uint64_t>(&bit.value))
             ++drivers[*net];
       };
   // Input and inout top port bits drive their nets.
@@ -388,25 +442,22 @@ validateYosysSynthesizedStructure(const YosysStructureFacts &structure,
                      cell.type + "'");
     for (const auto &[portName, connection] : cell.connections) {
       if (connection.empty())
-        return invalid("structural JSON cell '" + cell.type +
-                       "' connection '" + portName + "' is empty");
-      const auto definitionPort =
-          definition->second.ports.find(portName);
+        return invalid("structural JSON cell '" + cell.type + "' connection '" +
+                       portName + "' is empty");
+      const auto definitionPort = definition->second.ports.find(portName);
       if (definitionPort == definition->second.ports.end())
         return invalid("structural JSON cell '" + cell.type +
                        "' has no declared port '" + portName + "'");
       const auto direction = cell.portDirections.find(portName);
       if (direction == cell.portDirections.end())
-        return invalid("structural JSON cell '" + cell.type +
-                       "' connection '" + portName + "' has no direction");
+        return invalid("structural JSON cell '" + cell.type + "' connection '" +
+                       portName + "' has no direction");
       if (direction->second != definitionPort->second.direction)
-        return invalid("structural JSON cell '" + cell.type +
-                       "' connection '" + portName +
-                       "' direction does not match its definition");
+        return invalid("structural JSON cell '" + cell.type + "' connection '" +
+                       portName + "' direction does not match its definition");
       if (connection.size() != definitionPort->second.bits.size())
-        return invalid("structural JSON cell '" + cell.type +
-                       "' connection '" + portName +
-                       "' width does not match its definition");
+        return invalid("structural JSON cell '" + cell.type + "' connection '" +
+                       portName + "' width does not match its definition");
       if (direction->second != YosysPortGeometry::Direction::Input)
         recordDrivers(connection);
     }
@@ -443,8 +494,7 @@ compareYosysTopPortGeometry(const YosysStructureFacts &preSynthesis,
                             llvm::StringRef topModule) {
   const auto pre = preSynthesis.modules.find(topModule.str());
   const auto post = postSynthesis.modules.find(topModule.str());
-  if (pre == preSynthesis.modules.end() ||
-      post == postSynthesis.modules.end())
+  if (pre == preSynthesis.modules.end() || post == postSynthesis.modules.end())
     return invalid("structural JSON does not contain the exact top module");
   if (pre->second.ports.size() != post->second.ports.size())
     return invalid("synthesized netlist changed the exact top port geometry");
@@ -454,8 +504,7 @@ compareYosysTopPortGeometry(const YosysStructureFacts &preSynthesis,
     if (prePort->first != postPort->first ||
         prePort->second.direction != postPort->second.direction ||
         prePort->second.bits.size() != postPort->second.bits.size())
-      return invalid(
-          "synthesized netlist changed the exact top port geometry");
+      return invalid("synthesized netlist changed the exact top port geometry");
   return llvm::Error::success();
 }
 

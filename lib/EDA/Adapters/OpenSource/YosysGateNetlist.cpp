@@ -2,15 +2,13 @@
 
 #include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "EDA/Adapters/OpenSource/Yosys.h"
+#include "YosysSynthesisInvocation.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobDigest.h"
 #include "Common/BlobStore.h"
-#include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/Provider.h"
-#include "ExternalTool/RuntimeBinding.h"
-#include "ExternalTool/ShellProbe.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
@@ -24,7 +22,6 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,11 +35,6 @@ using namespace hardware;
 
 constexpr char configSchema[] =
     "loom.eda.open_source.yosys_gate_netlist_config.1.0";
-constexpr llvm::StringLiteral netlistOutputPath = "outputs/netlist.v";
-constexpr llvm::StringLiteral rtlStructureOutputPath =
-    "outputs/rtl-structure.json";
-constexpr llvm::StringLiteral netlistStructureOutputPath =
-    "outputs/netlist-structure.json";
 constexpr llvm::StringLiteral externalContractPayload =
     "contracts/yosys-standard-cells.txt";
 
@@ -365,26 +357,6 @@ invocationFacts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          top};
 }
 
-ExternalToolInvocationImportExpectation
-expectation(const InvocationFacts &facts) {
-  ExternalToolInvocationImportExpectation result;
-  result.semanticContract = facts.semanticContract;
-  for (const MaterializedBundleFile &file : facts.semanticInputs) {
-    result.semanticInputs.push_back(ExternalToolInvocationSemanticInput{
-        file.relativePath, *file.sourceArtifact,
-        computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
-            reinterpret_cast<const std::uint8_t *>(file.contents.data()),
-            file.contents.size()))});
-  }
-  result.externalInputs.push_back(ExternalToolInvocationExternalInput{
-      asicStandardCellLibertyInputSlot.str(),
-      facts.config.standardCellLiberty()});
-  result.declaredOutputs.push_back(netlistOutputPath.str());
-  result.declaredOutputs.push_back(rtlStructureOutputPath.str());
-  result.declaredOutputs.push_back(netlistStructureOutputPath.str());
-  return result;
-}
-
 } // namespace
 
 llvm::Expected<ExternalImplementationContractCatalog>
@@ -529,112 +501,9 @@ llvm::Expected<PreparedExternalToolInvocation> prepareProviderWithContracts(
   auto facts = invocationFacts(inputs, binding, contracts, artifacts, blobs);
   if (!facts)
     return facts.takeError();
-  auto externalFiles =
-      resolveExternalFiles({{asicStandardCellLibertyInputSlot.str(),
-                             facts->config.standardCellLiberty()}},
-                           context.localConfig);
-  if (!externalFiles)
-    return externalFiles.takeError();
-
-  const ExternalToolProviderDescriptor &toolProvider = yosysProvider();
-  const std::filesystem::path destination(context.bundleDestination);
-  const std::filesystem::path probeRoot = destination.parent_path();
-  ShellToolBindingProbe toolProbe(probeRoot.string(),
-                                  toolProvider.versionProbe);
-  const ToolEnvironment toolEnvironment =
-      captureToolEnvironment(toolProvider.binding);
-  auto tool = resolveToolBinding(toolProvider.binding, context.localConfig,
-                                 toolEnvironment, toolProbe);
-  if (!tool)
-    return tool.takeError();
-  if (tool->version != facts->config.stableProviderBuildIdentity())
-    return invalid(llvm::Twine("resolved Yosys build '") + tool->version +
-                   "' does not match semantic build '" +
-                   facts->config.stableProviderBuildIdentity() + "'");
-
-  std::vector<std::string> inheritEnvironment;
-  const auto configured =
-      context.localConfig.tools.find(toolProvider.binding.key);
-  if (configured != context.localConfig.tools.end())
-    inheritEnvironment = configured->second.inheritEnvironment;
-
-  const ExternalToolProviderDescriptor &containerProvider =
-      polyArchContainerProvider();
-  ShellToolBindingProbe containerProbe(probeRoot.string(),
-                                       containerProvider.versionProbe);
-  const ToolEnvironment containerEnvironment =
-      captureToolEnvironment(containerProvider.binding);
-  auto runtime = resolveInvocationRuntime(
-      *tool, context.localConfig, containerProvider.binding,
-      containerEnvironment, containerProbe, toolProvider.runtimeCompatibility,
-      [&](const ResolvedToolBinding &resolvedTool,
-          const ResolvedToolBinding &container,
-          llvm::StringRef os) -> llvm::Expected<std::optional<std::string>> {
-        return probeContainerToolComposition(probeRoot.string(), resolvedTool,
-                                             toolProvider.versionProbe,
-                                             container, os, inheritEnvironment);
-      });
-  if (!runtime)
-    return runtime.takeError();
-
-  auto driver = renderYosysSynthesisDriver(facts->top, facts->rtlPaths,
-                                           externalFiles->front().absolutePath);
-  if (!driver)
-    return driver.takeError();
-  std::vector<MaterializedBundleFile> files{
-      {"drivers/synthesize.ys", std::move(*driver), std::nullopt, false}};
-  files.insert(files.end(), facts->semanticInputs.begin(),
-               facts->semanticInputs.end());
-  const std::string executable = tool->executable;
-  ExternalToolInvocationBundleSpec specification{
-      facts->semanticContract,
-      std::move(*tool),
-      toolProvider.versionProbe,
-      std::move(*runtime),
-      containerProvider.versionProbe,
-      {{executable, "-q", "-s", "drivers/synthesize.ys"}},
-      std::move(inheritEnvironment),
-      {netlistOutputPath.str(), rtlStructureOutputPath.str(),
-       netlistStructureOutputPath.str()},
-      std::move(files),
-      std::move(*externalFiles),
-      {}};
-  return finalizeExternalToolInvocationBundle(context.bundleDestination,
-                                              specification);
-}
-
-llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
-  const std::filesystem::path outputs =
-      std::filesystem::path(bundleRoot.str()) / "outputs";
-  const std::set<std::string> allowed{
-      "completion.json",        "netlist.v",  "rtl-structure.json",
-      "netlist-structure.json", "stderr.log", "stdout.log"};
-  std::set<std::string> found;
-  std::error_code error;
-  const std::filesystem::file_status rootStatus =
-      std::filesystem::symlink_status(outputs, error);
-  if (error || !std::filesystem::is_directory(rootStatus) ||
-      std::filesystem::is_symlink(rootStatus))
-    return invalid("outputs directory is missing or not an ordinary directory");
-  for (std::filesystem::directory_iterator iterator(outputs, error), end;
-       !error && iterator != end; iterator.increment(error)) {
-    const std::filesystem::path path = iterator->path();
-    const std::filesystem::file_status status =
-        std::filesystem::symlink_status(path, error);
-    if (error)
-      break;
-    const std::string name = path.filename().string();
-    if (!std::filesystem::is_regular_file(status) ||
-        std::filesystem::is_symlink(status) || !allowed.count(name))
-      return invalid("outputs directory contains undeclared output '" + name +
-                     "'");
-    found.insert(name);
-  }
-  if (error)
-    return invalid("could not enumerate outputs directory: " + error.message());
-  if (found != allowed)
-    return invalid("outputs directory omits a lifecycle or declared output");
-  return llvm::Error::success();
+  return prepareYosysSynthesisInvocation(facts->config, facts->semanticContract,
+                                         facts->semanticInputs, facts->top,
+                                         facts->rtlPaths, nullptr, context);
 }
 
 llvm::Error validatePreservedMetadata(const HardwareImplementation &source,
@@ -699,12 +568,9 @@ publishGateNetlist(const InvocationFacts &facts, llvm::StringRef netlist,
   if (llvm::Error error = validatePreservedMetadata(source, *index, blobs))
     return std::move(error);
 
-  std::string contract =
-      "loom.open_source.yosys.standard_cell_contract.1.0\nliberty_sha256=" +
-      formatExternalFileFingerprint(facts.config.standardCellLiberty()) + "\n";
-  for (const RepresentationLocator &locator :
-       index->unresolvedExternalDefinitions())
-    contract += "module=" + locator.canonicalName + "\n";
+  std::string contract = renderYosysStandardCellBlackBoxContract(
+      facts.config.standardCellLiberty(),
+      index->unresolvedExternalDefinitions());
   auto contractDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
       reinterpret_cast<const std::uint8_t *>(contract.data()),
       contract.size()));
@@ -768,7 +634,8 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   if (!facts)
     return facts.takeError();
   ExternalToolInvocationImportExpectation importExpectation =
-      expectation(*facts);
+      yosysSynthesisInvocationExpectation(facts->semanticContract,
+                                          facts->semanticInputs, facts->config);
   auto attempt =
       execution
           ? importExternalToolInvocationAttempt(prepared, importExpectation,
@@ -798,33 +665,11 @@ llvm::Expected<CandidateGeneratorProviderResult> importProviderWithContracts(
   }
   ImportedExternalToolInvocationBundle imported =
       std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
-  if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
-    return std::move(error);
-  auto netlist =
-      readExternalToolInvocationDeclaredOutput(imported, netlistOutputPath);
-  if (!netlist)
-    return netlist.takeError();
-  auto rtlStructureText = readExternalToolInvocationDeclaredOutput(
-      imported, rtlStructureOutputPath);
-  if (!rtlStructureText)
-    return rtlStructureText.takeError();
-  auto netlistStructureText = readExternalToolInvocationDeclaredOutput(
-      imported, netlistStructureOutputPath);
-  if (!netlistStructureText)
-    return netlistStructureText.takeError();
-  auto rtlStructure = parseYosysStructureFacts(*rtlStructureText);
-  if (!rtlStructure)
-    return rtlStructure.takeError();
-  auto netlistStructure = parseYosysStructureFacts(*netlistStructureText);
-  if (!netlistStructure)
-    return netlistStructure.takeError();
-  if (llvm::Error error =
-          validateYosysSynthesizedStructure(*netlistStructure, facts->top))
-    return std::move(error);
-  if (llvm::Error error = compareYosysTopPortGeometry(
-          *rtlStructure, *netlistStructure, facts->top))
-    return std::move(error);
-  auto published = publishGateNetlist(*facts, *netlist, artifacts, blobs);
+  auto output = readYosysSynthesisOutput(prepared, imported, facts->top);
+  if (!output)
+    return output.takeError();
+  auto published =
+      publishGateNetlist(*facts, output->netlist, artifacts, blobs);
   if (!published)
     return published.takeError();
   return CandidateGeneratorProviderResult{

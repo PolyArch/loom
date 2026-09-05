@@ -1,15 +1,18 @@
-#include "EDA/Adapters/Synopsys/DesignCompilerBlock.h"
+#include "EDA/Adapters/OpenSource/YosysBlock.h"
+
+#include "YosysSynthesisInvocation.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "Hardware/Implementation/RepresentationIndex.h"
 #include "Hardware/RTL/BlockGateNetlistComposition.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include <array>
 #include <map>
 
-namespace loom::eda::synopsys {
+namespace loom::eda::open_source {
 namespace {
 
 using namespace dse;
@@ -45,7 +48,7 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> work{
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "design_compiler_block_invalid: " + message);
+                                 "yosys_block_invalid: " + message);
 }
 
 llvm::ArrayRef<std::uint8_t> bytesOf(llvm::StringRef text) {
@@ -58,58 +61,55 @@ std::string textOf(llvm::ArrayRef<std::uint8_t> bytes) {
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
                            const ComponentViewDigest &digest) {
-  auto adopted = adoptResolvedDesignCompilerGateNetlistConfigView(
-      resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(), bytes,
-      digest);
+  auto adopted = adoptResolvedYosysGateNetlistConfigView(
+      resolvedYosysGateNetlistConfigSchemaDescriptorBytes(), bytes, digest);
   return adopted ? llvm::Error::success() : adopted.takeError();
 }
 
 const CandidateGeneratorDescriptor descriptor{
-    designCompilerBlockGateNetlistCandidateGeneratorKind,
-    "synopsys.design_compiler.block_gate_netlist",
-    "loom.eda.synopsys.design_compiler.block_gate_netlist.generator.v1",
+    yosysBlockGateNetlistCandidateGeneratorKind,
+    "open_source.yosys.block_gate_netlist",
+    "loom.eda.open_source.yosys.block_gate_netlist.generator.v1",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
-        resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(),
-        validateConfig},
-    designCompilerCandidateGeneratorDeterminism,
+        resolvedYosysGateNetlistConfigSchemaDescriptorBytes(), validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
     work,
     nullptr,
     ProviderForm::ExternalPrepareImport};
 
 const CandidateGeneratorDescriptor parentDescriptor{
-    designCompilerHierarchicalBlockGateNetlistCandidateGeneratorKind,
-    "synopsys.design_compiler.hierarchical_block_gate_netlist",
-    "loom.eda.synopsys.design_compiler.hierarchical_block_gate_netlist."
+    yosysHierarchicalBlockGateNetlistCandidateGeneratorKind,
+    "open_source.yosys.hierarchical_block_gate_netlist",
+    "loom.eda.open_source.yosys.hierarchical_block_gate_netlist."
     "generator.v1",
     parentInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
-        resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(),
-        validateConfig},
-    designCompilerCandidateGeneratorDeterminism,
+        resolvedYosysGateNetlistConfigSchemaDescriptorBytes(), validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
     work,
     nullptr,
     ProviderForm::ExternalPrepareImport};
 
 struct ParentComposition final {
-  DesignCompilerMappedChildren mapped;
+  YosysMappedChildren mapped;
   std::vector<ImplementationPayload> payloads;
   std::map<std::string, std::uint64_t> multiplicities;
+  std::vector<BlockGateNetlistChildBoundary> boundaries;
 };
 
-llvm::Expected<ParentComposition> deriveParentComposition(
-    const FinalizedRtlBlockSource &source,
-    const platform::FinalizedImplementationPlatform &target,
-    const ResolvedDesignCompilerGateNetlistConfigView &config,
-    llvm::ArrayRef<ArtifactRootReference> children,
-    const ArtifactStore &artifacts, const BlobStore &blobs,
-    std::vector<MaterializedBundleFile> &files) {
+llvm::Expected<ParentComposition>
+deriveParentComposition(const FinalizedRtlBlockSource &source,
+                        const platform::FinalizedImplementationPlatform &target,
+                        const ResolvedYosysGateNetlistConfigView &config,
+                        llvm::ArrayRef<ArtifactRootReference> children,
+                        const ArtifactStore &artifacts, const BlobStore &blobs,
+                        std::vector<MaterializedBundleFile> &files) {
   std::vector<FinalizedBlockGateNetlist> products;
   for (const auto &reference : children) {
-    auto product =
-        importDesignCompilerBlockGateNetlist(reference, artifacts, blobs);
+    auto product = importYosysBlockGateNetlist(reference, artifacts, blobs);
     if (!product)
       return product.takeError();
     products.push_back(std::move(*product));
@@ -124,8 +124,11 @@ llvm::Expected<ParentComposition> deriveParentComposition(
       technology.standardCellLibrary != config.standardCellLiberty())
     return invalid("compiled child has another platform, corner or library");
   ParentComposition result;
-  for (const auto &child : composition->children)
+  for (const auto &child : composition->children) {
     result.multiplicities.emplace(child.definition, child.multiplicity);
+    result.mapped.directModuleNames.push_back(child.definition);
+  }
+  result.boundaries = std::move(composition->children);
   for (const auto &unit : composition->units) {
     result.payloads.push_back(unit.payload);
     auto bytes = blobs.get(unit.payload.blobDigest);
@@ -137,20 +140,17 @@ llvm::Expected<ParentComposition> deriveParentComposition(
     result.mapped.netlistPaths.push_back(path);
     files.push_back({path, textOf(*bytes), unit.contributor, false});
   }
-  for (const auto &definition : composition->definitions)
-    result.mapped.definitionNames.push_back(definition.canonicalName);
   llvm::sort(result.mapped.netlistPaths);
-  llvm::sort(result.mapped.definitionNames);
+
   return result;
 }
 
 struct InvocationFacts final {
   FinalizedRtlBlockSource source;
   platform::FinalizedImplementationPlatform target;
-  ResolvedDesignCompilerGateNetlistConfigView config;
+  ResolvedYosysGateNetlistConfigView config;
   ExternalToolSemanticContract contract;
   std::vector<MaterializedBundleFile> files;
-  std::vector<std::string> constraints;
   std::optional<ParentComposition> parent;
 };
 
@@ -165,8 +165,8 @@ facts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputs))
     return std::move(error);
-  auto config = adoptResolvedDesignCompilerGateNetlistConfigView(
-      resolvedDesignCompilerGateNetlistConfigSchemaDescriptorBytes(),
+  auto config = adoptResolvedYosysGateNetlistConfigView(
+      resolvedYosysGateNetlistConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
   if (!config)
     return config.takeError();
@@ -194,12 +194,10 @@ facts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
        source->reference(), false},
       {"inputs/target/implementation-platform.json",
        textOf(target->canonicalBytes().bytes()), target->reference(), false}};
-  std::vector<std::string> constraints;
   const std::string constraint = source->generationConstraint();
   if (!constraint.empty()) {
     files.push_back(
         {constraintPath.str(), constraint, source->reference(), false});
-    constraints.push_back(constraintPath.str());
   }
   std::optional<ParentComposition> parent;
   if (hierarchical) {
@@ -217,27 +215,16 @@ facts(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         bound->preamble().str() +
         bound->moduleBytes()[source->projection().graph.topModule].str();
   }
+  if (!hierarchical && !source->projection()
+                            .graph.modules[source->projection().graph.topModule]
+                            .dependencies.empty())
+    return invalid("a non-leaf Source requires the hierarchical provider");
   auto semantic = deriveExternalToolSemanticContract(inputs, binding);
   if (!semantic)
     return semantic.takeError();
   return InvocationFacts{std::move(*source), std::move(*target),
                          std::move(*config), std::move(*semantic),
-                         std::move(files),   std::move(constraints),
-                         std::move(parent)};
-}
-
-ExternalToolInvocationImportExpectation
-expectation(const InvocationFacts &facts) {
-  ExternalToolInvocationImportExpectation result;
-  result.semanticContract = facts.contract;
-  for (const auto &file : facts.files)
-    result.semanticInputs.push_back(
-        {file.relativePath, *file.sourceArtifact,
-         computeBlobDigest(bytesOf(file.contents))});
-  result.externalInputs.push_back({asicStandardCellLibertyInputSlot.str(),
-                                   facts.config.standardCellLiberty()});
-  result.declaredOutputs.push_back(designCompilerGateNetlistOutputPath.str());
-  return result;
+                         std::move(files),   std::move(parent)};
 }
 
 llvm::Expected<PreparedExternalToolInvocation>
@@ -248,38 +235,47 @@ prepare(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   auto invocation = facts(inputs, binding, artifacts, blobs);
   if (!invocation)
     return invocation.takeError();
-  auto frozen = resolveDesignCompilerInvocation(invocation->config, context);
-  if (!frozen)
-    return frozen.takeError();
-  auto driver = invocation->parent
-                    ? renderDesignCompilerParentDriver(
-                          invocation->source.top(), rtlPath,
-                          invocation->parent->mapped, invocation->constraints,
-                          frozen->externalFiles.front().absolutePath)
-                    : renderDesignCompilerDriver(
-                          invocation->source.top(), {rtlPath.str()},
-                          invocation->constraints,
-                          frozen->externalFiles.front().absolutePath,
-                          DesignCompilerHierarchy::PreserveDefinitions);
-  if (!driver)
-    return driver.takeError();
-  invocation->files.push_back(
-      {"drivers/design-compiler.tcl", std::move(*driver), std::nullopt, false});
-  const std::string executable = frozen->tool.executable;
-  ExternalToolInvocationBundleSpec specification{
-      invocation->contract,
-      std::move(frozen->tool),
-      frozen->toolVersionProbe,
-      std::move(frozen->runtime),
-      frozen->containerVersionProbe,
-      {{executable, "-f", "drivers/design-compiler.tcl"}},
-      std::move(frozen->inheritEnvironment),
-      {designCompilerGateNetlistOutputPath.str()},
-      std::move(invocation->files),
-      std::move(frozen->externalFiles),
-      {}};
-  return finalizeExternalToolInvocationBundle(context.bundleDestination,
-                                              specification);
+  const YosysMappedChildren leaf;
+  return prepareYosysSynthesisInvocation(
+      invocation->config, invocation->contract, invocation->files,
+      invocation->source.top(), {rtlPath.str()},
+      invocation->parent ? &invocation->parent->mapped : &leaf, context);
+}
+
+llvm::Error
+validateMappedChildInterfaces(const ParentComposition &parent,
+                              const YosysStructureFacts &structure) {
+  for (const auto &child : parent.boundaries) {
+    auto module = structure.modules.find(child.definition);
+    if (module == structure.modules.end() || !module->second.declaredBox ||
+        module->second.ports.size() != child.ports.size())
+      return invalid("native child library view changed the exact interface");
+    for (const auto &port : child.ports) {
+      llvm::StringRef name(port.locator.canonicalName);
+      if (!name.consume_front(child.definition + "."))
+        return invalid("child public port does not belong to its exact root");
+      auto observed = module->second.ports.find(name.str());
+      if (observed == module->second.ports.end() ||
+          observed->second.bits.size() != port.geometry.bitWidth)
+        return invalid("native child library view changed a public port width");
+      RepresentationSignalDirection direction;
+      switch (observed->second.direction) {
+      case YosysPortGeometry::Direction::Input:
+        direction = RepresentationSignalDirection::Input;
+        break;
+      case YosysPortGeometry::Direction::Output:
+        direction = RepresentationSignalDirection::Output;
+        break;
+      case YosysPortGeometry::Direction::Inout:
+        direction = RepresentationSignalDirection::Inout;
+        break;
+      }
+      if (direction != port.geometry.direction)
+        return invalid(
+            "native child library view changed a public port direction");
+    }
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<ArtifactRootReference> publish(const InvocationFacts &facts,
@@ -323,12 +319,10 @@ llvm::Expected<ArtifactRootReference> publish(const InvocationFacts &facts,
     if (observed != facts.parent->multiplicities)
       return invalid("synthesis changed the exact direct child multiplicities");
   }
-  auto contract = renderSynopsysStandardCellBlackBoxContract(
+  auto contract = renderYosysStandardCellBlackBoxContract(
       facts.config.standardCellLiberty(),
       index->unresolvedExternalDefinitions());
-  if (!contract)
-    return contract.takeError();
-  auto contractDigest = blobs.put(bytesOf(*contract));
+  auto contractDigest = blobs.put(bytesOf(contract));
   if (!contractDigest)
     return contractDigest.takeError();
   payloads.push_back({PayloadRole::BlackBoxContract, contractPayloadPath.str(),
@@ -338,19 +332,19 @@ llvm::Expected<ArtifactRootReference> publish(const InvocationFacts &facts,
       std::move(top), std::move(payloads));
   if (!root)
     return root.takeError();
-  auto contracts = makeSynopsysStandardCellContractCatalog();
+  auto contracts = makeYosysStandardCellContractCatalog();
   if (!contracts)
     return contracts.takeError();
   auto result = finalizeBlockGateNetlist(
       {facts.source.reference(), facts.target.reference(),
        facts.config.technologyCorner(),
-       synopsysDesignCompilerStandardCellContractRef.str(),
+       openSourceYosysStandardCellContractRef.str(),
        facts.config.standardCellLiberty(), std::move(*root)},
       *contracts, artifacts, blobs);
   if (!result)
     return result.takeError();
-  auto imported = importDesignCompilerBlockGateNetlist(result->reference(),
-                                                       artifacts, blobs);
+  auto imported =
+      importYosysBlockGateNetlist(result->reference(), artifacts, blobs);
   if (!imported)
     return imported.takeError();
   return imported->reference();
@@ -372,7 +366,8 @@ import(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   auto invocation = facts(inputs, binding, artifacts, blobs);
   if (!invocation)
     return invocation.takeError();
-  auto expected = expectation(*invocation);
+  auto expected = yosysSynthesisInvocationExpectation(
+      invocation->contract, invocation->files, invocation->config);
   auto attempt =
       execution
           ? importExternalToolInvocationAttempt(prepared, expected, *execution)
@@ -398,16 +393,17 @@ import(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       return incomplete(CandidateGeneratorIncompleteReason::ExecutionFailed);
     }
   }
-  if (llvm::Error error = validateSynopsysOutputInventory(
-          designCompilerDescriptor(), prepared.bundleRoot))
-    return std::move(error);
   auto imported =
       std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
-  auto output = readExternalToolInvocationDeclaredOutput(
-      imported, designCompilerGateNetlistOutputPath);
+  auto output =
+      readYosysSynthesisOutput(prepared, imported, invocation->source.top());
   if (!output)
     return output.takeError();
-  auto result = publish(*invocation, *output, artifacts, blobs);
+  if (invocation->parent)
+    if (llvm::Error error = validateMappedChildInterfaces(*invocation->parent,
+                                                          output->structure))
+      return std::move(error);
+  auto result = publish(*invocation, output->netlist, artifacts, blobs);
   if (!result)
     return result.takeError();
   return CandidateGeneratorProviderResult{
@@ -450,22 +446,21 @@ const CandidateGeneratorProvider parentProvider{
 } // namespace
 
 const dse::CandidateGeneratorDescriptor &
-designCompilerBlockGateNetlistCandidateGeneratorDescriptor() {
+yosysBlockGateNetlistCandidateGeneratorDescriptor() {
   return descriptor;
 }
 
-llvm::Error registerDesignCompilerBlockGateNetlistCandidateGenerator() {
+llvm::Error registerYosysBlockGateNetlistCandidateGenerator() {
   if (llvm::Error error = registerCandidateGeneratorDescriptor(descriptor))
     return error;
   return registerCandidateGeneratorProvider(provider);
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindDesignCompilerBlockGateNetlistInputs(
+bindYosysBlockGateNetlistInputs(
     const ArtifactRootReference &blockSource,
     const ArtifactRootReference &implementationPlatform) {
-  if (llvm::Error error =
-          registerDesignCompilerBlockGateNetlistCandidateGenerator())
+  if (llvm::Error error = registerYosysBlockGateNetlistCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> inputs{
       {blockInput, {blockSource}}, {targetInput, {implementationPlatform}}};
@@ -476,22 +471,20 @@ bindDesignCompilerBlockGateNetlistInputs(
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveDesignCompilerBlockGateNetlistBinding(
-    const ResolvedDesignCompilerGateNetlistConfigView &config) {
-  if (llvm::Error error =
-          registerDesignCompilerBlockGateNetlistCandidateGenerator())
+resolveYosysBlockGateNetlistBinding(
+    const ResolvedYosysGateNetlistConfigView &config) {
+  if (llvm::Error error = registerYosysBlockGateNetlistCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), config.canonicalViewBytes(), config.digest());
 }
 
 const dse::CandidateGeneratorDescriptor &
-designCompilerHierarchicalBlockGateNetlistCandidateGeneratorDescriptor() {
+yosysHierarchicalBlockGateNetlistCandidateGeneratorDescriptor() {
   return parentDescriptor;
 }
 
-llvm::Error
-registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator() {
+llvm::Error registerYosysHierarchicalBlockGateNetlistCandidateGenerator() {
   if (llvm::Error error =
           registerCandidateGeneratorDescriptor(parentDescriptor))
     return error;
@@ -499,12 +492,12 @@ registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator() {
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindDesignCompilerHierarchicalBlockGateNetlistInputs(
+bindYosysHierarchicalBlockGateNetlistInputs(
     const ArtifactRootReference &blockSource,
     const ArtifactRootReference &implementationPlatform,
     llvm::ArrayRef<ArtifactRootReference> compiledChildren) {
   if (llvm::Error error =
-          registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator())
+          registerYosysHierarchicalBlockGateNetlistCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> inputs{
       {blockInput, {blockSource}},
@@ -518,10 +511,10 @@ bindDesignCompilerHierarchicalBlockGateNetlistInputs(
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveDesignCompilerHierarchicalBlockGateNetlistBinding(
-    const ResolvedDesignCompilerGateNetlistConfigView &config) {
+resolveYosysHierarchicalBlockGateNetlistBinding(
+    const ResolvedYosysGateNetlistConfigView &config) {
   if (llvm::Error error =
-          registerDesignCompilerHierarchicalBlockGateNetlistCandidateGenerator())
+          registerYosysHierarchicalBlockGateNetlistCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(parentDescriptor.reference(),
                                                 config.canonicalViewBytes(),
@@ -529,36 +522,33 @@ resolveDesignCompilerHierarchicalBlockGateNetlistBinding(
 }
 
 llvm::Expected<FinalizedBlockGateNetlist>
-importDesignCompilerBlockGateNetlist(const ArtifactRootReference &reference,
-                                     const ArtifactStore &artifacts,
-                                     const BlobStore &blobs) {
-  auto contracts = makeSynopsysStandardCellContractCatalog();
+importYosysBlockGateNetlist(const ArtifactRootReference &reference,
+                            const ArtifactStore &artifacts,
+                            const BlobStore &blobs) {
+  auto contracts = makeYosysStandardCellContractCatalog();
   if (!contracts)
     return contracts.takeError();
   auto result = importBlockGateNetlist(reference, *contracts, artifacts, blobs);
   if (!result)
     return result.takeError();
   const auto &netlist = result->netlist();
-  if (netlist.standardCellContract !=
-      synopsysDesignCompilerStandardCellContractRef)
+  if (netlist.standardCellContract != openSourceYosysStandardCellContractRef)
     return invalid("mapped library belongs to another provider contract");
   auto index = indexRepresentationRoot(netlist.representation, blobs);
   if (!index)
     return index.takeError();
-  auto expected = renderSynopsysStandardCellBlackBoxContract(
+  auto expected = renderYosysStandardCellBlackBoxContract(
       netlist.standardCellLibrary, index->unresolvedExternalDefinitions());
-  if (!expected)
-    return expected.takeError();
   for (const auto &payload : netlist.representation.payloads)
     if (payload.role == PayloadRole::BlackBoxContract) {
       auto bytes = blobs.get(payload.blobDigest);
       if (!bytes)
         return bytes.takeError();
-      if (textOf(*bytes) != *expected)
+      if (textOf(*bytes) != expected)
         return invalid(
             "mapped library contract differs from the exact netlist closure");
     }
   return std::move(*result);
 }
 
-} // namespace loom::eda::synopsys
+} // namespace loom::eda::open_source

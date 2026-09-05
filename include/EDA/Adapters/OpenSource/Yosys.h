@@ -39,9 +39,9 @@ struct YosysPortGeometry final {
 
   friend bool operator==(const YosysPortGeometry &lhs,
                          const YosysPortGeometry &rhs) {
-    return lhs.direction == rhs.direction && lhs.bits.size() == rhs.bits.size() &&
-           lhs.offset == rhs.offset && lhs.upto == rhs.upto &&
-           lhs.isSigned == rhs.isSigned;
+    return lhs.direction == rhs.direction &&
+           lhs.bits.size() == rhs.bits.size() && lhs.offset == rhs.offset &&
+           lhs.upto == rhs.upto && lhs.isSigned == rhs.isSigned;
   }
 };
 
@@ -68,20 +68,44 @@ struct YosysStructureFacts final {
   std::map<std::string, YosysModuleFacts> modules;
 };
 
+inline constexpr llvm::StringLiteral yosysNetlistOutputPath =
+    "outputs/netlist.v";
+inline constexpr llvm::StringLiteral yosysRtlStructureOutputPath =
+    "outputs/rtl-structure.json";
+inline constexpr llvm::StringLiteral yosysNetlistStructureOutputPath =
+    "outputs/netlist-structure.json";
+
+/// Exact complete mapped units admitted by the block-product owner. Yosys
+/// derives tool-local black-box interfaces from their original bytes; the
+/// producing parent retains the complete immutable units in its output.
+struct YosysMappedChildren final {
+  std::vector<std::string> netlistPaths;
+  std::vector<std::string> directModuleNames;
+};
+
 /// Renders the byte-deterministic Yosys 0.67 synthesis driver. The script
 /// consumes only the fixed bundle-relative paths inputs/design.sv and
 /// inputs/library.lib, writes only outputs/..., and embeds the exact
 /// portable top identifier. A top that is not a portable HDL identifier is
 /// rejected rather than quoted.
-llvm::Expected<std::string> renderYosysSynthesisDriver(llvm::StringRef topModule);
+llvm::Expected<std::string>
+renderYosysSynthesisDriver(llvm::StringRef topModule);
 
 /// Renders the same driver for an exact ordered RTL payload closure and one
 /// resolved standard-cell Liberty file. Each source remains an independent
 /// compilation unit. RTL paths may use Yosys quoting; the Liberty path must be
 /// one bare token because the downstream ABC script cannot preserve quoting.
-llvm::Expected<std::string> renderYosysSynthesisDriver(
+llvm::Expected<std::string>
+renderYosysSynthesisDriver(llvm::StringRef topModule,
+                           llvm::ArrayRef<std::string> rtlSources,
+                           llvm::StringRef standardCellLiberty);
+
+/// Preserves block boundaries. An empty child set is a leaf; the caller must
+/// admit a Source with no concrete dependencies. A parent supplies all direct
+/// child definitions and their complete mapped payload closure.
+llvm::Expected<std::string> renderYosysBlockSynthesisDriver(
     llvm::StringRef topModule, llvm::ArrayRef<std::string> rtlSources,
-    llvm::StringRef standardCellLiberty);
+    llvm::StringRef standardCellLiberty, const YosysMappedChildren &children);
 
 /// Parses one write_json document into the typed facts view. Malformed JSON,
 /// wrong field types, unknown port directions, and invalid signal bits are

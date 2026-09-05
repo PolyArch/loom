@@ -36,6 +36,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "EDA/Adapters/OpenSource/OpenRoadRouted.h"
 #include "EDA/Adapters/OpenSource/OpenRoadStaticFpa.h"
+#include "EDA/Adapters/OpenSource/YosysBlock.h"
 #include "EDA/Adapters/OpenSource/YosysGateNetlist.h"
 #include "EDA/Adapters/Synopsys/DesignCompilerBlock.h"
 #include "Evaluation/Evidence.h"
@@ -1185,6 +1186,12 @@ llvm::Expected<int> run() {
     return error;
   if (llvm::Error error = eda::synopsys::
           registerDesignCompilerPortableGateImplementationCandidateGenerator())
+    return error;
+  if (llvm::Error error =
+          eda::open_source::registerYosysBlockGateNetlistCandidateGenerator())
+    return error;
+  if (llvm::Error error = eda::open_source::
+          registerYosysHierarchicalBlockGateNetlistCandidateGenerator())
     return error;
   if (llvm::Error error =
           eda::open_source::registerYosysGateNetlistCandidateGenerator())
