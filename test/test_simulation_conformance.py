@@ -286,6 +286,8 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         work_ledger = {
             "completion_goal": "exhaust_configured_work",
             "configured_seed_attempts": 4,
+            "deadline_ns": 45_000_000_000,
+            "deadline_overrun_ns": 0,
             "outcome": "completed",
             "incomplete_reason": None,
             "infeasibility_proof": None,
@@ -366,7 +368,27 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                         **work_ledger,
                         "candidates": [reference(500 + ordinal)],
                     },
+                    "spatial_candidate_screening": [
+                        {
+                            "spatial_mapping": reference(500 + ordinal),
+                            "buffered_fifo_traversals": 1,
+                            "bypass_fifo_traversals": 0,
+                            "retired": True,
+                            "closed_wait_actor_cycle_edges": None,
+                            "closed_wait_pending_transfers": None,
+                            "closed_wait_certificate_edges": None,
+                            "closed_wait_certificate_closed": None,
+                            "closed_wait_proof_failure": None,
+                        }
+                    ],
                     "transport_repair": None,
+                    "phase_ledger": [
+                        {
+                            "phase": "setup",
+                            "wall_nanoseconds": 1,
+                            "process_cpu_nanoseconds": 1,
+                        }
+                    ],
                     "warmup_evidence": reference(
                         700 + ordinal, "evaluation.evidence"
                     ),
