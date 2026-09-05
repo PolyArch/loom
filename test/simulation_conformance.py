@@ -738,7 +738,11 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
         "tech_mapping_search",
         "spatial_pnr",
     }
-    if not isinstance(value, Mapping) or set(value) != expected_fields:
+    # CgraBudgetProfile v2 appends stage diagnostics without changing the
+    # outcome schema. Keep the core fields exact while accepting those
+    # producer-owned diagnostics.
+    diagnostic_fields = {"spatial_candidate_screening", "transport_repair", "phase_ledger"}
+    if not isinstance(value, Mapping) or not expected_fields.issubset(value) or not set(value).issubset(expected_fields | diagnostic_fields):
         raise ValueError("CGRA profile outcome has the wrong shape")
     if value["schema"] != "loom.cgra_budget_profile_outcome.2":
         raise ValueError("CGRA profile outcome has the wrong schema")
@@ -788,6 +792,10 @@ def validate_cgra_profile_outcome(value: object) -> tuple[str, str | None]:
             raise ValueError(
                 "CGRA profile outcome contains a usable completed PnR result"
             )
+        result = value["spatial_pnr"]
+    elif stage == "transport_repair":
+        if value["spatial_pnr"] is None:
+            raise ValueError("CGRA transport repair outcome has no PnR result")
         result = value["spatial_pnr"]
     else:
         raise ValueError("CGRA profile outcome has an unknown stage")
