@@ -1,9 +1,8 @@
 #include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
 
 #include "Common/ArtifactStore.h"
-#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
-#include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 #include "Common/BlobStore.h"
+#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelProvider.h"
 #include "ExternalTool/Binding.h"
@@ -126,9 +125,8 @@ simulator_path=')sh";
   script += R"sh('
 plan_path='drivers/verilator-hierarchy-plan.json'
 work_directory='work/verilator')sh";
-  // The fixture closure selects no hierarchical block, so the bundle is the
-  // flat Verilation style: the ordinary generated makefile, the simulator
-  // executable as its target, and no child-Verilation configuration.
+  // The complete handshake closure uses one flat simulator and a split C++
+  // build, with no child-Verilation configuration.
   script += "\nmakefile_name='V" + mappedRtlHarnessTop.str() + ".mk'\n";
   script += R"sh(makefile="$work_directory/$makefile_name"
 build_target=')sh";
@@ -141,15 +139,7 @@ if [[ "$#" -ge 6 && "$1" == "-C" && "$2" == "$work_directory" &&
       "$3" == "-f" && "$4" == "$makefile_name" && "$6" == "$build_target" ]]; then
     [[ "$5" == '-j1' || "$5" == '-j2' || "$5" == '-j4' || "$5" == '-j8' ]] || exit )sh";
   script += std::to_string(kFakeToolUsageExitCode);
-  script += "\n    if printf '%s\\n' \"$@\" | grep -E -- '^(";
-  script += verilatorHierarchyLauncherVariable.str();
-  script += "|";
-  script += mappedRtlHierarchyVerilatorVariable.str();
-  script += "|";
-  script += mappedRtlHierarchyTestbenchVariable.str();
-  script += ")=' >/dev/null; then exit ";
-  script += std::to_string(kFakeToolUsageExitCode);
-  script += R"sh(; fi
+  script += R"sh(
     [[ "$(cat "$schedule_log")" == 'verilation' ]] || exit )sh";
   script += std::to_string(kFakeToolUsageExitCode);
   script += R"sh(
@@ -174,7 +164,8 @@ set -euo pipefail
               "  if [[ \"$ordinal\" -gt \"$max_program_ordinal\" ]]; then\n"
               "    max_program_ordinal=\"$ordinal\"\n"
               "  fi\n"
-              "done < <(grep -oE 'loom_cfg_payload_writes_[0-9]+' \"$testbench_path\" | sed 's/.*_//' | sort -nu)\n"
+              "done < <(grep -oE 'loom_cfg_payload_writes_[0-9]+' "
+              "\"$testbench_path\" | sed 's/.*_//' | sort -nu)\n"
               "program_count=$((max_program_ordinal + 1))\n"
               "printf '%s %s\\n' '";
     script += mappedRtlConfigurationTransportReceiptSchema.str();
@@ -184,10 +175,14 @@ set -euo pipefail
     script += mappedRtlConfigurationTransportReceiptPath.str();
     script += "\nprintf 'programs %s\\n' \"$program_count\" >> ";
     script += mappedRtlConfigurationTransportReceiptPath.str();
-    script += "\nfor ((ordinal=0; ordinal<program_count; ordinal++)); do\n"
-              "  payload_words=$(grep \"loom_cfg_payload_writes_${ordinal} !=\" \"$testbench_path\" | sed -E 's/.*!= ([0-9]+).*/\\1/' | head -1)\n"
-              "  [[ -n \"$payload_words\" ]] || exit 66\n"
-              "  printf 'program %s payload_writes %s atomic_commits 1 active_word_comparisons %s passing_status_reads 1\\n' \"$ordinal\" \"$payload_words\" \"$payload_words\" >> ";
+    script +=
+        "\nfor ((ordinal=0; ordinal<program_count; ordinal++)); do\n"
+        "  payload_words=$(grep \"loom_cfg_payload_writes_${ordinal} !=\" "
+        "\"$testbench_path\" | sed -E 's/.*!= ([0-9]+).*/\\1/' | head -1)\n"
+        "  [[ -n \"$payload_words\" ]] || exit 66\n"
+        "  printf 'program %s payload_writes %s atomic_commits 1 "
+        "active_word_comparisons %s passing_status_reads 1\\n' \"$ordinal\" "
+        "\"$payload_words\" \"$payload_words\" >> ";
     script += mappedRtlConfigurationTransportReceiptPath.str();
     script += "\ndone\nprintf 'end\\n' >> ";
     script += mappedRtlConfigurationTransportReceiptPath.str();
@@ -222,7 +217,7 @@ fi
             "(' \"$testbench_path\" >/dev/null\n";
   script += R"sh(test -f "$plan_path"
 grep -F '"transitive_body_lines"' "$plan_path" >/dev/null
-grep -F '"source_closure_modules"' "$plan_path" >/dev/null
+grep -F '"schema": "loom.mapped_rtl_hierarchy_plan.3"' "$plan_path" >/dev/null
 grep -F "\"verilation_style\": \"flat\"" "$plan_path" >/dev/null
 grep -F "\"verilation_makefile\": \"$makefile_name\"" "$plan_path" >/dev/null
 if grep -R -F '/*verilator hier_block*/' drivers/verilator-library inputs/implementation >/dev/null; then
@@ -235,7 +230,8 @@ fi
     script += "exit " + std::to_string(behavior.compileExitCode) + "\n";
     return script;
   }
-  script += R"sh(grep -F 'task automatic loom_cfg_write_' "$testbench_path" >/dev/null
+  script +=
+      R"sh(grep -F 'task automatic loom_cfg_write_' "$testbench_path" >/dev/null
 mkdir -p "$work_directory"
 : > "$makefile"
 printf '%s\n' verilation > "$schedule_log"
@@ -330,8 +326,8 @@ void resultProtocolIsCanonical() {
       take(parseMappedRtlConfigurationTransportReceipt(receiptBytes));
   require(decodedReceipt.programs == receipt.programs,
           "configuration transport receipt changed during round trip");
-  auto noncanonicalReceipt = parseMappedRtlConfigurationTransportReceipt(
-      receiptBytes + "unknown\n");
+  auto noncanonicalReceipt =
+      parseMappedRtlConfigurationTransportReceipt(receiptBytes + "unknown\n");
   require(!noncanonicalReceipt,
           "configuration transport receipt accepted trailing data");
   llvm::consumeError(noncanonicalReceipt.takeError());
@@ -821,9 +817,8 @@ void authoredFailure(AuthoredFailureCase selected) {
     const auto *unsupported =
         evidence ? std::get_if<UnsupportedEvidence>(&evidence->outcome())
                  : nullptr;
-    require(unsupported &&
-                unsupported->reason ==
-                    OutcomeReason::RuntimeCapabilityUnavailable,
+    require(unsupported && unsupported->reason ==
+                               OutcomeReason::RuntimeCapabilityUnavailable,
             "unvalidated Verilator release did not terminate as Unsupported");
     return;
   }

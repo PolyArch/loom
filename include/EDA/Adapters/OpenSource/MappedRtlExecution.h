@@ -67,30 +67,9 @@ struct MappedRtlExecutionClosure final {
   ArtifactRootReference runtimeInput;
 };
 
-struct MappedRtlHierarchyBlock final {
-  std::string module;
-  std::uint64_t bodyLines = 0;
-  std::uint64_t transitiveBodyLines = 0;
-  std::uint64_t rootInstanceMultiplicity = 0;
-  std::vector<std::string> sourceClosureModules;
-};
-
-/// How Verilator compiles one mapped-RTL bundle. A plan that selects at least
-/// one block is Verilated hierarchically: Verilator elaborates each block
-/// through a child argument file and emits the `V<top>_hier.mk` makefile whose
-/// `hier_build` target owns the C++ build. A plan without a block has no child
-/// argument file and no block metacomment, so Verilator emits the ordinary
-/// `V<top>.mk` whose target is the simulator executable.
-enum class MappedRtlVerilationStyle : std::uint8_t { Flat, Hierarchical };
-
-struct MappedRtlHierarchyPlan final {
-  std::string selectionPolicy;
-  std::uint64_t baselineBlockCount = 0;
-  std::uint64_t baselineRootSourceClosureModuleCount = 0;
-  std::uint64_t baselineRootSourceClosureBodyLines = 0;
-  std::uint64_t baselineRootSourceClosureBytes = 0;
-  std::uint64_t rootSourceClosureBodyLines = 0;
-  std::uint64_t rootSourceClosureBytes = 0;
+/// Exact CIRCT source closure compiled as one flat Verilator model. Source
+/// module boundaries remain ordinary RTL hierarchy, never protect-lib cuts.
+struct MappedRtlSourcePlan final {
   std::string sourcePath;
   std::string sourceSha256;
   std::uint64_t sourceByteCount = 0;
@@ -100,19 +79,14 @@ struct MappedRtlHierarchyPlan final {
   std::uint64_t hardwareRootBodyLines = 0;
   std::uint64_t hardwareRootTransitiveBodyLines = 0;
   std::vector<std::string> hardwareRootSourceClosureModules;
-  std::vector<MappedRtlHierarchyBlock> blocks;
-  std::vector<std::string> derivedRtlPaths;
   std::string rtlLibraryDirectoryPath;
   std::string manifestPath;
   std::string workDirectoryPath;
-  MappedRtlVerilationStyle style = MappedRtlVerilationStyle::Flat;
   std::string verilationMakefileName;
 };
 
 /// The frozen auxiliary tools of one mapped-RTL build: GNU make, the C++
-/// compiler, linker, and archiver named in the generated build, and the
-/// hierarchy Verilator launcher that the generated hierarchy makefile runs in
-/// place of Verilator.
+/// compiler, linker, and archiver named in the generated build.
 struct MappedRtlBuildTools final {
   std::string make;
   std::string cxx;
@@ -120,14 +94,13 @@ struct MappedRtlBuildTools final {
   // The linker executable plus any driver-mode argument required to link C++.
   std::string linkerInvocation;
   std::string archiver;
-  std::string hierarchyLauncher;
   std::vector<external_tool::ResolvedAuxiliaryToolExecutable> provenance;
 };
 
 struct MappedRtlExecutionBundleProjection final {
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::vector<external_tool::MaterializedBundleFile> toolLocalInputs;
-  MappedRtlHierarchyPlan hierarchy;
+  MappedRtlSourcePlan sourcePlan;
   std::vector<std::string> configurationProgramPaths;
   std::string testbenchPath;
   std::string standaloneVerilatorDriverPath;
@@ -140,7 +113,7 @@ struct MappedRtlExecutionBundleProjection final {
   std::string standaloneVerilatorDriver;
   std::string bridgedVerilatorDriver;
   /// The frozen build command: make, its work directory and generated
-  /// makefile, the job count, the target of the Verilation style, and the
+  /// makefile, the job count, the simulator executable target, and the
   /// exact tool variables of the generated build.
   std::vector<std::string> buildCommand;
 };
@@ -164,9 +137,8 @@ constexpr bool isMappedRtlParallelismCount(std::uint64_t value) {
 /// the selected simulator's provider options. `buildJobs` is the compiler's
 /// `-j`: for Verilator the Verilation job count and the make job count of the
 /// generated build, for VCS its parallel compilation count. `modelThreads` is
-/// Verilator's simulation thread count emitted as both `--threads` and
-/// `--hierarchical-threads` so the generated main, the root model, and the
-/// hierarchical schedule agree; VCS simulates single-threaded and admits no
+/// Verilator's simulation thread count emitted as `--threads` for the complete
+/// flat model; VCS simulates single-threaded and admits no
 /// thread option; Xcelium elaborates and simulates single-threaded and admits
 /// the cycle limit alone. Both counts satisfy `isMappedRtlParallelismCount`.
 struct MappedRtlExecutionAttemptOptions final {
@@ -213,7 +185,7 @@ struct MappedRtlXceliumElaborationPlan final {
 /// command, the tool-produced executables that command creates (the VCS
 /// simulator; none for Xcelium, whose snapshot is a library), and the
 /// simulation command. The harness compiles the semantic RTL source directly;
-/// no hierarchy plan or derived library exists for these members.
+/// no source plan or derived library exists for these members.
 struct MappedRtlEventDrivenBundleProjection final {
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::string testbenchPath;
@@ -241,8 +213,7 @@ resolveMappedRtlExecutionAttemptOptions(
     MappedRtlHdlSimulator simulator);
 
 llvm::Expected<MappedRtlBuildTools>
-resolveMappedRtlBuildTools(
-    const external_tool::LocalToolConfig &localConfig);
+resolveMappedRtlBuildTools(const external_tool::LocalToolConfig &localConfig);
 
 /// Derives the exact RTL materialization and both environment adapters from
 /// one closure. The generated harness semantics are shared; only the C++ main

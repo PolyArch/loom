@@ -198,7 +198,7 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   const auto configured = local.tools.find(provider.binding.key);
   // Each member admits its own parallelism options: Xcelium elaborates and
   // simulates single-threaded, VCS takes the parallel compilation count, and
-  // Verilator additionally owns the hierarchy workers and model threads.
+  // Verilator additionally owns concurrent bundle builds and model threads.
   if (options.simulator !=
       loom::eda::open_source::MappedRtlHdlSimulator::Xcelium)
     configured->second.providerOptions["build_jobs"] = options.buildJobs;
@@ -277,10 +277,13 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   if (execution->exitCode != 0)
     return invalid("spatial-rtl external invocation exited with status " +
                    llvm::Twine(execution->exitCode));
+  loom::hardware::rtl::RtlMaterializationStageTracker importStage(
+      "mapped_rtl_provider_import", materializationKey);
   auto evidence = loom::evaluation::importEvaluationModelInvocation(
       *request, *resolution, *prepared, *execution, artifacts, blobs);
   if (!evidence)
     return evidence.takeError();
+  importStage.finish();
   return MappedRtlCellEvidence{std::move(*request), std::move(*resolution),
                                std::move(*evidence)};
 }

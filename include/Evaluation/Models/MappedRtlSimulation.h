@@ -15,7 +15,7 @@ class BlobStore;
 namespace loom::evaluation::models {
 
 inline constexpr llvm::StringLiteral mappedRtlSimulatorSemanticIdentity =
-    "loom.mapped_rtl.simulator.v1";
+    "loom.mapped_rtl.simulator.v2";
 
 struct MappedRtlSimulationConfiguration final {
   MappedRtlSimulatorBinding providerBinding;

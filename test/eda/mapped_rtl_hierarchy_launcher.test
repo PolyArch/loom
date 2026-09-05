@@ -1,1 +1,0 @@
-# RUN: timeout %loom-timeout-fast %loom-mapped-rtl-hierarchy-launcher-test

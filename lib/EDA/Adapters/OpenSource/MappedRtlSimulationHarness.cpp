@@ -608,8 +608,8 @@ void renderConfigurationTransportReceiptWriter(
             "transport receipt was written more than once\");\n";
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms)) {
-    output << "      if (loom_cfg_payload_writes_" << ordinal << " != "
-           << program.layout.payloadWordCount
+    output << "      if (loom_cfg_payload_writes_" << ordinal
+           << " != " << program.layout.payloadWordCount
            << ") $fatal(1, \"configuration payload write count is "
               "incomplete\");\n"
            << "      if (loom_cfg_atomic_commits_" << ordinal
@@ -631,8 +631,8 @@ void renderConfigurationTransportReceiptWriter(
          << mappedRtlConfigurationTransportReceiptVersion << "\\n\");\n"
          << "      $fwrite(receipt_file, \"programs "
          << facts.configurationPrograms.size() << "\\n\");\n";
-  for (std::size_t ordinal = 0;
-       ordinal != facts.configurationPrograms.size(); ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != facts.configurationPrograms.size();
+       ++ordinal)
     output << "      $fwrite(receipt_file, \"program " << ordinal
            << " payload_writes %0d atomic_commits %0d "
               "active_word_comparisons %0d passing_status_reads %0d\\n\", "
@@ -834,13 +834,11 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   for (const auto &[ordinal, program] :
        llvm::enumerate(facts.configurationPrograms))
     output << "  logic [" << kConfigurationProgramWordWidth - 1
-           << ":0] loom_cfg_program_" << ordinal << " [0:"
-           << program.layout.payloadWordCount - 1 << "];\n"
+           << ":0] loom_cfg_program_" << ordinal
+           << " [0:" << program.layout.payloadWordCount - 1 << "];\n"
            << "  integer loom_cfg_program_word_" << ordinal << ";\n"
-           << "  longint unsigned loom_cfg_payload_writes_" << ordinal
-           << ";\n"
-           << "  longint unsigned loom_cfg_atomic_commits_" << ordinal
-           << ";\n"
+           << "  longint unsigned loom_cfg_payload_writes_" << ordinal << ";\n"
+           << "  longint unsigned loom_cfg_atomic_commits_" << ordinal << ";\n"
            << "  longint unsigned loom_cfg_active_word_comparisons_" << ordinal
            << ";\n"
            << "  longint unsigned loom_cfg_passing_status_reads_" << ordinal
@@ -884,16 +882,15 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "    loom_cfg_receipt_written = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
             "loom_verbose_level)) loom_verbose_level = 0;\n";
-  for (std::size_t ordinal = 0;
-       ordinal != facts.configurationPrograms.size(); ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != facts.configurationPrograms.size();
+       ++ordinal)
     output << "    loom_cfg_payload_writes_" << ordinal << " = 0;\n"
            << "    loom_cfg_atomic_commits_" << ordinal << " = 0;\n"
            << "    loom_cfg_active_word_comparisons_" << ordinal << " = 0;\n"
            << "    loom_cfg_passing_status_reads_" << ordinal << " = 0;\n";
-  for (const auto &[ordinal, path] :
-       llvm::enumerate(configurationProgramPaths))
-    output << "    $readmemh(\"" << path << "\", loom_cfg_program_"
-           << ordinal << ");\n";
+  for (const auto &[ordinal, path] : llvm::enumerate(configurationProgramPaths))
+    output << "    $readmemh(\"" << path << "\", loom_cfg_program_" << ordinal
+           << ");\n";
   for (const InputTokenStream &input : facts.streamInputs) {
     const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
     output << "    loom_runtime_stream_enabled_" << ordinal << " = 0;\n"
@@ -1036,8 +1033,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
        llvm::enumerate(facts.configurationPrograms))
     renderConfigurationTask(output, program.portPrefix, ordinal,
                             facts.selectedClock);
-  renderConfigurationTransportReceiptWriter(
-      output, facts, configurationTransportReceiptPath);
+  renderConfigurationTransportReceiptWriter(output, facts,
+                                            configurationTransportReceiptPath);
   renderMemoryService(output, facts);
 
   for (const auto &[ordinal, value] : llvm::enumerate(facts.valueResults))
@@ -1110,36 +1107,29 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
 
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
     const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
-    MappedRtlVerilationStyle style,
-    llvm::ArrayRef<std::string> hierarchyMakeVariables,
     llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
     std::optional<llvm::StringRef> bridgeEngineSourcePath) {
   if (facts.rtlPaths.empty() && facts.rtlLibraryDirectories.empty())
     return invalid("Verilator driver has no RTL sources");
   if (plan.buildJobs == 0 || plan.modelThreads == 0)
     return invalid("Verilator parallelism must be positive");
-  if (style == MappedRtlVerilationStyle::Flat &&
-      !hierarchyMakeVariables.empty())
-    return invalid("flat Verilation has no hierarchical make variables");
   std::string text;
   llvm::raw_string_ostream output(text);
   const std::filesystem::path simulatorExecutable(
       simulatorExecutablePath.str());
-  // `-j` is the Verilation job count and the job count of the make that
-  // Verilator runs for hierarchical Verilation. `--threads` and
-  // `--hierarchical-threads` carry one model thread count so the generated
-  // main, the root model, and the hierarchical schedule agree; the flat style
-  // has no hierarchical schedule.
+  // Model parallelism is independent of the split C++ build. The full
+  // handshake network remains visible to one Verilator scheduler.
   output << "--cc\n--exe\n";
   if (!bridgeEngineSourcePath)
     output << "--main\n";
-  if (style == MappedRtlVerilationStyle::Hierarchical)
-    output << "--hierarchical\n";
   output << "-j\n"
          << plan.buildJobs << "\n--threads\n"
          << plan.modelThreads << "\n";
-  if (style == MappedRtlVerilationStyle::Hierarchical)
-    output << "--hierarchical-threads\n" << plan.modelThreads << "\n";
+  output << "--output-split\n"
+         << mappedRtlOutputSplitStatements << "\n--output-split-cfuncs\n"
+         << mappedRtlOutputSplitStatements << "\n--output-groups\n"
+         << mappedRtlOutputGroupCount << "\n-MAKEFLAGS\n"
+         << mappedRtlParallelBuildVariable << "\n";
   output << "--timing\n--Wall\n--Wno-fatal\n"
             "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
             "--Wno-TIMESCALEMOD\n"
@@ -1147,8 +1137,6 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
          << mappedRtlHarnessTop << "\n--Mdir\n"
          << simulatorExecutable.parent_path().generic_string() << "\n-o\n"
          << simulatorExecutable.filename().generic_string() << "\n";
-  for (const std::string &variable : hierarchyMakeVariables)
-    output << "-MAKEFLAGS\n" << variable << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   for (const std::string &path : facts.rtlLibraryDirectories)

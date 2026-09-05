@@ -1,14 +1,13 @@
 #include "MappedRtlSimulationInternal.h"
 
 #include "Common/BlobDigest.h"
-#include "EDA/Adapters/OpenSource/MappedRtlHierarchyLauncher.h"
 #include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/Provider.h"
 #include "Hardware/RTL/RtlModuleGraph.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -17,18 +16,13 @@
 #include "llvm/Support/Program.h"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
-#include <cctype>
 #include <filesystem>
-#include <functional>
 #include <limits>
-#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <system_error>
-#include <tuple>
 #include <utility>
 
 namespace loom::eda::open_source {
@@ -40,16 +34,10 @@ constexpr llvm::StringLiteral kBuildWorkersOption = "build_workers";
 constexpr llvm::StringLiteral kModelThreadsOption = "model_threads";
 constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
 constexpr std::uint64_t kMaximumBuildWorkers = 4;
-constexpr std::uint64_t kHierarchyBodyLineThreshold = 10'000;
-constexpr std::uint64_t kHierarchyMinimumReuseMultiplicity = 8;
-constexpr std::uint64_t kHierarchyMultiplicityWeightThreshold = 25'000;
-constexpr std::uint64_t kHierarchyRootClosureBodyLineBudget = 100'000;
-constexpr std::uint64_t kHierarchyRootClosureByteBudget = 4'000'000;
-constexpr std::size_t kHierarchyMaximumBlockCount = 128;
 constexpr llvm::StringLiteral kVerilatorPreamblePath =
     "drivers/verilator-preamble.sv";
-constexpr llvm::StringLiteral kHierarchySelectionPolicy =
-    "circt_instance_graph_root_closure_rebalanced";
+constexpr llvm::StringLiteral kVerilationSelectionPolicy =
+    "circt_instance_graph_flat_handshake_closure";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -153,73 +141,27 @@ namespacedBundlePath(llvm::StringRef path, llvm::StringRef pathNamespace) {
   return result;
 }
 
-/// Verilator joins make flags into one unquoted make command line, so a
-/// variable value must be a single shell word.
-llvm::Error validateMakeVariableValue(llvm::StringRef name,
-                                      llvm::StringRef value) {
-  if (value.empty() || value.contains('\0') || value.contains('\n') ||
-      value.contains(' ') || value.contains('\t') || value.contains('\'') ||
-      value.contains('"') || value.contains('\\'))
-    return invalid("make variable " + name +
-                   " is not representable as one Verilator make flag");
-  return llvm::Error::success();
-}
-
-/// The make command-line variables that bind the generated hierarchy makefile
-/// to the frozen hierarchy launcher, the frozen Verilator executable, and the
-/// harness and preamble paths projected by the launcher. GNU make
-/// exports command-line variables to every recipe, which is how the launcher
-/// receives its configuration.
-llvm::Expected<std::vector<std::string>> renderHierarchyLauncherMakeVariables(
-    const MappedRtlBuildTools &tools, llvm::StringRef verilatorExecutable,
-    llvm::StringRef testbenchPath, llvm::StringRef preamblePath) {
-  const std::array<std::pair<llvm::StringRef, llvm::StringRef>, 4> bindings{{
-      {verilatorHierarchyLauncherVariable, tools.hierarchyLauncher},
-      {mappedRtlHierarchyVerilatorVariable, verilatorExecutable},
-      {mappedRtlHierarchyTestbenchVariable, testbenchPath},
-      {mappedRtlHierarchyPreambleVariable, preamblePath},
-  }};
-  std::vector<std::string> variables;
-  variables.reserve(bindings.size());
-  for (const auto &[name, value] : bindings) {
-    if (llvm::Error error = validateMakeVariableValue(name, value))
-      return std::move(error);
-    variables.push_back((name + "=" + value).str());
-  }
-  return variables;
-}
-
-/// The target of the generated makefile: hierarchical Verilation owns the
-/// child blocks and the root through `hier_build`; flat Verilation has one
-/// makefile whose target is the simulator executable.
-std::string verilationBuildTarget(MappedRtlVerilationStyle style) {
-  if (style == MappedRtlVerilationStyle::Hierarchical)
-    return "hier_build";
-  return std::filesystem::path(mappedRtlSimulatorExecutablePath.str())
-      .filename()
-      .generic_string();
-}
-
+/// One generated model contains the entire configured handshake network.
+/// Split translation units remain independently compiled; they do not introduce
+/// protect-lib scheduling boundaries or change the RTL dependency graph.
 std::vector<std::string>
 renderVerilationBuildCommand(const MappedRtlBuildTools &tools,
-                             const MappedRtlHierarchyPlan &hierarchy,
-                             std::uint64_t buildJobs,
-                             llvm::ArrayRef<std::string> launcherVariables) {
-  std::vector<std::string> command{
-      tools.make,
-      "-C",
-      hierarchy.workDirectoryPath,
-      "-f",
-      hierarchy.verilationMakefileName,
-      "-j" + std::to_string(buildJobs),
-      verilationBuildTarget(hierarchy.style),
-      "CXX=" + tools.cxx,
-      "LINK=" + tools.linkerInvocation,
-      "AR=" + tools.archiver,
-      "OBJCACHE="};
-  command.insert(command.end(), launcherVariables.begin(),
-                 launcherVariables.end());
-  return command;
+                             const MappedRtlSourcePlan &plan,
+                             std::uint64_t buildJobs) {
+  return {tools.make,
+          "-C",
+          plan.workDirectoryPath,
+          "-f",
+          plan.verilationMakefileName,
+          "-j" + std::to_string(buildJobs),
+          std::filesystem::path(mappedRtlSimulatorExecutablePath.str())
+              .filename()
+              .generic_string(),
+          detail::mappedRtlParallelBuildVariable.str(),
+          "CXX=" + tools.cxx,
+          "LINK=" + tools.linkerInvocation,
+          "AR=" + tools.archiver,
+          "OBJCACHE="};
 }
 
 struct ParsedModule final {
@@ -232,12 +174,10 @@ struct ParsedSource final {
   std::string originalPath;
   std::string derivedPath;
   std::string module;
-  std::string originalBytes;
-  std::string derivedBytes;
+  std::string bytes;
   BlobDigest originalDigest;
   std::uint64_t originalOffset = 0;
   std::vector<std::pair<std::string, std::uint64_t>> dependencies;
-  bool hierarchyBlock = false;
   std::uint64_t bodyLines = 0;
   std::uint64_t transitiveBodyLines = 0;
   std::uint64_t rootInstanceMultiplicity = 0;
@@ -268,101 +208,8 @@ std::uint64_t sourceLineCount(llvm::StringRef bytes) {
   return newlines + (bytes.ends_with("\n") ? 0 : 1);
 }
 
-llvm::Expected<std::string> annotateHierarchicalBlock(llvm::StringRef bytes,
-                                                      llvm::StringRef module) {
-  std::size_t definitionOffset = 0;
-  while (definitionOffset < bytes.size()) {
-    while (definitionOffset < bytes.size() &&
-           std::isspace(static_cast<unsigned char>(bytes[definitionOffset])))
-      ++definitionOffset;
-    if (bytes.substr(definitionOffset).starts_with("//")) {
-      const std::size_t newline = bytes.find('\n', definitionOffset + 2);
-      definitionOffset =
-          newline == llvm::StringRef::npos ? bytes.size() : newline + 1;
-      continue;
-    }
-    if (bytes.substr(definitionOffset).starts_with("/*")) {
-      const std::size_t end = bytes.find("*/", definitionOffset + 2);
-      if (end == llvm::StringRef::npos)
-        return invalid("framed RTL module has an unterminated prelude comment");
-      definitionOffset = end + 2;
-      continue;
-    }
-    break;
-  }
-  llvm::StringRef header = bytes.drop_front(definitionOffset);
-  if (!header.consume_front("module"))
-    return invalid("framed RTL module does not start with its definition");
-  if (header.empty() ||
-      !std::isspace(static_cast<unsigned char>(header.front())))
-    return invalid("framed RTL module has a malformed definition header");
-  header = header.ltrim();
-  const std::size_t nameEnd = header.find_first_of(" #(\t\r\n");
-  if (header.take_front(nameEnd) != module)
-    return invalid("framed RTL module name disagrees with the CIRCT graph");
-
-  enum class LexState : std::uint8_t {
-    Normal,
-    LineComment,
-    BlockComment,
-    String,
-  };
-  LexState state = LexState::Normal;
-  bool escaped = false;
-  std::optional<std::size_t> terminator;
-  for (std::size_t index = 0; index != bytes.size(); ++index) {
-    const char character = bytes[index];
-    const char next = index + 1 < bytes.size() ? bytes[index + 1] : '\0';
-    switch (state) {
-    case LexState::Normal:
-      if (character == '/' && next == '/') {
-        state = LexState::LineComment;
-        ++index;
-      } else if (character == '/' && next == '*') {
-        state = LexState::BlockComment;
-        ++index;
-      } else if (character == '"') {
-        state = LexState::String;
-        escaped = false;
-      } else if (character == ';') {
-        terminator = index;
-      }
-      break;
-    case LexState::LineComment:
-      if (character == '\n')
-        state = LexState::Normal;
-      break;
-    case LexState::BlockComment:
-      if (character == '*' && next == '/') {
-        state = LexState::Normal;
-        ++index;
-      }
-      break;
-    case LexState::String:
-      if (escaped) {
-        escaped = false;
-      } else if (character == '\\') {
-        escaped = true;
-      } else if (character == '"') {
-        state = LexState::Normal;
-      }
-      break;
-    }
-    if (terminator)
-      break;
-  }
-  if (!terminator || state != LexState::Normal)
-    return invalid("framed RTL module header has no exact terminator");
-  std::string result;
-  result.reserve(bytes.size() + 32);
-  result.append(bytes.data(), *terminator + 1);
-  result += "\n  /*verilator hier_block*/";
-  result.append(bytes.data() + *terminator + 1, bytes.size() - *terminator - 1);
-  return result;
-}
-
-llvm::Expected<std::pair<std::vector<ParsedSource>, MappedRtlHierarchyPlan>>
-deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts) {
+llvm::Expected<std::pair<std::vector<ParsedSource>, MappedRtlSourcePlan>>
+deriveVerilationSourcePlan(detail::MappedRtlInvocationFacts &facts) {
   const hardware::rtl::RtlModuleGraphProjection &graph = facts.rtlModuleGraph;
   if (!graph.sourceDigest || graph.topModule >= graph.modules.size())
     return invalid("CIRCT RTL module graph is not bound to emitted source");
@@ -454,144 +301,23 @@ deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts) {
     }
   }
 
-  MappedRtlHierarchyPlan plan;
-  plan.selectionPolicy = kHierarchySelectionPolicy.str();
+  MappedRtlSourcePlan plan;
   plan.sourcePath = sourceInput->relativePath;
   plan.sourceSha256 = formatBlobDigestHex(*graph.sourceDigest);
   plan.sourceByteCount = graph.sourceByteCount;
   plan.framingByteCount = graph.framingByteCount;
   plan.preamble = boundSource->preamble().str();
-  std::set<std::size_t> selected;
-  for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal) {
-    const ParsedModule &module = modules[ordinal];
-    if (!graph.modules[ordinal].reachable || ordinal == graph.topModule)
-      continue;
-    const std::uint64_t weight =
-        saturatingMultiply(module.transitiveBodyLines, module.rootMultiplicity);
-    if (module.bodyLines < kHierarchyBodyLineThreshold &&
-        (module.rootMultiplicity < kHierarchyMinimumReuseMultiplicity ||
-         weight < kHierarchyMultiplicityWeightThreshold))
-      continue;
-    selected.insert(ordinal);
-  }
-  const auto sourceClosureFor = [&](std::size_t start,
-                                    const std::set<std::size_t> &blocks) {
-    std::set<std::size_t> closure{start};
-    std::vector<std::size_t> work{start};
-    for (std::size_t index = 0; index != work.size(); ++index) {
-      const std::size_t ordinal = work[index];
-      for (const hardware::rtl::RtlModuleDependency &dependency :
-           graph.modules[ordinal].dependencies) {
-        if (dependency.targetModule != start &&
-            blocks.count(dependency.targetModule) != 0)
-          continue;
-        if (!closure.insert(dependency.targetModule).second)
-          continue;
-        work.push_back(dependency.targetModule);
-      }
-    }
-    return closure;
-  };
-  const auto closureBodyLines = [&](const std::set<std::size_t> &closure) {
-    std::uint64_t result = 0;
-    for (std::size_t ordinal : closure)
-      result = saturatingAdd(result, modules[ordinal].bodyLines);
-    return result;
-  };
-  const auto closureBytes = [&](const std::set<std::size_t> &closure) {
-    std::uint64_t result = 0;
-    for (std::size_t ordinal : closure)
-      result = saturatingAdd(result, moduleBytes[ordinal].size());
-    return result;
-  };
-  const std::set<std::size_t> baselineSelected = selected;
-  const std::set<std::size_t> baselineRootClosure =
-      sourceClosureFor(graph.topModule, baselineSelected);
-  plan.baselineBlockCount = baselineSelected.size();
-  plan.baselineRootSourceClosureModuleCount = baselineRootClosure.size();
-  plan.baselineRootSourceClosureBodyLines =
-      closureBodyLines(baselineRootClosure);
-  plan.baselineRootSourceClosureBytes = closureBytes(baselineRootClosure);
-
-  // Rebalance only along the exact CIRCT dependency graph. A candidate is
-  // admitted when it removes at least one source body line from the root
-  // closure; the score prefers the greatest reduction per child transitive
-  // body, with stable graph-name tie breaking.
-  std::set<std::size_t> rootSourceClosure =
-      sourceClosureFor(graph.topModule, selected);
-  while ((closureBodyLines(rootSourceClosure) >
-              kHierarchyRootClosureBodyLineBudget ||
-          closureBytes(rootSourceClosure) > kHierarchyRootClosureByteBudget) &&
-         selected.size() < kHierarchyMaximumBlockCount) {
-    const std::uint64_t currentBodyLines = closureBodyLines(rootSourceClosure);
-    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
-                             std::uint64_t, std::string>> bestScore;
-    std::optional<std::size_t> bestOrdinal;
-    for (std::size_t ordinal = 0; ordinal != graph.modules.size(); ++ordinal) {
-      if (ordinal == graph.topModule || !graph.modules[ordinal].reachable ||
-          selected.count(ordinal) != 0 ||
-          rootSourceClosure.count(ordinal) == 0)
-        continue;
-      std::set<std::size_t> trialBlocks = selected;
-      trialBlocks.insert(ordinal);
-      const std::set<std::size_t> trialClosure =
-          sourceClosureFor(graph.topModule, trialBlocks);
-      const std::uint64_t trialBodyLines = closureBodyLines(trialClosure);
-      if (trialBodyLines >= currentBodyLines)
-        continue;
-      const std::uint64_t benefit = currentBodyLines - trialBodyLines;
-      const ParsedModule &candidate = modules[ordinal];
-      const std::uint64_t denominator =
-          saturatingAdd(candidate.transitiveBodyLines, 1);
-      const std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
-                       std::uint64_t, std::string>
-          score{benefit / denominator, benefit, candidate.rootMultiplicity,
-                candidate.bodyLines, graph.modules[ordinal].emittedName};
-      if (!bestScore || score > *bestScore) {
-        bestScore = score;
-        bestOrdinal = ordinal;
-      }
-    }
-    if (!bestOrdinal)
-      break;
-    selected.insert(*bestOrdinal);
-    rootSourceClosure = sourceClosureFor(graph.topModule, selected);
-  }
-  plan.rootSourceClosureBodyLines = closureBodyLines(rootSourceClosure);
-  plan.rootSourceClosureBytes = closureBytes(rootSourceClosure);
+  // The complete root closure is one simulator model. A protect-lib block
+  // makes every output depend on every input and would re-close the registered
+  // handshake cuts owned by the Fabric lowering.
   const ParsedModule &root = modules[graph.topModule];
   plan.hardwareRootModule = graph.modules[graph.topModule].emittedName;
   plan.hardwareRootBodyLines = root.bodyLines;
   plan.hardwareRootTransitiveBodyLines = root.transitiveBodyLines;
-  for (std::size_t member : rootSourceClosure)
+  for (std::size_t member : transitiveModules[graph.topModule])
     plan.hardwareRootSourceClosureModules.push_back(
         graph.modules[member].emittedName);
   llvm::sort(plan.hardwareRootSourceClosureModules);
-  for (std::size_t selectedModule : selected) {
-    const ParsedModule &module = modules[selectedModule];
-    std::set<std::size_t> sourceClosure{selectedModule};
-    std::vector<std::size_t> closureWork{selectedModule};
-    for (std::size_t ordinal = 0; ordinal != closureWork.size(); ++ordinal) {
-      for (const hardware::rtl::RtlModuleDependency &dependency :
-           graph.modules[closureWork[ordinal]].dependencies) {
-        if (selected.count(dependency.targetModule) != 0 ||
-            !sourceClosure.insert(dependency.targetModule).second)
-          continue;
-        closureWork.push_back(dependency.targetModule);
-      }
-    }
-    std::vector<std::string> names;
-    names.reserve(sourceClosure.size());
-    for (std::size_t member : sourceClosure)
-      names.push_back(graph.modules[member].emittedName);
-    llvm::sort(names);
-    plan.blocks.push_back({graph.modules[selectedModule].emittedName,
-                           module.bodyLines, module.transitiveBodyLines,
-                           module.rootMultiplicity, std::move(names)});
-  }
-  llvm::sort(plan.blocks, [](const auto &lhs, const auto &rhs) {
-    return lhs.module < rhs.module;
-  });
 
   plan.rtlLibraryDirectoryPath = "drivers/verilator-library";
   std::vector<ParsedSource> derivedSources;
@@ -607,14 +333,6 @@ deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts) {
         llvm::StringRef(definition.emittedName).contains('\0'))
       return invalid("RTL module name cannot identify a library source");
     std::string moduleSource = moduleBytes[ordinal].str();
-    std::string derived = moduleSource;
-    if (selected.count(ordinal) != 0) {
-      auto annotated =
-          annotateHierarchicalBlock(moduleSource, definition.emittedName);
-      if (!annotated)
-        return annotated.takeError();
-      derived = std::move(*annotated);
-    }
     const std::string derivedPath =
         plan.rtlLibraryDirectoryPath + "/" + definition.emittedName + ".sv";
     std::vector<std::pair<std::string, std::uint64_t>> dependencies;
@@ -627,27 +345,19 @@ deriveHierarchyPlan(detail::MappedRtlInvocationFacts &facts) {
     llvm::sort(dependencies);
     derivedSources.push_back(
         {sourceInput->relativePath, derivedPath, definition.emittedName,
-         std::move(moduleSource), std::move(derived),
-         definition.emission->digest, definition.emission->offset,
-         std::move(dependencies),
-         selected.count(ordinal) != 0, modules[ordinal].bodyLines,
-         modules[ordinal].transitiveBodyLines,
+         std::move(moduleSource), definition.emission->digest,
+         definition.emission->offset, std::move(dependencies),
+         modules[ordinal].bodyLines, modules[ordinal].transitiveBodyLines,
          modules[ordinal].rootMultiplicity});
-    plan.derivedRtlPaths.push_back(derivedPath);
   }
   plan.manifestPath = "drivers/verilator-hierarchy-plan.json";
   plan.workDirectoryPath = "work/verilator";
-  plan.style = plan.blocks.empty() ? MappedRtlVerilationStyle::Flat
-                                   : MappedRtlVerilationStyle::Hierarchical;
-  plan.verilationMakefileName =
-      "V" + mappedRtlHarnessTop.str() +
-      (plan.style == MappedRtlVerilationStyle::Hierarchical ? "_hier.mk"
-                                                            : ".mk");
+  plan.verilationMakefileName = "V" + mappedRtlHarnessTop.str() + ".mk";
   return std::pair{std::move(derivedSources), std::move(plan)};
 }
 
-std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
-                                llvm::ArrayRef<ParsedSource> sources) {
+std::string renderVerilationSourcePlan(const MappedRtlSourcePlan &plan,
+                                       llvm::ArrayRef<ParsedSource> sources) {
   std::string text;
   llvm::raw_string_ostream output(text);
   llvm::json::OStream json(output, 2);
@@ -662,41 +372,14 @@ std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
     json.object([&] {
       json.attribute("module", source.module);
       json.attribute("source_offset", source.originalOffset);
-      json.attribute("source_bytes", source.originalBytes.size());
+      json.attribute("source_bytes", source.bytes.size());
       json.attribute("source_sha256",
                      formatBlobDigestHex(source.originalDigest));
     });
   };
   json.object([&] {
-    json.attribute("schema", "loom.mapped_rtl_hierarchy_plan.2");
-    json.attribute("selection_policy", plan.selectionPolicy);
-    json.attribute("body_line_threshold", kHierarchyBodyLineThreshold);
-    json.attribute("minimum_reuse_multiplicity",
-                   kHierarchyMinimumReuseMultiplicity);
-    json.attribute("multiplicity_weight_threshold",
-                   kHierarchyMultiplicityWeightThreshold);
-    json.attributeObject("root_closure_rebalance", [&] {
-      json.attribute("body_line_budget", kHierarchyRootClosureBodyLineBudget);
-      json.attribute("byte_budget", kHierarchyRootClosureByteBudget);
-      json.attribute("maximum_block_count", kHierarchyMaximumBlockCount);
-      json.attributeObject("baseline", [&] {
-        json.attribute("block_count", plan.baselineBlockCount);
-        json.attribute("source_closure_modules",
-                       plan.baselineRootSourceClosureModuleCount);
-        json.attribute("source_closure_body_lines",
-                       plan.baselineRootSourceClosureBodyLines);
-        json.attribute("source_closure_bytes",
-                       plan.baselineRootSourceClosureBytes);
-      });
-      json.attributeObject("selected", [&] {
-        json.attribute("block_count", plan.blocks.size());
-        json.attribute("source_closure_modules",
-                       plan.hardwareRootSourceClosureModules.size());
-        json.attribute("source_closure_body_lines",
-                       plan.rootSourceClosureBodyLines);
-        json.attribute("source_closure_bytes", plan.rootSourceClosureBytes);
-      });
-    });
+    json.attribute("schema", "loom.mapped_rtl_hierarchy_plan.3");
+    json.attribute("selection_policy", kVerilationSelectionPolicy);
     json.attributeObject("rtl_source", [&] {
       json.attribute("path", plan.sourcePath);
       json.attribute("bytes", plan.sourceByteCount);
@@ -706,10 +389,10 @@ std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
     });
     json.attribute("rtl_library_directory", plan.rtlLibraryDirectoryPath);
     json.attribute("work_directory", plan.workDirectoryPath);
-    json.attribute("verilation_style",
-                   plan.style == MappedRtlVerilationStyle::Hierarchical
-                       ? "hierarchical"
-                       : "flat");
+    json.attribute("verilation_style", "flat");
+    json.attribute("output_split_statements",
+                   detail::mappedRtlOutputSplitStatements);
+    json.attribute("output_group_count", detail::mappedRtlOutputGroupCount);
     json.attribute("verilation_makefile", plan.verilationMakefileName);
     json.attribute("verilator_top", mappedRtlHarnessTop);
     json.attributeObject("hardware_root", [&] {
@@ -728,38 +411,20 @@ std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
           json.attribute("original", source.originalPath);
           json.attribute("derived", source.derivedPath);
           json.attribute("module", source.module);
-          json.attribute("hierarchy_block", source.hierarchyBlock);
           json.attribute("body_lines", source.bodyLines);
           json.attribute("transitive_body_lines", source.transitiveBodyLines);
           json.attribute("root_instance_multiplicity",
                          source.rootInstanceMultiplicity);
           json.attribute("source_offset", source.originalOffset);
-          json.attribute("source_bytes", source.originalBytes.size());
+          json.attribute("source_bytes", source.bytes.size());
           json.attribute("source_sha256",
                          formatBlobDigestHex(source.originalDigest));
-          json.attribute("derived_bytes", source.derivedBytes.size());
-          json.attribute("derived_sha256", formatBlobDigestHex(digestSource(
-                                               source.derivedBytes)));
           json.attributeArray("direct_dependencies", [&] {
             for (const auto &dependency : source.dependencies)
               json.object([&] {
                 json.attribute("module", dependency.first);
                 json.attribute("multiplicity", dependency.second);
               });
-          });
-        });
-    });
-    json.attributeArray("blocks", [&] {
-      for (const auto &block : plan.blocks)
-        json.object([&] {
-          json.attribute("module", block.module);
-          json.attribute("body_lines", block.bodyLines);
-          json.attribute("transitive_body_lines", block.transitiveBodyLines);
-          json.attribute("root_instance_multiplicity",
-                         block.rootInstanceMultiplicity);
-          json.attributeArray("source_closure", [&] {
-            for (const std::string &module : block.sourceClosureModules)
-              writeSourceIdentity(sourceFor(module));
           });
         });
     });
@@ -770,8 +435,8 @@ std::string renderHierarchyPlan(const MappedRtlHierarchyPlan &plan,
 llvm::Expected<external_tool::ResolvedAuxiliaryToolExecutable>
 resolveBuildTool(const external_tool::LocalToolConfig &localConfig,
                  llvm::StringRef slot, llvm::ArrayRef<llvm::StringRef> names) {
-  const auto canonicalUsable = [](llvm::StringRef candidate)
-      -> std::optional<std::string> {
+  const auto canonicalUsable =
+      [](llvm::StringRef candidate) -> std::optional<std::string> {
     if (!llvm::sys::fs::can_execute(candidate))
       return std::nullopt;
     std::error_code error;
@@ -881,9 +546,8 @@ std::optional<MappedRtlHdlSimulator>
 classifyMappedRtlHdlSimulator(llvm::StringRef stableHdlSimulatorBuildIdentity) {
   std::optional<MappedRtlHdlSimulator> classified;
   for (MappedRtlHdlSimulator simulator : mappedRtlHdlSimulators) {
-    const auto &marker =
-        mappedRtlHdlSimulatorProvider(simulator).versionProbe
-            .requiredOutputSubstring;
+    const auto &marker = mappedRtlHdlSimulatorProvider(simulator)
+                             .versionProbe.requiredOutputSubstring;
     if (!marker || !stableHdlSimulatorBuildIdentity.contains(*marker))
       continue;
     if (classified)
@@ -909,9 +573,9 @@ resolveMappedRtlExecutionAttemptOptions(
                        ".provider_options contains unknown field " + name);
     }
   }
-  auto cycleLimit =
-      positiveOption(localConfig, provider, kCycleLimitOption,
-                     kDefaultCycleLimit, std::numeric_limits<std::uint64_t>::max());
+  auto cycleLimit = positiveOption(localConfig, provider, kCycleLimitOption,
+                                   kDefaultCycleLimit,
+                                   std::numeric_limits<std::uint64_t>::max());
   if (!cycleLimit)
     return cycleLimit.takeError();
   auto buildJobs = parallelismOption(localConfig, provider, kBuildJobsOption,
@@ -923,9 +587,8 @@ resolveMappedRtlExecutionAttemptOptions(
                      mappedRtlDefaultBuildWorkers, kMaximumBuildWorkers);
   if (!buildWorkers)
     return buildWorkers.takeError();
-  auto modelThreads =
-      parallelismOption(localConfig, provider, kModelThreadsOption,
-                        mappedRtlDefaultModelThreads);
+  auto modelThreads = parallelismOption(
+      localConfig, provider, kModelThreadsOption, mappedRtlDefaultModelThreads);
   if (!modelThreads)
     return modelThreads.takeError();
   return MappedRtlExecutionAttemptOptions{
@@ -943,38 +606,24 @@ resolveMappedRtlBuildTools(const external_tool::LocalToolConfig &localConfig) {
   auto linker = resolveBuildTool(localConfig, "mapped_rtl_linker", {"clang++"});
   auto archiver =
       resolveBuildTool(localConfig, "mapped_rtl_archiver", {"llvm-ar", "ar"});
-  auto hierarchyLauncher =
-      resolveBuildTool(localConfig, mappedRtlHierarchyLauncherSlot,
-                       {LOOM_MAPPED_RTL_HIERARCHY_LAUNCHER_PATH});
-  if (!make || !cxx || !linker || !archiver || !hierarchyLauncher)
+  if (!make || !cxx || !linker || !archiver)
     return llvm::joinErrors(
-        make ? llvm::Error::success() : make.takeError(),
-        llvm::joinErrors(
-            cxx ? llvm::Error::success() : cxx.takeError(),
-            llvm::joinErrors(
-                linker ? llvm::Error::success() : linker.takeError(),
-                llvm::joinErrors(archiver ? llvm::Error::success()
-                                          : archiver.takeError(),
-                                 hierarchyLauncher
-                                     ? llvm::Error::success()
-                                     : hierarchyLauncher.takeError()))));
-  MappedRtlBuildTools result{make->absolutePath,
-                             cxx->absolutePath,
-                             linker->absolutePath,
-                             linker->absolutePath,
-                             archiver->absolutePath,
-                             hierarchyLauncher->absolutePath,
-                             {}};
-  if (llvm::StringRef(std::filesystem::path(linker->absolutePath)
-                          .filename()
-                          .string())
+        llvm::joinErrors(make ? llvm::Error::success() : make.takeError(),
+                         cxx ? llvm::Error::success() : cxx.takeError()),
+        llvm::joinErrors(linker ? llvm::Error::success() : linker.takeError(),
+                         archiver ? llvm::Error::success()
+                                  : archiver.takeError()));
+  MappedRtlBuildTools result{make->absolutePath,     cxx->absolutePath,
+                             linker->absolutePath,   linker->absolutePath,
+                             archiver->absolutePath, {}};
+  if (llvm::StringRef(
+          std::filesystem::path(linker->absolutePath).filename().string())
           .starts_with("clang"))
     result.linkerInvocation += " --driver-mode=g++";
   result.provenance.push_back(std::move(*make));
   result.provenance.push_back(std::move(*cxx));
   result.provenance.push_back(std::move(*linker));
   result.provenance.push_back(std::move(*archiver));
-  result.provenance.push_back(std::move(*hierarchyLauncher));
   llvm::sort(result.provenance, [](const auto &lhs, const auto &rhs) {
     return lhs.providerInputSlot < rhs.providerInputSlot;
   });
@@ -1005,9 +654,9 @@ deriveMappedRtlExecutionBundleProjection(
       std::get<detail::MappedRtlInvocationFacts>(
           std::move(*factsOrUnsupported));
   facts.cycleLimit = plan.cycleLimit;
-  auto hierarchy = deriveHierarchyPlan(facts);
-  if (!hierarchy)
-    return hierarchy.takeError();
+  auto sourcePlan = deriveVerilationSourcePlan(facts);
+  if (!sourcePlan)
+    return sourcePlan.takeError();
   auto prefix = canonicalPathPrefix(pathPrefix);
   if (!prefix)
     return prefix.takeError();
@@ -1017,7 +666,7 @@ deriveMappedRtlExecutionBundleProjection(
       return path.takeError();
     file.relativePath = std::move(*path);
   }
-  for (ParsedSource &source : hierarchy->first) {
+  for (ParsedSource &source : sourcePlan->first) {
     auto original = namespacedBundlePath(source.originalPath, *prefix);
     auto path = namespacedBundlePath(source.derivedPath, *prefix);
     if (!original || !path)
@@ -1027,52 +676,45 @@ deriveMappedRtlExecutionBundleProjection(
     source.originalPath = std::move(*original);
     source.derivedPath = std::move(*path);
   }
-  if (hierarchy->first.empty())
+  if (sourcePlan->first.empty())
     return invalid("CIRCT hierarchy has no reachable module source");
-  hierarchy->second.sourcePath = hierarchy->first.front().originalPath;
-  hierarchy->second.derivedRtlPaths.clear();
-  for (const ParsedSource &source : hierarchy->first)
-    hierarchy->second.derivedRtlPaths.push_back(source.derivedPath);
+  sourcePlan->second.sourcePath = sourcePlan->first.front().originalPath;
   auto rtlLibraryDirectoryPath =
-      namespacedBundlePath(hierarchy->second.rtlLibraryDirectoryPath, *prefix);
+      namespacedBundlePath(sourcePlan->second.rtlLibraryDirectoryPath, *prefix);
   auto preamblePath = namespacedBundlePath(kVerilatorPreamblePath, *prefix);
-  auto hierarchyManifestPath =
-      namespacedBundlePath(hierarchy->second.manifestPath, *prefix);
+  auto sourceManifestPath =
+      namespacedBundlePath(sourcePlan->second.manifestPath, *prefix);
   auto workDirectoryPath =
-      namespacedBundlePath(hierarchy->second.workDirectoryPath, *prefix);
-  if (!rtlLibraryDirectoryPath || !preamblePath || !hierarchyManifestPath ||
+      namespacedBundlePath(sourcePlan->second.workDirectoryPath, *prefix);
+  if (!rtlLibraryDirectoryPath || !preamblePath || !sourceManifestPath ||
       !workDirectoryPath)
     return llvm::joinErrors(
         llvm::joinErrors(
             rtlLibraryDirectoryPath ? llvm::Error::success()
                                     : rtlLibraryDirectoryPath.takeError(),
             preamblePath ? llvm::Error::success() : preamblePath.takeError()),
-        llvm::joinErrors(hierarchyManifestPath
-                             ? llvm::Error::success()
-                             : hierarchyManifestPath.takeError(),
+        llvm::joinErrors(sourceManifestPath ? llvm::Error::success()
+                                            : sourceManifestPath.takeError(),
                          workDirectoryPath ? llvm::Error::success()
                                            : workDirectoryPath.takeError()));
-  hierarchy->second.rtlLibraryDirectoryPath =
+  sourcePlan->second.rtlLibraryDirectoryPath =
       std::move(*rtlLibraryDirectoryPath);
-  hierarchy->second.manifestPath = std::move(*hierarchyManifestPath);
-  hierarchy->second.workDirectoryPath = std::move(*workDirectoryPath);
+  sourcePlan->second.manifestPath = std::move(*sourceManifestPath);
+  sourcePlan->second.workDirectoryPath = std::move(*workDirectoryPath);
   facts.rtlPaths = {*preamblePath};
-  facts.rtlLibraryDirectories = {hierarchy->second.rtlLibraryDirectoryPath};
-  const std::string hierarchyManifest =
-      renderHierarchyPlan(hierarchy->second, hierarchy->first);
+  facts.rtlLibraryDirectories = {sourcePlan->second.rtlLibraryDirectoryPath};
+  const std::string sourceManifest =
+      renderVerilationSourcePlan(sourcePlan->second, sourcePlan->first);
   std::vector<external_tool::MaterializedBundleFile> toolLocalInputs;
-  toolLocalInputs.reserve(hierarchy->first.size() + 2);
+  toolLocalInputs.reserve(sourcePlan->first.size() + 2);
   toolLocalInputs.push_back(
-      {*preamblePath, hierarchy->second.preamble, std::nullopt, false});
-  for (ParsedSource &source : hierarchy->first) {
-    toolLocalInputs.push_back({source.derivedPath,
-                               std::move(source.derivedBytes),
-                               std::nullopt,
-                               false});
+      {*preamblePath, sourcePlan->second.preamble, std::nullopt, false});
+  for (ParsedSource &source : sourcePlan->first) {
+    toolLocalInputs.push_back(
+        {source.derivedPath, std::move(source.bytes), std::nullopt, false});
   }
   toolLocalInputs.push_back(
-      {hierarchy->second.manifestPath, hierarchyManifest, std::nullopt,
-       false});
+      {sourcePlan->second.manifestPath, sourceManifest, std::nullopt, false});
   // The rendered program images are semantic inputs materialized with the
   // facts; the testbench addresses them through their namespaced paths.
   std::vector<std::string> configurationProgramPaths;
@@ -1102,37 +744,24 @@ deriveMappedRtlExecutionBundleProjection(
   if (!transportReceiptPath)
     return transportReceiptPath.takeError();
   auto testbench = detail::renderMappedRtlTestbench(
-      facts, configurationProgramPaths, *resultPath,
-      *transportReceiptPath);
+      facts, configurationProgramPaths, *resultPath, *transportReceiptPath);
   if (!testbench)
     return testbench.takeError();
-  // The hierarchy launcher configures child Verilation, which exists only in
-  // the hierarchical style.
-  std::vector<std::string> launcherVariables;
-  if (hierarchy->second.style == MappedRtlVerilationStyle::Hierarchical) {
-    auto variables = renderHierarchyLauncherMakeVariables(
-        plan.buildTools, plan.verilatorExecutable, *testbenchPath,
-        *preamblePath);
-    if (!variables)
-      return variables.takeError();
-    launcherVariables = std::move(*variables);
-  }
   auto standalone = detail::renderMappedRtlVerilatorDriver(
-      facts, plan, hierarchy->second.style, launcherVariables, *testbenchPath,
-      *simulatorExecutablePath, std::nullopt);
+      facts, plan, *testbenchPath, *simulatorExecutablePath, std::nullopt);
   if (!standalone)
     return standalone.takeError();
   auto bridged = detail::renderMappedRtlVerilatorDriver(
-      facts, plan, hierarchy->second.style, launcherVariables, *testbenchPath,
-      *simulatorExecutablePath, llvm::StringRef(*bridgeEngineSourcePath));
+      facts, plan, *testbenchPath, *simulatorExecutablePath,
+      llvm::StringRef(*bridgeEngineSourcePath));
   if (!bridged)
     return bridged.takeError();
   MappedRtlExecutionBundleProjection result;
   result.buildCommand = renderVerilationBuildCommand(
-      plan.buildTools, hierarchy->second, plan.buildJobs, launcherVariables);
+      plan.buildTools, sourcePlan->second, plan.buildJobs);
   result.semanticInputs = std::move(facts.semanticInputs);
   result.toolLocalInputs = std::move(toolLocalInputs);
-  result.hierarchy = std::move(hierarchy->second);
+  result.sourcePlan = std::move(sourcePlan->second);
   result.configurationProgramPaths = std::move(configurationProgramPaths);
   result.testbenchPath = std::move(*testbenchPath);
   result.standaloneVerilatorDriverPath = std::move(*standaloneDriverPath);
@@ -1187,7 +816,8 @@ deriveEventDrivenBundleProjection(
   result.driverPath = driverPath.str();
   result.resultPath = mappedRtlResultPath.str();
   result.configurationTransportReceiptPath =
-      ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath.str();
+      ::loom::eda::open_source::mappedRtlConfigurationTransportReceiptPath
+          .str();
   result.testbench = std::move(*testbench);
   result.driver = std::move(*driver);
   return MappedRtlEventDrivenProjectionOrUnsupported{std::move(result)};
@@ -1297,8 +927,8 @@ deriveMappedRtlExecutionImportExpectation(
   if (!resultPath)
     return resultPath.takeError();
   expectation->declaredOutputs = {std::move(*resultPath)};
-  auto receiptPath = namespacedBundlePath(
-      mappedRtlConfigurationTransportReceiptPath, *prefix);
+  auto receiptPath =
+      namespacedBundlePath(mappedRtlConfigurationTransportReceiptPath, *prefix);
   if (!receiptPath)
     return receiptPath.takeError();
   expectation->declaredOutputs.push_back(std::move(*receiptPath));
@@ -1318,8 +948,8 @@ llvm::Error validateMappedRtlConfigurationTransportReceipt(
     return invalid("configuration transport receipt cannot be validated for "
                    "an unsupported mapped RTL closure: " +
                    evaluation::toString(unsupported->reason));
-  const auto &facts = std::get<detail::MappedRtlInvocationFacts>(
-      *factsOrUnsupported);
+  const auto &facts =
+      std::get<detail::MappedRtlInvocationFacts>(*factsOrUnsupported);
   if (receipt.programs.size() != facts.configurationPrograms.size())
     return invalid("configuration transport receipt program count disagrees "
                    "with the ConfigurationABI");

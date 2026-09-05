@@ -361,6 +361,39 @@ Raw waveforms, vendor reports, databases, and logs remain owner-attempt or
 scratch material until their exact Artifact owner is defined; human-readable
 FPA or comparison summaries are projections.
 
+### Canonical strict mapped RTL accounting
+
+The canonical Matmul cell freezes the same exact source, configuration,
+workload, runtime input and harness for VCS, Xcelium and Verilator. Every
+configuration payload write, active-word readback comparison, atomic commit,
+status read, functional result and transport receipt is required. The fabric
+clock runs throughout configuration and execution. A quiet one-variable
+comparison preserves exact result/receipt and simulation-stage coordinates;
+it cannot use backdoor initialization or relaxed unknown-state options.
+
+The mapped-RTL cost gate requires measured Verilation/compilation,
+elaboration/snapshot, process startup and `$readmemh`, per-word write/readback,
+kernel, retirement/result/receipt writing, strict diagnostic I/O, native wall
+versus CPU, and Loom prepare/import costs. Each cost has an explanation or a
+concrete inefficiency follow-up; an unexplained cost remains open. The 10 kHz
+hard target is withdrawn. VCS and Xcelium may use their measured approximately
+4.9 and 8.2 kHz strict operating points; Verilator must reach at least 1 kHz.
+Report full-testbench and kernel rates separately, with the exact numerator
+and measured phase denominator.
+
+Verilator freezes three commands: flat Verilation without C++ compilation,
+the split parallel C++ build, then simulation. Its exact source-plan, compiler
+partitioning and cache-identity rules are owned by
+[Mapped RTL Verilation flow](spec-rtl-lowering.md#mapped-rtl-verilation-flow).
+The ordinary strict complete-cell research fence remains 600 seconds, 16 GiB
+aggregate memory and zero swap, with at most eight native build jobs. The
+2026-09-04 classification experiment separately admits 32 GiB and 1,200 seconds
+for Verilation only; it does not silently enlarge the complete-cell fence or
+the canonical [test timeout tiers](../config/timeout-budgets.json). If measured
+flat work exceeds its fence, retain typed failure and exact resource evidence
+for a research-lead fence decision. Fine-grained protect-lib blocks cannot be
+restored as an automatic fallback.
+
 ## Negative Anchors
 
 Keep only boundary failures that protect stable contracts:

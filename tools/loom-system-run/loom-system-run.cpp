@@ -105,7 +105,7 @@ llvm::cl::opt<loom::eda::open_source::MappedRtlHdlSimulator> mappedRtlSimulator(
                    loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
                        loom::eda::open_source::MappedRtlHdlSimulator::Verilator)
                        .data(),
-                   "Verilator, hierarchical multithreaded model"),
+                   "Verilator, flat multithreaded model"),
         clEnumValN(loom::eda::open_source::MappedRtlHdlSimulator::Vcs,
                    loom::eda::open_source::mappedRtlHdlSimulatorSpelling(
                        loom::eda::open_source::MappedRtlHdlSimulator::Vcs)
@@ -123,7 +123,7 @@ llvm::cl::opt<std::uint64_t> mappedRtlBuildJobs(
     llvm::cl::init(loom::eda::open_source::mappedRtlDefaultBuildJobs));
 llvm::cl::opt<std::uint64_t> mappedRtlBuildWorkers(
     "mapped-rtl-build-workers",
-    llvm::cl::desc("Mapped RTL hierarchy worker limit"),
+    llvm::cl::desc("Mapped RTL concurrent bundle build limit"),
     llvm::cl::init(loom::eda::open_source::mappedRtlDefaultBuildWorkers));
 llvm::cl::opt<std::uint64_t> mappedRtlModelThreads(
     "mapped-rtl-model-threads",
@@ -168,7 +168,7 @@ loadMappedRtlProviderOptions() {
   if (mappedRtlSimulator != Simulator::Verilator &&
       (mappedRtlBuildWorkers.getNumOccurrences() ||
        mappedRtlModelThreads.getNumOccurrences()))
-    return invalid("mapped-RTL hierarchy workers and model threads require "
+    return invalid("mapped-RTL bundle build workers and model threads require "
                    "Verilator");
   if (mappedRtlSimulator == Simulator::Xcelium &&
       mappedRtlBuildJobs.getNumOccurrences())

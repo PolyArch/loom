@@ -30,6 +30,13 @@
 
 namespace loom::eda::open_source::detail {
 
+// Generated C++ partitioning preserves one RTL scheduler and bounds individual
+// compilation units independently of simulator model parallelism.
+inline constexpr std::uint64_t mappedRtlOutputSplitStatements = 20'000;
+inline constexpr std::uint64_t mappedRtlOutputGroupCount = 0;
+inline constexpr llvm::StringLiteral mappedRtlParallelBuildVariable =
+    "VM_PARALLEL_BUILDS=1";
+
 struct RtlPort final {
   std::string name;
   hardware::RepresentationSignalDirection direction =
@@ -154,8 +161,7 @@ deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &closure,
                                 const BlobStore &blobs);
 
 llvm::Expected<std::string>
-renderMappedRtlConfigurationProgramFile(
-    const ConfigurationProgram &program);
+renderMappedRtlConfigurationProgramFile(const ConfigurationProgram &program);
 
 llvm::Expected<std::string>
 renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
@@ -165,13 +171,10 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
 
 /// Renders the Verilator driver of one bundle. The generated main is selected
 /// when no bridge engine source is given; the bridged driver compiles the
-/// gem5 bridge engine as the C++ main instead. `hierarchyMakeVariables` are
-/// the make command-line variables of the generated hierarchical build and are
-/// empty for the flat style.
+/// gem5 bridge engine as the C++ main instead. Both compile the complete flat
+/// handshake network with the same generated C++ partitioning policy.
 llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
     const MappedRtlInvocationFacts &facts, const MappedRtlVerilationPlan &plan,
-    MappedRtlVerilationStyle style,
-    llvm::ArrayRef<std::string> hierarchyMakeVariables,
     llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath,
     std::optional<llvm::StringRef> bridgeEngineSourcePath);
 
@@ -180,12 +183,10 @@ llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
 /// compile work directory, the simulator output, and the exact source list.
 /// The mandatory `-full64` architecture token is a command token, not an
 /// argument-file line.
-llvm::Expected<std::string>
-renderMappedRtlVcsDriver(const MappedRtlInvocationFacts &facts,
-                         const MappedRtlVcsCompilationPlan &plan,
-                         llvm::StringRef testbenchPath,
-                         llvm::StringRef workDirectoryPath,
-                         llvm::StringRef simulatorExecutablePath);
+llvm::Expected<std::string> renderMappedRtlVcsDriver(
+    const MappedRtlInvocationFacts &facts,
+    const MappedRtlVcsCompilationPlan &plan, llvm::StringRef testbenchPath,
+    llvm::StringRef workDirectoryPath, llvm::StringRef simulatorExecutablePath);
 
 /// Renders the xrun argument file of one bundle: the SystemVerilog and
 /// timescale mode, the harness top, the snapshot library directory, the
