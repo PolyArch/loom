@@ -387,13 +387,16 @@ classes share one global scheduler; they introduce no protected submodel or
 child convergence boundary. Its exact source-plan, compiler partitioning and
 cache-identity rules are owned by
 [Mapped RTL Verilation flow](spec-rtl-lowering.md#mapped-rtl-verilation-flow).
-The ordinary strict complete-cell research fence remains 600 seconds, 16 GiB
-aggregate memory and zero swap, with at most eight native build jobs. The
-2026-09-04 classification experiment separately admits 32 GiB and 1,200 seconds
-for Verilation only; it does not silently enlarge the complete-cell fence or
-the canonical [test timeout tiers](../config/timeout-budgets.json). If measured
-flat work exceeds its fence, retain typed failure and exact resource evidence
-for a research-lead fence decision. Fine-grained protect-lib blocks cannot be
+The Verilator member's strict complete-cell research fence is 1,500 seconds
+wall and 24 GiB aggregate memory with zero swap and at most eight native build
+jobs; its three frozen commands are timed separately within that one fence.
+The VCS and Xcelium members keep the ordinary 600-second, 16 GiB, zero-swap
+complete-cell fence. The 2026-09-04 classification experiment separately
+admits 32 GiB and 1,200 seconds for Verilation only. Neither fence enlarges
+the canonical [test timeout tiers](../config/timeout-budgets.json); every
+mapped-RTL lit cell already runs under the `xlong` tier. If measured flat work
+exceeds its fence, retain typed failure and exact resource evidence for a
+research-lead fence decision. Fine-grained protect-lib blocks cannot be
 restored as an automatic fallback.
 
 ## Negative Anchors

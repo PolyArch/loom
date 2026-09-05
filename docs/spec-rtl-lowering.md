@@ -1298,9 +1298,11 @@ four-thread controls. The fresh one-thread Os build passes with the ordinary
 8 MiB compiler stack in 356.64 seconds, peaking at 2,143,506,432 bytes; its
 strict simulation passes at 220.61 testbench cycles/s. The separate four-thread
 control passes at 406.20 cycles/s. Neither rate meets the required floor, and
-separate generation/build/run measurements do not establish a complete-cell
-600-second PASS. Thread and optimization controls, convergence accounting and
-ordinary complete-cell validation remain acceptance requirements.
+separate generation/build/run measurements do not establish an ordinary
+complete-cell PASS under the Verilator member fence owned by the
+[canonical strict mapped RTL accounting](spec-end-to-end-demonstrators.md#canonical-strict-mapped-rtl-accounting).
+Thread and optimization controls, convergence accounting and ordinary
+complete-cell validation remain acceptance requirements.
 
 Current flat classification, full-cell operating point and per-phase cost
 accounting must accompany the flow's acceptance evidence. Report warning
