@@ -39,7 +39,7 @@ struct ApplicationSpatialInvocationPlan final {
     sim::OperationSimulationInputCapturePlan capture;
     std::vector<MemoryObjectSource> memoryObjectSources;
     std::vector<MemoryRootSource> memoryRootSources;
-    std::vector<runtime::SpatialInvocationWireLayout> pointWireLayouts;
+    runtime::SpatialInvocationWireLayout wireLayout;
   };
 
   struct Launch final {

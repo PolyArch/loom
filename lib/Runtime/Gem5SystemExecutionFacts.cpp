@@ -400,10 +400,6 @@ std::string instructionImagePath(std::size_t ordinal) {
   return "inputs/instruction-" + std::to_string(ordinal) + ".elf";
 }
 
-std::string spatialLaunchPath(std::size_t ordinal) {
-  return "inputs/spatial-launch-" + std::to_string(ordinal) + ".bin";
-}
-
 std::string spatialChannelProjectionPath(std::size_t ordinal) {
   return "inputs/spatial-channel-" + std::to_string(ordinal) + ".bin";
 }
@@ -1202,8 +1198,8 @@ deriveFactsUncached(const EvaluationRequest &request,
   const llvm::ArrayRef<std::uint8_t> launchBytes = deployment.spatialLaunchImage()
       ? deployment.spatialLaunchImage()->canonicalBytes().bytes()
       : llvm::ArrayRef<std::uint8_t>{};
-  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal)
-    semanticInputs.push_back({spatialLaunchPath(ordinal),
+  if (!pendingLaunches.empty())
+    semanticInputs.push_back({kSpatialLaunchPath.str(),
                               bytesToString(launchBytes),
                               inputs.deployment.reference(), false});
   if (deployment.threadDispatchImage())
@@ -1354,14 +1350,14 @@ deriveFactsUncached(const EvaluationRequest &request,
     if (!address)
       return address.takeError();
   }
-  std::vector<std::uint64_t> launchAddresses;
-  launchAddresses.reserve(pendingLaunches.size());
-  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal) {
-    auto address =
-        placeRuntimeImage(spatialLaunchPath(ordinal), launchBytes.size());
+  // Identical bytes are one image: every dispatch target of a rooted launch
+  // shares one staged copy and therefore one guest address.
+  std::uint64_t launchAddress = 0;
+  if (!pendingLaunches.empty()) {
+    auto address = placeRuntimeImage(kSpatialLaunchPath, launchBytes.size());
     if (!address)
       return address.takeError();
-    launchAddresses.push_back(*address);
+    launchAddress = *address;
   }
 
   if (engine == Gem5SystemEngine::Rtl) {
@@ -1440,8 +1436,7 @@ deriveFactsUncached(const EvaluationRequest &request,
         pending.instructionEntry->imageOrdinal,
         "__loom_thread_entry_" +
             std::to_string(pending.instructionEntry->entryOrdinal),
-        selectedBridge->pioAddress,
-        launchAddresses[indexed.index()],
+        selectedBridge->pioAddress, launchAddress,
         static_cast<std::uint64_t>(launchBytes.size())};
     Gem5SpatialChannelProjection channelProjection;
     Gem5SpatialChannelEnginePlan enginePlan;

@@ -230,24 +230,27 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
       waitType->getParamType(0) != i64)
     return invalid("selected root dispatch helper types are inconsistent");
   const sim::SimulationInputCapturePlan &capture = site.capture.input;
+  const runtime::SpatialInvocationWireLayout &wireLayout = site.wireLayout;
   if (launch.points.empty() ||
-      site.pointWireLayouts.size() != launch.points.size() ||
+      wireLayout.pointTemplates.size() != launch.points.size() ||
       capture.valueInputs.size() != launch.valueBitCounts.size() ||
       capture.valueResults.size() != launch.resultBitCounts.size() ||
       capture.objects.size() != site.memoryObjectSources.size() ||
       capture.memoryRootBindings.size() != site.memoryRootSources.size())
     return invalid("invocation capture and wire layout are inconsistent");
-  for (const runtime::SpatialInvocationWireLayout &wireLayout :
-       site.pointWireLayouts)
-    if (wireLayout.valuePayloadOffsets.size() != capture.valueInputs.size() ||
-        wireLayout.valuePointerTargetOffsetOffsets.size() !=
-            capture.valueInputs.size() ||
-        wireLayout.memoryAddressOffsets.size() != capture.objects.size() ||
-        wireLayout.memoryPayloadOffsets.size() != capture.objects.size() ||
-        wireLayout.memoryRootByteOffsetOffsets.size() !=
-            capture.memoryRootBindings.size() ||
-        wireLayout.resultAddressOffsets.size() != launch.resultBitCounts.size())
-      return invalid("point invocation wire layout is inconsistent");
+  if (wireLayout.valuePayloadOffsets.size() != capture.valueInputs.size() ||
+      wireLayout.valuePointerTargetOffsetOffsets.size() !=
+          capture.valueInputs.size() ||
+      wireLayout.memoryAddressOffsets.size() != capture.objects.size() ||
+      wireLayout.memoryRootByteOffsetOffsets.size() !=
+          capture.memoryRootBindings.size() ||
+      wireLayout.resultAddressOffsets.size() != launch.resultBitCounts.size())
+    return invalid("invocation wire layout is inconsistent");
+  const std::size_t wireByteCount = wireLayout.pointTemplates.front().size();
+  for (const std::vector<std::uint8_t> &pointTemplate :
+       wireLayout.pointTemplates)
+    if (pointTemplate.size() != wireByteCount)
+      return invalid("dense invocation points disagree on their wire extent");
 
   std::string helperName = "__loom_spatial_dispatch_" +
                            std::to_string(siteOrdinal) + "_" +
@@ -307,190 +310,163 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
       builder.CreateAdd(generation, llvm::ConstantInt::get(i64, 1)),
       nextGeneration);
   builder.CreateStore(generation, activeGeneration);
+  // Every dense point of one root shares the same dynamic field values; only
+  // the private wire template and the dispatch target differ. Derive the
+  // values once and store them into each occurrence's own wire.
+  llvm::Type *i8 = llvm::Type::getInt8Ty(module.getContext());
+  llvm::ArrayType *wireType = llvm::ArrayType::get(i8, wireByteCount);
+  struct WireFieldStore final {
+    std::size_t byteOffset = 0;
+    llvm::Value *value = nullptr;
+  };
+  std::vector<WireFieldStore> wireFieldStores;
+
+  for (const auto indexed : llvm::enumerate(capture.valueInputs)) {
+    const sim::SimulationValueInputCapture &input = indexed.value();
+    if (input.valueInputOrdinal != indexed.index())
+      return invalid("invocation value capture is not dense");
+    const bool baked = input.fixedValue || input.denseCoordinateDimension;
+    if (baked != !wireLayout.valuePayloadOffsets[indexed.index()])
+      return invalid("invocation value source differs from its wire layout");
+    if (baked)
+      continue;
+    if (!input.boundaryOperandOrdinal)
+      return invalid("runtime invocation value has no root operand");
+    auto dispatchOrdinal =
+        launch.dispatchOperandOrdinal(*input.boundaryOperandOrdinal);
+    if (!dispatchOrdinal || *dispatchOrdinal >= helper->arg_size())
+      return dispatchOrdinal ? invalid("runtime invocation value exceeds ABI")
+                             : dispatchOrdinal.takeError();
+    llvm::Type *wireInteger = llvm::IntegerType::get(
+        module.getContext(), launch.valueBitCounts[indexed.index()]);
+    llvm::Value *bits = helper->getArg(*dispatchOrdinal);
+    llvm::TypeSize sourceBits = layout.getTypeSizeInBits(bits->getType());
+    if (sourceBits.isScalable() ||
+        sourceBits.getFixedValue() != launch.valueBitCounts[indexed.index()])
+      return invalid("root value operand differs from graph input width");
+    if (bits->getType()->isPointerTy())
+      bits = builder.CreatePtrToInt(bits, wireInteger);
+    else if (bits->getType() != wireInteger)
+      bits = builder.CreateBitCast(bits, wireInteger);
+    wireFieldStores.push_back(
+        {*wireLayout.valuePayloadOffsets[indexed.index()], bits});
+  }
+
+  std::vector<llvm::Value *> objectBases;
+  objectBases.reserve(capture.objects.size());
+  for (const auto indexed : llvm::enumerate(capture.objects)) {
+    const sim::SimulationMemoryCaptureObject &object = indexed.value();
+    const ApplicationSpatialInvocationPlan::MemoryObjectSource &source =
+        site.memoryObjectSources[indexed.index()];
+    if (object.byteCount == 0 || source.byteOffset >= object.byteCount ||
+        source.byteOffset > static_cast<std::uint64_t>(
+                                std::numeric_limits<std::int64_t>::max()))
+      return invalid("invocation memory capture is not finite");
+    if (source.dispatchArgumentOrdinal >= helper->arg_size())
+      return invalid("invocation memory object exceeds ABI");
+    llvm::Value *rootPointer = helper->getArg(source.dispatchArgumentOrdinal);
+    if (!rootPointer->getType()->isPointerTy())
+      return invalid("invocation memory source is not a pointer");
+    llvm::Value *base = rootPointer;
+    if (source.byteOffset != 0)
+      base = builder.CreateGEP(
+          i8, base,
+          llvm::ConstantInt::getSigned(
+              i64, -static_cast<std::int64_t>(source.byteOffset)),
+          "invocation.base");
+    objectBases.push_back(base);
+    wireFieldStores.push_back({wireLayout.memoryAddressOffsets[indexed.index()],
+                               builder.CreatePtrToInt(base, i64)});
+  }
+
+  std::vector<llvm::Value *> rootByteOffsets(site.memoryRootSources.size(),
+                                             nullptr);
+  const auto rootByteOffset =
+      [&](std::size_t ordinal) -> llvm::Expected<llvm::Value *> {
+    if (rootByteOffsets[ordinal])
+      return rootByteOffsets[ordinal];
+    const ApplicationSpatialInvocationPlan::MemoryRootSource &source =
+        site.memoryRootSources[ordinal];
+    if (source.dispatchArgumentOrdinal >= helper->arg_size() ||
+        source.objectIndex >= objectBases.size())
+      return invalid("invocation memory root source exceeds ABI");
+    llvm::Value *rootPointer = helper->getArg(source.dispatchArgumentOrdinal);
+    if (!rootPointer->getType()->isPointerTy())
+      return invalid("invocation memory root source is not a pointer");
+    rootByteOffsets[ordinal] = builder.CreateSub(
+        builder.CreatePtrToInt(rootPointer, i64),
+        builder.CreatePtrToInt(objectBases[source.objectIndex], i64));
+    return rootByteOffsets[ordinal];
+  };
+  for (const auto rootIndexed : llvm::enumerate(site.memoryRootSources)) {
+    const std::optional<std::size_t> offsetPosition =
+        wireLayout.memoryRootByteOffsetOffsets[rootIndexed.index()];
+    if (!offsetPosition)
+      continue;
+    auto offset = rootByteOffset(rootIndexed.index());
+    if (!offset)
+      return offset.takeError();
+    wireFieldStores.push_back({*offsetPosition, *offset});
+  }
+  for (const auto valueIndexed : llvm::enumerate(capture.valueInputs)) {
+    const sim::SimulationValueInputCapture &input = valueIndexed.value();
+    const std::optional<std::size_t> offsetPosition =
+        wireLayout.valuePointerTargetOffsetOffsets[valueIndexed.index()];
+    if (!offsetPosition)
+      continue;
+    if (!input.pointerTarget)
+      return invalid("non-pointer invocation value has an offset slot");
+    const std::uint64_t rootOrdinal =
+        input.pointerTarget->memoryRootBindingOrdinal;
+    if (rootOrdinal >= rootByteOffsets.size())
+      return invalid("invocation pointer target has no root offset");
+    auto offset = rootByteOffset(static_cast<std::size_t>(rootOrdinal));
+    if (!offset)
+      return offset.takeError();
+    wireFieldStores.push_back({*offsetPosition, *offset});
+  }
+
+  for (const auto indexed : llvm::enumerate(launch.resultRootOperandOrdinals)) {
+    auto dispatchOrdinal = launch.dispatchOperandOrdinal(indexed.value());
+    if (!dispatchOrdinal || *dispatchOrdinal >= helper->arg_size())
+      return dispatchOrdinal ? invalid("invocation result exceeds ABI")
+                             : dispatchOrdinal.takeError();
+    llvm::Value *result = helper->getArg(*dispatchOrdinal);
+    if (!result->getType()->isPointerTy())
+      return invalid("invocation result root operand is not a pointer");
+    wireFieldStores.push_back({wireLayout.resultAddressOffsets[indexed.index()],
+                               builder.CreatePtrToInt(result, i64)});
+  }
+
   for (const auto pointIndexed : llvm::enumerate(launch.points)) {
     const ApplicationSpatialInvocationPlan::Launch::Point &point =
         pointIndexed.value();
-    const runtime::SpatialInvocationWireLayout &wireLayout =
-        site.pointWireLayouts[pointIndexed.index()];
-    llvm::ArrayType *wireType =
-        llvm::ArrayType::get(llvm::Type::getInt8Ty(module.getContext()),
-                             wireLayout.templateBytes.size());
     auto *wire = new llvm::GlobalVariable(
         module, wireType, false, llvm::GlobalValue::PrivateLinkage,
-        llvm::ConstantDataArray::get(module.getContext(),
-                                     wireLayout.templateBytes),
+        llvm::ConstantDataArray::get(
+            module.getContext(), wireLayout.pointTemplates[pointIndexed.index()]),
         helperName + ".wire." + std::to_string(pointIndexed.index()));
-    wire->setAlignment(llvm::Align(8));
-
-    for (const auto indexed : llvm::enumerate(capture.valueInputs)) {
-      const sim::SimulationValueInputCapture &input = indexed.value();
-      if (input.valueInputOrdinal != indexed.index())
-        return invalid("invocation value capture is not dense");
-      llvm::Type *wireInteger = llvm::IntegerType::get(
-          module.getContext(), launch.valueBitCounts[indexed.index()]);
-      llvm::Value *bits = nullptr;
-      if (input.fixedValue) {
-        if (input.boundaryOperandOrdinal || input.denseCoordinateDimension)
-          return invalid("fixed invocation value has another source");
-        auto packed = sim::packDefinedSpatialSimulationToken(
-            *input.fixedValue, {input.lanesPerToken, input.laneBitWidth}, 0);
-        if (!packed)
-          return packed.takeError();
-        if (packed->getBitWidth() != launch.valueBitCounts[indexed.index()])
-          return invalid("fixed invocation value has the wrong bit width");
-        bits = llvm::ConstantInt::get(module.getContext(), *packed);
-      } else if (input.denseCoordinateDimension) {
-        if (input.boundaryOperandOrdinal ||
-            *input.denseCoordinateDimension >= point.denseCoordinates.size())
-          return invalid("dense invocation coordinate has another source");
-        const std::uint64_t coordinate =
-            point.denseCoordinates[*input.denseCoordinateDimension];
-        llvm::APInt coordinateBits(64, coordinate);
-        if (coordinateBits.getActiveBits() >
-            launch.valueBitCounts[indexed.index()])
-          return invalid("dense invocation coordinate exceeds graph width");
-        bits = llvm::ConstantInt::get(wireInteger, coordinate);
-      } else {
-        if (!input.boundaryOperandOrdinal)
-          return invalid("runtime invocation value has no root operand");
-        auto dispatchOrdinal =
-            launch.dispatchOperandOrdinal(*input.boundaryOperandOrdinal);
-        if (!dispatchOrdinal || *dispatchOrdinal >= helper->arg_size())
-          return dispatchOrdinal
-                     ? invalid("runtime invocation value exceeds ABI")
-                     : dispatchOrdinal.takeError();
-        bits = helper->getArg(*dispatchOrdinal);
-        llvm::TypeSize sourceBits = layout.getTypeSizeInBits(bits->getType());
-        if (sourceBits.isScalable() ||
-            sourceBits.getFixedValue() !=
-                launch.valueBitCounts[indexed.index()])
-          return invalid("root value operand differs from graph input width");
-        if (bits->getType()->isPointerTy())
-          bits = builder.CreatePtrToInt(bits, wireInteger);
-        else if (bits->getType() != wireInteger)
-          bits = builder.CreateBitCast(bits, wireInteger);
-      }
+    wire->setAlignment(llvm::Align(runtime::spatialInvocationWireAlignment));
+    for (const WireFieldStore &field : wireFieldStores) {
       llvm::StoreInst *store = builder.CreateStore(
-          bits, bytePointer(builder, wire, wireType,
-                            wireLayout.valuePayloadOffsets[indexed.index()]));
-      store->setAlignment(llvm::Align(1));
+          field.value, bytePointer(builder, wire, wireType, field.byteOffset));
+      store->setAlignment(
+          llvm::Align(runtime::spatialInvocationWireAlignment));
     }
 
-    std::vector<llvm::Value *> objectBases;
-    objectBases.reserve(capture.objects.size());
-    for (const auto indexed : llvm::enumerate(capture.objects)) {
-      const sim::SimulationMemoryCaptureObject &object = indexed.value();
-      const ApplicationSpatialInvocationPlan::MemoryObjectSource &source =
-          site.memoryObjectSources[indexed.index()];
-      if (object.byteCount == 0 || source.byteOffset >= object.byteCount ||
-          source.byteOffset > static_cast<std::uint64_t>(
-                                  std::numeric_limits<std::int64_t>::max()))
-        return invalid("invocation memory capture is not finite");
-      if (source.dispatchArgumentOrdinal >= helper->arg_size())
-        return invalid("invocation memory object exceeds ABI");
-      llvm::Value *rootPointer = helper->getArg(source.dispatchArgumentOrdinal);
-      if (!rootPointer->getType()->isPointerTy())
-        return invalid("invocation memory source is not a pointer");
-      llvm::Value *base = rootPointer;
-      if (source.byteOffset != 0)
-        base = builder.CreateGEP(
-            llvm::Type::getInt8Ty(module.getContext()), base,
-            llvm::ConstantInt::getSigned(
-                llvm::Type::getInt64Ty(module.getContext()),
-                -static_cast<std::int64_t>(source.byteOffset)),
-            "invocation.base");
-      objectBases.push_back(base);
-      llvm::Value *address = builder.CreatePtrToInt(
-          base, llvm::Type::getInt64Ty(module.getContext()));
-      llvm::StoreInst *addressStore = builder.CreateStore(
-          address,
-          bytePointer(builder, wire, wireType,
-                      wireLayout.memoryAddressOffsets[indexed.index()]));
-      addressStore->setAlignment(llvm::Align(1));
-      builder.CreateMemCpy(
-          bytePointer(builder, wire, wireType,
-                      wireLayout.memoryPayloadOffsets[indexed.index()]),
-          llvm::MaybeAlign(1), base, llvm::MaybeAlign(1), object.byteCount);
-    }
-
-    std::vector<llvm::Value *> rootByteOffsets;
-    rootByteOffsets.reserve(site.memoryRootSources.size());
-    for (const auto rootIndexed : llvm::enumerate(site.memoryRootSources)) {
-      const ApplicationSpatialInvocationPlan::MemoryRootSource &source =
-          rootIndexed.value();
-      if (source.dispatchArgumentOrdinal >= helper->arg_size() ||
-          source.objectIndex >= objectBases.size())
-        return invalid("invocation memory root source exceeds ABI");
-      llvm::Value *rootPointer = helper->getArg(source.dispatchArgumentOrdinal);
-      if (!rootPointer->getType()->isPointerTy())
-        return invalid("invocation memory root source is not a pointer");
-      llvm::Value *rootAddress = builder.CreatePtrToInt(
-          rootPointer, llvm::Type::getInt64Ty(module.getContext()));
-      llvm::Value *baseAddress =
-          builder.CreatePtrToInt(objectBases[source.objectIndex],
-                                 llvm::Type::getInt64Ty(module.getContext()));
-      llvm::Value *byteOffset = builder.CreateSub(rootAddress, baseAddress);
-      llvm::StoreInst *offsetStore = builder.CreateStore(
-          byteOffset,
-          bytePointer(
-              builder, wire, wireType,
-              wireLayout.memoryRootByteOffsetOffsets[rootIndexed.index()]));
-      offsetStore->setAlignment(llvm::Align(1));
-      rootByteOffsets.push_back(byteOffset);
-    }
-
-    for (const auto valueIndexed : llvm::enumerate(capture.valueInputs)) {
-      const sim::SimulationValueInputCapture &input = valueIndexed.value();
-      const std::optional<std::size_t> offsetPosition =
-          wireLayout.valuePointerTargetOffsetOffsets[valueIndexed.index()];
-      if (!input.pointerTarget) {
-        if (offsetPosition)
-          return invalid("non-pointer invocation value has an offset slot");
-        continue;
-      }
-      const std::uint64_t rootOrdinal =
-          input.pointerTarget->memoryRootBindingOrdinal;
-      if (!offsetPosition || rootOrdinal >= rootByteOffsets.size())
-        return invalid("invocation pointer target has no root offset");
-      llvm::StoreInst *offsetStore = builder.CreateStore(
-          rootByteOffsets[rootOrdinal],
-          bytePointer(builder, wire, wireType, *offsetPosition));
-      offsetStore->setAlignment(llvm::Align(1));
-    }
-
-    for (const auto indexed :
-         llvm::enumerate(launch.resultRootOperandOrdinals)) {
-      auto dispatchOrdinal = launch.dispatchOperandOrdinal(indexed.value());
-      if (!dispatchOrdinal || *dispatchOrdinal >= helper->arg_size())
-        return dispatchOrdinal ? invalid("invocation result exceeds ABI")
-                               : dispatchOrdinal.takeError();
-      llvm::Value *result = helper->getArg(*dispatchOrdinal);
-      if (!result->getType()->isPointerTy())
-        return invalid("invocation result root operand is not a pointer");
-      llvm::Value *resultAddress = builder.CreatePtrToInt(
-          result, llvm::Type::getInt64Ty(module.getContext()));
-      llvm::StoreInst *resultAddressStore = builder.CreateStore(
-          resultAddress,
-          bytePointer(builder, wire, wireType,
-                      wireLayout.resultAddressOffsets[indexed.index()]));
-      resultAddressStore->setAlignment(llvm::Align(1));
-    }
-
-    llvm::Value *dispatch = builder.CreateLoad(
-        llvm::Type::getInt64Ty(module.getContext()), &dispatchBase);
+    llvm::Value *dispatch = builder.CreateLoad(i64, &dispatchBase);
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchTargetLow,
                 static_cast<std::uint32_t>(point.dispatchTargetOrdinal));
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchTargetHigh,
                 static_cast<std::uint32_t>(point.dispatchTargetOrdinal >> 32));
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchControl,
                 runtime::gem5ThreadDispatchReset);
-    llvm::Value *wireAddress = builder.CreatePtrToInt(
-        wire, llvm::Type::getInt64Ty(module.getContext()));
-    storeMmio64Descriptor(
-        builder, dispatch, runtime::gem5ThreadDispatchInvocationLow,
-        runtime::gem5ThreadDispatchInvocationHigh, wireAddress);
+    storeMmio64Descriptor(builder, dispatch,
+                          runtime::gem5ThreadDispatchInvocationLow,
+                          runtime::gem5ThreadDispatchInvocationHigh,
+                          builder.CreatePtrToInt(wire, i64));
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchInvocationSize,
-                static_cast<std::uint32_t>(wireLayout.templateBytes.size()));
+                static_cast<std::uint32_t>(wireByteCount));
     emitFence(builder);
     storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchControl,
                 runtime::gem5ThreadDispatchStart);

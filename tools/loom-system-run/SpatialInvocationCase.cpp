@@ -15,6 +15,7 @@
 #include "Simulator/SpatialObservationComparison.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <optional>
 #include <set>
 #include <utility>
@@ -163,7 +164,9 @@ bool sameRuntimeInputSemantics(
 
 llvm::Expected<bool> sameInvocationSemantics(
     const loom::runtime::SpatialInvocationWire &lhs,
+    const std::vector<std::uint8_t> &lhsSnapshot,
     const loom::runtime::SpatialInvocationWire &rhs,
+    const std::vector<std::uint8_t> &rhsSnapshot,
     const loom::sim::SpatialSimulationRuntimeInput &lhsRuntime,
     const loom::sim::SpatialSimulationRuntimeInput &rhsRuntime,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -196,9 +199,18 @@ llvm::Expected<bool> sameInvocationSemantics(
     const auto &left = lhs.memoryObjects[ordinal];
     const auto &right = rhs.memoryObjects[ordinal];
     if (left.ordinal != right.ordinal || left.address != right.address ||
-        left.initialBytes.size() != right.initialBytes.size() ||
-        (compareMemoryBytes[ordinal] &&
-         left.initialBytes != right.initialBytes))
+        left.byteCount != right.byteCount)
+      return false;
+    if (!compareMemoryBytes[ordinal])
+      continue;
+    const std::size_t byteCount = static_cast<std::size_t>(left.byteCount);
+    const std::size_t leftOffset =
+        loom::runtime::spatialInvocationMemorySnapshotOffset(lhs, ordinal);
+    const std::size_t rightOffset =
+        loom::runtime::spatialInvocationMemorySnapshotOffset(rhs, ordinal);
+    if (!std::equal(lhsSnapshot.begin() + leftOffset,
+                    lhsSnapshot.begin() + leftOffset + byteCount,
+                    rhsSnapshot.begin() + rightOffset))
       return false;
   }
   return sameRuntimeInputSemantics(lhsRuntime, rhsRuntime, compareMemoryBytes);
@@ -283,19 +295,19 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     return cgraRuntime.takeError();
   if (llvm::Error error =
           loom::sim::validateEffectiveSpatialInvocationRuntimeInput(
-              *dfgWorkload, dfgWire, *dfgRuntime))
+              *dfgWorkload, dfgWire, dfg.memorySnapshot, *dfgRuntime))
     return std::move(error);
   if (llvm::Error error =
           loom::sim::validateEffectiveSpatialInvocationRuntimeInput(
-              *cgraWorkload, cgraWire, *cgraRuntime))
+              *cgraWorkload, cgraWire, cgra.memorySnapshot, *cgraRuntime))
     return std::move(error);
   const auto *dfgSpatialRuntime = dfgRuntime->spatial();
   const auto *cgraSpatialRuntime = cgraRuntime->spatial();
   if (!dfgSpatialRuntime || !cgraSpatialRuntime)
     return invalid("System invocation runtime is not Spatial");
-  auto invocationSemantics =
-      sameInvocationSemantics(dfgWire, cgraWire, *dfgSpatialRuntime,
-                              *cgraSpatialRuntime, dfgDataflowView, graph);
+  auto invocationSemantics = sameInvocationSemantics(
+      dfgWire, dfg.memorySnapshot, cgraWire, cgra.memorySnapshot,
+      *dfgSpatialRuntime, *cgraSpatialRuntime, dfgDataflowView, graph);
   if (!invocationSemantics)
     return invocationSemantics.takeError();
   if (!*invocationSemantics)

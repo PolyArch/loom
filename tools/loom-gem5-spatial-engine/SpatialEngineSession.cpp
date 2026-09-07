@@ -100,9 +100,8 @@ public:
     const bool write =
         request.operation == loom::sim::CgraExternalMemoryOperation::Write;
     for (const auto &element : request.elements) {
-      if (element.byteCount == 0 ||
-          element.byteOffset > object.initialBytes.size() ||
-          element.byteCount > object.initialBytes.size() - element.byteOffset ||
+      if (element.byteCount == 0 || element.byteOffset > object.byteCount ||
+          element.byteCount > object.byteCount - element.byteOffset ||
           object.address >
               std::numeric_limits<std::uint64_t>::max() - element.byteOffset)
         return invalid("CGRA external memory element exceeds its guest object");
@@ -1046,7 +1045,7 @@ SpatialEngineSession::Impl::startInvocation(
     if (entry.staticRuntime)
       return invalid("dynamic invocation has a competing static runtime input");
     auto runtime = loom::sim::materializeSpatialInvocationRuntimeInput(
-        entry.workload, *invocation);
+        entry.workload, *invocation, launch.memorySnapshot);
     if (!runtime)
       return runtime.takeError();
     return std::make_unique<SpatialInvocation>(*selected, std::move(launch),
@@ -1274,7 +1273,8 @@ llvm::Error SpatialEngineSession::Impl::finishModel(
          runtimeInput.canonicalBytes().bytes().end()}});
   auto completionResult = loom::runtime::encodeSpatialInvocationResultWire(
       {entry.sessionEntryOrdinal, invocation.launch.invocation,
-       std::move(snapshot), std::move(*encoded)});
+       invocation.launch.memorySnapshot, std::move(snapshot),
+       std::move(*encoded)});
   if (completionResult.empty())
     return invalid("cannot encode Spatial invocation result");
   auto publications =
