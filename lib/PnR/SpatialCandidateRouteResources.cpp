@@ -232,6 +232,100 @@ llvm::Error SpatialMoveTransaction::synchronizeProgressTraversalDeltas() {
   return llvm::Error::success();
 }
 
+llvm::Expected<SpatialMoveRouteSavepoint>
+SpatialMoveTransaction::saveRoutes() const {
+  if (llvm::Error error = ensureCollecting())
+    return std::move(error);
+  if (routeDeltasCollected_)
+    return candidateError("cannot savepoint collected route deltas");
+  SpatialMoveRouteSavepoint savepoint;
+  savepoint.touchedRouteCount = scratch_->touchedRoutes_.size();
+  savepoint.progressTraversalDeltaCount =
+      scratch_->progressTraversalDeltas_.size();
+  savepoint.progressDirtyNetCount = scratch_->progressDirtyNets_.size();
+  savepoint.decisionDeltaCount = scratch_->decisionDeltas_.size();
+  savepoint.routes.reserve(savepoint.touchedRouteCount);
+  savepoint.progressRecordedRouteDeltaCounts.reserve(
+      savepoint.touchedRouteCount);
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_) {
+    auto route = scratch_->routeTransactions_[logicalNet]->savepoint();
+    if (!route)
+      return route.takeError();
+    savepoint.routes.push_back(std::move(*route));
+    savepoint.progressRecordedRouteDeltaCounts.push_back(
+        scratch_->progressRecordedRouteDeltaEpochs_[logicalNet] ==
+                scratch_->progressRecordedRouteDeltaEpoch_
+            ? scratch_->progressRecordedRouteDeltaCounts_[logicalNet]
+            : 0);
+  }
+  savepoint.progressTerminalActive.reserve(savepoint.progressDirtyNetCount);
+  for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
+    savepoint.progressTerminalActive.push_back(
+        scratch_->progressTerminalActive_[logicalNet]);
+  return savepoint;
+}
+
+llvm::Error
+SpatialMoveTransaction::restoreRoutes(SpatialMoveRouteSavepoint &&savepoint) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (routeDeltasCollected_)
+    return candidateError("cannot restore collected route deltas");
+  if (savepoint.touchedRouteCount > scratch_->touchedRoutes_.size() ||
+      savepoint.routes.size() != savepoint.touchedRouteCount ||
+      savepoint.progressRecordedRouteDeltaCounts.size() !=
+          savepoint.touchedRouteCount ||
+      savepoint.progressTraversalDeltaCount >
+          scratch_->progressTraversalDeltas_.size() ||
+      savepoint.progressDirtyNetCount > scratch_->progressDirtyNets_.size() ||
+      savepoint.progressTerminalActive.size() !=
+          savepoint.progressDirtyNetCount)
+    return candidateError("route savepoint lies after the current move");
+  if (savepoint.decisionDeltaCount != scratch_->decisionDeltas_.size())
+    return candidateError("route savepoint cannot span decision changes");
+  if (!scratch_->progressDependencyDeltas_.empty())
+    return candidateError(
+        "route savepoint cannot span a progress dependency projection");
+
+  for (std::size_t index = scratch_->progressTraversalDeltas_.size();
+       index != savepoint.progressTraversalDeltaCount; --index) {
+    const auto &delta = scratch_->progressTraversalDeltas_[index - 1];
+    state_->progressState_.revertTraversalDelta(
+        delta.logicalNet, delta.traversal, delta.removed, delta.added);
+  }
+  scratch_->progressTraversalDeltas_.resize(
+      savepoint.progressTraversalDeltaCount);
+  for (std::size_t index = scratch_->progressDirtyNets_.size();
+       index != savepoint.progressDirtyNetCount; --index)
+    scratch_->progressDirtyNetMarks_[scratch_->progressDirtyNets_[index - 1]] =
+        0;
+  scratch_->progressDirtyNets_.resize(savepoint.progressDirtyNetCount);
+  for (auto [ordinal, logicalNet] :
+       llvm::enumerate(scratch_->progressDirtyNets_))
+    scratch_->progressTerminalActive_[logicalNet] =
+        savepoint.progressTerminalActive[ordinal];
+
+  for (std::size_t index = scratch_->touchedRoutes_.size();
+       index != savepoint.touchedRouteCount; --index) {
+    const PnrIndex logicalNet = scratch_->touchedRoutes_[index - 1];
+    scratch_->routeTransactions_[logicalNet]->rollback();
+    scratch_->routeTransactions_[logicalNet].reset();
+    scratch_->progressRecordedRouteDeltaCounts_[logicalNet] = 0;
+  }
+  scratch_->touchedRoutes_.resize(savepoint.touchedRouteCount);
+  for (std::size_t index = savepoint.touchedRouteCount; index != 0; --index) {
+    const PnrIndex logicalNet = scratch_->touchedRoutes_[index - 1];
+    if (llvm::Error error = scratch_->routeTransactions_[logicalNet]->rollbackTo(
+            std::move(savepoint.routes[index - 1])))
+      return error;
+    scratch_->progressRecordedRouteDeltaCounts_[logicalNet] =
+        savepoint.progressRecordedRouteDeltaCounts[index - 1];
+    scratch_->progressRecordedRouteDeltaEpochs_[logicalNet] =
+        scratch_->progressRecordedRouteDeltaEpoch_;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_) {
     const bool firstProjection =

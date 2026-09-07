@@ -75,6 +75,30 @@ classifyProjection(const SpatialCandidateState &candidate,
   return result;
 }
 
+
+bool sameRouteProjectionFacts(const SpatialCandidateRouteProjection &lhs,
+                              const SpatialCandidateRouteProjection &rhs) {
+  return lhs.unroutedObligationCount == rhs.unroutedObligationCount &&
+         lhs.routeCapacityOveruse == rhs.routeCapacityOveruse &&
+         lhs.tagResidentCapacityOveruse == rhs.tagResidentCapacityOveruse &&
+         lhs.tagUnassignedCount == rhs.tagUnassignedCount &&
+         lhs.tagConflictCount == rhs.tagConflictCount &&
+         lhs.hardProgressViolation == rhs.hardProgressViolation &&
+         lhs.progressProofDebtWitnessCount ==
+             rhs.progressProofDebtWitnessCount &&
+         lhs.progressCapacityShortfall == rhs.progressCapacityShortfall &&
+         lhs.progressRouteAnchorCount == rhs.progressRouteAnchorCount &&
+         lhs.runtimeCounterexampleViolation ==
+             rhs.runtimeCounterexampleViolation &&
+         lhs.totalSelectedTraversalClaim == rhs.totalSelectedTraversalClaim &&
+         lhs.routeReleaseLatencyCycles == rhs.routeReleaseLatencyCycles &&
+         lhs.routeMinimumInitiationIntervalCycles ==
+             rhs.routeMinimumInitiationIntervalCycles &&
+         lhs.transportBitCycleDemand == rhs.transportBitCycleDemand &&
+         lhs.routeTerminalsCompatible == rhs.routeTerminalsCompatible &&
+         lhs.selectedHandshakeAcyclic == rhs.selectedHandshakeAcyclic;
+}
+
 } // namespace
 
 llvm::Error
@@ -324,41 +348,46 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
     return pathFinderError(
         "captured temporary routes did not restore their objective vector");
   }
-  if (restoredProjection->unroutedObligationCount !=
-          expectedProjection.unroutedObligationCount ||
-      restoredProjection->routeCapacityOveruse !=
-          expectedProjection.routeCapacityOveruse ||
-      restoredProjection->tagResidentCapacityOveruse !=
-          expectedProjection.tagResidentCapacityOveruse ||
-      restoredProjection->tagUnassignedCount !=
-          expectedProjection.tagUnassignedCount ||
-      restoredProjection->tagConflictCount !=
-          expectedProjection.tagConflictCount ||
-      restoredProjection->hardProgressViolation !=
-          expectedProjection.hardProgressViolation ||
-      restoredProjection->progressProofDebtWitnessCount !=
-          expectedProjection.progressProofDebtWitnessCount ||
-      restoredProjection->progressCapacityShortfall !=
-          expectedProjection.progressCapacityShortfall ||
-      restoredProjection->progressRouteAnchorCount !=
-          expectedProjection.progressRouteAnchorCount ||
-      restoredProjection->runtimeCounterexampleViolation !=
-          expectedProjection.runtimeCounterexampleViolation ||
-      restoredProjection->totalSelectedTraversalClaim !=
-          expectedProjection.totalSelectedTraversalClaim ||
-      restoredProjection->routeReleaseLatencyCycles !=
-          expectedProjection.routeReleaseLatencyCycles ||
-      restoredProjection->routeMinimumInitiationIntervalCycles !=
-          expectedProjection.routeMinimumInitiationIntervalCycles ||
-      restoredProjection->transportBitCycleDemand !=
-          expectedProjection.transportBitCycleDemand ||
-      restoredProjection->routeTerminalsCompatible !=
-          expectedProjection.routeTerminalsCompatible ||
-      restoredProjection->selectedHandshakeAcyclic !=
-          expectedProjection.selectedHandshakeAcyclic)
+  if (!sameRouteProjectionFacts(*restoredProjection, expectedProjection))
     return pathFinderError(
         "captured temporary routes did not restore their Mapping projection");
   return llvm::Error::success();
+}
+
+llvm::Error SpatialPathFinderRouterScratch::restoreTrialBaseline(
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+    SpatialRouteCostState &costs, llvm::ArrayRef<PnrIndex> logicalNets,
+    SpatialMoveRouteSavepoint &&savepoint,
+    const SpatialTagAssignmentSummary &baselineTagSummary) {
+  // The cost owner tracks claims as running capacity usage. Release the
+  // trial's claims while its RouteTrees are still installed, restore the
+  // move, then claim the baseline RouteTrees again. Tag uses and switch rows
+  // are re-established from the loop-invariant baseline summary.
+  const auto reclaim = [&](PnrIndex logicalNet, bool release) -> llvm::Error {
+    if (candidate.usesRegisterFifo(logicalNet))
+      return llvm::Error::success();
+    auto projection = projectLogicalNet(candidate, costs, logicalNet);
+    if (!projection)
+      return projection.takeError();
+    if (llvm::Error error = costs.selectLogicalNet(
+            logicalNet, release ? llvm::ArrayRef<std::uint64_t>(activeClaimBits_)
+                                : llvm::ArrayRef<std::uint64_t>{}))
+      return error;
+    if (llvm::Error error = costs.updateSelectedLogicalNetClaims(
+            release ? llvm::ArrayRef<std::uint64_t>{}
+                    : llvm::ArrayRef<std::uint64_t>(activeClaimBits_)))
+      return error;
+    return costs.acceptSelectedLogicalNet();
+  };
+  for (PnrIndex logicalNet : logicalNets)
+    if (llvm::Error error = reclaim(logicalNet, /*release=*/true))
+      return error;
+  if (llvm::Error error = move.restoreRoutes(std::move(savepoint)))
+    return error;
+  for (PnrIndex logicalNet : logicalNets)
+    if (llvm::Error error = reclaim(logicalNet, /*release=*/false))
+      return error;
+  return costs.synchronizeTagProjection(baselineTagSummary, logicalNets);
 }
 
 llvm::Expected<SpatialPathFinderClosureResult>
@@ -582,6 +611,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                                handshakeAdmissionProjectionNanoseconds;
                            fields["handshake_admission_restore_ns"] =
                                handshakeAdmissionRestoreNanoseconds;
+                           fields["pressure_saturations"] =
+                               costs.pressureSaturations();
                          });
   };
 
@@ -967,10 +998,12 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         if (executionControl_.stopRequested())
           return completeIterationFailure(
               interrupted("between whole-net handshake trials"));
-        // ExactRegional never retains a policy-temporary iterate, so these
-        // captures can reuse the temporary-route snapshot buffers.
-        if (llvm::Error error = captureCurrentRoutes(candidate, trialNets))
-          return completeIterationFailure(std::move(error));
+        // The trial mutates only the still-open move. Its savepoint restores
+        // the exact pre-trial RouteTrees and progress journal afterwards, so
+        // no route is reconstructed and no baseline projection is repeated.
+        auto trialSavepoint = move.saveRoutes();
+        if (!trialSavepoint)
+          return completeIterationFailure(trialSavepoint.takeError());
         if (llvm::Error error = netRouter_.beginConstraintSweep(trialNets))
           return completeIterationFailure(std::move(error));
         ++handshakeAdmissionTrials;
@@ -1061,9 +1094,6 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                   .count();
           if (!trialProjection)
             return completeIterationFailure(trialProjection.takeError());
-          if (llvm::Error error = costs.synchronizeTagProjection(
-                  trialTags, move.touchedRouteLogicalNets()))
-            return completeIterationFailure(std::move(error));
           if (trialProjection->routeTerminalsCompatible) {
             auto trialObjective =
                 candidate.problem()
@@ -1080,11 +1110,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               bestSoFar = *comparison < 0;
             }
             if (bestSoFar) {
-              // Preserve this group's baseline while the existing path codec
-              // captures its selected alternative. No search is replayed when
-              // the winner is installed after all groups have been evaluated.
-              auto baselineOffsets = std::move(capturedSinkPathOffsets_);
-              auto baselineArcs = std::move(capturedForwardArcs_);
+              // The existing path codec captures the selected alternative so
+              // the winner is installed without replaying any search.
               if (llvm::Error error =
                       captureCurrentRoutes(candidate, trialNets))
                 return completeIterationFailure(std::move(error));
@@ -1094,22 +1121,40 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                                          std::move(*trialProjection),
                                          std::move(capturedSinkPathOffsets_),
                                          std::move(capturedForwardArcs_)};
-              capturedSinkPathOffsets_ = std::move(baselineOffsets);
-              capturedForwardArcs_ = std::move(baselineArcs);
             }
           }
         }
         ++handshakeAdmissionRestores;
         const auto restoreStart = std::chrono::steady_clock::now();
-        llvm::Error restored = restoreCapturedRoutes(
-            move, candidate, costs, trialNets, *originalObjective, *projection,
-            tagSummary, &frozenHandshakeCycle);
+        llvm::Error restored = restoreTrialBaseline(
+            move, candidate, costs, trialNets, std::move(*trialSavepoint),
+            tagSummary);
         handshakeAdmissionRestoreNanoseconds +=
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - restoreStart)
                 .count();
         if (restored)
           return completeIterationFailure(std::move(restored));
+        if (loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
+          // Bring-up oracle: the restored baseline must project exactly the
+          // pre-trial facts. Steady-state runs rely on the savepoint contract.
+          SpatialTagAssignmentSummary restoredTags;
+          std::vector<PnrIndex> restoredCycle;
+          auto restoredProjection =
+              move.projectCurrentRoutes(restoredTags, &restoredCycle);
+          if (!restoredProjection)
+            return completeIterationFailure(restoredProjection.takeError());
+          auto restoredObjective =
+              candidate.problem().objectiveProgram().evaluateSpatialProjection(
+                  candidate, *restoredProjection);
+          if (!restoredObjective)
+            return completeIterationFailure(restoredObjective.takeError());
+          if (restoredObjective->codes() != originalObjective->codes() ||
+              restoredCycle != frozenHandshakeCycle ||
+              !sameRouteProjectionFacts(*restoredProjection, *projection))
+            return completeIterationFailure(pathFinderError(
+                "handshake trial savepoint did not restore the baseline"));
+        }
         // An unreachable group may leave pending constraint members. The
         // restored baseline has no unresolved members of that trial sweep.
         if (llvm::Error error = netRouter_.beginConstraintSweep({}))

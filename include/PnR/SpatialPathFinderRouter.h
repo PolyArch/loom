@@ -314,6 +314,15 @@ private:
       const SpatialCandidateRouteProjection &expectedProjection,
       SpatialTagAssignmentSummary &restoredTagSummary,
       std::vector<PnrIndex> *frozenCycleWitness = nullptr);
+  /// Returns a handshake trial's routes to the baseline through the move's
+  /// savepoint and reconciles the route cost owner with the restored trees.
+  llvm::Error
+  restoreTrialBaseline(SpatialMoveTransaction &move,
+                       SpatialCandidateState &candidate,
+                       SpatialRouteCostState &costs,
+                       llvm::ArrayRef<PnrIndex> logicalNets,
+                       SpatialMoveRouteSavepoint &&savepoint,
+                       const SpatialTagAssignmentSummary &baselineTagSummary);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,

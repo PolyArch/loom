@@ -4,6 +4,8 @@
 #include "Application/RuntimeManifest.h"
 #include "Deployment/Deployment.h"
 
+#include <cstddef>
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -16,6 +18,12 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::application {
+
+/// Entry limit of the invocation-local Artifact import cache that spans one
+/// product deployment tail (construction, manifest, package closure) and one
+/// staged package import. It bounds retained root-level views, not replay
+/// pairs, so a small multiple of the distinct root kinds suffices.
+inline constexpr std::size_t productDeploymentImportCacheEntries = 256;
 
 struct ApplicationDeploymentArtifacts;
 

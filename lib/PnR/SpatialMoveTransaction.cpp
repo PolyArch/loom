@@ -1,5 +1,7 @@
 #include "PnR/SpatialCandidateState.h"
 
+#include "Common/MappingDebugLog.h"
+
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
@@ -1206,6 +1208,11 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
   if (llvm::Error error = synchronizeProgressTraversalDeltas())
     return std::move(error);
 
+  // A RouteTree without an open transaction cannot have changed since the
+  // candidate last verified it, so only the trees this move touched are
+  // audited. The full sweep stays available as a diagnostic oracle.
+  const bool verifyUntouched =
+      loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail);
   std::vector<const RouteTreeState *> routes;
   routes.reserve(state_->routeTrees_.size());
   for (PnrIndex logicalNet = 0; logicalNet < state_->routeTrees_.size();
@@ -1215,8 +1222,9 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
       if (llvm::Error error =
               scratch_->routeTransactions_[logicalNet]->verify())
         return std::move(error);
-    } else if (llvm::Error error = route->verify()) {
-      return std::move(error);
+    } else if (verifyUntouched) {
+      if (llvm::Error error = route->verify())
+        return std::move(error);
     }
     routes.push_back(route);
   }

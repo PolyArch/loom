@@ -133,6 +133,22 @@ private:
   friend class RouteTreeTransaction;
 };
 
+/// A position inside one open RouteTreeTransaction. Rolling back to it
+/// restores the exact node storage, free-slot order, endpoint lookup, sink
+/// bindings, and traversal journal the transaction held when the savepoint was
+/// taken, so a trial mutation leaves no trace in the still-open transaction.
+struct RouteTreeTransactionSavepoint final {
+  std::size_t deltaCount = 0;
+  std::size_t traversalDeltaCount = 0;
+  PnrIndex boundSinkObligationCount = 0;
+  PnrIndex attachedSinkObligationCount = 0;
+  /// Once a transaction has rehashed its lookup it stops journaling bucket
+  /// writes, so a savepoint taken afterwards retains the complete lookup.
+  bool lookupBaselineActive = false;
+  std::size_t lookupTombstoneCount = 0;
+  std::vector<detail::RouteTreeLookupEntry> lookupSnapshot;
+};
+
 // FrozenSpatialRoutingGraph ownership is shared across states. Each transaction
 // keeps its mutable state alive until commit or rollback.
 class RouteTreeState : public std::enable_shared_from_this<RouteTreeState> {
@@ -240,10 +256,17 @@ public:
   llvm::Error verify() const;
   llvm::Error commit();
   void rollback() noexcept;
+  /// Captures the current unprepared position of this transaction.
+  llvm::Expected<RouteTreeTransactionSavepoint> savepoint() const;
+  /// Reverts every mutation recorded after `savepoint`; the transaction stays
+  /// open at that position.
+  llvm::Error rollbackTo(RouteTreeTransactionSavepoint &&savepoint);
 
 private:
   RouteTreeTransaction(RouteTreeStateHandle state,
                        RouteTreeTransactionScratch &scratch);
+
+  void undoDelta(const RouteTreeTransactionScratch::Delta &delta) noexcept;
 
   llvm::Error ensureLookupCapacity(PnrIndex requiredCount);
   void insertLookup(PnrIndex endpoint, PnrIndex slot);

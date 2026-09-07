@@ -25,6 +25,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1629,7 +1630,7 @@ publishApplicationActivationDecision(ApplicationActivationDecision decision,
                                                 std::move(decision));
 }
 
-llvm::Expected<FinalizedApplicationActivationDecision>
+llvm::Expected<std::shared_ptr<const FinalizedApplicationActivationDecision>>
 importApplicationActivationDecision(const ArtifactRootReference &reference,
                                     const ArtifactStore &artifacts,
                                     const BlobStore &blobs) {
@@ -1638,28 +1639,34 @@ importApplicationActivationDecision(const ArtifactRootReference &reference,
       reference.schemaVersion != applicationActivationDecisionSchema.version)
     return reject(ApplicationActivationDecisionErrorReason::ForeignSchema,
                   "foreign Application activation decision reference schema");
-  auto bytes = artifacts.get(reference);
-  if (!bytes)
-    return bytes.takeError();
-  auto draft = decodeDecision(bytes->bytes(), artifacts, blobs);
-  if (!draft)
-    return draft.takeError();
-  auto decision =
-      ApplicationActivationDecision::get(std::move(*draft), artifacts, blobs);
-  if (!decision)
-    return decision.takeError();
-  if (decision->canonicalBytes().bytes() != bytes->bytes())
-    return reject(
-        ApplicationActivationDecisionErrorReason::NonCanonicalEncoding,
-        "Application activation decision encoding is not canonical");
-  const ArtifactIdentity expected = finalizeArtifactIdentity(
-      applicationActivationDecisionSchema, decision->canonicalBytes());
-  if (expected != reference.artifact)
-    return reject(
-        ApplicationActivationDecisionErrorReason::NonCanonicalEncoding,
-        "Application activation decision identity is not canonical");
-  return FinalizedApplicationActivationDecision(reference,
-                                                std::move(*decision));
+  const std::array<ArtifactRootReference, 1> references{reference};
+  return evaluation::importCachedArtifact<
+      FinalizedApplicationActivationDecision>(
+      artifacts, &blobs, references,
+      [&]() -> llvm::Expected<FinalizedApplicationActivationDecision> {
+        auto bytes = artifacts.get(reference);
+        if (!bytes)
+          return bytes.takeError();
+        auto draft = decodeDecision(bytes->bytes(), artifacts, blobs);
+        if (!draft)
+          return draft.takeError();
+        auto decision = ApplicationActivationDecision::get(std::move(*draft),
+                                                           artifacts, blobs);
+        if (!decision)
+          return decision.takeError();
+        if (decision->canonicalBytes().bytes() != bytes->bytes())
+          return reject(
+              ApplicationActivationDecisionErrorReason::NonCanonicalEncoding,
+              "Application activation decision encoding is not canonical");
+        const ArtifactIdentity expected = finalizeArtifactIdentity(
+            applicationActivationDecisionSchema, decision->canonicalBytes());
+        if (expected != reference.artifact)
+          return reject(
+              ApplicationActivationDecisionErrorReason::NonCanonicalEncoding,
+              "Application activation decision identity is not canonical");
+        return FinalizedApplicationActivationDecision(reference,
+                                                      std::move(*decision));
+      });
 }
 
 } // namespace loom::application

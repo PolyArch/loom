@@ -276,6 +276,9 @@ public:
           return exact.takeError();
         if (*exact == ExactColoringResult::Solved)
           solvedExactly = true;
+        if (componentCache)
+          componentCache->exactWorkLimited =
+              *exact == ExactColoringResult::WorkLimit;
       }
       if (!solvedExactly)
         if (llvm::Error error = heuristicColor(component))
@@ -362,13 +365,19 @@ private:
     if (found == previousComponents_.end())
       return false;
     const SpatialTagColoringComponentCache &previous = *found->second;
-    if (!sameComponentInput(cache, previous) ||
-        previous.exactWorkBefore != exactWork_)
+    if (!sameComponentInput(cache, previous))
       return false;
     if (previous.values.size() != component.size() ||
         previous.exactWorkAfter < previous.exactWorkBefore ||
         previous.exactWorkAfter > exactColoringWorkLimit)
       return invalid("cached coloring component has inconsistent output");
+    // The exact search reads the shared counter only against the limit, so
+    // a component's result depends on its input and on the budget still
+    // available, never on the absolute prefix earlier components consumed.
+    const std::uint64_t consumed =
+        previous.exactWorkAfter - previous.exactWorkBefore;
+    if (previous.exactWorkLimited || consumed > exactColoringWorkLimit - exactWork_)
+      return false;
 
     const std::uint64_t unassignedBefore = result_.unassignedCount;
     const std::uint64_t conflictsBefore = result_.conflictCount;
@@ -379,10 +388,11 @@ private:
             previous.unassignedCount ||
         result_.conflictCount - conflictsBefore != previous.conflictCount)
       return invalid("cached coloring component summary is inconsistent");
-    exactWork_ = previous.exactWorkAfter;
     cache.values = previous.values;
-    cache.exactWorkBefore = previous.exactWorkBefore;
-    cache.exactWorkAfter = previous.exactWorkAfter;
+    cache.exactWorkBefore = exactWork_;
+    exactWork_ += consumed;
+    cache.exactWorkAfter = exactWork_;
+    cache.exactWorkLimited = false;
     cache.unassignedCount = previous.unassignedCount;
     cache.conflictCount = previous.conflictCount;
     return true;

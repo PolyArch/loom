@@ -27,6 +27,14 @@ using DualStep = std::uint64_t;
 constexpr RouteCost routeCostInfinity = std::numeric_limits<RouteCost>::max();
 constexpr RouteCost maxFiniteRouteCost = routeCostInfinity - 1;
 constexpr std::uint64_t routeCostScale = std::uint64_t{1} << 32;
+/// Routes sum one price per selected arc, and a multicast net sums one such
+/// route per sink, so a representable individual price is not sufficient for a
+/// representable route. The negotiated price schedule is therefore capped with
+/// this much summation headroom: any accumulation of up to 2^20 priced terms
+/// stays finite by construction.
+constexpr unsigned routeCostSummationHeadroomBits = 20;
+constexpr RouteCost maxNegotiatedRouteCost =
+    maxFiniteRouteCost >> routeCostSummationHeadroomBits;
 
 class RoutingNegotiationError final
     : public llvm::ErrorInfo<RoutingNegotiationError> {

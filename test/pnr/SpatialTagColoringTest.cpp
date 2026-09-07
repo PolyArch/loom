@@ -237,14 +237,37 @@ void cachedColoringSurvivesFlattenedOrdinalChanges() {
       workCached.values, workCold.values, [](const auto &lhs, const auto &rhs) {
         return lhs.has_value() == rhs.has_value() && (!lhs || *lhs == *rhs);
       });
+  // The unchanged component keeps its cached coloring even though the
+  // recomputed component ahead of it consumed a different exact-work prefix:
+  // a replay depends only on the component's input and the remaining budget.
   require(workInitialResult.cache.components[1].exactWorkBefore !=
                   workCold.cache.components[1].exactWorkBefore &&
-              workCached.recomputedIdentities.size() ==
-                  updatedIdentities.size() &&
+              workCached.recomputedIdentities.size() == 3 &&
+              llvm::all_of(workCached.recomputedIdentities,
+                           [](const auto identity) {
+                             return identity.owner == 0;
+                           }) &&
               equalWorkValues &&
               workCached.unassignedCount == workCold.unassignedCount &&
               workCached.conflictCount == workCold.conflictCount,
-          "coloring cache ignored changed exact-work prefix state");
+          "unchanged component was recolored after a changed exact-work prefix");
+
+  // A component whose exact search stopped on the shared work limit is never
+  // replayed from the cache: more remaining budget could change its result.
+  auto limitedCache = workInitialResult.cache;
+  for (auto &component : limitedCache.components)
+    component.exactWorkLimited = true;
+  const auto limitedCached =
+      take(loom::pnr::detail::colorSpatialTagInterference(
+          workUpdatedView, updatedIdentities, &limitedCache));
+  require(limitedCached.recomputedIdentities.size() ==
+                  updatedIdentities.size() &&
+              llvm::equal(limitedCached.values, workCold.values,
+                          [](const auto &lhs, const auto &rhs) {
+                            return lhs.has_value() == rhs.has_value() &&
+                                   (!lhs || *lhs == *rhs);
+                          }),
+          "work-limited cached component was replayed");
 }
 
 } // namespace

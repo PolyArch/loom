@@ -5,6 +5,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 
 #include "ortools/sat/cp_model.pb.h"
@@ -41,6 +42,9 @@ enum class CpSatCanonicalResultKind : std::uint8_t {
   SolverCallLimitReached,
   SolverUnknown,
   FeasibleWithoutOptimalityProof,
+  /// The invocation's execution control requested a stop between two solver
+  /// calls; the work consumed so far is reported and nothing was decided.
+  Interrupted,
 };
 
 llvm::StringRef cpSatCanonicalResultKindSpelling(CpSatCanonicalResultKind kind);
@@ -62,13 +66,16 @@ struct CpSatCanonicalResult final {
 /// present, must be the single integer variable named by objectiveVariable.
 /// Canonical extraction packs consecutive variables into exact int64
 /// mixed-radix objectives and consumes one solve per encodable block.
+/// `executionControl` is observed before every solver call, so a stop request
+/// interrupts a long canonical extraction between two bounded solves.
 llvm::Expected<CpSatCanonicalResult>
 solveCanonicalCpSat(const operations_research::sat::CpModelProto &model,
                     llvm::ArrayRef<CpSatCanonicalVariable> variables,
                     std::optional<int> objectiveVariable,
                     std::uint64_t maxSolverCalls, std::int32_t randomSeed,
                     SpatialPnrWorkLedgerView workLedger = {},
-                    llvm::ArrayRef<int> proofPriorityVariables = {});
+                    llvm::ArrayRef<int> proofPriorityVariables = {},
+                    ExecutionControlView executionControl = {});
 
 /// Proves one complete supplied assignment with a single solver call. The
 /// assignment uses the same typed variable/value order as canonical
@@ -80,7 +87,8 @@ solveFixedCpSatAssignment(const operations_research::sat::CpModelProto &model,
                           std::optional<int> objectiveVariable,
                           std::uint64_t maxSolverCalls, std::int32_t randomSeed,
                           SpatialPnrWorkLedgerView workLedger = {},
-                          llvm::ArrayRef<int> proofPriorityVariables = {});
+                          llvm::ArrayRef<int> proofPriorityVariables = {},
+                          ExecutionControlView executionControl = {});
 
 } // namespace loom::pnr::detail
 

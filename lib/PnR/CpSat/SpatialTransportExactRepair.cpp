@@ -1186,17 +1186,22 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                   model.Build(), canonicalVariables, currentAssignment,
                   mutationCount->objective.index(),
                   solverCallLimit - logicalSolverCalls, solverSeed, workLedger_,
-                  mutationCount->proofPriorityVariables)
+                  mutationCount->proofPriorityVariables, executionControl_)
             : detail::solveCanonicalCpSat(model.Build(), canonicalVariables,
                                           mutationCount->objective.index(),
                                           solverCallLimit - logicalSolverCalls,
                                           solverSeed, workLedger_,
-                                          mutationCount->proofPriorityVariables);
+                                          mutationCount->proofPriorityVariables,
+                                          executionControl_);
     if (!solved)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(solved.takeError()));
     solverCalls += solved->solverCalls;
     logicalSolverCalls += solved->logicalSolverCalls;
+    if (solved->kind == detail::CpSatCanonicalResultKind::Interrupted)
+      return executedResult(
+          SpatialExactRepairResultKind::TimedOut,
+          "route exact repair reached its deadline between solver calls");
     if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible) {
       if (proveCurrentAssignment)
         return executedResult(

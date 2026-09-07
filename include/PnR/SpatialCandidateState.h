@@ -723,6 +723,20 @@ private:
   friend class SpatialMoveTransaction;
 };
 
+/// A position inside one open move's route mutations. Restoring it returns
+/// every open RouteTree transaction and the progress journal to their state
+/// when the savepoint was taken, so a trial reroute leaves no trace in the
+/// still-open move. Decision changes cannot be spanned by a route savepoint.
+struct SpatialMoveRouteSavepoint final {
+  std::size_t touchedRouteCount = 0;
+  std::size_t progressTraversalDeltaCount = 0;
+  std::size_t progressDirtyNetCount = 0;
+  std::size_t decisionDeltaCount = 0;
+  std::vector<RouteTreeTransactionSavepoint> routes;
+  std::vector<std::size_t> progressRecordedRouteDeltaCounts;
+  std::vector<std::uint8_t> progressTerminalActive;
+};
+
 class SpatialMoveTransaction final {
 public:
   SpatialMoveTransaction(SpatialMoveTransaction &&other) noexcept;
@@ -762,6 +776,11 @@ public:
   llvm::Expected<SpatialCandidateRouteProjection>
   projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary,
                        std::vector<PnrIndex> *frozenCycleWitness = nullptr);
+  /// Captures the route mutation position of this still-open move.
+  llvm::Expected<SpatialMoveRouteSavepoint> saveRoutes() const;
+  /// Reverts every route mutation and progress update recorded after
+  /// `savepoint`. RouteTree transactions opened since then are released.
+  llvm::Error restoreRoutes(SpatialMoveRouteSavepoint &&savepoint);
 
   llvm::Expected<bool> close();
   /// Re-materializes the pending handshake graph of a still-open move whose
