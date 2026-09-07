@@ -307,6 +307,7 @@ llvm::Error validateProgress(const SystemProgressObservations &progress,
   std::vector<RootOccurrence> occurrences;
   occurrences.reserve(progress.rootLifecycle.size() / 2);
   std::optional<SystemEventCoordinate> previous;
+  std::uint64_t previousMemoryOccupiedTicks = 0;
   const SystemEventCoordinate eventLimit =
       progress.programExitVisible.value_or(progress.terminalObserved);
   for (const SystemRootLifecycleObservation &observation :
@@ -322,7 +323,12 @@ llvm::Error validateProgress(const SystemProgressObservations &progress,
       return detail::invalid(
           "simulation execution: root lifecycle coordinate is outside the "
           "program execution interval");
+    if (previousMemoryOccupiedTicks > observation.memoryOccupiedTicks)
+      return detail::invalid(
+          "simulation execution: root lifecycle memory service samples "
+          "decrease");
     previous = observation.coordinate;
+    previousMemoryOccupiedTicks = observation.memoryOccupiedTicks;
 
     auto root =
         context.dataflow->view().eventRootThreadLaunch(observation.event);
@@ -616,6 +622,7 @@ llvm::Error encodeProgress(detail::WireWriter &writer,
     writer.bytes(*event);
     writer.u64(observation.occurrence);
     encodeCoordinate(writer, observation.coordinate);
+    writer.u64(observation.memoryOccupiedTicks);
   }
   return llvm::Error::success();
 }
@@ -671,8 +678,11 @@ decodeProgress(detail::WireReader &reader,
     auto coordinate = decodeCoordinate(reader);
     if (!coordinate)
       return coordinate.takeError();
-    lifecycle.push_back(
-        {std::move(*event), *occurrence, std::move(*coordinate)});
+    auto memoryOccupiedTicks = reader.u64();
+    if (!memoryOccupiedTicks)
+      return memoryOccupiedTicks.takeError();
+    lifecycle.push_back({std::move(*event), *occurrence,
+                         std::move(*coordinate), *memoryOccupiedTicks});
   }
   return SystemProgressObservations{std::move(*entry), std::move(exit),
                                     std::move(*terminal), std::move(lifecycle)};

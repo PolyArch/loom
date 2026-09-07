@@ -44,7 +44,7 @@ RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
 SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
-ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQQIQ")
+ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQQIQQ")
 ROOT_EVENT_CONTROL_REQUEST = struct.Struct(">4sQQQIQQ")
 ROOT_EVENT_CONTROL_ACK = struct.Struct(">4sQIQ")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
@@ -891,7 +891,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 f"{system_result['cause']}; artifacts: {retained_root}"
             )
         lifecycle_bytes = root_lifecycle_path.read_bytes()
-        if not lifecycle_bytes.startswith(b"LRE2") or (
+        if not lifecycle_bytes.startswith(b"LRE3") or (
             len(lifecycle_bytes) - 4
         ) % ROOT_LIFECYCLE_RECORD.size:
             raise RuntimeError("root lifecycle trace is not structurally canonical")
@@ -912,10 +912,20 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             or (start[3], start[4]) >= (completion[3], completion[4])
             or start[3] < system_result["entry_tick"]
             or completion[3] > system_result["exit_tick"]
-            or start[5:] != (1, ROOT_EVENT_CONTINUE, 0)
-            or completion[5:] != (2, ROOT_EVENT_ACTIVATE_ENDPOINT, 1)
+            or start[5:8] != (1, ROOT_EVENT_CONTINUE, 0)
+            or completion[5:8] != (2, ROOT_EVENT_ACTIVATE_ENDPOINT, 1)
         ):
             raise RuntimeError("root lifecycle trace disagrees with the Host boundary")
+        # Each record samples the one shared-memory service observer, so the
+        # samples rise along the trace and stay within the full-program total.
+        if (
+            start[8] > completion[8]
+            or completion[8] > system_result["memory_activity"]["occupied_ticks"]
+        ):
+            raise RuntimeError(
+                "root lifecycle memory service samples are not a monotone "
+                "prefix of the full-program service occupancy"
+            )
         if len(acknowledged_events) != 2 or any(
             trace[:6]
             != (

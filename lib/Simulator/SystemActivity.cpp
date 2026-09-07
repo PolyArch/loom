@@ -1,6 +1,7 @@
 #include "SystemActivityInternal.h"
 #include "SimulationExecutionInternal.h"
 #include "Simulator/SystemActivity.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Deployment/Deployment.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Runtime/Gem5BuiltinModels.h"
@@ -21,6 +22,10 @@ llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execut
                        progress.programEntryAccepted.gem5Tick;
   if (execution.memoryActivity->occupiedTicks > elapsed)
     return invalid("System memory service occupancy exceeds its full program window");
+  for (const SystemRootLifecycleObservation &observation : progress.rootLifecycle)
+    if (observation.memoryOccupiedTicks > execution.memoryActivity->occupiedTicks)
+      return invalid("root lifecycle memory service sample exceeds the full "
+                     "program service occupancy");
   const auto kind = context.request->modelBinding().descriptorRef().modelKind();
   using evaluation::BuiltinEvaluationModel;
   using evaluation::builtinEvaluationModelKind;
@@ -78,5 +83,39 @@ projectSystemMemoryUtilization(const CanonicalSimulationExecution &execution,
   if (!ratio)
     return ratio.takeError();
   return std::optional<evaluation::ExactRatio>{*ratio};
+}
+
+llvm::Expected<std::optional<SystemAcceleratedWindow>>
+projectSystemAcceleratedWindow(const CanonicalSimulationExecution &execution,
+                              const evaluation::CaseArtifactResolution &resolution,
+                              const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto *system = execution.system();
+  if (!system)
+    return detail::invalid("System accelerated window requires a System execution");
+  const auto &lifecycle = system->progressObservations.rootLifecycle;
+  if (lifecycle.empty())
+    return std::optional<SystemAcceleratedWindow>{};
+  auto context = detail::resolveSystemExecutionContext(system->request, resolution,
+                                                       artifacts, blobs);
+  if (!context)
+    return context.takeError();
+  // Lifecycle coordinates increase strictly and no completion precedes its
+  // start, so the first entry opens the window and the last completion closes it.
+  const SystemRootLifecycleObservation *completion = nullptr;
+  for (const SystemRootLifecycleObservation &observation : lifecycle) {
+    auto root = context->dataflow->view().eventRootThreadLaunch(observation.event);
+    if (!root)
+      return root.takeError();
+    if (observation.event == dataflow::rootThreadCompletionEventFamily(*root))
+      completion = &observation;
+  }
+  if (!completion)
+    return std::optional<SystemAcceleratedWindow>{};
+  const SystemRootLifecycleObservation &start = lifecycle.front();
+  return std::optional<SystemAcceleratedWindow>{
+      SystemAcceleratedWindow{start.coordinate.gem5Tick,
+                              completion->coordinate.gem5Tick,
+                              completion->memoryOccupiedTicks -
+                                  start.memoryOccupiedTicks}};
 }
 }

@@ -347,7 +347,7 @@ the selected implementation or simulator executes its dynamic state.
 
 ## Diagnostic Simulation Projection
 
-`loom.simulation_execution 3.0` has no general Spatial diagnostic-trace field.
+`loom.simulation_execution 3.1` has no general Spatial diagnostic-trace field.
 Its narrow System root-lifecycle sequence cannot carry memory-relation events.
 The current invocation-local `SpatialDiagnosticTrace` owned by Simulation
 Artifacts includes the typed `MemoryLinearizedTraceEvent`, but that diagnostic

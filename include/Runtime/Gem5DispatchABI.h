@@ -54,7 +54,7 @@ inline constexpr std::uint32_t gem5ThreadDispatchBusy = 1U << 0;
 inline constexpr std::uint32_t gem5ThreadDispatchDone = 1U << 1;
 inline constexpr std::uint32_t gem5ThreadDispatchFailed = 1U << 2;
 
-inline constexpr std::uint32_t gem5RootLifecycleTraceMagic = 0x4c524532U;
+inline constexpr std::uint32_t gem5RootLifecycleTraceMagic = 0x4c524533U;
 inline constexpr std::uint32_t gem5RootEventControlRequestMagic = 0x4c524331U;
 inline constexpr std::uint32_t gem5RootEventControlAckMagic = 0x4c524131U;
 inline constexpr std::size_t gem5RootEventControlRequestBytes = 48;

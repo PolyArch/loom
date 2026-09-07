@@ -509,15 +509,23 @@ references that already own the run. A mapped-RTL execution adds the exact
 `mapped_rtl_deployment` reference and one Spatial run with engine `rtl` per
 invocation beside the `dfg` and `cgra` runs; it does not select another
 workspace schema. The required `paired_system_execution` section is the
-Application owner's `loom.application.system_qor_projection` 1.0. It records the
+Application owner's `loom.application.system_qor_projection` 2.0. It records the
 host-only and mapped candidate Request/Evidence/Execution roots, exact runtime
-manifest and gem5 binding, complete program tick durations, and native shared
-memory acceptance-service busy ticks. Both execution paths retain all physical
-CPUs and bridges. Qualification imports and joins both Runtime and product
-oracle Evidence, matches full output observations, and derives speedup and
-service utilization. The real-application gate requires strict speedup and more
-than 90 percent memory service utilization; unmeasured compute occupancy is not
-assumed. The workspace projects that owner result and cannot change the earlier
+manifest and gem5 binding, complete program tick durations, native shared memory
+acceptance-service busy ticks, and the candidate's accelerated window. Both
+execution paths retain all physical CPUs and bridges. Qualification imports and
+joins both Runtime and product oracle Evidence, matches full output
+observations, and derives speedup plus both window resource occupancies. The
+accelerated window runs from the candidate's first root Start lifecycle event to
+its last root Completion lifecycle event and counts the host gaps between
+launches; a run with no completed launch has no window. The real-application
+gate requires strict complete-program speedup joined with either more than 90
+percent window memory service utilization or more than 90 percent window compute
+occupancy, where one retired compute firing occupies its bound compute unit for
+one reference cycle. The projection also publishes a typed bottleneck
+classification of that window: memory bandwidth bound, compute bound, host bound
+when the window is under one tenth of the complete program, otherwise latency
+bound. The workspace projects that owner result and cannot change the earlier
 immutable planning decision into a measured performance claim.
 
 Each Spatial cell also records the dense coordinate tuple decoded from

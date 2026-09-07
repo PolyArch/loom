@@ -652,7 +652,7 @@ std::uint64_t readBigEndianU64(llvm::StringRef bytes, std::size_t offset) {
 llvm::Expected<std::vector<sim::SystemRootLifecycleObservation>>
 parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
   constexpr std::size_t headerBytes = 4;
-  constexpr std::size_t recordBytes = 56;
+  constexpr std::size_t recordBytes = 64;
   if (bytes.size() < headerBytes ||
       readBigEndianU32(bytes, 0) != gem5RootLifecycleTraceMagic)
     return invalid("gem5 root lifecycle result has the wrong header");
@@ -682,6 +682,7 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
         readBigEndianU64(bytes, offset + 36);
     const std::uint32_t decision = readBigEndianU32(bytes, offset + 44);
     const std::uint64_t endpoint = readBigEndianU64(bytes, offset + 48);
+    const std::uint64_t memoryOccupiedTicks = readBigEndianU64(bytes, offset + 56);
     if (action >
         static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion))
       return invalid("gem5 root lifecycle result has an unknown action");
@@ -733,7 +734,8 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
         action == static_cast<std::uint32_t>(Gem5RootLifecycleAction::Start)
             ? dataflow::rootThreadStartEventFamily(root)
             : dataflow::rootThreadCompletionEventFamily(root);
-    observations.push_back({event, occurrence, {tick, delta}});
+    observations.push_back(
+        {event, occurrence, {tick, delta}, memoryOccupiedTicks});
   }
   return observations;
 }

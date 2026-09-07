@@ -477,6 +477,33 @@ void loom::test::exerciseCgraAdmission(
       cgraEvidence.outputBindings().front().artifacts.size() != 1)
     fail("CGRA Evaluation did not produce one execution");
 
+  // The Application QoR compute branch measures occupancy from this table.
+  // Nothing else requires the CGRA engine to keep the actor attribution of the
+  // firings its scalar counters already total, so losing it would silently
+  // report zero compute work instead of failing.
+  {
+    auto cgraExecution = take(sim::importSimulationExecution(
+        cgraEvidence.outputBindings().front().artifacts.front(),
+        preparedCgra.resolution, store, blobs));
+    const sim::ActorTransitionsActivity *transitions = nullptr;
+    for (const sim::ActivitySummary &summary :
+         cgraExecution.spatialActivitySummaries())
+      if (summary.window == sim::ActivityWindow::LaunchToTerminal &&
+          summary.coverage == sim::ActivityCoverage::Complete)
+        transitions =
+            std::get_if<sim::ActorTransitionsActivity>(&summary.payload);
+    if (!transitions)
+      fail("CGRA execution published no complete actor transition table");
+    auto program = take(::dataflow::importCanonicalDataflow(dataflowReference, store));
+    std::uint64_t retiredFirings = 0;
+    for (const sim::ActorTransitionEntry &entry : transitions->transitions) {
+      take(program.view().resolve(entry.actor));
+      retiredFirings += entry.counts.retiredFirings;
+    }
+    if (retiredFirings == 0)
+      fail("CGRA actor transition table attributed no retired firing");
+  }
+
   auto comparison =
       take(evaluation::models::prepareSimulationComparisonEvaluation(
           dfgEvidence.outputBindings().front().artifacts.front(),

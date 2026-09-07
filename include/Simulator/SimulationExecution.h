@@ -36,7 +36,7 @@ namespace loom::sim {
 class PreparedSpatialExecutionContext;
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
-    "loom.simulation_execution", SchemaVersion{3, 0}};
+    "loom.simulation_execution", SchemaVersion{3, 1}};
 
 struct RetiredExecution {};
 
@@ -121,10 +121,14 @@ int compareSystemEventCoordinates(const SystemEventCoordinate &lhs,
 /// One canonical root-thread lifecycle event observed by the System runtime.
 /// The EventFamilyKey is the sole event identity; its root and lifecycle kind
 /// are always derived from the exact Request's Canonical Dataflow owner.
+/// `memoryOccupiedTicks` is the cumulative shared-memory acceptance-service
+/// integral sampled at this event, so a difference of two samples measures the
+/// service occupancy of the interval they bound.
 struct SystemRootLifecycleObservation {
   dataflow::EventFamilyKey event;
   std::uint64_t occurrence = 0;
   SystemEventCoordinate coordinate;
+  std::uint64_t memoryOccupiedTicks = 0;
 };
 
 struct SystemProgressObservations {
