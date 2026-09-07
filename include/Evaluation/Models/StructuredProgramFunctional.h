@@ -73,6 +73,14 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     const StructuredProgramFunctionalReplayInvocation &invocation,
     const ::loom::ArtifactStore &artifactStore);
 
+/// Record that this candidate cannot replay on the exact Fabric or through
+/// the Dataflow boundary (a typed ownership rejection), so its functional
+/// Evidence is Unsupported rather than an invocation failure.
+llvm::Error primeStructuredProgramFunctionalReplayUnsupported(
+    const ::loom::ArtifactRootReference &candidate,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput);
+
 /// Return the provider-owned transient replay projection already used to
 /// produce functional Evidence for this exact case. This does not execute the
 /// candidate again and does not become persistent candidate state.

@@ -36,15 +36,6 @@
 namespace loom::evaluation::models::detail {
 namespace {
 
-// The model identity pins these low-fidelity assumptions. They are not
-// measured Fabric timing or physical implementation facts.
-constexpr std::uint64_t kInstructionLeafEstimatePicoseconds = 1000;
-constexpr std::uint64_t kSpatialPressureEstimatePicoseconds = 250;
-constexpr std::uint64_t kGraphLaunchEstimatePicoseconds = 700;
-constexpr std::uint64_t kGraphSynchronizationEstimatePicoseconds = 500;
-constexpr std::uint64_t kBoundaryByteEstimatePicoseconds = 20;
-constexpr std::uint64_t kMemoryBindingEstimatePicoseconds = 100;
-constexpr std::uint64_t kMemoryTransactionEstimatePicoseconds = 150;
 constexpr std::uint64_t kPicosecondsPerSecond = 1000000000000ULL;
 
 struct EmptyConfigView {};
@@ -367,6 +358,11 @@ summarizeFabric(const fabric::FinalizedFabricRoot &root) {
   return estimate;
 }
 
+/// Bytes one memory actor firing moves across its service: every integer,
+/// floating-point, or vector operand and result, so a load counts its data
+/// result, a store its data operand, and a read-modify-write both.
+llvm::Expected<std::uint64_t> memoryActorTransferBytes(mlir::Operation *actor);
+
 llvm::Expected<std::uint64_t> typeBitWidth(mlir::Type type,
                                            mlir::Operation *owner) {
   if (type.isIntOrFloat())
@@ -384,6 +380,26 @@ llvm::Expected<std::uint64_t> typeBitWidth(mlir::Type type,
     return loom::getFixedVectorBitWidth(vector, *element);
   }
   return 1;
+}
+
+llvm::Expected<std::uint64_t> memoryActorTransferBytes(mlir::Operation *actor) {
+  std::uint64_t bytes = 0;
+  const auto accumulate = [&](mlir::Type type) -> llvm::Error {
+    if (!(type.isIntOrFloat() || mlir::isa<mlir::VectorType>(type)))
+      return llvm::Error::success();
+    auto width = typeBitWidth(type, actor);
+    if (!width)
+      return width.takeError();
+    return accumulateScaled(bytes, *width / 8 + (*width % 8 != 0 ? 1 : 0), 1,
+                            "memory actor transfer bytes");
+  };
+  for (mlir::Value operand : actor->getOperands())
+    if (llvm::Error error = accumulate(operand.getType()))
+      return std::move(error);
+  for (mlir::Value result : actor->getResults())
+    if (llvm::Error error = accumulate(result.getType()))
+      return std::move(error);
+  return bytes;
 }
 
 bool containsFloat(mlir::Type type) {
@@ -626,35 +642,22 @@ lowConfidenceClockFrequencyHertz(const PhysicalEstimate &physical) {
 llvm::Expected<LowConfidenceMetricSet>
 estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
                              AnalyticWorkloadEstimate workload,
+                             llvm::ArrayRef<AnalyticLaunchEstimate> launches,
+                             const SystemPlatformModel &platform,
                              const fabric::FinalizedFabricRoot &fabricRoot) {
-  std::uint64_t runtime = 0;
-  if (llvm::Error error = accumulateScaled(runtime, instructionLeaves,
-                                           kInstructionLeafEstimatePicoseconds,
-                                           "InstructionCore Runtime"))
-    return std::move(error);
-  if (llvm::Error error = accumulateScaled(runtime, workload.schedulingPressure,
-                                           kSpatialPressureEstimatePicoseconds,
-                                           "Spatial scheduling Runtime"))
-    return std::move(error);
-  if (llvm::Error error =
-          accumulateScaled(runtime, workload.graphActivations,
-                           kGraphLaunchEstimatePicoseconds +
-                               kGraphSynchronizationEstimatePicoseconds,
-                           "graph launch and synchronization Runtime"))
-    return std::move(error);
-  if (llvm::Error error = accumulateScaled(
-          runtime, workload.boundaryPayloadBytes,
-          kBoundaryByteEstimatePicoseconds, "boundary transfer Runtime"))
-    return std::move(error);
-  if (llvm::Error error = accumulateScaled(
-          runtime, workload.memoryBoundaryBindings,
-          kMemoryBindingEstimatePicoseconds, "memory binding Runtime"))
-    return std::move(error);
-  if (llvm::Error error = accumulateScaled(
-          runtime, workload.memoryTransactions,
-          kMemoryTransactionEstimatePicoseconds, "memory transaction Runtime"))
-    return std::move(error);
-  if (runtime >
+  auto runtime = estimateHostResidualPicoseconds(platform, instructionLeaves);
+  if (!runtime)
+    return runtime.takeError();
+  for (const AnalyticLaunchEstimate &launch : launches) {
+    auto duration =
+        estimateLaunchDuration(platform, launch, platform.accCoreCount);
+    if (!duration)
+      return duration.takeError();
+    if (llvm::Error error = accumulateScaled(*runtime, duration->picoseconds, 1,
+                                             "launch Runtime"))
+      return std::move(error);
+  }
+  if (*runtime >
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -681,9 +684,22 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_overflow: dynamic power estimate");
   return LowConfidenceMetricSet{
-      runtime, *frequency,
+      *runtime, *frequency,
       std::max<std::uint64_t>(physical->areaSquareMicrometers, 1),
       *dynamicPower, std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
+}
+
+llvm::Expected<std::optional<SystemPlatformModel>>
+projectFabricPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
+  auto system = fabric::requireSystemRoot(fabricRoot.view());
+  if (!system) {
+    llvm::consumeError(system.takeError());
+    return std::optional<SystemPlatformModel>{};
+  }
+  auto platform = projectSystemPlatformModel(*system);
+  if (!platform)
+    return platform.takeError();
+  return std::optional<SystemPlatformModel>(*platform);
 }
 
 llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
@@ -786,11 +802,20 @@ projectCanonicalDataflowWorkloadImpl(
       return std::move(error);
     if (dataflow::isCanonicalDataflowActor(
             demand.representative,
-            dataflow::CanonicalDataflowActorKind::Memory))
+            dataflow::CanonicalDataflowActorKind::Memory)) {
       if (llvm::Error error =
               accumulateScaled(workload.memoryTransactions, 1, demand.count,
                                "Canonical Dataflow memory transactions"))
         return std::move(error);
+      auto bytes = memoryActorTransferBytes(demand.representative);
+      if (!bytes)
+        return bytes.takeError();
+      if (llvm::Error error =
+              accumulateScaled(workload.externalMemoryBytes, *bytes,
+                               demand.count,
+                               "Canonical Dataflow memory bytes"))
+        return std::move(error);
+    }
   }
 
   llvm::SmallVector<dataflow::GraphRef> coveredGraphs;
@@ -824,8 +849,11 @@ projectCanonicalDataflowWorkloadImpl(
       criticalPathPressure =
           std::max(criticalPathPressure, schedule->graphCriticalLength(graph));
   }
-  workload.schedulingPressure =
-      std::max(workload.schedulingPressure, criticalPathPressure);
+  workload.criticalPathLength = criticalPathPressure;
+  for (const dataflow::StaticActorCriticality &actor : schedule->actors())
+    if (llvm::is_contained(coveredGraphs, actor.graph))
+      workload.recurrenceLength =
+          std::max(workload.recurrenceLength, actor.recurrenceCriticalLength);
 
   workload.graphActivations =
       selectedGraph ? 1 : program.staticGraphLaunches().size();

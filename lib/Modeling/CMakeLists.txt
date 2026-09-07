@@ -22,6 +22,7 @@ add_library(LoomStructuredFabricAnalyticModel
   StructuredEvaluationInvocationCache.cpp
   StructuredFabricAnalytic.cpp
   StructuredProgramFunctional.cpp
+  SystemRuntimeAnalytic.cpp
   SystemRuntimeParameterContract.cpp
   SystemRuntimePredictor.cpp
 )

@@ -6,6 +6,7 @@
 #include "Common/ExecutionControl.h"
 #include "DSE/PreMappingFrontier.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "PnR/System/SystemMappingMigration.h"
 
@@ -37,6 +38,7 @@ struct ResourceTimeInvocationKey final {
   /// speedup curve even when the underlying Dataflow artifact is unchanged.
   std::string entrySymbol;
   std::optional<std::uint64_t> estimatedRuntimePicoseconds;
+  std::vector<evaluation::models::AnalyticLaunchEstimate> launchEstimates;
 };
 
 /// Exact semantic context for removable transition-result memoization. The
@@ -186,11 +188,17 @@ std::uint64_t resourceTimeProjectionRetainedBytes(
 /// analytic speedup curve once for one canonical Dataflow. Completion
 /// dependencies are exact; an earlier token relation without a completion
 /// proof remains a FIFO dependency whose latency is unsupported.
+/// Projects the per-region speedup curves of one Canonical Dataflow program
+/// on one System. With launch estimates every region point is the roofline
+/// duration of its launch sites under that AccCore allocation; without them
+/// the whole-program estimate is split by region weight and divided by units.
 llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     llvm::StringRef entrySymbol,
     std::optional<std::uint64_t> estimatedRuntimePicoseconds = std::nullopt,
+    llvm::ArrayRef<evaluation::models::AnalyticLaunchEstimate> launchEstimates =
+        {},
     ResourceTimeEstimateSupport physicalModelSupport =
         ResourceTimeEstimateSupport::Unsupported);
 

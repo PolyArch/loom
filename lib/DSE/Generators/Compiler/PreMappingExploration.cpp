@@ -555,6 +555,7 @@ exploreStructuredCompilationToPreMapping(
     std::optional<std::size_t> planningRecordIndex;
     bool derivationsIncluded = false;
     std::optional<std::uint64_t> hostDynamicLeafExecutions = std::nullopt;
+    std::vector<evaluation::models::AnalyticLaunchEstimate> launchEstimates;
   };
   std::vector<RetainedOwnershipSelection> generations;
   std::vector<RetainedOwnershipAlternative> semanticAlternatives;
@@ -1106,6 +1107,8 @@ exploreStructuredCompilationToPreMapping(
                 *estimate ? std::optional<std::uint64_t>(
                                 (**estimate).hostDynamicLeafExecutions)
                           : std::nullopt};
+            if (*estimate)
+              alternative.launchEstimates = (**estimate).launches;
             if (depth + 1 == depthCount) {
               terminal.push_back(std::move(alternative));
               continue;
@@ -1212,6 +1215,8 @@ exploreStructuredCompilationToPreMapping(
                 coordinate.scheduleIntent;
             candidateInventory.back().hostDynamicLeafExecutions =
                 alternative.hostDynamicLeafExecutions;
+            candidateInventory.back().launchEstimates =
+                alternative.launchEstimates;
             alternative.planningRecordIndex = candidateInventory.size() - 1;
             semanticAlternatives.push_back(std::move(alternative));
           }

@@ -358,6 +358,72 @@ same model using the exact source root, before candidate enumeration. These
 are analytic picosecond observations, not native or target clock measurements.
 Candidate ranking continues to belong to the central ObjectiveProgram.
 
+### System Runtime Analytic Model
+
+Model kinds 2 and 3 estimate whole-case Runtime with one roofline System
+model rather than with free per-operation constants. Every platform quantity
+is derived from the exact Fabric System root and the builtin gem5 platform
+policy:
+
+```text
+SystemPlatformModel {
+  clock_period_picoseconds          : rate clock of the SpatialCore memory
+                                      attachment's System memory service
+  host_cycles_per_instruction_leaf  : HostCore realization kind
+                                      (InOrder 3, OutOfOrder 1)
+  acc_core_count
+  memory_latency_picoseconds        : service BoundedCompletion (or one rate
+                                      window under FairEventual)
+  memory_service_picoseconds_per_byte : rate window / (operations per window
+                                        * service beat bytes)
+  acc_core_outstanding_requests     : rate maxOutstanding
+  acc_core_request_bytes            : service beat bytes
+  launch_dispatch_picoseconds       : host Thread Dispatch leaves and PIO
+                                      operations per activation
+  launch_fixed_picoseconds          : AccCore InstructionCore entry, bridge
+                                      programming, and completion PIO
+}
+```
+
+The launch protocol operation counts follow the launch sequence owned by
+`docs/spec-runtime-abi.md`; the model identity pins them together with the
+per-leaf cycle assumptions. They are low-confidence assumptions, not measured
+timing, and a calibrated System Runtime bundle (model kind 16) supersedes them
+for ranking whenever one is admitted.
+
+Each static graph launch site yields one `AnalyticLaunchEstimate`:
+`activations` (dynamic firings over the complete program, from the exact
+Structured block profile), `compute_cycles_per_activation` (the iterations one
+activation performs times the larger of the resource-bound initiation interval
+and the recurrence length, plus the graph critical path),
+`external_memory_bytes_per_activation` (bytes every memory actor moves across
+the SpatialCore service boundary per iteration), and
+`boundary_payload_bytes_per_activation` (the invocation wire). The duration of
+a launch site under an allocation of `u` AccCores is:
+
+```text
+cores            = max(1, min(u, activations))
+per_core         = ceil(activations / cores)
+compute          = compute_cycles * clock_period
+bandwidth        = bytes * service_ps_per_byte * cores
+latency_chain    = ceil(ceil(bytes / request_bytes) / outstanding) * memory_latency
+point            = max(compute, bandwidth, latency_chain)
+wire             = memory_latency + boundary_bytes * service_ps_per_byte
+duration         = activations * launch_dispatch
+                 + per_core * (launch_fixed + wire + point)
+```
+
+The largest term is the site's typed bottleneck: `Launch` when the fixed cost
+reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
+`MemoryLatency`. Whole-case Runtime is the serialized host residual
+(executable leaves outside Spatial ownership times the host cycles per leaf
+and the clock period) plus every launch site's duration under the widest
+useful allocation. The same per-site estimates feed the resource-time
+projection: a region whose every rooted launch site carries an estimate takes
+the sum of those durations as its speedup-curve point for each allocation, so
+launch cost, shared bandwidth, and latency-bound request chains bound the
+schedule frontier instead of a weight-split runtime divided by units.
+
 Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
 view because their semantics are fixed by their descriptor, case, and, for

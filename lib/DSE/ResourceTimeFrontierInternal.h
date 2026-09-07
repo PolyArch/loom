@@ -88,6 +88,8 @@ appendResourceTimeInvocationKey(std::vector<std::uint8_t> &bytes,
   appendDigest(bytes, invocation.modelSnapshotDigest);
   appendString(bytes, invocation.entrySymbol);
   appendOptionalU64(bytes, invocation.estimatedRuntimePicoseconds);
+  evaluation::models::appendAnalyticLaunchEstimates(
+      bytes, invocation.launchEstimates);
 }
 
 inline void appendResourceTimeFeatures(

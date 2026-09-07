@@ -561,7 +561,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         resourceTimeConfig->digest(),
         modelSnapshot,
         request.sourceInvocation.entrySymbol,
-        planningRecord.estimatedRuntimePicoseconds};
+        planningRecord.estimatedRuntimePicoseconds,
+        planningRecord.launchEstimates};
     auto projectionKey = dse::deriveResourceTimeProjectionCacheKey(invocation);
     if (!projectionKey)
       return projectionKey.takeError();
@@ -580,7 +581,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       const MonotonicClock::time_point projectionBegin = MonotonicClock::now();
       auto computedProjection = dse::projectResourceTimeDataflow(
           dataflowView, *systemView, request.sourceInvocation.entrySymbol,
-          planningRecord.estimatedRuntimePicoseconds, physicalModelSupport);
+          planningRecord.estimatedRuntimePicoseconds,
+          planningRecord.launchEstimates, physicalModelSupport);
       const std::uint64_t projectionElapsed =
           elapsedNanoseconds(projectionBegin);
       resourceTimeProjectionElapsedNanoseconds =

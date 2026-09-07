@@ -853,6 +853,21 @@ void emitApplicationPlanningDiagnostics(
             payload["projection"] = nullptr;
           addOptionalUnsigned(payload, "estimated_runtime_ps",
                               record.estimatedRuntimePicoseconds);
+          llvm::json::Array launches;
+          for (const evaluation::models::AnalyticLaunchEstimate &launch :
+               record.launchEstimates) {
+            llvm::json::Object row;
+            row["static_graph_launch"] = launch.launch.entity.value();
+            row["activations"] = launch.activations;
+            row["compute_cycles_per_activation"] =
+                launch.computeCyclesPerActivation;
+            row["external_memory_bytes_per_activation"] =
+                launch.externalMemoryBytesPerActivation;
+            row["boundary_payload_bytes_per_activation"] =
+                launch.boundaryPayloadBytesPerActivation;
+            launches.push_back(std::move(row));
+          }
+          payload["analytic_launches"] = std::move(launches);
           addOptionalUnsigned(payload, "host_dynamic_leaf_executions",
                               record.hostDynamicLeafExecutions);
           addOptionalUnsigned(payload, "preference_rank",
