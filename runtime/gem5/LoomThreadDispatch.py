@@ -10,6 +10,9 @@ class LoomThreadDispatch(BasicPioDevice):
     workload = Param.LoomRiscvDeploymentWorkload(
         "Deployment workload that owns exact executable entries"
     )
+    memory_service = Param.LoomMemoryServiceProbe(
+        "Shared-memory service observer sampled at each root lifecycle event"
+    )
     root_event_trace_path = Param.String(
         "Canonical root lifecycle attempt output"
     )

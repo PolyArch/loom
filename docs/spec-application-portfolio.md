@@ -422,20 +422,53 @@ the exact runtime manifest, host-only and mapped System executions, their
 completed Runtime Evidence, and each required passing product-oracle Evidence.
 Both requests use identical gem5 binding, model, model inputs, configuration,
 conditions, and replicate index. Their complete functional observations agree.
-The exact Runtime values must equal the complete program tick windows. Native
-shared-memory acceptance-service occupancy supplies System resource evidence.
-The result is derived from immutable owners, not stored as another Artifact or
+The exact Runtime values must equal the complete program tick windows. The
+result is derived from immutable owners, not stored as another Artifact or
 written back into the earlier pair decision.
 
-The owner's `loom.application.system_qor_projection` version `1.0` reports exact
-roots, durations, native busy ticks, utilization ratios, speedup, and a derived
-`qualified` or `not_qualified` status. Qualification currently establishes the
-bandwidth branch: strictly positive complete-program speedup and strictly more
-than 90 percent of existing shared-memory service capacity. A compute-occupancy
-measurement is not yet available and is never inferred from elapsed accelerator
-time. `not_qualified` preserves the observed measurements without claiming that
-unmeasured compute occupancy failed its alternative target. Capacity is fixed
-by the exact System model and cannot be reduced to improve utilization.
+Accelerator resources are measured over the candidate's accelerated window: the
+gem5-tick interval from its first root Start lifecycle event through its last
+root Completion lifecycle event. Host gaps between launches stay inside that
+interval, so an idle accelerator is never hidden. The window's shared-memory
+acceptance service is the difference of the cumulative service samples the two
+bounding lifecycle events carry. A run that completes no launch has no window
+and therefore no accelerated resource claim; the host-only member is exactly
+such a run. Speedup remains the complete-program comparison, so shrinking the
+window cannot manufacture qualification.
+
+Compute occupancy is the candidate's second, independent resource measurement.
+One retired compute firing occupies its bound compute unit for exactly one
+reference cycle. The numerator sums the retired firings of Compute-kind actors
+across every candidate Spatial invocation replayed standalone on the CGRA
+engine over its LaunchToTerminal window; the DFG replays are a correctness
+oracle, not the candidate. The denominator is the compute-cycle capacity the
+launched accelerators offered across the window: the mapped compute units times
+the launched AccCore count times the window's reference cycles. Mapped compute
+units are the distinct physical PE occurrences, spatial and temporal, that carry
+at least one compute realization in the selected SpatialMapping. Launched
+AccCores are the distinct AccCores that received at least one invocation. Window
+reference cycles are the window's gem5 ticks divided by the SpatialCore clock
+period, taken from that occurrence's Fabric clock-domain contract; no reference
+frequency is assumed.
+
+The owner's `loom.application.system_qor_projection` version `2.0` reports exact
+roots, complete-program durations, native busy ticks, the candidate's
+accelerated window with both resource measurements, speedup, a derived
+`qualified` or `not_qualified` status, and a typed bottleneck classification.
+Qualification requires a strictly positive complete-program speedup joined with
+a saturated accelerator resource: strictly more than 90 percent window
+shared-memory service utilization, or strictly more than 90 percent window
+compute occupancy. The two branches are independent; either one suffices.
+`not_qualified` preserves both observed measurements. Capacity is fixed by the
+exact System model and the selected mapping and cannot be reduced to improve
+either utilization.
+
+The bottleneck classification explains the same measurements the status uses and
+is not a second gate. It is derived in a fixed order: `memory_bandwidth_bound`
+when the window's memory service exceeds the threshold, then `compute_bound`
+when the window's compute occupancy does, then `host_bound` when the window
+covers less than one tenth of the complete program, otherwise `latency_bound`.
+The DSE consumes this classification; it never overrides the status.
 
 The System driver always retains valid measured results, including regressions.
 The real-application verifier and portfolio qualification consume this

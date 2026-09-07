@@ -603,6 +603,7 @@ def build_system(
         pio_addr=dispatch["pio_address"],
         pio_latency=dispatch["pio_latency"],
         workload=system.workload,
+        memory_service=system.memory_service,
         root_event_control_path=dispatch["root_event_control_path"],
         root_event_trace_path=dispatch["root_event_trace_path"],
         logical_target_count=logical_target_count,

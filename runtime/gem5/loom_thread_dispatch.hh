@@ -5,6 +5,7 @@
 
 #include "dev/io_device.hh"
 #include "params/LoomThreadDispatch.hh"
+#include "runtime/gem5/loom_memory_service_probe.hh"
 #include "sim/eventq.hh"
 
 #include <cstdint>
@@ -46,6 +47,7 @@ private:
   };
 
   LoomRiscvDeploymentWorkload *const workload;
+  LoomMemoryServiceProbe *const memoryService;
   std::uint64_t selectedTarget = 0;
   std::uint64_t invocationAddress = 0;
   std::uint64_t invocationSize = 0;
