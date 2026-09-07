@@ -84,6 +84,10 @@ struct CgraExecutionSession::Impl final {
   const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
   const detail::PreparedCgraGraph *graphExecution = nullptr;
   detail::ResolvedLaunchContext context;
+  /// Committed and retired firings per semantic actor ordinal. The scalar
+  /// counters below total the same events; this table keeps their actor
+  /// attribution so occupancy can be measured per actor kind.
+  std::vector<ActorTransitionCounts> actorTransitions;
   detail::SimulatorState dynamicState;
   detail::ExternalStreamInputState streamInputs;
   std::optional<CanonicalSimulationRuntimeInput> capturedRuntimeInput;
@@ -109,7 +113,8 @@ struct CgraExecutionSession::Impl final {
        std::optional<TraceCaptureLevel> traceLevel)
       : preparedOwner(std::move(prepared)), prepared(preparedOwner.get()),
         workload(&workload), runtimeInput(&runtimeInput),
-        graphExecution(&graphExecution), context(std::move(context)) {
+        graphExecution(&graphExecution), context(std::move(context)),
+        actorTransitions(graphExecution.actors.size()) {
     if (traceLevel)
       trace.emplace(SpatialDiagnosticTrace{*traceLevel, {}});
   }
@@ -225,14 +230,44 @@ struct CgraExecutionSession::Impl final {
     return *requested;
   }
 
+  /// The actor-transition table over the whole launch-to-terminal window. It
+  /// is total over the rooted graph's actor inventory, so an actor that never
+  /// fired is reported with zero counts rather than omitted.
+  std::optional<ActivitySummary> actorTransitionSummary() const {
+    if (actorTransitions.empty())
+      return std::nullopt;
+    std::vector<ActorTransitionEntry> transitions;
+    transitions.reserve(actorTransitions.size());
+    for (std::size_t ordinal = 0; ordinal != actorTransitions.size(); ++ordinal)
+      transitions.push_back(
+          {graphExecution->actors[ordinal], actorTransitions[ordinal]});
+    llvm::sort(transitions, [](const ActorTransitionEntry &lhs,
+                               const ActorTransitionEntry &rhs) {
+      return lhs.actor.entity.value() < rhs.actor.entity.value();
+    });
+    return ActivitySummary{ActivityWindow::LaunchToTerminal,
+                           ActivityCoverage::Complete,
+                           ActorTransitionsActivity{std::move(transitions)}};
+  }
+
   llvm::Expected<std::vector<ActivitySummary>>
   finishActivity(const SpatialEventCoordinate &terminal) {
+    std::vector<ActivitySummary> summaries;
+    // The actor table sorts before a Fabric summary of the same window.
+    if (auto actors = actorTransitionSummary())
+      summaries.push_back(std::move(*actors));
     if (!activity)
-      return std::vector<ActivitySummary>{};
+      return summaries;
     if (llvm::Error error =
             activity->close(ActivityWindow::LaunchToTerminal, terminal))
       return std::move(error);
-    return activity->takeSummaries();
+    llvm::append_range(summaries, activity->takeSummaries());
+    llvm::sort(summaries, [](const ActivitySummary &lhs,
+                             const ActivitySummary &rhs) {
+      return std::make_pair(lhs.window, lhs.payload.index()) <
+             std::make_pair(rhs.window, rhs.payload.index());
+    });
+    return summaries;
   }
 
   llvm::Error settleQuiescence() {
@@ -383,10 +418,17 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
         ((**frame).sourceMask & 4) != 0;
     impl_->counters.physicalSourceFrameCount += ((**frame).sourceMask & 8) != 0;
     for (const detail::CgraActorLifecycleEvent &event : (**frame).actorEvents) {
-      if (event.kind == detail::CgraActorLifecycleKind::Committed)
+      if (event.semanticActorOrdinal >= impl_->actorTransitions.size())
+        return invalid("CGRA actor lifecycle ordinal is out of range");
+      ActorTransitionCounts &counts =
+          impl_->actorTransitions[event.semanticActorOrdinal];
+      if (event.kind == detail::CgraActorLifecycleKind::Committed) {
         ++impl_->counters.actorCommitCount;
-      else
+        ++counts.committedFirings;
+      } else {
         ++impl_->counters.actorRetirementCount;
+        ++counts.retiredFirings;
+      }
     }
     impl_->counters.tokenPublicationCount += (**frame).publications.size();
     impl_->counters.memoryLinearizationCount +=

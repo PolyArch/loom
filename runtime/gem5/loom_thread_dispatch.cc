@@ -177,7 +177,7 @@ bool receiveAll(int socket, std::uint8_t *bytes, std::size_t size,
 
 LoomThreadDispatch::LoomThreadDispatch(const Params &params)
     : BasicPioDevice(params, gem5ThreadDispatchApertureBytes),
-      workload(params.workload),
+      workload(params.workload), memoryService(params.memory_service),
       logicalTargetCount(params.logical_target_count),
       endpointTargetOffsets(params.endpoint_target_offsets),
       endpointDispatchEnabled(params.endpoint_dispatch_enabled),
@@ -186,6 +186,7 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
                      std::ios::binary | std::ios::trunc),
       serviceEvent([this] { service(); }, name() + ".service") {
   panic_if(!workload, "LoomThreadDispatch workload is absent");
+  panic_if(!memoryService, "LoomThreadDispatch memory service observer is absent");
   panic_if((logicalTargetCount == 0) != records.empty(),
            "LoomThreadDispatch target domain is inconsistent");
   panic_if(endpointTargetOffsets.empty(),
@@ -553,6 +554,9 @@ LoomThreadDispatch::recordRootEvent(Gem5RootLifecycleAction action) {
   writeU64(rootEventTrace, acknowledgementGeneration);
   writeU32(rootEventTrace, static_cast<std::uint32_t>(decision));
   writeU64(rootEventTrace, endpoint);
+  // The cumulative shared-memory service integral sampled at this event bounds
+  // the accelerated window's memory occupancy without a second observer.
+  writeU64(rootEventTrace, memoryService->occupiedTicks());
   rootEventTrace.flush();
   fatal_if(!rootEventTrace,
            "LoomThreadDispatch cannot append its root event trace");

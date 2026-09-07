@@ -66,7 +66,7 @@ activity only from the exact `SimulationExecution`. It obtains normalized
 outcome, metrics, and findings only from exact `EvaluationEvidence`, with query
 meaning recovered through the corresponding `EvaluationRequest` and
 registries. Persistent trace projection is unavailable in
-`loom.simulation_execution 3.0` except for the narrow System root-lifecycle
+`loom.simulation_execution 3.1` except for the narrow System root-lifecycle
 progress sequence. An invocation-local diagnostic trace may be projected only
 when the current attempt explicitly supplies it.
 

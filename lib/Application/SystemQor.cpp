@@ -20,6 +20,24 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "application System QoR: " + message);
 }
 
+/// Sign of `numerator/denominator - targetNumerator/targetDenominator`, taken
+/// without leaving the exact integer domain.
+int compareToTarget(std::uint64_t numerator, std::uint64_t denominator,
+                    std::uint64_t targetNumerator,
+                    std::uint64_t targetDenominator) {
+  constexpr unsigned width = 128;
+  const auto measured = llvm::APInt(width, numerator) * targetDenominator;
+  const auto target = llvm::APInt(width, denominator) * targetNumerator;
+  return measured.ugt(target) ? 1 : (measured.ult(target) ? -1 : 0);
+}
+
+/// A resource is saturated only strictly above the shared exclusive target.
+bool isSaturated(evaluation::ExactRatio value) {
+  return compareToTarget(value.numerator(), value.denominator(),
+                         applicationMinimumResourceUtilizationNumerator,
+                         applicationMinimumResourceUtilizationDenominator) > 0;
+}
+
 struct ImportedRun final {
   sim::CanonicalSimulationExecution execution;
   evaluation::EvaluationRequest request;
@@ -116,6 +134,50 @@ llvm::Expected<ImportedRun> importRun(
                      std::move(measurement)};
 }
 
+/// Derives the candidate's accelerated window and both resource occupancies
+/// over it. The compute capacity offered across the window is the mapped
+/// compute units of every launched accelerator held for its reference cycles.
+llvm::Expected<ApplicationSystemWindowMeasurement> measureCandidateWindow(
+    const sim::CanonicalSimulationExecution &execution,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ApplicationSystemComputeInputs &compute, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  auto window = sim::projectSystemAcceleratedWindow(execution, resolution,
+                                                    artifacts, blobs);
+  if (!window)
+    return window.takeError();
+  if (!*window)
+    return invalid("candidate completed no accelerator launch, so it has no "
+                   "accelerated window");
+  const std::uint64_t elapsed = (*window)->elapsedTicks();
+  if (elapsed == 0)
+    return invalid("candidate accelerated window is empty");
+  auto memoryUtilization =
+      evaluation::ExactRatio::get((*window)->occupiedTicks, elapsed);
+  if (!memoryUtilization)
+    return memoryUtilization.takeError();
+  if (compute.referenceCycleTicks == 0 || compute.mappedComputeUnits == 0 ||
+      compute.launchedAccCores == 0)
+    return invalid("candidate compute measurement has no accelerator capacity");
+  // firings / (units * cores * elapsed / period) reduced by multiplying both
+  // sides by the period, so a window that is not a whole number of reference
+  // cycles stays exact instead of rounding the capacity.
+  constexpr unsigned width = 128;
+  const llvm::APInt capacity = llvm::APInt(width, elapsed) *
+                               compute.mappedComputeUnits *
+                               compute.launchedAccCores;
+  const llvm::APInt firings =
+      llvm::APInt(width, compute.retiredComputeFirings) * compute.referenceCycleTicks;
+  if (capacity.getActiveBits() > 64 || firings.getActiveBits() > 64)
+    return invalid("candidate compute occupancy exceeds the exact ratio domain");
+  auto occupancy = evaluation::ExactRatio::get(firings.getZExtValue(),
+                                               capacity.getZExtValue());
+  if (!occupancy)
+    return occupancy.takeError();
+  return ApplicationSystemWindowMeasurement{**window, *memoryUtilization,
+                                            {compute, *occupancy}};
+}
+
 void writeRoot(llvm::json::OStream &json, llvm::StringRef name,
                const ArtifactRootReference &reference) {
   json.attributeObject(name, [&] { writeArtifactRootReferenceJsonFields(json, reference); });
@@ -143,15 +205,58 @@ void writeRun(llvm::json::OStream &json, const ApplicationSystemRunMeasurement &
   });
 }
 
+void writeWindow(llvm::json::OStream &json,
+                 const ApplicationSystemWindowMeasurement &measured) {
+  json.attribute("first_start_tick", measured.window.firstStartTick);
+  json.attribute("last_completion_tick", measured.window.lastCompletionTick);
+  json.attribute("elapsed_ticks", measured.window.elapsedTicks());
+  json.attributeObject("shared_memory", [&] {
+    json.attribute("occupied_ticks", measured.window.occupiedTicks);
+    writeRatio(json, "utilization", measured.memoryUtilization);
+  });
+  json.attributeObject("compute", [&] {
+    const auto &inputs = measured.compute.inputs;
+    json.attribute("retired_compute_firings", inputs.retiredComputeFirings);
+    json.attribute("mapped_compute_units", inputs.mappedComputeUnits);
+    json.attribute("launched_acc_cores", inputs.launchedAccCores);
+    json.attribute("reference_cycle_ticks", inputs.referenceCycleTicks);
+    writeRatio(json, "occupancy", measured.compute.occupancy);
+  });
+}
+
 } // namespace
 
+llvm::StringRef
+applicationSystemBottleneckSpelling(ApplicationSystemBottleneck bottleneck) {
+  switch (bottleneck) {
+  case ApplicationSystemBottleneck::MemoryBandwidthBound:
+    return "memory_bandwidth_bound";
+  case ApplicationSystemBottleneck::ComputeBound:
+    return "compute_bound";
+  case ApplicationSystemBottleneck::HostBound:
+    return "host_bound";
+  case ApplicationSystemBottleneck::LatencyBound:
+    return "latency_bound";
+  }
+  llvm_unreachable("closed System bottleneck classification");
+}
+
+ApplicationSystemBottleneck ApplicationSystemQor::bottleneck() const {
+  if (isSaturated(window_.memoryUtilization))
+    return ApplicationSystemBottleneck::MemoryBandwidthBound;
+  if (isSaturated(window_.compute.occupancy))
+    return ApplicationSystemBottleneck::ComputeBound;
+  if (compareToTarget(window_.window.elapsedTicks(), candidate_.elapsedTicks,
+                      applicationHostBoundWindowNumerator,
+                      applicationHostBoundWindowDenominator) < 0)
+    return ApplicationSystemBottleneck::HostBound;
+  return ApplicationSystemBottleneck::LatencyBound;
+}
+
 ApplicationSystemQorStatus ApplicationSystemQor::status() const {
-  constexpr unsigned width = 128;
-  const auto used = llvm::APInt(width, candidate_.memoryActivity.occupiedTicks) *
-                    applicationMinimumMemoryUtilizationDenominator;
-  const auto target = llvm::APInt(width, candidate_.elapsedTicks) *
-                      applicationMinimumMemoryUtilizationNumerator;
-  return candidate_.elapsedTicks < host_.elapsedTicks && used.ugt(target)
+  const bool saturated = isSaturated(window_.memoryUtilization) ||
+                         isSaturated(window_.compute.occupancy);
+  return candidate_.elapsedTicks < host_.elapsedTicks && saturated
              ? ApplicationSystemQorStatus::Qualified : ApplicationSystemQorStatus::NotQualified;
 }
 
@@ -161,6 +266,7 @@ llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
     const evaluation::CaseArtifactResolution &hostResolution,
     const ApplicationSystemRunEvidence &candidate,
     const evaluation::CaseArtifactResolution &candidateResolution,
+    const ApplicationSystemComputeInputs &candidateCompute,
     const ResolvedConfig &config, const ArtifactStore &artifacts, const BlobStore &blobs) {
   const auto &runtime = manifest.manifest();
   const auto &baseline = runtime.hostOnlyBaseline();
@@ -196,9 +302,13 @@ llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
                                             accelerated->measurement.elapsedTicks);
   if (!speedup)
     return speedup.takeError();
+  auto window = measureCandidateWindow(accelerated->execution, candidateResolution,
+                                       candidateCompute, artifacts, blobs);
+  if (!window)
+    return window.takeError();
   return ApplicationSystemQor(manifest.reference(), host->gem5Binding,
                               std::move(host->measurement), std::move(accelerated->measurement),
-                              *speedup);
+                              std::move(*window), *speedup);
 }
 
 void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
@@ -208,15 +318,28 @@ void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
   writeRoot(json, "application_runtime_manifest", qor.runtimeManifest());
   writeRoot(json, "gem5_binding", qor.gem5Binding());
   json.attributeObject("host_only", [&] { writeRun(json, qor.hostOnly()); });
-  json.attributeObject("candidate", [&] { writeRun(json, qor.candidate()); });
+  json.attributeObject("candidate", [&] {
+    writeRun(json, qor.candidate());
+    json.attributeObject("accelerated_window",
+                         [&] { writeWindow(json, qor.candidateWindow()); });
+  });
   writeRatio(json, "speedup", qor.speedup());
   json.attribute("status", qor.status() == ApplicationSystemQorStatus::Qualified
                                ? "qualified" : "not_qualified");
+  json.attribute("bottleneck", applicationSystemBottleneckSpelling(qor.bottleneck()));
   json.attributeObject("target", [&] {
     json.attribute("strict_speedup", true);
-    json.attributeObject("minimum_memory_utilization_exclusive", [&] {
-      json.attribute("numerator", applicationMinimumMemoryUtilizationNumerator);
-      json.attribute("denominator", applicationMinimumMemoryUtilizationDenominator);
+    json.attributeArray("window_branches", [&] {
+      json.value("memory_service_utilization");
+      json.value("compute_occupancy");
+    });
+    json.attributeObject("minimum_window_utilization_exclusive", [&] {
+      json.attribute("numerator", applicationMinimumResourceUtilizationNumerator);
+      json.attribute("denominator", applicationMinimumResourceUtilizationDenominator);
+    });
+    json.attributeObject("host_bound_window_fraction_exclusive", [&] {
+      json.attribute("numerator", applicationHostBoundWindowNumerator);
+      json.attribute("denominator", applicationHostBoundWindowDenominator);
     });
   });
 }

@@ -12,7 +12,7 @@ The fixed schema descriptors are:
 ```text
 loom.simulation_workload      1.1
 loom.simulation_runtime_input 2.0
-loom.simulation_execution     3.0
+loom.simulation_execution     3.1
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
@@ -20,9 +20,12 @@ Schema versions use `X.Y`: `X` denotes an incompatible change and `Y` denotes
 a compatible extension. Simulator-specific request, result, trace, activity,
 or report Artifact families are forbidden.
 
-`loom.simulation_execution 3.0` incompatibly adds optional native System memory
-activity over the existing mandatory narrow System root-lifecycle progress form. It does not add a general diagnostic
-trace, provider payload, or replay field.
+`loom.simulation_execution 3.1` extends the optional native System memory
+activity of `3.0` with a required per-event shared-memory service sample on
+every mandatory narrow System root-lifecycle progress entry. Identity bytes are
+compared by exact schema version, so `3.0` bytes are simply another identity and
+no compatibility path reads them. It does not add a general diagnostic trace,
+provider payload, or replay field.
 
 ## SimulationWorkload
 
@@ -534,7 +537,7 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 3.0` wire. The invocation-local
+define the complete `loom.simulation_execution 3.1` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
 root; the narrow System root-lifecycle progress sequence is a distinct
 mandatory observation.
@@ -857,6 +860,15 @@ closure. The event key is the sole event identity. `occurrence` is a nonzero
 execution-local dynamic invocation identity assigned by the System provider;
 it does not redefine the event family or root.
 
+Each entry also carries `memory_occupied_ticks`, the cumulative shared-memory
+acceptance-service integral of the same execution sampled at that event by the
+sole maintained service observer. Samples are non-decreasing along the ordered
+lifecycle and never exceed the execution's full-program occupancy when memory
+activity is present. The difference of two samples is therefore the exact
+service occupancy of the interval they bound, which is what makes an accelerated
+window measurable without a second observer or a derived rate. A sample is not a
+second time authority and never replaces the coordinate.
+
 Lifecycle coordinates are strictly increasing across the array and lie in the
 closed interval from `program_entry_accepted` through `program_exit_visible`
 when present, otherwise through `terminal_observed`. A start introduces a
@@ -870,18 +882,20 @@ completion.
 The System progress wire encodes the three anchors in declaration order,
 followed by an unsigned 64-bit big-endian lifecycle count. Each lifecycle
 entry contains a length-framed canonical local `EventFamilyKey`, the unsigned
-64-bit big-endian occurrence, and the coordinate's unsigned 64-bit big-endian
-tick and delta. Foreign Dataflow references, non-root boundary families,
-unmapped roots, zero or reused occurrences, completion before start, duplicate
-completion, non-increasing coordinates, and out-of-interval coordinates are
-invalid identity bytes.
+64-bit big-endian occurrence, the coordinate's unsigned 64-bit big-endian tick
+and delta, and the unsigned 64-bit big-endian `memory_occupied_ticks` sample.
+Foreign Dataflow references, non-root boundary families, unmapped roots, zero or
+reused occurrences, completion before start, duplicate completion,
+non-increasing coordinates, out-of-interval coordinates, decreasing service
+samples, and a sample above the full-program occupancy are invalid identity
+bytes.
 
 These observations do not copy a tick frequency, wall time, exit-code policy,
 or gem5 event priority. Evaluation derives metrics through the exact model.
 The root lifecycle is not a general gem5 event trace and does not admit raw
 provider records or diagnostic events. Raw gem5 traces remain attempt or
 scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
-event algebra below only outside `loom.simulation_execution 3.0` identity.
+event algebra below only outside `loom.simulation_execution 3.1` identity.
 
 ## Activity Summaries
 
@@ -1038,19 +1052,32 @@ window. Atomic instructions still travel as timing packets. The probe requires
 timing System mode; this contract does not admit arbitrary atomic-mode transport.
 Missing observations remain unavailable and never become zero. Admission
 requires a retired positive gem5-tick window, occupied ticks no greater than that
-window, and the exact same-System binding's single physical memory domain.
+window, every root-lifecycle service sample no greater than that occupancy, and
+the exact same-System binding's single physical memory domain.
+
+The same observer is sampled by the Thread Dispatch device at every root
+lifecycle event, so the execution retains one cumulative service integral read at
+two granularities: the full-program total and the per-event samples. There is no
+second counter and no derived rate.
 
 `projectSystemMemoryUtilization` divides occupied ticks by the complete program
-window. The bound SimpleMemory contract retains its existing finite capacity:
+window. `projectSystemAcceleratedWindow` instead reports the accelerated window:
+the first observed root Start tick, the last observed root Completion tick, and
+the difference of their service samples. Host gaps between launches stay inside
+that interval. The window is absent when the execution completed no root launch,
+so a host-only run is unmeasured rather than fully utilized; the Application
+owner additionally refuses a window that spans no tick, because no occupancy
+ratio exists over it. The bound SimpleMemory contract retains its existing finite capacity:
 one accepted byte consumes 73 ticks after native conversion of the default
 12.8 GiB/s rate at a fixed 1ps global tick. Configuration verifies the effective
-native rate. Neither idle devices nor unused time disappear from the denominator.
-The execution stores only native occupancy; the reduced exact utilization ratio
-is derived. It establishes no compute occupancy and does not itself qualify
-application QoR. Other System models may omit memory activity.
+native rate. Neither idle devices nor unused time disappear from either
+denominator. The execution stores only native occupancy; both reduced exact
+utilization ratios are derived. Memory service alone does not qualify
+application QoR; the Application owner joins it with an independent compute
+occupancy. Other System models may omit memory activity.
 
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 3.0` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 3.1` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -1093,7 +1120,7 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 3.0` contains no general diagnostic-trace field.
+`loom.simulation_execution 3.1` contains no general diagnostic-trace field.
 Its mandatory narrow System root-lifecycle progress sequence is not a
 `SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
 Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
@@ -1530,7 +1557,7 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 3.0` import admits only
+noninterference. Persistent `loom.simulation_execution 3.1` import admits only
 the narrow System root-lifecycle progress field and rejects any general trace,
 manifest, chunk, coverage, path, or opaque diagnostic field.
 
