@@ -50,9 +50,12 @@ enum class CgraExternalMemoryOperation : std::uint32_t {
   Write = 1,
 };
 
-/// One active element of a logical memory actor firing. Offsets are relative
-/// to the canonical runtime memory object. A write carries exactly byteCount
-/// bytes; a read carries none.
+/// One contiguous external transfer of a logical memory actor firing. Offsets
+/// are relative to the canonical runtime memory object. A write carries
+/// exactly byteCount bytes; a read carries none. A contiguous access
+/// contributes one element for each run of adjacent active lanes, so a fully
+/// active vector firing is one element; element and indexed geometry
+/// contribute one element for each active lane.
 struct CgraExternalMemoryElement final {
   std::uint64_t byteOffset = 0;
   std::uint64_t byteCount = 0;
@@ -86,15 +89,22 @@ using CgraExternalMemorySubmission =
 
 /// Execution-scoped provider for manager-dispatched CGRA memory requests.
 /// A completed local service returns its response. An external service may
-/// retain the request and return Pending; the execution then suspends its
-/// current model frame until the matching response arrives. Provider-internal
-/// beats remain invisible to actor firing and retirement identity.
+/// retain the request and return Pending; the execution keeps advancing every
+/// actor whose linearization the consistency domain does not order behind that
+/// request. Provider-internal beats remain invisible to actor firing and
+/// retirement identity.
 class CgraExternalMemoryProvider {
 public:
   virtual ~CgraExternalMemoryProvider() = default;
 
   virtual llvm::Expected<CgraExternalMemorySubmission>
   submit(const CgraExternalMemoryRequest &request) = 0;
+
+  /// Concurrent requests the selected external service guarantees. The
+  /// execution submits at most this many requests before consuming the
+  /// response of the earliest one. It is the exact service contract's
+  /// outstanding-operation guarantee, never a simulator-chosen depth.
+  virtual std::uint64_t outstandingCapacity() const = 0;
 };
 
 } // namespace loom::sim

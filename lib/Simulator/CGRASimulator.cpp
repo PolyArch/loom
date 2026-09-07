@@ -492,9 +492,16 @@ llvm::Error CgraExecutionSession::completeExternalMemory(
     CgraExternalMemoryRequestId request, CgraExternalMemoryResponse response) {
   if (!impl_)
     return invalid("CGRA execution session is empty");
-  if (impl_->resultTaken ||
-      impl_->lifecycle !=
-          SpatialExecutionSessionState::WaitingForExternalMemory) {
+  // Requests are pipelined, so a response may arrive while the session is
+  // runnable or awaiting another external event. Only a finished session has
+  // no external memory left to answer.
+  const bool live =
+      impl_->lifecycle == SpatialExecutionSessionState::Runnable ||
+      impl_->lifecycle ==
+          SpatialExecutionSessionState::WaitingForExternalMemory ||
+      impl_->lifecycle ==
+          SpatialExecutionSessionState::WaitingForExternalStreamInput;
+  if (impl_->resultTaken || !live) {
     impl_->lifecycle = SpatialExecutionSessionState::Failed;
     return invalid("CGRA execution session has no pending external memory");
   }
@@ -503,7 +510,9 @@ llvm::Error CgraExecutionSession::completeExternalMemory(
     impl_->lifecycle = SpatialExecutionSessionState::Failed;
     return error;
   }
-  if (!impl_->runtime->waitingForExternalMemory())
+  if (impl_->lifecycle ==
+          SpatialExecutionSessionState::WaitingForExternalMemory &&
+      !impl_->runtime->waitingForExternalMemory())
     impl_->lifecycle = SpatialExecutionSessionState::Runnable;
   return llvm::Error::success();
 }

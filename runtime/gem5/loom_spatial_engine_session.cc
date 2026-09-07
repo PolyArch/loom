@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <set>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -90,19 +89,22 @@ void LoomSpatialEngineSession::advance() {
     initiator.startEngineWait();
     loom::runtime::Gem5BridgeAdvance response;
     const bool received = loom::runtime::readGem5BridgeAdvance(
-        socket, bridgeCount, messageLimit, response, diagnostic);
+        socket,
+        bridgeCount * loom::runtime::gem5BridgeMaximumBridgeActionsPerAdvance,
+        messageLimit, response, diagnostic);
     initiator.finishEngineWait();
     fatal_if(!received, "Loom Spatial causal response failed: %s",
              diagnostic.c_str());
     fatal_if(response.generation != input.generation ||
                  response.causalTick != input.causalTick,
              "Loom Spatial causal response has stale or foreign identity");
-    std::set<std::uint64_t> targets;
+    // One Bridge may receive several concurrent memory transactions in one
+    // response; every other boundary action stays unique per Bridge because
+    // the engine emits it only once per causal advance.
     for (const auto &message : response.messages) {
       const auto found = bridges.find(message.bridgeSessionOrdinal);
-      fatal_if(found == bridges.end() ||
-                   !targets.insert(message.bridgeSessionOrdinal).second,
-               "Loom Spatial response repeats or names a foreign bridge");
+      fatal_if(found == bridges.end(),
+               "Loom Spatial response names a foreign bridge");
       fatal_if(message.payload.size() +
                        loom::runtime::gem5BridgeWireHeaderBytes >
                    found->second->maximumMessageBytes,

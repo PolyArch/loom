@@ -615,27 +615,10 @@ llvm::Expected<std::optional<CgraGraphActivationFrame>>
 CgraGraphActivationRuntime::advance() {
   if (!started_)
     return invalid("CGRA graph activation has not started");
-  if (memory_->waitingForExternalMemory())
-    return std::optional<CgraGraphActivationFrame>{};
-  const std::optional<SpatialEventCoordinate> coordinate =
-      suspendedFrame_ ? std::optional<SpatialEventCoordinate>(
-                            suspendedFrame_->graph.coordinate)
-                      : nextCoordinate();
+  const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
   if (!coordinate)
     return std::optional<CgraGraphActivationFrame>{};
   CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}, 0};
-  if (suspendedFrame_) {
-    SuspendedFrame &suspended = *suspendedFrame_;
-    if (llvm::Error error = memory_->resumeExternalMemory(suspended.memory))
-      return std::move(error);
-    if (memory_->waitingForExternalMemory())
-      return std::optional<CgraGraphActivationFrame>{};
-    result = std::move(suspended.graph);
-    if (llvm::Error error = finishPhysicalFrame(
-            suspended.physical, std::move(suspended.memory), result))
-      return std::move(error);
-    suspendedFrame_.reset();
-  }
 
   while (true) {
     const auto computeCoordinate = compute_->nextCoordinate();
@@ -696,11 +679,9 @@ CgraGraphActivationRuntime::advance() {
       auto memoryFrame = memory_->acceptPhysicalEvents(**physicalFrame);
       if (!memoryFrame)
         return memoryFrame.takeError();
-      if (memory_->waitingForExternalMemory()) {
-        suspendedFrame_.emplace(SuspendedFrame{
-            std::move(result), std::move(*memoryFrame), **physicalFrame});
-        return std::optional<CgraGraphActivationFrame>{};
-      }
+      // A firing whose external response has not arrived stays in the memory
+      // runtime's linearization order; every other client of this frame still
+      // advances.
       if (llvm::Error error = finishPhysicalFrame(
               **physicalFrame, std::move(*memoryFrame), result))
         return std::move(error);

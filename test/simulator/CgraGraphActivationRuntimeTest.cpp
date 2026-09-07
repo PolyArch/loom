@@ -58,6 +58,8 @@ public:
     return {{{static_cast<std::uint8_t>(13 + 4 * ordinal), 0, 0, 0}}};
   }
 
+  std::uint64_t outstandingCapacity() const override { return 2; }
+
   llvm::Expected<loom::sim::CgraExternalMemorySubmission>
   submit(const loom::sim::CgraExternalMemoryRequest &request) override {
     if (request.objectOrdinal != 0 ||
@@ -700,16 +702,30 @@ void graphActivationExecutesSelectedLocalMemory() {
               std::make_error_code(std::errc::not_supported),
           "manager memory target did not fail as typed unsupported");
 
-  const auto frameShape = [](const CgraGraphActivationFrame &frame) {
-    return std::make_tuple(frame.coordinate.referenceCycle.numerator(),
-                           frame.coordinate.referenceCycle.denominator(),
-                           frame.coordinate.delta, frame.physicalEvents.size(),
-                           frame.actorEvents.size(), frame.publications.size(),
-                           frame.memoryLinearizations.size(), frame.sourceMask);
+  // A deferred provider response changes when the model consumes it, but not
+  // which lifecycle events the model produces: every actor still commits,
+  // publishes, and linearizes exactly once.
+  struct ActivationEvidence final {
+    std::size_t physicalEvents = 0;
+    std::size_t actorEvents = 0;
+    std::size_t publications = 0;
+    std::size_t memoryLinearizations = 0;
+
+    void accumulate(const CgraGraphActivationFrame &frame) {
+      physicalEvents += frame.physicalEvents.size();
+      actorEvents += frame.actorEvents.size();
+      publications += frame.publications.size();
+      memoryLinearizations += frame.memoryLinearizations.size();
+    }
+
+    bool operator==(const ActivationEvidence &other) const {
+      return std::tie(physicalEvents, actorEvents, publications,
+                      memoryLinearizations) ==
+             std::tie(other.physicalEvents, other.actorEvents,
+                      other.publications, other.memoryLinearizations);
+    }
   };
-  using FrameShape =
-      decltype(frameShape(std::declval<const CgraGraphActivationFrame &>()));
-  std::vector<FrameShape> immediateFrames;
+  ActivationEvidence immediateEvidence;
   FixedExternalMemoryProvider externalMemory;
   auto externalRuntime = take(CgraGraphActivationRuntime::create(
       plan, view, launch, load->graph, *prepared, externalTransportGraph,
@@ -721,7 +737,7 @@ void graphActivationExecutesSelectedLocalMemory() {
     auto frame = take(externalRuntime.advance());
     require(frame.has_value(),
             "external memory activation lost its pending frame");
-    immediateFrames.push_back(frameShape(*frame));
+    immediateEvidence.accumulate(*frame);
   }
   require(!externalRuntime.hasPendingEvents() &&
               externalMemory.requests.size() == 2 &&
@@ -754,12 +770,12 @@ void graphActivationExecutesSelectedLocalMemory() {
       /*captureMicroarchitecture=*/false, &deferredMemory));
   if (llvm::Error error = deferredRuntime.start(coordinate(0), deferredIngress))
     fail(llvm::toString(std::move(error)));
-  std::vector<FrameShape> deferredFrames;
+  ActivationEvidence deferredEvidence;
   for (unsigned iteration = 0;
        iteration != 96 && deferredRuntime.hasPendingEvents(); ++iteration) {
     auto frame = take(deferredRuntime.advance());
     if (frame) {
-      deferredFrames.push_back(frameShape(*frame));
+      deferredEvidence.accumulate(*frame);
       continue;
     }
     require(deferredRuntime.waitingForExternalMemory() &&
@@ -793,8 +809,8 @@ void graphActivationExecutesSelectedLocalMemory() {
   }
   require(!deferredRuntime.hasPendingEvents() &&
               deferredMemory.requests.size() == 2 &&
-              deferredFrames == immediateFrames,
-          "host suspension changed CGRA model coordinates or frame evidence");
+              deferredEvidence == immediateEvidence,
+          "deferred external memory changed CGRA lifecycle evidence");
   requireExternalOutput(deferredState);
 
   plan.memory.rootedUses.front().target = service;
