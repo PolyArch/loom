@@ -709,6 +709,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
            contextKeys[sessionEntryOrdinal],
            workloadReferences[sessionEntryOrdinal],
            std::move(invocationResult.invocation),
+           std::move(invocationResult.memorySnapshot),
            std::move(*invocationResult.runtimeInput),
            std::move(invocationResult.spatialBoundaryResult)});
     }

@@ -654,7 +654,8 @@ int main(int argc, char **argv) {
       !loom::runtime::decodeGem5SpatialLaunchEnvelope(
           launch.payload, launchEnvelope, launchDiagnostic) ||
       launchEnvelope.staticLaunch != expectedLaunch ||
-      !launchEnvelope.invocation.empty()) {
+      !launchEnvelope.invocation.empty() ||
+      !launchEnvelope.memorySnapshot.empty()) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);
@@ -766,7 +767,8 @@ int main(int argc, char **argv) {
   }
   if (!bridge.sendCompletion(remainingDelay, retired ? 0U : 1U,
                              loom::runtime::encodeSpatialInvocationResultWire(
-                                 {0, launchEnvelope.invocation, std::nullopt,
+                                 {0, launchEnvelope.invocation,
+                                  launchEnvelope.memorySnapshot, std::nullopt,
                                   std::move(result)}))) {
     ::close(connection);
     if (!options.peer)

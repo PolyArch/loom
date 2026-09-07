@@ -68,6 +68,10 @@ inline constexpr llvm::StringLiteral kHostElfPath = "inputs/host.elf";
 inline constexpr llvm::StringLiteral kThreadDispatchPath =
     "inputs/thread-dispatch.bin";
 inline constexpr llvm::StringLiteral kAdmissionPath = "inputs/admission.bin";
+/// One Deployment owns one SpatialLaunchImage, so every dispatch target of a
+/// rooted launch resolves to this one staged copy and one guest address.
+inline constexpr llvm::StringLiteral kSpatialLaunchPath =
+    "inputs/spatial-launch.bin";
 inline constexpr llvm::StringLiteral kMemoryTablePath =
     "inputs/system-memory-table.bin";
 inline constexpr llvm::StringLiteral kValueTablePath =
@@ -192,7 +196,6 @@ llvm::Expected<std::pair<ArtifactRootReference, ArtifactRootReference>>
 systemSubjects(const evaluation::EvaluationRequest &request);
 
 std::string instructionImagePath(std::size_t ordinal);
-std::string spatialLaunchPath(std::size_t ordinal);
 std::string spatialChannelProjectionPath(std::size_t ordinal);
 std::string spatialChannelEnginePlanPath(std::size_t ordinal);
 std::string spatialChannelBufferPath(std::size_t ordinal);

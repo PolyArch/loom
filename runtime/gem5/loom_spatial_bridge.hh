@@ -108,6 +108,7 @@ private:
   std::uint64_t residentStaticLaunchAddress = 0;
   std::uint32_t residentStaticLaunchSize = 0;
   std::vector<std::uint8_t> invocationPayload;
+  std::vector<std::uint8_t> memorySnapshotPayload;
   std::map<std::uint64_t, std::unique_ptr<MemoryTransaction>>
       memoryTransactions;
   /// Answered transactions whose DMA completion event the queue is still
