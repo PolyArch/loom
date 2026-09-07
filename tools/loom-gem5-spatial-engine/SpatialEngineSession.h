@@ -24,7 +24,7 @@ using PreparedSpatialExecution = loom::sim::PreparedCgraExecution;
 struct SpatialSessionEntry final {
   loom::sim::ImportedSpatialSimulationWorkload workload;
   std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
-  loom::runtime::Gem5SpatialChannelProjection channels;
+  loom::runtime::Gem5SpatialChannelProjection projection;
   std::vector<std::uint8_t> expectedLaunch;
   std::uint64_t bridgeOrdinal = 0;
   std::uint64_t sessionEntryOrdinal = 0;

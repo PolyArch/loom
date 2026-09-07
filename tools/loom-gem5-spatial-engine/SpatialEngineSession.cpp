@@ -41,6 +41,7 @@ struct PendingChannelPublication final {
   std::size_t nextPayload = 0;
 };
 
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
 llvm::Expected<std::uint64_t>
 spatialCoordinateTicks(const loom::sim::SpatialEventCoordinate &coordinate,
                        std::uint64_t ticksPerCycle) {
@@ -74,28 +75,31 @@ llvm::Expected<std::uint64_t> spatialServiceDelay(
   return *ready - prior;
 }
 
+/// External memory service of one gem5 invocation. It retains every logical
+/// request the SpatialCore submits, up to the exact System memory service
+/// outstanding guarantee, and lowers each request element to one Bridge
+/// transaction. Transactions may complete in any order; a logical request
+/// answers the SpatialCore only once all of its elements have.
 class Gem5CgraExternalMemoryProvider final
     : public loom::sim::CgraExternalMemoryProvider {
 public:
   Gem5CgraExternalMemoryProvider(
       const loom::runtime::SpatialInvocationWire &invocation,
-      std::uint64_t ticksPerCycle,
-      std::optional<loom::sim::SpatialEventCoordinate> &servicedThrough)
-      : invocation_(&invocation), ticksPerCycle_(ticksPerCycle),
-        servicedThrough_(&servicedThrough) {}
+      std::uint64_t outstandingCapacity)
+      : invocation_(&invocation), outstandingCapacity_(outstandingCapacity) {}
+
+  std::uint64_t outstandingCapacity() const override {
+    return outstandingCapacity_;
+  }
 
   llvm::Expected<loom::sim::CgraExternalMemorySubmission>
   submit(const loom::sim::CgraExternalMemoryRequest &request) override {
-    if (pending_)
-      return invalid(
-          "CGRA submitted memory while its prior request is pending");
+    if (pending_.size() >= outstandingCapacity_)
+      return invalid("CGRA submitted memory beyond the service outstanding "
+                     "guarantee");
     if (request.elements.empty() ||
         request.objectOrdinal >= invocation_->memoryObjects.size())
       return invalid("CGRA external memory request names no guest elements");
-    auto delay = spatialServiceDelay(request.readyCoordinate, ticksPerCycle_,
-                                      *servicedThrough_);
-    if (!delay)
-      return delay.takeError();
     const auto &object = invocation_->memoryObjects[request.objectOrdinal];
     const bool write =
         request.operation == loom::sim::CgraExternalMemoryOperation::Write;
@@ -110,56 +114,71 @@ public:
           (!write && !element.writeData.empty()))
         return invalid("CGRA external memory element has the wrong payload");
     }
-    pending_.emplace(Pending{request, *delay, 0, {}});
+    Pending entry{request, 0, 0, {}};
+    if (!write)
+      entry.response.readData.resize(request.elements.size());
+    pending_.emplace(nextPendingOrdinal_++, std::move(entry));
     return loom::sim::CgraExternalMemoryPending{};
   }
 
-  llvm::Expected<loom::runtime::Gem5BridgeMemoryRequest>
-  nextElement(std::uint64_t requestId) const {
-    if (!pending_ ||
-        pending_->elementOrdinal >= pending_->request.elements.size())
-      return invalid("CGRA external memory continuation has no next element");
-    const auto &element = pending_->request.elements[pending_->elementOrdinal];
-    const auto &object =
-        invocation_->memoryObjects[pending_->request.objectOrdinal];
-    return loom::runtime::Gem5BridgeMemoryRequest{
-        pending_->request.operation ==
-                loom::sim::CgraExternalMemoryOperation::Write
-            ? loom::runtime::Gem5BridgeMemoryOperation::Write
-            : loom::runtime::Gem5BridgeMemoryOperation::Read,
-        pending_->elementOrdinal == 0 ? pending_->initialDelay : 0,
-        requestId,
-        object.address + element.byteOffset,
-        element.byteCount,
-        element.writeData};
+  /// One Bridge transaction and the Spatial coordinate at which its logical
+  /// request became ready. The caller owns the modeled causal delay.
+  struct Transaction final {
+    loom::runtime::Gem5BridgeMemoryRequest request;
+    loom::sim::SpatialEventCoordinate readyCoordinate;
+  };
+
+  std::optional<Transaction> nextTransaction(std::uint64_t transactionId) {
+    for (auto &[ordinal, entry] : pending_) {
+      if (entry.nextElement == entry.request.elements.size())
+        continue;
+      const std::size_t elementOrdinal = entry.nextElement++;
+      const auto &element = entry.request.elements[elementOrdinal];
+      const auto &object =
+          invocation_->memoryObjects[entry.request.objectOrdinal];
+      inFlight_.emplace(transactionId, ElementKey{ordinal, elementOrdinal});
+      return Transaction{
+          {entry.request.operation ==
+                   loom::sim::CgraExternalMemoryOperation::Write
+               ? loom::runtime::Gem5BridgeMemoryOperation::Write
+               : loom::runtime::Gem5BridgeMemoryOperation::Read,
+           0, transactionId, object.address + element.byteOffset,
+           element.byteCount, element.writeData},
+          entry.request.readyCoordinate};
+    }
+    return std::nullopt;
   }
 
-  llvm::Expected<bool>
-  completeElement(loom::runtime::Gem5BridgeMemoryResponse response,
-                  loom::sim::CgraExecutionSession &session) {
-    if (!pending_ ||
-        pending_->elementOrdinal >= pending_->request.elements.size())
-      return invalid("CGRA external memory response has no pending element");
-    const auto &element = pending_->request.elements[pending_->elementOrdinal];
-    const auto &object =
-        invocation_->memoryObjects[pending_->request.objectOrdinal];
-    if (pending_->request.operation ==
+  llvm::Error completeTransaction(std::uint64_t transactionId,
+                                  std::vector<std::uint8_t> data,
+                                  loom::sim::CgraExecutionSession &session) {
+    const auto found = inFlight_.find(transactionId);
+    if (found == inFlight_.end())
+      return invalid("CGRA external memory response names no transaction");
+    const ElementKey key = found->second;
+    inFlight_.erase(found);
+    const auto entry = pending_.find(key.pendingOrdinal);
+    if (entry == pending_.end() ||
+        key.elementOrdinal >= entry->second.request.elements.size())
+      return invalid("CGRA external memory transaction lost its request");
+    Pending &value = entry->second;
+    const auto &element = value.request.elements[key.elementOrdinal];
+    const auto &object = invocation_->memoryObjects[value.request.objectOrdinal];
+    if (value.request.operation ==
         loom::sim::CgraExternalMemoryOperation::Write) {
       for (std::size_t byte = 0; byte != element.writeData.size(); ++byte)
         externallyCommittedBytes_[object.address + element.byteOffset + byte] =
             element.writeData[byte];
     } else {
-      pending_->response.readData.push_back(std::move(response.data));
+      value.response.readData[key.elementOrdinal] = std::move(data);
     }
-    ++pending_->elementOrdinal;
-    if (pending_->elementOrdinal != pending_->request.elements.size())
-      return false;
+    if (++value.completedElements != value.request.elements.size())
+      return llvm::Error::success();
     if (llvm::Error error = session.completeExternalMemory(
-            pending_->request.id, std::move(pending_->response)))
-      return std::move(error);
-    *servicedThrough_ = pending_->request.readyCoordinate;
-    pending_.reset();
-    return true;
+            value.request.id, std::move(value.response)))
+      return error;
+    pending_.erase(entry);
+    return llvm::Error::success();
   }
 
   std::vector<loom::sim::SpatialInvocationMemoryWrite> retainUncommittedWrites(
@@ -211,16 +230,24 @@ public:
 private:
   struct Pending final {
     loom::sim::CgraExternalMemoryRequest request;
-    std::uint64_t initialDelay;
-    std::size_t elementOrdinal;
+    std::size_t nextElement = 0;
+    std::size_t completedElements = 0;
     loom::sim::CgraExternalMemoryResponse response;
   };
+  struct ElementKey final {
+    std::uint64_t pendingOrdinal = 0;
+    std::size_t elementOrdinal = 0;
+  };
   const loom::runtime::SpatialInvocationWire *invocation_;
-  const std::uint64_t ticksPerCycle_;
-  std::optional<Pending> pending_;
-  std::optional<loom::sim::SpatialEventCoordinate> *servicedThrough_;
+  const std::uint64_t outstandingCapacity_;
+  std::uint64_t nextPendingOrdinal_ = 0;
+  std::map<std::uint64_t, Pending> pending_;
+  std::map<std::uint64_t, ElementKey> inFlight_;
   std::map<std::uint64_t, std::uint8_t> externallyCommittedBytes_;
 };
+
+#endif
+
 void appendChannelKeyU64(std::string &key, std::uint64_t value) {
   for (unsigned byte = 0; byte != 8; ++byte)
     key.push_back(static_cast<char>(value >> (byte * 8)));
@@ -837,6 +864,16 @@ struct PendingCompletion final {
   bool retired = false;
 };
 
+/// Which boundary owns one outstanding Bridge memory transaction. Model
+/// memory answers the SpatialCore; a result write publishes an invocation
+/// result after the model retired.
+enum class MemoryTransactionOwner { ModelMemory, ResultWrite };
+
+struct OutstandingMemoryTransaction final {
+  loom::runtime::Gem5BridgeMemoryRequest request;
+  MemoryTransactionOwner owner = MemoryTransactionOwner::ModelMemory;
+};
+
 struct SpatialInvocation final {
   SpatialInvocation(std::size_t entryOrdinal,
                     loom::runtime::Gem5SpatialLaunchEnvelope launch,
@@ -853,7 +890,7 @@ struct SpatialInvocation final {
   std::optional<loom::sim::SpatialEventCoordinate> servicedThrough;
   const loom::sim::CanonicalSimulationRuntimeInput *retiredRuntimeInput = nullptr;
   std::uint64_t nextRequestId = 0;
-  std::optional<loom::runtime::Gem5BridgeMemoryRequest> outstandingMemory;
+  std::map<std::uint64_t, OutstandingMemoryTransaction> outstandingMemory;
   std::optional<PendingCompletion> completion;
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
   std::optional<loom::sim::DfgExecutionSession> dfg;
@@ -890,10 +927,10 @@ llvm::Expected<bool> receiveStreamInput(
   const auto &request = invocation.pendingStreamInput();
   if (!request)
     return invalid("Spatial stream wait lost its demanded input event");
-  auto channel = llvm::find_if(entry.channels.inputs, [&](const auto &input) {
+  auto channel = llvm::find_if(entry.projection.inputs, [&](const auto &input) {
     return input.consumerStreamInputOrdinal == request->streamInputOrdinal;
   });
-  if (channel == entry.channels.inputs.end())
+  if (channel == entry.projection.inputs.end())
     return invalid("demanded stream input has no ordered channel binding");
   auto state = channelSequences.find(channel->channelOrdinal);
   if (state == channelSequences.end())
@@ -955,22 +992,23 @@ struct SpatialEngineSession::Impl final {
   advanceModel(SpatialInvocation &invocation);
   llvm::Error finishModel(SpatialInvocation &invocation,
                           loom::sim::SpatialEngineBoundaryResult result);
-  llvm::Expected<std::optional<loom::runtime::Gem5BridgeMessage>>
+  llvm::Error
   nextBoundary(std::uint64_t bridgeOrdinal, BridgeInvocation &bridge,
-               bool &channelsAdvanced);
+               bool &channelsAdvanced,
+               std::vector<loom::runtime::Gem5BridgeMessage> &messages);
 };
 
 llvm::Error SpatialEngineSession::Impl::initializeChannels() {
   std::map<std::uint64_t, std::uint64_t> channelCapacities;
   std::map<std::uint64_t, std::set<std::string>> channelConsumerKeys;
   for (const SpatialSessionEntry &entry : entries) {
-    for (const auto &output : entry.channels.outputs) {
+    for (const auto &output : entry.projection.outputs) {
       auto [position, inserted] = channelCapacities.emplace(
           output.channelOrdinal, output.capacityMessages);
       if (!inserted && position->second != output.capacityMessages)
         return invalid("ordered channel outputs disagree on capacity");
     }
-    for (const auto &input : entry.channels.inputs) {
+    for (const auto &input : entry.projection.inputs) {
       auto [position, inserted] = channelCapacities.emplace(
           input.channelOrdinal, input.capacityMessages);
       if (!inserted && position->second != input.capacityMessages)
@@ -1004,7 +1042,7 @@ llvm::Error SpatialEngineSession::Impl::initializeChannels() {
       ordinals.emplace(key, ordinal++);
   }
   for (const SpatialSessionEntry &entry : entries) {
-    for (const auto &input : entry.channels.inputs) {
+    for (const auto &input : entry.projection.inputs) {
       auto state = channelSequences.find(input.channelOrdinal);
       if (state == channelSequences.end())
         return invalid("ordered channel input has no sequence state");
@@ -1099,37 +1137,47 @@ llvm::Error SpatialEngineSession::Impl::acceptInput(
     }
     return llvm::Error::success();
   }
-  if (message.kind != loom::runtime::Gem5BridgeMessageKind::MemoryResponse ||
-      !invocation.outstandingMemory)
+  if (message.kind != loom::runtime::Gem5BridgeMessageKind::MemoryResponse)
     return invalid("causal continuation has no matching memory boundary");
   loom::runtime::Gem5BridgeMemoryResponse response;
   std::string diagnostic;
   if (!loom::runtime::decodeGem5BridgeMemoryResponse(message.payload, response,
                                                      diagnostic))
     return invalid(diagnostic);
-  const auto &request = *invocation.outstandingMemory;
-  if (response.requestId != request.requestId || !response.success ||
+  const auto outstanding =
+      invocation.outstandingMemory.find(response.requestId);
+  if (outstanding == invocation.outstandingMemory.end())
+    return invalid("bridge memory response names no outstanding transaction");
+  const loom::runtime::Gem5BridgeMemoryRequest &request =
+      outstanding->second.request;
+  if (!response.success ||
       (request.operation == loom::runtime::Gem5BridgeMemoryOperation::Read
            ? response.data.size() != request.size
            : !response.data.empty()))
     return invalid("bridge memory response does not match its request");
-  if (invocation.phase == InvocationPhase::ResultWrites) {
+  switch (outstanding->second.owner) {
+  case MemoryTransactionOwner::ResultWrite:
+    if (!invocation.completion)
+      return invalid("result write response has no pending completion");
     ++invocation.completion->nextWrite;
-  }
-#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-  else if (invocation.phase == InvocationPhase::ModelMemory) {
-    auto completed = invocation.externalMemory->completeElement(
-        std::move(response), *invocation.cgra);
-    if (!completed)
-      return completed.takeError();
-    if (*completed)
+    break;
+  case MemoryTransactionOwner::ModelMemory:
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+    return invalid("DFG invocation has no model memory boundary");
+#else
+    if (llvm::Error error = invocation.externalMemory->completeTransaction(
+            response.requestId, std::move(response.data), *invocation.cgra))
+      return error;
+    // The model resumes as soon as the response its linearization order waits
+    // for has arrived; other transactions stay in flight.
+    if (invocation.phase == InvocationPhase::ModelMemory &&
+        invocation.cgra->state() !=
+            loom::sim::SpatialExecutionSessionState::WaitingForExternalMemory)
       invocation.phase = InvocationPhase::RunningModel;
-  }
+    break;
 #endif
-  else {
-    return invalid("memory response arrived in a non-memory invocation phase");
   }
-  invocation.outstandingMemory.reset();
+  invocation.outstandingMemory.erase(outstanding);
   return llvm::Error::success();
 }
 
@@ -1137,7 +1185,7 @@ llvm::Expected<std::optional<loom::sim::SpatialEngineBoundaryResult>>
 SpatialEngineSession::Impl::advanceModel(SpatialInvocation &invocation) {
   const auto &entry = entries[invocation.entryOrdinal];
   std::vector<std::uint64_t> liveInputs;
-  for (const auto &input : entry.channels.inputs)
+  for (const auto &input : entry.projection.inputs)
     liveInputs.push_back(input.consumerStreamInputOrdinal);
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
   if (!invocation.dfg) {
@@ -1181,8 +1229,8 @@ SpatialEngineSession::Impl::advanceModel(SpatialInvocation &invocation) {
   }
   if (!invocation.cgra) {
     if (invocation.wire)
-      invocation.externalMemory.emplace(*invocation.wire, limits.ticksPerCycle,
-                                         invocation.servicedThrough);
+      invocation.externalMemory.emplace(*invocation.wire,
+                                        entry.projection.memoryOutstandingCapacity);
     auto session = loom::sim::startCgraExecutionSession(
         preparedExecutions[entry.preparedOrdinal], entry.workload.workload,
         invocation.runtime, std::nullopt,
@@ -1278,7 +1326,7 @@ llvm::Error SpatialEngineSession::Impl::finishModel(
   if (completionResult.empty())
     return invalid("cannot encode Spatial invocation result");
   auto publications =
-      prepareChannelPublications(entry.channels, result, entry.workload,
+      prepareChannelPublications(entry.projection, result, entry.workload,
                                  runtimeInput, channelSequences);
   if (!publications)
     return publications.takeError();
@@ -1291,18 +1339,18 @@ llvm::Error SpatialEngineSession::Impl::finishModel(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<loom::runtime::Gem5BridgeMessage>>
-SpatialEngineSession::Impl::nextBoundary(std::uint64_t bridgeOrdinal,
-                                         BridgeInvocation &bridge,
-                                         bool &channelsAdvanced) {
+llvm::Error SpatialEngineSession::Impl::nextBoundary(
+    std::uint64_t bridgeOrdinal, BridgeInvocation &bridge,
+    bool &channelsAdvanced,
+    std::vector<loom::runtime::Gem5BridgeMessage> &messages) {
   using Message = loom::runtime::Gem5BridgeMessage;
   using Kind = loom::runtime::Gem5BridgeMessageKind;
   if (!bridge.active)
-    return std::optional<Message>{};
+    return llvm::Error::success();
   auto &invocation = *bridge.active;
   const auto &entry = entries[invocation.entryOrdinal];
   const auto emit = [&](Kind kind, std::vector<std::uint8_t> payload) {
-    return std::optional<Message>(
+    messages.push_back(
         Message{kind, bridgeOrdinal, bridge.nextSequence, std::move(payload)});
   };
   if (invocation.phase == InvocationPhase::WaitingForStreamInput) {
@@ -1310,7 +1358,7 @@ SpatialEngineSession::Impl::nextBoundary(std::uint64_t bridgeOrdinal,
     if (!received)
       return received.takeError();
     if (!*received)
-      return std::optional<Message>{};
+      return llvm::Error::success();
     channelsAdvanced = true;
     invocation.phase = InvocationPhase::RunningModel;
   }
@@ -1343,7 +1391,7 @@ SpatialEngineSession::Impl::nextBoundary(std::uint64_t bridgeOrdinal,
     }
     if (*result)
       if (auto error = finishModel(invocation, std::move(**result)))
-        return std::move(error);
+        return error;
   }
   if (invocation.phase == InvocationPhase::NeedsStreamInputReadiness) {
     const auto &request = invocation.pendingStreamInput();
@@ -1359,45 +1407,79 @@ SpatialEngineSession::Impl::nextBoundary(std::uint64_t bridgeOrdinal,
     delay = *projected;
 #endif
     invocation.phase = InvocationPhase::AwaitingStreamInputReadiness;
-    return emit(Kind::ChannelCommit,
-                loom::runtime::encodeGem5BridgeChannelCommit({delay}));
+    emit(Kind::ChannelCommit,
+         loom::runtime::encodeGem5BridgeChannelCommit({delay}));
+    return llvm::Error::success();
   }
-  if (invocation.outstandingMemory)
-    return std::optional<Message>{};
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+  if (invocation.phase == InvocationPhase::ModelMemory) {
+    // Every transaction of this batch is scheduled from the same causal input
+    // tick, so each modeled difference is measured against the coordinate the
+    // last batch charged. The serviced coordinate then advances once.
+    const std::optional<loom::sim::SpatialEventCoordinate> baseline =
+        invocation.servicedThrough;
+    std::optional<loom::sim::SpatialEventCoordinate> emittedThrough;
+    while (invocation.outstandingMemory.size() <
+           entry.projection.memoryOutstandingCapacity) {
+      if (invocation.nextRequestId == std::numeric_limits<std::uint64_t>::max())
+        return invalid("bridge memory request identity domain exhausted");
+      const auto requestId = invocation.nextRequestId;
+      auto transaction = invocation.externalMemory->nextTransaction(requestId);
+      if (!transaction)
+        break;
+      ++invocation.nextRequestId;
+      auto delay = spatialServiceDelay(transaction->readyCoordinate,
+                                       limits.ticksPerCycle, baseline);
+      if (!delay)
+        return delay.takeError();
+      transaction->request.readyAfterTicks = *delay;
+      if (!emittedThrough ||
+          loom::sim::compareSpatialEventCoordinates(
+              *emittedThrough, transaction->readyCoordinate) < 0)
+        emittedThrough = transaction->readyCoordinate;
+      invocation.outstandingMemory.emplace(
+          requestId, OutstandingMemoryTransaction{
+                         transaction->request,
+                         MemoryTransactionOwner::ModelMemory});
+      emit(Kind::MemoryRequest, loom::runtime::encodeGem5BridgeMemoryRequest(
+                                    transaction->request));
+    }
+    if (emittedThrough)
+      invocation.servicedThrough = std::move(emittedThrough);
+    return llvm::Error::success();
+  }
+#endif
+  if (!invocation.outstandingMemory.empty())
+    return llvm::Error::success();
   if (invocation.phase == InvocationPhase::ResultWrites &&
       invocation.completion->nextWrite == invocation.completion->writes.size())
     invocation.phase = InvocationPhase::NeedsChannelCommit;
-  if (invocation.phase == InvocationPhase::ResultWrites ||
-      invocation.phase == InvocationPhase::ModelMemory) {
+  if (invocation.phase == InvocationPhase::ResultWrites) {
     if (invocation.nextRequestId == std::numeric_limits<std::uint64_t>::max())
       return invalid("bridge memory request identity domain exhausted");
     const auto requestId = invocation.nextRequestId++;
-#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-    if (invocation.phase == InvocationPhase::ModelMemory) {
-      auto request = invocation.externalMemory->nextElement(requestId);
-      if (!request)
-        return request.takeError();
-      invocation.outstandingMemory = std::move(*request);
-    } else
-#endif
-    {
-      auto &completion = *invocation.completion;
-      const auto &write = completion.writes[completion.nextWrite];
-      invocation.outstandingMemory.emplace(
-          loom::runtime::Gem5BridgeMemoryRequest{
-              loom::runtime::Gem5BridgeMemoryOperation::Write,
-              std::exchange(completion.remainingDelay, 0), requestId,
-              write.address, write.bytes.size(), write.bytes});
-    }
-    return emit(Kind::MemoryRequest,
-                loom::runtime::encodeGem5BridgeMemoryRequest(
-                    *invocation.outstandingMemory));
+    auto &completion = *invocation.completion;
+    const auto &write = completion.writes[completion.nextWrite];
+    const loom::runtime::Gem5BridgeMemoryRequest request{
+        loom::runtime::Gem5BridgeMemoryOperation::Write,
+        std::exchange(completion.remainingDelay, 0),
+        requestId,
+        write.address,
+        write.bytes.size(),
+        write.bytes};
+    invocation.outstandingMemory.emplace(
+        requestId, OutstandingMemoryTransaction{
+                       request, MemoryTransactionOwner::ResultWrite});
+    emit(Kind::MemoryRequest,
+         loom::runtime::encodeGem5BridgeMemoryRequest(request));
+    return llvm::Error::success();
   }
   if (invocation.phase == InvocationPhase::NeedsChannelCommit) {
     invocation.phase = InvocationPhase::AwaitingChannelCommit;
-    return emit(Kind::ChannelCommit,
-                loom::runtime::encodeGem5BridgeChannelCommit(
-                    {std::exchange(invocation.completion->remainingDelay, 0)}));
+    emit(Kind::ChannelCommit,
+         loom::runtime::encodeGem5BridgeChannelCommit(
+             {std::exchange(invocation.completion->remainingDelay, 0)}));
+    return llvm::Error::success();
   }
   if (invocation.phase == InvocationPhase::PublishingChannels) {
     auto publication = publishAvailableChannelOutputs(
@@ -1406,16 +1488,16 @@ SpatialEngineSession::Impl::nextBoundary(std::uint64_t bridgeOrdinal,
       return publication.takeError();
     channelsAdvanced |= publication->advanced;
     if (!publication->complete)
-      return std::optional<Message>{};
-    auto message =
-        emit(Kind::Completion, loom::runtime::encodeGem5BridgeCompletion(
-                                   {0, invocation.completion->retired ? 0U : 1U,
-                                    std::move(invocation.completion->result)}));
+      return llvm::Error::success();
+    emit(Kind::Completion,
+         loom::runtime::encodeGem5BridgeCompletion(
+             {0, invocation.completion->retired ? 0U : 1U,
+              std::move(invocation.completion->result)}));
     bridge.active.reset();
     ++bridge.nextSequence;
-    return message;
+    return llvm::Error::success();
   }
-  return std::optional<Message>{};
+  return llvm::Error::success();
 }
 
 SpatialEngineSession::SpatialEngineSession(std::unique_ptr<Impl> impl)
@@ -1466,13 +1548,16 @@ SpatialEngineSession::advance(const loom::runtime::Gem5BridgeAdvance &input) {
     for (auto &[ordinal, bridge] : impl_->bridges) {
       if (emitted.count(ordinal))
         continue;
-      auto boundary = impl_->nextBoundary(ordinal, bridge, channelsAdvanced);
-      if (!boundary)
-        return boundary.takeError();
-      if (*boundary) {
-        emitted.insert(ordinal);
-        response.messages.push_back(std::move(**boundary));
-      }
+      std::vector<loom::runtime::Gem5BridgeMessage> boundary;
+      if (llvm::Error error =
+              impl_->nextBoundary(ordinal, bridge, channelsAdvanced, boundary))
+        return std::move(error);
+      if (boundary.empty())
+        continue;
+      emitted.insert(ordinal);
+      response.messages.insert(response.messages.end(),
+                               std::make_move_iterator(boundary.begin()),
+                               std::make_move_iterator(boundary.end()));
     }
   } while (channelsAdvanced);
   if (response.messages.empty() &&

@@ -224,16 +224,43 @@ ordinal, complete active element geometry, defined write bytes when present,
 and the exact Spatial ready coordinate. Missing provider support is typed
 `Unsupported`.
 
+One provider request carries the firing's active byte ranges, not its lanes. A
+contiguous access reaches one byte range in canonical row-major lane order, so
+each run of adjacent active lanes is one request element and a fully active
+vector firing is a single element covering its whole range; an inactive lane
+splits the range and starts the next element. Element and indexed geometry
+keep one element for each active lane, because neither derives a contiguous
+range. Coalescing changes no address, byte, active-lane, or retirement fact;
+it only stops the provider boundary from inventing per-lane transactions the
+Fabric use pattern did not declare.
+
+The execution submits several requests concurrently, up to the
+outstanding-operation guarantee of the exact service rate contract the
+provider reports. It never chooses that depth itself. The consistency domain
+still linearizes firings in the order it accepted them, so responses are
+consumed in issue order however the provider answers. A firing whose response
+has not arrived blocks only its own linearization: every other actor,
+transport transfer, physical action, and external request keeps executing, and
+the execution reports `WaitingForExternalMemory` only when no other work
+remains. An arrived response resumes the earliest blocked linearization at the
+coordinate the execution has reached, which is the request's own ready
+coordinate whenever the execution had no independent work to overlap with it.
+
 The standalone CGRA Evaluation model derives its provider state from the exact
 immutable `SpatialSimulationRuntimeInput`; provider writes update only that
 execution-scoped state. The gem5 Spatial engine implements the same provider
 boundary by transacting against the invocation's guest objects. Neither
 provider chooses an object, service, route, access shape, or Mapping decision.
 Standalone CGRA cycle evidence covers the SpatialCore subject and therefore
-adds no invented System-memory latency. The gem5 provider separately advances
-System time while servicing the request, so System evidence retains that
-latency without changing the Spatial event coordinate or the CGRA cycle
-metric.
+adds no invented System-memory latency; its provider answers at the request's
+exact ready coordinate. The gem5 provider separately advances System time
+while servicing the request, so System evidence retains that latency as
+System ticks and never converts it into an invented Spatial cycle count. A
+SpatialCore that still has independent work continues executing while that
+request is outstanding, and the response linearizes at the coordinate the
+execution had reached. The two providers therefore agree on every value and on
+the retirement order, while a System execution additionally records the
+compute it overlapped with an outstanding external request.
 
 For every load or store, the simulator derives the same
 `CanonicalMemoryAccessView` used by TechMapping and executes the exact selected

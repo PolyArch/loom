@@ -26,9 +26,13 @@ struct Gem5SpatialChannelOutput final {
   std::uint64_t capacityMessages = 0;
 };
 
+/// The per-launch service facts the System owner projects to the Spatial
+/// engine: its ordered-channel bindings and the concurrent memory operations
+/// the exact System memory services bound to that SpatialCore guarantee.
 struct Gem5SpatialChannelProjection final {
   std::vector<Gem5SpatialChannelInput> inputs;
   std::vector<Gem5SpatialChannelOutput> outputs;
+  std::uint64_t memoryOutstandingCapacity = 1;
 };
 
 llvm::Expected<std::vector<std::uint8_t>>

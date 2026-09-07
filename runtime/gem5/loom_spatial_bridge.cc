@@ -60,7 +60,29 @@ LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
       ADD_STAT(invocationCount, statistics::units::Count::get(),
                "Spatial invocations completed"),
       ADD_STAT(clockFailureCount, statistics::units::Count::get(),
-               "Host performance clock samples that failed") {}
+               "Host performance clock samples that failed"),
+      ADD_STAT(staticLaunchFetchCount, statistics::units::Count::get(),
+               "Immutable Spatial launch images fetched from guest memory") {}
+
+LoomSpatialBridge::MemoryTransaction::MemoryTransaction(
+    LoomSpatialBridge &bridge,
+    loom::runtime::Gem5BridgeMemoryRequest request)
+    : request(std::move(request)),
+      issueEvent(
+          [this, &bridge] {
+            bridge.runAccounted([&] { bridge.issueMemoryRequest(*this); });
+          },
+          bridge.name() + ".memory_request"),
+      completionEvent(
+          [this, &bridge] {
+            bridge.runAccounted([&] { bridge.completeMemoryRequest(*this); });
+          },
+          bridge.name() + ".dma_completion") {
+  buffer = this->request.data;
+  if (this->request.operation ==
+      loom::runtime::Gem5BridgeMemoryOperation::Read)
+    buffer.assign(static_cast<std::size_t>(this->request.size), 0);
+}
 
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
     : DmaDevice(params), performanceStatistics(this),
@@ -72,25 +94,19 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       maximumInvocations(params.max_invocations),
       collectPerformance(params.collect_performance),
       launchEvent(
-          [this] { runAccounted(&LoomSpatialBridge::fetchStaticLaunch); },
+          [this] { runAccounted([this] { fetchStaticLaunch(); }); },
           name() + ".launch"),
       staticLaunchCompletionEvent(
-          [this] { runAccounted(&LoomSpatialBridge::fetchInvocation); },
+          [this] { runAccounted([this] { fetchInvocation(); }); },
           name() + ".static_launch_completion"),
       invocationCompletionEvent(
-          [this] { runAccounted(&LoomSpatialBridge::startLaunch); },
+          [this] { runAccounted([this] { startLaunch(); }); },
           name() + ".invocation_completion"),
-      memoryRequestEvent(
-          [this] { runAccounted(&LoomSpatialBridge::issueMemoryRequest); },
-          name() + ".memory_request"),
-      dmaCompletionEvent(
-          [this] { runAccounted(&LoomSpatialBridge::completeMemoryRequest); },
-          name() + ".dma_completion"),
       completionEvent(
-          [this] { runAccounted(&LoomSpatialBridge::completeInvocation); },
+          [this] { runAccounted([this] { completeInvocation(); }); },
           name() + ".completion"),
       channelCommitEvent(
-          [this] { runAccounted(&LoomSpatialBridge::completeChannelCommit); },
+          [this] { runAccounted([this] { completeChannelCommit(); }); },
           name() + ".channel_commit") {
   if (engineSession)
     engineSession->registerBridge(bridgeSessionOrdinal, *this);
@@ -115,7 +131,6 @@ std::uint32_t LoomSpatialBridge::status() const {
   case State::Idle:
     return 0;
   case State::Running:
-  case State::WaitingForMemory:
   case State::WaitingForChannelCommit:
   case State::WaitingForCompletion:
     return gem5SpatialBridgeBusy;
@@ -246,6 +261,18 @@ void LoomSpatialBridge::fetchStaticLaunch() {
     fail(18, "active static launch descriptor is invalid");
     return;
   }
+  // The immutable plane is loaded once per configuration residency. A launch
+  // naming the resident descriptor reuses those bytes; the engine still
+  // compares them against its Deployment projection.
+  if (activeStaticLaunchAddress == residentStaticLaunchAddress &&
+      activeStaticLaunchSize == residentStaticLaunchSize &&
+      staticLaunchPayload.size() == activeStaticLaunchSize) {
+    fetchInvocation();
+    return;
+  }
+  ++performanceStatistics.staticLaunchFetchCount;
+  residentStaticLaunchAddress = activeStaticLaunchAddress;
+  residentStaticLaunchSize = activeStaticLaunchSize;
   staticLaunchPayload.assign(activeStaticLaunchSize, 0);
   dmaRead(activeStaticLaunchAddress, static_cast<int>(activeStaticLaunchSize),
           &staticLaunchCompletionEvent, staticLaunchPayload.data());
@@ -286,12 +313,6 @@ void LoomSpatialBridge::finishCallbackAccounting(
       *finished - accounting.started;
 }
 
-void LoomSpatialBridge::runAccounted(void (LoomSpatialBridge::*action)()) {
-  const CallbackAccounting accounting = beginCallbackAccounting();
-  (this->*action)();
-  finishCallbackAccounting(accounting);
-}
-
 void LoomSpatialBridge::startEngineWait() {
   if (collectPerformance)
     engineWaitStarted = std::chrono::steady_clock::now();
@@ -318,6 +339,7 @@ void LoomSpatialBridge::startLaunch() {
 
 void LoomSpatialBridge::acceptBoundary(
     const loom::runtime::Gem5BridgeMessage &message, Tick causalTick) {
+  reclaimRetiredMemory();
   ++performanceStatistics.messageCount;
   if (state != State::Running || message.sequence != nextSequence ||
       message.bridgeSessionOrdinal != bridgeSessionOrdinal ||
@@ -340,29 +362,7 @@ void LoomSpatialBridge::acceptBoundary(
   }
   if (message.kind == loom::runtime::Gem5BridgeMessageKind::MemoryRequest ||
       message.kind == loom::runtime::Gem5BridgeMessageKind::ChannelTransfer) {
-    std::string diagnostic;
-    if (!loom::runtime::decodeGem5BridgeMemoryRequest(
-            message.payload, pendingMemory, diagnostic)) {
-      fail(8, diagnostic);
-      return;
-    }
-    if (message.kind == loom::runtime::Gem5BridgeMessageKind::ChannelTransfer &&
-        pendingMemory.operation !=
-            loom::runtime::Gem5BridgeMemoryOperation::Write) {
-      fail(9, "channel transfer is not a write transaction");
-      return;
-    }
-    if (pendingMemory.size > std::numeric_limits<int>::max() ||
-        pendingMemory.readyAfterTicks > MaxTick - causalTick) {
-      fail(10, "memory transaction is too large");
-      return;
-    }
-    memoryBuffer = pendingMemory.data;
-    if (pendingMemory.operation ==
-        loom::runtime::Gem5BridgeMemoryOperation::Read)
-      memoryBuffer.assign(static_cast<std::size_t>(pendingMemory.size), 0);
-    state = State::WaitingForMemory;
-    schedule(&memoryRequestEvent, causalTick + pendingMemory.readyAfterTicks);
+    acceptMemoryRequest(message, causalTick);
     return;
   }
   if (message.kind != loom::runtime::Gem5BridgeMessageKind::Completion) {
@@ -390,36 +390,72 @@ void LoomSpatialBridge::acceptBoundary(
   schedule(&completionEvent, causalTick + pendingCompletion.readyAfterTicks);
 }
 
-void LoomSpatialBridge::issueMemoryRequest() {
-  if (state != State::WaitingForMemory) {
-    fail(13, "memory issue arrived in the wrong bridge state");
-    return;
-  }
-  // DmaDevice's delay argument postpones only its completion callback. Issue
-  // the request from this event so memory cannot observe it before readiness.
-  if (pendingMemory.operation == loom::runtime::Gem5BridgeMemoryOperation::Read)
-    dmaRead(pendingMemory.address, static_cast<int>(pendingMemory.size),
-            &dmaCompletionEvent, memoryBuffer.data());
-  else
-    dmaWrite(pendingMemory.address, static_cast<int>(pendingMemory.size),
-             &dmaCompletionEvent, memoryBuffer.data());
+void LoomSpatialBridge::reclaimRetiredMemory() {
+  retiredMemoryTransactions.clear();
 }
 
-void LoomSpatialBridge::completeMemoryRequest() {
-  if (state != State::WaitingForMemory) {
-    fail(13, "memory completion arrived in the wrong bridge state");
+void LoomSpatialBridge::acceptMemoryRequest(
+    const loom::runtime::Gem5BridgeMessage &message, Tick causalTick) {
+  loom::runtime::Gem5BridgeMemoryRequest request;
+  std::string diagnostic;
+  if (!loom::runtime::decodeGem5BridgeMemoryRequest(message.payload, request,
+                                                   diagnostic)) {
+    fail(8, diagnostic);
     return;
   }
+  if (message.kind == loom::runtime::Gem5BridgeMessageKind::ChannelTransfer &&
+      request.operation != loom::runtime::Gem5BridgeMemoryOperation::Write) {
+    fail(9, "channel transfer is not a write transaction");
+    return;
+  }
+  if (request.size > std::numeric_limits<int>::max() ||
+      request.readyAfterTicks > MaxTick - causalTick) {
+    fail(10, "memory transaction is too large");
+    return;
+  }
+  const std::uint64_t requestId = request.requestId;
+  const Tick readyTick = causalTick + request.readyAfterTicks;
+  auto transaction =
+      std::make_unique<MemoryTransaction>(*this, std::move(request));
+  auto *scheduled = transaction.get();
+  if (!memoryTransactions.emplace(requestId, std::move(transaction)).second) {
+    fail(14, "memory transaction identity is already in flight");
+    return;
+  }
+  schedule(&scheduled->issueEvent, readyTick);
+}
+
+void LoomSpatialBridge::issueMemoryRequest(MemoryTransaction &transaction) {
+  // DmaDevice's delay argument postpones only its completion callback. Issue
+  // the request from this event so memory cannot observe it before readiness.
+  if (transaction.request.operation ==
+      loom::runtime::Gem5BridgeMemoryOperation::Read)
+    dmaRead(transaction.request.address,
+            static_cast<int>(transaction.request.size),
+            &transaction.completionEvent, transaction.buffer.data());
+  else
+    dmaWrite(transaction.request.address,
+             static_cast<int>(transaction.request.size),
+             &transaction.completionEvent, transaction.buffer.data());
+}
+
+void LoomSpatialBridge::completeMemoryRequest(MemoryTransaction &transaction) {
   const loom::runtime::Gem5BridgeMemoryResponse response{
-      pendingMemory.requestId, true,
-      pendingMemory.operation == loom::runtime::Gem5BridgeMemoryOperation::Read
-          ? memoryBuffer
+      transaction.request.requestId, true,
+      transaction.request.operation ==
+              loom::runtime::Gem5BridgeMemoryOperation::Read
+          ? transaction.buffer
           : std::vector<std::uint8_t>{}};
   const loom::runtime::Gem5BridgeMessage message{
       loom::runtime::Gem5BridgeMessageKind::MemoryResponse,
       bridgeSessionOrdinal, nextSequence,
       loom::runtime::encodeGem5BridgeMemoryResponse(response)};
-  state = State::Running;
+  // The event queue still owns this transaction's completion event, so its
+  // storage is released at the next boundary or completion.
+  reclaimRetiredMemory();
+  const auto retired = memoryTransactions.find(transaction.request.requestId);
+  retiredMemoryTransactions.push_back(std::move(retired->second));
+  memoryTransactions.erase(retired);
   engineSession->submit(message);
 }
 
@@ -523,6 +559,8 @@ void LoomSpatialBridge::resetBridge() {
   panic_if(dmaPending() || (state != State::Idle && state != State::Complete &&
                             state != State::Failed),
            "cannot reset LoomSpatialBridge with an active invocation");
+  panic_if(!memoryTransactions.empty() && state != State::Failed,
+           "cannot reset LoomSpatialBridge with in-flight memory");
   engineWaitStarted.reset();
   if (launchEvent.scheduled())
     deschedule(&launchEvent);
@@ -530,16 +568,19 @@ void LoomSpatialBridge::resetBridge() {
     deschedule(&staticLaunchCompletionEvent);
   if (invocationCompletionEvent.scheduled())
     deschedule(&invocationCompletionEvent);
-  if (memoryRequestEvent.scheduled())
-    deschedule(&memoryRequestEvent);
   if (completionEvent.scheduled())
     deschedule(&completionEvent);
   if (channelCommitEvent.scheduled())
     deschedule(&channelCommitEvent);
-  memoryBuffer.clear();
+  for (auto &[requestId, transaction] : memoryTransactions)
+    if (transaction->issueEvent.scheduled())
+      deschedule(&transaction->issueEvent);
+  memoryTransactions.clear();
+  retiredMemoryTransactions.clear();
   staticLaunchPayload.clear();
+  residentStaticLaunchAddress = 0;
+  residentStaticLaunchSize = 0;
   invocationPayload.clear();
-  pendingMemory = {};
   pendingCompletion = {};
   errorCode = 0;
   staticLaunchAddress = 0;
