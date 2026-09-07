@@ -374,6 +374,17 @@ validateCorrespondenceModels(llvm::ArrayRef<Gem5Correspondence> rows,
         return kind.takeError();
       const auto *descriptor =
           findGem5ModelContract(bridge->bridgeEndpoint.object.contract);
+      if (!descriptor->validateSpatialBridgeCompatibility)
+        return invalid("SpatialBridge model contract has no compatibility "
+                       "owner");
+      const fabric::SpatialMemoryAccessRealization *spatialMemoryAccess =
+          system.spatialMemoryAccess(bridge->spatialCore.core);
+      if (!spatialMemoryAccess)
+        return invalid("SpatialBridge correspondence names an unknown AccCore");
+      if (llvm::Error error = descriptor->validateSpatialBridgeCompatibility(
+              bridge->bridgeEndpoint.object.payload, *spatialMemoryAccess))
+        return invalid("SpatialBridge model is incompatible with Fabric: " +
+                       llvm::toString(std::move(error)));
       objects.emplace_back(objectKey(bridge->bridgeEndpoint.object),
                            descriptor);
       ports.emplace_back(portKey(bridge->bridgeEndpoint), *kind);
@@ -667,27 +678,42 @@ finalizeBuiltinGem5SimulationBinding(
                                    gem5BridgeAbiIdentity,
                                    {}};
   std::uint64_t cpuId = 0;
+  // The Fabric realization is the sole owner of every cache parameter; the
+  // platform policy contributes only the clock period and address plan.
+  const auto processorObject =
+      [&](const fabric::InstructionCoreMicroarchitecturalRealization
+              *microarchitecture,
+          const Gem5ModelContractDescriptor &model) {
+        const fabric::PrivateCacheRealization &caches =
+            microarchitecture->privateCaches();
+        return gem5Object(
+            model, encodeGem5RiscvCpuParameters(
+                       {cpuId++, policy.processorClockPeriodTicks,
+                        projectGem5Cache(caches.instruction),
+                        projectGem5Cache(caches.data)}));
+      };
   for (fabric::HostCoreOccurrenceRef core :
        view->artifact().hostCoreOccurrences()) {
-    auto model = processorModel(view->instructionCoreMicroarchitecture(core));
+    const fabric::InstructionCoreMicroarchitecturalRealization
+        *microarchitecture = view->instructionCoreMicroarchitecture(core);
+    auto model = processorModel(microarchitecture);
     if (!model)
       return model.takeError();
     draft.correspondences.push_back(Gem5ProcessorCorrespondence{
         Gem5ProcessorFabricRef(core),
-        gem5Object(**model, encodeGem5RiscvCpuParameters(
-                                {cpuId++, policy.processorClockPeriodTicks}))});
+        processorObject(microarchitecture, **model)});
   }
   for (fabric::AccCoreOccurrenceRef core :
        view->artifact().accCoreOccurrences()) {
     const fabric::InstructionCoreContextRef context{core};
-    auto model =
-        processorModel(view->instructionCoreMicroarchitecture(context));
+    const fabric::InstructionCoreMicroarchitecturalRealization
+        *microarchitecture = view->instructionCoreMicroarchitecture(context);
+    auto model = processorModel(microarchitecture);
     if (!model)
       return model.takeError();
     draft.correspondences.push_back(Gem5ProcessorCorrespondence{
         Gem5ProcessorFabricRef(context),
-        gem5Object(**model, encodeGem5RiscvCpuParameters(
-                                {cpuId++, policy.processorClockPeriodTicks}))});
+        processorObject(microarchitecture, **model)});
   }
 
   std::map<Key, Gem5SimObjectRef> bridges;
@@ -706,12 +732,18 @@ finalizeBuiltinGem5SimulationBinding(
         return invalid("builtin spatial bridge address range overflows");
       const std::uint64_t address = policy.spatialBridgeBaseAddress +
                                     ordinal * policy.spatialBridgeAddressStride;
-      object->second =
-          gem5Object(gem5SpatialBridgeModel(),
-                     encodeGem5SpatialBridgeParameters(
-                         {address, policy.spatialBridgeApertureBytes,
-                          policy.spatialBridgeLatencyTicks,
-                          policy.spatialBridgeMaximumMessageBytes}));
+      const fabric::SpatialMemoryAccessRealization *spatialMemoryAccess =
+          view->spatialMemoryAccess(spatialCore->core);
+      if (!spatialMemoryAccess)
+        return invalid("builtin spatial attachment has no AccCore memory "
+                       "realization");
+      object->second = gem5Object(
+          gem5SpatialBridgeModel(),
+          encodeGem5SpatialBridgeParameters(
+              {address, policy.spatialBridgeApertureBytes,
+               policy.spatialBridgeLatencyTicks,
+               policy.spatialBridgeMaximumMessageBytes,
+               projectGem5Cache(spatialMemoryAccess->cache())}));
     }
     draft.correspondences.push_back(Gem5SpatialBridgeCorrespondence{
         *spatialCore, attachment.spatialEndpoint, gem5Port(object->second)});

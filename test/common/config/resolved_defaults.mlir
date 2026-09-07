@@ -14,7 +14,7 @@
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.general_purpose"
 // JSON-DAG: "schema_major": 8
-// JSON-DAG: "schema_minor": 1
+// JSON-DAG: "schema_minor": 2
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "mesh_dimension": 6
 // JSON-DAG: "spatial_mesh_lanes_per_direction": 2
@@ -30,6 +30,14 @@
 // JSON-DAG: "temporal_fu_occurrences"
 // JSON-DAG: "memory_capacity_bytes": 262144
 // JSON-DAG: "interconnect_fifo_queue_discipline": "per_tag_virtual_channel"
+// JSON-DAG: "private_caches"
+// JSON-DAG: "instruction_core_cache_bytes": 16384
+// JSON-DAG: "spatial_memory_cache_bytes": 32768
+// JSON-DAG: "line_bytes": 64
+// JSON-DAG: "associativity": 4
+// JSON-DAG: "hit_latency_cycles": 1
+// JSON-DAG: "in_order_miss_status_entries": 4
+// JSON-DAG: "out_of_order_miss_status_entries": 8
 // JSON-DAG: "dse"
 // JSON-DAG: "structured_ownership"
 // JSON-DAG: "scope_expansion_limit": 64

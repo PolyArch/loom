@@ -78,6 +78,28 @@ MEMORY_TABLE_ADDRESS = 0x82003000
 BRIDGE_ADDRESS = 0x10000000
 SECOND_BRIDGE_ADDRESS = 0x10001000
 DISPATCH_ADDRESS = 0x10002000
+# The Thread Dispatch ABI header owns the exact aperture size.
+_dispatch_header = (REPOSITORY_ROOT / "include/Runtime/Gem5DispatchABI.h").read_text()
+_dispatch_match = re.search(
+    r"gem5ThreadDispatchApertureBytes = (0x[0-9a-fA-F]+|\d+)", _dispatch_header
+)
+if _dispatch_match is None:
+    raise RuntimeError("Thread Dispatch aperture definition is missing")
+DISPATCH_APERTURE_BYTES = int(_dispatch_match.group(1), 0)
+PRIVATE_CACHE = {
+    "capacity_bytes": 16 * 1024,
+    "line_bytes": 64,
+    "associativity": 4,
+    "hit_latency_cycles": 1,
+    "miss_status_entries": 4,
+}
+SPATIAL_CACHE = {
+    "capacity_bytes": 32 * 1024,
+    "line_bytes": 64,
+    "associativity": 4,
+    "hit_latency_cycles": 1,
+    "miss_status_entries": 4,
+}
 STACK_BASE = 0x83F00000
 STACK_STRIDE = 0x00010000
 EXPECTED_VALUE = 0x1122334455667788
@@ -709,7 +731,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.14",
+            "schema": "loom.gem5_system_projection.15",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns",
@@ -744,6 +766,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             },
             "dispatch": {
                 "pio_address": DISPATCH_ADDRESS,
+                "pio_size": DISPATCH_APERTURE_BYTES,
                 "pio_latency": "10ns",
                 "stack_base": STACK_BASE,
                 "stack_stride": STACK_STRIDE,
@@ -776,6 +799,10 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "cpu_id": cpu_id,
                     "model": "timing_simple",
                     "num_threads": 1,
+                    "caches": {
+                        "instruction": PRIVATE_CACHE,
+                        "data": PRIVATE_CACHE,
+                    },
                     "execution_units": [
                         {
                             "operation_classes": ["IntAlu"],
@@ -794,6 +821,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "acc_core_ref": acc_core_reference(0),
                     "execution_context_keys": [spatial_execution_context_key(0)],
                     "spatial_workloads": [hashlib.sha256(EXPECTED_LAUNCH).hexdigest()],
+                    "cache": SPATIAL_CACHE,
                     "pio_address": BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
@@ -809,6 +837,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "acc_core_ref": acc_core_reference(1),
                     "execution_context_keys": [spatial_execution_context_key(1)],
                     "spatial_workloads": [hashlib.sha256(EXPECTED_LAUNCH).hexdigest()],
+                    "cache": SPATIAL_CACHE,
                     "pio_address": SECOND_BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",

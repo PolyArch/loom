@@ -110,6 +110,13 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
             static_cast<std::uint32_t>(scale.interconnectFifoQueueDiscipline));
   appendU32(bytes, specialMathCapabilityProfileWireTag(
                        scale.specialMathCapabilityProfile));
+  appendU64(bytes, scale.privateCaches.instructionCoreCacheBytes);
+  appendU64(bytes, scale.privateCaches.spatialMemoryCacheBytes);
+  appendU32(bytes, scale.privateCaches.lineBytes);
+  appendU32(bytes, scale.privateCaches.associativity);
+  appendU32(bytes, scale.privateCaches.hitLatencyCycles);
+  appendU32(bytes, scale.privateCaches.inOrderMissStatusEntries);
+  appendU32(bytes, scale.privateCaches.outOfOrderMissStatusEntries);
   return bytes;
 }
 
@@ -128,7 +135,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 140)
+  if (bytes.size() != 176)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -176,6 +183,20 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!specialMathProfile)
     return invalid("template special-math capability profile is invalid");
   scale.specialMathCapabilityProfile = *specialMathProfile;
+  const auto readU64 = [&bytes]() {
+    std::uint64_t value = 0;
+    for (std::uint8_t byte : bytes.take_front(8))
+      value = (value << 8) | byte;
+    bytes = bytes.drop_front(8);
+    return value;
+  };
+  scale.privateCaches.instructionCoreCacheBytes = readU64();
+  scale.privateCaches.spatialMemoryCacheBytes = readU64();
+  scale.privateCaches.lineBytes = readU32();
+  scale.privateCaches.associativity = readU32();
+  scale.privateCaches.hitLatencyCycles = readU32();
+  scale.privateCaches.inOrderMissStatusEntries = readU32();
+  scale.privateCaches.outOfOrderMissStatusEntries = readU32();
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");

@@ -190,7 +190,10 @@ class BuildPaths:
 
 
 def build_paths(repository_root: pathlib.Path) -> BuildPaths:
-    root = primary_worktree(repository_root) / "build" / GEM5_BUILD_DIRECTORY
+    # gem5 compiles this worktree's runtime/gem5 extras, so the built binary and
+    # its readiness stamp are worktree-local products. Only the pinned gem5
+    # source checkout is shared with the primary worktree.
+    root = repository_root.resolve() / "build" / GEM5_BUILD_DIRECTORY
     build_directory = root / "build" / GEM5_TARGET
     return BuildPaths(
         root=root,

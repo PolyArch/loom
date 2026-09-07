@@ -22,6 +22,7 @@ class ArtifactStore;
 namespace loom::fabric {
 class InstructionCoreArchitecturalContract;
 class InstructionCoreMicroarchitecturalRealization;
+class SpatialMemoryAccessRealization;
 } // namespace loom::fabric
 
 namespace loom::runtime {
@@ -65,6 +66,9 @@ using Gem5ProcessorCompatibilityValidator = llvm::Error (*)(
     const fabric::InstructionCoreArchitecturalContract &architecture,
     const fabric::InstructionCoreMicroarchitecturalRealization
         &microarchitecture);
+using Gem5SpatialBridgeCompatibilityValidator = llvm::Error (*)(
+    llvm::ArrayRef<std::uint8_t> objectPayload,
+    const fabric::SpatialMemoryAccessRealization &spatialMemoryAccess);
 
 struct Gem5ModelPortKindDescriptor final {
   std::uint32_t kind = 0;
@@ -84,6 +88,8 @@ struct Gem5ModelContractDescriptor final {
   bool allowsSharedBinding = false;
   Gem5CanonicalPayloadValidator validateCanonicalObjectPayload = nullptr;
   Gem5ProcessorCompatibilityValidator validateProcessorCompatibility = nullptr;
+  Gem5SpatialBridgeCompatibilityValidator validateSpatialBridgeCompatibility =
+      nullptr;
   llvm::ArrayRef<Gem5ModelPortKindDescriptor> portKinds;
 };
 

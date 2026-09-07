@@ -908,6 +908,11 @@ llvm::Expected<AccCore> SystemBuilder::addAccCoreFromPrototype(
           unsignedBytes(prototypeOp->getMicroarchitectureAttr()));
   if (!microarchitecture)
     return microarchitecture.takeError();
+  auto spatialMemoryAccess =
+      loom::fabric::decodeSpatialMemoryAccessRealization(
+          unsignedBytes(prototypeOp->getSpatialMemoryAccessAttr()));
+  if (!spatialMemoryAccess)
+    return spatialMemoryAccess.takeError();
   auto services = memoryAttachmentServices(**root, prototype);
   if (!services)
     return services.takeError();
@@ -923,7 +928,8 @@ llvm::Expected<AccCore> SystemBuilder::addAccCoreFromPrototype(
       (*root)->importedModules[imported->importOrdinal_]);
   if (!endpointMapping)
     return endpointMapping.takeError();
-  auto created = addAccCore(*architecture, *microarchitecture, *imported);
+  auto created = addAccCore(*architecture, *microarchitecture, *imported,
+                            *spatialMemoryAccess);
   if (!created)
     return created.takeError();
   const loom::fabric::AccCoreOccurrenceRef destination(created->entity_);

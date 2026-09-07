@@ -20,7 +20,7 @@ llvm::Error invalid(const llvm::Twine &message) {
 } // namespace
 
 llvm::Expected<ArtifactRootReference>
-migrateFabricRootV7_0ToV7_1(const ArtifactRootReference &reference,
+migrateFabricRootV7_0ToCurrent(const ArtifactRootReference &reference,
                             const ArtifactStore &store) {
   if (reference.schemaIdentity != fabricArtifactSchemaV7_0.identity ||
       reference.schemaVersion != fabricArtifactSchemaV7_0.version)
@@ -40,7 +40,7 @@ migrateFabricRootV7_0ToV7_1(const ArtifactRootReference &reference,
   std::vector<FabricDirectDependency> migrated;
   migrated.reserve(decoded->dependencies.size());
   for (const FabricDirectDependency &dependency : decoded->dependencies) {
-    auto migratedRoot = migrateFabricRootV7_0ToV7_1(dependency.root, store);
+    auto migratedRoot = migrateFabricRootV7_0ToCurrent(dependency.root, store);
     if (!migratedRoot)
       return migratedRoot.takeError();
     migrated.push_back({dependency.role, *migratedRoot});

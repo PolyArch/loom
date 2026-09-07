@@ -45,13 +45,25 @@ mlir::MLIRContext &relationContext() {
 
 llvm::Expected<fabric::InstructionCoreMicroarchitecturalRealization>
 makeInstructionCoreMicroarchitecture() {
+  auto cache = fabric::CacheRealizationRecord::create(16 * 1024, 64, 4, 1, 4);
+  if (!cache)
+    return cache.takeError();
   fabric::InstructionCoreCommonDeclaration common{
       1,
       {{fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
-      ::fabric::oneCycleElasticOperationResourceContract()};
+      ::fabric::oneCycleElasticOperationResourceContract(),
+      fabric::PrivateCacheRealization{*cache, *cache}};
   fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1, 1, 1, 2, 1};
   return fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
       std::move(common), pipeline);
+}
+
+llvm::Expected<fabric::SpatialMemoryAccessRealization>
+makeSpatialMemoryAccessRealization() {
+  auto cache = fabric::CacheRealizationRecord::create(32 * 1024, 64, 4, 1, 4);
+  if (!cache)
+    return cache.takeError();
+  return fabric::SpatialMemoryAccessRealization::create(*cache);
 }
 
 fabric::FabricInventoryOwnerRef
@@ -99,14 +111,17 @@ makeSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
   auto microarchitecture = makeInstructionCoreMicroarchitecture();
   if (!microarchitecture)
     return microarchitecture.takeError();
+  auto spatialMemoryAccess = makeSpatialMemoryAccessRealization();
+  if (!spatialMemoryAccess)
+    return spatialMemoryAccess.takeError();
   auto host = system->addHostCore(*architecture, *microarchitecture);
   if (!host)
     return host.takeError();
   std::vector<adg::HardwareDomainMember> clockMembers{host->domainMember()};
   std::vector<adg::HardwareDomainMember> resetMembers{host->domainMember()};
   for (std::uint64_t ordinal = 0; ordinal < spatialCoreCount; ++ordinal) {
-    auto core =
-        system->addAccCore(*architecture, *microarchitecture, *imported);
+    auto core = system->addAccCore(*architecture, *microarchitecture, *imported,
+                                   *spatialMemoryAccess);
     if (!core)
       return core.takeError();
     clockMembers.push_back(core->instructionCoreDomainMember());

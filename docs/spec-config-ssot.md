@@ -162,7 +162,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.5`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.6`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -358,6 +358,21 @@ are not accepted as current or relabeled. Existing run keys already include
 ResolvedConfig identity, so no additional run-key field or binding codec is
 introduced. Historical terminal recovery remains exact within its pinned
 registry and producer closure; it cannot supply a new closure.
+
+Version 11.6 adds the required typed
+`hardware_target.parameters.private_caches` record. Its fields are
+`instruction_core_cache_bytes`, `spatial_memory_cache_bytes`, `line_bytes`,
+`associativity`, `hit_latency_cycles`, `in_order_miss_status_entries`, and
+`out_of_order_miss_status_entries`, and their exact Fabric meaning is owned by
+the version 8.2 builtin template in
+[ADG Builder](spec-adg-builder.md#builtin-targets). The record is required
+because every expanded InstructionCore and AccCore declares a private cache
+that enters Fabric identity; there is no cacheless target to default to. The
+11.5 to 11.6 transition is explicit authoring-source re-resolution: the owner
+adds the record, changes the target descriptor to 8.2, and resolves new
+ResolvedConfig, Fabric-template component-view, and Fabric identities.
+Ordinary parsing does not accept an 11.5 profile as current or insert the
+missing record.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.
 Feedback remains invocation-local until the Mapping owner verifies replayed

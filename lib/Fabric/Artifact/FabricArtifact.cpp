@@ -1142,8 +1142,13 @@ llvm::Expected<FabricArtifactView> buildSystemView(
               unsignedBytes(core.getMicroarchitectureAttr()));
       if (!microarchitecture)
         return microarchitecture.takeError();
+      auto spatialMemoryAccess = decodeSpatialMemoryAccessRealization(
+          unsignedBytes(core.getSpatialMemoryAccessAttr()));
+      if (!spatialMemoryAccess)
+        return spatialMemoryAccess.takeError();
       entity.instructionCoreArchitecture = std::move(*architecture);
       entity.instructionCoreMicroarchitecture = std::move(*microarchitecture);
+      entity.spatialMemoryAccess = *spatialMemoryAccess;
       entity.instructionCore =
           instructionCoreView(*entity.instructionCoreMicroarchitecture);
       auto spatial = spatialCoreView(**module);
