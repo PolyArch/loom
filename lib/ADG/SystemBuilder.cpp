@@ -575,7 +575,8 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
     const loom::fabric::InstructionCoreArchitecturalContract &architecture,
     const loom::fabric::InstructionCoreMicroarchitecturalRealization
         &microarchitecture,
-    const ImportedSpatialCore &spatialCore) {
+    const ImportedSpatialCore &spatialCore,
+    const loom::fabric::SpatialMemoryAccessRealization &spatialMemoryAccess) {
   auto state = detail::activeState(state_);
   if (!state)
     return state.takeError();
@@ -599,6 +600,10 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
           microarchitecture);
   if (!microarchitectureBytes)
     return microarchitectureBytes.takeError();
+  auto spatialMemoryAccessBytes =
+      loom::fabric::encodeSpatialMemoryAccessRealization(spatialMemoryAccess);
+  if (!spatialMemoryAccessBytes)
+    return spatialMemoryAccessBytes.takeError();
   const loom::fabric::FabricImportedModuleTargetRef target{
       spatialCore.importOrdinal_, imported.module};
 
@@ -610,7 +615,8 @@ llvm::Expected<AccCore> SystemBuilder::addAccCore(
       denseBytes((*state)->context, *architectureBytes),
       denseBytes((*state)->context, *microarchitectureBytes),
       denseBytes((*state)->context,
-                 loom::fabric::encodeFabricImportedModuleTargetRef(target)));
+                 loom::fabric::encodeFabricImportedModuleTargetRef(target)),
+      denseBytes((*state)->context, *spatialMemoryAccessBytes));
   if (llvm::Error error = verifyCreated(operation, "AccCore"))
     return error;
 

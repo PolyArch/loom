@@ -26,9 +26,18 @@ getBuiltinInstructionCoreArchitecture();
 
 /// Exact in-order InstructionCore realization used by builtin target presets.
 /// System recipes that embed an independently authored SpatialCore reuse this
-/// owner instead of copying its execution-unit and resource contracts.
+/// owner instead of copying its execution-unit, resource, and private-cache
+/// contracts.
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
-getBuiltinInOrderInstructionCoreMicroarchitecture();
+getBuiltinInOrderInstructionCoreMicroarchitecture(
+    const BuiltinPrivateCacheScale &caches);
+
+/// Exact SpatialCore memory-path realization the builtin recipe declares for
+/// one AccCore. `missStatusEntries` is the System memory service's
+/// outstanding-operation capacity, whose sole owner is that service contract.
+llvm::Expected<loom::fabric::SpatialMemoryAccessRealization>
+getBuiltinSpatialMemoryAccessRealization(const BuiltinPrivateCacheScale &caches,
+                                         std::uint32_t missStatusEntries);
 
 llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 

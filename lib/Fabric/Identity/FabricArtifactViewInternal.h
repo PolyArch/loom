@@ -90,6 +90,7 @@ struct FabricEntityViewData {
       instructionCoreArchitecture;
   std::optional<InstructionCoreMicroarchitecturalRealization>
       instructionCoreMicroarchitecture;
+  std::optional<SpatialMemoryAccessRealization> spatialMemoryAccess;
   std::optional<FabricLocalMemoryServiceViewData> localMemoryService;
   std::optional<::fabric::Schedule> peSchedule;
   std::optional<::fabric::Schedule> switchSchedule;

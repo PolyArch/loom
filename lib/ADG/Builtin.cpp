@@ -85,11 +85,35 @@ makeBuiltinInstructionCoreArchitecture() {
       std::move(declaration));
 }
 
+llvm::Expected<loom::fabric::CacheRealizationRecord>
+makeBuiltinCache(const BuiltinPrivateCacheScale &caches,
+                 std::uint64_t capacityBytes,
+                 std::uint32_t missStatusEntries) {
+  return loom::fabric::CacheRealizationRecord::create(
+      capacityBytes, caches.lineBytes, caches.associativity,
+      caches.hitLatencyCycles, missStatusEntries);
+}
+
+llvm::Expected<loom::fabric::PrivateCacheRealization>
+makeBuiltinPrivateCaches(const BuiltinPrivateCacheScale &caches,
+                         std::uint32_t missStatusEntries) {
+  auto cache = makeBuiltinCache(caches, caches.instructionCoreCacheBytes,
+                                missStatusEntries);
+  if (!cache)
+    return cache.takeError();
+  return loom::fabric::PrivateCacheRealization{*cache, *cache};
+}
+
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
-makeBuiltinInOrderInstructionCoreMicroarchitecture() {
+makeBuiltinInOrderInstructionCoreMicroarchitecture(
+    const BuiltinPrivateCacheScale &caches) {
   auto resources = singleRequesterResourceContract();
   if (!resources)
     return resources.takeError();
+  auto privateCaches =
+      makeBuiltinPrivateCaches(caches, caches.inOrderMissStatusEntries);
+  if (!privateCaches)
+    return privateCaches.takeError();
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
@@ -100,7 +124,8 @@ makeBuiltinInOrderInstructionCoreMicroarchitecture() {
         1},
        {loom::fabric::InstructionOperationClass::FloatingPointDivide, 1, 12,
         12}},
-      std::move(*resources)};
+      std::move(*resources),
+      *privateCaches};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 4, 2};
   return loom::fabric::InstructionCoreMicroarchitecturalRealization::
@@ -108,10 +133,14 @@ makeBuiltinInOrderInstructionCoreMicroarchitecture() {
 }
 
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
-outOfOrderMicroarchitecture() {
+outOfOrderMicroarchitecture(const BuiltinPrivateCacheScale &caches) {
   auto resources = singleRequesterResourceContract();
   if (!resources)
     return resources.takeError();
+  auto privateCaches =
+      makeBuiltinPrivateCaches(caches, caches.outOfOrderMissStatusEntries);
+  if (!privateCaches)
+    return privateCaches.takeError();
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
@@ -123,7 +152,8 @@ outOfOrderMicroarchitecture() {
         1},
        {loom::fabric::InstructionOperationClass::FloatingPointDivide, 1, 12,
         12}},
-      std::move(*resources)};
+      std::move(*resources),
+      *privateCaches};
   loom::fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
       2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 64, 64};
   return loom::fabric::InstructionCoreMicroarchitecturalRealization::
@@ -784,12 +814,17 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   auto architecture = getBuiltinInstructionCoreArchitecture();
   if (!architecture)
     return architecture.takeError();
-  auto inOrder = getBuiltinInOrderInstructionCoreMicroarchitecture();
+  auto inOrder =
+      makeBuiltinInOrderInstructionCoreMicroarchitecture(scale.privateCaches);
   if (!inOrder)
     return inOrder.takeError();
-  auto outOfOrder = outOfOrderMicroarchitecture();
+  auto outOfOrder = outOfOrderMicroarchitecture(scale.privateCaches);
   if (!outOfOrder)
     return outOfOrder.takeError();
+  auto spatialMemoryAccess = getBuiltinSpatialMemoryAccessRealization(
+      scale.privateCaches, scale.temporalResidentContexts);
+  if (!spatialMemoryAccess)
+    return spatialMemoryAccess.takeError();
   auto host = system->addHostCore(*architecture, *inOrder);
   if (!host)
     return host.takeError();
@@ -798,7 +833,8 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   cores.reserve(scale.accCoreCount);
   for (std::uint32_t ordinal = 0; ordinal != scale.accCoreCount; ++ordinal) {
     auto core = system->addAccCore(
-        *architecture, ordinal % 2 == 0 ? *inOrder : *outOfOrder, *imported);
+        *architecture, ordinal % 2 == 0 ? *inOrder : *outOfOrder, *imported,
+        *spatialMemoryAccess);
     if (!core)
       return core.takeError();
     cores.push_back(*core);
@@ -1100,8 +1136,20 @@ getBuiltinInstructionCoreArchitecture() {
 }
 
 llvm::Expected<loom::fabric::InstructionCoreMicroarchitecturalRealization>
-getBuiltinInOrderInstructionCoreMicroarchitecture() {
-  return makeBuiltinInOrderInstructionCoreMicroarchitecture();
+getBuiltinInOrderInstructionCoreMicroarchitecture(
+    const BuiltinPrivateCacheScale &caches) {
+  return makeBuiltinInOrderInstructionCoreMicroarchitecture(caches);
+}
+
+llvm::Expected<loom::fabric::SpatialMemoryAccessRealization>
+getBuiltinSpatialMemoryAccessRealization(const BuiltinPrivateCacheScale &caches,
+                                         std::uint32_t missStatusEntries) {
+  auto cache =
+      makeBuiltinCache(caches, caches.spatialMemoryCacheBytes,
+                       missStatusEntries);
+  if (!cache)
+    return cache.takeError();
+  return loom::fabric::SpatialMemoryAccessRealization::create(*cache);
 }
 
 llvm::Expected<BuiltinTargetPreset>

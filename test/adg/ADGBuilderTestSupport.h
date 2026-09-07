@@ -68,6 +68,8 @@ loom::fabric::InstructionCoreMicroarchitecturalRealization
 inOrderMicroarchitecture(llvm::StringRef test);
 loom::fabric::InstructionCoreMicroarchitecturalRealization
 outOfOrderMicroarchitecture(llvm::StringRef test);
+loom::fabric::SpatialMemoryAccessRealization
+spatialMemoryAccess(llvm::StringRef test);
 ::fabric::MemoryServiceContractRecord
 systemMemoryContract(llvm::StringRef test, mlir::MLIRContext &context);
 ::fabric::MemoryServiceContractRecord

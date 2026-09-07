@@ -276,10 +276,75 @@ struct ExecutionUnitRecord {
   std::uint32_t initiationInterval;
 };
 
+/// One private set-associative cache in front of an exact core memory path.
+/// The record owns only the architecture-visible geometry and occupancy that
+/// fix hit timing and outstanding-miss capacity; replacement policy,
+/// prefetching, coherence protocol state, and simulator tag storage remain
+/// implementation state.
+class CacheRealizationRecord {
+public:
+  static llvm::Expected<CacheRealizationRecord>
+  create(std::uint64_t capacityBytes, std::uint32_t lineBytes,
+         std::uint32_t associativity, std::uint32_t hitLatencyCycles,
+         std::uint32_t missStatusEntries);
+
+  std::uint64_t capacityBytes() const { return capacityBytes_; }
+  std::uint32_t lineBytes() const { return lineBytes_; }
+  std::uint32_t associativity() const { return associativity_; }
+  std::uint32_t hitLatencyCycles() const { return hitLatencyCycles_; }
+  std::uint32_t missStatusEntries() const { return missStatusEntries_; }
+
+  friend bool operator==(const CacheRealizationRecord &lhs,
+                         const CacheRealizationRecord &rhs) {
+    return lhs.capacityBytes_ == rhs.capacityBytes_ &&
+           lhs.lineBytes_ == rhs.lineBytes_ &&
+           lhs.associativity_ == rhs.associativity_ &&
+           lhs.hitLatencyCycles_ == rhs.hitLatencyCycles_ &&
+           lhs.missStatusEntries_ == rhs.missStatusEntries_;
+  }
+  friend bool operator!=(const CacheRealizationRecord &lhs,
+                         const CacheRealizationRecord &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  CacheRealizationRecord(std::uint64_t capacityBytes, std::uint32_t lineBytes,
+                         std::uint32_t associativity,
+                         std::uint32_t hitLatencyCycles,
+                         std::uint32_t missStatusEntries)
+      : capacityBytes_(capacityBytes), lineBytes_(lineBytes),
+        associativity_(associativity), hitLatencyCycles_(hitLatencyCycles),
+        missStatusEntries_(missStatusEntries) {}
+
+  std::uint64_t capacityBytes_;
+  std::uint32_t lineBytes_;
+  std::uint32_t associativity_;
+  std::uint32_t hitLatencyCycles_;
+  std::uint32_t missStatusEntries_;
+};
+
+/// The two private caches an InstructionCore owns on its own instruction and
+/// data fetch paths. Both are required: a cacheless InstructionCore is not a
+/// representable realization.
+struct PrivateCacheRealization {
+  CacheRealizationRecord instruction;
+  CacheRealizationRecord data;
+
+  friend bool operator==(const PrivateCacheRealization &lhs,
+                         const PrivateCacheRealization &rhs) {
+    return lhs.instruction == rhs.instruction && lhs.data == rhs.data;
+  }
+  friend bool operator!=(const PrivateCacheRealization &lhs,
+                         const PrivateCacheRealization &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 struct InstructionCoreCommonDeclaration {
   std::uint32_t hardwareThreadCount;
   std::vector<ExecutionUnitRecord> executionUnits;
   ::fabric::ResourceContract resourceContract;
+  PrivateCacheRealization privateCaches;
 };
 
 struct InOrderMicroarchitectureDeclaration {
@@ -334,6 +399,9 @@ public:
   const ::fabric::ResourceContract &resourceContract() const {
     return resourceContract_;
   }
+  const PrivateCacheRealization &privateCaches() const {
+    return privateCaches_;
+  }
   const InOrderMicroarchitectureDeclaration *inOrder() const {
     return std::get_if<InOrderMicroarchitectureDeclaration>(&pipeline_);
   }
@@ -348,17 +416,45 @@ private:
   InstructionCoreMicroarchitecturalRealization(
       InstructionCoreRealizationKind kind, std::uint32_t hardwareThreadCount,
       std::vector<ExecutionUnitRecord> executionUnits,
-      ::fabric::ResourceContract resourceContract, Pipeline pipeline)
+      ::fabric::ResourceContract resourceContract,
+      PrivateCacheRealization privateCaches, Pipeline pipeline)
       : kind_(kind), hardwareThreadCount_(hardwareThreadCount),
         executionUnits_(std::move(executionUnits)),
         resourceContract_(std::move(resourceContract)),
-        pipeline_(std::move(pipeline)) {}
+        privateCaches_(privateCaches), pipeline_(std::move(pipeline)) {}
 
   InstructionCoreRealizationKind kind_;
   std::uint32_t hardwareThreadCount_;
   std::vector<ExecutionUnitRecord> executionUnits_;
   ::fabric::ResourceContract resourceContract_;
+  PrivateCacheRealization privateCaches_;
   Pipeline pipeline_;
+};
+
+/// The timing realization of one AccCore's SpatialCore memory-manager path.
+/// It refines how that occurrence's declared memory service is reached; it
+/// never restates the service capability set and is not a service transform.
+class SpatialMemoryAccessRealization {
+public:
+  static llvm::Expected<SpatialMemoryAccessRealization>
+  create(CacheRealizationRecord cache);
+
+  const CacheRealizationRecord &cache() const { return cache_; }
+
+  friend bool operator==(const SpatialMemoryAccessRealization &lhs,
+                         const SpatialMemoryAccessRealization &rhs) {
+    return lhs.cache_ == rhs.cache_;
+  }
+  friend bool operator!=(const SpatialMemoryAccessRealization &lhs,
+                         const SpatialMemoryAccessRealization &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  explicit SpatialMemoryAccessRealization(CacheRealizationRecord cache)
+      : cache_(cache) {}
+
+  CacheRealizationRecord cache_;
 };
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -373,6 +469,11 @@ encodeInstructionCoreMicroarchitecturalRealization(
 llvm::Expected<InstructionCoreMicroarchitecturalRealization>
 decodeInstructionCoreMicroarchitecturalRealization(
     llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialMemoryAccessRealization(
+    const SpatialMemoryAccessRealization &realization);
+llvm::Expected<SpatialMemoryAccessRealization>
+decodeSpatialMemoryAccessRealization(llvm::ArrayRef<std::uint8_t> bytes);
 
 enum class ResetPolarity : std::uint32_t {
   ActiveHigh,

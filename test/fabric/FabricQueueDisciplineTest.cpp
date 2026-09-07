@@ -227,10 +227,14 @@ std::vector<std::uint8_t> instructionArchitecture(llvm::StringRef test) {
 }
 
 std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
+  const auto cache = take(
+      test,
+      loom::fabric::CacheRealizationRecord::create(16 * 1024, 64, 4, 1, 4));
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
-      instructionContextContract(test)};
+      instructionContextContract(test),
+      loom::fabric::PrivateCacheRealization{cache, cache}};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 2, 1};
   auto realization = take(
@@ -240,6 +244,15 @@ std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
   return take(test,
               loom::fabric::encodeInstructionCoreMicroarchitecturalRealization(
                   realization));
+}
+
+std::vector<std::uint8_t> spatialMemoryAccess(llvm::StringRef test) {
+  auto realization =
+      take(test, loom::fabric::SpatialMemoryAccessRealization::create(
+                     take(test, loom::fabric::CacheRealizationRecord::create(
+                                    32 * 1024, 64, 4, 1, 4))));
+  return take(
+      test, loom::fabric::encodeSpatialMemoryAccessRealization(realization));
 }
 
 std::string hostCoreSource(llvm::StringRef test) {
@@ -264,7 +277,8 @@ accCoreSource(llvm::StringRef test,
          << " spatial_core = "
          << denseI8Assembly(
                 loom::fabric::encodeFabricImportedModuleTargetRef(target))
-         << "\n";
+         << " spatial_memory_access = "
+         << denseI8Assembly(spatialMemoryAccess(test)) << "\n";
   return text;
 }
 
@@ -335,7 +349,7 @@ void strictFifoRoundTrip() {
           imported.reference().artifact == finalized.reference().artifact &&
               imported.view().fifoQueueDiscipline(fifo) ==
                   ::fabric::FifoQueueDiscipline::StrictFifo,
-          "strict 7.1 import changed a StrictFifo occurrence");
+          "strict import changed a StrictFifo occurrence");
 }
 
 void perTagVirtualChannelRoundTrip() {
@@ -358,7 +372,7 @@ void perTagVirtualChannelRoundTrip() {
           imported.reference().artifact == finalized.reference().artifact &&
               imported.view().fifoQueueDiscipline(fifo) ==
                   ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
-          "strict 7.1 import changed a PerTagVirtualChannel occurrence");
+          "strict import changed a PerTagVirtualChannel occurrence");
 }
 
 void disciplineSelectionChangesIdentity() {
@@ -390,7 +404,7 @@ void coldRebuildKeepsIdentity() {
       ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
       /*declareDiscipline=*/true);
   require(test, first.reference() == second.reference(),
-          "cold rebuild changed the 7.1 identity of equal semantics");
+          "cold rebuild changed the identity of equal semantics");
 }
 
 void untaggedFifoRejectsVirtualChannel() {
@@ -480,32 +494,33 @@ void migrationRefinalizesModule() {
   FinalizedFabricRoot native = take(
       test, loom::fabric::finalizeFabricRoot(moduleRoot(test, *source), store));
   require(test,
-          native.reference().schemaVersion == SchemaVersion{7, 1},
+          native.reference().schemaVersion ==
+              loom::fabric::fabricArtifactSchema.version,
           "fixture is not a current loom.fabric artifact");
   CanonicalSemanticBytes bytes =
       take(test, store.get(native.reference()));
   const ArtifactRootReference twin70 = publish7_0Twin(test, store, bytes);
   require(test, twin70.artifact != native.reference().artifact,
-          "the 7.0 descriptor shares the 7.1 identity");
+          "the 7.0 descriptor shares the current identity");
 
-  // The ordinary 7.1 importer never silently accepts a 7.0 reference.
+  // The ordinary current importer never silently accepts a 7.0 reference.
   expectRejected(test,
                  loom::fabric::importEntireFabricRoot(twin70, store),
                  "wrong Fabric schema");
   // Migration rejects a reference that is not an exact 7.0 root.
   expectRejected(test,
-                 loom::fabric::migrateFabricRootV7_0ToV7_1(
+                 loom::fabric::migrateFabricRootV7_0ToCurrent(
                      native.reference(), store),
                  "exact loom.fabric 7.0 root reference");
 
   const ArtifactRootReference migrated = take(
-      test, loom::fabric::migrateFabricRootV7_0ToV7_1(twin70, store));
+      test, loom::fabric::migrateFabricRootV7_0ToCurrent(twin70, store));
   require(test, migrated == native.reference(),
-          "migration did not reproduce the native 7.1 identity");
+          "migration did not reproduce the native identity");
   const ArtifactRootReference repeated = take(
-      test, loom::fabric::migrateFabricRootV7_0ToV7_1(twin70, store));
+      test, loom::fabric::migrateFabricRootV7_0ToCurrent(twin70, store));
   require(test, repeated == native.reference(),
-          "repeated migration changed the 7.1 identity");
+          "repeated migration changed the identity");
 }
 
 void migrationRewritesDependencyClosure() {
@@ -544,14 +559,14 @@ void migrationRewritesDependencyClosure() {
     fail(test, llvm::toString(envelope70.takeError()));
   const ArtifactRootReference system70 = publish7_0Twin(test, store, *envelope70);
   require(test, system70.artifact != nativeSystem.reference().artifact,
-          "the 7.0 System shares the 7.1 identity");
+          "the 7.0 System shares the current identity");
 
   expectRejected(test, loom::fabric::importEntireFabricRoot(system70, store),
                  "wrong Fabric schema");
   const ArtifactRootReference migrated = take(
-      test, loom::fabric::migrateFabricRootV7_0ToV7_1(system70, store));
+      test, loom::fabric::migrateFabricRootV7_0ToCurrent(system70, store));
   require(test, migrated == nativeSystem.reference(),
-          "recursive migration did not reproduce the native 7.1 System");
+          "recursive migration did not reproduce the native System");
 }
 
 } // namespace

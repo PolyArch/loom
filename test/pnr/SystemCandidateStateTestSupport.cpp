@@ -295,11 +295,14 @@ singleRequesterResourceContract(std::uint32_t capacity = 1) {
 
 loom::fabric::InstructionCoreMicroarchitecturalRealization
 inOrderMicroarchitecture() {
+  const auto cache =
+      take(loom::fabric::CacheRealizationRecord::create(16 * 1024, 64, 4, 1, 4));
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
        {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1}},
-      singleRequesterResourceContract()};
+      singleRequesterResourceContract(),
+      loom::fabric::PrivateCacheRealization{cache, cache}};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 4, 2};
   return take(
@@ -540,7 +543,9 @@ static loom::adg::FinalizedFabricDesign buildHeterogeneousSystemImpl(
   const auto architecture =
       take(loom::adg::getBuiltinInstructionCoreArchitecture());
   auto extraCore = take(
-      system.addAccCore(architecture, inOrderMicroarchitecture(), imported));
+      system.addAccCore(architecture, inOrderMicroarchitecture(), imported,
+                        take(loom::adg::getBuiltinSpatialMemoryAccessRealization(
+                            loom::adg::builtinDefaultPrivateCacheScale(), 4))));
 
   const auto bits128 = take(loom::adg::PortType::bits(128));
   const auto transportContract = singleRequesterResourceContract();

@@ -32,6 +32,50 @@ std::uint64_t readU64(llvm::ArrayRef<std::uint8_t> bytes, std::size_t offset) {
   return value;
 }
 
+constexpr std::size_t kCacheParameterFields = 5;
+constexpr std::size_t kCacheParameterBytes = kCacheParameterFields * 8;
+
+void appendCache(std::vector<std::uint8_t> &bytes,
+                 Gem5CacheParameters cache) {
+  appendU64(bytes, cache.capacityBytes);
+  appendU64(bytes, cache.lineBytes);
+  appendU64(bytes, cache.associativity);
+  appendU64(bytes, cache.hitLatencyCycles);
+  appendU64(bytes, cache.missStatusEntries);
+}
+
+Gem5CacheParameters readCache(llvm::ArrayRef<std::uint8_t> bytes,
+                              std::size_t offset) {
+  return Gem5CacheParameters{
+      readU64(bytes, offset), readU64(bytes, offset + 8),
+      readU64(bytes, offset + 16), readU64(bytes, offset + 24),
+      readU64(bytes, offset + 32)};
+}
+
+/// The gem5 payload repeats the Fabric geometry, so it repeats the Fabric
+/// admission rule instead of trusting the producer.
+llvm::Error validateCache(Gem5CacheParameters cache) {
+  if (cache.capacityBytes == 0 || cache.lineBytes == 0 ||
+      cache.associativity == 0 || cache.hitLatencyCycles == 0 ||
+      cache.missStatusEntries == 0)
+    return invalid("cache parameters must be positive");
+  if ((cache.lineBytes & (cache.lineBytes - 1)) != 0)
+    return invalid("cache line size must be a power of two");
+  if (cache.capacityBytes % (cache.lineBytes * cache.associativity) != 0)
+    return invalid("cache capacity must be a multiple of line size times "
+                   "associativity");
+  return llvm::Error::success();
+}
+
+llvm::Error requireFabricCache(Gem5CacheParameters projected,
+                               const fabric::CacheRealizationRecord &declared,
+                               llvm::StringRef role) {
+  if (projected != projectGem5Cache(declared))
+    return invalid(role + " cache parameters differ from the Fabric "
+                          "realization");
+  return llvm::Error::success();
+}
+
 llvm::Error validateEmpty(llvm::ArrayRef<std::uint8_t> bytes) {
   return bytes.empty() ? llvm::Error::success()
                        : invalid("payload must be empty");
@@ -47,6 +91,16 @@ llvm::Error validateBridge(llvm::ArrayRef<std::uint8_t> bytes) {
   return parameters ? llvm::Error::success() : parameters.takeError();
 }
 
+llvm::Error validateSpatialBridgeCompatibility(
+    llvm::ArrayRef<std::uint8_t> payload,
+    const fabric::SpatialMemoryAccessRealization &spatialMemoryAccess) {
+  auto parameters = decodeGem5SpatialBridgeParameters(payload);
+  if (!parameters)
+    return parameters.takeError();
+  return requireFabricCache(parameters->cache, spatialMemoryAccess.cache(),
+                            "SpatialBridge");
+}
+
 llvm::Error validateMemory(llvm::ArrayRef<std::uint8_t> bytes) {
   auto parameters = decodeGem5SimpleMemoryParameters(bytes);
   return parameters ? llvm::Error::success() : parameters.takeError();
@@ -57,8 +111,6 @@ llvm::Error validateRiscvMachineCompatibility(
     const fabric::InstructionCoreArchitecturalContract &architecture,
     const fabric::InstructionCoreMicroarchitecturalRealization
         &microarchitecture) {
-  if (llvm::Error error = validateCpu(payload))
-    return error;
   if (architecture.xlen() != fabric::RiscVXLen::X64 ||
       architecture.endianness() != fabric::InstructionEndianness::Little ||
       !llvm::is_contained(architecture.privilegeModes(),
@@ -66,6 +118,19 @@ llvm::Error validateRiscvMachineCompatibility(
       microarchitecture.hardwareThreadCount() == 0)
     return invalid(
         "processor requires little-endian RV64 machine hardware threads");
+  auto parameters = decodeGem5RiscvCpuParameters(payload);
+  if (!parameters)
+    return parameters.takeError();
+  const fabric::PrivateCacheRealization &caches =
+      microarchitecture.privateCaches();
+  if (llvm::Error error = requireFabricCache(parameters->instructionCache,
+                                             caches.instruction, "instruction"))
+    return error;
+  if (llvm::Error error =
+          requireFabricCache(parameters->dataCache, caches.data, "data"))
+    return error;
+  if (parameters->instructionCache.lineBytes != parameters->dataCache.lineBytes)
+    return invalid("processor caches disagree on the System line size");
   return llvm::Error::success();
 }
 
@@ -169,39 +234,42 @@ projectGem5O3OperationClasses(
 
 const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel() {
   static const Gem5ModelContractDescriptor descriptor{
-      {"loom.gem5.riscv_timing_cpu", {1, 0}},
-      "loom.gem5.riscv_timing_cpu.v1",
+      {"loom.gem5.riscv_timing_cpu", {1, 1}},
+      "loom.gem5.riscv_timing_cpu.v1.1",
       "RiscvTimingSimpleCPU",
       Gem5ModelObjectClass::Processor,
       false,
       &validateCpu,
       &validateTimingCpuCompatibility,
+      nullptr,
       {}};
   return descriptor;
 }
 
 const Gem5ModelContractDescriptor &gem5RiscvO3CpuModel() {
   static const Gem5ModelContractDescriptor descriptor{
-      {"loom.gem5.riscv_o3_cpu", {1, 1}},
-      "loom.gem5.riscv_o3_cpu.v1.1",
+      {"loom.gem5.riscv_o3_cpu", {1, 2}},
+      "loom.gem5.riscv_o3_cpu.v1.2",
       "RiscvO3CPU",
       Gem5ModelObjectClass::Processor,
       false,
       &validateCpu,
       &validateO3CpuCompatibility,
+      nullptr,
       {}};
   return descriptor;
 }
 
 const Gem5ModelContractDescriptor &gem5SpatialBridgeModel() {
   static const Gem5ModelContractDescriptor descriptor{
-      {"loom.gem5.spatial_bridge", {1, 0}},
-      "loom.gem5.spatial_bridge.v1",
+      {"loom.gem5.spatial_bridge", {1, 1}},
+      "loom.gem5.spatial_bridge.v1.1",
       "LoomSpatialBridge",
       Gem5ModelObjectClass::SpatialBridge,
       true,
       &validateBridge,
       nullptr,
+      &validateSpatialBridgeCompatibility,
       kBridgePorts};
   return descriptor;
 }
@@ -214,6 +282,7 @@ const Gem5ModelContractDescriptor &gem5SimpleMemoryModel() {
       Gem5ModelObjectClass::MemoryOrService,
       true,
       &validateMemory,
+      nullptr,
       nullptr,
       kMemoryPorts};
   return descriptor;
@@ -228,6 +297,7 @@ const Gem5ModelContractDescriptor &gem5SystemXBarModel() {
       true,
       &validateEmpty,
       nullptr,
+      nullptr,
       kTransportPorts};
   return descriptor;
 }
@@ -240,6 +310,7 @@ const Gem5ModelContractDescriptor &gem5ExternalEndpointModel() {
       Gem5ModelObjectClass::ExternalEndpoint,
       true,
       &validateEmpty,
+      nullptr,
       nullptr,
       kExternalPorts};
   return descriptor;
@@ -256,42 +327,63 @@ llvm::Error registerBuiltinGem5ModelContracts() {
   return llvm::Error::success();
 }
 
+Gem5CacheParameters
+projectGem5Cache(const fabric::CacheRealizationRecord &cache) {
+  return Gem5CacheParameters{cache.capacityBytes(), cache.lineBytes(),
+                             cache.associativity(), cache.hitLatencyCycles(),
+                             cache.missStatusEntries()};
+}
+
 std::vector<std::uint8_t>
 encodeGem5RiscvCpuParameters(Gem5RiscvCpuParameters parameters) {
   std::vector<std::uint8_t> bytes;
-  bytes.reserve(16);
+  bytes.reserve(16 + 2 * kCacheParameterBytes);
   appendU64(bytes, parameters.cpuId);
   appendU64(bytes, parameters.clockPeriodTicks);
+  appendCache(bytes, parameters.instructionCache);
+  appendCache(bytes, parameters.dataCache);
   return bytes;
 }
 
 llvm::Expected<Gem5RiscvCpuParameters>
 decodeGem5RiscvCpuParameters(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != 16)
-    return invalid("RISC-V CPU payload must contain two u64 fields");
-  Gem5RiscvCpuParameters result{readU64(bytes, 0), readU64(bytes, 8)};
+  if (bytes.size() != 16 + 2 * kCacheParameterBytes)
+    return invalid("RISC-V CPU payload must contain two u64 fields and two "
+                   "cache records");
+  Gem5RiscvCpuParameters result{readU64(bytes, 0), readU64(bytes, 8),
+                                readCache(bytes, 16),
+                                readCache(bytes, 16 + kCacheParameterBytes)};
   if (result.clockPeriodTicks == 0)
     return invalid("RISC-V CPU clock period must be positive");
+  if (llvm::Error error = validateCache(result.instructionCache))
+    return std::move(error);
+  if (llvm::Error error = validateCache(result.dataCache))
+    return std::move(error);
   return result;
 }
 
 std::vector<std::uint8_t>
 encodeGem5SpatialBridgeParameters(Gem5SpatialBridgeParameters parameters) {
   std::vector<std::uint8_t> bytes;
-  bytes.reserve(32);
+  bytes.reserve(32 + kCacheParameterBytes);
   appendU64(bytes, parameters.pioAddress);
   appendU64(bytes, parameters.pioSize);
   appendU64(bytes, parameters.pioLatencyTicks);
   appendU64(bytes, parameters.maximumMessageBytes);
+  appendCache(bytes, parameters.cache);
   return bytes;
 }
 
 llvm::Expected<Gem5SpatialBridgeParameters>
 decodeGem5SpatialBridgeParameters(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != 32)
-    return invalid("SpatialBridge payload must contain four u64 fields");
+  if (bytes.size() != 32 + kCacheParameterBytes)
+    return invalid("SpatialBridge payload must contain four u64 fields and "
+                   "one cache record");
   Gem5SpatialBridgeParameters result{readU64(bytes, 0), readU64(bytes, 8),
-                                     readU64(bytes, 16), readU64(bytes, 24)};
+                                     readU64(bytes, 16), readU64(bytes, 24),
+                                     readCache(bytes, 32)};
+  if (llvm::Error error = validateCache(result.cache))
+    return std::move(error);
   if (result.pioSize < 0x28 || result.pioLatencyTicks == 0 ||
       result.maximumMessageBytes < gem5BridgeWireHeaderBytes ||
       result.maximumMessageBytes >

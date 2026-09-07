@@ -1558,7 +1558,8 @@ public:
       const loom::fabric::InstructionCoreArchitecturalContract &architecture,
       const loom::fabric::InstructionCoreMicroarchitecturalRealization
           &microarchitecture,
-      const ImportedSpatialCore &spatialCore);
+      const ImportedSpatialCore &spatialCore,
+      const loom::fabric::SpatialMemoryAccessRealization &spatialMemoryAccess);
   llvm::Expected<SystemMemoryService>
   addMemoryService(const ::fabric::MemoryServiceContractRecord &contract);
   llvm::Expected<ExternalBoundary> addExternalBoundary();

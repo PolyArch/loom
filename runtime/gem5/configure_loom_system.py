@@ -15,11 +15,13 @@ import m5
 from m5.params import NULL
 from m5.objects import (
     AddrRange,
+    Cache,
     CommMonitor,
     LoomMemoryServiceProbe,
     FUPool,
     FUDesc,
     IQUnit,
+    PMAChecker,
     LoomRiscvDeploymentWorkload,
     LoomSpatialBridge,
     LoomSpatialEngineSession,
@@ -36,7 +38,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.14"
+CONFIG_SCHEMA = "loom.gem5_system_projection.15"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.6"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -72,9 +74,23 @@ PROCESSOR_FIELDS = {
     "cpu_id",
     "model",
     "num_threads",
+    "caches",
     "execution_units",
     "pipeline",
 }
+
+CACHE_FIELDS = {
+    "capacity_bytes",
+    "line_bytes",
+    "associativity",
+    "hit_latency_cycles",
+    "miss_status_entries",
+}
+
+# gem5 charges each miss-status entry a separate target list. The Fabric record
+# owns the outstanding-miss count; this is the per-entry coalescing depth, which
+# the architecture contract does not distinguish.
+CACHE_TARGETS_PER_MSHR = 8
 
 O3_PIPELINE_FIELDS = {
     "fetch_width",
@@ -213,6 +229,7 @@ def start_engines(
                     "acc_core_ref",
                     "execution_context_keys",
                     "spatial_workloads",
+                    "cache",
                     "pio_address",
                     "pio_size",
                     "pio_latency",
@@ -360,6 +377,41 @@ def build_o3_execution_units(records: list[dict]) -> FUPool:
     return FUPool(FUList=units)
 
 
+def parse_cache(cache: dict, context: str) -> dict:
+    require_keys(cache, CACHE_FIELDS, context)
+    for field, value in cache.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{context}.{field} must be positive")
+    line = cache["line_bytes"]
+    if line & (line - 1):
+        raise ValueError(f"{context}.line_bytes must be a power of two")
+    if cache["capacity_bytes"] % (line * cache["associativity"]):
+        raise ValueError(
+            f"{context}.capacity_bytes is not a multiple of line times associativity"
+        )
+    return cache
+
+
+def build_cache(cache: dict, read_only: bool, addr_ranges=None) -> Cache:
+    # gem5 splits a hit across tag lookup, data access, and the response path.
+    # The Fabric record declares one architectural hit latency, so each stage
+    # carries it and a hit occupies exactly `hit_latency_cycles` per stage.
+    hit_latency = cache["hit_latency_cycles"]
+    parameters = dict(
+        size=f"{cache['capacity_bytes']}B",
+        assoc=cache["associativity"],
+        tag_latency=hit_latency,
+        data_latency=hit_latency,
+        response_latency=hit_latency,
+        mshrs=cache["miss_status_entries"],
+        tgts_per_mshr=CACHE_TARGETS_PER_MSHR,
+        is_read_only=read_only,
+    )
+    if addr_ranges is not None:
+        parameters["addr_ranges"] = addr_ranges
+    return Cache(**parameters)
+
+
 def build_processor(processor: dict, ordinal: int):
     require_keys(processor, PROCESSOR_FIELDS, f"processor {ordinal}")
     cpu_id = processor["cpu_id"]
@@ -370,6 +422,11 @@ def build_processor(processor: dict, ordinal: int):
         raise ValueError(f"processor {ordinal} num_threads is invalid")
     if not isinstance(processor["execution_units"], list):
         raise ValueError(f"processor {ordinal} execution units are invalid")
+    caches = processor["caches"]
+    if not isinstance(caches, dict) or set(caches) != {"instruction", "data"}:
+        raise ValueError(f"processor {ordinal} private caches are invalid")
+    for role, cache in caches.items():
+        parse_cache(cache, f"processor {ordinal} {role} cache")
     pipeline = processor["pipeline"]
     if not isinstance(pipeline, dict):
         raise ValueError(f"processor {ordinal} pipeline is invalid")
@@ -431,6 +488,7 @@ def build_system(
         dispatch,
         {
             "pio_address",
+            "pio_size",
             "pio_latency",
             "stack_base",
             "stack_stride",
@@ -533,7 +591,16 @@ def build_system(
     ):
         raise ValueError("endpoint target range exceeds the dispatch table")
 
+    line_sizes = {
+        processor["caches"][role]["line_bytes"]
+        for processor in projection["processors"]
+        for role in ("instruction", "data")
+    } | {bridge["cache"]["line_bytes"] for bridge in projection["bridges"]}
+    if len(line_sizes) != 1:
+        raise ValueError("System caches disagree on one physical line size")
+
     system = RiscvSystem()
+    system.cache_line_size = line_sizes.pop()
     system.clk_domain = SrcClockDomain(
         clock=projection["clock"], voltage_domain=VoltageDomain()
     )
@@ -569,13 +636,27 @@ def build_system(
     system.membus = SystemXBar()
     system.system_port = system.membus.cpu_side_ports
 
+    # Device apertures are physically uncacheable: the private L1 caches must
+    # never absorb a Thread Dispatch or Spatial bridge access.
+    device_ranges = [
+        AddrRange(start=dispatch["pio_address"], size=dispatch["pio_size"])
+    ] + [
+        AddrRange(start=bridge["pio_address"], size=bridge["pio_size"])
+        for bridge in projection["bridges"]
+    ]
+
     processors = []
     for ordinal, processor in enumerate(projection["processors"]):
         cpu = build_processor(processor, ordinal)
         cpu.createInterruptController()
         cpu.createThreads()
-        cpu.icache_port = system.membus.cpu_side_ports
-        cpu.dcache_port = system.membus.cpu_side_ports
+        cpu.mmu.pma_checker = PMAChecker(uncacheable=device_ranges)
+        cpu.icache = build_cache(processor["caches"]["instruction"], True)
+        cpu.dcache = build_cache(processor["caches"]["data"], False)
+        cpu.icache_port = cpu.icache.cpu_side
+        cpu.dcache_port = cpu.dcache.cpu_side
+        cpu.icache.mem_side = system.membus.cpu_side_ports
+        cpu.dcache.mem_side = system.membus.cpu_side_ports
         processors.append(cpu)
     system.cpu = processors
 
@@ -641,7 +722,13 @@ def build_system(
             collect_performance=collect_performance,
         )
         device.pio = system.membus.mem_side_ports
-        device.dma = system.membus.cpu_side_ports
+        device.cache = build_cache(
+            parse_cache(bridge["cache"], "Spatial bridge cache"),
+            False,
+            addr_ranges=system.mem_ranges,
+        )
+        device.dma = device.cache.cpu_side
+        device.cache.mem_side = system.membus.cpu_side_ports
         bridges.append(device)
     system.loom_bridges = bridges
     return system, sessions

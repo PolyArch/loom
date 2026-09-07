@@ -448,10 +448,11 @@ void heterogeneousSystemFinalizes() {
   auto inOrder = inOrderMicroarchitecture(test);
   auto host = take(test, system.addHostCore(architecture, inOrder));
   auto firstCore =
-      take(test, system.addAccCore(architecture, inOrder, firstImported));
+      take(test, system.addAccCore(architecture, inOrder, firstImported,
+                                   spatialMemoryAccess(test)));
   auto secondCore = take(
       test, system.addAccCore(architecture, outOfOrderMicroarchitecture(test),
-                              secondImported));
+                              secondImported, spatialMemoryAccess(test)));
 
   auto transport =
       take(test, system.addTransportResource(

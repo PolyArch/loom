@@ -104,7 +104,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 8 && descriptor.schemaMinor == 1,
+    require(test, descriptor.schemaMajor == 8 && descriptor.schemaMinor == 2,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =

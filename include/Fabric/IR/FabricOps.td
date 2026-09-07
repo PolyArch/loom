@@ -587,17 +587,20 @@ def Fabric_SystemAccCoreOp
   let summary = "coupled InstructionCore and SpatialCore system entity";
   let description = [{
     One AccCore with exact InstructionCore architecture and microarchitecture
-    records plus one compact ImportedModule target for its SpatialCore.
+    records, one compact ImportedModule target for its SpatialCore, and the
+    exact timing realization of that SpatialCore's memory-manager path.
   }];
 
   let arguments = (ins OptionalAttr<Fabric_EntityIdAttr>:$entity_id,
       DenseI8ArrayAttr:$architecture, DenseI8ArrayAttr:$microarchitecture,
-      DenseI8ArrayAttr:$spatial_core);
+      DenseI8ArrayAttr:$spatial_core,
+      DenseI8ArrayAttr:$spatial_memory_access);
 
   let assemblyFormat = [{
     `architecture` `=` $architecture
     `microarchitecture` `=` $microarchitecture
-    `spatial_core` `=` $spatial_core attr-dict
+    `spatial_core` `=` $spatial_core
+    `spatial_memory_access` `=` $spatial_memory_access attr-dict
   }];
   let hasVerifier = 1;
 }
