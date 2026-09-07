@@ -30,7 +30,7 @@ inline constexpr ArtifactSchemaDescriptor instructionCoreBinarySchema{
 using InstructionLoadSegment = ExecutableLoadSegment;
 
 /// A non-empty invocation accepted by this entry through the canonical
-/// loom.spatial_invocation_abi.v1 wire. Value geometry is derived from the
+/// loom.spatial_invocation_abi.v3 wire. Value geometry is derived from the
 /// exact rooted graph and is not duplicated here.
 struct ThreadEntrySpatialInvocationBinding final {
   dataflow::RootedGraphLaunchRef graph;

@@ -5,6 +5,7 @@
 #include "Runtime/Gem5DispatchABI.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
+#include "Simulator/SpatialInvocation.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -536,14 +537,36 @@ deriveApplicationSpatialInvocationPlanImpl(
                 static_cast<std::uint32_t>(binding.objectIndex),
                 binding.byteOffset};
           }
-          valueLayouts.push_back(
-              {launch.valueBitCounts[indexed.index()], pointerTarget});
+          runtime::SpatialInvocationValueLayout valueLayout{
+              launch.valueBitCounts[indexed.index()], pointerTarget};
+          if (input.fixedValue) {
+            if (input.boundaryOperandOrdinal || input.denseCoordinateDimension)
+              return invalid("fixed invocation value has another source");
+            auto packed = sim::packDefinedSpatialSimulationToken(
+                *input.fixedValue, {input.lanesPerToken, input.laneBitWidth},
+                0);
+            if (!packed)
+              return packed.takeError();
+            if (packed->getBitWidth() != valueLayout.bitCount)
+              return invalid("fixed invocation value has the wrong bit width");
+            valueLayout.source =
+                runtime::SpatialInvocationValueSource::FixedBits;
+            valueLayout.fixedLittleEndianBits =
+                sim::packSpatialInvocationValueBits(*packed);
+          } else if (input.denseCoordinateDimension) {
+            valueLayout.source =
+                runtime::SpatialInvocationValueSource::DenseCoordinate;
+            valueLayout.denseCoordinateDimension =
+                static_cast<std::size_t>(*input.denseCoordinateDimension);
+          }
+          valueLayouts.push_back(std::move(valueLayout));
         }
         std::vector<runtime::SpatialInvocationMemoryObjectLayout> objectLayouts;
         objectLayouts.reserve(capture->input.objects.size());
         for (const sim::SimulationMemoryCaptureObject &object :
              capture->input.objects)
-          objectLayouts.push_back({object.byteCount});
+          objectLayouts.push_back(
+              {object.byteCount, object.baseBindingCallOrdinal.has_value()});
         std::vector<runtime::SpatialInvocationMemoryRootBinding> rootBindings;
         rootBindings.reserve(capture->input.memoryRootBindings.size());
         for (const sim::SimulationMemoryRootCapture &binding :
@@ -555,27 +578,25 @@ deriveApplicationSpatialInvocationPlanImpl(
                static_cast<std::uint32_t>(binding.objectIndex),
                binding.byteOffset});
         }
-        std::vector<runtime::SpatialInvocationWireLayout> pointWireLayouts;
-        pointWireLayouts.reserve(launch.points.size());
+        std::vector<std::vector<std::uint64_t>> pointDenseCoordinates;
+        pointDenseCoordinates.reserve(launch.points.size());
         for (const ApplicationSpatialInvocationPlan::Launch::Point &point :
-             launch.points) {
-          runtime::SpatialInvocationWireLayout wireLayout;
-          std::string diagnostic;
-          if (!runtime::projectSpatialInvocationWireLayout(
-                  dataflow.identity().bytes(), launch.root.entity.value(),
-                  launch.graph.staticGraphLaunch.entity.value(),
-                  point.denseCoordinates, valueLayouts, objectLayouts,
-                  rootBindings, launch.resultBitCounts, wireLayout, diagnostic))
-            return invalid(diagnostic);
-          if (wireLayout.templateBytes.size() >
-              std::numeric_limits<std::uint32_t>::max())
-            return invalid(
-                "invocation wire exceeds the dispatch size register");
-          pointWireLayouts.push_back(std::move(wireLayout));
-        }
+             launch.points)
+          pointDenseCoordinates.push_back(point.denseCoordinates);
+        runtime::SpatialInvocationWireLayout wireLayout;
+        std::string diagnostic;
+        if (!runtime::projectSpatialInvocationWireLayout(
+                dataflow.identity().bytes(), launch.root.entity.value(),
+                launch.graph.staticGraphLaunch.entity.value(),
+                pointDenseCoordinates, valueLayouts, objectLayouts,
+                rootBindings, launch.resultBitCounts, wireLayout, diagnostic))
+          return invalid(diagnostic);
+        if (wireLayout.pointTemplates.front().size() >
+            std::numeric_limits<std::uint32_t>::max())
+          return invalid("invocation wire exceeds the dispatch size register");
         launch.sites.push_back(
             {std::move(*capture), std::move(memoryObjectSources),
-             std::move(memoryRootSources), std::move(pointWireLayouts)});
+             std::move(memoryRootSources), std::move(wireLayout)});
       }
     }
   }

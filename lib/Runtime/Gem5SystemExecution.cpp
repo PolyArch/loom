@@ -491,7 +491,7 @@ renderProjection(const Gem5SystemFacts &facts,
               const Gem5SpatialLaunchProjection &launch =
                   facts.spatialLaunches[launchOrdinal];
               json.value("--expected-launch");
-              json.value(spatialLaunchPath(launchOrdinal));
+              json.value(kSpatialLaunchPath);
               json.value("--workload");
               json.value(
                   formatArtifactIdentityHex(launch.spatialWorkload.artifact));
@@ -1361,7 +1361,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
           "--socket",
           spatialBridgeSocketPath(launch.bridgeSessionOrdinal),
           "--expected-launch",
-          spatialLaunchPath(indexed.index()),
+          std::string(kSpatialLaunchPath),
           "--mapped-result",
           rtl.resultPath,
           "--channel-plan",
@@ -1731,6 +1731,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
             reinterpret_cast<const std::uint8_t *>(mappedText->data()),
             mappedText->size());
         if (!invocationResult.invocation.empty() ||
+            !invocationResult.memorySnapshot.empty() ||
             invocationResult.runtimeInput ||
             mappedBytes != llvm::ArrayRef<std::uint8_t>(
                                invocationResult.spatialBoundaryResult))
@@ -1804,7 +1805,8 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
             return runtime.takeError();
           if (llvm::Error error =
                   sim::validateEffectiveSpatialInvocationRuntimeInput(
-                      *spatialWorkload, wire, *runtime))
+                      *spatialWorkload, wire, invocationResult.memorySnapshot,
+                      *runtime))
             return std::move(error);
           auto decoded = sim::decodeSpatialEngineBoundaryResult(
               invocationResult.spatialBoundaryResult, *spatialWorkload,
