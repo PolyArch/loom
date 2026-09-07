@@ -20,6 +20,7 @@
 #include "ExternalTool/ShellProbe.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Mapping/Artifact/SystemServiceBindingProjection.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/ExecutableElf.h"
@@ -103,6 +104,9 @@ struct PendingSpatialLaunch final {
   std::vector<std::uint32_t> streamOutputBitWidths;
   std::vector<std::uint64_t> observableStreamOutputOrdinals;
   std::optional<SelectedInstructionEntry> instructionEntry;
+  /// Concurrent memory operations the bound System memory services guarantee
+  /// this SpatialCore execution.
+  std::uint64_t memoryOutstandingCapacity = 1;
 };
 
 struct PendingChannelBuffer final {
@@ -180,6 +184,35 @@ llvm::Expected<std::uint64_t> deriveSelectedMessageOutstandingCapacity(
   if (!capacity)
     return invalid("selected message route has no service endpoint capacity");
   return *capacity;
+}
+
+llvm::Expected<std::uint64_t> deriveSelectedMemoryOutstandingCapacity(
+    const fabric::FabricSystemRootView &system,
+    const mapping::SpatialMappingView &mapping,
+    fabric::AccCoreOccurrenceRef accCore) {
+  const std::optional<fabric::FabricImportedModuleTargetRef> target =
+      system.spatialCoreTarget(accCore);
+  if (!target)
+    return invalid("Spatial launch AccCore has no System Module target");
+  auto endpoints = mapping::projectSystemSpatialManagerMemoryEndpoints(
+      system, mapping, target->dependencyOrdinal, accCore);
+  if (!endpoints)
+    return endpoints.takeError();
+  std::optional<std::uint64_t> capacity;
+  for (const fabric::SystemServiceEndpointRef &endpoint : *endpoints) {
+    const fabric::CanonicalServiceCapabilitySet *capabilities =
+        system.serviceEndpointCapabilities(endpoint);
+    if (!capabilities ||
+        capabilities->plane() != fabric::CanonicalServiceEndpointPlane::Memory)
+      return invalid("bound memory endpoint has no memory capability set");
+    for (const auto &candidate : capabilities->capabilities()) {
+      const std::uint64_t outstanding = candidate.rate().maxOutstanding();
+      capacity = capacity ? std::min(*capacity, outstanding) : outstanding;
+    }
+  }
+  // A launch whose memory never leaves the SpatialCore reaches no external
+  // service; its provider capacity is one logical request.
+  return capacity.value_or(1);
 }
 
 std::string bytesToString(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -717,6 +750,11 @@ deriveFactsUncached(const EvaluationRequest &request,
                                {},
                                {},
                                {}});
+      auto memoryCapacity = deriveSelectedMemoryOutstandingCapacity(
+          *system, spatialMapping->view(), selection->context.accCore);
+      if (!memoryCapacity)
+        return memoryCapacity.takeError();
+      pendingLaunches.back().memoryOutstandingCapacity = *memoryCapacity;
     }
   }
 
@@ -1493,6 +1531,8 @@ deriveFactsUncached(const EvaluationRequest &request,
         enginePlan.outputs.push_back(
             {buffer.address, buffer.stagingCapacityBytes});
     }
+    channelProjection.memoryOutstandingCapacity =
+        pending.memoryOutstandingCapacity;
     auto encodedProjection =
         encodeGem5SpatialChannelProjection(std::move(channelProjection));
     if (!encodedProjection)

@@ -70,6 +70,16 @@ projectSystemSpatialMemoryBinding(
     std::optional<::loom::fabric::AccCoreOccurrenceRef> exactAccCore =
         std::nullopt);
 
+/// Every System service endpoint the manager dispatches of one immutable
+/// SpatialMapping bind on the exact issuing AccCore occurrence. It is the
+/// complete external memory service closure of that SpatialCore execution,
+/// independent of which operation issues a request.
+llvm::Expected<std::vector<::loom::fabric::SystemServiceEndpointRef>>
+projectSystemSpatialManagerMemoryEndpoints(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SpatialMappingView &mapping, std::uint64_t moduleDependencyOrdinal,
+    ::loom::fabric::AccCoreOccurrenceRef accCore);
+
 /// Derives the operation service kind from the canonical actor schema.
 /// MessageTransfer and MemoryExposure anchors are outside this projection.
 llvm::Expected<::dataflow::semantics::ServiceKind>

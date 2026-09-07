@@ -72,11 +72,8 @@ public:
   bool waitingForExternalMemory() const;
   llvm::Error completeExternalMemory(CgraExternalMemoryRequestId request,
                                      CgraExternalMemoryResponse response);
-  llvm::Error resumeExternalMemory(CgraMemoryLifecycleFrame &frame);
 
-  std::optional<SpatialEventCoordinate> nextCoordinate() const {
-    return requestedEvents_.nextCoordinate();
-  }
+  std::optional<SpatialEventCoordinate> nextCoordinate() const;
 
   bool hasPendingEvents() const {
     return !requestedEvents_.empty() || activeActorCount_ != 0;
@@ -119,7 +116,11 @@ private:
     std::optional<CgraExternalMemoryResponse> response;
   };
 
-  enum class LinearizationState { Unissued, Pending, Complete };
+  /// A firing enters `Pending` when the consistency domain accepts it into the
+  /// linearization order, becomes `Issued` once its external request reaches
+  /// the provider, and reaches `Complete` when it linearizes. Requests are
+  /// pipelined; the domain still linearizes them in `Pending` order.
+  enum class LinearizationState { Unissued, Pending, Issued, Complete };
 
   struct Firing final {
     bool active = false;
@@ -134,6 +135,9 @@ private:
     bool operationRetired = false;
     bool issueCommitted = false;
     LinearizationState linearization = LinearizationState::Unissued;
+    /// The coordinate at which the consistency domain accepted this firing.
+    /// An external request retains it as its exact Spatial ready coordinate.
+    std::optional<SpatialEventCoordinate> linearizeCoordinate;
     std::optional<PendingExternalMemory> external;
   };
 
@@ -168,8 +172,14 @@ private:
                           CgraMemoryLifecycleFrame &frame);
   llvm::Error linearize(std::uint64_t firingSlot,
                         CgraMemoryLifecycleFrame &frame);
-  llvm::Error beginLinearization(std::uint64_t firingSlot,
-                                 CgraMemoryLifecycleFrame &frame);
+  bool usesExternalService(const Firing &firing) const;
+  std::uint64_t externalCapacity() const;
+  bool headLinearizationReady() const;
+  llvm::Expected<std::optional<DataflowMemoryWrite>>
+  prepareFiringWrite(std::uint64_t firingSlot);
+  llvm::Error issueExternalMemory(std::uint64_t firingSlot);
+  llvm::Error commitLocalLinearization(std::uint64_t firingSlot,
+                                       CgraMemoryLifecycleFrame &frame);
   llvm::Error advanceLinearizations(CgraMemoryLifecycleFrame &frame);
   llvm::Error
   applyExternalMemoryResponse(Firing &firing,
@@ -195,7 +205,13 @@ private:
   CgraExternalMemoryProvider *externalMemoryProvider_ = nullptr;
   std::shared_ptr<const CgraExternalMemoryRequestId::Domain>
       externalMemoryDomain_;
+  /// Firings the consistency domain has accepted, in linearization order.
   std::deque<std::uint64_t> pendingLinearizations_;
+  std::uint64_t outstandingExternalRequests_ = 0;
+  /// The coordinate at which an arrived response resumes the head
+  /// linearization. Absent while no response is waiting to be consumed.
+  std::optional<SpatialEventCoordinate> drainCoordinate_;
+  std::optional<SpatialEventCoordinate> lastCoordinate_;
   CgraEventQueue requestedEvents_{"CGRA memory request"};
   std::vector<std::uint64_t> nextActionOccurrence_;
   std::vector<Firing> firings_;
