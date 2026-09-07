@@ -10,9 +10,11 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <limits>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -97,7 +99,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "canonical_dataflow_fabric_low_confidence",
-    "loom.canonical_dataflow_fabric.low_confidence.v3",
+    "loom.canonical_dataflow_fabric.low_confidence.v4",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -122,9 +124,64 @@ estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,
     return pressure.takeError();
   if (!*pressure)
     return std::optional<detail::LowConfidenceMetricSet>{};
+  auto platform = detail::projectFabricPlatformModel(fabricRoot);
+  if (!platform)
+    return platform.takeError();
+  if (!*platform)
+    return std::optional<detail::LowConfidenceMetricSet>{};
 
-  auto metrics =
-      detail::estimateLowConfidenceMetrics(0, **pressure, fabricRoot);
+  // Without a source profile every rooted launch fires once per static dense
+  // point and one activation performs one graph iteration.
+  std::vector<AnalyticLaunchEstimate> launches;
+  llvm::Error failure = llvm::Error::success();
+  bool inapplicable = false;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    if (failure || inapplicable)
+      return;
+    auto resolved = view.resolve(launch);
+    if (!resolved) {
+      failure = resolved.takeError();
+      return;
+    }
+    auto graph = detail::projectCanonicalDataflowGraphWorkload(
+        view, *resolved, fabricRoot);
+    if (!graph) {
+      failure = graph.takeError();
+      return;
+    }
+    if (!*graph) {
+      inapplicable = true;
+      return;
+    }
+    auto extents = view.projectStaticDenseExtents(launch);
+    if (!extents) {
+      failure = extents.takeError();
+      return;
+    }
+    std::uint64_t activations = 1;
+    if (*extents)
+      for (std::uint64_t extent : **extents)
+        activations = llvm::checkedMulUnsigned(activations, extent)
+                          .value_or(std::numeric_limits<std::uint64_t>::max());
+    AnalyticLaunchEstimate estimate{launch.staticGraphLaunch, activations, 0,
+                                    0, 0};
+    estimate.computeCyclesPerActivation =
+        std::max<std::uint64_t>(
+            1, std::max((*graph)->schedulingPressure,
+                        (*graph)->recurrenceLength)) +
+        (*graph)->criticalPathLength;
+    estimate.externalMemoryBytesPerActivation = (*graph)->externalMemoryBytes;
+    estimate.boundaryPayloadBytesPerActivation =
+        (*graph)->boundaryPayloadBytes;
+    launches.push_back(std::move(estimate));
+  });
+  if (failure)
+    return std::move(failure);
+  if (inapplicable)
+    return std::optional<detail::LowConfidenceMetricSet>{};
+
+  auto metrics = detail::estimateLowConfidenceMetrics(0, **pressure, launches,
+                                                      **platform, fabricRoot);
   if (!metrics)
     return metrics.takeError();
   return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));

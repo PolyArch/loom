@@ -28,7 +28,7 @@ namespace {
 constexpr llvm::StringLiteral resourceTimeTransitionCacheDescriptor{
     "loom.dse.resource_time_transition_cache.2"};
 constexpr llvm::StringLiteral resourceTimeAnalyticModelDescriptor{
-    "loom.dse.resource_time_analytic_model.1"};
+    "loom.dse.resource_time_analytic_model.2"};
 constexpr llvm::StringLiteral resourceTimePhysicalModelSnapshotDescriptor{
     "loom.dse.resource_time_physical_model_snapshot.1"};
 constexpr llvm::StringLiteral resourceTimeProjectionMemoDescriptor{
@@ -133,9 +133,17 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     const ::loom::fabric::FabricSystemRootView &system,
     llvm::StringRef entrySymbol,
     std::optional<std::uint64_t> estimatedRuntimePicoseconds,
+    llvm::ArrayRef<evaluation::models::AnalyticLaunchEstimate> launchEstimates,
     ResourceTimeEstimateSupport physicalModelSupport) {
   if (entrySymbol.empty())
     return invalid("resource-time projection requires an ABI entry symbol");
+  std::optional<evaluation::models::SystemPlatformModel> platform;
+  if (!launchEstimates.empty()) {
+    auto projected = evaluation::models::projectSystemPlatformModel(system);
+    if (!projected)
+      return projected.takeError();
+    platform.emplace(*projected);
+  }
   if (physicalModelSupport != ResourceTimeEstimateSupport::Calibrated &&
       physicalModelSupport != ResourceTimeEstimateSupport::OutOfDomain &&
       physicalModelSupport != ResourceTimeEstimateSupport::Unsupported)
@@ -313,27 +321,71 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
         std::max<std::uint64_t>(1, logicalEpochCounts[ordinal]);
     feature.analyticFeatures.topologyCongestionProxy =
         feature.analyticFeatures.actorCount + feature.dependencies.size();
-    const unsigned __int128 scaled =
-        static_cast<unsigned __int128>(
-            estimatedRuntimePicoseconds.value_or(totalWeight)) *
-        weights[ordinal];
-    const std::uint64_t baseDuration = std::max<std::uint64_t>(
-        1, static_cast<std::uint64_t>(std::min<unsigned __int128>(
-               std::numeric_limits<std::uint64_t>::max(),
-               (scaled + totalWeight - 1) / totalWeight)));
-    const ResourceTimeEstimateSupport estimateSupport =
-        estimatedRuntimePicoseconds ? ResourceTimeEstimateSupport::Analytic
-                                    : ResourceTimeEstimateSupport::Unsupported;
-    for (std::uint64_t units = 1; units <= maximumUseful[ordinal]; ++units)
-      feature.speedupCurve.push_back(
-          {{units},
-           baseDuration / units + (baseDuration % units != 0),
-           std::nullopt,
-           std::nullopt,
-           0,
-           0,
-           0,
-           estimateSupport});
+    // A region whose every rooted launch site carries an analytic estimate
+    // takes the roofline duration of those sites under each allocation.
+    // Otherwise the whole-program estimate is split by region weight.
+    std::vector<const evaluation::models::AnalyticLaunchEstimate *>
+        regionEstimates;
+    if (platform && !launches[ordinal].empty()) {
+      for (const ::dataflow::RootedGraphLaunchRef launch : launches[ordinal]) {
+        const auto *estimate = llvm::find_if(
+            launchEstimates, [&](const auto &candidate) {
+              return candidate.launch == launch.staticGraphLaunch;
+            });
+        if (estimate == launchEstimates.end())
+          break;
+        regionEstimates.push_back(&*estimate);
+      }
+      if (regionEstimates.size() != launches[ordinal].size())
+        regionEstimates.clear();
+    }
+    if (!regionEstimates.empty()) {
+      for (std::uint64_t units = 1; units <= maximumUseful[ordinal]; ++units) {
+        std::uint64_t duration = 0;
+        for (const auto *estimate : regionEstimates) {
+          auto launchDuration = evaluation::models::estimateLaunchDuration(
+              *platform, *estimate, units);
+          if (!launchDuration)
+            return launchDuration.takeError();
+          const auto sum =
+              llvm::checkedAddUnsigned(duration, launchDuration->picoseconds);
+          if (!sum)
+            return invalid("resource-time region duration overflows");
+          duration = *sum;
+        }
+        feature.speedupCurve.push_back({{units},
+                                        std::max<std::uint64_t>(1, duration),
+                                        std::nullopt,
+                                        std::nullopt,
+                                        0,
+                                        0,
+                                        0,
+                                        ResourceTimeEstimateSupport::Analytic});
+      }
+    } else {
+      const unsigned __int128 scaled =
+          static_cast<unsigned __int128>(
+              estimatedRuntimePicoseconds.value_or(totalWeight)) *
+          weights[ordinal];
+      const std::uint64_t baseDuration = std::max<std::uint64_t>(
+          1, static_cast<std::uint64_t>(std::min<unsigned __int128>(
+                 std::numeric_limits<std::uint64_t>::max(),
+                 (scaled + totalWeight - 1) / totalWeight)));
+      const ResourceTimeEstimateSupport estimateSupport =
+          estimatedRuntimePicoseconds
+              ? ResourceTimeEstimateSupport::Analytic
+              : ResourceTimeEstimateSupport::Unsupported;
+      for (std::uint64_t units = 1; units <= maximumUseful[ordinal]; ++units)
+        feature.speedupCurve.push_back(
+            {{units},
+             baseDuration / units + (baseDuration % units != 0),
+             std::nullopt,
+             std::nullopt,
+             0,
+             0,
+             0,
+             estimateSupport});
+    }
     result.regions.push_back(std::move(feature));
     result.regionBounds.push_back(
         {(*reachable)[ordinal], maximumUseful[ordinal], boundSupport[ordinal],

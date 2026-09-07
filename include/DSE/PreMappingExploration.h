@@ -5,6 +5,7 @@
 #include "DSE/PreMappingFrontier.h"
 #include "DSE/StructuredOwnership.h"
 #include "DSE/StructuredOwnershipInvocation.h"
+#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Common/ExecutionControl.h"
 #include "Frontend/Analysis/StructuredProtocolDependencies.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
@@ -135,6 +136,9 @@ struct PreMappingCandidatePlanningRecord final {
   /// Protocol-root subsets do not supply this observation. Like Runtime,
   /// this derived invocation observation is excluded from candidate identity.
   std::optional<std::uint64_t> hostDynamicLeafExecutions = std::nullopt;
+  /// Per-launch-site work behind the Runtime estimate. Like Runtime it is a
+  /// derived observation excluded from candidate identity.
+  std::vector<evaluation::models::AnalyticLaunchEstimate> launchEstimates;
 
   friend bool operator==(const PreMappingCandidatePlanningRecord &lhs,
                          const PreMappingCandidatePlanningRecord &rhs) {
@@ -145,6 +149,7 @@ struct PreMappingCandidatePlanningRecord final {
            lhs.temporalWitness == rhs.temporalWitness &&
            lhs.projection == rhs.projection &&
            lhs.estimatedRuntimePicoseconds == rhs.estimatedRuntimePicoseconds &&
+           lhs.launchEstimates == rhs.launchEstimates &&
            lhs.disposition == rhs.disposition &&
            lhs.preferenceRank == rhs.preferenceRank &&
            lhs.materializedProjection == rhs.materializedProjection &&

@@ -156,7 +156,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "structured_fabric_low_confidence",
-    "loom.structured_fabric.low_confidence.v4",
+    "loom.structured_fabric.low_confidence.v5",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -199,6 +199,7 @@ struct ScopeDynamicWork final {
 struct SpatialDynamicWork final {
   std::uint64_t dynamicLeafExecutions = 0;
   std::uint64_t loweredLeafCopies = 0;
+  std::uint64_t staticLeafCount = 0;
 };
 
 struct ResolvedScopeActivity final {
@@ -306,6 +307,7 @@ projectSpatialDynamicWork(const BlockActivityProjection &activity,
       return;
     }
     result.dynamicLeafExecutions = *dynamic;
+    ++result.staticLeafCount;
 
     std::uint64_t copies = 1;
     for (mlir::Operation *parent = operation->getParentOp();
@@ -354,6 +356,7 @@ projectSpatialDynamicWork(const BlockActivityProjection &activity,
           "activity projection");
     result.dynamicLeafExecutions = activation->second;
     result.loweredLeafCopies = 1;
+    result.staticLeafCount = 1;
   }
   return result;
 }
@@ -636,11 +639,59 @@ accumulateGraphWorkload(detail::AnalyticWorkloadEstimate &destination,
       "memory transactions");
 }
 
-llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
+struct EstimatedMetrics final {
+  detail::LowConfidenceMetricSet metrics;
+  std::vector<AnalyticLaunchEstimate> launches;
+};
+
+/// One launch site's per-activation work: the source profile counts every
+/// executable leaf firing inside the Spatial owner, so dividing by the owner's
+/// activations and its static leaf count yields the iterations one activation
+/// performs, which scale the graph's initiation interval and memory bytes.
+llvm::Expected<AnalyticLaunchEstimate>
+projectLaunchEstimate(dataflow::StaticGraphLaunchRef launch,
+                      const detail::AnalyticWorkloadEstimate &graph,
+                      std::uint64_t activations,
+                      const SpatialDynamicWork &dynamicWork) {
+  AnalyticLaunchEstimate estimate{launch, activations, 0, 0, 0};
+  const std::uint64_t leafFirings = std::max<std::uint64_t>(
+      1, std::max<std::uint64_t>(1, activations) *
+             std::max<std::uint64_t>(1, dynamicWork.staticLeafCount));
+  const std::uint64_t iterations = std::max<std::uint64_t>(
+      1, dynamicWork.dynamicLeafExecutions / leafFirings +
+             (dynamicWork.dynamicLeafExecutions % leafFirings != 0 ? 1 : 0));
+  const std::uint64_t initiationInterval = std::max<std::uint64_t>(
+      1, std::max(graph.schedulingPressure, graph.recurrenceLength));
+  auto steady = checkedScaledCount(initiationInterval, iterations,
+                                   "launch steady-state cycles");
+  if (!steady)
+    return steady.takeError();
+  const auto compute =
+      llvm::checkedAddUnsigned(*steady, graph.criticalPathLength);
+  if (!compute)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_overflow: launch compute cycles");
+  estimate.computeCyclesPerActivation = *compute;
+  auto bytes = checkedScaledCount(graph.externalMemoryBytes, iterations,
+                                  "launch external memory bytes");
+  if (!bytes)
+    return bytes.takeError();
+  estimate.externalMemoryBytesPerActivation = *bytes;
+  estimate.boundaryPayloadBytesPerActivation = graph.boundaryPayloadBytes;
+  return estimate;
+}
+
+llvm::Expected<std::optional<EstimatedMetrics>> estimateMetrics(
     const BlockActivityProjection &activity,
     const fabric::FinalizedFabricRoot &fabricRoot,
     const dataflow::CanonicalDataflowProgramView *projectedDataflow,
     llvm::ArrayRef<lowering::StructuredSpatialGraphProjection> spatialGraphs) {
+  auto platform = detail::projectFabricPlatformModel(fabricRoot);
+  if (!platform)
+    return platform.takeError();
+  if (!*platform)
+    return std::optional<EstimatedMetrics>{};
   std::size_t spatialRegionCount = 0;
   for (const frontend::StructuredEntity &entity :
        activity.view.entities(frontend::StructuredEntityKind::Operation))
@@ -657,6 +708,8 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
         "structured_fabric_model_invalid: Dataflow projection is partial");
 
   detail::AnalyticWorkloadEstimate pressure;
+  std::vector<AnalyticLaunchEstimate> launches;
+  launches.reserve(spatialGraphs.size());
   llvm::DenseSet<mlir::Operation *> visitedRegions;
   llvm::DenseSet<mlir::Operation *> visitedLaunches;
   for (const lowering::StructuredSpatialGraphProjection &projection :
@@ -696,20 +749,27 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
     if (!graph)
       return graph.takeError();
     if (!*graph)
-      return std::optional<detail::LowConfidenceMetricSet>{};
+      return std::optional<EstimatedMetrics>{};
     auto dynamicWork = projectSpatialDynamicWork(activity, spatial);
     if (!dynamicWork)
       return dynamicWork.takeError();
     if (llvm::Error error = accumulateGraphWorkload(
             pressure, **graph, found->second, *dynamicWork))
       return std::move(error);
+    auto launchEstimate = projectLaunchEstimate(
+        projection.staticGraphLaunch, **graph, found->second, *dynamicWork);
+    if (!launchEstimate)
+      return launchEstimate.takeError();
+    launches.push_back(std::move(*launchEstimate));
   }
 
   auto metrics = detail::estimateLowConfidenceMetrics(
-      activity.hostInstructionLeafExecutions, pressure, fabricRoot);
+      activity.hostInstructionLeafExecutions, pressure, launches, **platform,
+      fabricRoot);
   if (!metrics)
     return metrics.takeError();
-  return std::optional<detail::LowConfidenceMetricSet>(std::move(*metrics));
+  return std::optional<EstimatedMetrics>(
+      EstimatedMetrics{std::move(*metrics), std::move(launches)});
 }
 
 llvm::Expected<EvaluationModelResult>
@@ -843,7 +903,10 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
             : llvm::ArrayRef<lowering::StructuredSpatialGraphProjection>{});
     if (!computed)
       return computed.takeError();
-    metrics = std::move(*computed);
+    if (*computed) {
+      metrics = std::move((*computed)->metrics);
+      analysis.launches = std::move((*computed)->launches);
+    }
     analysis.hostDynamicLeafExecutions =
         activity->hostInstructionLeafExecutions;
     if (cache) {
@@ -1212,8 +1275,12 @@ llvm::Error primeStructuredFabricAnalyticResult(
                                  candidate.spatialGraphs);
   if (!metrics)
     return metrics.takeError();
-  const CachedAnalysis analysis{std::move(*metrics),
-                                activity->hostInstructionLeafExecutions};
+  CachedAnalysis analysis;
+  if (*metrics) {
+    analysis.metrics = std::move((*metrics)->metrics);
+    analysis.launches = std::move((*metrics)->launches);
+  }
+  analysis.hostDynamicLeafExecutions = activity->hostInstructionLeafExecutions;
   auto cached = std::make_shared<const CachedAnalysis>(analysis);
   std::lock_guard<std::mutex> lock(cacheImpl.mutex);
   if (auto existing = cacheImpl.analyticResults.find(key);
@@ -1266,7 +1333,7 @@ lookupStructuredFabricAnalyticEstimate(
           analysis.metrics ? std::optional<std::uint64_t>(
                                  analysis.metrics->runtimePicoseconds)
                            : std::nullopt,
-          analysis.hostDynamicLeafExecutions});
+          analysis.hostDynamicLeafExecutions, analysis.launches});
 }
 
 llvm::Expected<bool> hasStructuredFabricAnalyticResult(

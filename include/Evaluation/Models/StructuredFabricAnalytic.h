@@ -2,6 +2,7 @@
 #define LOOM_EVALUATION_MODELS_STRUCTUREDFABRICANALYTIC_H
 
 #include "Common/Artifact.h"
+#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Request.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -213,6 +214,9 @@ llvm::Error primeStructuredFabricAnalyticResult(
 struct StructuredFabricAnalyticEstimate final {
   std::optional<std::uint64_t> runtimePicoseconds;
   std::uint64_t hostDynamicLeafExecutions = 0;
+  /// Per-launch-site work behind `runtimePicoseconds`; empty when the model
+  /// was inapplicable or the candidate owns no Spatial region.
+  std::vector<AnalyticLaunchEstimate> launches;
 };
 
 /// Reads the exact-key result without evaluating or ranking a candidate.

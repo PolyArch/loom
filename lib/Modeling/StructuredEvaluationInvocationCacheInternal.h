@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 #include <utility>
 
 namespace loom::evaluation::models::detail {
@@ -22,11 +23,13 @@ namespace loom::evaluation::models::detail {
 struct StructuredAnalyticResult final {
   std::optional<LowConfidenceMetricSet> metrics;
   std::uint64_t hostDynamicLeafExecutions = 0;
+  std::vector<AnalyticLaunchEstimate> launches;
 
   friend bool operator==(const StructuredAnalyticResult &lhs,
                          const StructuredAnalyticResult &rhs) {
     return lhs.metrics == rhs.metrics &&
-           lhs.hostDynamicLeafExecutions == rhs.hostDynamicLeafExecutions;
+           lhs.hostDynamicLeafExecutions == rhs.hostDynamicLeafExecutions &&
+           lhs.launches == rhs.launches;
   }
   friend bool operator!=(const StructuredAnalyticResult &lhs,
                          const StructuredAnalyticResult &rhs) {

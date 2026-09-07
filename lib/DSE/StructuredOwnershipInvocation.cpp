@@ -1850,8 +1850,29 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
       auto direct = frontend::materializeSpatialOwnershipDecision(
           impl.generationParent, derivation.scope, derivation.decision,
           impl.fabric, impl.lowering, impl.sourceProvenance);
-      if (!direct)
-        return direct.takeError();
+      if (!direct) {
+        // The exact Fabric or the Dataflow boundary refused this generated
+        // decision: the candidate cannot execute, so its functional Evidence
+        // is typed Unsupported rather than an invocation failure.
+        bool rejected = false;
+        llvm::Error unhandled = llvm::handleErrors(
+            direct.takeError(),
+            [&](const frontend::SpatialOwnershipCandidateRejection &) {
+              rejected = true;
+            });
+        if (unhandled)
+          return unhandled;
+        if (!rejected)
+          return invalid("functional candidate failed without a classified "
+                         "error");
+        if (llvm::Error error = evaluation::models::
+                primeStructuredProgramFunctionalReplayUnsupported(
+                    candidate, *impl.workloadReference,
+                    *impl.runtimeInputReference))
+          return error;
+        impl.primedCandidates.insert(candidate);
+        return llvm::Error::success();
+      }
       reconstructed.emplace(std::move(*direct));
     }
     auto inserted =

@@ -68,8 +68,14 @@ finalizeSpatialOwnershipCandidate(
   auto projected =
       lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
           candidate.structuredProgram, loweringOptions);
-  if (!projected)
-    return projected.takeError();
+  if (!projected) {
+    // The mechanical Dataflow boundary refusing the selected region is the
+    // candidate's typed non-finalizability, reported with the boundary's
+    // own diagnostic rather than as an invocation failure.
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  "canonical Dataflow lowering refused the candidate: " +
+                      llvm::toString(projected.takeError()));
+  }
   if (llvm::Error error =
           requireExactFabricCapabilities(projected->artifact, fabric))
     return std::move(error);

@@ -768,6 +768,46 @@ llvm::Error primeStructuredProgramFunctionalReplay(
   return llvm::Error::success();
 }
 
+llvm::Error primeStructuredProgramFunctionalReplayUnsupported(
+    const ArtifactRootReference &candidate,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput) {
+  if (llvm::Error error = registerStructuredProgramFunctionalModel())
+    return error;
+  StructuredEvaluationInvocationCache *cache =
+      detail::currentStructuredEvaluationCache();
+  if (!cache)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_functional_model_invalid: replay priming requires an "
+        "active invocation cache");
+  const detail::StructuredFunctionalCacheKey key =
+      replayCacheKey(candidate, workload, runtimeInput);
+  auto value = std::make_shared<const CachedReplayResult>(
+      CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt});
+  auto &cacheImpl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  std::lock_guard<std::mutex> lock(cacheImpl.mutex);
+  if (auto existing = cacheImpl.functionalResults.find(key);
+      existing != cacheImpl.functionalResults.end()) {
+    if (!(*existing->second == *value))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_functional_model_invalid: nondeterministic replay");
+    return llvm::Error::success();
+  }
+  if (cacheImpl.functionalResults.size() >=
+      cacheImpl.limits.maximumFunctionalEntries) {
+    cacheImpl.capacityBypassCount.fetch_add(1, std::memory_order_relaxed);
+    return llvm::createStringError(
+        std::make_error_code(std::errc::no_buffer_space),
+        "structured_functional_model_incomplete: replay cache capacity "
+        "exhausted");
+  }
+  cacheImpl.functionalResults.try_emplace(key, value);
+  cacheImpl.functionalPrimeCount.fetch_add(1, std::memory_order_relaxed);
+  return llvm::Error::success();
+}
+
 llvm::Expected<sim::SourceBackedDfgValidationResult>
 getPrimedStructuredProgramFunctionalReplay(
     const ArtifactRootReference &candidate,

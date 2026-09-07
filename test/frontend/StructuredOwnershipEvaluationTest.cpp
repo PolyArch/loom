@@ -71,35 +71,40 @@ using loom::test::structured_ownership::SourceSimulationInputs;
 using loom::test::structured_ownership::take;
 using loom::test::structured_ownership::zeroedMemory;
 
+/// The evaluation kernels add two vectors element by element as straight-line
+/// code: enough work that offloading a kernel pays for a physically priced
+/// launch, while `tiny` does not, and no loop so every scope keeps exactly
+/// one ownership decision.
+constexpr std::size_t kVectorLength = 64;
+
+std::string vectorAddKernel(llvm::StringRef name) {
+  std::string body;
+  llvm::raw_string_ostream stream(body);
+  stream << "define void @" << name << "(ptr %a, ptr %b, ptr %c) {\nentry:\n";
+  for (std::size_t element = 0; element < kVectorLength; ++element) {
+    stream << "  %pa" << element << " = getelementptr float, ptr %a, i64 "
+           << element << "\n"
+           << "  %pb" << element << " = getelementptr float, ptr %b, i64 "
+           << element << "\n"
+           << "  %pc" << element << " = getelementptr float, ptr %c, i64 "
+           << element << "\n"
+           << "  %lhs" << element << " = load float, ptr %pa" << element
+           << ", align 4\n"
+           << "  %rhs" << element << " = load float, ptr %pb" << element
+           << ", align 4\n"
+           << "  %sum" << element << " = fadd float %lhs" << element
+           << ", %rhs" << element << "\n"
+           << "  store float %sum" << element << ", ptr %pc" << element
+           << ", align 4\n";
+  }
+  stream << "  ret void\n}\n\n";
+  return stream.str();
+}
+
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context) {
-  constexpr llvm::StringLiteral source = R"llvm(
-define void @kernel(ptr %a, ptr %b, ptr %c) {
-entry:
-  %lhs = load float, ptr %a, align 4
-  %rhs = load float, ptr %b, align 4
-  %sum = fadd float %lhs, %rhs
-  store float %sum, ptr %c, align 4
-  ret void
-}
-
-define void @cold(ptr %a, ptr %b, ptr %c) {
-entry:
-  %lhs = load float, ptr %a, align 4
-  %rhs = load float, ptr %b, align 4
-  %sum = fadd float %lhs, %rhs
-  store float %sum, ptr %c, align 4
-  ret void
-}
-
-define void @warm(ptr %a, ptr %b, ptr %c) {
-entry:
-  %lhs = load float, ptr %a, align 4
-  %rhs = load float, ptr %b, align 4
-  %sum = fadd float %lhs, %rhs
-  store float %sum, ptr %c, align 4
-  ret void
-}
-
+  const std::string source = vectorAddKernel("kernel") +
+                             vectorAddKernel("cold") + vectorAddKernel("warm") +
+                             R"llvm(
 define i32 @tiny() {
 entry:
   ret i32 7
@@ -193,14 +198,15 @@ parseFunctionallyIncorrectModule(llvm::LLVMContext &context) {
   fail("incorrect candidate found no floating addition");
 }
 
-loom::sim::RuntimeMemoryObject f32Memory(float value) {
+loom::sim::RuntimeMemoryObject f32VectorMemory(float value) {
   llvm::APInt bits = llvm::APFloat(value).bitcastToAPInt();
   std::vector<loom::sim::SemanticMemoryByte> bytes;
-  bytes.reserve(4);
-  for (unsigned byte = 0; byte < 4; ++byte)
-    bytes.push_back(
-        {loom::sim::SemanticState::Defined,
-         static_cast<std::uint8_t>(bits.extractBitsAsZExtValue(8, byte * 8))});
+  bytes.reserve(4 * kVectorLength);
+  for (std::size_t element = 0; element < kVectorLength; ++element)
+    for (unsigned byte = 0; byte < 4; ++byte)
+      bytes.push_back({loom::sim::SemanticState::Defined,
+                       static_cast<std::uint8_t>(
+                           bits.extractBitsAsZExtValue(8, byte * 8))});
   return loom::sim::RuntimeMemoryObject{std::move(bytes)};
 }
 
@@ -222,8 +228,9 @@ SourceSimulationInputs makeSourceSimulationInputs(
 
   loom::sim::StructuredProgramSimulationRuntimeInputDraft runtime{
       workload.identity()};
-  runtime.memoryObjects = {f32Memory(3.0F), f32Memory(2.0F), zeroedMemory(4),
-                           zeroedMemory(4)};
+  runtime.memoryObjects = {f32VectorMemory(3.0F), f32VectorMemory(2.0F),
+                           zeroedMemory(4 * kVectorLength),
+                           zeroedMemory(4 * kVectorLength)};
   runtime.pointerBindings = {{0, 0, 0}, {1, 1, 0}, {2, 2, 0}, {3, 3, 0}};
   auto runtimeInput =
       take(loom::sim::finalizeSimulationRuntimeInput(runtime, workload, view));
