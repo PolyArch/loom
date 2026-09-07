@@ -7,6 +7,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -426,6 +427,31 @@ llvm::Error validateInstructionResourceContract(
   return llvm::Error::success();
 }
 
+void writeCacheRealization(ContractRecordWriter &writer,
+                           const CacheRealizationRecord &cache) {
+  writer.u64(cache.capacityBytes());
+  writer.u32(cache.lineBytes());
+  writer.u32(cache.associativity());
+  writer.u32(cache.hitLatencyCycles());
+  writer.u32(cache.missStatusEntries());
+}
+
+llvm::Expected<CacheRealizationRecord>
+readCacheRealization(ContractRecordReader &reader, llvm::StringRef field) {
+  llvm::Expected<std::uint64_t> capacity = reader.u64(field);
+  if (!capacity)
+    return capacity.takeError();
+  std::uint32_t fields[4] = {};
+  for (std::uint32_t &value : fields) {
+    llvm::Expected<std::uint32_t> read = reader.u32(field);
+    if (!read)
+      return read.takeError();
+    value = *read;
+  }
+  return CacheRealizationRecord::create(*capacity, fields[0], fields[1],
+                                        fields[2], fields[3]);
+}
+
 template <typename Pipeline> bool allPositive(const Pipeline &pipeline);
 
 template <>
@@ -766,6 +792,33 @@ InstructionCoreArchitecturalContract::create(
   return InstructionCoreArchitecturalContract(std::move(declaration));
 }
 
+llvm::Expected<CacheRealizationRecord> CacheRealizationRecord::create(
+    std::uint64_t capacityBytes, std::uint32_t lineBytes,
+    std::uint32_t associativity, std::uint32_t hitLatencyCycles,
+    std::uint32_t missStatusEntries) {
+  if (capacityBytes == 0 || lineBytes == 0 || associativity == 0 ||
+      hitLatencyCycles == 0 || missStatusEntries == 0)
+    return invalidContract("cache realization",
+                           "capacity, line, associativity, hit latency, and "
+                           "miss-status entries must be positive");
+  if (!llvm::isPowerOf2_32(lineBytes))
+    return invalidContract("cache realization",
+                           "line_bytes must be a power of two");
+  const std::uint64_t setBytes =
+      static_cast<std::uint64_t>(lineBytes) * associativity;
+  if (capacityBytes % setBytes != 0)
+    return invalidContract(
+        "cache realization",
+        "capacity_bytes must be a multiple of line_bytes * associativity");
+  return CacheRealizationRecord(capacityBytes, lineBytes, associativity,
+                                hitLatencyCycles, missStatusEntries);
+}
+
+llvm::Expected<SpatialMemoryAccessRealization>
+SpatialMemoryAccessRealization::create(CacheRealizationRecord cache) {
+  return SpatialMemoryAccessRealization(cache);
+}
+
 llvm::Expected<InstructionCoreMicroarchitecturalRealization>
 InstructionCoreMicroarchitecturalRealization::createInOrder(
     InstructionCoreCommonDeclaration common,
@@ -783,7 +836,8 @@ InstructionCoreMicroarchitecturalRealization::createInOrder(
     return std::move(error);
   return InstructionCoreMicroarchitecturalRealization(
       InstructionCoreRealizationKind::InOrder, common.hardwareThreadCount,
-      std::move(*units), std::move(common.resourceContract), pipeline);
+      std::move(*units), std::move(common.resourceContract),
+      common.privateCaches, pipeline);
 }
 
 llvm::Expected<InstructionCoreMicroarchitecturalRealization>
@@ -803,7 +857,8 @@ InstructionCoreMicroarchitecturalRealization::createOutOfOrder(
     return std::move(error);
   return InstructionCoreMicroarchitecturalRealization(
       InstructionCoreRealizationKind::OutOfOrder, common.hardwareThreadCount,
-      std::move(*units), std::move(common.resourceContract), pipeline);
+      std::move(*units), std::move(common.resourceContract),
+      common.privateCaches, pipeline);
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -948,6 +1003,8 @@ loom::fabric::encodeInstructionCoreMicroarchitecturalRealization(
   if (!resource)
     return resource.takeError();
   writer.blob(*resource);
+  writeCacheRealization(writer, realization.privateCaches().instruction);
+  writeCacheRealization(writer, realization.privateCaches().data);
 
   if (const auto *pipeline = realization.inOrder()) {
     writer.u32(pipeline->fetchWidth);
@@ -976,6 +1033,36 @@ loom::fabric::encodeInstructionCoreMicroarchitecturalRealization(
     writer.u32(outOfOrder.physicalVectorRegisters);
   }
   return writer.take();
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+loom::fabric::encodeSpatialMemoryAccessRealization(
+    const SpatialMemoryAccessRealization &realization) {
+  ContractRecordWriter writer;
+  writeCacheRealization(writer, realization.cache());
+  return writer.take();
+}
+
+llvm::Expected<SpatialMemoryAccessRealization>
+loom::fabric::decodeSpatialMemoryAccessRealization(
+    llvm::ArrayRef<std::uint8_t> bytes) {
+  ContractRecordReader reader(bytes);
+  llvm::Expected<CacheRealizationRecord> cache =
+      readCacheRealization(reader, "spatial memory access cache");
+  if (!cache)
+    return cache.takeError();
+  if (llvm::Error error = reader.finish("spatial memory access"))
+    return std::move(error);
+  llvm::Expected<SpatialMemoryAccessRealization> realization =
+      SpatialMemoryAccessRealization::create(*cache);
+  if (!realization)
+    return realization.takeError();
+  if (llvm::Error error =
+          requireCanonical(bytes, *realization,
+                           encodeSpatialMemoryAccessRealization,
+                           "spatial memory access"))
+    return std::move(error);
+  return std::move(*realization);
 }
 
 llvm::Expected<InstructionCoreMicroarchitecturalRealization>
@@ -1024,9 +1111,18 @@ loom::fabric::decodeInstructionCoreMicroarchitecturalRealization(
       ::fabric::decodeResourceContractRecord(*resourceBytes);
   if (!resource)
     return resource.takeError();
+  llvm::Expected<CacheRealizationRecord> instructionCache =
+      readCacheRealization(reader, "private instruction cache");
+  if (!instructionCache)
+    return instructionCache.takeError();
+  llvm::Expected<CacheRealizationRecord> dataCache =
+      readCacheRealization(reader, "private data cache");
+  if (!dataCache)
+    return dataCache.takeError();
 
-  InstructionCoreCommonDeclaration common{*threads, std::move(units),
-                                          std::move(*resource)};
+  InstructionCoreCommonDeclaration common{
+      *threads, std::move(units), std::move(*resource),
+      PrivateCacheRealization{*instructionCache, *dataCache}};
   llvm::Expected<InstructionCoreMicroarchitecturalRealization> realization =
       [&]() -> llvm::Expected<InstructionCoreMicroarchitecturalRealization> {
     if (*kind ==

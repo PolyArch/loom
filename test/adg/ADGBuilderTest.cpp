@@ -210,13 +210,20 @@ instructionArchitecture(llvm::StringRef test) {
                         std::move(declaration)));
 }
 
+loom::fabric::PrivateCacheRealization privateCaches(llvm::StringRef test) {
+  auto cache = take(test, loom::fabric::CacheRealizationRecord::create(
+                              16 * 1024, 64, 4, 1, 4));
+  return loom::fabric::PrivateCacheRealization{cache, cache};
+}
+
 loom::fabric::InstructionCoreMicroarchitecturalRealization
 inOrderMicroarchitecture(llvm::StringRef test) {
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1},
        {loom::fabric::InstructionOperationClass::LoadStore, 1, 2, 1}},
-      singleUseResourceContract(test)};
+      singleUseResourceContract(test),
+      privateCaches(test)};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 4, 2};
   return take(
@@ -231,11 +238,19 @@ outOfOrderMicroarchitecture(llvm::StringRef test) {
       2,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
        {loom::fabric::InstructionOperationClass::LoadStore, 2, 2, 1}},
-      singleUseResourceContract(test)};
+      singleUseResourceContract(test),
+      privateCaches(test)};
   loom::fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
       2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 32, 32};
   return take(test, loom::fabric::InstructionCoreMicroarchitecturalRealization::
                         createOutOfOrder(std::move(common), pipeline));
+}
+
+loom::fabric::SpatialMemoryAccessRealization
+spatialMemoryAccess(llvm::StringRef test) {
+  return take(test, loom::fabric::SpatialMemoryAccessRealization::create(
+                        take(test, loom::fabric::CacheRealizationRecord::create(
+                                       32 * 1024, 64, 4, 1, 4))));
 }
 
 ::fabric::MemoryAccessClass systemElementAccess(llvm::StringRef test) {

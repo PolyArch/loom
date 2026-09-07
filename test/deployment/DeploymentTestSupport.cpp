@@ -136,12 +136,26 @@ HostCatalog systemArtifactHostCatalog(llvm::StringRef test) {
             HostExternalInterfaceDirection::InOut, memory}}};
 }
 
+fabric::PrivateCacheRealization privateCaches(llvm::StringRef test) {
+  const auto cache = take(
+      test, fabric::CacheRealizationRecord::create(16 * 1024, 64, 4, 1, 4));
+  return fabric::PrivateCacheRealization{cache, cache};
+}
+
+fabric::SpatialMemoryAccessRealization
+spatialMemoryAccess(llvm::StringRef test) {
+  return take(test, fabric::SpatialMemoryAccessRealization::create(
+                        take(test, fabric::CacheRealizationRecord::create(
+                                       32 * 1024, 64, 4, 1, 4))));
+}
+
 fabric::InstructionCoreMicroarchitecturalRealization
 microarchitecture(llvm::StringRef test) {
   fabric::InstructionCoreCommonDeclaration common{
       1,
       {{fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
-      ::fabric::oneCycleElasticOperationResourceContract()};
+      ::fabric::oneCycleElasticOperationResourceContract(),
+      privateCaches(test)};
   fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1, 1, 1, 2, 1};
   return take(
       test, fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
@@ -154,7 +168,8 @@ outOfOrderMicroarchitecture(llvm::StringRef test) {
       1,
       {{fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
        {fabric::InstructionOperationClass::LoadStore, 2, 2, 1}},
-      ::fabric::oneCycleElasticOperationResourceContract()};
+      ::fabric::oneCycleElasticOperationResourceContract(),
+      privateCaches(test)};
   fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
       2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 64, 64};
   return take(
@@ -251,8 +266,9 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
         spec.alternateInstructionMicroarchitectures && ordinal % 2 != 0
             ? outOfOrder
             : inOrder;
-    cores.push_back(take(
-        test, system.addAccCore(architecture, microarchitecture, imported)));
+    cores.push_back(take(test, system.addAccCore(architecture, microarchitecture,
+                                                imported,
+                                                spatialMemoryAccess(test))));
   }
 
   auto clock = take(test, system.createHardwareDomain());

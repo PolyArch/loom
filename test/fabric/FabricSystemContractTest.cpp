@@ -117,13 +117,30 @@ representativeArchitecture(bool acceleratorDispatcher = true) {
               InstructionCoreArchitecturalContract::create(declaration));
 }
 
+CacheRealizationRecord representativeCache(std::uint64_t capacityBytes) {
+  return take("representative cache",
+              CacheRealizationRecord::create(capacityBytes, 64, 4, 1, 4));
+}
+
+PrivateCacheRealization representativePrivateCaches() {
+  return PrivateCacheRealization{representativeCache(16 * 1024),
+                                 representativeCache(16 * 1024)};
+}
+
+SpatialMemoryAccessRealization representativeSpatialMemoryAccess() {
+  return take("representative spatial memory access",
+              SpatialMemoryAccessRealization::create(
+                  representativeCache(32 * 1024)));
+}
+
 InstructionCoreMicroarchitecturalRealization representativeMicroarchitecture() {
   InstructionCoreCommonDeclaration common{
       2,
       {{InstructionOperationClass::LoadStore, 1, 3, 1},
        {InstructionOperationClass::IntegerAlu, 1, 1, 1},
        {InstructionOperationClass::IntegerAlu, 2, 1, 1}},
-      instructionContextContract()};
+      instructionContextContract(),
+      representativePrivateCaches()};
   InOrderMicroarchitectureDeclaration pipeline{2, 2, 2, 2, 1, 1, 8, 4};
   return take("representative microarchitecture",
               InstructionCoreMicroarchitecturalRealization::createInOrder(
@@ -351,7 +368,8 @@ void checkInstructionMicroarchitectureContract() {
       1,
       {{InstructionOperationClass::IntegerAlu, 4, 1, 1},
        {InstructionOperationClass::LoadStore, 2, 3, 1}},
-      instructionContextContract()};
+      instructionContextContract(),
+      representativePrivateCaches()};
   InstructionCoreMicroarchitecturalRealization outOfOrder =
       take(test, InstructionCoreMicroarchitecturalRealization::createOutOfOrder(
                      std::move(outOfOrderCommon), outOfOrderPipeline));
@@ -360,6 +378,47 @@ void checkInstructionMicroarchitectureContract() {
               take(test, encodeInstructionCoreMicroarchitecturalRealization(
                              outOfOrder)) != encoded,
           "out-of-order realization did not retain distinct identity bytes");
+
+  // The private-cache geometry is an admission joint of the realization, not a
+  // free-form parameter block: a capacity that does not tile whole sets and a
+  // non-power-of-two line are both rejected.
+  const auto rejectsCache = [&](std::uint64_t capacityBytes,
+                               std::uint32_t lineBytes,
+                               std::uint32_t associativity,
+                               std::uint32_t missStatusEntries) {
+    auto rejected = CacheRealizationRecord::create(
+        capacityBytes, lineBytes, associativity, 1, missStatusEntries);
+    if (!rejected) {
+      llvm::consumeError(rejected.takeError());
+      return true;
+    }
+    return false;
+  };
+  require(test, rejectsCache(16 * 1024 + 64, 64, 3, 4),
+          "admitted a capacity that is not a whole number of cache sets");
+  require(test, rejectsCache(16 * 1024, 48, 4, 4),
+          "admitted a non-power-of-two cache line");
+  require(test, rejectsCache(16 * 1024, 64, 4, 0),
+          "admitted a cache without outstanding-miss capacity");
+
+  // The declared caches enter the realization identity.
+  InstructionCoreCommonDeclaration wideCacheCommon{
+      2,
+      {{InstructionOperationClass::LoadStore, 1, 3, 1},
+       {InstructionOperationClass::IntegerAlu, 1, 1, 1},
+       {InstructionOperationClass::IntegerAlu, 2, 1, 1}},
+      instructionContextContract(),
+      PrivateCacheRealization{representativeCache(16 * 1024),
+                              representativeCache(32 * 1024)}};
+  InstructionCoreMicroarchitecturalRealization wideCache =
+      take(test, InstructionCoreMicroarchitecturalRealization::createInOrder(
+                     std::move(wideCacheCommon),
+                     InOrderMicroarchitectureDeclaration{2, 2, 2, 2, 1, 1, 8,
+                                                         4}));
+  require(test,
+          take(test, encodeInstructionCoreMicroarchitecturalRealization(
+                         wideCache)) != encoded,
+          "a distinct private data cache did not change realization identity");
 }
 
 std::string denseI8Assembly(mlir::MLIRContext &context,
@@ -428,6 +487,9 @@ void checkTypedSystemRejections() {
   const std::vector<std::uint8_t> spatialCore =
       encodeFabricImportedModuleTargetRef(
           FabricImportedModuleTargetRef{0, FabricModuleTemplateRef(1)});
+  const std::vector<std::uint8_t> spatialMemoryAccess =
+      take(test, encodeSpatialMemoryAccessRealization(
+                     representativeSpatialMemoryAccess()));
 
   const std::string malformed =
       "module { fabric.system @soc { "
@@ -443,7 +505,9 @@ void checkTypedSystemRejections() {
       "fabric.system.acc_core architecture = " +
       denseI8Assembly(context, hostArchitecture) +
       " microarchitecture = " + denseI8Assembly(context, microarchitecture) +
-      " spatial_core = " + denseI8Assembly(context, spatialCore) + " } }";
+      " spatial_core = " + denseI8Assembly(context, spatialCore) +
+      " spatial_memory_access = " +
+      denseI8Assembly(context, spatialMemoryAccess) + " } }";
   require(test,
           !mlir::parseSourceString<mlir::ModuleOp>(missingServices, &context),
           "accepted an AccCore without dispatch and launch services");

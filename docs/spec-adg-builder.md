@@ -623,7 +623,7 @@ BuiltinTargetPreset = Small | Coverage | Large
 ```
 
 Every preset resolves to the single template identity
-`loom.adg.builtin.general_purpose` at schema version `8.1`. Their prior recipes
+`loom.adg.builtin.general_purpose` at schema version `8.2`. Their prior recipes
 are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
@@ -681,6 +681,17 @@ or provider registry. All current presets select `PortableProviderClosed`.
 The minor transition is compatible because `FullCatalog` uniquely reconstructs
 the complete version 8.0 capability relation; compatibility does not make old
 and new descriptor references interchangeable.
+
+Version 8.2 adds the required typed `privateCaches` scale parameter. It owns
+the private-cache realization every expanded InstructionCore and every AccCore
+SpatialCore memory path declares in Fabric: one capacity for the two
+InstructionCore L1 caches, one capacity for the SpatialCore memory-path cache,
+and the shared line size, associativity, hit latency, and per-realization
+outstanding-miss capacities. These are hardware facts that enter Fabric
+identity and the System performance model; they are not simulator options and
+an 8.1 descriptor cannot supply them. The SpatialCore cache's outstanding-miss
+capacity is not a scale field: it is `temporalResidentContexts`, the same
+value that owns the System memory service's outstanding-operation capacity.
 
 Re-finalization from an 8.0 authoring source is explicit. The owner adds
 `specialMathCapabilityProfile = FullCatalog`, selects template version 8.1,
@@ -845,6 +856,13 @@ The initial scale anchors are:
 | cross-schedule lanes / Temporal PE |     5 |         5 |       5 |
 | Module transport gateway anchor  |       2 |         4 |       8 |
 | cross-schedule boundary pairs    |      20 |        45 |      80 |
+| InstructionCore L1 capacity (B)  |   16384 |     16384 |   16384 |
+| SpatialCore cache capacity (B)   |   32768 |     32768 |   32768 |
+| cache line bytes                 |      64 |        64 |      64 |
+| cache associativity              |       4 |         4 |       4 |
+| cache hit latency (cycles)       |       1 |         1 |       1 |
+| in-order miss-status entries     |       4 |         4 |       4 |
+| out-of-order miss-status entries |       8 |         8 |       8 |
 
 These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource
@@ -876,8 +894,11 @@ admits the `makeGeneral64SystemMemory` read/write domain, and it exposes one
 Serve endpoint in the System clock domain. Its service rate is one operation
 per System clock tick, with `temporalResidentContexts` outstanding operations
 and bounded completion within 20 ticks of the builtin System clock. That clock
-has period `1,000,000 fs` and phase zero. These are expanded Fabric facts, not
-additional preset fields or backend defaults.
+has period `1,000,000 fs` and phase zero. The same
+`temporalResidentContexts` value is the outstanding-miss capacity of every
+AccCore SpatialCore memory-path cache, so the cache in front of that service
+cannot request more concurrency than the service admits. These are expanded
+Fabric facts, not additional preset fields or backend defaults.
 
 Every builtin SpatialCore Module declares one Clock slot and one Reset slot
 and explicitly associates every boundary and every Module physical owner with

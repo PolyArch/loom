@@ -347,12 +347,24 @@ sharedTransportResourceContract(std::uint32_t residentRouteCapacity) {
   return take(::fabric::ResourceContract::create(std::move(declaration)));
 }
 
+loom::fabric::CacheRealizationRecord makeCache(std::uint64_t capacityBytes) {
+  return take(loom::fabric::CacheRealizationRecord::create(capacityBytes, 64, 4,
+                                                           1, 4));
+}
+
+loom::fabric::SpatialMemoryAccessRealization makeSpatialMemoryAccess() {
+  return take(loom::fabric::SpatialMemoryAccessRealization::create(
+      makeCache(32 * 1024)));
+}
+
 loom::fabric::InstructionCoreMicroarchitecturalRealization
 inOrderMicroarchitecture() {
+  const auto cache = makeCache(16 * 1024);
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
-      ::fabric::oneCycleElasticOperationResourceContract()};
+      ::fabric::oneCycleElasticOperationResourceContract(),
+      loom::fabric::PrivateCacheRealization{cache, cache}};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 2, 1};
   return take(
@@ -374,7 +386,8 @@ buildSystem(const loom::fabric::FinalizedFabricRoot &module,
   const auto microarchitecture = inOrderMicroarchitecture();
   const auto host = take(system.addHostCore(architecture, microarchitecture));
   const auto core =
-      take(system.addAccCore(architecture, microarchitecture, imported));
+      take(system.addAccCore(architecture, microarchitecture, imported,
+                             makeSpatialMemoryAccess()));
 
   auto clock = take(system.createHardwareDomain());
   const auto rate = take(system.createServiceRate(

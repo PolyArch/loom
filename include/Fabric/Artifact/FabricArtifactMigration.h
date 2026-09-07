@@ -16,21 +16,22 @@ namespace loom::fabric {
 inline constexpr ArtifactSchemaDescriptor fabricArtifactSchemaV7_0{
     "loom.fabric", SchemaVersion{7, 0}};
 
-/// Re-finalizes one exact loom.fabric 7.0 root under the current 7.1
-/// descriptor and returns the new ArtifactRootReference. The queue discipline
-/// extension is non-breaking: a 7.0 FIFO carries no queue_discipline
-/// attribute, which 7.1 reads as the canonical StrictFifo default, so the
-/// canonical MLIR payload and its embedded resource contracts are unchanged.
-/// Migration rewrites only the envelope dependency rows to the migrated 7.1
-/// references, recursively across the direct dependency closure, publishes
-/// the result under the 7.1 descriptor, and independently reverifies it
-/// through the complete strict 7.1 import before returning. The new identity
-/// differs from the 7.0 identity, so every Mapping, ResolvedConfig, and
-/// evaluation provenance that names the 7.0 root no longer resolves and must
-/// be regenerated against the migrated root.
+/// Re-finalizes one exact loom.fabric 7.0 root under the current 7.2
+/// descriptor and returns the new ArtifactRootReference. This is an
+/// envelope-level rewrite: it rewrites only the dependency rows to the
+/// migrated references, recursively across the direct dependency closure,
+/// publishes the result under the current descriptor, and independently
+/// reverifies it through the complete strict import before returning. It
+/// therefore succeeds exactly when the 7.0 canonical MLIR payload already
+/// satisfies the current grammar. A 7.0 System payload predates the required
+/// 7.2 private-cache and SpatialCore memory-path realizations and must be
+/// re-finalized from its authoring source instead. The new identity differs
+/// from the 7.0 identity, so every Mapping, ResolvedConfig, and evaluation
+/// provenance that names the 7.0 root no longer resolves and must be
+/// regenerated against the migrated root.
 llvm::Expected<ArtifactRootReference>
-migrateFabricRootV7_0ToV7_1(const ArtifactRootReference &reference,
-                            const ArtifactStore &store);
+migrateFabricRootV7_0ToCurrent(const ArtifactRootReference &reference,
+                               const ArtifactStore &store);
 
 } // namespace loom::fabric
 
