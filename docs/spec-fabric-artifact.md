@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 7.1
+loom.fabric 7.2
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 7.1
+  version = 7.2
 }
 
 FabricRoot =
@@ -106,14 +106,30 @@ re-finalization; only the descriptor framing and any rewritten dependency
 rows change identity. The extended use-pattern value-schema `parameters`
 codec field, previously reserved and rejected, is admitted for exactly these
 tag qualifications. A 7.0 root and its 7.1 re-finalization are never
-interchangeable: the ordinary 7.1 importer accepts and emits only the exact
+interchangeable: a 7.1 importer accepted and emitted only the exact
 `loom.fabric 7.1` descriptor, and reading a 7.0 root requires the explicit
-migration owner `migrateFabricRootV7_0ToV7_1`, which recursively re-finalizes
-the direct dependency closure under 7.1, publishes each result, and
-independently reverifies it through the complete strict 7.1 import. Migration
+migration owner `migrateFabricRootV7_0ToCurrent`, which recursively
+re-finalizes the direct dependency closure under the current descriptor,
+publishes each result, and independently reverifies it through the complete
+strict import. Migration
 yields a new ArtifactIdentity, so every Mapping, ResolvedConfig, and
 evaluation provenance naming the 7.0 root no longer resolves and must be
 regenerated against the migrated root.
+
+Version 7.2 is a non-breaking semantic extension of the 7.1 System
+InstructionCore and AccCore records under the `X.Y` rule above. Every
+InstructionCore Microarchitectural Realization now declares a required
+`PrivateCacheRealization` for its own instruction and data fetch paths, and
+every `fabric.system.acc_core` declares a required
+`SpatialMemoryAccessRealization` for its SpatialCore memory-manager path.
+Both records are appended to their owners; no earlier field position or
+meaning changes. Because the new fields are required rather than defaulted, a
+7.0 or 7.1 canonical payload does not satisfy the 7.2 grammar and cannot be
+upgraded in place. The current owner accepts and emits only the exact
+`loom.fabric 7.2` descriptor, and `migrateFabricRootV7_0ToCurrent` remains an
+envelope-level rewrite that succeeds exactly when the migrated payload already
+satisfies the current grammar. A System root authored before 7.2 must be
+re-finalized from its authoring source.
 
 The 4.0 `fabric.system.connection` relation retains both its Transport and
 MemoryService variants from 3.0. These remain required operation-service
@@ -162,7 +178,7 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 7.1`:
+The dependency-role catalog remains unchanged in `loom.fabric 7.2`:
 
 ```text
 ImportedModule       = 0
@@ -180,21 +196,21 @@ no accepted artifact family, schema version, root kind, owner-local target
 kind, or dependency-use contract in schema 7.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-7.1 dependency contracts are exact:
+The enabled schema-7.2 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 7.1
+  owner schema = loom.fabric 7.2
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 7.1
+  owner schema = loom.fabric 7.2
   required root = System
 ```
 
-A pre-7.1 Module or System has no 7.1 dependency contract and is rejected
+A pre-7.2 Module or System has no 7.2 dependency contract and is rejected
 rather than republished under a new identity without exact finalization; the
-only 7.0-to-7.1 path is the migration owner above. Likewise, a `RefinedSystem`
+only 7.0-to-current path is the migration owner above. Likewise, a `RefinedSystem`
 dependency cannot cross a Fabric schema version or name a Module or
 InterconnectImplementation root. A later compatible Fabric minor version must
 explicitly publish its own dependency-contract table; role ordinals alone
@@ -800,9 +816,9 @@ Anchor tests cover:
   trips through finalization and strict import, rejection of
   `per_tag_virtual_channel` on an untagged or bypassable FIFO, distinct
   canonical identities for distinct disciplines, cold-rebuild identity
-  stability, rejection of a 7.0 reference by the ordinary 7.1 importer, and
-  exact 7.0-to-7.1 migration reproducing the native 7.1 identity for a Module
-  and for a System with its recursive dependency closure;
+  stability, rejection of a 7.0 reference by the ordinary importer, and exact
+  7.0-to-current migration reproducing the native identity for a Module and
+  for a System with its recursive dependency closure;
 * a valid custom Fabric with a missing backend provider reporting
   `Unsupported`; and
 * a builtin target publishing with complete semantic capability while a later

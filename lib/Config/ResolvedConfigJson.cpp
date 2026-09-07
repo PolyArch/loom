@@ -303,6 +303,18 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
             {"vector_structural", counts.vectorStructural},
             {"special_math", counts.specialMath}};
       };
+  const auto privateCaches =
+      [](const loom::adg::BuiltinPrivateCacheScale &caches) {
+        return llvm::json::Object{
+            {"instruction_core_cache_bytes", caches.instructionCoreCacheBytes},
+            {"spatial_memory_cache_bytes", caches.spatialMemoryCacheBytes},
+            {"line_bytes", caches.lineBytes},
+            {"associativity", caches.associativity},
+            {"hit_latency_cycles", caches.hitLatencyCycles},
+            {"in_order_miss_status_entries", caches.inOrderMissStatusEntries},
+            {"out_of_order_miss_status_entries",
+             caches.outOfOrderMissStatusEntries}};
+      };
   llvm::json::Object evaluation;
   if (config.evaluation.cadenceVoltusStaticRail) {
     const auto &binding = *config.evaluation.cadenceVoltusStaticRail;
@@ -374,7 +386,8 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"interconnect_fifo_depth", scale.interconnectFifoDepth},
                 {"interconnect_fifo_queue_discipline",
                  ::fabric::stringifyFifoQueueDiscipline(
-                     scale.interconnectFifoQueueDiscipline)}}}}},
+                     scale.interconnectFifoQueueDiscipline)},
+                {"private_caches", privateCaches(scale.privateCaches)}}}}},
       {"dse",
        llvm::json::Object{
            {"structured_ownership",

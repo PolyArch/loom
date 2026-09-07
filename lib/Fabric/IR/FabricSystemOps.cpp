@@ -121,6 +121,11 @@ LogicalResult SystemAccCoreOp::verify() {
   if (!spatialCore)
     return emitOpError("has invalid spatial_core reference: ")
            << llvm::toString(spatialCore.takeError());
+  auto spatialMemoryAccess = loom::fabric::decodeSpatialMemoryAccessRealization(
+      unsignedBytes(getSpatialMemoryAccessAttr()));
+  if (!spatialMemoryAccess)
+    return emitOpError("has invalid spatial_memory_access record: ")
+           << llvm::toString(spatialMemoryAccess.takeError());
   return success();
 }
 

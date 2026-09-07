@@ -50,6 +50,11 @@ public:
   std::optional<FabricImportedModuleTargetRef>
   spatialCoreTarget(AccCoreOccurrenceRef core) const;
 
+  /// Exact timing realization of one AccCore's SpatialCore memory path. A
+  /// wrong-kind or unknown occurrence has no realization.
+  const SpatialMemoryAccessRealization *
+  spatialMemoryAccess(AccCoreOccurrenceRef core) const;
+
   llvm::Expected<ResolvedFabricPhysicalOwnerView>
   resolvePhysicalOwner(const FabricPhysicalOccurrenceOwnerRef &owner) const;
 

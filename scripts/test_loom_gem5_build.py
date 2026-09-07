@@ -152,7 +152,7 @@ class Gem5BuildHelperTest(unittest.TestCase):
         with self.assertRaisesRegex(self.module.BuildError, "checkout is dirty"):
             self.module.validate_gem5_source(repository, source)
 
-    def test_linked_worktree_uses_primary_build_and_source(self) -> None:
+    def test_linked_worktree_builds_locally_from_primary_source(self) -> None:
         repository = self.root / "repository"
         initialize_repository(repository)
         source = repository / "externals" / "gem5"
@@ -165,7 +165,9 @@ class Gem5BuildHelperTest(unittest.TestCase):
         git(repository, "worktree", "add", "-q", "-b", "linked", str(linked))
 
         paths = self.module.build_paths(linked)
-        self.assertEqual(paths.root, repository / "build" / "gem5")
+        # The build product embeds this worktree's runtime/gem5 extras, so it is
+        # worktree-local; only the pinned source checkout is shared.
+        self.assertEqual(paths.root, linked.resolve() / "build" / "gem5")
         self.assertEqual(paths.source, source.resolve())
 
     def test_build_without_binary_is_rejected(self) -> None:

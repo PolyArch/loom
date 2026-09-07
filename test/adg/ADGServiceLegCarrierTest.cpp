@@ -45,7 +45,8 @@ buildReadServiceSystemInStore(llvm::StringRef test, ArtifactStore &store,
   auto microarchitecture = inOrderMicroarchitecture(test);
   auto host = take(test, system.addHostCore(architecture, microarchitecture));
   auto core =
-      take(test, system.addAccCore(architecture, microarchitecture, imported));
+      take(test, system.addAccCore(architecture, microarchitecture, imported,
+                                   spatialMemoryAccess(test)));
 
   std::vector<PortType> inputs;
   std::vector<PortType> outputs;

@@ -13,14 +13,44 @@ namespace loom::runtime {
 
 inline constexpr int gem5TickSecondsExponent = -12;
 
+/// Projection of one exact `fabric::CacheRealizationRecord` onto the gem5
+/// classic `Cache` parameters. The Fabric realization remains the sole owner
+/// of these values; this record only carries them into the simulator binding.
+struct Gem5CacheParameters final {
+  std::uint64_t capacityBytes = 0;
+  std::uint64_t lineBytes = 0;
+  std::uint64_t associativity = 0;
+  std::uint64_t hitLatencyCycles = 0;
+  std::uint64_t missStatusEntries = 0;
+
+  friend bool operator==(Gem5CacheParameters lhs, Gem5CacheParameters rhs) {
+    return lhs.capacityBytes == rhs.capacityBytes &&
+           lhs.lineBytes == rhs.lineBytes &&
+           lhs.associativity == rhs.associativity &&
+           lhs.hitLatencyCycles == rhs.hitLatencyCycles &&
+           lhs.missStatusEntries == rhs.missStatusEntries;
+  }
+  friend bool operator!=(Gem5CacheParameters lhs, Gem5CacheParameters rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// Projects one Fabric cache realization onto the gem5 parameter record.
+Gem5CacheParameters
+projectGem5Cache(const fabric::CacheRealizationRecord &cache);
+
 struct Gem5RiscvCpuParameters final {
   std::uint64_t cpuId = 0;
   std::uint64_t clockPeriodTicks = 0;
+  Gem5CacheParameters instructionCache;
+  Gem5CacheParameters dataCache;
 
   friend bool operator==(Gem5RiscvCpuParameters lhs,
                          Gem5RiscvCpuParameters rhs) {
     return lhs.cpuId == rhs.cpuId &&
-           lhs.clockPeriodTicks == rhs.clockPeriodTicks;
+           lhs.clockPeriodTicks == rhs.clockPeriodTicks &&
+           lhs.instructionCache == rhs.instructionCache &&
+           lhs.dataCache == rhs.dataCache;
   }
 };
 
@@ -29,12 +59,14 @@ struct Gem5SpatialBridgeParameters final {
   std::uint64_t pioSize = 0;
   std::uint64_t pioLatencyTicks = 0;
   std::uint64_t maximumMessageBytes = 0;
+  Gem5CacheParameters cache;
 
   friend bool operator==(Gem5SpatialBridgeParameters lhs,
                          Gem5SpatialBridgeParameters rhs) {
     return lhs.pioAddress == rhs.pioAddress && lhs.pioSize == rhs.pioSize &&
            lhs.pioLatencyTicks == rhs.pioLatencyTicks &&
-           lhs.maximumMessageBytes == rhs.maximumMessageBytes;
+           lhs.maximumMessageBytes == rhs.maximumMessageBytes &&
+           lhs.cache == rhs.cache;
   }
 };
 

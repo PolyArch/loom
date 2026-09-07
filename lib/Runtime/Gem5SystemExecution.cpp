@@ -235,6 +235,16 @@ struct RootEventControlProjection final {
   const Gem5RootEventEndpointTable &endpoints;
 };
 
+/// The Fabric cache realization reaches gem5 through the model payload only;
+/// this writer never restates a capacity, geometry, or latency of its own.
+void emitCache(llvm::json::OStream &json, const Gem5CacheParameters &cache) {
+  json.attribute("capacity_bytes", cache.capacityBytes);
+  json.attribute("line_bytes", cache.lineBytes);
+  json.attribute("associativity", cache.associativity);
+  json.attribute("hit_latency_cycles", cache.hitLatencyCycles);
+  json.attribute("miss_status_entries", cache.missStatusEntries);
+}
+
 llvm::Expected<std::string>
 renderProjection(const Gem5SystemFacts &facts,
                  const ReadinessIdentity &readiness, bool diagnostics,
@@ -277,7 +287,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.14");
+    json.attribute("schema", "loom.gem5_system_projection.15");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -332,6 +342,7 @@ renderProjection(const Gem5SystemFacts &facts,
     });
     json.attributeObject("dispatch", [&] {
       json.attribute("pio_address", facts.dispatchAddress);
+      json.attribute("pio_size", gem5ThreadDispatchApertureBytes);
       json.attribute("pio_latency", std::to_string(ticksPerCycle) + "ps");
       json.attribute("stack_base", facts.stackBase);
       json.attribute("stack_stride", facts.stackStride);
@@ -380,6 +391,14 @@ renderProjection(const Gem5SystemFacts &facts,
                              ? "timing_simple"
                              : "o3");
           json.attribute("num_threads", processor.hardwareThreadCount);
+          json.attributeObject("caches", [&] {
+            json.attributeObject("instruction", [&] {
+              emitCache(json, processor.parameters.instructionCache);
+            });
+            json.attributeObject("data", [&] {
+              emitCache(json, processor.parameters.dataCache);
+            });
+          });
           json.attributeArray("execution_units", [&] {
             for (std::size_t unitOrdinal = 0;
                  unitOrdinal != processor.executionUnits.size();
@@ -448,6 +467,8 @@ renderProjection(const Gem5SystemFacts &facts,
                   formatArtifactIdentityHex(facts.spatialLaunches[launchOrdinal]
                                                 .spatialWorkload.artifact));
           });
+          json.attributeObject(
+              "cache", [&] { emitCache(json, session.bridge.cache); });
           json.attribute("pio_address", session.bridge.pioAddress);
           json.attribute("pio_size", session.bridge.pioSize);
           json.attribute("session_ordinal", indexed.index());

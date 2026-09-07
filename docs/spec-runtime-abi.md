@@ -31,7 +31,7 @@ four strictly positive components price one copy setup, each copied byte, each
 changed configuration word, and each configuration commit. This is an
 incompatible addition to 3.1. RuntimePlatformBinding still admits exact
 `loom.hardware_implementation 4.1` dependencies, including the payload-free
-`FabricModel`; Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.1` roots.
+`FabricModel`; Gem5SimulationBinding 2.0 admits exact `loom.fabric 7.2` roots.
 No prior-version reference is reinterpreted with a different record shape or
 accepted dependency schema.
 
@@ -664,7 +664,10 @@ entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
 The shared-memory service observer is a maintained native probe on a zero-delay
-CommMonitor immediately before the existing SimpleMemory. It observes successful
+CommMonitor immediately before the existing SimpleMemory. With private caches
+present, the requests it observes are cache line fills and writebacks rather
+than individual instruction-level accesses, so the observed service interval
+measures the exact memory-side traffic the caches produce. It observes successful
 request acceptance, including atomic instructions and failed store-conditionals,
 under the fixed timing-CPU/DMA transport contract. The probe integrates the exact
 native service interval, rejects overlaps, and clips the final tail to the full
@@ -672,9 +675,23 @@ program observation window. It does not measure payload-byte throughput or chang
 physical capacity. The custom gem5 build-readiness digest covers this observer.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.14`. Version 14 admits an empty executable
-session domain for the typed host-only Deployment while retaining every physical
-processor and bridge. Its memory projection carries the exact finite bandwidth
+`loom.gem5_system_projection.15`. Version 15 adds the private-cache
+realization: every processor entry carries `caches.instruction` and
+`caches.data`, every bridge entry carries one `cache`, and every such object
+records `capacity_bytes`, `line_bytes`, `associativity`, `hit_latency_cycles`,
+and `miss_status_entries`. These values are projected from the exact Fabric
+records and are never chosen by the platform policy or the native
+configuration. The native configuration instantiates one gem5 classic `Cache`
+per projected record: an L1I and L1D between each CPU's fetch and data ports
+and the SystemXBar, and one cache between each Spatial bridge DMA port and the
+SystemXBar. It requires all projected line sizes to agree and installs that one
+value as the System line size, and it marks the Thread Dispatch and Spatial
+bridge apertures physically uncacheable through the RISC-V PMA checker so a
+device access never enters a private cache. Version 15 also adds
+`dispatch.pio_size` so that aperture is projected rather than restated. It
+retains the Version 14 domains: an empty executable session domain for the
+typed host-only Deployment while retaining every physical processor and
+bridge. Its memory projection carries the exact finite bandwidth
 from the bound SimpleMemory contract. The native configuration verifies that
 rate after gem5's tick conversion. The Host projection retains the exact
 program-value table address and entry count. For every
@@ -687,7 +704,7 @@ which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
 
-Projection 14 also requires `dispatch.root_event_trace_path`, a logical target
+Projection 15 also requires `dispatch.root_event_trace_path`, a logical target
 count, and parallel endpoint offset/enable arrays. The arrays define a finite
 runtime endpoint table over the immutable dispatch records; they cannot create
 new targets. An endpoint with dispatch disabled may only be selected as a
@@ -1397,14 +1414,22 @@ admission joins the third:
 
 * the exact InstructionCore Architectural Contract;
 * the exact InstructionCore Microarchitectural Realization, including
-  execution structure, timing, capacity, and mapping-visible resources; and
+  execution structure, timing, capacity, mapping-visible resources, and the
+  declared private instruction and data caches; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-Because `loom.fabric 7.1` admits only the `RiscV` Architectural Contract, the
+Because `loom.fabric 7.2` admits only the `RiscV` Architectural Contract, the
 selected gem5 build and every `Processor` correspondence must provide a
 compatible RISC-V ISA model. A build without that ISA or a correspondence to a
 different ISA is typed `Unsupported`; the binding cannot retarget the binary
 or substitute a host-native model.
+
+Each processor model contract owns the compatibility rule between its
+SimObject payload and the Fabric realization, and each SpatialBridge model
+contract owns the same rule against its AccCore `SpatialMemoryAccessRealization`.
+A payload whose projected cache geometry, hit latency, or outstanding-miss
+capacity differs from the declared record is rejected at binding finalization;
+the simulator binding therefore holds no independent cache constant.
 
 It does not reference or copy SystemMapping or CompilerTargetBindings. The
 system-simulator descriptor

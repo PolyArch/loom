@@ -65,6 +65,48 @@ isValidBuiltinFuOccurrenceCounts(const BuiltinFuOccurrenceCounts &counts,
          counts.vectorStructural <= peCount && counts.specialMath <= peCount;
 }
 
+/// Geometry and occupancy of every private cache the builtin target declares:
+/// the two InstructionCore L1 caches of each HostCore and AccCore, and the
+/// AccCore SpatialCore memory-path cache. Line size and associativity are one
+/// System-wide choice; only capacity and outstanding-miss capacity differ by
+/// role. The SpatialCore cache's outstanding-miss capacity is the System
+/// memory service's `temporalResidentContexts`, which stays its sole owner.
+struct BuiltinPrivateCacheScale final {
+  std::uint64_t instructionCoreCacheBytes;
+  std::uint64_t spatialMemoryCacheBytes;
+  std::uint32_t lineBytes;
+  std::uint32_t associativity;
+  std::uint32_t hitLatencyCycles;
+  std::uint32_t inOrderMissStatusEntries;
+  std::uint32_t outOfOrderMissStatusEntries;
+};
+
+constexpr bool isPowerOfTwoCacheGeometry(std::uint32_t lineBytes) {
+  return lineBytes != 0 && (lineBytes & (lineBytes - 1)) == 0;
+}
+
+constexpr bool
+isValidBuiltinPrivateCacheScale(const BuiltinPrivateCacheScale &caches) {
+  return caches.instructionCoreCacheBytes != 0 &&
+         caches.spatialMemoryCacheBytes != 0 &&
+         isPowerOfTwoCacheGeometry(caches.lineBytes) &&
+         caches.associativity != 0 && caches.hitLatencyCycles != 0 &&
+         caches.inOrderMissStatusEntries != 0 &&
+         caches.outOfOrderMissStatusEntries != 0 &&
+         caches.instructionCoreCacheBytes %
+                 (static_cast<std::uint64_t>(caches.lineBytes) *
+                  caches.associativity) ==
+             0 &&
+         caches.spatialMemoryCacheBytes %
+                 (static_cast<std::uint64_t>(caches.lineBytes) *
+                  caches.associativity) ==
+             0;
+}
+
+constexpr BuiltinPrivateCacheScale builtinDefaultPrivateCacheScale() {
+  return {16 * 1024, 32 * 1024, 64, 4, 1, 4, 8};
+}
+
 struct BuiltinTargetScale final {
   std::uint32_t accCoreCount;
   std::uint32_t meshDimension;
@@ -90,6 +132,9 @@ struct BuiltinTargetScale final {
   std::uint32_t crossScheduleBoundaryLanesPerTemporalPe;
   std::uint32_t gatewayCount;
   std::uint64_t memoryCapacityBytes;
+  /// Private cache realization declared by every InstructionCore and by every
+  /// AccCore SpatialCore memory path.
+  BuiltinPrivateCacheScale privateCaches;
 };
 
 constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
@@ -114,7 +159,8 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
              scale.specialMathCapabilityProfile) &&
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
-         scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0;
+         scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0 &&
+         isValidBuiltinPrivateCacheScale(scale.privateCaches);
 }
 
 struct BuiltinTargetDescriptor final {
@@ -131,36 +177,39 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     "small",
     "loom.adg.builtin.general_purpose",
     8,
-    1,
+    2,
     {4, 4, 2, 2, 12, 4, builtinBalancedFuOccurrences(12),
      builtinBalancedFuOccurrences(4), 1, 1, 2, 2,
      ::fabric::FifoQueueDiscipline::StrictFifo,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
-     LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024}};
+     LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024,
+     builtinDefaultPrivateCacheScale()}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     BuiltinTargetPreset::Coverage,
     "coverage",
     "loom.adg.builtin.general_purpose",
     8,
-    1,
+    2,
     {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
      builtinBalancedFuOccurrences(9), 4, 4, 4, 4,
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
-     LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
+     LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024,
+     builtinDefaultPrivateCacheScale()}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
     "large",
     "loom.adg.builtin.general_purpose",
     8,
-    1,
+    2,
     {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
      builtinBalancedFuOccurrences(16), 4, 4, 8, 16,
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
-     LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
+     LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024,
+     builtinDefaultPrivateCacheScale()}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

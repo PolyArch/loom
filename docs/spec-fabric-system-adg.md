@@ -161,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 7.1` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 7.2` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -216,8 +216,11 @@ not an accelerator dispatcher; every AccCore requires `ThreadDispatch` and
 `SpatialLaunch`. `Ztso` memory ordering requires the `Ztso` extension.
 
 These are hardware architecture facts. Compiler triple, CPU spelling,
-DataLayout, runtime library selection, gem5 model names, cache sizes,
-speculation policy, and pipeline organization are not fields of this contract.
+DataLayout, runtime library selection, gem5 model names, speculation policy,
+and pipeline organization are not fields of this contract. Private cache
+geometry is a field of the Microarchitectural Realization below, never of this
+binary-compatibility contract: changing a cache changes performance and Fabric
+identity without changing which binaries the core can execute.
 The exact contract has one domain-separated architecture fingerprint used by
 `CompilerTargetBinding`, but the digest is an index and never replaces the
 typed contract. The fingerprint is the Common digest of the canonical
@@ -258,6 +261,7 @@ common = {
   hardware_thread_count : positive uint32
   execution_units       : canonical non-empty sequence<ExecutionUnitRecord>
   resource_contract     : ResourceContract
+  private_caches        : PrivateCacheRealization
 }
 
 ExecutionUnitRecord = {
@@ -265,6 +269,20 @@ ExecutionUnitRecord = {
   count                 : positive uint32
   latency_cycles        : positive uint32
   initiation_interval   : positive uint32
+}
+
+PrivateCacheRealization = {
+  instruction : CacheRealizationRecord
+  data        : CacheRealizationRecord
+}
+
+CacheRealizationRecord = {
+  capacity_bytes      : positive uint64,
+                        multiple of line_bytes * associativity
+  line_bytes          : positive power-of-two uint32
+  associativity       : positive uint32
+  hit_latency_cycles  : positive uint32
+  miss_status_entries : positive uint32
 }
 
 InstructionOperationClass =
@@ -277,8 +295,14 @@ Every width and capacity field is positive. Execution-unit records are sorted
 lexicographically by `(operation_class, latency_cycles,
 initiation_interval)`; two records with the same tuple are merged by checked
 addition of `count`, and an unrepresentable sum is invalid. The exact variant
-and all fields enter Fabric identity. Cache hierarchy, branch-predictor shape,
-pipeline stage names, rename maps, dynamic queues, speculative state, and
+and all fields, including both `private_caches` records, enter Fabric
+identity: two InstructionCores that differ only in a declared cache capacity,
+line size, associativity, hit latency, or outstanding-miss capacity are
+distinct hardware. There is no cacheless InstructionCore realization and no
+absent or defaulted cache state; a core that is deliberately uncached would be
+a new closed variant of the realization, not a null field. Branch-predictor
+shape, replacement and prefetch policy, pipeline stage names, rename maps,
+dynamic queues, speculative state, coherence protocol state, and
 provider-private scheduling remain implementation or simulation state unless
 an observable shared capacity is deliberately exposed through the one
 `resource_contract`.
@@ -291,7 +315,11 @@ Contract changes both compatibility and Fabric identity.
 Both record codecs use unsigned big-endian fields. Closed variants, enum
 values, sequence counts, widths, capacities, and execution-unit fields are
 `u32be`. The embedded canonical `ResourceContract` is framed by a `u64be` byte
-count followed by its exact production record bytes. Sequence elements appear
+count followed by its exact production record bytes. A `CacheRealizationRecord`
+is one `u64be` capacity followed by four `u32be` fields in declaration order;
+the microarchitecture record carries the instruction and then the data cache
+immediately after the resource-contract frame, and the `acc_core`
+`spatial_memory_access` record is exactly one such cache record. Sequence elements appear
 in their canonical order and no padding, unknown field, or trailing byte is
 admitted. Strict import reconstructs the typed record, re-encodes it through
 the same production codec, and requires byte equality.
@@ -301,6 +329,25 @@ mechanically selects and validates the Compiler Target Binding owned by
 `docs/spec-executable-closure.md`.
 Neither that binding nor its target-specific binary enters `fabric.system`
 identity or SystemMapping identity.
+
+An AccCore additionally declares the timing realization of the memory path
+that continues its SpatialCore memory-manager endpoint into the System service
+topology:
+
+```text
+SpatialMemoryAccessRealization = {
+  cache : CacheRealizationRecord
+}
+```
+
+This is a realization of that one occurrence, not a service transform: it
+adds no addressing relation, no second provider, and no capability of its own,
+and it never appears in the `ServiceTransformContract` sum. Private caches are
+always core realizations in this way. A cache shared between several cores
+would instead be a future closed `ServiceTransformContract` variant, because
+sharing introduces a distinct storage identity and coherence relation that the
+occurrence-local realization cannot express. The record enters Fabric identity
+on the same terms as the InstructionCore `private_caches`.
 
 Its SpatialCore references one exact `fabric.module` template. Multiple
 AccCores may reference the same template while remaining distinct physical
@@ -331,9 +378,10 @@ scheduler.
 The initial schema has one mapping-visible admission requester, the derived
 `InstructionCoreContextRef`, so its requester order and grant are structural
 and have no selectable policy field. Internal pipeline stages, registers,
-caches, speculation, and gem5 state remain implementation or simulation
-details unless the Fabric contract deliberately exposes one as a
-Mapping-visible shared capacity. Dynamic occupancy, instruction progress, and
+speculation, and gem5 state remain implementation or simulation details unless
+the Fabric contract deliberately exposes one as a Mapping-visible shared
+capacity. The declared private caches are not such a shared capacity: they are
+timing and occupancy facts of one core and they bind no Mapping admission. Dynamic occupancy, instruction progress, and
 grant state are transient and never persist in Fabric or Mapping.
 
 `docs/spec-fabric-resource-contract.md` owns the shared meanings of
@@ -698,9 +746,13 @@ Interconnect Implementation objects to gem5 models, SimObjects, parameters,
 and the Bridge ABI. It is a simulator binding, not hardware truth. Every modeled
 InstructionCore must validate all three authorities: the exact InstructionCore
 Architectural Contract; the exact InstructionCore Microarchitectural
-Realization, including execution structure, timing, capacity, and
-mapping-visible resources; and the compatible Compiler Target Binding used by
-its target-specific binary. The system-simulator descriptor references the
+Realization, including execution structure, timing, capacity,
+mapping-visible resources, and the declared private caches; and the compatible
+Compiler Target Binding used by its target-specific binary. Each modeled
+Spatial bridge likewise validates its AccCore
+`SpatialMemoryAccessRealization`. Gem5 owns the dynamic cache and coherence
+microstate, but never the declared cache geometry, hit latency, or
+outstanding-miss capacity. The system-simulator descriptor references the
 shared system-simulation case signature with ordered `deployment` and
 `system_model` roles; an ordinary `EvaluationRequest` binds their exact
 subjects. Exact workload and runtime data use
@@ -1009,6 +1061,7 @@ fabric.system.acc_core
   InstructionCoreMicroarchitecturalRealization
   exact (ImportedModule dependency ordinal, FabricModuleTemplateRef)
     spatial_core
+  exact SpatialMemoryAccessRealization spatial_memory_access
 
 fabric.system.memory_service
   EntityId
@@ -1353,7 +1406,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 7.1` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 7.2` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 
@@ -1532,6 +1585,10 @@ Anchor-level validation should cover:
   reject a Mapping-defined scheduler or split claim;
 * exact InstructionCore architecture fingerprinting, including compatibility
   across microarchitectural changes and incompatibility after an ISA change;
+* private-cache admission and identity: rejection of a capacity that is not a
+  whole number of sets, a non-power-of-two line, or a zero outstanding-miss
+  capacity, and a distinct realization identity when only one declared cache
+  differs;
 * arbitrary directed Transport Architecture routing with a shared bottleneck;
 * one-ingress multicast and competing single-ingress arbitration patterns;
 * all six Canonical Service kinds, exact leg order, actor-contract ownership,

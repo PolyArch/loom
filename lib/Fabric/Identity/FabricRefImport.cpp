@@ -831,6 +831,13 @@ FabricSystemRootView::spatialCoreTarget(AccCoreOccurrenceRef core) const {
   return entity ? entity->spatialCoreTarget : std::nullopt;
 }
 
+const SpatialMemoryAccessRealization *
+FabricSystemRootView::spatialMemoryAccess(AccCoreOccurrenceRef core) const {
+  const detail::FabricEntityViewData *entity = artifact_.storage_->entity(core);
+  return entity && entity->spatialMemoryAccess ? &*entity->spatialMemoryAccess
+                                               : nullptr;
+}
+
 llvm::ArrayRef<HardwareDomainRef>
 FabricSystemRootView::hardwareDomains() const {
   return artifact_.storage_->data.hardwareDomains;

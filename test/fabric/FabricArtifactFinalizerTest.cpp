@@ -256,10 +256,14 @@ std::vector<std::uint8_t> instructionArchitecture(llvm::StringRef test,
 }
 
 std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
+  const auto cache = take(
+      test,
+      loom::fabric::CacheRealizationRecord::create(16 * 1024, 64, 4, 1, 4));
   loom::fabric::InstructionCoreCommonDeclaration common{
       1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
-      instructionContextContract(test)};
+      instructionContextContract(test),
+      loom::fabric::PrivateCacheRealization{cache, cache}};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
                                                              1, 1, 2, 1};
   auto realization = take(
@@ -269,6 +273,15 @@ std::vector<std::uint8_t> instructionMicroarchitecture(llvm::StringRef test) {
   return take(test,
               loom::fabric::encodeInstructionCoreMicroarchitecturalRealization(
                   realization));
+}
+
+std::vector<std::uint8_t> spatialMemoryAccess(llvm::StringRef test) {
+  auto realization =
+      take(test, loom::fabric::SpatialMemoryAccessRealization::create(
+                     take(test, loom::fabric::CacheRealizationRecord::create(
+                                    32 * 1024, 64, 4, 1, 4))));
+  return take(
+      test, loom::fabric::encodeSpatialMemoryAccessRealization(realization));
 }
 
 std::string hostCoreSource(llvm::StringRef test, bool x64 = true,
@@ -295,7 +308,8 @@ accCoreSource(llvm::StringRef test,
          << " spatial_core = "
          << denseI8Assembly(
                 loom::fabric::encodeFabricImportedModuleTargetRef(target))
-         << "\n";
+         << " spatial_memory_access = "
+         << denseI8Assembly(spatialMemoryAccess(test)) << "\n";
   return text;
 }
 
@@ -340,6 +354,8 @@ std::string attachedAccCoreSystemSource(
          << " spatial_core = "
          << denseI8Assembly(
                 loom::fabric::encodeFabricImportedModuleTargetRef(target))
+         << " spatial_memory_access = "
+         << denseI8Assembly(spatialMemoryAccess(test))
          << " {entity_id = #fabric.entity_id<" << coreId << ">}\n"
          << "fabric.system.spatial_attachment module_endpoint = "
          << denseI8Assembly(

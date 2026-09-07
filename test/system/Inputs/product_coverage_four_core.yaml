@@ -1,7 +1,7 @@
 hardware_target:
   template_identity: loom.adg.builtin.general_purpose
   schema_major: 8
-  schema_minor: 1
+  schema_minor: 2
   parameters:
     acc_core_count: 4
     mesh_dimension: 6
@@ -37,3 +37,11 @@ hardware_target:
     memory_capacity_bytes: 262144
     interconnect_fifo_depth: 4
     interconnect_fifo_queue_discipline: strict_fifo
+    private_caches:
+      instruction_core_cache_bytes: 16384
+      spatial_memory_cache_bytes: 32768
+      line_bytes: 64
+      associativity: 4
+      hit_latency_cycles: 1
+      in_order_miss_status_entries: 4
+      out_of_order_miss_status_entries: 8

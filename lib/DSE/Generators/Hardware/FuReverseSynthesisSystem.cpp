@@ -29,6 +29,9 @@ namespace {
 
 constexpr std::uint64_t reverseFuSystemClockPeriodFs = 1'000;
 constexpr std::uint32_t reverseFuResidentRouteCapacity = 32;
+/// Outstanding-operation capacity of this System's one message service and of
+/// the AccCore SpatialCore memory-path cache that reaches it.
+constexpr std::uint32_t kSynthesisMemoryServiceOutstanding = 1;
 
 llvm::Error failure(const llvm::Twine &message) {
   return llvm::make_error<FuReverseSynthesisError>(
@@ -76,15 +79,22 @@ buildSystemDesign(const ::loom::fabric::FinalizedFabricRoot &module,
   auto architecture = ::loom::adg::getBuiltinInstructionCoreArchitecture();
   if (!architecture)
     return failure(llvm::toString(architecture.takeError()));
+  const ::loom::adg::BuiltinPrivateCacheScale caches =
+      ::loom::adg::builtinDefaultPrivateCacheScale();
   auto microarchitecture =
-      ::loom::adg::getBuiltinInOrderInstructionCoreMicroarchitecture();
+      ::loom::adg::getBuiltinInOrderInstructionCoreMicroarchitecture(caches);
   if (!microarchitecture)
     return failure(llvm::toString(microarchitecture.takeError()));
+  auto spatialMemoryAccess =
+      ::loom::adg::getBuiltinSpatialMemoryAccessRealization(
+          caches, kSynthesisMemoryServiceOutstanding);
+  if (!spatialMemoryAccess)
+    return failure(llvm::toString(spatialMemoryAccess.takeError()));
   auto host = system->addHostCore(*architecture, *microarchitecture);
   if (!host)
     return failure(llvm::toString(host.takeError()));
-  auto accCore =
-      system->addAccCore(*architecture, *microarchitecture, *imported);
+  auto accCore = system->addAccCore(*architecture, *microarchitecture,
+                                    *imported, *spatialMemoryAccess);
   if (!accCore)
     return failure(llvm::toString(accCore.takeError()));
 
@@ -92,7 +102,7 @@ buildSystemDesign(const ::loom::fabric::FinalizedFabricRoot &module,
   if (!clock)
     return failure(llvm::toString(clock.takeError()));
   auto rate = system->createServiceRate(
-      *clock, 1, 1, 1,
+      *clock, 1, 1, kSynthesisMemoryServiceOutstanding,
       ::loom::fabric::ServiceProgress(
           std::in_place_type<::fabric::FairEventual>));
   if (!rate)

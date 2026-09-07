@@ -80,6 +80,12 @@ llvm::Error validateProcessor(
   return validateByte(payload);
 }
 
+llvm::Error
+validateSpatialBridge(llvm::ArrayRef<std::uint8_t> payload,
+                      const loom::fabric::SpatialMemoryAccessRealization &) {
+  return validateByte(payload);
+}
+
 const Gem5ModelContractDescriptor &processorDescriptor() {
   static const Gem5ModelContractDescriptor descriptor{
       {"loom.gem5.test_processor", {1, 0}},
@@ -89,6 +95,7 @@ const Gem5ModelContractDescriptor &processorDescriptor() {
       false,
       validateByte,
       validateProcessor,
+      nullptr,
       {}};
   return descriptor;
 }
@@ -105,6 +112,7 @@ const Gem5ModelContractDescriptor &spatialBridgeDescriptor() {
       false,
       validateByte,
       nullptr,
+      validateSpatialBridge,
       ports};
   return descriptor;
 }
@@ -121,6 +129,7 @@ const Gem5ModelContractDescriptor &memoryDescriptor() {
       false,
       validateByte,
       nullptr,
+      nullptr,
       ports};
   return descriptor;
 }
@@ -135,6 +144,7 @@ const Gem5ModelContractDescriptor &transportDescriptor() {
       Gem5ModelObjectClass::Transport,
       false,
       validateByte,
+      nullptr,
       nullptr,
       ports};
   return descriptor;
@@ -151,6 +161,7 @@ const Gem5ModelContractDescriptor &externalDescriptor() {
       Gem5ModelObjectClass::ExternalEndpoint,
       false,
       validateByte,
+      nullptr,
       nullptr,
       ports};
   return descriptor;
@@ -217,14 +228,20 @@ makeCatalogSystem(llvm::StringRef test,
   auto imported = take(test, system.importSpatialCore(module));
   const auto architecture =
       take(test, loom::adg::getBuiltinInstructionCoreArchitecture());
-  const auto microarchitecture = take(
-      test, loom::adg::getBuiltinInOrderInstructionCoreMicroarchitecture());
+  const auto caches = loom::adg::builtinDefaultPrivateCacheScale();
+  const auto microarchitecture =
+      take(test,
+           loom::adg::getBuiltinInOrderInstructionCoreMicroarchitecture(caches));
+  const auto spatialMemoryAccess = take(
+      test, loom::adg::getBuiltinSpatialMemoryAccessRealization(caches, 4));
   const auto host =
       take(test, system.addHostCore(architecture, microarchitecture));
   const auto source =
-      take(test, system.addAccCore(architecture, microarchitecture, imported));
+      take(test, system.addAccCore(architecture, microarchitecture, imported,
+                                   spatialMemoryAccess));
   const auto destination =
-      take(test, system.addAccCore(architecture, microarchitecture, imported));
+      take(test, system.addAccCore(architecture, microarchitecture, imported,
+                                   spatialMemoryAccess));
 
   const auto bits32 = take(test, loom::adg::PortType::bits(32));
   const auto transport = take(

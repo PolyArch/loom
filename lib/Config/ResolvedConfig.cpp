@@ -416,6 +416,48 @@ parseBuiltinFuOccurrences(const ConfigSyntax *node, llvm::StringRef key) {
       *tokenControl,       *vectorAdapter, *vectorStructural, *specialMath};
 }
 
+llvm::Expected<loom::adg::BuiltinPrivateCacheScale>
+parseBuiltinPrivateCaches(const ConfigSyntax *node, llvm::StringRef key) {
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, key,
+      {"instruction_core_cache_bytes", "spatial_memory_cache_bytes",
+       "line_bytes", "associativity", "hit_latency_cycles",
+       "in_order_miss_status_entries", "out_of_order_miss_status_entries"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  const auto readU64 = [&](llvm::StringRef field) {
+    return requirePositiveU64(fieldsOrErr->at(field),
+                              llvm::Twine(key) + "." + field);
+  };
+  const auto readU32 = [&](llvm::StringRef field) {
+    return requireU32(fieldsOrErr->at(field), llvm::Twine(key) + "." + field);
+  };
+  auto instructionCoreBytes = readU64("instruction_core_cache_bytes");
+  auto spatialMemoryBytes = readU64("spatial_memory_cache_bytes");
+  auto lineBytes = readU32("line_bytes");
+  auto associativity = readU32("associativity");
+  auto hitLatency = readU32("hit_latency_cycles");
+  auto inOrderMshrs = readU32("in_order_miss_status_entries");
+  auto outOfOrderMshrs = readU32("out_of_order_miss_status_entries");
+  if (!instructionCoreBytes)
+    return instructionCoreBytes.takeError();
+  if (!spatialMemoryBytes)
+    return spatialMemoryBytes.takeError();
+  if (!lineBytes)
+    return lineBytes.takeError();
+  if (!associativity)
+    return associativity.takeError();
+  if (!hitLatency)
+    return hitLatency.takeError();
+  if (!inOrderMshrs)
+    return inOrderMshrs.takeError();
+  if (!outOfOrderMshrs)
+    return outOfOrderMshrs.takeError();
+  return loom::adg::BuiltinPrivateCacheScale{
+      *instructionCoreBytes, *spatialMemoryBytes, *lineBytes,     *associativity,
+      *hitLatency,           *inOrderMshrs,       *outOfOrderMshrs};
+}
+
 llvm::Expected<loom::ResolvedHardwareTargetConfig>
 parseHardwareTarget(const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(
@@ -446,7 +488,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
        "special_math_capability_profile",
        "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
        "memory_capacity_bytes", "interconnect_fifo_depth",
-       "interconnect_fifo_queue_discipline"});
+       "interconnect_fifo_queue_discipline", "private_caches"});
   if (!parametersOrErr)
     return parametersOrErr.takeError();
 
@@ -503,6 +545,9 @@ parseHardwareTarget(const ConfigSyntax *node) {
       requirePositiveU64(parametersOrErr->at("memory_capacity_bytes"),
                          "hardware_target.parameters.memory_capacity_bytes");
   auto interconnectFifoDepth = positiveU32("interconnect_fifo_depth");
+  auto privateCaches =
+      parseBuiltinPrivateCaches(parametersOrErr->at("private_caches"),
+                                "hardware_target.parameters.private_caches");
   auto fifoDisciplineSpelling = requireScalarString(
       parametersOrErr->at("interconnect_fifo_queue_discipline"),
       "hardware_target.parameters.interconnect_fifo_queue_discipline");
@@ -545,6 +590,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return memoryCapacity.takeError();
   if (!interconnectFifoDepth)
     return interconnectFifoDepth.takeError();
+  if (!privateCaches)
+    return privateCaches.takeError();
 
   return loom::ResolvedHardwareTargetConfig{
       *templateOrErr,
@@ -554,7 +601,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
        *spatialMemories, *temporalMemories, *residentContexts,
        *interconnectFifoDepth, *fifoDiscipline, *specialMathProfile,
        *memoryPortVariant,
-       *crossScheduleBoundaryLanes, *gateways, *memoryCapacity}};
+       *crossScheduleBoundaryLanes, *gateways, *memoryCapacity,
+       *privateCaches}};
 }
 
 enum class ParsedObjectiveSourceKind {

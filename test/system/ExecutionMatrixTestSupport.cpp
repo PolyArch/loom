@@ -209,23 +209,32 @@ runtime::FinalizedGem5SimulationBinding buildGem5Binding(
                                             runtime::gem5BridgeAbiIdentity,
                                             {}};
   std::uint64_t cpuId = 0;
+  const auto processorObject =
+      [&](const fabric::InstructionCoreMicroarchitecturalRealization
+              *microarchitecture) {
+        require(test, microarchitecture != nullptr,
+                "System core has no Fabric realization");
+        const fabric::PrivateCacheRealization &caches =
+            microarchitecture->privateCaches();
+        return gem5Object(
+            processorModel(test, microarchitecture),
+            runtime::encodeGem5RiscvCpuParameters(
+                {cpuId++, 1000, runtime::projectGem5Cache(caches.instruction),
+                 runtime::projectGem5Cache(caches.data)}));
+      };
   for (const fabric::HostCoreOccurrenceRef core :
        view.artifact().hostCoreOccurrences()) {
     draft.correspondences.push_back(runtime::Gem5ProcessorCorrespondence{
         runtime::Gem5ProcessorFabricRef(core),
-        gem5Object(
-            processorModel(test, view.instructionCoreMicroarchitecture(core)),
-            runtime::encodeGem5RiscvCpuParameters({cpuId++, 1000}))});
+        processorObject(view.instructionCoreMicroarchitecture(core))});
   }
   for (const fabric::AccCoreOccurrenceRef core :
        view.artifact().accCoreOccurrences()) {
     draft.correspondences.push_back(runtime::Gem5ProcessorCorrespondence{
         runtime::Gem5ProcessorFabricRef(
             fabric::InstructionCoreContextRef{core}),
-        gem5Object(
-            processorModel(test, view.instructionCoreMicroarchitecture(
-                                     fabric::InstructionCoreContextRef{core})),
-            runtime::encodeGem5RiscvCpuParameters({cpuId++, 1000}))});
+        processorObject(view.instructionCoreMicroarchitecture(
+            fabric::InstructionCoreContextRef{core}))});
   }
 
   std::map<std::vector<std::uint8_t>, runtime::Gem5SimObjectRef> bridgeObjects;
@@ -239,10 +248,17 @@ runtime::FinalizedGem5SimulationBinding buildGem5Binding(
     auto [object, inserted] = bridgeObjects.try_emplace(coreKey);
     if (inserted) {
       const std::uint64_t bridgeOrdinal = bridgeObjects.size() - 1;
-      object->second = gem5Object(
-          runtime::gem5SpatialBridgeModel(),
-          runtime::encodeGem5SpatialBridgeParameters(
-              {0x10000000 + bridgeOrdinal * 0x10000, 0x1000, 10000, 1 << 20}));
+      const fabric::SpatialMemoryAccessRealization *spatialMemoryAccess =
+          view.spatialMemoryAccess(spatialCore->core);
+      require(test, spatialMemoryAccess != nullptr,
+              "System AccCore has no SpatialCore memory realization");
+      object->second =
+          gem5Object(runtime::gem5SpatialBridgeModel(),
+                     runtime::encodeGem5SpatialBridgeParameters(
+                         {0x10000000 + bridgeOrdinal * 0x10000, 0x1000, 10000,
+                          1 << 20,
+                          runtime::projectGem5Cache(
+                              spatialMemoryAccess->cache())}));
     }
     draft.correspondences.push_back(runtime::Gem5SpatialBridgeCorrespondence{
         *spatialCore, attachment.spatialEndpoint, gem5Port(object->second)});
