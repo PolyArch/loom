@@ -379,11 +379,10 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
       *transition.child.deployment, artifacts, blobs);
   if (!childDeployment)
     return childDeployment.takeError();
-  if (parentDeployment->deployment().systemMapping() !=
-      transition.parent.mapping)
+  if (!parentDeployment->deployment().systemMapping() || *parentDeployment->deployment().systemMapping() != transition.parent.mapping)
     return invalid("parent Deployment does not select the parent "
                    "SystemMapping");
-  if (childDeployment->deployment().systemMapping() != transition.child.mapping)
+  if (!childDeployment->deployment().systemMapping() || *childDeployment->deployment().systemMapping() != transition.child.mapping)
     return invalid("child Deployment does not select the child "
                    "SystemMapping");
 
@@ -411,10 +410,8 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
       ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
-  if (llvm::Error error = dataflow->validate(transition.trigger))
+  const auto &dataflow = dataflowArtifact->view();
+  if (llvm::Error error = dataflow.validate(transition.trigger))
     return invalid("resource-time transition trigger is not owned by the "
                    "endpoint "
                    "Dataflow: " +
@@ -435,11 +432,11 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
   if (!system)
     return system.takeError();
   auto parentContexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, parentMapping->view().executionBindings());
+      dataflow, parentMapping->view().executionBindings());
   if (!parentContexts)
     return parentContexts.takeError();
   auto childContexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, childMapping->view().executionBindings());
+      dataflow, childMapping->view().executionBindings());
   if (!childContexts)
     return childContexts.takeError();
 
@@ -450,7 +447,7 @@ verifyResourceTimeTransitionClosure(const ResourceTimeTransition &transition,
     for (const ResourceTimeRegionAllocation &allocation : allocations) {
       if (allocation.region.artifact != dataflowReference.artifact)
         return invalid(name + " names a foreign Dataflow region");
-      auto root = dataflow->resolve(allocation.region);
+      auto root = dataflow.resolve(allocation.region);
       if (!root)
         return root.takeError();
       auto expected =

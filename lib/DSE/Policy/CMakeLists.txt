@@ -23,6 +23,7 @@ target_link_libraries(LoomDSECandidateGenerator PUBLIC
   LoomCommon
   LoomEvaluation
   LoomExternalTool
+  LoomFabricArtifact
   LLVMSupport
 )
 

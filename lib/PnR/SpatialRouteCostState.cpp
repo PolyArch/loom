@@ -607,9 +607,8 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
     } else {
       stagedTagResidentOveruseCosts_[domain] = 0;
     }
-    auto encodingPressure = normalizedRouteClaimCost(
-        saturatedAdd(usage, 1),
-        encodingCapacity(matchDomains[domain].tagWidthBits));
+    auto encodingPressure = normalizedRouteOveruseCost(
+        usage, 1, encodingCapacity(matchDomains[domain].tagWidthBits));
     if (!encodingPressure)
       return encodingPressure.takeError();
     stagedTagEncodingPressureCosts_[domain] = *encodingPressure;
@@ -691,12 +690,6 @@ std::uint64_t SpatialRouteCostState::tagUsageForCost(PnrIndex domain,
   return workingTagDomainUsage_[domain];
 }
 
-std::uint64_t
-SpatialRouteCostState::encodingPressureRaw(PnrIndex domain,
-                                           bool stagedTags) const {
-  return tagUsageForCost(domain, stagedTags);
-}
-
 llvm::Expected<RouteCost> SpatialRouteCostState::computeTagDomainCost(
     PnrIndex domain, bool resident, bool dynamicCost, bool stagedTags,
     std::uint64_t presentPressure, std::uint64_t historyPressure) const {
@@ -715,12 +708,8 @@ llvm::Expected<RouteCost> SpatialRouteCostState::computeTagDomainCost(
   if (!dynamicCost)
     return *qCost;
 
-  const std::uint64_t usage = resident
-                                  ? tagUsageForCost(domain, stagedTags)
-                                  : encodingPressureRaw(domain, stagedTags);
-  llvm::Expected<RouteCost> pressure =
-      resident ? normalizedRouteOveruseCost(usage, 1, capacity)
-               : normalizedRouteClaimCost(saturatedAdd(usage, 1), capacity);
+  const std::uint64_t usage = tagUsageForCost(domain, stagedTags);
+  auto pressure = normalizedRouteOveruseCost(usage, 1, capacity);
   if (!pressure)
     return pressure.takeError();
   return pathFinderResourceCost(policy_.priceKernel, *qCost, *pressure,
@@ -1145,9 +1134,11 @@ llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
     switchRows_->netDemands[*selectedLogicalNet_] =
         std::move(switchRows_->selectedNetDemands);
     switchRows_->selectedNetDemands.clear();
+    // Empty switch demands have no tag association left to resolve, including
+    // local FIFO routes. Nonempty prospective demands still await closure.
+    switchRows_->netDemandsSettled[*selectedLogicalNet_] =
+        switchRows_->netDemands[*selectedLogicalNet_].empty();
   }
-  if (switchRows_ && switchRows_->enabled)
-    switchRows_->netDemandsSettled[*selectedLogicalNet_] = 0;
   selectedLogicalNetTagUses_.clear();
   selectedLogicalNet_.reset();
   return llvm::Error::success();
@@ -1189,7 +1180,7 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateTraversals(
 
 llvm::Error SpatialRouteCostState::synchronizeTagProjection(
     const SpatialTagAssignmentSummary &summary,
-    llvm::ArrayRef<PnrIndex> changedLogicalNets) {
+    llvm::ArrayRef<PnrIndex> routeChangedLogicalNets) {
   if (selectedLogicalNet_)
     return routeCostStateError(
         "cannot synchronize tags while a logical net is selected");
@@ -1208,7 +1199,8 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
       summary.netTagValueOffsets.back() != summary.netTagValues.size())
     return routeCostStateError("tag projection dimensions are inconsistent");
 
-  if (llvm::Error error = synchronizeCandidateSwitchRows(changedLogicalNets))
+  if (llvm::Error error =
+          synchronizeCandidateSwitchRows(routeChangedLogicalNets))
     return error;
   std::uint64_t unassignedCount = 0;
   for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
@@ -1296,7 +1288,9 @@ llvm::Error SpatialRouteCostState::rebuildSwitchRowProjectionFromCandidate() {
     return llvm::Error::success();
   switchRows_->netDemands.assign(logicalNetCount_, {});
   switchRows_->netDemandsSettled.assign(logicalNetCount_, 0);
-  if (llvm::Error error = synchronizeCandidateSwitchRows({}))
+  const auto logicalNets =
+      llvm::to_vector(llvm::seq<PnrIndex>(0, logicalNetCount_));
+  if (llvm::Error error = synchronizeCandidateSwitchRows(logicalNets))
     return error;
   for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
     const auto values = candidate_->tagValues(logicalNet);
@@ -1310,7 +1304,7 @@ llvm::Error SpatialRouteCostState::rebuildSwitchRowProjectionFromCandidate() {
 }
 
 llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
-    llvm::ArrayRef<PnrIndex> changedLogicalNets) {
+    llvm::ArrayRef<PnrIndex> routeChangedLogicalNets) {
   if (!switchRows_)
     return routeCostStateError("Temporal switch row storage is unavailable");
   switchRows_->demandScratch.recycle(
@@ -1325,8 +1319,7 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
   std::vector<std::pair<
       PnrIndex, std::vector<detail::SpatialTemporalSwitchSegmentDemand>>>
       replacements;
-  replacements.reserve(changedLogicalNets.empty() ? logicalNetCount_
-                                                  : changedLogicalNets.size());
+  replacements.reserve(routeChangedLogicalNets.size());
   SpatialTagContinuityProjection continuity;
   SpatialTagContinuityScratch continuityScratch;
   const auto append = [&](PnrIndex logicalNet) -> llvm::Error {
@@ -1344,15 +1337,9 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
     replacements.emplace_back(logicalNet, std::move(*demands));
     return llvm::Error::success();
   };
-  if (changedLogicalNets.empty()) {
-    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet)
-      if (llvm::Error error = append(logicalNet))
-        return error;
-  } else {
-    for (PnrIndex logicalNet : changedLogicalNets)
-      if (llvm::Error error = append(logicalNet))
-        return error;
-  }
+  for (PnrIndex logicalNet : routeChangedLogicalNets)
+    if (llvm::Error error = append(logicalNet))
+      return error;
   for (auto &replacement : replacements) {
     switchRows_->demandScratch.recycle(
         std::move(switchRows_->netDemands[replacement.first]));
@@ -1494,8 +1481,8 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
     } else {
       tagResidentOveruseCosts_[domain] = 0;
     }
-    auto encoding = normalizedRouteClaimCost(
-        saturatedAdd(encodingPressureRaw(domain, false), 1),
+    auto encoding = normalizedRouteOveruseCost(
+        workingTagDomainUsage_[domain], 1,
         encodingCapacity(domains[domain].tagWidthBits));
     if (!encoding)
       return encoding.takeError();
@@ -1690,10 +1677,16 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
         encodingOveruse);
     if (!nextEncoding)
       return nextEncoding.takeError();
+    // Arc prices include one prospective row. A full resident domain's
+    // current overuse is zero, but its marginal price still depends on pressure.
+    const bool residentMarginalOveruse =
+        domains[domain].residentEntryCapacity &&
+        workingTagDomainUsage_[domain] >=
+            *domains[domain].residentEntryCapacity;
     const bool changed = *nextResident != tagResidentHistoryPressure_[domain] ||
                          *nextEncoding != tagEncodingHistoryPressure_[domain] ||
                          (*nextPressure != presentPressure_ &&
-                          (tagResidentOveruseCosts_[domain] != 0 ||
+                          (residentMarginalOveruse ||
                            tagEncodingPressureCosts_[domain] != 0));
     stagedTagResidentHistoryPressure_[domain] = *nextResident;
     stagedTagEncodingHistoryPressure_[domain] = *nextEncoding;

@@ -30,7 +30,7 @@ llvm::Error validateResult(const SpatialEngineBoundaryResult &result,
   if (llvm::Error error = detail::validateSpatialFunctionalObservations(
           result.functionalObservations, result.terminal, context))
     return error;
-  return detail::validateActorActivitySummaries(
+  return detail::validateActivitySummaries(
       result.activitySummaries, result.terminal, result.progressObservations,
       context);
 }
@@ -61,7 +61,7 @@ encodeCanonical(const SpatialEngineBoundaryResult &result,
       writer, result.functionalObservations, context);
   detail::encodeSpatialProgressObservations(writer,
                                             result.progressObservations);
-  detail::encodeActorActivitySummaries(writer, result.activitySummaries);
+  detail::encodeActivitySummaries(writer, result.activitySummaries);
   std::vector<std::uint8_t> payload = writer.take();
   bytes.insert(bytes.end(), payload.begin(), payload.end());
   return bytes;
@@ -84,7 +84,7 @@ decodeCanonical(llvm::ArrayRef<std::uint8_t> bytes,
   auto progress = detail::decodeSpatialProgressObservations(reader);
   if (!progress)
     return progress.takeError();
-  auto activities = detail::decodeActorActivitySummaries(reader);
+  auto activities = detail::decodeActivitySummaries(reader);
   if (!activities)
     return activities.takeError();
   if (!reader.atEnd())
@@ -101,15 +101,16 @@ decodeCanonical(llvm::ArrayRef<std::uint8_t> bytes,
 
 } // namespace
 
-llvm::Expected<std::vector<std::uint8_t>>
-encodeSpatialEngineBoundaryResult(const SpatialEngineBoundaryResult &result,
-                                  const ArtifactRootReference &workload,
-                                  const ArtifactRootReference &runtimeInput,
-                                  const ArtifactStore &store) {
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
+    const SpatialEngineBoundaryResult &result,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
+    const fabric::FabricArtifactView *fabricView) {
   auto context =
       detail::resolveSpatialEngineResultContext(workload, runtimeInput, store);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   if (llvm::Error error = validateResult(result, *context))
     return std::move(error);
   return encodeCanonical(result, *context);
@@ -117,10 +118,12 @@ encodeSpatialEngineBoundaryResult(const SpatialEngineBoundaryResult &result,
 
 llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
     const SpatialEngineBoundaryResult &result,
-    const ImportedSpatialSimulationInputs &inputs) {
+    const ImportedSpatialSimulationInputs &inputs,
+    const fabric::FabricArtifactView *fabricView) {
   auto context = detail::resolveSpatialEngineResultContext(inputs);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   if (llvm::Error error = validateResult(result, *context))
     return std::move(error);
   return encodeCanonical(result, *context);
@@ -129,11 +132,13 @@ llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
 llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
     const SpatialEngineBoundaryResult &result,
     const ImportedSpatialSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput) {
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FabricArtifactView *fabricView) {
   auto context =
       detail::resolveSpatialEngineResultContext(workload, runtimeInput);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   if (llvm::Error error = validateResult(result, *context))
     return std::move(error);
   return encodeCanonical(result, *context);
@@ -141,31 +146,37 @@ llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
+    const fabric::FabricArtifactView *fabricView) {
   auto context =
       detail::resolveSpatialEngineResultContext(workload, runtimeInput, store);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   return decodeCanonical(bytes, *context);
 }
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
-    const ImportedSpatialSimulationInputs &inputs) {
+    const ImportedSpatialSimulationInputs &inputs,
+    const fabric::FabricArtifactView *fabricView) {
   auto context = detail::resolveSpatialEngineResultContext(inputs);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   return decodeCanonical(bytes, *context);
 }
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
     const ImportedSpatialSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput) {
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FabricArtifactView *fabricView) {
   auto context =
       detail::resolveSpatialEngineResultContext(workload, runtimeInput);
   if (!context)
     return context.takeError();
+  context->fabricView = fabricView;
   return decodeCanonical(bytes, *context);
 }
 

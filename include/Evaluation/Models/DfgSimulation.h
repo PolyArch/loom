@@ -2,6 +2,7 @@
 #define LOOM_EVALUATION_MODELS_DFGSIMULATION_H
 
 #include "Evaluation/Evidence.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include <chrono>
 #include <cstdint>
@@ -18,6 +19,7 @@ namespace loom::evaluation::models {
 struct PreparedDfgSimulationEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
+  sim::ImportedSpatialSimulationInputs inputs;
 };
 
 /// Nonsemantic limits for one DFG provider attempt. They do not enter Request

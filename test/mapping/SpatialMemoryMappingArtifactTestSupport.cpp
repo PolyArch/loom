@@ -304,7 +304,7 @@ void completeMemorySpatialMappingRoundTrip(bool temporal, bool splitExposures) {
   auto dataflowArtifact = buildMemoryDataflow(context, splitExposures);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildMemoryFabric(store, temporal);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();

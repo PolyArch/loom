@@ -123,7 +123,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 ArtifactRootReference
 publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
                            const ArtifactStore &store) {
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   if (view.rootThreadLaunches().size() != 1 ||
       view.staticGraphLaunches().size() != 1)
     fail("application fixture does not have one rooted graph launch");
@@ -144,7 +144,7 @@ ArtifactRootReference
 publishApplicationRuntimeInput(const ArtifactRootReference &workload,
                                std::int32_t value, const ArtifactStore &store) {
   auto imported = take(sim::importSpatialSimulationWorkload(workload, store));
-  auto view = take(imported.dataflow.view());
+  const auto &view = imported.dataflow->view();
   const auto *spatial = imported.workload.spatial();
   if (!spatial)
     fail("application fixture workload is not Spatial");
@@ -227,7 +227,7 @@ bool everyCoreIsUsed(const ArtifactRootReference &systemReference,
         mapping.view().dataflowIdentity()};
     auto dataflowArtifact =
         take(dataflow::importCanonicalDataflow(dataflowReference, store));
-    auto dataflowView = take(dataflowArtifact.view());
+    const auto &dataflowView = dataflowArtifact.view();
     auto projection = take(mapping::projectSystemExecutionContexts(
         dataflowView, mapping.view().executionBindings()));
     for (const auto &domain : projection.instructionDomains)
@@ -254,10 +254,8 @@ verifyAdjacentResourceTimeSchedule(
       dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
-  auto projection = projectResourceTimeDataflow(*dataflow, system, "host", 100);
+  const auto &dataflow = dataflowArtifact->view();
+  auto projection = projectResourceTimeDataflow(dataflow, system, "host", 100);
   if (!projection)
     return projection.takeError();
   if (projection->regions.size() != 1 || projection->regionBounds.size() != 1 ||
@@ -464,7 +462,7 @@ void exerciseAdjacentResourceTimeMappingRepair(
     fail("adjacent resource-time repair changed immutable owners");
   auto adjacentDataflowArtifact = take(dataflow::importCanonicalDataflow(
       plan.frontier.pairs.front().software.dataflow, store));
-  auto adjacentDataflow = take(adjacentDataflowArtifact.view());
+  const auto &adjacentDataflow = adjacentDataflowArtifact.view();
   auto adjacentContexts = take(mapping::projectSystemExecutionContexts(
       adjacentDataflow, adjacentMapping.view().executionBindings()));
   auto adjacentResources = take(

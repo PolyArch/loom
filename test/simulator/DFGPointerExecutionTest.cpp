@@ -278,11 +278,7 @@ LogicalMemoryRootRef rootAtService(const CanonicalDataflowProgramView &view) {
 
 void pointerGepLoadPreservesObjectProvenance() {
   CanonicalDataflowArtifact artifact = finalizeProgram(pointerLoadProgram());
-  llvm::Expected<CanonicalDataflowProgramView> imported = artifact.view();
-  if (!imported)
-    fail("failed to import pointer-load fixture: " +
-         llvm::toString(imported.takeError()));
-  CanonicalDataflowProgramView view = std::move(*imported);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(view.rootThreadLaunches().size() == 1 &&
               view.staticGraphLaunches().size() == 1,
           "pointer-load fixture does not have one rooted launch");
@@ -338,11 +334,7 @@ void pointerGepLoadPreservesObjectProvenance() {
 
 void pointerServiceCaptureResolvesSharedObject() {
   CanonicalDataflowArtifact artifact = finalizeProgram(pointerCaptureProgram());
-  llvm::Expected<CanonicalDataflowProgramView> imported = artifact.view();
-  if (!imported)
-    fail("failed to import pointer-capture fixture: " +
-         llvm::toString(imported.takeError()));
-  CanonicalDataflowProgramView view = std::move(*imported);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(view.rootThreadLaunches().size() == 1 &&
               view.staticGraphLaunches().size() == 1,
           "pointer-capture fixture does not have one rooted launch");
@@ -421,11 +413,7 @@ entry:
 
 void pointerPayloadRoundtripPreservesProvenance() {
   CanonicalDataflowArtifact artifact = finalizeProgram(pointerPayloadProgram());
-  llvm::Expected<CanonicalDataflowProgramView> imported = artifact.view();
-  if (!imported)
-    fail("failed to import pointer-payload fixture: " +
-         llvm::toString(imported.takeError()));
-  CanonicalDataflowProgramView view = std::move(*imported);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   SpatialSimulationWorkload workloadModel{
       RootedGraphLaunchRef{view.rootThreadLaunches().front().ref,
@@ -478,11 +466,7 @@ void pointerPayloadRoundtripPreservesProvenance() {
 void initialPointerPayloadUsesCanonicalObjectRegistry() {
   CanonicalDataflowArtifact artifact =
       finalizeProgram(initialPointerPayloadProgram());
-  auto imported = artifact.view();
-  if (!imported)
-    fail("failed to import initial pointer-payload fixture: " +
-         llvm::toString(imported.takeError()));
-  CanonicalDataflowProgramView view = std::move(*imported);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   SpatialSimulationWorkload workloadModel{
       RootedGraphLaunchRef{view.rootThreadLaunches().front().ref,

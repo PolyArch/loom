@@ -139,6 +139,15 @@ struct DirectCallSimulationInputCapturePlan final {
   std::vector<DirectCallCaptureSite> invocationPath;
 };
 
+/// An exact source-bound finite object supplied by the workload capture owner.
+/// `base` is live SSA storage, and root offsets remain invocation-dependent.
+struct OperationMemorySourceBinding final {
+  dataflow::LogicalMemoryRootRef root;
+  mlir::Value base;
+  std::uint64_t byteCount = 0;
+  std::uint64_t baseByteOffset = 0;
+};
+
 struct OperationSimulationInputCapturePlan final {
   SimulationInputCapturePlan input;
   /// Root-to-leaf exact direct calls from the execution entry to the selected
@@ -187,6 +196,14 @@ deriveOperationSimulationInputCapturePlan(
     dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
     mlir::ValueRange boundaryResults,
     llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath);
+
+llvm::Expected<OperationSimulationInputCapturePlan>
+deriveOperationSimulationInputCapturePlan(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch, mlir::ValueRange boundaryInputs,
+    mlir::ValueRange boundaryResults,
+    llvm::ArrayRef<mlir::LLVM::CallOp> invocationPath,
+    llvm::ArrayRef<OperationMemorySourceBinding> memorySources);
 
 } // namespace loom::sim
 

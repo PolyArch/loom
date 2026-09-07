@@ -9,7 +9,7 @@
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Simulator/SimulationArtifacts.h"
-#include "Simulator/SourceBackedDfgValidation.h"
+#include "DSE/StructuredFunctionalReplayBudget.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -51,8 +51,7 @@ struct StructuredOwnershipExplorationOptions final {
   lowering::CanonicalDataflowLoweringOptions lowering;
   StructuredOwnershipTopKSelection selection;
   std::uint32_t candidateWorkerCount = 1;
-  sim::SourceBackedDfgValidationLimits functionalReplayLimits{
-      100000, 1000000, 256ULL * 1024ULL * 1024ULL};
+  StructuredFunctionalReplayBudget functionalReplayLimits;
   /// Optional invocation-local operator protocol roots. When nonempty, the
   /// ownership domain contains only these exact defined callables and their
   /// statically resolved direct callees. The Structured Program remains the

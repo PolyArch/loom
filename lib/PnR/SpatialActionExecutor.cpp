@@ -23,6 +23,7 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 using namespace loom;
 using namespace loom::pnr;
@@ -96,69 +97,69 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
                                       SpatialActionExecutionContext context) {
   return llvm::handleErrors(
       std::move(failure),
-      [&](const EndpointRouteSearchFailure &routeFailure) -> llvm::Error {
-        if (routeFailure.kind() == EndpointRouteSearchFailureKind::Invalid) {
-          std::string message;
-          llvm::raw_string_ostream stream(message);
-          routeFailure.log(stream);
-          return llvm::make_error<EndpointRouteSearchFailure>(
-              routeFailure.kind(), stream.str());
-        }
+      [&](std::unique_ptr<EndpointRouteSearchFailure> routeFailure)
+          -> llvm::Error {
+        if (routeFailure->kind() == EndpointRouteSearchFailureKind::Invalid ||
+            routeFailure->kind() ==
+                EndpointRouteSearchFailureKind::ArithmeticOverflow)
+          return llvm::Error(std::move(routeFailure));
         std::string message;
         llvm::raw_string_ostream stream(message);
-        routeFailure.log(stream);
+        routeFailure->log(stream);
         return llvm::make_error<SpatialActionTransitionFailure>(
-            routeFailure.kind() == EndpointRouteSearchFailureKind::WorkLimit
+            routeFailure->kind() == EndpointRouteSearchFailureKind::WorkLimit
                 ? SpatialActionTransitionFailureKind::WorkLimit
                 : SpatialActionTransitionFailureKind::IntrinsicInvalid,
             stream.str());
       },
-      [&](const SpatialPathFinderClosureFailure &closureFailure)
+      [&](std::unique_ptr<SpatialPathFinderClosureFailure> closureFailure)
           -> llvm::Error {
+        const auto kind = closureFailure->kind();
+        if ((kind == SpatialPathFinderClosureFailure::Kind::
+                         FixedTerminalCapacityCut &&
+             context != SpatialActionExecutionContext::Search) ||
+            (context == SpatialActionExecutionContext::ExactRepair &&
+             (kind == SpatialPathFinderClosureFailure::Kind::RegionalLimit ||
+              kind == SpatialPathFinderClosureFailure::Kind::NonClosure ||
+              kind == SpatialPathFinderClosureFailure::Kind::NoProgress ||
+              kind == SpatialPathFinderClosureFailure::Kind::
+                          SelectedCombinationalHandshakeCycle)))
+          return llvm::Error(std::move(closureFailure));
         std::string message;
         llvm::raw_string_ostream stream(message);
-        closureFailure.log(stream);
-        if (closureFailure.kind() ==
-            SpatialPathFinderClosureFailure::Kind::Interrupted)
+        closureFailure->log(stream);
+        if (kind == SpatialPathFinderClosureFailure::Kind::Interrupted)
           return llvm::make_error<SpatialActionTransitionFailure>(
               SpatialActionTransitionFailureKind::Interrupted, stream.str());
-        if (closureFailure.kind() == SpatialPathFinderClosureFailure::Kind::
-                                         FixedTerminalCapacityCut &&
-            context != SpatialActionExecutionContext::Search)
-          return llvm::make_error<SpatialPathFinderClosureFailure>(
-              closureFailure.kind(), stream.str(), closureFailure.certificate(),
-              closureFailure.mandatoryUsage(),
-              closureFailure.physicalCapacity(),
-              closureFailure.regionalLogicalNetCount(),
-              closureFailure.regionalLogicalNetLimit());
-        if (closureFailure.kind() ==
-                SpatialPathFinderClosureFailure::Kind::RegionalLimit &&
-            context == SpatialActionExecutionContext::ExactRepair)
-          return llvm::make_error<SpatialPathFinderClosureFailure>(
-              closureFailure.kind(), stream.str(), closureFailure.certificate(),
-              closureFailure.mandatoryUsage(),
-              closureFailure.physicalCapacity(),
-              closureFailure.regionalLogicalNetCount(),
-              closureFailure.regionalLogicalNetLimit());
         return llvm::make_error<SpatialActionTransitionFailure>(
-            closureFailure.kind() ==
-                        SpatialPathFinderClosureFailure::Kind::NonClosure ||
-                    closureFailure.kind() ==
-                        SpatialPathFinderClosureFailure::Kind::NoProgress
+            kind == SpatialPathFinderClosureFailure::Kind::NonClosure ||
+                    kind == SpatialPathFinderClosureFailure::Kind::NoProgress
                 ? SpatialActionTransitionFailureKind::WorkLimit
                 : SpatialActionTransitionFailureKind::IntrinsicInvalid,
             stream.str());
       },
-      [&](const RoutingNegotiationError &negotiationError) -> llvm::Error {
-        std::string message;
-        llvm::raw_string_ostream stream(message);
-        negotiationError.log(stream);
-        if (negotiationError.kind() ==
-            RoutingNegotiationError::Kind::InvalidPolicy)
-          return llvm::make_error<RoutingNegotiationError>(
-              negotiationError.kind(), stream.str());
-        return llvm::make_error<SpatialActionTransitionFailure>(
-            SpatialActionTransitionFailureKind::IntrinsicInvalid, stream.str());
+      [&](std::unique_ptr<RoutingNegotiationError> negotiationError)
+          -> llvm::Error {
+        // A finite-cost representation failure is not a proof that this
+        // transition or its binding domain is intrinsically invalid. Keep
+        // the original typed error through rollback and search consumers.
+        loom::mapping_debug::emit(
+            loom::mapping_debug::Level::Decision,
+            loom::mapping_debug::Stage::SpatialPnr,
+            loom::mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["operation"] = "routing_negotiation_failure";
+              fields["failure_kind"] =
+                  negotiationError->kind() ==
+                          RoutingNegotiationError::Kind::ArithmeticOverflow
+                      ? "arithmetic_overflow"
+                      : "invalid_policy";
+              std::string message;
+              llvm::raw_string_ostream stream(message);
+              negotiationError->log(stream);
+              fields["diagnostic"] = stream.str();
+            });
+        return llvm::Error(std::move(negotiationError));
       });
 }
 
@@ -256,6 +257,14 @@ llvm::Error SpatialActionProbe::commit() {
     owner->committedDecisionChanges_.push_back({delta.kind, delta.index});
   owner->committedLogicalNetChanges_.assign(
       owner->routeCostLogicalNets_.begin(), owner->routeCostLogicalNets_.end());
+  if (!owner->routeTagLogicalNets_.empty()) {
+    auto &logicalNets = owner->committedLogicalNetChanges_;
+    logicalNets.insert(logicalNets.end(), owner->routeTagLogicalNets_.begin(),
+                       owner->routeTagLogicalNets_.end());
+    llvm::sort(logicalNets);
+    logicalNets.erase(std::unique(logicalNets.begin(), logicalNets.end()),
+                      logicalNets.end());
+  }
   owner->committedChangesValid_ = true;
   if (llvm::Error error = move_.commit())
     return error;
@@ -1298,9 +1307,7 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
           explicitNetDispositionMarks_[logicalNet] == dependencyEpoch_
               ? explicitNetDispositions_[logicalNet]
               : SpatialWholeNetDispositionKind::Preferred;
-      if (disposition == SpatialWholeNetDispositionKind::RegisterFifo) {
-        selectedLocal = explicitRegisterFifoTransfers_[logicalNet];
-      } else if (disposition == SpatialWholeNetDispositionKind::Preferred) {
+      if (disposition == SpatialWholeNetDispositionKind::Preferred) {
         auto local = detail::findPreferredAvailableSpatialLocalTransfer(
             candidate.problem(), candidate.computeBindings_,
             candidate.registerFifoTransfers_, logicalNet);
@@ -1309,7 +1316,6 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
         selectedLocal = *local;
       }
       if (selectedLocal &&
-          disposition == SpatialWholeNetDispositionKind::Preferred &&
           candidate.registerFifoTransfer(logicalNet) != *selectedLocal) {
         // A preferred pairing is only a preference: when it would close a
         // handshake cycle with the pairings already selected, the net keeps
@@ -1424,7 +1430,8 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
 }
 
 llvm::Error SpatialActionExecutorScratch::realizeExplicitLocalDispositions(
-    SpatialMoveTransaction &move, SpatialCandidateState &candidate) {
+    SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+    SpatialActionExecutionContext context) {
   if (globalRouting_)
     for (PnrIndex logicalNet : affectedNets_)
       if (explicitNetDispositionMarks_[logicalNet] == dependencyEpoch_)
@@ -1442,9 +1449,13 @@ llvm::Error SpatialActionExecutorScratch::realizeExplicitLocalDispositions(
     }
     const SpatialWholeNetDispositionKind disposition =
         explicitNetDispositions_[logicalNet];
-    if (disposition == SpatialWholeNetDispositionKind::Preferred)
-      return executorError(
-          "explicit exact-repair disposition cannot be Preferred");
+    if (disposition == SpatialWholeNetDispositionKind::Preferred) {
+      if (context != SpatialActionExecutionContext::Search)
+        return executorError(
+            "explicit exact-repair disposition cannot be Preferred");
+      externalNets.push_back(logicalNet);
+      continue;
+    }
     if (disposition == SpatialWholeNetDispositionKind::External) {
       if (candidate.usesRegisterFifo(logicalNet))
         if (llvm::Error error =
@@ -1564,7 +1575,8 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
   if (!restoration)
     restoration =
         routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_);
-  if (!restoration && !routeCostLogicalNets_.empty())
+  if (!restoration &&
+      (!routeCostLogicalNets_.empty() || !routeTagLogicalNets_.empty()))
     restoration = restoreCandidateTagDelta();
   if (restoration) {
     llvm::Error fallback = routeCosts_->resetFromVerifiedCandidate();
@@ -1634,9 +1646,17 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (!moveOrError)
     return moveOrError.takeError();
   SpatialMoveTransaction move = std::move(*moveOrError);
-  for (const SpatialMappingAction &action : actions)
+  std::vector<const SpatialMappingAction *> deferredTagActions;
+  for (const SpatialMappingAction &action : actions) {
+    const auto *transport = std::get_if<SpatialTransportRoutingAction>(&action);
+    if (transport &&
+        std::holds_alternative<SpatialPhysicalTagAction>(*transport)) {
+      deferredTagActions.push_back(&action);
+      continue;
+    }
     if (llvm::Error error = apply(move, candidate, action))
       return restoreAfterFailure(move, std::move(error), false);
+  }
   if (llvm::Error error =
           reconcileExplicitLogicalMemoryBindings(move, candidate))
     return restoreAfterFailure(move, std::move(error), false);
@@ -1650,13 +1670,19 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   affectedNets_.erase(
       std::unique(affectedNets_.begin(), affectedNets_.end()),
       affectedNets_.end());
-  if (context != SpatialActionExecutionContext::Search)
-    if (llvm::Error error = realizeExplicitLocalDispositions(move, candidate))
-      return restoreAfterFailure(move, std::move(error), false);
+  // Reserve the batch's explicit local choices before any preferred
+  // reroute can adopt their FIFO. A relocation can make additional nets
+  // eligible, including nets earlier than the explicit owner in net order.
+  if (llvm::Error error =
+          realizeExplicitLocalDispositions(move, candidate, context))
+    return restoreAfterFailure(move, std::move(error), false);
 
   const bool negotiatedRouting =
       globalRouting_ || (context != SpatialActionExecutionContext::Search &&
                          !affectedNets_.empty());
+  const bool deferHandshakeCycleUntilClose =
+      context == SpatialActionExecutionContext::ExactRepair &&
+      !deferredTagActions.empty();
   if (*routeCut &&
       (!negotiatedRouting ||
        (!globalRouting_ &&
@@ -1685,7 +1711,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
          routing.noProgressIterationLimit, routing.noProgressTrendWindow},
         globalRouting_ ? llvm::ArrayRef<PnrIndex>{}
                        : llvm::ArrayRef<PnrIndex>(affectedNets_),
-        {}, closureRequirement, exactRegionalLogicalNetLimit, *routeCut);
+        {}, closureRequirement, exactRegionalLogicalNetLimit, *routeCut,
+        deferHandshakeCycleUntilClose);
     if (!closure)
       return restoreAfterFailure(
           move, classifyTransitionFailure(closure.takeError(), context), true);
@@ -1701,6 +1728,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
       return restoreAfterFailure(move, projected.takeError(), true);
     negotiatedProjection = std::move(*projected);
   }
+
+  for (const SpatialMappingAction *action : deferredTagActions)
+    if (llvm::Error error = apply(move, candidate, *action))
+      return restoreAfterFailure(move, std::move(error), negotiatedRouting);
 
   auto closed = move.close();
   if (!closed)
@@ -1733,19 +1764,12 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
                            "RouteTrees project " + llvm::Twine(projected));
     };
     const std::array<std::tuple<llvm::StringRef, std::uint64_t, std::uint64_t>,
-                     12>
+                     9>
         routeFacts{{
             {"unrouted obligation count", candidate.unroutedObligationCount(),
              negotiatedProjection->unroutedObligationCount},
             {"route capacity overuse", candidate.routeCapacityOveruse(),
              negotiatedProjection->routeCapacityOveruse},
-            {"tag resident capacity overuse",
-             candidate.tagResidentCapacityOveruse(),
-             negotiatedProjection->tagResidentCapacityOveruse},
-            {"tag unassigned count", candidate.tagUnassignedCount(),
-             negotiatedProjection->tagUnassignedCount},
-            {"tag conflict count", candidate.tagConflictCount(),
-             negotiatedProjection->tagConflictCount},
             {"runtime counterexample violation",
              candidate.runtimeCounterexampleViolation(),
              negotiatedProjection->runtimeCounterexampleViolation},
@@ -1770,6 +1794,22 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     for (const auto &[field, closed, projected] : routeFacts)
       if (llvm::Error error = requireEqual(field, closed, projected))
         return restoreAfterFailure(move, std::move(error), true);
+    if (deferredTagActions.empty()) {
+      const std::array<
+          std::tuple<llvm::StringRef, std::uint64_t, std::uint64_t>, 3>
+          tagFacts{{
+              {"tag resident capacity overuse",
+               candidate.tagResidentCapacityOveruse(),
+               negotiatedProjection->tagResidentCapacityOveruse},
+              {"tag unassigned count", candidate.tagUnassignedCount(),
+               negotiatedProjection->tagUnassignedCount},
+              {"tag conflict count", candidate.tagConflictCount(),
+               negotiatedProjection->tagConflictCount},
+          }};
+      for (const auto &[field, closed, projected] : tagFacts)
+        if (llvm::Error error = requireEqual(field, closed, projected))
+          return restoreAfterFailure(move, std::move(error), true);
+    }
   }
   const bool semanticChange = move.hasSemanticChange();
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
@@ -1787,13 +1827,6 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     tagDelta = std::move(*projected);
     routeTagLogicalNets_ = tagDelta->logicalNets;
     routeTagDomains_ = tagDelta->domains;
-    routeCostLogicalNets_.insert(routeCostLogicalNets_.end(),
-                                 routeTagLogicalNets_.begin(),
-                                 routeTagLogicalNets_.end());
-    llvm::sort(routeCostLogicalNets_);
-    routeCostLogicalNets_.erase(
-        std::unique(routeCostLogicalNets_.begin(), routeCostLogicalNets_.end()),
-        routeCostLogicalNets_.end());
   }
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))

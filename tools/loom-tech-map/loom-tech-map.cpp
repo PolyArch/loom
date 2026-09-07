@@ -308,10 +308,8 @@ int main(int argc, char **argv) {
   auto dataflow = dataflow::finalizeCanonicalDataflow(**source);
   if (!dataflow)
     return reportError(dataflow.takeError());
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return reportError(dataflowView.takeError());
-  if (dataflowView->graphs().empty() || dataflowView->actors().empty())
+  const auto &dataflowView = dataflow->view();
+  if (dataflowView.graphs().empty() || dataflowView.actors().empty())
     return reportError(invalid("Dataflow program has no nonempty graph"));
 
   loom::ArtifactStore store(artifactStorePath);
@@ -329,16 +327,16 @@ int main(int argc, char **argv) {
     return reportError(techConfig.takeError());
 
   std::vector<::dataflow::GraphRef> covers;
-  covers.reserve(dataflowView->graphs().size());
-  for (const auto &graph : dataflowView->graphs())
+  covers.reserve(dataflowView.graphs().size());
+  for (const auto &graph : dataflowView.graphs())
     covers.push_back(graph.ref);
 
   llvm::json::Object report;
   report["kind"] = "tech_mapping_coverage";
   report["canonical_dataflow"] =
       loom::formatArtifactIdentityHex(dataflowReference->artifact);
-  report["graph_count"] = dataflowView->graphs().size();
-  report["actor_count"] = dataflowView->actors().size();
+  report["graph_count"] = dataflowView.graphs().size();
+  report["actor_count"] = dataflowView.actors().size();
   llvm::json::Array fabricReports;
   bool failed = false;
 
@@ -369,7 +367,7 @@ int main(int argc, char **argv) {
       return reportError(invalid("process CPU clock is unavailable"));
     const loom::mapping::TechMappingGenerationOutcome outcome =
         loom::mapping::generateTechMappings(
-            {*dataflowView, covers, fabricView, *techConfig, store});
+            {dataflowView, covers, fabricView, *techConfig, store});
     const std::clock_t cpuFinished = std::clock();
     if (cpuFinished == static_cast<std::clock_t>(-1))
       return reportError(invalid("process CPU clock is unavailable"));
@@ -380,7 +378,7 @@ int main(int argc, char **argv) {
                                       wallStarted)
             .count();
     llvm::json::Object fabricReport =
-        outcomeReport(outcome, store, dataflowView->actors().size());
+        outcomeReport(outcome, store, dataflowView.actors().size());
     fabricReport["fabric"] =
         loom::formatArtifactIdentityHex(fabricView.identity());
     fabricReport["input_fabric_root"] =

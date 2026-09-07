@@ -204,7 +204,7 @@ void splitMergeRoundTripIsExact() {
   require(split && split->launches.size() == 1,
           "normalized bipartition was not enumerated");
 
-  auto view = take(parent.view());
+  const auto &view = parent.view();
   require(view.staticGraphLaunches().size() == 2,
           "fixture does not have two static launches");
   auto noncanonical = *split;
@@ -218,7 +218,7 @@ void splitMergeRoundTripIsExact() {
 
   auto child = take(dataflow::materializeDataflowRewrite(parent, *split));
   require(child.has_value(), "split produced no child");
-  auto childView = take(child->view());
+  const auto &childView = child->view();
   require(childView.graphs().size() == 2 &&
               childView.staticGraphLaunches().size() == 2 &&
               childView.staticGraphLaunches()[0].callee !=
@@ -252,7 +252,7 @@ void memoryFormalGraphsAreMergeable() {
 
   auto child = take(dataflow::materializeDataflowRewrite(parent, *merge));
   require(child.has_value(), "memory-formal merge produced no child");
-  auto view = take(child->view());
+  const auto &view = child->view();
   require(view.graphs().size() == 1 && view.staticGraphLaunches().size() == 2 &&
               view.staticGraphLaunches()[0].callee ==
                   view.staticGraphLaunches()[1].callee,

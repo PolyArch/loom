@@ -41,6 +41,7 @@
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Application/SystemQor.h"
 #include "Simulator/SpatialInvocation.h"
 #include "Simulator/SpatialObservationComparison.h"
 
@@ -606,8 +607,8 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Array *dispatchTargets =
       dispatch ? dispatch->getArray("targets") : nullptr;
   const auto schema = object ? object->getString("schema") : std::nullopt;
-  if (!schema || *schema != "loom.gem5_system_projection.13" || !bridges ||
-      bridges->empty() || !dispatchTargets || dispatchTargets->empty())
+  if (!schema || *schema != "loom.gem5_system_projection.14" || !bridges ||
+      bridges->empty() || !dispatchTargets)
     return invalid("gem5 projection contains no Spatial bridge");
 
   std::vector<ObservedSpatialInvocation> invocations;
@@ -624,7 +625,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
         bridge->getArray("execution_context_keys");
     const llvm::json::Array *spatialWorkloads =
         bridge->getArray("spatial_workloads");
-    if (!dispatchTargetOrdinals || dispatchTargetOrdinals->empty() ||
+    if (!dispatchTargetOrdinals ||
         !accCoreReference || accCoreReference->empty() ||
         !executionContextKeys || !spatialWorkloads ||
         executionContextKeys->size() != dispatchTargetOrdinals->size() ||
@@ -681,8 +682,8 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
             resultBytes, bridgeResults, diagnostic))
       return invalid("cannot decode verified gem5 bridge result: " +
                      llvm::Twine(diagnostic));
-    if (bridgeResults.results.empty())
-      return invalid("gem5 bridge did not execute a declared target");
+    if (bridgeResults.results.empty() != targetOrdinals.empty())
+      return invalid("gem5 bridge activity differs from its declared target domain");
     std::vector<bool> observedSessionEntries(targetOrdinals.size());
     for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
       const loom::runtime::Gem5BridgeResult &bridgeResult =
@@ -755,8 +756,18 @@ execute(Engine engine, llvm::StringRef workspace,
       *descriptor, {}, loom::defaultResolvedConfig());
   if (!model)
     return model.takeError();
+  std::vector<loom::evaluation::MetricRequest> metrics;
+  if (engine == Engine::Cgra) {
+    auto runtimeMetric = loom::evaluation::MetricRequest::get(
+        {loom::evaluation::MetricKind::Runtime,
+         loom::evaluation::EvaluationScope{loom::evaluation::ScopeFormRef(0), {}}},
+        {}, *evaluationCase, resolution, artifacts);
+    if (!runtimeMetric)
+      return runtimeMetric.takeError();
+    metrics.push_back(std::move(*runtimeMetric));
+  }
   auto request = loom::evaluation::EvaluationRequest::get(
-      *evaluationCase, {}, {}, std::move(*model), 0, resolution, artifacts,
+      *evaluationCase, std::move(metrics), {}, std::move(*model), 0, resolution, artifacts,
       blobs);
   if (!request)
     return request.takeError();
@@ -1302,7 +1313,7 @@ llvm::Error writeManifest(
     const loom::deployment::FinalizedDeployment &deployment,
     const loom::runtime::FinalizedGem5SimulationBinding &binding,
     const PublishedInputs &inputs, const CompletedRun &dfg,
-    const CompletedRun &cgra,
+    const CompletedRun &cgra, const loom::application::ApplicationSystemQor &systemQor,
     llvm::ArrayRef<SpatialInvocationCase> spatialInvocations,
     llvm::ArrayRef<CompletedSpatialRun> spatialRuns,
     const ResourceTimeDriveOutcome &drive,
@@ -1313,7 +1324,7 @@ llvm::Error writeManifest(
   llvm::raw_string_ostream stream(body);
   llvm::json::OStream json(stream, 2);
   json.object([&] {
-    json.attribute("schema", "loom.execution_matrix_workspace.2.0");
+    json.attribute("schema", "loom.execution_matrix_workspace.3.0");
     json.attributeObject("application_runtime_manifest", [&] {
       loom::writeArtifactRootReferenceJsonFields(
           json, applicationManifest.reference());
@@ -1334,6 +1345,9 @@ llvm::Error writeManifest(
     });
     json.attributeObject("runtime_input", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, inputs.runtimeInput);
+    });
+    json.attributeObject("paired_system_execution", [&] {
+      loom::application::writeApplicationSystemQorJsonFields(json, systemQor);
     });
     json.attributeBegin("product_profile");
     if (applicationManifest.manifest().productOracle()) {
@@ -1623,6 +1637,44 @@ llvm::Error run() {
               blobs))
         return error;
     }
+    const auto &baseline = manifest.hostOnlyBaseline();
+    auto baselineDeployment = loom::deployment::importDeployment(
+        baseline.deployment, artifacts, blobs);
+    if (!baselineDeployment)
+      return baselineDeployment.takeError();
+    const PublishedInputs baselineInputs{baseline.inputs.workload,
+                                         baseline.inputs.runtimeInput};
+    auto baselineResolution = buildResolution(*baselineDeployment, *binding,
+                                               baselineInputs, artifacts, blobs);
+    if (!baselineResolution)
+      return baselineResolution.takeError();
+    const std::string baselineWorkspace = child(workspacePath, "host-only");
+    if (!std::filesystem::create_directories(
+            std::filesystem::path(baselineWorkspace) / "bundles", directoryError) ||
+        directoryError)
+      return ioError("cannot create host-only System execution directory");
+    auto hostOnly = execute(Engine::Cgra, baselineWorkspace, *baselineDeployment,
+                            *binding, baselineInputs, *baselineResolution,
+                            *readiness, artifacts, blobs, nullptr);
+    if (!hostOnly)
+      return hostOnly.takeError();
+    if (!hostOnly->spatialInvocations.empty())
+      return invalid("host-only baseline executed an accelerator invocation");
+    if (manifest.productOracle())
+      if (llvm::Error error = publishProductOracleEvidence(
+              workspace->package.manifest(), *hostOnly, *baselineResolution,
+              artifacts, blobs))
+        return error;
+
+    auto systemQor = loom::application::qualifyApplicationSystemQor(
+        workspace->package.manifest(),
+        {hostOnly->execution, hostOnly->evidence, hostOnly->productOracleEvidence},
+        *baselineResolution,
+        {cgra->execution, cgra->evidence, cgra->productOracleEvidence}, *resolution,
+        loom::defaultResolvedConfig(), artifacts, blobs);
+    if (!systemQor)
+      return systemQor.takeError();
+
     std::optional<
         loom::application::FinalizedApplicationResourceTimeExecutionTrace>
         resourceTimeTrace;
@@ -1730,7 +1782,7 @@ llvm::Error run() {
     }
     if (llvm::Error error = writeManifest(
             workspacePath, workspace->package.manifest(), deployment, *binding,
-            *inputs, *dfg, *cgra,
+            *inputs, *dfg, *cgra, *systemQor,
             spatialInvocations, spatialRuns, *drive,
             resourceTimeTrace ? &*resourceTimeTrace : nullptr,
             rtlDeployment ? &*rtlDeployment : nullptr))

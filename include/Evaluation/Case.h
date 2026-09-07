@@ -463,7 +463,6 @@ struct EvaluationCaseSignatureDescriptor {
   llvm::ArrayRef<ConditionApplicabilityPattern> permittedBaseConditions;
 
   /// The exact catalog version that owns this immutable descriptor view.
-  /// Compatible older views are mechanically derived by the registry.
   SchemaVersion registryVersion = evaluationSchemaVersion();
 
   const CaseSubjectRoleDescriptor *

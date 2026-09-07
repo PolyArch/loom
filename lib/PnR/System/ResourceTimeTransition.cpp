@@ -410,15 +410,13 @@ projectLogicalMemoryBinding(
       ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
-  auto extent = dataflow->staticMemoryByteExtent(
+  const auto &dataflow = dataflowArtifact->view();
+  auto extent = dataflow.staticMemoryByteExtent(
       ::dataflow::LogicalMemoryRootOrViewRef{memory});
   if (!extent)
     return extent.takeError();
   auto contexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, mapping.view().executionBindings());
+      dataflow, mapping.view().executionBindings());
   if (!contexts)
     return contexts.takeError();
 
@@ -839,9 +837,8 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
       *transition.child.deployment, artifacts, blobs);
   if (!childDeployment)
     return childDeployment.takeError();
-  if (parentDeployment->deployment().systemMapping() !=
-          transition.parent.mapping ||
-      childDeployment->deployment().systemMapping() != transition.child.mapping)
+  if (!parentDeployment->deployment().systemMapping() || *parentDeployment->deployment().systemMapping() != transition.parent.mapping ||
+      !childDeployment->deployment().systemMapping() || *childDeployment->deployment().systemMapping() != transition.child.mapping)
     return invalid("transition Deployment endpoint selects another Mapping");
 
   auto parentMapping = ::loom::mapping::importSystemMapping(
@@ -870,16 +867,14 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
       ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
 
   auto parentContexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, parentMapping->view().executionBindings());
+      dataflow, parentMapping->view().executionBindings());
   if (!parentContexts)
     return parentContexts.takeError();
   auto childContexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, childMapping->view().executionBindings());
+      dataflow, childMapping->view().executionBindings());
   if (!childContexts)
     return childContexts.takeError();
   auto parentMappingClosure =
@@ -922,7 +917,7 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
   if (!routes)
     return routes.takeError();
   auto completionFrontier = completionFrontierIsCausallyAdmissible(
-      transition, *dataflow,
+      transition, dataflow,
       parentMapping->view().executionBindings().rootThreadLaunches());
   if (!completionFrontier)
     return completionFrontier.takeError();
@@ -940,7 +935,7 @@ deriveTransitionDigests(const ResourceTimeTransition &transition,
                   "or runtime bindings");
   std::vector<ResourceTimeLogicalMemoryCorrespondence> logicalMemories;
   auto execution = deriveExecutionPlan(
-      transition, *dataflow, *parentMapping, *childMapping, *parentDeployment,
+      transition, dataflow, *parentMapping, *childMapping, *parentDeployment,
       *childDeployment, artifacts, blobs, logicalMemories);
   if (!execution)
     return execution.takeError();

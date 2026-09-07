@@ -82,6 +82,11 @@ public:
   /// invariant; only the checked numerator can overflow.
   llvm::Expected<ExactRatio> addInteger(std::uint64_t value) const;
 
+  llvm::Expected<ExactRatio> add(ExactRatio value) const;
+  /// Subtraction remains in the nonnegative exact-ratio domain.
+  llvm::Expected<ExactRatio> subtract(ExactRatio value) const;
+  llvm::Expected<ExactRatio> multiplyInteger(std::uint64_t value) const;
+
   // Normalize this ratio modulo a positive modulus into the half-open range
   // [0, modulus). Fails when the modulus is zero or when the exact reduced
   // result does not fit uint64.
@@ -102,6 +107,9 @@ private:
   std::uint64_t numerator_;
   std::uint64_t denominator_;
 };
+
+/// Exact numeric order, without converting either ratio to floating point.
+int compareExactRatio(ExactRatio lhs, ExactRatio rhs);
 
 } // namespace loom::evaluation
 

@@ -895,9 +895,7 @@ strictImport(const ArtifactIdentity &identity,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
 
   ArtifactRootReference techMappingReference{
       mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
@@ -914,8 +912,8 @@ strictImport(const ArtifactIdentity &identity,
     return fabric.takeError();
 
   auto view = SpatialMappingConstraintSetView::import(
-      identity, parsed->root, *dataflowView, techMapping->view(),
-      fabric->view(), store, importedMappingCache);
+      identity, parsed->root, dataflowView, techMapping->view(), fabric->view(),
+      store, importedMappingCache);
   if (!view)
     return view.takeError();
   auto rewritten = writeCanonicalSpatialConstraintAssembly(parsed->root);

@@ -165,7 +165,7 @@ void canonicalGraphOwnsLeastFixedPoint() {
                   mlir::LLVM::LLVMDialect, mlir::ub::UBDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   auto artifact = buildProgram(context);
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
 
   using Fact = dataflow::ActivityDefinedness;
   const auto constant =

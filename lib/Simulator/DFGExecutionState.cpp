@@ -2,6 +2,7 @@
 #include "SimulationWireInternal.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Matchers.h"
 
 #include <limits>
 #include <system_error>
@@ -117,15 +118,39 @@ llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
 }
 
 llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
+  auto addByteShift = [](std::int64_t base,
+                         std::int64_t shift) -> std::optional<std::int64_t> {
+    if (shift > 0 && base > std::numeric_limits<std::int64_t>::max() - shift)
+      return std::nullopt;
+    if (shift < 0 && base < std::numeric_limits<std::int64_t>::min() - shift)
+      return std::nullopt;
+    return base + shift;
+  };
   bool changed = true;
   while (changed) {
     changed = false;
     for (mlir::Operation &op : entry.getOperations()) {
       mlir::Value source;
       mlir::Value target;
+      std::int64_t byteShift = 0;
       if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(op)) {
         source = cast.getSource();
         target = cast.getDest();
+      } else if (auto view = llvm::dyn_cast<mlir::memref::ViewOp>(op)) {
+        source = view.getSource();
+        target = view.getResult();
+        llvm::APInt shift;
+        if (!mlir::matchPattern(view.getByteShift(),
+                                mlir::m_ConstantInt(&shift)) ||
+            !shift.isSignedIntN(64))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memref.view byte shift is not a supported constant");
+        byteShift = shift.getSExtValue();
+        if (byteShift < 0)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memref.view byte shift is negative");
       } else {
         continue;
       }
@@ -138,6 +163,12 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
       if (viewIt != state.memoryViews.end()) {
         MemoryView view = viewIt->second;
         auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
+        auto shiftedOffset = addByteShift(view.byteOffset, byteShift);
+        if (!shiftedOffset)
+          return llvm::createStringError(
+              std::errc::value_too_large,
+              "memref.view byte offset exceeds the signed runtime domain");
+        view.byteOffset = *shiftedOffset;
         if (targetMemref) {
           view.elementType = targetMemref.getElementType();
           MemoryView &sourceView = viewIt->second;
@@ -159,7 +190,7 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
                                         memoryIt->second->logicalRootId);
         state.memories[target] = memoryIt->second;
         state.memoryViews[target] = MemoryView{
-            memoryIt->second, source, 0,
+            memoryIt->second, source, byteShift,
             targetMemref ? targetMemref.getElementType() : mlir::Type{}};
         changed = true;
         continue;
@@ -173,7 +204,13 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
       if (!memoryOrErr)
         return memoryOrErr.takeError();
       auto memory = *memoryOrErr;
-      MemoryView view{memory, source, rawIt->second.byteOffset,
+      auto shiftedOffset =
+          addByteShift(rawIt->second.byteOffset, byteShift);
+      if (!shiftedOffset)
+        return llvm::createStringError(
+            std::errc::value_too_large,
+            "memref.view byte offset exceeds the signed runtime domain");
+      MemoryView view{memory, source, *shiftedOffset,
                       targetMemref.getElementType()};
       state.memories[source] = memory;
       state.memories[target] = memory;

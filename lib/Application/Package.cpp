@@ -104,19 +104,27 @@ llvm::Expected<ArtifactIdentity> readIdentity(llvm::StringRef path,
   return *identity;
 }
 
-llvm::Error addArtifact(std::vector<ArtifactRootReference> &roots,
+bool artifactIdentityLess(const ArtifactRootReference &lhs,
+                          const ArtifactRootReference &rhs) {
+  return lhs.artifact.bytes() < rhs.artifact.bytes();
+}
+
+using PackageArtifactRoots =
+    std::set<ArtifactRootReference, decltype(&artifactIdentityLess)>;
+
+llvm::Error addArtifact(PackageArtifactRoots &roots,
                         const ArtifactRootReference &root,
                         const ArtifactStore &artifacts) {
-  if (llvm::is_contained(roots, root))
+  const auto existing = roots.find(root);
+  if (existing != roots.end()) {
+    if (*existing != root)
+      return invalid("one Artifact identity has multiple schema framings");
     return llvm::Error::success();
-  if (llvm::any_of(roots, [&](const auto &existing) {
-        return existing.artifact == root.artifact;
-      }))
-    return invalid("one Artifact identity has multiple schema framings");
+  }
   auto bytes = artifacts.getStoredObject(root);
   if (!bytes)
     return bytes.takeError();
-  roots.push_back(root);
+  roots.insert(root);
   return llvm::Error::success();
 }
 
@@ -143,7 +151,7 @@ llvm::Error addRequestPayloadBlobs(
   return llvm::Error::success();
 }
 
-llvm::Error addFabricClosure(std::vector<ArtifactRootReference> &roots,
+llvm::Error addFabricClosure(PackageArtifactRoots &roots,
                              std::vector<ArtifactRootReference> &expanded,
                              const ArtifactRootReference &root,
                              const ArtifactStore &artifacts) {
@@ -174,8 +182,9 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
         ApplicationRuntimeManifestErrorReason::DeploymentMismatch,
         "runtime manifest does not bind the package entry Deployment");
   ApplicationPackageClosure result;
+  PackageArtifactRoots artifactRoots(artifactIdentityLess);
   std::vector<ArtifactRootReference> deployments = {
-      entryDeployment.reference()};
+      entryDeployment.reference(), manifest.manifest().hostOnlyBaseline().deployment};
   if (manifest.manifest().transitionGraph())
     for (const pnr::ResourceTimeTransitionEndpointReference &endpoint :
          manifest.manifest().transitionGraph()->endpoints)
@@ -191,7 +200,7 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     if (!closure)
       return closure.takeError();
     for (const ArtifactRootReference &root : closure->artifacts())
-      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+      if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
         return std::move(error);
     for (const BlobDigest &digest : closure->blobs())
       addBlob(result.blobs, digest);
@@ -204,7 +213,7 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     if (!closure)
       return closure.takeError();
     for (const ArtifactRootReference &root : closure->artifacts())
-      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+      if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
         return error;
     for (const BlobDigest &digest : closure->blobs())
       addBlob(result.blobs, digest);
@@ -217,7 +226,7 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     if (!closure)
       return closure.takeError();
     for (const ArtifactRootReference &root : closure->artifacts())
-      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+      if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
         return error;
     for (const BlobDigest &digest : closure->blobs())
       addBlob(result.blobs, digest);
@@ -230,8 +239,10 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
         &runtime.workload(), &runtime.runtimeInput(), &runtime.selectedSystem(),
         &runtime.selectedMapping(), &runtime.deployment(),
         &runtime.activationWorkload(), &runtime.activationRuntimeInput(),
-        &runtime.activationDecision()})
-    if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
+        &runtime.activationDecision(), &runtime.hostOnlyBaseline().deployment,
+        &runtime.hostOnlyBaseline().inputs.workload,
+        &runtime.hostOnlyBaseline().inputs.runtimeInput})
+    if (llvm::Error error = addArtifact(artifactRoots, *root, artifacts))
       return std::move(error);
   auto activation = importApplicationActivationDecision(
       runtime.activationDecision(), artifacts, blobs);
@@ -243,7 +254,7 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   if (!activationDependencies)
     return activationDependencies.takeError();
   for (const ArtifactRootReference &root : activationDependencies->artifacts)
-    if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+    if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
       return std::move(error);
   for (const BlobDigest &digest : activationDependencies->blobs)
     addBlob(result.blobs, digest);
@@ -251,18 +262,18 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
        runtime.sourceBackedReplayCases())
     for (const ArtifactRootReference *root :
          {&replay.workload, &replay.runtimeInput})
-      if (llvm::Error error = addArtifact(result.artifacts, *root, artifacts))
+      if (llvm::Error error = addArtifact(artifactRoots, *root, artifacts))
         return std::move(error);
   std::vector<ArtifactRootReference> expandedFabrics;
-  if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+  if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
                                            runtime.fabric(), artifacts))
     return std::move(error);
-  if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+  if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
                                            runtime.selectedSystem(), artifacts))
     return std::move(error);
   for (const ArtifactRootReference &reference :
        runtime.hardwareMutationRepairRecords()) {
-    if (llvm::Error error = addArtifact(result.artifacts, reference, artifacts))
+    if (llvm::Error error = addArtifact(artifactRoots, reference, artifacts))
       return std::move(error);
     auto imported =
         dse::importHardwareMutationRepairRecord(reference, artifacts);
@@ -273,22 +284,22 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
          record.decisionLineage) {
       for (const ArtifactRootReference &parent : lineage.parents)
         if (llvm::Error error = addFabricClosure(
-                result.artifacts, expandedFabrics, parent, artifacts))
+                artifactRoots, expandedFabrics, parent, artifacts))
           return std::move(error);
       if (llvm::Error error = addFabricClosure(
-              result.artifacts, expandedFabrics, lineage.output, artifacts))
+              artifactRoots, expandedFabrics, lineage.output, artifacts))
         return std::move(error);
     }
-    if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+    if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
                                              record.parentSystem, artifacts))
       return std::move(error);
-    if (llvm::Error error = addFabricClosure(result.artifacts, expandedFabrics,
+    if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
                                              record.childSystem, artifacts))
       return std::move(error);
     for (const dse::HardwareMutationImpactRecord &impact : record.impacts)
       if (impact.child)
         if (llvm::Error error = addFabricClosure(
-                result.artifacts, expandedFabrics, *impact.child, artifacts))
+                artifactRoots, expandedFabrics, *impact.child, artifacts))
           return std::move(error);
     std::vector<ArtifactRootReference> mappings = {record.parentMapping};
     if (record.cold)
@@ -315,24 +326,24 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
          runtime.transitionGraph()->transitions) {
       if (transition.safePoint)
         if (llvm::Error error = addArtifact(
-                result.artifacts, transition.safePoint->artifact, artifacts))
+                artifactRoots, transition.safePoint->artifact, artifacts))
           return std::move(error);
     }
   for (const ArtifactRootReference &root : runtime.runtimeRequestDependencies())
-    if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+    if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
       return std::move(error);
   if (runtime.productOracle())
     addBlob(result.blobs, runtime.productOracle()->expectedOutput);
 
   for (const ArtifactRootReference &evidence : runtime.runtimeEvidence()) {
-    if (llvm::Error error = addArtifact(result.artifacts, evidence, artifacts))
+    if (llvm::Error error = addArtifact(artifactRoots, evidence, artifacts))
       return std::move(error);
     auto projection = evaluation::importEvaluationEvidenceDependencyProjection(
         evidence, artifacts);
     if (!projection)
       return projection.takeError();
     if (llvm::Error error =
-            addArtifact(result.artifacts, projection->request, artifacts))
+            addArtifact(artifactRoots, projection->request, artifacts))
       return std::move(error);
     auto requestDependencies =
         evaluation::importEvaluationRequestArtifactReferences(
@@ -340,7 +351,7 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     if (!requestDependencies)
       return requestDependencies.takeError();
     for (const ArtifactRootReference &root : *requestDependencies)
-      if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+      if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
         return std::move(error);
     if (llvm::Error error = addRequestPayloadBlobs(
             result.blobs, *requestDependencies, artifacts))
@@ -348,9 +359,10 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
     for (const evaluation::ModelOutputBinding &binding :
          projection->outputBindings)
       for (const ArtifactRootReference &root : binding.artifacts)
-        if (llvm::Error error = addArtifact(result.artifacts, root, artifacts))
+        if (llvm::Error error = addArtifact(artifactRoots, root, artifacts))
           return std::move(error);
   }
+  result.artifacts.assign(artifactRoots.begin(), artifactRoots.end());
   llvm::sort(result.artifacts, artifactRootReferenceLess);
   llvm::sort(result.blobs, blobLess);
   return result;

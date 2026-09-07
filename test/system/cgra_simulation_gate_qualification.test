@@ -4,7 +4,7 @@
 # RUN:   --dfg-run=loom-dfg-run --cgra-profile=%loom-cgra-budget-profile \
 # RUN:   --output=%t/cgra-simulation-gate-v1.json
 # RUN: %python -c "import sys; sys.path.insert(0, '%S/..'); \
-# RUN:   import simulation_conformance as c; from pathlib import Path; \
+# RUN:   import cgra_qualification as c; from pathlib import Path; \
 # RUN:   gate = c.load_cgra_gate_configuration(Path('%t/cgra-simulation-gate-v1.json')); \
 # RUN:   print('regenerated-gate profiles=%d budget_ns=%d' \
 # RUN:         % (len(gate.profiles), gate.spatial_absolute_budget_nanoseconds))" \

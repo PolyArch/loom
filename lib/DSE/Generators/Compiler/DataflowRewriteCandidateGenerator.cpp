@@ -300,12 +300,10 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       return invalid("rewrite decision domain is not canonically ordered");
 
     std::vector<dataflow::StaticGraphLaunchRef> parentLaunches;
-    auto parentView = parent.artifact.view();
-    if (!parentView)
-      return parentView.takeError();
-    parentLaunches.reserve(parentView->staticGraphLaunches().size());
+    const auto &parentView = parent.artifact.view();
+    parentLaunches.reserve(parentView.staticGraphLaunches().size());
     for (const dataflow::CanonicalStaticGraphLaunchView &launch :
-         parentView->staticGraphLaunches())
+         parentView.staticGraphLaunches())
       parentLaunches.push_back(launch.ref);
 
     for (const dataflow::DataflowRewriteDecision &decision : decisions) {

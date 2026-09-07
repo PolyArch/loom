@@ -118,7 +118,7 @@ void solverCallBudgetLeavesNoPartialAssignment() {
   const CpSatCanonicalResult result = take(solveCanonicalCpSat(
       model.Build(), variables, std::nullopt, /*maxSolverCalls=*/1,
       /*randomSeed=*/19, loom::pnr::SpatialPnrWorkLedgerView(counters)));
-  require(result.kind == CpSatCanonicalResultKind::UnknownBudgetExhausted,
+  require(result.kind == CpSatCanonicalResultKind::SolverCallLimitReached,
           "solver-call exhaustion was treated as a proof");
   require(result.assignment.empty(),
           "solver-call exhaustion exposed a partial assignment");
@@ -273,8 +273,8 @@ void nonProofStatusesFailClosed() {
               CpSatProofStatus::Infeasible,
           "INFEASIBLE lost proof-bearing status");
   require(classifyCpSatProofStatus(CpSolverStatus::FEASIBLE) ==
-              CpSatProofStatus::Unknown,
-          "FEASIBLE was treated as proof-bearing");
+              CpSatProofStatus::Feasible,
+          "FEASIBLE lost its distinct non-optimal status");
   require(classifyCpSatProofStatus(CpSolverStatus::UNKNOWN) ==
               CpSatProofStatus::Unknown,
           "UNKNOWN was treated as proof-bearing");

@@ -16,6 +16,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -68,8 +69,8 @@ std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
         elementType = type.getElementType();
       return MemoryView{memory->second, value, 0, elementType};
     }
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
+    if (auto view = value.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+      value = view.getViewSource();
       continue;
     }
     return {};
@@ -84,8 +85,8 @@ static std::optional<std::uint64_t> memoryRootIdForValue(SimulatorState &state,
     auto root = state.memoryRootIds.find(value);
     if (root != state.memoryRootIds.end())
       return root->second;
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
+    if (auto view = value.getDefiningOp<mlir::ViewLikeOpInterface>()) {
+      value = view.getViewSource();
       continue;
     }
     return std::nullopt;

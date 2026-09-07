@@ -19,14 +19,15 @@ class FabricArtifactView;
 namespace loom::mapping {
 
 struct TechMappingComputeContextHallDemandGroup final {
-  loom::fabric::FabricFuCapabilityTemplateRef capability;
+  std::vector<loom::fabric::FabricFuCapabilityTemplateRef> capabilities;
   std::uint64_t demandCount = 0;
   std::vector<loom::fabric::InstructionContextRef> compatibleContexts;
 };
 
 /// One exact Hall deficit observed while exploring a Tech cover. Demand
-/// multiplicity is retained by capability; compatible contexts are rebuilt
-/// from the exact Fabric rather than accepted as an independent payload fact.
+/// multiplicity is retained by its allowed capability set. Selected rows have
+/// one capability; an unavoidable actor demand may still have alternatives.
+/// Compatible contexts are rebuilt from the exact Fabric.
 class TechMappingComputeContextHallDeficit final {
 public:
   static llvm::Expected<TechMappingComputeContextHallDeficit>

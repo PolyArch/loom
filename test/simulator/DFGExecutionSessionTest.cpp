@@ -150,7 +150,7 @@ std::uint64_t observedI32(const loom::sim::RetiredDFGSimulation &execution) {
 
 void incrementalExecutionMatchesRunToCompletion() {
   dataflow::CanonicalDataflowArtifact artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
 
   loom::sim::SpatialSimulationWorkload workloadDraft{launch};
@@ -204,7 +204,7 @@ void incrementalExecutionMatchesRunToCompletion() {
 
 void typedRetiredApiPreservesRetirementFailure() {
   dataflow::CanonicalDataflowArtifact artifact = nonRetiringProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
 
   loom::sim::SpatialSimulationWorkload workloadDraft{launch};

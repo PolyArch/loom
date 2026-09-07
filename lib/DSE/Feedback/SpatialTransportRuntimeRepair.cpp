@@ -114,9 +114,7 @@ executeSpatialTransportRuntimeRepair(
       ::dataflow::importCanonicalDataflow(feedback.owners->dataflow, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto tech =
       mapping::importTechMapping(feedback.owners->techMapping, artifacts);
   if (!tech)

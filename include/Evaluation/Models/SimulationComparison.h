@@ -2,6 +2,7 @@
 #define LOOM_EVALUATION_MODELS_SIMULATIONCOMPARISON_H
 
 #include "Evaluation/Evidence.h"
+#include "Simulator/SimulationExecution.h"
 
 namespace loom {
 class ArtifactStore;
@@ -15,6 +16,8 @@ struct PreparedSimulationComparisonEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
   FindingRequestOrdinal functionalMismatchFinding;
+  sim::CanonicalSimulationExecution reference;
+  sim::CanonicalSimulationExecution candidate;
 };
 
 llvm::Error registerSimulationComparisonModel();

@@ -278,7 +278,7 @@ void verifyCanonicalAttention(dataflow::CanonicalDataflowArtifact &artifact) {
   if (creates != 1 || !producer || !consumer)
     fail("canonical attention lost its unique producer/consumer channel");
 
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   loom::sim::RetiredDFGSimulation produced =
       simulateProducer(artifact, view, producer);
   if (produced.report.status != "pass" ||

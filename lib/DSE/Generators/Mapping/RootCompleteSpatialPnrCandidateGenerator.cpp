@@ -113,7 +113,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v25",
+    "loom.mapping.root_complete_spatial_pnr.generator.v30",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -137,11 +137,6 @@ CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
   }
   llvm_unreachable("unknown Spatial PnR infeasibility kind");
 }
-
-struct CachedDataflow final {
-  ::dataflow::CanonicalDataflowArtifact artifact;
-  ::dataflow::CanonicalDataflowProgramView view;
-};
 
 struct DataflowImportStatistics final {
   std::uint64_t requests = 0;
@@ -179,7 +174,7 @@ struct PreparedTechCandidate final {
   std::size_t inputOrdinal = 0;
   ArtifactRootReference reference;
   ::loom::mapping::FinalizedTechMapping tech;
-  CachedDataflow *dataflow = nullptr;
+  ::dataflow::CanonicalDataflowArtifact *dataflow = nullptr;
   ::loom::mapping::FinalizedSpatialMappingConstraintSet constraints;
   ::loom::pnr::FrozenSpatialPnrProblemHandle activeProblem;
   std::optional<::loom::pnr::SpatialCandidateInitializerPreference> preference;
@@ -212,16 +207,17 @@ void accountArray(llvm::ArrayRef<T> values, std::uint64_t &bytes,
   saturatingAdd(work, count);
 }
 
-void accountRetainedDataflow(const CachedDataflow &cached,
-                             DataflowImportStatistics &statistics) {
-  std::uint64_t bytes = sizeof(CachedDataflow);
-  std::uint64_t work = cached.artifact.canonicalBytes().bytes().size();
-  saturatingAdd(bytes, cached.artifact.canonicalBytes().bytes().size());
-  accountArray(cached.view.graphs(), bytes, work);
-  accountArray(cached.view.actors(), bytes, work);
-  accountArray(cached.view.rootThreadLaunches(), bytes, work);
-  accountArray(cached.view.staticGraphLaunches(), bytes, work);
-  accountArray(cached.view.logicalMemoryRoots(), bytes, work);
+void accountRetainedDataflow(
+    const ::dataflow::CanonicalDataflowArtifact &cached,
+    DataflowImportStatistics &statistics) {
+  std::uint64_t bytes = sizeof(::dataflow::CanonicalDataflowArtifact);
+  std::uint64_t work = cached.canonicalBytes().bytes().size();
+  saturatingAdd(bytes, cached.canonicalBytes().bytes().size());
+  accountArray(cached.view().graphs(), bytes, work);
+  accountArray(cached.view().actors(), bytes, work);
+  accountArray(cached.view().rootThreadLaunches(), bytes, work);
+  accountArray(cached.view().staticGraphLaunches(), bytes, work);
+  accountArray(cached.view().logicalMemoryRoots(), bytes, work);
   saturatingAdd(statistics.retainedBytes, bytes);
   saturatingAdd(statistics.deterministicWork, work);
 }
@@ -685,7 +681,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     ::loom::pnr::emitFabricTopologyQuality(
         *topology, ::loom::mapping_debug::Stage::SpatialPnr);
 
-  std::map<ArtifactRootReference, std::unique_ptr<CachedDataflow>,
+  std::map<ArtifactRootReference,
+           std::unique_ptr<::dataflow::CanonicalDataflowArtifact>,
            decltype(&artifactRootReferenceLess)>
       dataflowCache(&artifactRootReferenceLess);
   DataflowImportStatistics dataflowImportStatistics;
@@ -766,7 +763,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                                    CandidatePreparationOutcome &outcome) {
     const auto activeProblemBegin = std::chrono::steady_clock::now();
     auto activeProblem = ::loom::pnr::freezeSpatialPnrProblem(
-        candidate.dataflow->view, candidate.tech.view(), fabric->view(),
+        candidate.dataflow->view(), candidate.tech.view(), fabric->view(),
         *physicalTiming, *config, candidate.constraints.view(),
         &*derivedContexts);
     outcome.constructionNanoseconds = static_cast<std::uint64_t>(
@@ -941,14 +938,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           ::dataflow::importCanonicalDataflow(dataflowReference, store);
       if (!artifact)
         return artifact.takeError();
-      auto view = artifact->view();
-      if (!view)
-        return view.takeError();
-      cached = dataflowCache
-                   .emplace(dataflowReference,
-                            std::make_unique<CachedDataflow>(CachedDataflow{
-                                std::move(*artifact), std::move(*view)}))
-                   .first;
+      cached =
+          dataflowCache
+              .emplace(dataflowReference,
+                       std::make_unique<::dataflow::CanonicalDataflowArtifact>(
+                           std::move(*artifact)))
+              .first;
       ++dataflowImportStatistics.misses;
       saturatingAdd(
           dataflowImportStatistics.constructionNanoseconds,
@@ -960,14 +955,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     } else {
       ++dataflowImportStatistics.hits;
     }
-    if (cached->second->artifact.identity() != dataflowReference.artifact ||
-        cached->second->view.identity() != dataflowReference.artifact)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "root_complete_spatial_pnr_generator_invalid: cached Dataflow "
-          "identity does not match the exact TechMapping lineage");
     const ::dataflow::CanonicalDataflowProgramView &dataflow =
-        cached->second->view;
+        cached->second->view();
 
     auto constraints =
         ::loom::mapping::finalizeEmptySpatialMappingConstraintSet(
@@ -1225,6 +1214,99 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   std::vector<::dataflow::GraphRef> coveredGraphs;
   std::uint64_t attemptedTechMappings = 0;
   std::uint64_t skippedCoveredTechMappings = 0;
+  const auto generatePreparedCandidate = [&](PreparedTechCandidate &prepared,
+                                             llvm::ThreadPoolInterface *workers)
+      -> ::loom::pnr::SpatialPnrGenerationOutcome {
+    ::loom::pnr::SpatialPnrGenerationInputs generationInputs{
+        prepared.dataflow->view(),
+        prepared.tech.view(),
+        fabric->view(),
+        *physicalTiming,
+        *config,
+        prepared.constraints.view(),
+        store,
+        invocationWorkerCount,
+        invocation.executionControl(),
+        &*derivedContexts,
+        topology,
+        prepared.activeProblem,
+        false,
+        std::nullopt,
+        invocation.executionBudget()};
+    generationInputs.preparedCanonicalSeed = prepared.canonicalSeed;
+    if (workers)
+      return ::loom::pnr::generateSpatialMappings(generationInputs, *workers);
+    return ::loom::pnr::generateSpatialMappings(generationInputs);
+  };
+  const auto accountGeneratedCandidate =
+      [&](PreparedTechCandidate &prepared,
+          const ::loom::pnr::SpatialPnrGenerationOutcome &outcome)
+      -> llvm::Error {
+    ++attemptedTechMappings;
+    ++activeProblemCacheStatistics.requests;
+    ++activeProblemCacheStatistics.hits;
+    if (prepared.canonicalSeed && prepared.canonicalSeed->consumed)
+      ++activeProblemCacheStatistics.rankSeedHandoffConsumedCount;
+    const auto invocationWorkSummary = std::visit(
+        [](const auto &value) {
+          return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
+        },
+        outcome);
+    llvm::Error invocationError =
+        accumulateWorkSummary(invocationWorkSummary, workSummary);
+    llvm::Error handoffError = accountUnconsumedSeedHandoff(
+        prepared.canonicalSeed, workSummary, activeProblemCacheStatistics,
+        rankExecutionFailed);
+    return llvm::joinErrors(std::move(invocationError),
+                            std::move(handoffError));
+  };
+  // Positive memory admission calibrates a complete restart for one problem
+  // before sizing its worker set. Keep that grant exclusive to one frontier;
+  // concurrent calibration would multiply the owner's minimum-worker rule.
+  const auto memoryBudget = invocation.executionBudget().memoryBytes;
+  const bool parallelFrontiers =
+      !firstVerifiedCandidate && !(memoryBudget && *memoryBudget != 0) &&
+      invocationWorkerCount > 1 && preparedCandidates.size() > 1;
+  std::vector<std::optional<::loom::pnr::SpatialPnrGenerationOutcome>>
+      frontierOutcomes;
+  std::uint32_t sharedPoolWorkerCount = 0;
+  if (parallelFrontiers) {
+    frontierOutcomes.resize(preparedCandidates.size());
+    llvm::DefaultThreadPool workers(llvm::heavyweight_hardware_concurrency(
+        static_cast<unsigned>(invocationWorkerCount)));
+    sharedPoolWorkerCount = workers.getMaxConcurrency();
+    const auto sessionAttachment =
+        ::loom::pnr::PnrDerivedContextSession::currentAttachment();
+    llvm::ThreadPoolTaskGroup frontiers(workers);
+    const auto frontierWorkerCount =
+        std::min<std::size_t>(preparedCandidates.size(), sharedPoolWorkerCount);
+    std::atomic<std::size_t> nextFrontier{0};
+    for (std::size_t worker = 0; worker != frontierWorkerCount; ++worker)
+      frontiers.async([&, sessionAttachment] {
+        ::loom::pnr::PnrDerivedContextSession session(sessionAttachment);
+        while (true) {
+          const auto ordinal =
+              nextFrontier.fetch_add(1, std::memory_order_relaxed);
+          if (ordinal >= preparedCandidates.size())
+            break;
+          frontierOutcomes[ordinal] =
+              generatePreparedCandidate(preparedCandidates[ordinal], &workers);
+        }
+      });
+    frontiers.wait();
+    // Account every admitted frontier before reducing any terminal outcome.
+    // An early canonical error cannot erase work already executed by peers.
+    llvm::Error accountingErrors = llvm::Error::success();
+    for (std::size_t ordinal = 0; ordinal != preparedCandidates.size();
+         ++ordinal) {
+      llvm::Error error = accountGeneratedCandidate(preparedCandidates[ordinal],
+                                                    *frontierOutcomes[ordinal]);
+      accountingErrors =
+          llvm::joinErrors(std::move(accountingErrors), std::move(error));
+    }
+    if (accountingErrors)
+      return std::move(accountingErrors);
+  }
   for (std::size_t techOrdinal = 0; techOrdinal != preparedCandidates.size();
        ++techOrdinal) {
     if (firstVerifiedCandidate) {
@@ -1236,9 +1318,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     }
     PreparedTechCandidate &prepared = preparedCandidates[techOrdinal];
     const ArtifactRootReference &techReference = prepared.reference;
-    const ::dataflow::CanonicalDataflowProgramView &dataflow =
-        prepared.dataflow->view;
-    if (!hasUncoveredGraph(prepared.tech.view().covers(), coveredGraphs)) {
+    if (firstVerifiedCandidate &&
+        !hasUncoveredGraph(prepared.tech.view().covers(), coveredGraphs)) {
       ++skippedCoveredTechMappings;
       if (llvm::Error error = accountUnconsumedSeedHandoff(
               prepared.canonicalSeed, workSummary, activeProblemCacheStatistics,
@@ -1261,43 +1342,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           CandidateGeneratorIncompleteReason::SemanticLimitReached);
       break;
     }
-    ++attemptedTechMappings;
-    ++activeProblemCacheStatistics.requests;
-    ++activeProblemCacheStatistics.hits;
-
-    ::loom::pnr::SpatialPnrGenerationInputs generationInputs{
-        dataflow,
-        prepared.tech.view(),
-        fabric->view(),
-        *physicalTiming,
-        *config,
-        prepared.constraints.view(),
-        store,
-        invocationWorkerCount,
-        invocation.executionControl(),
-        &*derivedContexts,
-        topology,
-        prepared.activeProblem,
-        false,
-        std::nullopt,
-        invocation.executionBudget()};
-    generationInputs.preparedCanonicalSeed = prepared.canonicalSeed;
     ::loom::pnr::SpatialPnrGenerationOutcome outcome =
-        ::loom::pnr::generateSpatialMappings(generationInputs);
-    if (prepared.canonicalSeed && prepared.canonicalSeed->consumed)
-      ++activeProblemCacheStatistics.rankSeedHandoffConsumedCount;
-    const auto invocationWorkSummary = std::visit(
-        [](const auto &value) {
-          return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
-        },
-        outcome);
-    if (llvm::Error error =
-            accumulateWorkSummary(invocationWorkSummary, workSummary))
-      return std::move(error);
-    if (llvm::Error error = accountUnconsumedSeedHandoff(
-            prepared.canonicalSeed, workSummary, activeProblemCacheStatistics,
-            rankExecutionFailed))
-      return std::move(error);
+        parallelFrontiers ? std::move(*frontierOutcomes[techOrdinal])
+                          : generatePreparedCandidate(prepared, nullptr);
+    if (!parallelFrontiers)
+      if (llvm::Error error = accountGeneratedCandidate(prepared, outcome))
+        return std::move(error);
     if (auto *generated =
             std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
       if (auto reason = pnrGenerationIncompleteReason(generated->termination))
@@ -1313,7 +1363,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         applyOutputDemand();
       if (outputs.size() > outputCountBefore)
         addCoveredGraphs(prepared.tech.view().covers(), coveredGraphs);
-      if (!hasUncoveredGraph(candidateGraphs, coveredGraphs)) {
+      if (firstVerifiedCandidate &&
+          !hasUncoveredGraph(candidateGraphs, coveredGraphs)) {
         if (llvm::Error error = settleUnconsumedSeeds())
           return std::move(error);
         break;
@@ -1405,7 +1456,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                      std::make_move_iterator(interrupted->candidates.end()));
       rememberIncomplete(
           CandidateGeneratorIncompleteReason::CancelledOrTimeout);
-      break;
+      if (!parallelFrontiers)
+        break;
+      continue;
     }
     if (std::holds_alternative<::loom::pnr::UnsupportedSpatialPnrGeneration>(
             outcome)) {
@@ -1454,6 +1507,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         fields["input_candidate_graph_count"] = candidateGraphs.size();
         fields["covered_graph_count"] = coveredGraphs.size();
         fields["prepared_tech_mapping_count"] = preparedCandidates.size();
+        fields["parallel_frontier_execution"] = parallelFrontiers;
+        fields["invocation_worker_count"] = invocationWorkerCount;
+        fields["shared_pool_worker_count"] = sharedPoolWorkerCount;
+        fields["per_problem_memory_admission"] =
+            memoryBudget && *memoryBudget != 0;
         fields["attempted_tech_mapping_count"] = attemptedTechMappings;
         fields["skipped_covered_tech_mapping_count"] =
             skippedCoveredTechMappings;

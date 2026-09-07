@@ -363,22 +363,25 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
       return invalid("CGRA resource request selects an unknown use");
     const CgraResourceUsePlan &use =
         plan_->selectedUses[request.selectedUseOrdinal];
+    if (use.domainOrdinal != noCgraResourceDomain) {
+      if (use.domainOrdinal >= plan_->domains.size())
+        return invalid("CGRA resource request has an unknown domain");
+      if (use.requesterPosition >=
+          plan_->domains[use.domainOrdinal].requesterCount)
+        return invalid("CGRA resource request has an unknown requester");
+    }
     pending.push_back({request, use.domainOrdinal, use.requesterPosition});
   }
   if (pending.size() > 1)
     llvm::sort(pending, pendingLess);
-  for (std::size_t ordinal = 1; ordinal != pending.size(); ++ordinal)
+  for (std::size_t ordinal = 1; ordinal < pending.size(); ++ordinal)
     if (pending[ordinal - 1].request.selectedUseOrdinal ==
             pending[ordinal].request.selectedUseOrdinal &&
         pending[ordinal - 1].request.occurrenceOrdinal ==
             pending[ordinal].request.occurrenceOrdinal)
       return invalid("CGRA resource request is duplicated");
 
-  std::size_t reusableEnvelopes = 0;
-  for (std::uint32_t slot : freeEnvelopes_)
-    reusableEnvelopes +=
-        envelopes_[slot].generation < std::numeric_limits<std::uint64_t>::max();
-  if (requests.size() > reusableEnvelopes +
+  if (requests.size() > freeEnvelopes_.size() +
                             std::numeric_limits<std::uint32_t>::max() -
                             envelopes_.size())
     return invalid("CGRA claim-envelope inventory exceeds u32");
@@ -405,21 +408,24 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
           plan_->claims[use.claimOffset + offset];
       occupancy_[claim.dimensionOrdinal] += claim.amount;
     }
+    if (request.domain != noCgraResourceDomain) {
+      const CgraResourceDomainPlan &domain = plan_->domains[request.domain];
+      if (domain.policy == CgraGrantPolicyKind::RoundRobin)
+        domainCursors_[request.domain] =
+            (request.requesterPosition + 1) % domain.requesterCount;
+    }
 
     std::uint32_t slot = 0;
-    while (!freeEnvelopes_.empty()) {
+    if (!freeEnvelopes_.empty()) {
       slot = freeEnvelopes_.back();
       freeEnvelopes_.pop_back();
-      if (envelopes_[slot].generation <
-          std::numeric_limits<std::uint64_t>::max()) {
-        ++envelopes_[slot].generation;
-        envelopes_[slot].selectedUseOrdinal =
-            request.request.selectedUseOrdinal;
-        envelopes_[slot].active = true;
-        return CgraResourceGrant{request.request.selectedUseOrdinal,
-                                 request.request.occurrenceOrdinal,
-                                 {slot, envelopes_[slot].generation}};
-      }
+      ++envelopes_[slot].generation;
+      envelopes_[slot].selectedUseOrdinal =
+          request.request.selectedUseOrdinal;
+      envelopes_[slot].active = true;
+      return CgraResourceGrant{request.request.selectedUseOrdinal,
+                               request.request.occurrenceOrdinal,
+                               {slot, envelopes_[slot].generation}};
     }
     slot = static_cast<std::uint32_t>(envelopes_.size());
     envelopes_.push_back({1, request.request.selectedUseOrdinal, true});
@@ -449,15 +455,11 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
       first = last;
       continue;
     }
-    if (domainOrdinal >= plan_->domains.size())
-      return invalid("CGRA resource request has an unknown domain");
     const CgraResourceDomainPlan &domain = plan_->domains[domainOrdinal];
     llvm::SmallVector<std::size_t, 8> begins(domain.requesterCount, last);
     llvm::SmallVector<std::size_t, 8> ends(domain.requesterCount, last);
     for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
       const std::uint32_t requester = pending[ordinal].requesterPosition;
-      if (requester >= domain.requesterCount)
-        return invalid("CGRA resource request has an unknown requester");
       if (begins[requester] == last)
         begins[requester] = ordinal;
       ends[requester] = ordinal + 1;
@@ -518,7 +520,6 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
           }
           grants.push_back(acquire(request));
           ++current[requester];
-          cursor = (requester + 1) % domain.requesterCount;
           granted = true;
           break;
         }
@@ -555,8 +556,42 @@ llvm::Error CgraResourceRuntime::release(CgraClaimEnvelope envelope) {
   return llvm::Error::success();
 }
 
-std::uint32_t
-CgraResourceRuntime::occupancy(std::uint64_t dimensionOrdinal) const {
+std::vector<CgraCapacityBlocker> CgraResourceRuntime::capacityBlockers(
+    std::uint64_t selectedUseOrdinal) const {
+  std::vector<CgraCapacityBlocker> result;
+  if (selectedUseOrdinal >= plan_->selectedUses.size())
+    return result;
+  const auto &use = plan_->selectedUses[selectedUseOrdinal];
+  for (const auto &claim : llvm::ArrayRef(plan_->claims).slice(
+           use.claimOffset, use.claimCount)) {
+    const auto &dimension = plan_->dimensions[claim.dimensionOrdinal];
+    const auto occupied = occupancy_[claim.dimensionOrdinal];
+    if (claim.amount <= dimension.capacity - occupied)
+      continue;
+    const std::size_t start = result.size();
+    std::uint64_t attributed = 0;
+    for (std::uint32_t slot = 0; slot != envelopes_.size(); ++slot) {
+      const auto &envelope = envelopes_[slot];
+      if (!envelope.active)
+        continue;
+      const auto &holder = plan_->selectedUses[envelope.selectedUseOrdinal];
+      for (const auto &held : llvm::ArrayRef(plan_->claims).slice(
+               holder.claimOffset, holder.claimCount)) {
+        if (held.dimensionOrdinal != claim.dimensionOrdinal)
+          continue;
+        attributed += held.amount;
+        result.push_back({{slot, envelope.generation}, claim.dimensionOrdinal,
+                          dimension.capacity, occupied, claim.amount,
+                          held.amount});
+      }
+    }
+    if (attributed != occupied)
+      result.resize(start);
+  }
+  return result;
+}
+
+std::uint32_t CgraResourceRuntime::occupancy(std::uint64_t dimensionOrdinal) const {
   assert(dimensionOrdinal < occupancy_.size() &&
          "unknown CGRA resource dimension");
   return occupancy_[dimensionOrdinal];

@@ -34,6 +34,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/ThreadPool.h"
 
 #include <limits>
 #include <optional>
@@ -43,6 +44,44 @@
 using namespace mlir;
 
 namespace dataflow {
+namespace {
+
+// MLIR uses the installed pool as the synchronization-mode owner for type and
+// attribute uniquers. This executor has no queue or workers, so finalized
+// artifacts can be shared without silently creating one pool per artifact.
+class ReadOnlyContextExecutor final : public llvm::ThreadPoolInterface {
+public:
+  void wait() override {}
+  void wait(llvm::ThreadPoolTaskGroup &) override {}
+  unsigned getMaxConcurrency() const override { return 1; }
+
+private:
+  void asyncEnqueue(llvm::unique_function<void()> task,
+                    llvm::ThreadPoolTaskGroup *) override {
+    task();
+  }
+};
+
+llvm::ThreadPoolInterface &readOnlyContextExecutor() {
+  static ReadOnlyContextExecutor executor;
+  return executor;
+}
+
+} // namespace
+
+CanonicalDataflowArtifact::CanonicalDataflowArtifact(
+    ::loom::ArtifactIdentity identity, mlir::OwningOpRef<mlir::ModuleOp> module,
+    ::loom::CanonicalSemanticBytes bytes, CanonicalDataflowProgramView view,
+    std::unique_ptr<mlir::MLIRContext> context)
+    : identity_(identity), context_(std::move(context)),
+      module_(std::move(module)), bytes_(std::move(bytes)),
+      view_(std::move(view)) {
+  // Read-only consumers may intern types and attributes while resolving a
+  // DataLayout. Enable the owned context's uniquers without creating a nested
+  // worker pool; parsing and canonicalization remain serial.
+  context_->setThreadPool(readOnlyContextExecutor());
+}
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -187,10 +226,18 @@ finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
 llvm::Expected<FinalizedCanonicalDataflowProjection>
 finalizeCanonicalDataflowWithTrackedEntities(
     ModuleOp source, ArrayRef<Operation *> trackedStaticGraphLaunches,
-    ArrayRef<Operation *> trackedActors) {
+    ArrayRef<Operation *> trackedActors, ArrayRef<Value> trackedValues) {
   IRMapping mapping;
   OwningOpRef<ModuleOp> clone(
       cast<ModuleOp>(source.getOperation()->clone(mapping)));
+  SmallVector<Value> mappedValues;
+  mappedValues.reserve(trackedValues.size());
+  for (Value value : trackedValues) {
+    Value mapped = mapping.lookupOrNull(value);
+    if (!mapped)
+      return invalid("canonical dataflow: tracked value has the wrong owner");
+    mappedValues.push_back(mapped);
+  }
   SmallVector<Operation *> trackedLaunches;
   trackedLaunches.reserve(trackedStaticGraphLaunches.size());
   for (Operation *operation : trackedStaticGraphLaunches) {
@@ -256,6 +303,31 @@ finalizeCanonicalDataflowWithTrackedEntities(
     trackedActorOrdinals.push_back(found->second);
   }
 
+  // The parser round trip preserves operation and block order. The finalizer
+  // owns this transient ordinal correspondence just as it does for actors.
+  auto collectValues = [](ModuleOp module) {
+    SmallVector<Value> values;
+    module.walk([&](Operation *operation) {
+      for (Region &region : operation->getRegions())
+        for (Block &block : region)
+          llvm::append_range(values, block.getArguments());
+      llvm::append_range(values, operation->getResults());
+    });
+    return values;
+  };
+  auto liveValues = mappedValues.empty() ? SmallVector<Value>{}
+                                         : collectValues(clone.get());
+  llvm::DenseMap<Value, std::size_t> valueOrdinals;
+  for (auto indexed : llvm::enumerate(liveValues))
+    valueOrdinals.try_emplace(indexed.value(), indexed.index());
+  SmallVector<std::size_t> trackedValueOrdinals;
+  for (Value value : mappedValues) {
+    auto found = valueOrdinals.find(value);
+    if (found == valueOrdinals.end())
+      return invalid("canonical dataflow: tracked value is not live after pruning");
+    trackedValueOrdinals.push_back(found->second);
+  }
+
   clone->walk([&](Operation *operation) {
     operation->setLoc(UnknownLoc::get(clone.get().getContext()));
   });
@@ -293,6 +365,16 @@ finalizeCanonicalDataflowWithTrackedEntities(
           "canonical dataflow: tracked actor was lost during normalization");
     trackedActorOperations.push_back(normalizedActors[ordinal]);
   }
+
+  const auto normalizedValues = mappedValues.empty()
+                                    ? SmallVector<Value>{}
+                                    : collectValues(normalized->module.get());
+  if (!mappedValues.empty() && normalizedValues.size() != liveValues.size())
+    return invalid("canonical dataflow: parser changed tracked value cardinality");
+  std::vector<Value> normalizedTrackedValues;
+  normalizedTrackedValues.reserve(trackedValueOrdinals.size());
+  for (std::size_t ordinal : trackedValueOrdinals)
+    normalizedTrackedValues.push_back(normalizedValues[ordinal]);
 
   llvm::Expected<detail::CanonicalLabeling> labeling =
       detail::canonicalizeDataflowPresentation(normalized->module.get());
@@ -350,7 +432,8 @@ finalizeCanonicalDataflowWithTrackedEntities(
       CanonicalDataflowArtifact(identity, std::move(normalized->module),
                                 std::move(bytes), std::move(*view),
                                 std::move(normalized->context)),
-      std::move(trackedReferences), std::move(trackedActorReferences)};
+      std::move(trackedReferences), std::move(trackedActorReferences),
+      std::move(normalizedTrackedValues)};
 }
 
 //===----------------------------------------------------------------------===//

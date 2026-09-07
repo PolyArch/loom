@@ -327,7 +327,7 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
   BlobStore blobs(tree.path("blobs"));
   mlir::MLIRContext context = makeContext();
   const auto dataflowArtifact = buildLiveStateDataflow(test, context);
-  const auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto roots = deriveOrderedRoots(test, dataflow);
   deployment::test::require(test, dataflow.logicalMemoryRoots().size() == 1,
                             "replay requires one logical-memory owner");
@@ -514,7 +514,7 @@ void copiedLiveStateExecutesAtTheApplicationSafePoint() {
       buildOrderedChannelDataflow(test, context);
   const auto orderedDataflowReference = take(
       test, dataflow::publishCanonicalDataflow(orderedDataflowArtifact, artifacts));
-  const auto orderedDataflow = take(test, orderedDataflowArtifact.view());
+  const auto &orderedDataflow = orderedDataflowArtifact.view();
   const auto orderedRoots = deriveOrderedRoots(test, orderedDataflow);
   const auto orderedParentTargets = rootTargets(
       test, orderedDataflow, orderedRoots, cores[1], cores[0], cores[0]);

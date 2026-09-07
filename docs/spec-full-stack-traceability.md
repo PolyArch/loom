@@ -380,13 +380,27 @@ artifact dependency graphs, multi-object transactions, publication manifests,
 or family-specific import. An artifact family must resolve and validate its
 dependencies before asking the store to publish that family's root object.
 
+The root's lifecycle owner selects `ArtifactStore::Durability` at construction;
+copies retain that choice. `Durable` is the default and requires a durably
+provisioned root. `Transient` is restricted to invocation-owned workspaces with
+no crash-recovery contract. Roots used for recovery remain `Durable`. This
+operational choice does not change canonical bytes, schemas, or identities.
+
 The store keys objects by full `ArtifactIdentity` and retains enough framing to
-validate the exact schema and preimage. One `put` writes and validates the
-complete identity preimage in a temporary object on the same filesystem,
+validate the exact schema and preimage. In a `Durable` store, when the identity
+is absent, `put`
+writes and validates the complete identity preimage in a temporary object on
+the same filesystem,
 durably flushes its bytes, atomically inserts the final identity-derived name
 without replacement, and flushes the containing directory before reporting
 success. A reader therefore observes either no final object or one complete
 validated object, never a partial object.
+
+When the final object already exists, `put` validates its complete framing,
+digest, and exact preimage equality against the requested object, then flushes
+that inode and the containing directory before returning. It does not create
+another temporary object for identical content. A concurrent insertion follows
+the same existing-object verification and durability requirements.
 
 A successful return proves that the one object is durably published. If the
 publisher crashes or receives an I/O error before that return, it must not infer
@@ -395,6 +409,14 @@ the complete final name became visible. Recovery deterministically repeats the
 same `put` or performs a validated `get`. The resulting store state is either
 absent or the complete expected object; there is no pending, partial, or
 rollback state and no cleanup transaction.
+
+A `Transient` store retains the same complete-preimage validation, atomic
+no-replace publication, deduplication, and read contracts, but performs no
+durability flushes. Successful publication establishes visibility of the
+complete object without acknowledging persistence after a crash. The private
+`ProductWorkspace` uses this mode: product stages share its objects during the
+invocation, package publication copies the validated closure to its separate
+output tree, and workspace destruction removes the temporary store.
 
 Publishing identical content deduplicates, including concurrent publication.
 Different content at an existing valid key is an identity collision; malformed

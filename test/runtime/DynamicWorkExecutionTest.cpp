@@ -162,7 +162,7 @@ observedI32(llvm::StringRef test,
 void typedDynamicWorkGatesRemainDistinct(mlir::MLIRContext &context) {
   const llvm::StringRef test = __func__;
   auto captured = buildCapturedDynamicDataflow(test, context);
-  auto view = take(test, captured.view());
+  const auto &view = captured.view();
   loom::deployment::test::require(
       test, view.rootThreadLaunches().size() == 1,
       "captured fixture did not retain one root launch");
@@ -307,7 +307,7 @@ void dynamicWorkTraversesMappingAndJoins() {
   auto dataflow = buildDynamicDataflow(test, context);
   const auto dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
-  auto dataflowView = take(test, dataflow.view());
+  const auto &dataflowView = dataflow.view();
   loom::deployment::test::require(
       test, dataflowView.rootThreadLaunches().size() == 1,
       "DynamicWork fixture did not retain one root launch");
@@ -343,7 +343,7 @@ void dynamicWorkTraversesMappingAndJoins() {
       test, dataflow, system, {spatialMapping}, artifacts);
 
   auto graphless = buildGraphlessDynamicDataflow(test, context);
-  auto graphlessView = take(test, graphless.view());
+  const auto &graphlessView = graphless.view();
   loom::runtime::DynamicWorkCgraExecutionRequest graphlessRequest;
   graphlessRequest.dispatch.workerCount = 1;
   graphlessRequest.dispatch.queueCapacityPerWorker = 1;

@@ -8,6 +8,7 @@
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=bounded_stream_chain \
 # RUN:   --loom-operator-protocol-symbol=stream_consumer \
+# RUN:   --loom-mapping-spectrum-endpoint=max_temporal \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
 # RUN:   --deployment-package=%t.deployment --output=%t.execution \
@@ -16,7 +17,6 @@
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --spatial-invocations=2 --spatial-search-frontier \
-# RUN:   --required-dataflow-text=stream_inputs \
-# RUN:   --required-dataflow-text=stream_outputs \
+# RUN:   --mapping-inspector=loom-product-mapping-inspection-test --require-stream-pipeline \
 # RUN:   --required-dataflow-text=arith.addi \
 # RUN:   --required-dataflow-text=arith.muli

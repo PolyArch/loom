@@ -70,4 +70,5 @@ add_executable(loom-product-mapping-inspection-test
 
 target_link_libraries(loom-product-mapping-inspection-test PRIVATE
   LoomMappingInspection
+  LoomSimulator
 )

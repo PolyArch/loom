@@ -372,6 +372,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         accounting.spatialPnrJournalReplayCount;
     summary.systemPnrJournalReplayCount =
         accounting.systemPnrJournalReplayCount;
+    // This result still owns the exact selected plan execution. Controller
+    // frontier accounting must not erase its measured execution wall time.
+    summary.executionWallTimeNanoseconds =
+        execution.summary.executionWallTimeNanoseconds;
     summary.coldReopenWallTimeNanoseconds =
         accounting.coldReopenWallTimeNanoseconds;
     summary.incrementalReopenWallTimeNanoseconds =
@@ -557,20 +561,52 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return invalid("hardware reopen plan pointer is null");
     const JointDesignExplorationPlan &plan = *planPointer;
     ++attemptedSoftwarePlans;
+    std::uint64_t actionableHardwareParents = 0;
+    if (request.hardwareExplorationScope ==
+            JointHardwareExplorationScope::BoundedHardwareReopen &&
+        policy.maximumSystemFrontier() > 1) {
+      for (const FailedSoftwareAttempt &attempt : failedSoftwareAttempts) {
+        auto tech = selectTechHardwareFeedback(attempt.execution, artifacts);
+        if (!tech)
+          return tech.takeError();
+        auto spatial =
+            selectSpatialHardwareFeedback(attempt.execution, artifacts);
+        if (!spatial)
+          return spatial.takeError();
+        auto system = selectSystemHardwareFeedback(attempt.execution, artifacts);
+        if (!system)
+          return system.takeError();
+        if (*tech || *spatial || *system)
+          ++actionableHardwareParents;
+      }
+      if (request.boundedQuality) {
+        const std::uint64_t limit =
+            request.boundedQuality->maximumHardwareSpectrumParents;
+        actionableHardwareParents = std::min(
+            actionableHardwareParents,
+            limit > hardwareSpectrumParentsConsumed
+                ? limit - hardwareSpectrumParentsConsumed
+                : 0);
+      }
+    }
     std::optional<PlanExecutionPolicy> planExecutionPolicy;
-    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
-      const std::uint64_t remainingPlans = plans.size() - indexed.index();
+    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality ||
+        actionableHardwareParents != 0) {
+      std::uint64_t remainingPlans = plans.size() - indexed.index();
+      saturatingAdd(remainingPlans, actionableHardwareParents);
       auto fair =
-          fairBoundedQualityPlanPolicy(request.executionPolicy, remainingPlans);
+          fairRemainingPlanPolicy(request.executionPolicy, remainingPlans);
       if (!fair)
         return fair.takeError();
       planExecutionPolicy.emplace(std::move(*fair));
       mapping_debug::emit(
           mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
           mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-            fields["operation"] = "bounded_quality_plan_slice";
+            fields["operation"] = "software_frontier_plan_slice";
             fields["plan_ordinal"] = indexed.index();
             fields["remaining_plan_count"] = remainingPlans;
+            fields["actionable_hardware_parent_count"] =
+                actionableHardwareParents;
             if (planExecutionPolicy->dispatchNotAfterUnixNanoseconds())
               fields["dispatch_not_after_unix_ns"] =
                   *planExecutionPolicy->dispatchNotAfterUnixNanoseconds();
@@ -605,8 +641,14 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                   initial->summary.spatialPnrJournalReplayCount);
     saturatingAdd(accounting.systemPnrJournalReplayCount,
                   initial->summary.systemPnrJournalReplayCount);
-    saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
-                  initial->summary.executionWallTimeNanoseconds);
+    // A fixed frontier does not determine whether its caller is executing a
+    // cold baseline or an incremental repair. Preserve the existing owner.
+    saturatingAdd(
+        accounting.coldReopenWallTimeNanoseconds,
+        request.hardwareExplorationScope ==
+                JointHardwareExplorationScope::FixedSystemFrontier
+            ? initial->summary.coldReopenWallTimeNanoseconds
+            : initial->summary.executionWallTimeNanoseconds);
     saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                   initial->summary.incrementalReopenWallTimeNanoseconds);
     saturatingAdd(accounting.preservedTechMappings,
@@ -876,9 +918,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     std::optional<PlanExecutionPolicy> feedbackExecutionPolicy;
     std::optional<ArtifactRootReference> promotedParentSystem;
     if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
-      auto fair = fairBoundedQualityPlanPolicy(request.executionPolicy,
-                                               hardwareFeedbackFrontier.size() -
-                                                   indexedAttempt.index());
+      auto fair = fairRemainingPlanPolicy(
+          request.executionPolicy,
+          hardwareFeedbackFrontier.size() - indexedAttempt.index());
       if (!fair)
         return fair.takeError();
       feedbackExecutionPolicy.emplace(std::move(*fair));
@@ -891,12 +933,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
     }
     ++hardwareReopenSearches;
+    auto promotedTechFeedback =
+        selectTechHardwareFeedback(attempt.execution, artifacts);
+    if (!promotedTechFeedback)
+      return promotedTechFeedback.takeError();
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "hardware_feedback_promotion";
           fields["plan_ordinal"] = attempt.planOrdinal;
-          fields["tech_hall_deficit"] = attempt.techHallDeficit;
+          fields["tech_hall_deficit"] =
+              *promotedTechFeedback ? (*promotedTechFeedback)->feedback.deficit()
+                                    : 0;
           fields["accelerated_root_count"] =
               attempt.coverage.acceleratedRootCount;
           fields["graph_count"] = attempt.coverage.graphCount;
@@ -1057,7 +1105,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         promotedParentSystem =
             plans[parentPlanOrdinal]->frontier.systemFrontier.front();
       }
-      auto spectrumPolicy = fairBoundedQualityPlanPolicy(
+      auto spectrumPolicy = fairRemainingPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal);
       if (!spectrumPolicy)
         return spectrumPolicy.takeError();

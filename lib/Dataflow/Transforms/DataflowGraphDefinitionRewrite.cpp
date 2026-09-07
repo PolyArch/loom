@@ -135,12 +135,10 @@ std::string freshGraphName(mlir::ModuleOp module) {
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateGraphDefinitionRefactorDecisions(
     const CanonicalDataflowArtifact &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = parent.view();
   std::vector<DataflowRewriteDecision> decisions;
-  for (const CanonicalGraphView &graph : view->graphs()) {
-    auto callers = callersOf(*view, graph.ref);
+  for (const CanonicalGraphView &graph : view.graphs()) {
+    auto callers = callersOf(view, graph.ref);
     if (callers.size() < 2)
       continue;
     std::vector<StaticGraphLaunchId> selected{callers.front().ref.entity};
@@ -148,11 +146,11 @@ enumerateGraphDefinitionRefactorDecisions(
                               decisions);
   }
 
-  for (std::size_t lower = 0; lower != view->graphs().size(); ++lower) {
-    for (std::size_t higher = lower + 1; higher != view->graphs().size();
+  for (std::size_t lower = 0; lower != view.graphs().size(); ++lower) {
+    for (std::size_t higher = lower + 1; higher != view.graphs().size();
          ++higher) {
-      const CanonicalGraphView *first = &view->graphs()[lower];
-      const CanonicalGraphView *second = &view->graphs()[higher];
+      const CanonicalGraphView *first = &view.graphs()[lower];
+      const CanonicalGraphView *second = &view.graphs()[higher];
       if (second->ref.entity.value() < first->ref.entity.value())
         std::swap(first, second);
       if (areAlphaIsomorphic(llvm::cast<GraphOp>(first->op),
@@ -170,18 +168,16 @@ materializeGraphDefinitionRefactorProjection(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
     llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = parent.view();
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> candidate(
       mlir::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
 
   if (const auto *split = std::get_if<GraphDefinitionSplitRewrite>(&decision)) {
-    auto partition = validateSplit(*view, *split);
+    auto partition = validateSplit(view, *split);
     if (!partition)
       return partition.takeError();
-    auto sourceView = view->resolve(GraphRef{parent.identity(), split->graph});
+    auto sourceView = view.resolve(GraphRef{parent.identity(), split->graph});
     if (!sourceView)
       return sourceView.takeError();
     auto source =
@@ -209,12 +205,11 @@ materializeGraphDefinitionRefactorProjection(
   const auto *merge = std::get_if<GraphDefinitionMergeRewrite>(&decision);
   if (!merge)
     return invalid("decision is not a graph-definition variant");
-  auto lowerView =
-      view->resolve(GraphRef{parent.identity(), merge->lowerGraph});
+  auto lowerView = view.resolve(GraphRef{parent.identity(), merge->lowerGraph});
   if (!lowerView)
     return lowerView.takeError();
   auto higherView =
-      view->resolve(GraphRef{parent.identity(), merge->higherGraph});
+      view.resolve(GraphRef{parent.identity(), merge->higherGraph});
   if (!higherView)
     return higherView.takeError();
   auto lower = llvm::dyn_cast<GraphOp>(lowerView->op);
@@ -228,7 +223,7 @@ materializeGraphDefinitionRefactorProjection(
   if (!clonedLower || !clonedHigher)
     return invalid("merge graphs were not cloned");
   for (const CanonicalStaticGraphLaunchView &launch :
-       callersOf(*view, higherView->ref)) {
+       callersOf(view, higherView->ref)) {
     auto clonedLaunch =
         llvm::dyn_cast_or_null<GraphLaunchOp>(mapping.lookupOrNull(launch.op));
     if (!clonedLaunch)

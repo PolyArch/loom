@@ -207,7 +207,7 @@ void rootCompleteAdapterPublishesExactTechMapping() {
   auto dataflowArtifact = buildRootedDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflowView = take(dataflowArtifact.view());
+  const auto &dataflowView = dataflowArtifact.view();
   auto fabricRoot = buildSmallSpatialCore(store);
   const auto &fabricReference = fabricRoot.reference();
 

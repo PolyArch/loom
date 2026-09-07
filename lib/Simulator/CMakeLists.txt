@@ -1,8 +1,10 @@
 add_mlir_library(LoomSimulator
   CGRAAdmission.cpp
   CgraClosedWaitCertificate.cpp
+  CgraClosedWaitProjection.cpp
   CGRASimulator.cpp
   CgraComputeRuntime.cpp
+  CgraFabricActivityRuntime.cpp
   CgraGraphActivationRuntime.cpp
   CgraMemoryRuntime.cpp
   CgraPhysicalTraceProjection.cpp
@@ -14,6 +16,7 @@ add_mlir_library(LoomSimulator
   CgraTransportDiagnostics.cpp
   CgraTransportIngressRuntime.cpp
   CgraTransportPlanRuntime.cpp
+  CgraTransportGraph.cpp
   CgraTransportScheduling.cpp
   CgraTransportStorageRuntime.cpp
   CgraTransportTrace.cpp
@@ -44,6 +47,7 @@ add_mlir_library(LoomSimulator
   SimulationAdmission.cpp
   SimulationArtifactStore.cpp
   SimulationExecution.cpp
+  SimulationActivity.cpp
   SpatialEngineBoundaryResult.cpp
   SimulationFunctionalObservations.cpp
   SimulationInputCapture.cpp
@@ -57,6 +61,7 @@ add_mlir_library(LoomSimulator
   SimulationWorkload.cpp
   StructuredProgramSimulationRuntimeInput.cpp
   StructuredProgramSimulationWorkload.cpp
+  SystemActivity.cpp
   SystemSimulationExecution.cpp
   SystemSimulationRuntimeInput.cpp
   SystemSimulationWorkload.cpp
@@ -73,6 +78,7 @@ add_mlir_library(LoomSimulator
   LoomFabricArtifact
   LoomMappingArtifact
   LoomMappingInspection
+  LoomRuntimePlatformBinding
   MLIRLoom
   MLIRArithDialect
   MLIRDataflow
@@ -111,6 +117,7 @@ add_mlir_library(LoomNativeSimulationOracle
   SourceBackedDfgValidation.cpp
   StructuredProgramNativeChannelLifecycle.cpp
   StructuredProgramNativeExecution.cpp
+  StructuredProgramWorkloadCapture.cpp
   StructuredProgramWorkloadInstrumentation.cpp
   StructuredProgramObservations.cpp
   StructuredOwnershipProjection.cpp

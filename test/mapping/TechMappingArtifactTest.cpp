@@ -606,7 +606,7 @@ void withSpatialCandidateFixture(
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflowView = take(dataflowArtifact.view());
+  const auto &dataflowView = dataflowArtifact.view();
   loom::adg::DesignBuilder builder(store);
   auto expansion = take(loom::adg::expandBuiltinSpatialCore(
       builder, scale));
@@ -721,7 +721,7 @@ void artifactRoundTripAndReferenceValidation() {
   auto dataflowArtifact = buildDataflow(context);
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflowView = take(dataflowArtifact.view());
+  const auto &dataflowView = dataflowArtifact.view();
 
   loom::adg::DesignBuilder builder(store);
   auto expansion = take(loom::adg::expandBuiltinSpatialCore(

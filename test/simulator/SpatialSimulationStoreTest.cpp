@@ -125,7 +125,7 @@ void storedSpatialInputsRecoverTheirSoleDataflowOwner() {
   TemporaryDirectory directory;
   const loom::ArtifactStore store(directory.path());
   auto dataflow = program();
-  auto view = take(dataflow.view());
+  const auto &view = dataflow.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
 
   loom::sim::SpatialSimulationWorkload workloadDraft{launch};
@@ -149,13 +149,13 @@ void storedSpatialInputsRecoverTheirSoleDataflowOwner() {
   auto imported = take(
       loom::sim::importSpatialSimulationInputs(workloadRef, runtimeRef, store));
 
-  require(imported.dataflow.identity() == dataflowRef.artifact,
+  require(imported.dataflow->identity() == dataflowRef.artifact,
           "import recovered a different Dataflow owner");
   require(imported.workload.identity() == workload.identity(),
           "workload identity changed during strict import");
   require(imported.runtimeInput.identity() == runtime.identity(),
           "runtime-input identity changed during strict import");
-  auto importedView = take(imported.dataflow.view());
+  const auto &importedView = imported.dataflow->view();
   require(imported.workload.spatial() &&
               imported.workload.spatial()->launchRef ==
                   onlyLaunch(importedView),

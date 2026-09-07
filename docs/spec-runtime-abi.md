@@ -35,10 +35,20 @@ incompatible addition to 3.1. RuntimePlatformBinding still admits exact
 No prior-version reference is reinterpreted with a different record shape or
 accepted dependency schema.
 
+Runtime manifest 9.0 requires an exact `host_only_baseline` Deployment and its
+System workload/runtime inputs. Both execution paths use the same selected
+System and HostCore compiler binding. The baseline compiles the original linked
+source through the shared target entry ABI. Both input pairs derive through
+`materializeApplicationActivationInputs` from the same canonical source
+invocation and runtime data. Strict import rederives the baseline inputs and
+checks both roots. Packaging retains the baseline ELF and complete dependencies.
+Product-oracle admission accepts exactly the mapped or this baseline input pair
+and compares each with the same independently sealed source output.
+
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime-owned manifest or public manual-launch
 schema. The Application layer does publish the incompatible
-`loom.application.runtime_manifest 7.0` activation closure. It references one
+`loom.application.runtime_manifest 9.0` activation closure. It references one
 strictly imported StructuredProgram source workload/runtime pair, the exact
 source-backed Spatial replay cases, one completed pair decision, the selected
 SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
@@ -49,7 +59,7 @@ an incompatible extension of 5.0. The canonical set of durable
 `loom.dse.hardware_mutation_repair_record` roots produced while the pair was
 evaluated and a nullable exact selected-record root remain required. The
 exact set and selection are owned by `loom.application.activation_decision`
-2.0; construction and strict import require agreement with that owner.
+3.0; construction and strict import require agreement with that owner.
 An empty set and null selection mean that no
 hardware-mutation repair was executed or selected. These
 references authorize no new Mapping, route, entry, or input construction at
@@ -64,8 +74,12 @@ must be named; omission is invalid. Records for evaluated but nonselected
 children remain separate provenance. Every non-hardware pair disposition
 requires a null selected record.
 
-Version 7.0 adds the required nullable product contract to the 6.0 closure.
-A selected product row carries one manifest-derived contract. It
+Runtime manifest 9.0 and activation decision 3.0 admit the completed
+`verified_feasible` disposition without asserting a measured application
+speedup. They reject prior decision encodings instead of reinterpreting the
+old acceleration/benefit classifications. The required nullable product
+contract remains part of the closure. A selected product row carries one
+manifest-derived contract. It
 binds `cached_inputs_profile_output_v1`, the selected external symbol, warm-up
 and measured counts, output bytes per measured sample, the dense Deployment
 output-interface ordinal, and a Blob digest for the independently decoded
@@ -386,8 +400,8 @@ unchanged. A selected edge is committed only through
 uses graph order as policy.
 
 The joined event sequence may be published as
-`loom.application.resource_time_execution_trace` version 2.0. Version 2.0
-requires an exact `loom.application.runtime_manifest 7.0` root and is
+`loom.application.resource_time_execution_trace` version 4.0. Version 4.0
+requires an exact `loom.application.runtime_manifest 9.0` root and is
 incompatible with 1.0 rather than reinterpreting its accepted manifest
 dependency. The trace names
 its exact Application runtime manifest, retains the root event occurrence and
@@ -649,9 +663,21 @@ Mapping, route, service, or configuration. A result continues to name its
 entry by the session-local ordinal described below, rather than by the
 provider's process-wide entry index.
 
+The shared-memory service observer is a maintained native probe on a zero-delay
+CommMonitor immediately before the existing SimpleMemory. It observes successful
+request acceptance, including atomic instructions and failed store-conditionals,
+under the fixed timing-CPU/DMA transport contract. The probe integrates the exact
+native service interval, rejects overlaps, and clips the final tail to the full
+program observation window. It does not measure payload-byte throughput or change
+physical capacity. The custom gem5 build-readiness digest covers this observer.
+
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.13`. Version 13 incompatibly adds the exact
-program-value table address and entry count to the Host projection. For every
+`loom.gem5_system_projection.14`. Version 14 admits an empty executable
+session domain for the typed host-only Deployment while retaining every physical
+processor and bridge. Its memory projection carries the exact finite bandwidth
+from the bound SimpleMemory contract. The native configuration verifies that
+rate after gem5's tick conversion. The Host projection retains the exact
+program-value table address and entry count. For every
 Bridge session it records aligned
 arrays of dispatch-target ordinals, execution-context keys, and Spatial
 workload identities. These arrays are derived together from the immutable
@@ -661,7 +687,7 @@ which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
 
-Projection 13 also requires `dispatch.root_event_trace_path`, a logical target
+Projection 14 also requires `dispatch.root_event_trace_path`, a logical target
 count, and parallel endpoint offset/enable arrays. The arrays define a finite
 runtime endpoint table over the immutable dispatch records; they cannot create
 new targets. An endpoint with dispatch disabled may only be selected as a
@@ -840,6 +866,29 @@ wire encoding size. An exhausted queue returns a typed backpressure/timeout
 outcome and never overwrites an unacknowledged message. A graph stream's
 `ClosedAfterLast` observation is only the horizon of that graph activation and
 does not implicitly close the thread-level channel.
+
+A live Spatial consumer retains one DFG or CGRA execution session across its
+receive events. Its channel bindings identify live graph stream inputs; the
+immutable initial Runtime Input supplies the ordinary values and memory image.
+At the initial runnable boundary and after each committed DFG wavefront or
+CGRA event frame, the current actor-transition probe requests the next input
+event only when that exact graph input is required, its next token is not
+already in flight, and its selected physical ingress can accept it. Discovery
+precedes the next coordinate advance and does not
+wait for independent actors to become globally quiescent.
+The existing semantic queues and, for CGRA, physical graph-ingress transport
+accept each supplied token. A wait does not reconstruct the graph, repeat a
+previous firing, or reset the activation's aggregate work allowance.
+
+Each successful receive event commits independently. A later non-retirement
+cancels only a currently uncommitted reservation; it does not rewind earlier
+receive events. At consumer retirement, the session derives one canonical
+Runtime Input snapshot from the exact input-token sequence it admitted. That
+snapshot closes the consumer's observation horizon and is the input owner used
+by the engine result and standalone oracles. Neither the producer's graph
+horizon nor a fixed per-activation count determines how many messages this
+consumer receives. `OpenAfterLast` retains its ordinary complete-input meaning;
+it is not used as a placeholder for future timed arrivals.
 
 `OrderedChannelABI` is the direct in-process Runtime call boundary for that
 same sequence owner. `send` exposes the candidate `SendSeq` without advancing
@@ -1091,7 +1140,7 @@ mapped, and packaged disposition selected before runtime.
 root, exact dependency closure, ConfigurationABI and
 HardwareConfigurationImage relations, package projection, and finalization
 rules. Runtime consumes that exact Deployment and does not restate or repair
-its closure. Runtime accepts only `loom.deployment 6.0`, whose hardware
+its closure. Runtime accepts only `loom.deployment 7.0`, whose hardware
 bindings require exact `loom.runtime_platform_binding 4.0` roots. Deployment
 6.0 is incompatible with 5.1 because the accepted child descriptor changed;
 neither version is reinterpreted as the other. The finalized Deployment must
@@ -1407,14 +1456,54 @@ request, completion, interrupt, mapped boundary transfer, or deterministic
 wakeup time. The Bridge translates that event and resumes execution when the
 corresponding gem5 event or response occurs.
 
-External Spatial-engine socket readiness enters through gem5's poll queue and
-is migrated to the owning Bridge event queue before state changes. Sending a
-launch returns control to gem5; the Bridge consumes a response only when its
-socket becomes readable. A consumer waiting for a channel message therefore
-keeps its own Bridge pending without blocking another InstructionCore, Bridge,
-DMA completion, or producer launch. Blocking on a host socket inside a gem5
-device event is invalid because it creates a host-induced closed wait absent
-from both Dataflow and SystemMapping.
+The external engine protocol is `loom.gem5_spatial_bridge_abi.v6`. One
+engine session owns one connection and every physical Bridge whose ordered
+channels that engine can wake. Each causal advance carries one gem5 input,
+a strictly increasing generation, and its gem5 tick. Its response echoes both
+coordinates and contains the complete finite batch of next boundary actions,
+with at most one action per registered physical Bridge. Every message names
+its physical Bridge and invocation sequence in the outer envelope; the launch
+payload does not repeat the Bridge identity. An empty response explicitly
+acknowledges quiescence until a later gem5 input.
+
+After the required launch-descriptor DMAs, a memory acknowledgement, or a
+scheduled channel commit, the session exits the simulation loop immediately at
+that input tick. The driver obtains the complete response outside device
+event callbacks before resuming simulated time. Host computation and socket
+latency therefore cannot move the causal origin. A channel consumer that
+cannot yet run returns a quiescent response, allowing gem5 to execute the
+producer launch or DMA that can make it ready. A shared engine suspends only
+the CGRA invocation awaiting a manager-memory response; its other Bridges
+remain independently runnable. Socket silence is never treated as channel
+quiescence, and blocking on a host socket inside a gem5 device event is invalid.
+
+The Bridge schedules each action at the causal input tick plus its modeled
+local-coordinate difference. A memory request is issued from a gem5 event at
+that ready tick; a DMA callback delay cannot substitute for delaying the
+request's visibility. The following advance is anchored to the actual DMA
+acknowledgement tick, and the modeled difference is charged exactly once.
+The same scheduled channel boundary also exposes a consumer's next receive
+readiness coordinate. The provider schedules that boundary before waiting for
+message availability, so an already executed consumer prefix is not charged
+again after a producer wakes it. After its readiness acknowledgement, a receive
+commits at that causal input or the later causal input that makes its exact
+message available. Its acknowledgement immediately releases the input credit.
+Memory and receive boundaries share one invocation-local serviced coordinate,
+so their modeled differences are charged once across every retained resume.
+
+Output publications occur after gem5 acknowledges the producer's scheduled
+retirement commit. A producer blocked by channel capacity retains its
+publication cursor and resumes on a later consumer event without reexecuting
+the graph. Independent input commits permit one capacity-one channel to feed
+several receive events within one consumer activation. Mapped RTL charges its
+retirement delay before its first channel payload DMA, then publishes the
+channel header after the payload acknowledgement.
+
+Generation, routing, invocation, payload, and tick-overflow checks reject
+stale, foreign, duplicate, or malformed boundaries. The driver preserves one
+absolute simulation deadline across all causal exits; neither host waits nor
+quiescent advances reset its tick or invocation limits. Earlier Bridge wire
+versions are not accepted by this protocol.
 
 The gem5 Thread Dispatch MMIO surface carries target selection, the address and
 size of the dynamic invocation wire, per-target status/error, and the assigned

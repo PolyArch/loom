@@ -6,9 +6,11 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Evaluation/ModelParameter.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Threading.h"
 
 #include <algorithm>
 #include <mutex>
@@ -24,11 +26,15 @@ defaultCandidateWorkerCount(ExecutionResourceBudget executionBudget) {
   constexpr std::uint32_t reservedHostThreads = 4;
   constexpr std::uint32_t maximumWorkerCount = 120;
   const unsigned hardware = std::thread::hardware_concurrency();
-  const std::uint32_t defaultWorkerCount =
+  const std::uint32_t hostWorkerCount =
       hardware <= reservedHostThreads
           ? 1
           : std::min<std::uint32_t>(hardware - reservedHostThreads,
                                     maximumWorkerCount);
+  // A process may own only part of the host through CPU affinity or a cpuset.
+  // Explicit invocation grants cannot create workers beyond that allocation.
+  const std::uint32_t defaultWorkerCount = std::min<std::uint32_t>(
+      hostWorkerCount, llvm::hardware_concurrency().compute_thread_count());
   const std::optional<std::uint64_t> cpuCores = executionBudget.cpuCores;
   if (!cpuCores || *cpuCores == 0)
     return defaultWorkerCount;
@@ -138,7 +144,8 @@ llvm::Error canonicalizeLineageEdges(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     llvm::ArrayRef<CandidateGeneratorOutputBinding> outputs,
     std::vector<CandidateGeneratorLineageEdge> &edges,
-    const ArtifactStore &store) {
+    const ArtifactStore &store,
+    fabric::FabricArtifactImportSession &fabricImportSession) {
   std::vector<ArtifactRootReference> invocationInputs;
   for (const CandidateGeneratorInputBinding &binding : inputs)
     invocationInputs.insert(invocationInputs.end(), binding.artifacts.begin(),
@@ -148,7 +155,47 @@ llvm::Error canonicalizeLineageEdges(
       std::unique(invocationInputs.begin(), invocationInputs.end()),
       invocationInputs.end());
 
-  for (CandidateGeneratorLineageEdge &edge : edges) {
+  std::vector<ArtifactRootReference> produced;
+  produced.reserve(edges.size());
+  for (const CandidateGeneratorLineageEdge &edge : edges)
+    produced.push_back(edge.output);
+  llvm::sort(produced, artifactRootReferenceLess);
+  produced.erase(std::unique(produced.begin(), produced.end()), produced.end());
+
+  std::vector<ArtifactRootReference> consumed;
+  for (const CandidateGeneratorLineageEdge &edge : edges)
+    consumed.insert(consumed.end(), edge.parents.begin(), edge.parents.end());
+  llvm::sort(consumed, artifactRootReferenceLess);
+  consumed.erase(std::unique(consumed.begin(), consumed.end()), consumed.end());
+
+  const auto producedOrdinal = [&](const ArtifactRootReference &reference) {
+    auto found =
+        llvm::lower_bound(produced, reference, artifactRootReferenceLess);
+    return static_cast<std::size_t>(found - produced.begin());
+  };
+  // An outcome callback may revisit any output. Otherwise the canonical
+  // lineage bindings determine the last use of each produced root, including
+  // roots shared by multiple edges or consumed as another edge's parent.
+  std::vector<std::size_t> lastLineageUses;
+  if (!descriptor.ownerOutcome) {
+    lastLineageUses.resize(produced.size());
+    for (auto [ordinal, edge] : llvm::enumerate(edges)) {
+      lastLineageUses[producedOrdinal(edge.output)] = ordinal;
+      for (const ArtifactRootReference &parent : edge.parents)
+        if (containsReference(produced, parent))
+          lastLineageUses[producedOrdinal(parent)] = ordinal;
+    }
+  }
+  const auto releaseFinishedImport = [&](const ArtifactRootReference &root,
+                                         std::size_t ordinal) {
+    if (!lastLineageUses.empty() &&
+        !containsReference(invocationInputs, root) &&
+        containsReference(produced, root) &&
+        lastLineageUses[producedOrdinal(root)] == ordinal)
+      fabricImportSession.releaseLocalImport(root);
+  };
+
+  for (auto [ordinal, edge] : llvm::enumerate(edges)) {
     if (static_cast<std::uint32_t>(edge.kind) >
         static_cast<std::uint32_t>(
             CandidateGeneratorLineageEdgeKind::CandidateDecision))
@@ -173,6 +220,7 @@ llvm::Error canonicalizeLineageEdges(
     if (edge.kind == CandidateGeneratorLineageEdgeKind::MechanicalDerivation) {
       if (!edge.parents.empty() || !edge.ownerPayload.empty())
         return invalid("mechanical lineage edge has decision fields");
+      releaseFinishedImport(edge.output, ordinal);
       continue;
     }
     if (edge.parents.empty())
@@ -186,7 +234,9 @@ llvm::Error canonicalizeLineageEdges(
       auto stored = store.get(parent);
       if (!stored)
         return stored.takeError();
+      releaseFinishedImport(parent, ordinal);
     }
+    releaseFinishedImport(edge.output, ordinal);
   }
 
   llvm::sort(edges, lineageEdgeLess);
@@ -204,19 +254,6 @@ llvm::Error canonicalizeLineageEdges(
                   }),
       lineageTargets.end());
 
-  std::vector<ArtifactRootReference> produced;
-  produced.reserve(edges.size());
-  for (const CandidateGeneratorLineageEdge &edge : edges)
-    produced.push_back(edge.output);
-  llvm::sort(produced, artifactRootReferenceLess);
-  produced.erase(std::unique(produced.begin(), produced.end()), produced.end());
-
-  std::vector<ArtifactRootReference> consumed;
-  for (const CandidateGeneratorLineageEdge &edge : edges)
-    consumed.insert(consumed.end(), edge.parents.begin(), edge.parents.end());
-  llvm::sort(consumed, artifactRootReferenceLess);
-  consumed.erase(std::unique(consumed.begin(), consumed.end()), consumed.end());
-
   for (const CandidateGeneratorLineageEdge &edge : edges) {
     const bool isReturned = containsReference(
         outputs[edge.outputSlot.ordinal()].artifacts, edge.output);
@@ -233,11 +270,6 @@ llvm::Error canonicalizeLineageEdges(
   std::vector<std::vector<std::size_t>> successors(produced.size());
   std::vector<std::vector<std::size_t>> producers(produced.size());
   std::vector<std::size_t> indegrees(produced.size());
-  const auto producedOrdinal = [&](const ArtifactRootReference &reference) {
-    auto found =
-        llvm::lower_bound(produced, reference, artifactRootReferenceLess);
-    return static_cast<std::size_t>(found - produced.begin());
-  };
   for (std::size_t edgeOrdinal = 0; edgeOrdinal < edges.size(); ++edgeOrdinal) {
     const CandidateGeneratorLineageEdge &edge = edges[edgeOrdinal];
     const std::size_t child = producedOrdinal(edge.output);
@@ -521,7 +553,8 @@ llvm::Error validateProviderResult(
     const ResolvedCandidateGeneratorBinding &binding,
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     CandidateGeneratorProviderResult &result, const ArtifactStore &store,
-    const BlobStore &blobs) {
+    const BlobStore &blobs,
+    fabric::FabricArtifactImportSession &fabricImportSession) {
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
           binding.descriptorRef(), result.workSummary))
     return error;
@@ -547,7 +580,7 @@ llvm::Error validateProviderResult(
       return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, completed->outputBindings,
-            completed->lineageEdges, store))
+            completed->lineageEdges, store, fabricImportSession))
       return error;
     canonicalOutputs = completed->outputBindings;
     canonicalEdges = completed->lineageEdges;
@@ -585,7 +618,7 @@ llvm::Error validateProviderResult(
       return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, incomplete.retainedOutputBindings,
-            incomplete.lineageEdges, store))
+            incomplete.lineageEdges, store, fabricImportSession))
       return error;
     canonicalOutputs = incomplete.retainedOutputBindings;
     canonicalEdges = incomplete.lineageEdges;
@@ -881,6 +914,7 @@ llvm::Error validateCandidateGeneratorProviderResult(
     const ResolvedCandidateGeneratorBinding &binding,
     CandidateGeneratorProviderResult &result, const ArtifactStore &store,
     const BlobStore &blobs) {
+  fabric::FabricArtifactImportSession fabricImportSession;
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -892,7 +926,7 @@ llvm::Error validateCandidateGeneratorProviderResult(
           validateContractedInputArtifacts(*descriptor, inputs, store, blobs))
     return error;
   return validateProviderResult(*descriptor, binding, inputs, result, store,
-                                blobs);
+                                blobs, fabricImportSession);
 }
 
 llvm::Error
@@ -956,6 +990,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
     const CandidateGeneratorInvocationView &invocation) {
+  // Keep provider work and its complete result/lineage validation in one
+  // bounded import transaction, including callers without a surrounding plan.
+  fabric::FabricArtifactImportSession fabricImportSession;
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -1015,7 +1052,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(
-          *descriptor, binding, inputBindings, *result, store, blobs))
+          *descriptor, binding, inputBindings, *result, store, blobs,
+          fabricImportSession))
     return std::move(error);
   if (!outputDemands.empty()) {
     const auto &outputs = std::visit(
@@ -1078,6 +1116,7 @@ importCandidateGeneratorInvocationImpl(
     const external_tool::PreparedExternalToolInvocation &prepared,
     const external_tool::ExternalToolInvocationExecutionObservation *execution,
     const ArtifactStore &store, const BlobStore &blobs) {
+  fabric::FabricArtifactImportSession fabricImportSession;
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -1107,7 +1146,8 @@ importCandidateGeneratorInvocationImpl(
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(
-          *descriptor, binding, inputBindings, *result, store, blobs))
+          *descriptor, binding, inputBindings, *result, store, blobs,
+          fabricImportSession))
     return std::move(error);
   return result;
 }
@@ -1141,6 +1181,7 @@ static llvm::Error validateCanonicalCandidateGeneratorInvocationImpl(
     const std::optional<CandidateGeneratorInfeasibilityProof>
         &infeasibilityProof,
     const ArtifactStore &store, const BlobStore *blobs) {
+  fabric::FabricArtifactImportSession fabricImportSession;
   if (infeasibilityProof && !completed)
     return invalid("ProvenInfeasible invocation is not terminal");
   const CandidateGeneratorDescriptor *descriptor =
@@ -1181,7 +1222,8 @@ static llvm::Error validateCanonicalCandidateGeneratorInvocationImpl(
   std::vector<CandidateGeneratorLineageEdge> canonicalEdges(
       lineageEdges.begin(), lineageEdges.end());
   if (llvm::Error error = canonicalizeLineageEdges(
-          *descriptor, inputs, canonicalOutputs, canonicalEdges, store))
+          *descriptor, inputs, canonicalOutputs, canonicalEdges, store,
+          fabricImportSession))
     return error;
   if (llvm::ArrayRef(canonicalEdges) != lineageEdges)
     return invalid("invocation lineage edges are not canonical");

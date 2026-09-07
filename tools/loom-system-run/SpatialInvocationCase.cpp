@@ -252,14 +252,10 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
       loom::sim::importSpatialSimulationWorkload(cgra.workload, artifacts);
   if (!cgraWorkload)
     return cgraWorkload.takeError();
-  auto dfgDataflowView = dfgWorkload->dataflow.view();
-  if (!dfgDataflowView)
-    return dfgDataflowView.takeError();
-  auto cgraDataflowView = cgraWorkload->dataflow.view();
-  if (!cgraDataflowView)
-    return cgraDataflowView.takeError();
-  if (dfgWorkload->dataflow.identity() != dataflowReference.artifact ||
-      cgraWorkload->dataflow.identity() != dataflowReference.artifact)
+  const auto &dfgDataflowView = dfgWorkload->dataflow->view();
+  const auto &cgraDataflowView = cgraWorkload->dataflow->view();
+  if (dfgWorkload->dataflow->identity() != dataflowReference.artifact ||
+      cgraWorkload->dataflow->identity() != dataflowReference.artifact)
     return invalid("System invocation workload has a foreign Dataflow owner");
   const auto *dfgSpatialWorkload = dfgWorkload->workload.spatial();
   const auto *cgraSpatialWorkload = cgraWorkload->workload.spatial();
@@ -272,7 +268,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   if (!dfgRuntimeIdentity)
     return dfgRuntimeIdentity.takeError();
   auto dfgRuntime = loom::sim::importSimulationRuntimeInput(
-      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload, *dfgDataflowView,
+      dfg.runtimeInput.canonicalBytes, dfgWorkload->workload, dfgDataflowView,
       *dfgRuntimeIdentity);
   if (!dfgRuntime)
     return dfgRuntime.takeError();
@@ -282,7 +278,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     return cgraRuntimeIdentity.takeError();
   auto cgraRuntime = loom::sim::importSimulationRuntimeInput(
       cgra.runtimeInput.canonicalBytes, cgraWorkload->workload,
-      *cgraDataflowView, *cgraRuntimeIdentity);
+      cgraDataflowView, *cgraRuntimeIdentity);
   if (!cgraRuntime)
     return cgraRuntime.takeError();
   if (llvm::Error error =
@@ -299,7 +295,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     return invalid("System invocation runtime is not Spatial");
   auto invocationSemantics =
       sameInvocationSemantics(dfgWire, cgraWire, *dfgSpatialRuntime,
-                              *cgraSpatialRuntime, *dfgDataflowView, graph);
+                              *cgraSpatialRuntime, dfgDataflowView, graph);
   if (!invocationSemantics)
     return invocationSemantics.takeError();
   if (!*invocationSemantics)

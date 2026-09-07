@@ -270,9 +270,9 @@ additional physical capacity and replacement arcs are part of Fabric identity.
 
 The final graph must be a directed acyclic graph. A cycle is an intrinsic
 base-verifier failure, not congestion, a temporary capacity violation, a QoR
-metric, or an Evaluation finding. The diagnostic may carry a canonical sorted
-cycle witness for explanation, but that witness is not persistent semantic
-content.
+metric, or an Evaluation finding. The diagnostic may carry an ordered directed
+cycle witness over selected arcs for explanation, but that witness is not
+persistent semantic content.
 SpatialMapping checks the complete SpatialCore-local graph. SystemMapping
 requires every exact imported SpatialMapping to have passed its own gate, then
 composes the active arcs mechanically derived from those immutable mappings

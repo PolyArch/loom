@@ -67,13 +67,11 @@ projectJointSoftwareCoverage(const JointDesignExplorationPlan &plan,
       plan.frontier.softwareFrontier.front().dataflow, artifacts);
   if (!imported)
     return imported.takeError();
-  auto view = imported->view();
-  if (!view)
-    return view.takeError();
+  const auto &view = imported->view();
   return JointSoftwareCoverage{
-      static_cast<std::uint64_t>(view->rootThreadLaunches().size()),
-      static_cast<std::uint64_t>(view->graphs().size()),
-      static_cast<std::uint64_t>(view->actors().size())};
+      static_cast<std::uint64_t>(view.rootThreadLaunches().size()),
+      static_cast<std::uint64_t>(view.graphs().size()),
+      static_cast<std::uint64_t>(view.actors().size())};
 }
 
 // PlanExecutor propagates this deadline into each provider, but the joint
@@ -94,10 +92,10 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy) {
 }
 
 llvm::Expected<PlanExecutionPolicy>
-fairBoundedQualityPlanPolicy(const PlanExecutionPolicy &base,
-                             std::uint64_t remainingPlanCount) {
+fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
+                        std::uint64_t remainingPlanCount) {
   if (remainingPlanCount == 0)
-    return invalid("bounded-quality plan slice has no remaining plan");
+    return invalid("remaining-plan time slice has no remaining plan");
   const auto globalDeadline = base.dispatchNotAfterUnixNanoseconds();
   if (!globalDeadline)
     return base;
@@ -105,7 +103,7 @@ fairBoundedQualityPlanPolicy(const PlanExecutionPolicy &base,
   const auto signedNow =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
   if (signedNow <= 0)
-    return invalid("system clock cannot derive a bounded-quality plan slice");
+    return invalid("system clock cannot derive a remaining-plan time slice");
   const std::uint64_t now = static_cast<std::uint64_t>(signedNow);
   if (now >= *globalDeadline)
     return PlanExecutionPolicy::get(
@@ -113,9 +111,9 @@ fairBoundedQualityPlanPolicy(const PlanExecutionPolicy &base,
         base.resourceBindings(), base.maximumDispatches(), *globalDeadline);
   const std::uint64_t remaining = *globalDeadline - now;
   // Reserve one equal share for terminal application QoR acquisition. Each
-  // untried Mapping plan receives a fair share of the rest, so one difficult
-  // finalist cannot consume the entire invocation deadline before its
-  // siblings are dispatched. The global deadline remains the hard ceiling.
+  // untried Mapping plan or evidenced hardware parent receives a fair share
+  // of the rest. A difficult software finalist cannot consume the invocation
+  // before an actionable hardware repair. The global deadline is unchanged.
   const std::uint64_t divisor =
       remainingPlanCount == std::numeric_limits<std::uint64_t>::max()
           ? remainingPlanCount
@@ -570,9 +568,7 @@ executeTechGate(const JointDesignExplorationPlan &plan,
       ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   std::vector<::dataflow::GraphRef> requiredGraphs;
   for (const DsePlanNodeDefinition &node : plan.resolvedConfig.dse.planNodes) {
     const auto *generate = std::get_if<GeneratePlanNodeDefinition>(&node);
@@ -593,11 +589,11 @@ executeTechGate(const JointDesignExplorationPlan &plan,
       return constraints.takeError();
     for (const auto &root : constraints->view().rootThreadLaunches()) {
       llvm::Error graphError = llvm::Error::success();
-      dataflow->forEachRootedGraphLaunch(
+      dataflow.forEachRootedGraphLaunch(
           [&](::dataflow::RootedGraphLaunchRef launch) {
             if (graphError || launch.rootThreadLaunch != root)
               return;
-            auto graph = dataflow->resolve(launch);
+            auto graph = dataflow.resolve(launch);
             if (graph)
               requiredGraphs.push_back(*graph);
             else

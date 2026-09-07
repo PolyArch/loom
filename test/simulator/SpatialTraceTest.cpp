@@ -46,8 +46,8 @@ void levelsAndCanonicalKeysAreClosed() {
   SpatialDiagnosticTrace trace{TraceCaptureLevel::Microarchitecture, {}};
   ActorTransitionOccurrenceRef actor = transition(3);
   ActorResultTokenOccurrenceRef token{actor, 0, 5};
-  PhysicalActionOccurrenceRef physical{TransitionPhysicalActionParent{actor},
-                                       2};
+  PhysicalActionOccurrenceRef physical =
+      TransitionPhysicalActionOccurrenceRef{actor, 2};
   const loom::fabric::SystemTransportResourceRef resource(1);
   const loom::fabric::FabricUsePatternOwnerRef useOwner(
       loom::fabric::FabricInventoryOwnerRef::of(resource));
@@ -79,8 +79,8 @@ void levelsAndCanonicalKeysAreClosed() {
 
   SpatialTraceFrame tooDetailed{
       coordinate(8),
-      {PhysicalGrantedTraceEvent{PhysicalActionOccurrenceRef{
-          TransitionPhysicalActionParent{actor}, 0}}}};
+      {PhysicalGrantedTraceEvent{
+          TransitionPhysicalActionOccurrenceRef{actor, 0}}}};
   llvm::Error levelError =
       canonicalizeSpatialTraceFrame(tooDetailed, TraceCaptureLevel::Semantic);
   if (!levelError)
@@ -131,8 +131,7 @@ void transferProjectionPreservesAtomicPatternSet() {
   SpatialTraceFrame frame{
       coordinate(9),
       {PhysicalRequestedTraceEvent{
-          PhysicalActionOccurrenceRef{
-              TransitionPhysicalActionParent{transition(4)}, 0},
+          TransitionPhysicalActionOccurrenceRef{transition(4), 0},
           std::move(target)}}};
   if (llvm::Error error = canonicalizeSpatialTraceFrame(
           frame, TraceCaptureLevel::Microarchitecture))

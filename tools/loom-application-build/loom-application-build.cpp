@@ -56,6 +56,10 @@ llvm::cl::opt<std::uint64_t> mappingWallTimeLimitMilliseconds(
     llvm::cl::desc("cooperative pre-Mapping and Mapping wall-time limit"),
     llvm::cl::init(
         loom::application::defaultProductMappingWallTimeLimitMilliseconds));
+llvm::cl::opt<std::uint64_t> mappingReplayWavefrontLimit(
+    "mapping-replay-wavefront-limit",
+    llvm::cl::desc("positive aggregate DFG wavefront allowance for each "
+                   "source-backed functional replay"));
 llvm::cl::opt<std::string> mappingStoppingPolicy(
     "mapping-stopping-policy",
     llvm::cl::desc(
@@ -122,6 +126,9 @@ llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
                                operatorProtocolSymbols.end()),
       mappingTechCandidateLimit,
       mappingWallTimeLimitMilliseconds,
+      mappingReplayWavefrontLimit.getNumOccurrences()
+          ? std::optional<std::uint64_t>(mappingReplayWavefrontLimit.getValue())
+          : std::nullopt,
       // The Mapping-repair admission keeps the joint repair owner's default;
       // this driver exposes no option for it.
       std::nullopt,

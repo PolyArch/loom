@@ -5,3 +5,4 @@
 # CHECK: "a_star_expansions":{{[0-9]+}}{{.*}}"candidate_publications":1{{.*}}"negotiation_iterations":{{[0-9]+}}{{.*}}"publication_slots":1{{.*}}"seed_attempt_slots":4{{.*}}"statistics_kind":"spatial_pnr_invocation"
 # CHECK: "configured_worker_count":4{{.*}}"cpu_budget_cores":3{{.*}}"memory_budget_bytes":null{{.*}}"statistics_kind":"spatial_pnr_execution"{{.*}}"thread_count":3{{.*}}"worker_count":3
 # CHECK: spatial_worker_budget constrained_workers=1 parallel_workers=3 exhaustive_restart_slots=4 bounded_publications=1
+# RUN: %loom-root-complete-spatial-pnr-generator-test frontier-worker-invariance

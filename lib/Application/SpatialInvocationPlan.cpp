@@ -4,6 +4,9 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Runtime/Gem5DispatchABI.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SourceBackedDfgValidation.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -20,6 +23,106 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "application_execution_glue_invalid: " + message);
+}
+
+struct SourceBoundInvocationMemory final {
+  const sim::WorkloadBoundMemoryCapture &capture;
+  const sim::StructuredProgramSimulationRuntimeInput &runtimeInput;
+};
+
+mlir::Value stripPointerCasts(mlir::Value value) {
+  while (auto cast = value.getDefiningOp<mlir::LLVM::BitcastOp>())
+    value = cast.getArg();
+  return value;
+}
+
+llvm::Expected<std::vector<sim::OperationMemorySourceBinding>>
+deriveInvocationMemorySources(
+    const SourceBoundInvocationMemory &source,
+    dataflow::RootedGraphLaunchRef launch,
+    dataflow::ThreadLaunchOp rootLaunch, llvm::StringRef entrySymbol,
+    llvm::ArrayRef<mlir::LLVM::CallOp> path) {
+  const auto graph = llvm::find_if(source.capture.graphs,
+      [&](const sim::WorkloadBoundGraphMemory &candidate) {
+        return candidate.launch == launch;
+      });
+  if (graph == source.capture.graphs.end())
+    return invalid("source-bound invocation has no exact graph relation");
+  auto module = rootLaunch->getParentOfType<mlir::ModuleOp>();
+  auto selected = rootLaunch->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  auto entry = module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
+  if (!entry)
+    return invalid("source-bound invocation has no canonical ABI entry");
+  std::vector<sim::OperationMemorySourceBinding> result;
+  for (const sim::WorkloadBoundMemoryRoot &root : graph->roots) {
+    mlir::Value base = root.programBase;
+    std::uint64_t baseByteOffset = 0;
+    if (const auto *input =
+            std::get_if<sim::NativeInputMemoryObjectSource>(&root.source)) {
+      if (input->objectOrdinal >= source.runtimeInput.memoryObjects.size() ||
+          source.runtimeInput.memoryObjects[input->objectOrdinal].initialBytes.size() !=
+              root.byteCount)
+        return invalid("captured ABI object differs from source runtime input");
+      for (const sim::StructuredPointerBindingEntry &binding :
+           source.runtimeInput.pointerBindings) {
+        if (binding.binding.objectOrdinal != input->objectOrdinal ||
+            binding.argumentOrdinal >= entry.getNumArguments())
+          continue;
+        mlir::Value candidate = entry.getArgument(binding.argumentOrdinal);
+        mlir::LLVM::LLVMFuncOp owner = entry;
+        for (mlir::LLVM::CallOp call : path) {
+          if (call->getParentOfType<mlir::LLVM::LLVMFuncOp>() != owner ||
+              !call.getCalleeAttr()) {
+            candidate = {};
+            break;
+          }
+          auto callee = mlir::SymbolTable::lookupNearestSymbolFrom<
+              mlir::LLVM::LLVMFuncOp>(call, call.getCalleeAttr());
+          if (!callee) {
+            candidate = {};
+            break;
+          }
+          auto operand = llvm::find_if(call.getCalleeOperands(),
+              [&](mlir::Value value) {
+                return stripPointerCasts(value) == stripPointerCasts(candidate);
+              });
+          if (operand == call.getCalleeOperands().end()) {
+            candidate = {};
+            break;
+          }
+          const std::size_t ordinal =
+              std::distance(call.getCalleeOperands().begin(), operand);
+          if (ordinal >= callee.getNumArguments()) {
+            candidate = {};
+            break;
+          }
+          candidate = callee.getArgument(ordinal);
+          owner = callee;
+        }
+        if (!candidate || owner != selected)
+          continue;
+        if (!base || binding.binding.byteOffset < baseByteOffset) {
+          base = candidate;
+          baseByteOffset = binding.binding.byteOffset;
+        }
+      }
+    }
+    if (!base)
+      return llvm::createStringError(std::errc::not_supported,
+          "source-bound memory object has no live base in the invocation");
+    auto owner = base.getDefiningOp()
+                     ? base.getDefiningOp()->getParentOfType<mlir::LLVM::LLVMFuncOp>()
+                     : mlir::LLVM::LLVMFuncOp{};
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(base))
+      owner = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(
+          argument.getOwner()->getParentOp());
+    mlir::DominanceInfo dominance(selected);
+    if (owner != selected || !dominance.dominates(base, rootLaunch))
+      return llvm::createStringError(std::errc::not_supported,
+          "source-bound object base does not dominate its root invocation");
+    result.push_back({root.root, base, root.byteCount, baseByteOffset});
+  }
+  return result;
 }
 
 llvm::Expected<std::uint32_t>
@@ -114,10 +217,11 @@ ApplicationSpatialInvocationPlan::Launch::dispatchOperandOrdinal(
       std::distance(dispatchRootOperandOrdinals.begin(), found));
 }
 
-llvm::Expected<ApplicationSpatialInvocationPlan>
-deriveApplicationSpatialInvocationPlan(
+static llvm::Expected<ApplicationSpatialInvocationPlan>
+deriveApplicationSpatialInvocationPlanImpl(
     const dataflow::CanonicalDataflowProgramView &dataflow,
-    llvm::StringRef entrySymbol) {
+    llvm::StringRef entrySymbol,
+    const SourceBoundInvocationMemory *sourceBound = nullptr) {
   auto roots =
       dataflow.projectRootThreadLaunchesReachableFromAbiEntry(entrySymbol);
   if (!roots)
@@ -240,9 +344,17 @@ deriveApplicationSpatialInvocationPlan(
             return invalid("canonical invocation path contains a non-call");
           path.push_back(call);
         }
+        std::vector<sim::OperationMemorySourceBinding> memorySources;
+        if (sourceBound) {
+          auto derived = deriveInvocationMemorySources(*sourceBound, launch.graph,
+              boundary.rootLaunch, entrySymbol, path);
+          if (!derived)
+            return derived.takeError();
+          memorySources = std::move(*derived);
+        }
         auto capture = sim::deriveOperationSimulationInputCapturePlan(
             dataflow, launch.graph, boundary.rootLaunch.getBodyOperands(),
-            boundary.graphLaunch.getValueResults(), path);
+            boundary.graphLaunch.getValueResults(), path, memorySources);
         if (!capture)
           return capture.takeError();
         if (capture->invocationPath.empty())
@@ -473,6 +585,57 @@ deriveApplicationSpatialInvocationPlan(
     launches.push_back(std::move(boundary.launch));
   return ApplicationSpatialInvocationPlan{std::move(launches),
                                           std::move(callables)};
+}
+
+llvm::Expected<ApplicationSpatialInvocationPlan>
+deriveApplicationSpatialInvocationPlan(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::StringRef entrySymbol) {
+  return deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol);
+}
+
+llvm::Expected<ApplicationSpatialInvocationPlan>
+deriveApplicationSpatialInvocationPlan(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::StringRef entrySymbol, const ArtifactRootReference &selectedProgram,
+    const ArtifactRootReference &sourceWorkload,
+    const ArtifactRootReference &sourceRuntimeInput,
+    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes) {
+  auto staticPlan = deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol);
+  if (staticPlan)
+    return std::move(*staticPlan);
+  llvm::Error failure = llvm::handleErrors(staticPlan.takeError(),
+      [&](const llvm::StringError &error) -> llvm::Error {
+        if (error.convertToErrorCode() == std::errc::not_supported) {
+          return llvm::Error::success();
+        }
+        return llvm::createStringError(error.convertToErrorCode(), error.getMessage());
+      });
+  if (failure)
+    return std::move(failure);
+  auto selected = frontend::importStructuredProgram(selectedProgram, artifacts);
+  if (!selected)
+    return selected.takeError();
+  auto inputs = sim::importStructuredProgramSimulationInputs(
+      sourceWorkload, sourceRuntimeInput, artifacts);
+  if (!inputs)
+    return inputs.takeError();
+  auto view = inputs->structuredProgram.view();
+  if (!view)
+    return view.takeError();
+  auto entry = view->resolve(inputs->workload.structuredProgram()->entryRef);
+  if (!entry)
+    return entry.takeError();
+  auto callable = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entry->operation);
+  if (!callable || callable.getSymName() != entrySymbol)
+    return invalid("source-bound invocation entry differs from its workload");
+  auto capture = sim::deriveWorkloadBoundMemoryCapture(
+      *selected, dataflow, *inputs, maxRetainedCaptureBytes);
+  if (!capture)
+    return capture.takeError();
+  SourceBoundInvocationMemory source{*capture,
+                                     *inputs->runtimeInput.structuredProgram()};
+  return deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol, &source);
 }
 
 } // namespace loom::application::detail

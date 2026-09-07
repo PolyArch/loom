@@ -122,8 +122,12 @@ public:
       return error;
 
     const Deployment &root = deployment.deployment();
-    if (llvm::Error error = addSystemMapping(root.systemMapping()))
+    if (const auto *mapping = root.systemMapping()) {
+      if (llvm::Error error = addSystemMapping(*mapping))
+        return error;
+    } else if (llvm::Error error = addFabric(root.hostOnly()->fabric)) {
       return error;
+    }
     if (llvm::Error error =
             addCompilerTarget(root.hostProgram().compilerTargetBinding()))
       return error;

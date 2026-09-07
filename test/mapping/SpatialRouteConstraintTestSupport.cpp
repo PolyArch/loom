@@ -4,9 +4,11 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "PnR/RoutingNegotiation.h"
 #include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialActionExecutor.h"
 #include "PnR/SpatialCandidateInitializer.h"
+#include "PnR/SpatialRouteCostState.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
@@ -198,6 +200,189 @@ void loom::test::exerciseSpatialRouteConstraintRelations(
   }
   if (routableNets.size() < 2 || !statefulNet || !multicastNet)
     fail("fixture lacks two routes, one stateful route, and one multicast");
+
+  // A representational failure must not reject an otherwise routable binding.
+  {
+    auto resolved = buildSpatialPnrTestResolvedConfig();
+    auto &pressure = std::get<ResolvedPathFinderPolicy>(
+        resolved.dse.spatialPnr.search.routing.negotiation);
+    pressure.priceKernel = ResolvedPathFinderPriceKernel::Additive;
+    pressure.presentPressureInitial = 1;
+    pressure.presentPressureGrowth = {1, 1};
+    pressure.historyPressureIncrement = 1;
+    auto positiveProblem = take(pnr::freezeSpatialPnrProblem(
+        dataflow, techMapping, fabric,
+        take(pnr::projectResolvedSpatialPnrConfigView(resolved)),
+        unconstrained.view()));
+    auto positive = take(pnr::createCanonicalSpatialCandidate(positiveProblem));
+    pnr::SpatialActionExecutorScratch positiveExecutor;
+    requireSuccess(positiveExecutor.prepare(*positive));
+    std::optional<pnr::PnrIndex> pressuredNet;
+    pnr::RouteCost pressuredClaimCost = 0;
+    for (pnr::PnrIndex net : routableNets) {
+      auto probe = take(positiveExecutor.probe(
+          *positive, pnr::SpatialTransportRoutingAction{
+                         pnr::SpatialWholeNetRoutingAction{net}}));
+      const auto selected = selectedRouteSets(*positiveProblem, *positive, net);
+      for (pnr::PnrIndex traversal : selected.traversals) {
+        const auto &routing = positiveProblem->routing();
+        const auto &record = routing.traversals()[traversal];
+        for (pnr::PnrIndex claim : routing.traversalClaimKeys().slice(
+                 record.routeClaimOffset, record.routeClaimCount)) {
+          const auto &resource = routing.routeClaims()[claim];
+          if (resource.amount == 1 &&
+              positiveProblem->resources()
+                      .capacityDimensions()[resource.capacityDimension]
+                      .capacity == 1) {
+            pressuredNet = net;
+            pressuredClaimCost = take(pnr::normalizedRouteClaimCost(
+                resource.amount,
+                positiveProblem->resources()
+                    .capacityDimensions()[resource.capacityDimension]
+                    .capacity));
+          }
+        }
+      }
+      requireSuccess(probe.discard());
+      if (pressuredNet)
+        break;
+    }
+    if (!pressuredNet)
+      fail("routing arithmetic fixture has no routable unit-capacity claim");
+
+    // Replay every initial decision, so policy identity cannot change binding.
+    std::vector<pnr::SpatialMemoryBindingSelection> memoryBindings;
+    for (pnr::PnrIndex memory = 0;
+         memory < positiveProblem->realizations().memoryRealizations().size();
+         ++memory)
+      memoryBindings.push_back(positive->memoryBinding(memory));
+    std::vector<pnr::PnrIndex> memoryPlans;
+    for (pnr::PnrIndex actor = 0;
+         actor < positiveProblem->realizations().memoryActors().size(); ++actor)
+      memoryPlans.push_back(positive->memoryOperationPlan(actor));
+    std::vector<pnr::SpatialLogicalMemoryBindingSelection> logicalBindings;
+    for (pnr::PnrIndex binding = 0;
+         binding < positiveProblem->memory().logicalBindings().size();
+         ++binding)
+      logicalBindings.push_back(positive->logicalMemoryBinding(binding));
+    std::vector<pnr::PnrIndex> dispatches;
+    for (pnr::PnrIndex use = 0;
+         use < positiveProblem->memory().rootedUses().size(); ++use)
+      dispatches.push_back(positive->memoryUseDispatch(use));
+    std::vector<pnr::PnrIndex> exposures;
+    for (pnr::PnrIndex exposure = 0;
+         exposure < positiveProblem->memory().exposures().size(); ++exposure)
+      exposures.push_back(positive->memoryExposureSelection(exposure));
+    const pnr::SpatialCandidateInitialization initialization{
+        positive->computeBindingSelections(),
+        memoryBindings,
+        positive->portAttachmentSelections(),
+        positive->graphBoundaryAttachmentSelections(),
+        memoryPlans,
+        logicalBindings,
+        dispatches,
+        exposures,
+        positive->registerFifoTransferSelections()};
+    // An unrouted candidate has no congestion slope. The first actual use of
+    // the witnessed unit-capacity claim makes another unit claim overuse it.
+    // Derive the Additive pressure boundary from that real Q-scaled claim;
+    // the uncongested initial arc prices remain representable.
+    pressure.presentPressureInitial =
+        pnr::maxFiniteRouteCost / pressuredClaimCost;
+    requireSuccess(validateResolvedPathFinderPolicy(pressure));
+    auto overflowProblem = take(pnr::freezeSpatialPnrProblem(
+        dataflow, techMapping, fabric,
+        take(pnr::projectResolvedSpatialPnrConfigView(resolved)),
+        unconstrained.view()));
+    auto overflow = take(
+        pnr::SpatialCandidateState::create(overflowProblem, initialization));
+    pnr::SpatialActionExecutorScratch overflowExecutor;
+    requireSuccess(overflowExecutor.prepare(*overflow));
+    const auto requireRestored = [&] {
+      requireSuccess(overflow->verify());
+      requireSuccess(overflowExecutor.verifyCandidateProjection());
+      for (auto [index, binding] :
+           llvm::enumerate(initialization.computeBindings)) {
+        const auto &actual = overflow->computeBinding(index);
+        if (actual.placement != binding.placement ||
+            actual.instructionContext != binding.instructionContext)
+          fail("routing overflow changed a compute binding");
+      }
+      for (auto [index, binding] : llvm::enumerate(memoryBindings))
+        if (overflow->memoryBinding(index).placement != binding.placement)
+          fail("routing overflow changed a memory binding");
+      if (!llvm::equal(overflow->portAttachmentSelections(),
+                       initialization.portAttachments) ||
+          !llvm::equal(overflow->graphBoundaryAttachmentSelections(),
+                       initialization.graphBoundaryAttachments) ||
+          !llvm::equal(overflow->registerFifoTransferSelections(),
+                       initialization.registerFifoTransfers))
+        fail("routing overflow changed an attachment or local transfer");
+      for (auto [index, plan] : llvm::enumerate(memoryPlans))
+        if (overflow->memoryOperationPlan(index) != plan)
+          fail("routing overflow changed a memory plan");
+      for (auto [index, binding] : llvm::enumerate(logicalBindings)) {
+        const auto &actual = overflow->logicalMemoryBinding(index);
+        if (actual.target != binding.target ||
+            actual.physicalOffsetBytes != binding.physicalOffsetBytes)
+          fail("routing overflow changed a logical memory binding");
+      }
+      for (auto [index, dispatch] : llvm::enumerate(dispatches))
+        if (overflow->memoryUseDispatch(index) != dispatch)
+          fail("routing overflow changed memory dispatch");
+      for (auto [index, exposure] : llvm::enumerate(exposures))
+        if (overflow->memoryExposureSelection(index) != exposure)
+          fail("routing overflow changed memory exposure");
+      for (pnr::PnrIndex net = 0; net < producers.size(); ++net)
+        if (!overflow->routeTree(net).isUnrouted())
+          fail("routing overflow retained a provisional route");
+      for (pnr::PnrIndex capacity = 0;
+           capacity < overflowProblem->resources().capacityDimensions().size();
+           ++capacity)
+        if (overflow->routeCapacityUsageRaw(capacity) != 0)
+          fail("routing overflow retained provisional resource usage");
+      if (overflow->unroutedObligationCount() !=
+              positive->unroutedObligationCount() ||
+          overflow->totalSelectedTraversalClaim() !=
+              positive->totalSelectedTraversalClaim())
+        fail("routing overflow changed route accounting");
+    };
+    requireRestored();
+    const pnr::SpatialMappingAction action = pnr::SpatialTransportRoutingAction{
+        pnr::SpatialWholeNetRoutingAction{*pressuredNet}};
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+      auto probe = overflowExecutor.probe(*overflow, action);
+      if (probe)
+        fail("routing arithmetic fixture did not overflow");
+      bool observedOverflow = false;
+      llvm::handleAllErrors(
+          probe.takeError(), [&](const pnr::RoutingNegotiationError &error) {
+            observedOverflow =
+                error.kind() ==
+                pnr::RoutingNegotiationError::Kind::ArithmeticOverflow;
+          },
+          [&](const pnr::EndpointRouteSearchFailure &error) {
+            observedOverflow =
+                error.kind() ==
+                pnr::EndpointRouteSearchFailureKind::ArithmeticOverflow;
+          },
+          [&](const pnr::SpatialActionTransitionFailure &error) {
+            if (error.kind() ==
+                pnr::SpatialActionTransitionFailureKind::IntrinsicInvalid)
+              fail("routing arithmetic probe became IntrinsicInvalid");
+            fail("routing arithmetic probe became a transition rejection");
+          });
+      if (!observedOverflow)
+        fail("routing arithmetic failure lost its typed classification");
+      requireRestored();
+    }
+    auto positiveProbe = take(positiveExecutor.probe(*positive, action));
+    if (positive->routeTree(*pressuredNet).isUnrouted())
+      fail("representable routing policy did not route the same binding");
+    requireSuccess(positiveProbe.commit());
+    requireSuccess(positive->verify());
+    requireSuccess(positiveExecutor.verifyCandidateProjection());
+  }
 
   auto localCandidate =
       take(pnr::createCanonicalSpatialCandidate(unconstrainedProblem));

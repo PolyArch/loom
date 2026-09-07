@@ -32,10 +32,8 @@ struct FunctionalOutcome final {
 inline llvm::Expected<FunctionalOutcome>
 simulateGraph(const CanonicalDataflowArtifact &artifact, GraphRef graphRef,
               llvm::ArrayRef<loom::sim::DFGRuntimeArg> args = {}) {
-  auto view = artifact.view();
-  if (!view)
-    return view.takeError();
-  auto graph = view->resolve(graphRef);
+  const auto &view = artifact.view();
+  auto graph = view.resolve(graphRef);
   if (!graph)
     return graph.takeError();
   loom::sim::DFGSimulationOptions options;
@@ -53,14 +51,12 @@ simulateGraph(const CanonicalDataflowArtifact &artifact, GraphRef graphRef,
 inline llvm::Expected<FunctionalOutcome>
 simulateOnlyGraph(const CanonicalDataflowArtifact &artifact,
                   llvm::ArrayRef<loom::sim::DFGRuntimeArg> args = {}) {
-  auto view = artifact.view();
-  if (!view)
-    return view.takeError();
-  if (view->graphs().size() != 1)
+  const auto &view = artifact.view();
+  if (view.graphs().size() != 1)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "rewrite differential fixture does not contain exactly one graph");
-  return simulateGraph(artifact, view->graphs().front().ref, args);
+  return simulateGraph(artifact, view.graphs().front().ref, args);
 }
 
 } // namespace dataflow::test

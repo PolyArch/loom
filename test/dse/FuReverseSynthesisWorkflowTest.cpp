@@ -439,7 +439,7 @@ int main(int argc, char **argv) {
       blobs, tree);
   auto importedDeployment = take(loom::deployment::importDeployment(
       deployment.reference(), replayStore, replayBlobs));
-  require(importedDeployment.deployment().systemMapping() ==
+  require(*importedDeployment.deployment().systemMapping() ==
               systemMapping.reference(),
           "Deployment selected another SystemMapping");
   require(!importedDeployment.deployment().hardwareBindings().empty(),

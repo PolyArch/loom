@@ -141,10 +141,8 @@ std::optional<TreeAnalysis> analyzeCanonicalTree(SyncOp root) {
 
 llvm::Expected<CanonicalActorView>
 resolveRoot(const CanonicalDataflowArtifact &parent, ActorId root) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto resolved = view->resolve(ActorRef{parent.identity(), root});
+  const auto &view = parent.view();
+  auto resolved = view.resolve(ActorRef{parent.identity(), root});
   if (!resolved)
     return resolved.takeError();
   if (!llvm::isa<SyncOp>(resolved->op))
@@ -156,12 +154,10 @@ resolveRoot(const CanonicalDataflowArtifact &parent, ActorId root) {
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateSyncRendezvousDecisions(const CanonicalDataflowArtifact &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = parent.view();
   llvm::DenseSet<mlir::Operation *> canonicalTreeRoots;
   llvm::DenseSet<mlir::Operation *> nonMaximalTreeRoots;
-  for (const CanonicalActorView &actor : view->actors()) {
+  for (const CanonicalActorView &actor : view.actors()) {
     auto sync = llvm::dyn_cast<SyncOp>(actor.op);
     if (!sync)
       continue;
@@ -174,7 +170,7 @@ enumerateSyncRendezvousDecisions(const CanonicalDataflowArtifact &parent) {
   }
 
   std::vector<DataflowRewriteDecision> decisions;
-  for (const CanonicalActorView &actor : view->actors()) {
+  for (const CanonicalActorView &actor : view.actors()) {
     auto sync = llvm::dyn_cast<SyncOp>(actor.op);
     if (!sync)
       continue;

@@ -97,6 +97,15 @@ struct CgraResourceGrant final {
   CgraClaimEnvelope claimEnvelope;
 };
 
+struct CgraCapacityBlocker final {
+  CgraClaimEnvelope holder;
+  std::uint64_t dimensionOrdinal = 0;
+  std::uint32_t capacity = 0;
+  std::uint32_t occupancy = 0;
+  std::uint32_t requestedAmount = 0;
+  std::uint32_t heldAmount = 0;
+};
+
 /// Execution-local temporary-capacity and arbitration state. Durable resource
 /// transitions remain owned by typed concrete-resource providers.
 class CgraResourceRuntime final {
@@ -108,6 +117,11 @@ public:
                     llvm::SmallVectorImpl<CgraResourceGrant> &grants);
 
   llvm::Error release(CgraClaimEnvelope envelope);
+
+  /// Exact active envelope holders of blocked capacity dimensions. A
+  /// dimension with unattributed initial occupancy supplies no proof edges.
+  std::vector<CgraCapacityBlocker>
+  capacityBlockers(std::uint64_t selectedUseOrdinal) const;
 
   std::uint32_t occupancy(std::uint64_t dimensionOrdinal) const;
 
@@ -125,6 +139,7 @@ private:
   std::vector<std::uint32_t> occupancy_;
   std::vector<std::uint32_t> domainCursors_;
   std::vector<EnvelopeSlot> envelopes_;
+  /// Released slots whose generation can still be advanced on reuse.
   std::vector<std::uint32_t> freeEnvelopes_;
 };
 

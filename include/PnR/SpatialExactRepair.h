@@ -70,7 +70,11 @@ public:
          /// frozen clause instead of allowing an unrelated static witness to
          /// take precedence.
          std::optional<PnrIndex> runtimeCounterexampleClause = std::nullopt,
-         ExecutionControlView executionControl = {});
+         ExecutionControlView executionControl = {},
+         /// Search ordering only: exact current frozen binding decisions
+         /// selected by the runtime certificate's Mapping-owned actions.
+         /// Other finite owner regions remain in the search domain.
+         llvm::ArrayRef<PnrIndex> preferredRuntimeBindingDecisions = {});
 
   std::size_t retainedStorageBytes() const;
 
@@ -83,12 +87,14 @@ private:
                          std::uint64_t restartOrdinal,
                          std::uint64_t solverCallLimit,
                          DeterministicPnrRandomStream &exactRepairStream,
-                         std::optional<PnrIndex> runtimeCounterexampleClause);
+                         std::optional<PnrIndex> runtimeCounterexampleClause,
+                         llvm::ArrayRef<PnrIndex> preferredBindingDecisions = {});
 
   llvm::Expected<SpatialExactRepairResult> repairTransportClosureRegion(
       SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
       std::uint64_t solverCallLimit, std::int32_t solverSeed,
       llvm::ArrayRef<SpatialFixedTerminalCutCertificate> certificates,
+      std::vector<PnrIndex> &handshakeCycleNets,
       bool &requiresRegionExpansion,
       const detail::SpatialRuntimeCounterexampleBreaker *runtimeBreaker =
           nullptr);

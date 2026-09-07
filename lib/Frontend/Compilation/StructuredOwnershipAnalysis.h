@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace loom::frontend::detail {
 
@@ -41,8 +42,8 @@ deriveCallableSpatialSlice(mlir::LLVM::LLVMFuncOp function,
                            const CallableOwnershipBoundary &boundary);
 
 std::optional<std::string>
-explainUnboundMemoryService(llvm::ArrayRef<mlir::Operation *> selectedBody,
-                            llvm::ArrayRef<mlir::Value> liveIns);
+completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
+                              std::vector<mlir::Value> &liveIns);
 
 } // namespace loom::frontend::detail
 

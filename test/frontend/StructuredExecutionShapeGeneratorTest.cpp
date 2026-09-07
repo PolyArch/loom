@@ -300,7 +300,7 @@ void selectedShapesRemainNativeObservable() {
           std::move(owned), {loom::raising::FMulAddExecutionShape::Fused}));
   auto candidate = take(loom::frontend::finalizeSpatialOwnershipCandidate(
       std::move(shaped), design.roots().front()));
-  auto view = take(candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
   auto plan = take(loom::sim::deriveSimulationInputCapturePlan(
       view, launch,

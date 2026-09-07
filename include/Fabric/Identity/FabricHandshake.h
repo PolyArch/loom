@@ -491,6 +491,12 @@ public:
 
   void prepare(std::size_t crosspointCapacity);
   bool activates(const FabricSwitchHandshakeContentionRelation &relation) const;
+  /// Whether a selected crosspoint belongs to the component of an active
+  /// relation. Repair dependency closure needs the complete selected
+  /// component; removing one member need not disable the relation.
+  bool selectedCrosspointInRelationComponent(
+      const FabricSwitchHandshakeContentionRelation &relation,
+      const FabricSwitchSelectedCrosspoint &crosspoint) const;
   std::size_t retainedStorageBytes() const;
 
 private:

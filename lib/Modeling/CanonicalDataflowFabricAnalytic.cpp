@@ -115,11 +115,9 @@ const EvaluationModelDescriptor kModelDescriptor{
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>>
 estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,
                 const fabric::FinalizedFabricRoot &fabricRoot) {
-  auto view = program.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = program.view();
 
-  auto pressure = detail::projectCanonicalDataflowWorkload(*view, fabricRoot);
+  auto pressure = detail::projectCanonicalDataflowWorkload(view, fabricRoot);
   if (!pressure)
     return pressure.takeError();
   if (!*pressure)

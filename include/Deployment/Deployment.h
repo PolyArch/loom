@@ -14,6 +14,7 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <variant>
 
 namespace loom {
 class ArtifactStore;
@@ -28,7 +29,7 @@ struct DerivedRuntimeImages;
 } // namespace detail
 
 inline constexpr ArtifactSchemaDescriptor deploymentSchema{"loom.deployment",
-                                                           SchemaVersion{6, 0}};
+                                                           SchemaVersion{7, 0}};
 inline constexpr ArtifactSchemaDescriptor threadDispatchImageSchema{
     "loom.thread_dispatch_image", SchemaVersion{1, 0}};
 inline constexpr ArtifactSchemaDescriptor spatialLaunchImageSchema{
@@ -90,22 +91,33 @@ private:
   friend struct detail::DerivedRuntimeImages;
 };
 
+/// A source executable on the same complete Fabric System, with no accelerator
+/// launches or Mapping. The HostProgramLeaf remains the executable owner.
+struct HostOnlyDeploymentRoot final {
+  ArtifactRootReference fabric;
+};
+
+/// The reference alternative names an exact SystemMapping; the host-only
+/// alternative names the exact Fabric System directly.
+using DeploymentExecutionRoot =
+    std::variant<ArtifactRootReference, HostOnlyDeploymentRoot>;
+
 struct DeploymentDraft final {
-  ArtifactRootReference systemMapping;
+  DeploymentExecutionRoot executionRoot;
   HostProgramLeaf hostProgram;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
   std::vector<DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> configurationImages;
   std::vector<StaticMemoryImageLeaf> staticMemoryImages;
-  CanonicalSemanticBytes threadDispatchImage;
+  std::optional<CanonicalSemanticBytes> threadDispatchImage;
   std::optional<CanonicalSemanticBytes> spatialLaunchImage;
-  CanonicalSemanticBytes admissionImage;
+  std::optional<CanonicalSemanticBytes> admissionImage;
 };
 
 /// Inputs whose selection belongs upstream of Deployment. Configuration
 /// images and runtime-image children are derived mechanically by the owner.
 struct ExactDeploymentInputs final {
-  ArtifactRootReference systemMapping;
+  DeploymentExecutionRoot executionRoot;
   HostProgramLeaf hostProgram;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
   std::vector<DeploymentHardwareBinding> hardwareBindings;
@@ -114,7 +126,13 @@ struct ExactDeploymentInputs final {
 
 class Deployment final {
 public:
-  const ArtifactRootReference &systemMapping() const { return systemMapping_; }
+  const DeploymentExecutionRoot &executionRoot() const { return executionRoot_; }
+  const ArtifactRootReference *systemMapping() const {
+    return std::get_if<ArtifactRootReference>(&executionRoot_);
+  }
+  const HostOnlyDeploymentRoot *hostOnly() const {
+    return std::get_if<HostOnlyDeploymentRoot>(&executionRoot_);
+  }
   const HostProgramLeaf &hostProgram() const { return hostProgram_; }
   llvm::ArrayRef<ArtifactRootReference> instructionCoreBinaries() const {
     return instructionCoreBinaries_;
@@ -128,24 +146,24 @@ public:
   llvm::ArrayRef<StaticMemoryImageLeaf> staticMemoryImages() const {
     return staticMemoryImages_;
   }
-  const InlineRuntimeImage &threadDispatchImage() const {
+  const std::optional<InlineRuntimeImage> &threadDispatchImage() const {
     return threadDispatchImage_;
   }
   const std::optional<InlineRuntimeImage> &spatialLaunchImage() const {
     return spatialLaunchImage_;
   }
-  const InlineRuntimeImage &admissionImage() const { return admissionImage_; }
+  const std::optional<InlineRuntimeImage> &admissionImage() const { return admissionImage_; }
 
 private:
-  Deployment(ArtifactRootReference systemMapping, HostProgramLeaf hostProgram,
+  Deployment(DeploymentExecutionRoot executionRoot, HostProgramLeaf hostProgram,
              std::vector<ArtifactRootReference> instructionCoreBinaries,
              std::vector<DeploymentHardwareBinding> hardwareBindings,
              std::vector<ArtifactRootReference> configurationImages,
              std::vector<StaticMemoryImageLeaf> staticMemoryImages,
-             InlineRuntimeImage threadDispatchImage,
+             std::optional<InlineRuntimeImage> threadDispatchImage,
              std::optional<InlineRuntimeImage> spatialLaunchImage,
-             InlineRuntimeImage admissionImage)
-      : systemMapping_(std::move(systemMapping)),
+             std::optional<InlineRuntimeImage> admissionImage)
+      : executionRoot_(std::move(executionRoot)),
         hostProgram_(std::move(hostProgram)),
         instructionCoreBinaries_(std::move(instructionCoreBinaries)),
         hardwareBindings_(std::move(hardwareBindings)),
@@ -155,15 +173,15 @@ private:
         spatialLaunchImage_(std::move(spatialLaunchImage)),
         admissionImage_(std::move(admissionImage)) {}
 
-  ArtifactRootReference systemMapping_;
+  DeploymentExecutionRoot executionRoot_;
   HostProgramLeaf hostProgram_;
   std::vector<ArtifactRootReference> instructionCoreBinaries_;
   std::vector<DeploymentHardwareBinding> hardwareBindings_;
   std::vector<ArtifactRootReference> configurationImages_;
   std::vector<StaticMemoryImageLeaf> staticMemoryImages_;
-  InlineRuntimeImage threadDispatchImage_;
+  std::optional<InlineRuntimeImage> threadDispatchImage_;
   std::optional<InlineRuntimeImage> spatialLaunchImage_;
-  InlineRuntimeImage admissionImage_;
+  std::optional<InlineRuntimeImage> admissionImage_;
 
   friend class detail::DeploymentCodecAccess;
 };
@@ -190,6 +208,10 @@ private:
 
   friend class detail::DeploymentCodecAccess;
 };
+
+/// Resolves the single Fabric owner of either execution root.
+llvm::Expected<ArtifactRootReference>
+deploymentFabric(const Deployment &deployment, const ArtifactStore &artifacts);
 
 llvm::Expected<FinalizedDeployment>
 finalizeDeployment(DeploymentDraft draft, const ArtifactStore &artifacts,

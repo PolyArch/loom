@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.6
+  loom.spatial_pnr.config.15.10
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.4
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -170,9 +170,18 @@ preserves the live `planned > consumed` suffix in the typed outcome. A typed
 negative outcome produced after that boundary completes consumes the slot. A
 normal `ExhaustConfiguredWork` return consumes every configured restart and
 every admitted nested slot, so every public work-summary row has
-`planned == consumed`. `FirstVerifiedCandidate` remains an explicitly
-incomplete bounded prefix; restart slots beyond that executed prefix remain
-configuration capacity rather than being fabricated as planned work.
+`planned == consumed`. `FirstVerifiedCandidate` selects an explicitly
+incomplete canonical result prefix. Every actually executed speculative slot
+also retains its complete planned and consumed work; result selection cannot
+refund work. Slots never admitted by an atomic owner remain configuration
+capacity rather than being fabricated as planned work.
+
+System invocation statistics are emitted once from the checked terminal
+`SystemPnrGenerationOutcome`, including model-freeze failures before search
+admission. The row carries the outcome's accounting and, for proven
+infeasibility, its typed proof kind. Frozen-context and frozen-problem proofs
+therefore publish zero candidates and zero planned or consumed semantic work;
+they still count as provider invocations in the aggregate DSE ledger.
 
 The invocation-local `ExecutionControlView` combines the DSE journal's
 graceful-stop state with its absolute dispatch deadline. Tech, Spatial, and
@@ -191,9 +200,16 @@ constructing that payload.
 
 The Spatial provider allocates exactly `seed_attempt_count` isolated restart
 slots. Slots may execute in parallel, but their results are reduced by original
-restart ordinal.
+restart ordinal. An uncapped completed candidate passes independent Mapping
+finalization and progress admission on its existing worker before waiting for
+unfinished peers. A publication cap admits only the first canonical candidate
+restarts once all earlier slot outcomes are known. A finalized restart retains
+its Artifact reference and compact objective/violation summary and releases its
+mutable candidate; unfinished state remains available to diagnostics and
+hardware feedback. An interruption retains every already admitted finalized
+reference while preserving the configured work that has not completed.
 
-`ExhaustConfiguredWork` bounds parallel restart workers by the configured
+Both completion goals bound parallel restart workers by the configured
 candidate-worker request, restart count, active RouteGraph unit count, the
 admitted CPU claim, and the admitted memory reservation. A missing or zero
 resource dimension is unconstrained. The active RouteGraph unit count is the
@@ -209,11 +225,37 @@ the normal candidate verification. A failed transferred seed retains its typed
 failure and is classified by the formal restart owner without a cold retry.
 Root active-problem diagnostics report both prepared and consumed handoff
 counts so this transfer remains independently auditable.
-`FirstVerifiedCandidate` remains a serial bounded-prefix execution. A plan
-publication bound is applied only after the exhaustive restart sequence and
-cannot reduce, serialize, or reclassify its configured work. Worker allocation
-and host-process observations are diagnostic only and cannot change restart
-streams, ordinal reduction, candidate identity, or formal work accounting.
+`FirstVerifiedCandidate` executes bounded waves through this same worker
+allocation and invocation pool. A wave contains at most the admitted worker
+count; the owner joins it before admitting another wave. Isolated search may
+finish out of order, but Mapping finalization, progress admission, and result
+publication run only in the canonical ordinal reducer. The least ordinal with
+an independently finalized Mapping closes the result prefix after every earlier
+slot is terminal. Candidate disposition without established progress is not a
+verified result. A global infeasibility result also closes the prefix. The
+memory-calibration restart uses this same reducer and is never executed twice.
+A positive memory grant can therefore spend its deadline in restart zero before
+any parallel wave is admissible; the reservation is not relaxed to bypass that
+limit.
+
+After prefix closure, no later wave is admitted. Already started later slots
+observe a composed execution query at their existing atomic boundaries; it
+preserves the invocation deadline and remaining time and additionally stops
+ordinals outside the selected prefix. Every submitted task is joined. Result
+classification and interruption residual selection use the canonical result
+prefix, while work accounting and original typed restart diagnostics include
+all executed slots. Diagnostics identify whether each restart contributes to
+the result. A suffix cancellation or Internal diagnostic cannot replace the
+prefix result; neither is erased or rewritten as infeasibility. Accounting
+failure remains globally fatal. A global infeasibility claim contradicted by
+any candidate restart remains globally Internal, including speculative work.
+The original invocation stop and deadline still produce a typed interruption.
+
+A plan publication bound remains independent of exhaustive restart execution
+and cannot reduce, serialize, or reclassify its configured work. The existing
+publication admission count is unchanged. Worker allocation and host-process
+observations cannot change restart streams or candidate identity; scheduling
+and speculative cancellation affect actual work, which is recorded in full.
 
 Each slot executes:
 
@@ -293,6 +335,57 @@ endpoint router receives. The router scans a request's cost arrays itself only
 when a revision is absent, stale, or uncertified, so the validation happens
 once per write instead of once per query without weakening it.
 
+A budget failure retains its typed termination reason and may carry the
+current cycle as additional evidence; exact repair retains its existing
+`Unknown` outcome for exhausted route work.
+
+An exact regional probe closes the routing dependencies of its provisional
+selection before rejecting the assignment. Capacity and tag conflicts add
+their active contributors; a selected handshake cycle adds the routes that
+activate its witnessed fragments. For switch contention, those routes include
+the complete selected crosspoint component supplied by the Fabric owner,
+including members whose own traversal fragments do not intersect the cycle.
+Each expansion uses the existing logical-net bound and relation closure, then
+retries within the same negotiation budget. Expanding on the final iteration
+returns typed `NonClosure` and consumes that completed iteration once. These
+routes define repair freedom, not a proof that each member independently
+causes the cycle or that every route under the assignment is illegal.
+
+A cyclic exact regional sweep with route-capacity overuse first checks the
+fixed-terminal capacity certificate. Its mandatory-use proof follows the
+canonical frozen reachability graph without traversal omissions; a certified
+deficit rejects those fixed terminals before any handshake reroute trial.
+Changing routes alone cannot repair that certificate.
+
+After an exact regional sweep without such a certificate, the provider closes
+the witnessed routing region before choosing a traversal to omit. Each trial reroutes all current
+RouteTree users of that traversal together, in frozen traversal order. It
+releases the whole group before routing any member and preserves each
+caller-supplied route cut. Every trial restores the same baseline before the
+next group is evaluated. Complete trials with compatible terminals are ranked
+by the existing Mapping objective's selected rank; equal ranks retain the
+earlier frozen traversal. Only the best trial's captured routes are installed,
+without rerunning endpoint search, and its traversal is added to the
+invocation-local omission set. A trial need not improve the baseline rank:
+several exclusions may be required before a selected cycle disappears. Every
+subsequent ordinary or trial route respects this set, so later trials cannot
+restore an earlier route configuration. The full provisional oracle supplies
+any remaining cycle for the next negotiation iteration; only ordinary
+capacity, handshake, and Mapping closure permit success.
+
+Each trial restores the group's routes through the existing projection owner
+and checks the original objective and Mapping facts. Installing the selected
+capture uses that same owner and checks its selected objective and Mapping
+facts. The caller and route costs consume the actual reconstructed tag summary
+and cycle witness, rather than saved trial projections of those details.
+Each witnessed traversal group is tried at most once per iteration;
+selection introduces no additional search budget or recursive trial domain. Retained cyclic
+trials still consume the ordinary iteration and no-progress budgets. All
+trials consume the existing endpoint-work bounds and observe execution stops
+between net routes. An unreachable ordinary route under retained omissions
+returns typed `NonClosure`, since these temporary search restrictions do not
+prove the binding assignment infeasible.
+
 The negotiated router observes the invocation-local `ExecutionControlView`
 between its atomic work units only: before each negotiation iteration and
 between the net routes of one iteration, never inside an endpoint A* search.
@@ -311,13 +404,17 @@ pinned OR-Tools v9.15 source commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`.
 
 Every canonical solve runs with presolve probing disabled and under a fixed
-deterministic-time budget of 2.0. Probing computes failed-literal information
-the canonical `FIXED_SEARCH` strategy never consumes, and the budget is an
-instruction-count clock, so the same model and seed exhaust it identically on
-every host. A budget-exhausted solve is the existing typed `Unknown` outcome:
-the repair remains incomplete and can never prove infeasibility or consume the
-invocation deadline. These solver constants are part of the versioned config
-descriptors above; changing them is a formal search-order change.
+deterministic-time budget of 2.0. The initial mutation-count proof orders its
+objective and the Boolean terms that define it before canonical physical
+choices; canonical mixed-radix extraction restores typed decision-key order
+after fixing the proven objective. The budget is an instruction-count clock,
+so the same model, priority order, and seed exhaust it identically on every
+host. The canonical protocol distinguishes solver-call exhaustion,
+CP-SAT `UNKNOWN`, and `FEASIBLE` without the required optimality proof. All
+three leave repair incomplete and cannot prove infeasibility. The per-call
+limit bounds one solver invocation independently of the remaining solver-call
+budget. These solver constants are part of the versioned config descriptors
+above; changing them is a formal search-order change.
 
 There are two actual repair profiles:
 
@@ -342,8 +439,17 @@ A candidate-local witness that has no complete typed encoding returns
 `UnsupportedEncoding`, including a route-progress dependency violation without
 a finite-buffer owner witness. This runtime result remains incomplete and
 cannot prove infeasibility. Region overflow returns `RegionTooLarge`;
-solver-call exhaustion or any non-proof-bearing status returns
-`UnknownBudgetExhausted`.
+solver-call exhaustion or any non-proof-bearing status returns the public
+`UnknownBudgetExhausted` result. That coarse result does not assert that
+`max_solver_calls` was consumed. The canonical protocol preserves the distinct
+typed causes `SolverCallLimitReached`, `SolverUnknown`, and
+`FeasibleWithoutOptimalityProof`. Summary diagnostics record the proof phase,
+actual and logical solver-call counts, the last CP-SAT status, and observed
+deterministic work and solver time. The enclosing transport repair also
+records its cumulative actual and logical calls against its own call limit.
+Incomplete solves include the final response's branch, conflict, and
+propagation counts and solution information. These retain the work reported
+by the solver before termination, including whether it performed branching.
 
 The result vocabulary is:
 
@@ -363,10 +469,17 @@ complete invocation domain.
 
 Each repair invocation consumes one word from its exact-repair stream. The low
 31 bits seed a one-worker CP-SAT run. Search is fixed, randomized search and
-LNS are disabled, presolve remains enabled, and no solver wall-time or
-deterministic-time limit replaces Loom's solver-call budget. Canonical
-mixed-radix extraction fixes optimum values in typed decision-key order and
-splits blocks before any signed-integer safety limit.
+LNS are disabled, and presolve remains enabled. Each solver call uses the
+versioned deterministic-time limit above; no solver wall-time limit replaces
+Loom's solver-call budget. The mutation-count optimum and each canonical
+mixed-radix optimum must be proven before extraction fixes values in typed
+decision-key order. Blocks split before any signed-integer safety limit.
+The initial optimum's complete feasible assignment seeds canonical solves as
+a solution hint. Each proven block refreshes that hint after fixing its
+prefix; a feasible but unproven block may refresh the hint when it is split.
+Hints preserve an incumbent across solver restarts and never fix decisions or
+replace the required optimality proofs. All retries retain the same per-call
+deterministic-time and invocation solver-call bounds.
 
 Transport repair first tests the current exact assignment. Failed route probes
 add an invocation-local search no-good over the complete observed placement,
@@ -376,9 +489,13 @@ certificate excludes only assignments for which its separating capacity proof
 remains valid. Certificate growth is monotonic inside one invocation and
 cannot become persistent Mapping state. A successful probe that realizes its
 assignment, removes the primary witness, and preserves atomic capacity is legal
-even when its selected objective rank does not improve. Objective preference
-cannot turn that legal assignment into a hard no-good; the cold closure and
-verifier remain the legality gates.
+when its affected region closes. If unrelated transport witnesses remain, the
+probe must strictly improve the global selected objective rank without adding
+hard progress violations or proof debt. Repair and global closure can then
+compose independent regional improvements. A complete transport closure is
+legal even when its selected objective rank does not improve. Objective
+preference cannot turn that complete legal assignment into a hard no-good;
+the cold global closure and verifier remain the publication gates.
 
 ### Final Spatial Closure
 
@@ -386,7 +503,7 @@ Repair and global closure alternate until global closure succeeds, a typed
 incomplete result prevents continuation, or the restart-wide solver-call limit
 is consumed. Successful repair always requires another global closure.
 
-The final candidate must have all five Mapping violations at zero. Candidate
+The final candidate must have all Mapping violations at zero. Candidate
 invariants are checked before materialization. The cold SpatialMapping verifier
 and exact `K` admission then run during finalization. Only the resulting
 Artifact reference enters the canonical candidate set.

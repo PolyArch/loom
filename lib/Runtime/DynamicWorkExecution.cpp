@@ -46,9 +46,9 @@ llvm::Error verifyDynamicWorkJoin(const sim::DynamicWorkScheduler &scheduler,
       "incomplete responsibility domain");
 }
 
-llvm::Error cancelDynamicWorkDomain(
-    sim::DynamicWorkScheduler &scheduler,
-    sim::DynamicWorkAssignment &&activeAssignment) {
+llvm::Error
+cancelDynamicWorkDomain(sim::DynamicWorkScheduler &scheduler,
+                        sim::DynamicWorkAssignment &&activeAssignment) {
   auto active = retireDynamicWorkAssignment(
       scheduler, std::move(activeAssignment),
       DynamicWorkExecutionAction::RequestCancellation);
@@ -67,6 +67,10 @@ llvm::StringRef spelling(sim::SpatialExecutionSessionState state) {
   switch (state) {
   case sim::SpatialExecutionSessionState::Runnable:
     return "runnable";
+  case sim::SpatialExecutionSessionState::WaitingForExternalMemory:
+    return "waiting_for_external_memory";
+  case sim::SpatialExecutionSessionState::WaitingForExternalStreamInput:
+    return "waiting_for_external_stream_input";
   case sim::SpatialExecutionSessionState::Retired:
     return "retired";
   case sim::SpatialExecutionSessionState::Halted:
@@ -406,8 +410,12 @@ DynamicWorkExecutionSession::executeRoot(
     }
 
     DynamicWorkExecutionAssignment executionAssignment{
-        assignment->id(), assignment->workerOrdinal(), assignment->payload(),
-        *instruction, spatial, *servicePlans};
+        assignment->id(),
+        assignment->workerOrdinal(),
+        assignment->payload(),
+        *instruction,
+        spatial,
+        *servicePlans};
     auto itemResult = executor(executionAssignment);
     ++result.processedItemCount;
     if (!itemResult) {
@@ -416,8 +424,7 @@ DynamicWorkExecutionSession::executeRoot(
           std::move(bodyError),
           cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
     }
-    if (itemResult->action ==
-            DynamicWorkExecutionAction::RequestCancellation &&
+    if (itemResult->action == DynamicWorkExecutionAction::RequestCancellation &&
         !itemResult->childPayloads.empty()) {
       llvm::Error error = llvm::createStringError(
           llvm::inconvertibleErrorCode(),
@@ -438,8 +445,8 @@ DynamicWorkExecutionSession::executeRoot(
           std::move(error),
           cancelDynamicWorkDomain(**scheduler, std::move(*assignment)));
     }
-    auto published = (*scheduler)->publishChildren(
-        *assignment, itemResult->childPayloads);
+    auto published =
+        (*scheduler)->publishChildren(*assignment, itemResult->childPayloads);
     if (!published) {
       llvm::Error error = published.takeError();
       return llvm::joinErrors(
@@ -465,8 +472,8 @@ DynamicWorkExecutionSession::executeRoot(
     }
     result.publishedChildCount += published->children.size();
 
-    const bool cancelled = itemResult->action ==
-                           DynamicWorkExecutionAction::RequestCancellation;
+    const bool cancelled =
+        itemResult->action == DynamicWorkExecutionAction::RequestCancellation;
     auto retirement = retireDynamicWorkAssignment(
         **scheduler, std::move(*assignment), itemResult->action);
     if (!retirement)
@@ -494,10 +501,8 @@ DynamicWorkExecutionSession::executeRootCgra(
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "dynamic_work_execution_invalid: CGRA event-frame budget is zero");
-  auto view = dataflowArtifact.view();
-  if (!view)
-    return view.takeError();
-  auto dynamic = view->projectDynamicWork(root);
+  const auto &view = dataflowArtifact.view();
+  auto dynamic = view.projectDynamicWork(root);
   if (!dynamic)
     return dynamic.takeError();
   if (dynamic->directGraphLaunches.size() != 1)
@@ -505,12 +510,12 @@ DynamicWorkExecutionSession::executeRootCgra(
         DynamicWorkExecutionUnsupportedReason::SelectedGraphUnavailable,
         "the direct-CGRA profile requires exactly one selected graph");
 
-  auto resolvedRoot = view->resolve(root);
+  auto resolvedRoot = view.resolve(root);
   if (!resolvedRoot)
     return resolvedRoot.takeError();
   auto thread = llvm::dyn_cast<dataflow::ThreadOp>(resolvedRoot->callee);
   const auto graphRef = dynamic->directGraphLaunches.front();
-  auto resolvedGraph = view->resolve(graphRef.staticGraphLaunch);
+  auto resolvedGraph = view.resolve(graphRef.staticGraphLaunch);
   if (!resolvedGraph)
     return resolvedGraph.takeError();
   auto graphLaunch = llvm::dyn_cast<dataflow::GraphLaunchOp>(resolvedGraph->op);
@@ -551,7 +556,7 @@ DynamicWorkExecutionSession::executeRootCgra(
   std::optional<sim::RetiredCgraSimulation> retired;
   const std::uint64_t maxEventFrames = request.maxEventFrames;
   auto dispatch = executeRoot(
-      *view, systemMapping, root, std::move(request.dispatch),
+      view, systemMapping, root, std::move(request.dispatch),
       [&](const DynamicWorkExecutionAssignment &assignment)
           -> llvm::Expected<DynamicWorkItemExecution> {
         if (!assignment.spatialContext)
@@ -574,14 +579,14 @@ DynamicWorkExecutionSession::executeRootCgra(
             graphLaunch.getValueResults().size());
         std::iota(workloadDraft.observableContract.valueResults.begin(),
                   workloadDraft.observableContract.valueResults.end(), 0);
-        auto workload = sim::finalizeSimulationWorkload(workloadDraft, *view);
+        auto workload = sim::finalizeSimulationWorkload(workloadDraft, view);
         if (!workload)
           return workload.takeError();
         sim::SpatialSimulationRuntimeInputDraft runtimeDraft{
             workload->identity()};
         runtimeDraft.runtimeValues = {{0, std::move(value)}};
         auto runtimeInput =
-            sim::finalizeSimulationRuntimeInput(runtimeDraft, *workload, *view);
+            sim::finalizeSimulationRuntimeInput(runtimeDraft, *workload, view);
         if (!runtimeInput)
           return runtimeInput.takeError();
 
@@ -648,9 +653,7 @@ DynamicWorkExecutionSession::executeRootCgraReplay(
         "dynamic_work_execution_invalid: completed replay changed its "
         "persistent selection, schedule, or retired CGRA observation");
 
-  auto view = dataflowArtifact.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = dataflowArtifact.view();
 
   std::optional<mapping::InstructionExecutionContextKey> cancelledInstruction;
   std::optional<mapping::SelectedSystemSpatialContext> cancelledSpatial;
@@ -664,7 +667,7 @@ DynamicWorkExecutionSession::executeRootCgraReplay(
         DynamicWorkExecutionAction::RequestCancellation, {}};
   };
   auto cancelled =
-      executeRoot(*view, systemMapping, root, cancellationRequest, cancel);
+      executeRoot(view, systemMapping, root, cancellationRequest, cancel);
   if (!cancelled)
     return cancelled.takeError();
   if (!cancelledInstruction || !cancelledSpatial)
@@ -684,8 +687,8 @@ DynamicWorkExecutionSession::executeRootCgraReplay(
     return DynamicWorkItemExecution{
         DynamicWorkExecutionAction::RequestCancellation, {}};
   };
-  auto cancelledReplay = executeRoot(*view, systemMapping, root,
-                                     cancellationRequest, cancelReplay);
+  auto cancelledReplay =
+      executeRoot(view, systemMapping, root, cancellationRequest, cancelReplay);
   if (!cancelledReplay)
     return cancelledReplay.takeError();
   if (!replayedInstruction || !replayedSpatial ||

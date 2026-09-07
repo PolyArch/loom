@@ -233,6 +233,19 @@ std::vector<std::uint8_t> encodeEdge(const Diagnostic::WaitEdge &edge) {
   writer.u64(edge.headDestinationActorOrdinal);
   writer.u32(edge.headDestinationInputOrdinal);
   writer.u64(edge.headDestinationChannelOrdinal);
+  if (edge.kind == Diagnostic::WaitEdgeKind::PhysicalCapacity &&
+      edge.physicalCapacity) {
+    const auto &capacity = *edge.physicalCapacity;
+    writer.u64(capacity.waitingActionOrdinal);
+    writer.u64(capacity.waitingOccurrenceOrdinal);
+    writer.u64(capacity.holdingActionOrdinal);
+    writer.u64(capacity.holdingOccurrenceOrdinal);
+    writer.u64(capacity.dimensionOrdinal);
+    writer.u32(capacity.capacity);
+    writer.u32(capacity.occupancy);
+    writer.u32(capacity.requestedAmount);
+    writer.u32(capacity.heldAmount);
+  }
   return writer.take();
 }
 
@@ -251,7 +264,7 @@ llvm::Expected<Diagnostic::WaitEdge> decodeEdge(
   auto kind = reader.u32();
   if (!kind)
     return kind.takeError();
-  if (*kind > static_cast<std::uint32_t>(Diagnostic::WaitEdgeKind::OperandQueueWait))
+  if (*kind > static_cast<std::uint32_t>(Diagnostic::WaitEdgeKind::PhysicalCapacity))
     return invalid("wait-edge kind is unknown");
   edge.kind = static_cast<Diagnostic::WaitEdgeKind>(*kind);
   auto waitingInput = reader.u32();
@@ -313,6 +326,37 @@ llvm::Expected<Diagnostic::WaitEdge> decodeEdge(
   if (!headChannel)
     return headChannel.takeError();
   edge.headDestinationChannelOrdinal = *headChannel;
+  if (edge.kind == Diagnostic::WaitEdgeKind::PhysicalCapacity) {
+    Diagnostic::PhysicalCapacityWait fact;
+    auto waitingActionOrdinal = reader.u64();
+    if (!waitingActionOrdinal) return waitingActionOrdinal.takeError();
+    fact.waitingActionOrdinal = *waitingActionOrdinal;
+    auto waitingOccurrenceOrdinal = reader.u64();
+    if (!waitingOccurrenceOrdinal) return waitingOccurrenceOrdinal.takeError();
+    fact.waitingOccurrenceOrdinal = *waitingOccurrenceOrdinal;
+    auto holdingActionOrdinal = reader.u64();
+    if (!holdingActionOrdinal) return holdingActionOrdinal.takeError();
+    fact.holdingActionOrdinal = *holdingActionOrdinal;
+    auto holdingOccurrenceOrdinal = reader.u64();
+    if (!holdingOccurrenceOrdinal) return holdingOccurrenceOrdinal.takeError();
+    fact.holdingOccurrenceOrdinal = *holdingOccurrenceOrdinal;
+    auto dimensionOrdinal = reader.u64();
+    if (!dimensionOrdinal) return dimensionOrdinal.takeError();
+    fact.dimensionOrdinal = *dimensionOrdinal;
+    auto capacity = reader.u32();
+    if (!capacity) return capacity.takeError();
+    fact.capacity = *capacity;
+    auto occupancy = reader.u32();
+    if (!occupancy) return occupancy.takeError();
+    fact.occupancy = *occupancy;
+    auto requestedAmount = reader.u32();
+    if (!requestedAmount) return requestedAmount.takeError();
+    fact.requestedAmount = *requestedAmount;
+    auto heldAmount = reader.u32();
+    if (!heldAmount) return heldAmount.takeError();
+    fact.heldAmount = *heldAmount;
+    edge.physicalCapacity = fact;
+  }
   if (!reader.atEnd())
     return invalid("wait edge has trailing bytes");
   return edge;
@@ -516,6 +560,61 @@ encodeCertificateWire(const CgraClosedWaitCertificate &certificate,
 
 } // namespace
 
+namespace loom::sim {
+
+/// Independent closure check of one emitted certificate: every owner it names
+/// waits inside the certificate, and the certificate is one strongly
+/// connected component. Anchor tests call this; the builder's own selection
+/// already guarantees these invariants, so this verifier never trusts the
+/// builder's internal state.
+bool verifyClosedWaitCertificateClosure(
+    const CgraClosedWaitSetDiagnostic &closedWait) {
+  if (closedWait.waitProofFailure)
+    return false;
+  return verifyClosedWaitCertificateClosure(closedWait.waitCertificate);
+}
+
+bool verifyClosedWaitCertificateClosure(
+    llvm::ArrayRef<CgraClosedWaitSetDiagnostic::WaitEdge> edges) {
+  using OwnerKey = CgraClosedWaitSetDiagnostic::WaitOwnerKey;
+  if (edges.empty())
+    return false;
+  std::vector<OwnerKey> nodes;
+  for (const auto &edge : edges) {
+    nodes.push_back(edge.from);
+    nodes.push_back(edge.to);
+  }
+  llvm::sort(nodes);
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+  std::map<OwnerKey, std::uint32_t> indexOf;
+  for (std::uint32_t index = 0; index != nodes.size(); ++index)
+    indexOf[nodes[index]] = index;
+  std::vector<std::vector<std::uint32_t>> outgoing(nodes.size());
+  std::vector<std::vector<std::uint32_t>> incoming(nodes.size());
+  for (const auto &edge : edges) {
+    outgoing[indexOf[edge.from]].push_back(indexOf[edge.to]);
+    incoming[indexOf[edge.to]].push_back(indexOf[edge.from]);
+  }
+  const auto allReachable = [&](const auto &adjacency) {
+    std::vector<bool> reached(nodes.size(), false);
+    std::vector<std::uint32_t> work{0};
+    reached[0] = true;
+    while (!work.empty()) {
+      const std::uint32_t node = work.back();
+      work.pop_back();
+      for (std::uint32_t target : adjacency[node])
+        if (!reached[target]) {
+          reached[target] = true;
+          work.push_back(target);
+        }
+    }
+    return llvm::all_of(reached, [](bool value) { return value; });
+  };
+  return allReachable(outgoing) && allReachable(incoming);
+}
+
+} // namespace loom::sim
+
 llvm::Error loom::sim::verifyCgraClosedWaitCertificate(
     const CgraClosedWaitCertificate &certificate) {
   if (certificate.edges.empty())
@@ -550,10 +649,51 @@ llvm::Error loom::sim::verifyCgraClosedWaitCertificate(
   }
   std::vector<std::uint8_t> previousEdge;
   for (const Diagnostic::WaitEdge &edge : certificate.edges) {
+    if ((edge.kind == Diagnostic::WaitEdgeKind::PhysicalCapacity) !=
+        edge.physicalCapacity.has_value())
+      return invalid("capacity edge has no exact claim fact");
+    if (edge.physicalCapacity) {
+      const auto &capacity = *edge.physicalCapacity;
+      if (!std::holds_alternative<Diagnostic::WaitActorFiringKey>(edge.from.owner) ||
+          !std::holds_alternative<Diagnostic::WaitActorFiringKey>(edge.to.owner) ||
+          capacity.capacity == 0 || capacity.occupancy > capacity.capacity ||
+          capacity.heldAmount == 0 || capacity.heldAmount > capacity.occupancy ||
+          capacity.requestedAmount > capacity.capacity ||
+          capacity.requestedAmount <= capacity.capacity - capacity.occupancy)
+        return invalid("capacity edge does not prove a blocked acquisition");
+    }
     std::vector<std::uint8_t> current = encodeEdge(edge);
     if (!previousEdge.empty() && !(previousEdge < current))
       return invalid("certificate edges are not canonical");
     previousEdge = std::move(current);
+  }
+  using CapacityGroupKey =
+      std::tuple<Diagnostic::WaitOwnerKey, std::uint64_t, std::uint64_t,
+                 std::uint64_t>;
+  std::map<CapacityGroupKey,
+           std::vector<const Diagnostic::PhysicalCapacityWait *>> capacityGroups;
+  for (const auto &edge : certificate.edges)
+    if (edge.physicalCapacity) {
+      const auto &capacity = *edge.physicalCapacity;
+      capacityGroups[{edge.from, capacity.waitingActionOrdinal,
+                      capacity.waitingOccurrenceOrdinal,
+                      capacity.dimensionOrdinal}].push_back(&capacity);
+    }
+  for (const auto &[key, holders] : capacityGroups) {
+    const auto &first = *holders.front();
+    std::set<std::pair<std::uint64_t, std::uint64_t>> seenHolders;
+    std::uint64_t occupied = 0;
+    for (const auto *holder : holders) {
+      if (holder->capacity != first.capacity ||
+          holder->occupancy != first.occupancy ||
+          holder->requestedAmount != first.requestedAmount ||
+          !seenHolders.insert({holder->holdingActionOrdinal,
+                               holder->holdingOccurrenceOrdinal}).second)
+        return invalid("capacity wait has inconsistent or duplicate holders");
+      occupied += holder->heldAmount;
+    }
+    if (occupied != first.occupancy)
+      return invalid("capacity wait omits occupied claim holders");
   }
   std::set<TransferKey> referenced;
   for (const Diagnostic::WaitEdge &edge : certificate.edges) {

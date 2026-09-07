@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <fcntl.h>
 #include <string>
+#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -93,6 +94,23 @@ llvm::Expected<detail::ParsedArtifactIdentityPreimage> validateStoredObject(
   return *parsed;
 }
 
+llvm::Error validateStoredObjectAgainstPreimage(
+    const OpenedArtifactObject &object, llvm::StringRef description,
+    const ArtifactIdentity &identity, llvm::ArrayRef<std::uint8_t> preimage,
+    llvm::StringRef objectErrorCode) {
+  // put already constructed and hashed this complete identity preimage. Full
+  // byte equality proves both its framing and key without hashing the same
+  // bytes again; a different object retains the independent error distinction.
+  if (llvm::ArrayRef<std::uint8_t>(object.preimage).equals(preimage))
+    return llvm::Error::success();
+  auto parsed = validateStoredObject(object, description, identity,
+                                     objectErrorCode);
+  if (!parsed)
+    return parsed.takeError();
+  return storeError("artifact_identity_collision",
+                    "different identity preimages share one digest");
+}
+
 llvm::Error closeFile(int &file, llvm::StringRef description) {
   if (std::error_code error = llvm::sys::fs::closeFile(file))
     return storeError("artifact_store_io", llvm::Twine("unable to close ") +
@@ -158,7 +176,10 @@ llvm::Expected<int> openStoreDirectory(llvm::StringRef root) {
   return directory;
 }
 
-llvm::Error syncFile(int file, llvm::StringRef description) {
+llvm::Error syncFile(int file, llvm::StringRef description,
+                     ArtifactStore::Durability durability) {
+  if (durability == ArtifactStore::Durability::Transient)
+    return llvm::Error::success();
   int result;
   do {
     result = ::fsync(file);
@@ -192,6 +213,47 @@ llvm::Error discardTemporary(llvm::sys::fs::TempFile &temporary) {
   return llvm::Error::success();
 }
 
+llvm::Expected<bool>
+validateExistingObject(int directory, llvm::StringRef objectName,
+                       const ArtifactIdentity &identity,
+                       llvm::ArrayRef<std::uint8_t> preimage,
+                       ArtifactStore::Durability durability) {
+  const std::string name = objectName.str();
+  struct stat status;
+  int inspected;
+  do {
+    inspected =
+        ::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW);
+  } while (inspected == -1 && errno == EINTR);
+  if (inspected == -1) {
+    if (errno == ENOENT)
+      return false;
+    return storeErrno("artifact_store_io", "unable to inspect stored object");
+  }
+  auto existing = openStoredObject(directory, objectName);
+  if (!existing)
+    return existing.takeError();
+  int file = *existing;
+  llvm::scope_exit closeExisting([&] {
+    if (file != -1)
+      llvm::consumeError(closeFile(file, "existing object"));
+  });
+  auto object =
+      readOpenedObject(file, "existing object", "artifact_store_corruption");
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = validateStoredObjectAgainstPreimage(
+          *object, "existing object", identity, preimage,
+          "artifact_store_corruption"))
+    return std::move(error);
+  if (llvm::Error error = syncFile(file, "existing object", durability))
+    return std::move(error);
+  if (llvm::Error error = closeFile(file, "existing object"))
+    return std::move(error);
+  closeExisting.release();
+  return true;
+}
+
 } // namespace
 
 llvm::Expected<ArtifactIdentity>
@@ -212,105 +274,92 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
       llvm::consumeError(closeFile(directory, "store directory"));
   });
 
-  llvm::SmallString<256> temporaryModel(root_);
-  llvm::sys::path::append(temporaryModel, ".artifact-%%%%%%");
-  auto temporaryOrError = llvm::sys::fs::TempFile::create(
-      temporaryModel, llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
-  if (!temporaryOrError)
-    return storeError("artifact_store_io",
-                      llvm::Twine("unable to create temporary object: ") +
-                          llvm::toString(temporaryOrError.takeError()));
-  llvm::sys::fs::TempFile temporary = std::move(*temporaryOrError);
-  llvm::scope_exit discardTemporaryOnFailure(
-      [&] { llvm::consumeError(temporary.discard()); });
-
-  {
-    llvm::raw_fd_ostream output(temporary.FD, false);
-    output.write(reinterpret_cast<const char *>(preimage.data()),
-                 preimage.size());
-    output.flush();
-    if (std::error_code error = output.error()) {
-      output.clear_error();
+  auto existing = validateExistingObject(directory, objectName, identity,
+                                         preimage, durability_);
+  if (!existing)
+    return existing.takeError();
+  if (!*existing) {
+    llvm::SmallString<256> temporaryModel(root_);
+    llvm::sys::path::append(temporaryModel, ".artifact-%%%%%%");
+    auto temporaryOrError = llvm::sys::fs::TempFile::create(
+        temporaryModel, llvm::sys::fs::owner_read | llvm::sys::fs::owner_write);
+    if (!temporaryOrError)
       return storeError("artifact_store_io",
-                        llvm::Twine("unable to write temporary object: ") +
-                            error.message());
+                        llvm::Twine("unable to create temporary object: ") +
+                            llvm::toString(temporaryOrError.takeError()));
+    llvm::sys::fs::TempFile temporary = std::move(*temporaryOrError);
+    llvm::scope_exit discardTemporaryOnFailure(
+        [&] { llvm::consumeError(temporary.discard()); });
+
+    {
+      llvm::raw_fd_ostream output(temporary.FD, false);
+      output.write(reinterpret_cast<const char *>(preimage.data()),
+                   preimage.size());
+      output.flush();
+      if (std::error_code error = output.error()) {
+        output.clear_error();
+        return storeError("artifact_store_io",
+                          llvm::Twine("unable to write temporary object: ") +
+                              error.message());
+      }
     }
-  }
 
-  if (llvm::Error error = syncFile(temporary.FD, "temporary object"))
-    return std::move(error);
-  auto temporaryObject =
-      readOpenedObject(temporary.FD, "temporary object", "artifact_store_io");
-  if (!temporaryObject)
-    return temporaryObject.takeError();
-  auto parsedTemporary = validateStoredObject(
-      *temporaryObject, "temporary object", identity, "artifact_store_io");
-  if (!parsedTemporary)
-    return parsedTemporary.takeError();
-  if (!llvm::ArrayRef<std::uint8_t>(temporaryObject->preimage).equals(preimage))
-    return storeError("artifact_identity_collision",
-                      "different identity preimages share one digest");
-
-  const std::error_code publishError =
-      publishNoReplace(temporary.FD, directory, objectName);
-  if (!publishError) {
-    auto published = openStoredObject(directory, objectName);
-    if (!published)
-      return published.takeError();
-    int publishedFile = *published;
-    llvm::scope_exit closePublishedOnFailure([&] {
-      if (publishedFile != -1)
-        llvm::consumeError(closeFile(publishedFile, "published object"));
-    });
-
-    auto publishedStatus = regularFileStatus(
-        publishedFile, "artifact_store_corruption", "published object");
-    if (!publishedStatus)
-      return publishedStatus.takeError();
-    if (publishedStatus->getUniqueID() != temporaryObject->status.getUniqueID())
-      return storeError("artifact_store_corruption",
-                        "published object is not the validated inode");
-    if (llvm::Error error = closeFile(publishedFile, "published object"))
+    if (llvm::Error error =
+            syncFile(temporary.FD, "temporary object", durability_))
       return std::move(error);
-    closePublishedOnFailure.release();
-  } else if (publishError == std::errc::file_exists) {
-    auto existing = openStoredObject(directory, objectName);
-    if (!existing)
-      return existing.takeError();
-    int existingFile = *existing;
-    llvm::scope_exit closeExistingOnFailure([&] {
-      if (existingFile != -1)
-        llvm::consumeError(closeFile(existingFile, "existing object"));
-    });
-
-    auto existingObject = readOpenedObject(existingFile, "existing object",
-                                           "artifact_store_corruption");
-    if (!existingObject)
-      return existingObject.takeError();
-    auto parsedExisting =
-        validateStoredObject(*existingObject, "existing object", identity,
-                             "artifact_store_corruption");
-    if (!parsedExisting)
-      return parsedExisting.takeError();
-    if (!llvm::ArrayRef<std::uint8_t>(existingObject->preimage)
-             .equals(preimage))
-      return storeError("artifact_identity_collision",
-                        "different identity preimages share one digest");
-    if (llvm::Error error = closeFile(existingFile, "existing object"))
+    auto temporaryObject =
+        readOpenedObject(temporary.FD, "temporary object", "artifact_store_io");
+    if (!temporaryObject)
+      return temporaryObject.takeError();
+    if (llvm::Error error = validateStoredObjectAgainstPreimage(
+            *temporaryObject, "temporary object", identity, preimage,
+            "artifact_store_io"))
       return std::move(error);
-    closeExistingOnFailure.release();
-  } else {
-    return storeError("artifact_store_io",
-                      llvm::Twine("unable to publish object: ") +
-                          publishError.message());
-  }
 
-  if (llvm::Error error = discardTemporary(temporary)) {
+    const std::error_code publishError =
+        publishNoReplace(temporary.FD, directory, objectName);
+    if (!publishError) {
+      auto published = openStoredObject(directory, objectName);
+      if (!published)
+        return published.takeError();
+      int publishedFile = *published;
+      llvm::scope_exit closePublishedOnFailure([&] {
+        if (publishedFile != -1)
+          llvm::consumeError(closeFile(publishedFile, "published object"));
+      });
+
+      auto publishedStatus = regularFileStatus(
+          publishedFile, "artifact_store_corruption", "published object");
+      if (!publishedStatus)
+        return publishedStatus.takeError();
+      if (publishedStatus->getUniqueID() !=
+          temporaryObject->status.getUniqueID())
+        return storeError("artifact_store_corruption",
+                          "published object is not the validated inode");
+      if (llvm::Error error = closeFile(publishedFile, "published object"))
+        return std::move(error);
+      closePublishedOnFailure.release();
+    } else if (publishError == std::errc::file_exists) {
+      auto existing = validateExistingObject(directory, objectName, identity,
+                                             preimage, durability_);
+      if (!existing)
+        return existing.takeError();
+      if (!*existing)
+        return storeError("artifact_store_missing",
+                          "stored object is missing: '" + objectName + "'");
+    } else {
+      return storeError("artifact_store_io",
+                        llvm::Twine("unable to publish object: ") +
+                            publishError.message());
+    }
+
+    if (llvm::Error error = discardTemporary(temporary)) {
+      discardTemporaryOnFailure.release();
+      return std::move(error);
+    }
     discardTemporaryOnFailure.release();
-    return std::move(error);
   }
-  discardTemporaryOnFailure.release();
-  if (llvm::Error error = syncFile(directory, "store directory"))
+  if (llvm::Error error = syncFile(directory, "store directory", durability_))
     return std::move(error);
   if (llvm::Error error = closeFile(directory, "store directory"))
     return std::move(error);

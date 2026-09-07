@@ -12,24 +12,31 @@
 
 namespace loom::sim::detail {
 
+// A Request's identity does not encode the caller's dependency resolution.
+// Every execution context admits that resolution through the Evaluation owner.
+llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
+importExecutionRequest(const ArtifactRootReference &reference,
+                       const evaluation::CaseArtifactResolution &resolution,
+                       const ArtifactStore &store, const BlobStore &blobs);
+
 struct SpatialExecutionContext {
   std::shared_ptr<const evaluation::EvaluationRequest> request;
   std::shared_ptr<const ImportedSpatialSimulationInputs> ownedInputs;
   const CanonicalSimulationWorkload *workload = nullptr;
   const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
-  dataflow::CanonicalDataflowProgramView dataflowView;
+  const dataflow::CanonicalDataflowProgramView &dataflowView;
   ResolvedLaunchContext launch;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
   const evaluation::CaseArtifactResolution *resolution = nullptr;
   const ArtifactStore *artifactStore = nullptr;
   const BlobStore *blobStore = nullptr;
+  const fabric::FabricArtifactView *fabricView = nullptr;
 };
 
 struct SystemExecutionContext {
   std::shared_ptr<const evaluation::EvaluationRequest> request;
   std::shared_ptr<const ImportedSystemSimulationInputs> inputs;
   std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
-  dataflow::CanonicalDataflowProgramView dataflowView;
   std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
   ResolvedSystemContext system;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
@@ -99,18 +106,17 @@ llvm::Expected<SpatialFunctionalObservations>
 decodeSpatialFunctionalObservations(WireReader &reader,
                                     const SpatialExecutionContext &context);
 
-llvm::Error validateActorActivitySummaries(
-    llvm::ArrayRef<ActorTransitionsActivitySummary> summaries,
-    const ExecutionTerminal &terminal,
-    const SpatialProgressObservations &progress,
-    const SpatialExecutionContext &context);
+llvm::Error
+validateActivitySummaries(llvm::ArrayRef<ActivitySummary> summaries,
+                          const ExecutionTerminal &terminal,
+                          const SpatialProgressObservations &progress,
+                          const SpatialExecutionContext &context);
 
-void encodeActorActivitySummaries(
-    WireWriter &writer,
-    llvm::ArrayRef<ActorTransitionsActivitySummary> summaries);
+void encodeActivitySummaries(WireWriter &writer,
+                             llvm::ArrayRef<ActivitySummary> summaries);
 
-llvm::Expected<std::vector<ActorTransitionsActivitySummary>>
-decodeActorActivitySummaries(WireReader &reader);
+llvm::Expected<std::vector<ActivitySummary>>
+decodeActivitySummaries(WireReader &reader);
 
 } // namespace loom::sim::detail
 

@@ -20,7 +20,7 @@ namespace loom::mapping {
 namespace {
 
 constexpr llvm::StringLiteral feedbackSchema =
-    "loom.mapping.tech_compute_context_hall_feedback.1.0";
+    "loom.mapping.tech_compute_context_hall_feedback.2.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -51,6 +51,18 @@ contextKey(const loom::fabric::InstructionContextRef &context) {
 bool contextLess(const loom::fabric::InstructionContextRef &lhs,
                  const loom::fabric::InstructionContextRef &rhs) {
   return contextKey(lhs) < contextKey(rhs);
+}
+
+std::vector<std::uint8_t> capabilitySetKey(
+    llvm::ArrayRef<loom::fabric::FabricFuCapabilityTemplateRef> capabilities) {
+  std::vector<std::uint8_t> bytes;
+  appendU64(bytes, capabilities.size());
+  for (const auto capability : capabilities) {
+    const auto key = loom::fabric::canonicalFabricBytes(capability);
+    appendU64(bytes, key.size());
+    bytes.insert(bytes.end(), key.begin(), key.end());
+  }
+  return bytes;
 }
 
 llvm::Expected<std::vector<loom::fabric::InstructionContextRef>>
@@ -84,9 +96,19 @@ TechMappingComputeContextHallDeficit::get(
 
   std::vector<TechMappingComputeContextHallDemandGroup> groups(
       inputGroups.begin(), inputGroups.end());
+  for (auto &group : groups) {
+    if (group.capabilities.empty())
+      return invalid("Hall demand capability set is empty");
+    llvm::sort(group.capabilities, [](const auto lhs, const auto rhs) {
+      return loom::fabric::canonicalFabricBytes(lhs) <
+             loom::fabric::canonicalFabricBytes(rhs);
+    });
+    if (std::adjacent_find(group.capabilities.begin(),
+                           group.capabilities.end()) != group.capabilities.end())
+      return invalid("Hall demand capability set contains a duplicate");
+  }
   llvm::sort(groups, [](const auto &lhs, const auto &rhs) {
-    return loom::fabric::canonicalFabricBytes(lhs.capability) <
-           loom::fabric::canonicalFabricBytes(rhs.capability);
+    return capabilitySetKey(lhs.capabilities) < capabilitySetKey(rhs.capabilities);
   });
   std::uint64_t hallDemandCount = 0;
   std::map<std::vector<std::uint8_t>, loom::fabric::InstructionContextRef>
@@ -94,9 +116,9 @@ TechMappingComputeContextHallDeficit::get(
   std::optional<std::vector<std::uint8_t>> previousCapability;
   for (TechMappingComputeContextHallDemandGroup &group : groups) {
     const std::vector<std::uint8_t> capability =
-        loom::fabric::canonicalFabricBytes(group.capability);
+        capabilitySetKey(group.capabilities);
     if (previousCapability && *previousCapability == capability)
-      return invalid("Hall demand groups contain a duplicate capability");
+      return invalid("Hall demand groups contain a duplicate capability set");
     previousCapability = capability;
     if (group.demandCount == 0)
       return invalid("Hall demand multiplicity is zero");
@@ -136,8 +158,7 @@ std::vector<std::uint8_t> encodeTechMappingComputeContextHallFeedback(
   appendU64(bytes, feedback.groups().size());
   for (const auto &group : feedback.groups()) {
     const std::vector<std::uint8_t> capability =
-        loom::fabric::canonicalFabricBytes(group.capability);
-    appendU64(bytes, capability.size());
+        capabilitySetKey(group.capabilities);
     bytes.insert(bytes.end(), capability.begin(), capability.end());
     appendU64(bytes, group.demandCount);
   }
@@ -164,24 +185,37 @@ adoptTechMappingComputeContextHallFeedback(
   std::vector<TechMappingComputeContextHallDemandGroup> groups;
   groups.reserve(*groupCount);
   for (std::uint64_t index = 0; index != *groupCount; ++index) {
-    auto capabilitySize = readU64(bytes, offset);
-    if (!capabilitySize)
-      return capabilitySize.takeError();
-    if (*capabilitySize > bytes.size() - offset)
-      return invalid("capability reference is truncated");
-    auto capability = loom::fabric::decodeFabricRef<
-        loom::fabric::FabricFuCapabilityTemplateRef>(
-        bytes.slice(offset, *capabilitySize));
-    if (!capability)
-      return capability.takeError();
-    offset += *capabilitySize;
+    auto capabilityCount = readU64(bytes, offset);
+    if (!capabilityCount)
+      return capabilityCount.takeError();
+    if (*capabilityCount > (bytes.size() - offset) / 8)
+      return invalid("capability count exceeds its payload");
+    std::vector<loom::fabric::FabricFuCapabilityTemplateRef> capabilities;
+    std::vector<loom::fabric::InstructionContextRef> contexts;
+    for (std::uint64_t ordinal = 0; ordinal != *capabilityCount; ++ordinal) {
+      auto capabilitySize = readU64(bytes, offset);
+      if (!capabilitySize)
+        return capabilitySize.takeError();
+      if (*capabilitySize > bytes.size() - offset)
+        return invalid("capability reference is truncated");
+      auto capability = loom::fabric::decodeFabricRef<
+          loom::fabric::FabricFuCapabilityTemplateRef>(
+          bytes.slice(offset, *capabilitySize));
+      if (!capability)
+        return capability.takeError();
+      offset += *capabilitySize;
+      auto compatible = deriveCompatibleContexts(*capability, fabric);
+      if (!compatible)
+        return compatible.takeError();
+      capabilities.push_back(*capability);
+      contexts.insert(contexts.end(), compatible->begin(), compatible->end());
+    }
+    llvm::sort(contexts, contextLess);
+    contexts.erase(std::unique(contexts.begin(), contexts.end()), contexts.end());
     auto demandCount = readU64(bytes, offset);
     if (!demandCount)
       return demandCount.takeError();
-    auto contexts = deriveCompatibleContexts(*capability, fabric);
-    if (!contexts)
-      return contexts.takeError();
-    groups.push_back({*capability, *demandCount, std::move(*contexts)});
+    groups.push_back({std::move(capabilities), *demandCount, std::move(contexts)});
   }
   if (offset != bytes.size())
     return invalid("payload has trailing bytes");

@@ -147,6 +147,17 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t expectedProducerOccurrenceOrdinal =
         std::numeric_limits<std::uint64_t>::max();
   };
+  struct PhysicalCapacityWait final {
+    std::uint64_t waitingActionOrdinal = 0;
+    std::uint64_t waitingOccurrenceOrdinal = 0;
+    std::uint64_t holdingActionOrdinal = 0;
+    std::uint64_t holdingOccurrenceOrdinal = 0;
+    std::uint64_t dimensionOrdinal = 0;
+    std::uint32_t capacity = 0;
+    std::uint32_t occupancy = 0;
+    std::uint32_t requestedAmount = 0;
+    std::uint32_t heldAmount = 0;
+  };
   struct PhysicalAction final {
     std::uint64_t actionOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
@@ -157,6 +168,8 @@ struct CgraClosedWaitSetDiagnostic final {
     bool requiresCausalRelease = false;
     bool intrinsicReleaseReached = false;
     bool causalReleaseReached = false;
+    std::optional<std::uint64_t> semanticOccurrenceOrdinal;
+    std::vector<PhysicalCapacityWait> capacityWaits;
   };
   struct Transfer final {
     struct StorageHead final {
@@ -287,15 +300,16 @@ struct CgraClosedWaitSetDiagnostic final {
   std::vector<ActorWaitCycleEdge> actorWaitCycle;
 
   /// Unified causal certificate of one quiescent closed wait. Nodes are typed
-  /// dynamic owners — one exact actor firing occurrence, or one queue class of
-  /// one physical storage — and every edge quotes one dynamic wait fact the
+  /// dynamic owners - one exact actor firing occurrence, or one queue class of
+  /// one physical storage - and every edge quotes one dynamic wait fact the
   /// runtime observed. The certificate is the single closed strongly connected
   /// component of that combined wait-for relation, so it stays bounded by the
   /// closure that actually deadlocked. An independent Mapping or DSE owner can
   /// rebuild the closed cycle from these edges alone; the runtime remains the
   /// only owner of the dynamic facts they quote.
   struct WaitActorFiringKey final {
-    std::uint64_t semanticActorOrdinal = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t semanticActorOrdinal =
+        std::numeric_limits<std::uint64_t>::max();
     std::uint64_t occurrenceOrdinal = std::numeric_limits<std::uint64_t>::max();
 
     friend bool operator==(const WaitActorFiringKey &lhs,
@@ -336,8 +350,7 @@ struct CgraClosedWaitSetDiagnostic final {
                           const WaitQueueClass &rhs) {
       if (lhs.tagLocal != rhs.tagLocal)
         return !lhs.tagLocal;
-      return ::fabric::comparePhysicalTagValues(lhs.tagValue, rhs.tagValue) <
-             0;
+      return ::fabric::comparePhysicalTagValues(lhs.tagValue, rhs.tagValue) < 0;
     }
   };
   enum class WaitStorageDomain : std::uint8_t {
@@ -382,7 +395,7 @@ struct CgraClosedWaitSetDiagnostic final {
     /// storage queue cannot admit it.
     ActorOutputBackpressure,
     /// An actor firing's awaited token is resident behind the head of its
-    /// queue class — the strict FIFO head, or its tag-local head.
+    /// queue class - the strict FIFO head, or its tag-local head.
     StorageOrder,
     /// A storage queue's class head cannot continue into the downstream
     /// storage queue, which is full at cycle start.
@@ -392,11 +405,14 @@ struct CgraClosedWaitSetDiagnostic final {
     StorageConsumer,
     /// An actor firing's input wait joins at the exact operand queue head.
     OperandQueueWait,
+    /// An actor firing cannot acquire capacity held by another exact firing.
+    PhysicalCapacity,
   };
   struct WaitEdge final {
     WaitOwnerKey from;
     WaitOwnerKey to;
     WaitEdgeKind kind = WaitEdgeKind::ActorMissingInput;
+    std::optional<PhysicalCapacityWait> physicalCapacity;
     /// Waiting side, when the waiting node is an actor firing.
     std::uint32_t waitingInputOrdinal =
         std::numeric_limits<std::uint32_t>::max();
@@ -478,12 +494,14 @@ struct RetiredCgraSimulation final {
   SpatialFunctionalObservations observations;
   SpatialProgressObservations progress;
   CgraSimulationCounters counters;
+  std::vector<ActivitySummary> activitySummaries;
 };
 
 struct HaltedCgraSimulation final {
   SpatialFunctionalObservations observations;
   SpatialProgressObservations progress;
   CgraSimulationCounters counters;
+  std::vector<ActivitySummary> activitySummaries;
 };
 
 struct CgraSimulationOutcome final {
@@ -530,12 +548,12 @@ private:
   prepareCgraWorkloadExecution(const PreparedCgraExecution &,
                                const CanonicalSimulationWorkload &,
                                const CanonicalSimulationRuntimeInput &);
-  friend llvm::Expected<CgraExecutionSession>
-  startCgraExecutionSession(const PreparedCgraWorkloadExecution &,
-                            const CanonicalSimulationWorkload &,
-                            const CanonicalSimulationRuntimeInput &,
-                            std::optional<TraceCaptureLevel>,
-                            CgraExternalMemoryProvider *);
+  friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
+      const PreparedCgraWorkloadExecution &,
+      const CanonicalSimulationWorkload &,
+      const CanonicalSimulationRuntimeInput &, std::optional<TraceCaptureLevel>,
+      CgraExternalMemoryProvider *, llvm::ArrayRef<std::uint64_t>,
+      std::optional<ActivityWindow>);
 };
 
 llvm::Expected<PreparedCgraWorkloadExecution> prepareCgraWorkloadExecution(
@@ -562,6 +580,16 @@ public:
       std::optional<std::chrono::steady_clock::time_point> executionDeadline =
           std::nullopt);
 
+  /// Completes one request issued by this session. Foreign, duplicate, or
+  /// malformed responses fail the session before model execution resumes.
+  llvm::Error completeExternalMemory(CgraExternalMemoryRequestId request,
+                                     CgraExternalMemoryResponse response);
+
+  const std::optional<SpatialStreamInputRequest> &pendingStreamInput() const;
+  llvm::Error completeStreamInput(const SpatialStreamInputRequest &request,
+                                  const CanonicalValueSequence &value);
+  const CanonicalSimulationRuntimeInput *retiredRuntimeInput() const;
+
   llvm::Expected<RetiredCgraSimulation> takeRetiredSimulation();
   llvm::Expected<HaltedCgraSimulation> takeHaltedSimulation();
 
@@ -572,27 +600,18 @@ private:
   std::unique_ptr<Impl> impl_;
 
   friend llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
-      const PreparedCgraExecution &, const CanonicalSimulationWorkload &,
+      const PreparedCgraWorkloadExecution &,
+      const CanonicalSimulationWorkload &,
       const CanonicalSimulationRuntimeInput &, std::optional<TraceCaptureLevel>,
-      CgraExternalMemoryProvider *);
-  friend llvm::Expected<CgraExecutionSession>
-  startCgraExecutionSession(const PreparedCgraWorkloadExecution &,
-                            const CanonicalSimulationWorkload &,
-                            const CanonicalSimulationRuntimeInput &,
-                            std::optional<TraceCaptureLevel>,
-                            CgraExternalMemoryProvider *);
-  friend llvm::Expected<CgraSimulationOutcome>
-  simulateCgraWorkload(const PreparedCgraExecution &,
-                       const CanonicalSimulationWorkload &,
-                       const CanonicalSimulationRuntimeInput &, std::uint64_t,
-                       std::optional<std::chrono::steady_clock::time_point>,
-                       CgraExternalMemoryProvider *);
+      CgraExternalMemoryProvider *, llvm::ArrayRef<std::uint64_t>,
+      std::optional<ActivityWindow>);
   friend llvm::Expected<CgraSimulationOutcome>
   simulateCgraWorkload(const PreparedCgraWorkloadExecution &,
                        const CanonicalSimulationWorkload &,
                        const CanonicalSimulationRuntimeInput &, std::uint64_t,
                        std::optional<std::chrono::steady_clock::time_point>,
-                       CgraExternalMemoryProvider *);
+                       CgraExternalMemoryProvider *,
+                       std::optional<ActivityWindow>);
 };
 
 llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
@@ -600,14 +619,18 @@ llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::optional<TraceCaptureLevel> traceLevel = std::nullopt,
-    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
+    llvm::ArrayRef<std::uint64_t> liveStreamInputs = {},
+    std::optional<ActivityWindow> fabricActivityWindow = std::nullopt);
 
 llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
     const PreparedCgraWorkloadExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::optional<TraceCaptureLevel> traceLevel = std::nullopt,
-    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
+    llvm::ArrayRef<std::uint64_t> liveStreamInputs = {},
+    std::optional<ActivityWindow> fabricActivityWindow = std::nullopt);
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraExecution &prepared,
@@ -616,7 +639,8 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     std::uint64_t maxEventFrames,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline =
         std::nullopt,
-    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
+    std::optional<ActivityWindow> fabricActivityWindow = std::nullopt);
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraWorkloadExecution &prepared,
@@ -625,7 +649,8 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     std::uint64_t maxEventFrames,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline =
         std::nullopt,
-    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
+    std::optional<ActivityWindow> fabricActivityWindow = std::nullopt);
 
 } // namespace loom::sim
 

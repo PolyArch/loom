@@ -129,7 +129,6 @@ struct ImportedRuntimeClosure final {
   std::vector<FinalizedRuntimePlatformBinding> runtimeBindings;
   mapping::FinalizedSystemMapping systemMapping;
   dataflow::CanonicalDataflowArtifact dataflowArtifact;
-  dataflow::CanonicalDataflowProgramView dataflow;
   fabric::FinalizedFabricRoot fabricArtifact;
   fabric::FabricSystemRootView fabric;
   mapping::SystemMappingClosureProjection mappingClosure;
@@ -138,6 +137,9 @@ struct ImportedRuntimeClosure final {
 llvm::Expected<ImportedRuntimeClosure>
 importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
                      const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (!deployment.deployment().systemMapping())
+    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                     "host-only Deployment has no programmable Mapping closure");
   if (deployment.deployment().hardwareBindings().empty())
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                      "Deployment has no runtime hardware binding");
@@ -181,7 +183,7 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
                          llvm::toString(abi.takeError()));
 
   auto systemMapping = mapping::importSystemMapping(
-      deployment.deployment().systemMapping(), artifacts);
+      *deployment.deployment().systemMapping(), artifacts);
   if (!systemMapping)
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                      "cannot import SystemMapping: " +
@@ -196,11 +198,7 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                      "cannot import Canonical Dataflow: " +
                          llvm::toString(dataflowArtifact.takeError()));
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "cannot reconstruct Canonical Dataflow: " +
-                         llvm::toString(dataflowView.takeError()));
+  const auto &dataflowView = dataflowArtifact->view();
 
   const ArtifactRootReference fabricReference{
       fabric::fabricArtifactSchema.identity.str(),
@@ -224,7 +222,7 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
                      "Fabric root is not a System: " +
                          llvm::toString(system.takeError()));
   auto closure = mapping::projectSystemMappingClosure(
-      *dataflowView, *system, systemMapping->view(), artifacts);
+      dataflowView, *system, systemMapping->view(), artifacts);
   if (!closure)
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                      "cannot project SystemMapping closure: " +
@@ -233,9 +231,8 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
   return ImportedRuntimeClosure{
       std::move(implementations),   std::move(*abi),
       std::move(runtimeBindings),   std::move(*systemMapping),
-      std::move(*dataflowArtifact), std::move(*dataflowView),
-      std::move(*fabricArtifact),   std::move(*system),
-      std::move(*closure)};
+      std::move(*dataflowArtifact), std::move(*fabricArtifact),
+      std::move(*system),           std::move(*closure)};
 }
 
 llvm::Error
@@ -359,7 +356,7 @@ configurationTargets(const deployment::FinalizedDeployment &deployment,
                        "portable configuration target has an empty payload");
 
     auto activation = detail::configurationActivationEventKey(
-        closure.dataflow.identity(),
+        closure.dataflowArtifact.view().identity(),
         closure.mappingClosure.executionContexts.spatialDomains, selectedCore);
     if (!activation)
       return loadError(RuntimeLoadFailureKind::InvalidDeployment,
@@ -671,7 +668,7 @@ collectStaticTargets(const deployment::StaticMemoryImageLeaf &leaf,
 
   std::map<ByteVector, RuntimeStaticMemoryTarget> canonical;
   for (RuntimeStaticMemoryTarget &target : candidates) {
-    auto key = staticTargetKey(closure.dataflow, target);
+    auto key = staticTargetKey(closure.dataflowArtifact.view(), target);
     if (!key)
       return key.takeError();
     canonical.try_emplace(std::move(*key), std::move(target));
@@ -1045,7 +1042,8 @@ LoadedDeployment::prepareResourceTimeActivations(
             llvm::toString(std::move(error)));
   if (!graph.entry.deployment ||
       *graph.entry.deployment != state_->deployment.reference() ||
-      graph.entry.mapping != state_->deployment.deployment().systemMapping())
+      !state_->deployment.deployment().systemMapping() ||
+      graph.entry.mapping != *state_->deployment.deployment().systemMapping())
     return activationReplacementError(
         RuntimeActivationReplacementErrorReason::TransitionMismatch,
         "resource-time graph entry is not the active Deployment");
@@ -1126,11 +1124,11 @@ LoadedDeployment::prepareResourceTimeActivations(
     const RuntimeExecutableRegistrationView registration{
         candidate.hostProgram(), executables->hostBytes,
         executables->instructionBinaries, executables->instructionBytes,
-        candidate.threadDispatchImage()};
+        *candidate.threadDispatchImage()};
     const RuntimeActivationView activation{
         deployment.reference(), closure->runtimeBindings,
-        candidate.threadDispatchImage(), candidate.spatialLaunchImage(),
-        candidate.admissionImage()};
+        *candidate.threadDispatchImage(), candidate.spatialLaunchImage(),
+        *candidate.admissionImage()};
     auto execution = pnr::deriveResourceTimeTransitionExecutionPlan(
         transition, artifacts, blobs);
     if (!execution)
@@ -1373,7 +1371,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
   RuntimeExecutableRegistrationView registration{
       deployment.deployment().hostProgram(), executables->hostBytes,
       executables->instructionBinaries, executables->instructionBytes,
-      deployment.deployment().threadDispatchImage()};
+      *deployment.deployment().threadDispatchImage()};
   deviceStateChanged = true;
   if (llvm::Error error = provider.registerExecutables(*lease, registration))
     return recoverAndRelease(RuntimeLoadFailureKind::Registration,
@@ -1384,9 +1382,9 @@ loadDeployment(deployment::FinalizedDeployment deployment,
 
   const RuntimeActivationView activation{
       deployment.reference(), closure->runtimeBindings,
-      deployment.deployment().threadDispatchImage(),
+      *deployment.deployment().threadDispatchImage(),
       deployment.deployment().spatialLaunchImage(),
-      deployment.deployment().admissionImage()};
+      *deployment.deployment().admissionImage()};
   if (llvm::Error error = provider.activate(*lease, activation))
     return recoverAndRelease(RuntimeLoadFailureKind::Activation,
                              "activation failed: " +

@@ -130,6 +130,8 @@ target_link_libraries(loom-structured-ownership-accounting-test PRIVATE
 
 add_executable(loom-structured-ownership-evaluation-test
   StructuredOwnershipEvaluationTest.cpp
+  StructuredOwnershipEvaluationTestSupport.cpp
+  StructuredOwnershipPlanningTest.cpp
 )
 
 target_link_libraries(loom-structured-ownership-evaluation-test PRIVATE

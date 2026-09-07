@@ -142,13 +142,11 @@ llvm::Error validateLineagePayload(
             ::loom::fabric::FabricRootKind::Module ||
         synthesizedFabric->view().fuTemplates().size() != 1)
       return invalid("Fabric lineage output is not a bounded FU Module");
-    auto dataflowView = importedDataflow->view();
-    if (!dataflowView)
-      return dataflowView.takeError();
+    const auto &dataflowView = importedDataflow->view();
     const std::vector<::dataflow::GraphRef> graphs =
-        completeGraphSet(*dataflowView);
+        completeGraphSet(dataflowView);
     if (llvm::Error error = verifyScalarIntegerAddSubFuFabricLineage(
-            *dataflowView, graphs, *synthesizedFabric, store))
+            dataflowView, graphs, *synthesizedFabric, store))
       return error;
     return llvm::Error::success();
   }
@@ -170,17 +168,15 @@ llvm::Error validateLineagePayload(
         mapping->view().fabricIdentity() != fabric->artifact ||
         mapping->view().covers().size() != 1)
       return invalid("TechMapping lineage does not bind its exact parents");
-    auto dataflowView = importedDataflow->view();
-    if (!dataflowView)
-      return dataflowView.takeError();
+    const auto &dataflowView = importedDataflow->view();
     auto synthesizedFabric =
         ::loom::fabric::importEntireFabricRoot(*fabric, store);
     if (!synthesizedFabric)
       return synthesizedFabric.takeError();
     const std::vector<::dataflow::GraphRef> graphs =
-        completeGraphSet(*dataflowView);
+        completeGraphSet(dataflowView);
     return verifyScalarIntegerAddSubFuMappingLineage(
-        *dataflowView, graphs, *synthesizedFabric, *mapping, store);
+        dataflowView, graphs, *synthesizedFabric, *mapping, store);
   }
 
   if (kind == LineageOutputKind::System) {
@@ -210,9 +206,7 @@ llvm::Error validateLineagePayload(
         ::dataflow::importCanonicalDataflow(*dataflow, store);
     if (!importedDataflow)
       return importedDataflow.takeError();
-    auto dataflowView = importedDataflow->view();
-    if (!dataflowView)
-      return dataflowView.takeError();
+    const auto &dataflowView = importedDataflow->view();
     auto synthesizedFabric =
         ::loom::fabric::importEntireFabricRoot(*fabric, store);
     if (!synthesizedFabric)
@@ -221,9 +215,9 @@ llvm::Error validateLineagePayload(
     if (!mapping)
       return mapping.takeError();
     const std::vector<::dataflow::GraphRef> graphs =
-        completeGraphSet(*dataflowView);
+        completeGraphSet(dataflowView);
     return verifyScalarIntegerAddSubFuJointMappingLineage(
-        *dataflowView, graphs, *synthesizedFabric, *mapping, store);
+        dataflowView, graphs, *synthesizedFabric, *mapping, store);
   }
 
   if (kind == LineageOutputKind::PhysicalTimingProfile) {
@@ -286,11 +280,9 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       inputs.front().artifacts.front(), store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   const std::vector<::dataflow::GraphRef> graphs =
-      completeGraphSet(*dataflowView);
+      completeGraphSet(dataflowView);
 
   const auto &moduleOutputs = outputs[ModuleOutput].artifacts;
   const auto &mappingOutputs = outputs[MappingOutput].artifacts;
@@ -310,7 +302,7 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       (!mappingOutputs.empty() && !hasFixedClosure))
     return invalid("outcome has an incomplete fixed synthesis closure");
   if (completed && (!hasFixedClosure || jointMappingOutputs.size() != 1 ||
-                    mappingOutputs.size() != dataflowView->graphs().size()))
+                    mappingOutputs.size() != dataflowView.graphs().size()))
     return invalid("completed outcome does not cover the complete graph "
                    "domain");
 
@@ -338,7 +330,7 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       if (!jointMapping)
         return jointMapping.takeError();
       if (llvm::Error error = verifyScalarIntegerAddSubFuJointMappingLineage(
-              *dataflowView, graphs, *module, *jointMapping, store))
+              dataflowView, graphs, *module, *jointMapping, store))
         return error;
     }
   }
@@ -349,7 +341,7 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     auto mapping = ::loom::mapping::importTechMapping(reference, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflowView->identity() ||
+    if (mapping->view().dataflowIdentity() != dataflowView.identity() ||
         mapping->view().fabricIdentity() != moduleOutputs.front().artifact ||
         mapping->view().covers().size() != 1)
       return invalid("outcome mapping does not bind its exact synthesis "
@@ -357,14 +349,14 @@ validateOutcome(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ::dataflow::GraphRef graph = mapping->view().covers().front();
     if (llvm::is_contained(coveredGraphs, graph))
       return invalid("outcome maps one graph more than once");
-    if (!llvm::any_of(dataflowView->graphs(), [&](const auto &candidate) {
+    if (!llvm::any_of(dataflowView.graphs(), [&](const auto &candidate) {
           return candidate.ref == graph;
         }))
       return invalid("outcome mapping covers a graph outside its input");
     coveredGraphs.push_back(graph);
   }
   if (completed)
-    for (const ::dataflow::CanonicalGraphView &graph : dataflowView->graphs())
+    for (const ::dataflow::CanonicalGraphView &graph : dataflowView.graphs())
       if (!llvm::is_contained(coveredGraphs, graph.ref))
         return invalid("completed outcome omits a graph mapping");
 
@@ -416,9 +408,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto view = dataflow->view();
-  if (!view)
-    return view.takeError();
+  const auto &view = dataflow->view();
   auto mappingConfig = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -426,8 +416,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return mappingConfig.takeError();
 
   std::vector<::dataflow::GraphRef> graphs;
-  graphs.reserve(view->graphs().size());
-  for (const ::dataflow::CanonicalGraphView &graph : view->graphs())
+  graphs.reserve(view.graphs().size());
+  for (const ::dataflow::CanonicalGraphView &graph : view.graphs())
     graphs.push_back(graph.ref);
   const auto emptyOutputBindings = [] {
     return std::vector<CandidateGeneratorOutputBinding>{
@@ -467,7 +457,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         CandidateGeneratorIncompleteReason::CancelledOrTimeout);
 
   auto synthesized = attemptScalarIntegerAddSubFuSynthesis(
-      *view, graphs, *mappingConfig, store, invocation.executionControl());
+      view, graphs, *mappingConfig, store, invocation.executionControl());
   if (!synthesized) {
     std::optional<FuReverseSynthesisFailure> kind;
     std::string diagnostic;

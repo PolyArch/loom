@@ -9,6 +9,8 @@
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/NumericValue.h"
 #include "Evaluation/OwnerValue.h"
+#include "Fabric/IR/ResourceContract.h"
+#include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -20,6 +22,10 @@
 #include <variant>
 #include <vector>
 
+namespace loom::fabric {
+class FabricArtifactView;
+}
+
 namespace loom {
 class ArtifactStore;
 class BlobStore;
@@ -30,7 +36,7 @@ namespace loom::sim {
 class PreparedSpatialExecutionContext;
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
-    "loom.simulation_execution", SchemaVersion{2, 0}};
+    "loom.simulation_execution", SchemaVersion{3, 0}};
 
 struct RetiredExecution {};
 
@@ -61,8 +67,28 @@ struct SpatialEventCoordinate {
 /// Exact numeric and delta order: negative, zero, or positive. Equal
 /// denominators compare their canonical numerators directly; other products
 /// use unsigned 128-bit arithmetic, which exactly contains u64*u64.
-int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
-                                   const SpatialEventCoordinate &rhs);
+inline int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
+                                          const SpatialEventCoordinate &rhs) {
+  if (lhs.referenceCycle.denominator() == rhs.referenceCycle.denominator()) {
+    if (lhs.referenceCycle.numerator() != rhs.referenceCycle.numerator())
+      return lhs.referenceCycle.numerator() < rhs.referenceCycle.numerator()
+                 ? -1
+                 : 1;
+    if (lhs.delta == rhs.delta)
+      return 0;
+    return lhs.delta < rhs.delta ? -1 : 1;
+  }
+  using u128 = unsigned __int128;
+  const u128 lhsScaled = static_cast<u128>(lhs.referenceCycle.numerator()) *
+                         rhs.referenceCycle.denominator();
+  const u128 rhsScaled = static_cast<u128>(rhs.referenceCycle.numerator()) *
+                         lhs.referenceCycle.denominator();
+  if (lhsScaled != rhsScaled)
+    return lhsScaled < rhsScaled ? -1 : 1;
+  if (lhs.delta == rhs.delta)
+    return 0;
+  return lhs.delta < rhs.delta ? -1 : 1;
+}
 
 /// Returns the exact integral reference-cycle distance when `to` does not
 /// precede `from`; nonintegral, reversed, or overflowing intervals have no
@@ -125,10 +151,35 @@ struct ActorTransitionEntry {
   ActorTransitionCounts counts;
 };
 
-struct ActorTransitionsActivitySummary {
+struct ActorTransitionsActivity {
+  std::vector<ActorTransitionEntry> transitions;
+};
+
+struct FabricUseCountEntry {
+  fabric::FabricUsePatternRef pattern;
+  std::uint64_t activations = 0;
+};
+
+struct FabricCapacityOccupancy {
+  ::fabric::CapacityDimensionKey dimension;
+  evaluation::ExactRatio occupiedCapacityReferenceCycles;
+  std::uint64_t peakOccupiedCapacity = 0;
+};
+
+struct FabricResourceOccupancyEntry {
+  fabric::FabricResourceStateRef resource;
+  std::vector<FabricCapacityOccupancy> dimensions;
+};
+
+struct FabricResourcesActivity {
+  std::vector<FabricUseCountEntry> useCounts;
+  std::vector<FabricResourceOccupancyEntry> resourceOccupancy;
+};
+
+struct ActivitySummary {
   ActivityWindow window = ActivityWindow::LaunchToTerminal;
   ActivityCoverage coverage = ActivityCoverage::Partial;
-  std::vector<ActorTransitionEntry> transitions;
+  std::variant<ActorTransitionsActivity, FabricResourcesActivity> payload;
 };
 
 /// The Spatial observation form selected by a Spatial workload. It carries no
@@ -138,7 +189,7 @@ struct SpatialSimulationExecution {
   ExecutionTerminal terminal;
   SpatialFunctionalObservations functionalObservations;
   SpatialProgressObservations progressObservations;
-  std::vector<ActorTransitionsActivitySummary> activitySummaries;
+  std::vector<ActivitySummary> activitySummaries;
 };
 
 /// Invocation-local result at a Spatial engine boundary. The exact workload
@@ -149,7 +200,14 @@ struct SpatialEngineBoundaryResult {
   ExecutionTerminal terminal;
   SpatialFunctionalObservations functionalObservations;
   SpatialProgressObservations progressObservations;
-  std::vector<ActorTransitionsActivitySummary> activitySummaries;
+  std::vector<ActivitySummary> activitySummaries;
+};
+
+/// Native occupied acceptance-service ticks of the one shared System memory,
+/// clipped to program-entry acceptance through visible program exit. The
+/// exact bound model owns capacity; retry attempts consume no service.
+struct SystemMemoryActivity final {
+  std::uint64_t occupiedTicks = 0;
 };
 
 /// The Deployment-owned observation form selected by a System workload. The
@@ -159,9 +217,7 @@ struct SystemSimulationExecution {
   ExecutionTerminal terminal;
   SystemFunctionalObservations functionalObservations;
   SystemProgressObservations progressObservations;
-  // Schema 2.0 activity payloads use Spatial reference-cycle windows, so this
-  // collection is required to be empty for System executions.
-  std::vector<ActorTransitionsActivitySummary> activitySummaries;
+  std::optional<SystemMemoryActivity> memoryActivity;
 };
 
 using SimulationExecutionModel =
@@ -204,8 +260,7 @@ public:
   const SpatialProgressObservations &spatialProgressObservations() const {
     return std::get<SpatialSimulationExecution>(model_).progressObservations;
   }
-  llvm::ArrayRef<ActorTransitionsActivitySummary>
-  spatialActivitySummaries() const {
+  llvm::ArrayRef<ActivitySummary> spatialActivitySummaries() const {
     return std::get<SpatialSimulationExecution>(model_).activitySummaries;
   }
   const CanonicalSemanticBytes &canonicalBytes() const { return bytes_; }
@@ -311,33 +366,40 @@ llvm::Expected<ArtifactRootReference>
 simulationExecutionRequestReference(const ArtifactRootReference &reference,
                                     const ArtifactStore &store);
 
-llvm::Expected<std::vector<std::uint8_t>>
-encodeSpatialEngineBoundaryResult(const SpatialEngineBoundaryResult &result,
-                                  const ArtifactRootReference &workload,
-                                  const ArtifactRootReference &runtimeInput,
-                                  const ArtifactStore &store);
+/// Fabric payloads require the exact borrowed mapped Fabric view. Actor-only
+/// results need no Fabric context. The view never enters boundary-result bytes.
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
+    const SpatialEngineBoundaryResult &result,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
     const SpatialEngineBoundaryResult &result,
-    const ImportedSpatialSimulationInputs &inputs);
+    const ImportedSpatialSimulationInputs &inputs,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
     const SpatialEngineBoundaryResult &result,
     const ImportedSpatialSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput);
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
-    const ImportedSpatialSimulationInputs &inputs);
+    const ImportedSpatialSimulationInputs &inputs,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
     const ImportedSpatialSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput);
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const fabric::FabricArtifactView *fabricView = nullptr);
 
 } // namespace loom::sim
 

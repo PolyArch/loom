@@ -90,10 +90,20 @@ struct SelectedWholeProgramProjection final {
   std::optional<NativeChannelCallbackNames> channels;
 };
 
+enum class ProgramObjectCaptureKind : std::uint64_t {
+  Global,
+  RuntimeAllocation,
+  StackAllocation
+};
+
 struct WorkloadCaptureCallbackNames final {
+  std::vector<NativeMemoryObjectSource> programObjectSources;
   std::string begin;
   std::string end;
   std::optional<std::string> registerObject;
+  std::optional<std::string> endStackObject;
+  std::optional<std::string> enterStackFrame;
+  std::optional<std::string> leaveStackFrame;
   std::optional<std::string> coordinate;
   std::optional<std::string> memoryRoot;
   std::optional<std::string> value;

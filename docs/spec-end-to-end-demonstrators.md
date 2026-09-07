@@ -173,17 +173,26 @@ high-water mark of the whole workload batch, not a per-execution sample. The
 profile binds the current operator-gate digest and exact Dataflow, workload,
 runtime-input, Fabric, TechMapping, and SpatialMapping roots.
 
-The ten-row qualification uses one fixed parameter point derived from the
-public `builtinLargeTarget`: its topology and FU distribution are unchanged,
-and every Temporal PE has 16 resident instruction contexts. These target
-parameters are part of the one published `ResolvedConfig` consumed by
-TechMapping, Spatial PnR, and simulation. The smaller default coverage target
-is not a qualification substitute: its 63 resident instruction contexts
-cannot admit the representative matrix-multiply cover, whose exact Hall demand
-contains 98 Compute Realizations. The unmodified large point also has a
-seven-context Hall deficit in the special-math-compatible demand subset. The
-qualification point closes that typed capacity witness rather than weakening
-the injective context rule.
+The ten-row qualification starts from the public `builtinLargeTarget` with
+16 resident instruction contexts per Temporal PE and selects one shared
+hardware child for the complete source suite. That initial parameter point is
+owned by the published `ResolvedConfig`; exact child Fabric roots are produced
+by the ordinary Spatial microarchitecture generator. The qualification gathers
+TechMapping compute-context Hall feedback across every source case, projects
+the existing minimum joint context-growth action, and reruns the suite against
+its atomic child. Every round preserves the source Dataflow, workload, and
+runtime-input roots. The shared search has the canonical `fast` deadline and
+retains provider outcomes, work counts, feedback bytes, rewrite configuration,
+Fabric lineage, and separate host time accounting. It never treats a deadline
+or an incomplete rewrite as a capacity proof.
+
+Source preparation uses one shared artifact store. After all ten cases have
+usable TechMapping frontiers on the same Fabric, each workload independently
+runs the complete qualification below against that exact Fabric and the same
+ResolvedConfig. No workload chooses a private hardware point. The search report
+is retained with the run's diagnostics; the gate continues to bind the actual
+common Fabric and configuration through every measured profile. Each run uses
+a fresh temporary directory and preserves earlier qualification evidence.
 
 Qualification uses the production resolved Spatial PnR policy with
 `ExhaustConfiguredWork`; it does not replace that policy with a bounded-prefix
@@ -217,6 +226,16 @@ conformance owner's policy constants and the current operator-gate digest in
 every suite run. Once the gate is published, the paired runner consumes it as
 the only Spatial absolute budget; the `medium`-tier bootstrap ceiling is not
 retained as a second value.
+The Python qualification owner is `test/cgra_qualification.py`; the paired
+runner imports its published budget and gate resolution. Profile schema
+identities are derived from the named constants in `CgraBudgetProfile.cpp`.
+Transport repair records the production CEGAR termination and each local
+transition's parent Mapping, triggering runtime Evidence, accumulated
+constraints, child Mapping and child runtime Evidence. Consecutive transitions
+must join on both Mapping and Evidence identities. A completed profile requires
+the final transition to retire and its child to equal the measured Mapping.
+An unretired transport outcome remains incomplete even when the preceding
+static PnR search completed; its CEGAR termination is the retained reason.
 The value is selected from the aggregate evidence and the 100 k
 reference-cycles-per-wall-second target, and is derived with integer arithmetic:
 

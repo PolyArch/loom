@@ -3,10 +3,14 @@
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
 
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <type_traits>
+#include <utility>
 
 namespace loom::pnr::detail {
 namespace {
@@ -70,14 +74,12 @@ void emitHandshakeCycleDiagnostic(
     const FrozenSpatialHandshakeIndex &index, HandshakeCycleOrigin origin,
     llvm::ArrayRef<PnrIndex> frozenWitness,
     llvm::ArrayRef<PnrIndex> activeFragments,
-    llvm::ArrayRef<PnrIndex> fragmentRefcounts) {
+    llvm::ArrayRef<PnrIndex> fragmentRefcounts,
+    DiagnosticVerbosity minimum) {
   using namespace ::loom::mapping_debug;
-  const Level level = origin == HandshakeCycleOrigin::Candidate
-                          ? Level::Decision
-                          : Level::Detail;
-  if (frozenWitness.empty() || !enabled(level))
+  if (frozenWitness.empty() || !enabled(minimum))
     return;
-  emit(level, Stage::SpatialPnr, Event::MappingFailure,
+  emit(minimum, Stage::SpatialPnr, Event::MappingFailure,
        [&](llvm::json::Object &fields) {
          fields["operation"] =
              origin == HandshakeCycleOrigin::Candidate
@@ -85,6 +87,54 @@ void emitHandshakeCycleDiagnostic(
                  : "projected_handshake_cycle";
          fields["arc_numbering"] = "frozen_projection";
          fields["witness_arc_count"] = frozenWitness.size();
+         // Keep the complete witness identity available at summary verbosity.
+         // Owner expansion is useful while making a routing decision, but makes
+         // repeated exact-repair failures needlessly expensive to aggregate.
+         llvm::json::Array arcRefs;
+         for (PnrIndex arc : frozenWitness)
+           arcRefs.push_back(static_cast<std::int64_t>(arc));
+         fields["witness_arc_refs"] = std::move(arcRefs);
+         const auto fragmentOffsets = index.projectionFragmentArcOffsets();
+         const auto fragmentArcs = index.projectionFragmentArcs();
+         const auto fragments = index.fragments();
+         const auto models = index.ownerModels();
+         llvm::SmallSet<PnrIndex, 32> witnessArcs;
+         for (PnrIndex arc : frozenWitness)
+           witnessArcs.insert(arc);
+         const auto fragmentIntersectsWitness = [&](PnrIndex fragment) {
+           return llvm::any_of(
+               fragmentArcs.slice(fragmentOffsets[fragment],
+                                  fragmentOffsets[fragment + 1] -
+                                      fragmentOffsets[fragment]),
+               [&](PnrIndex arc) { return witnessArcs.contains(arc); });
+         };
+         llvm::SmallVector<std::pair<llvm::StringRef, std::uint64_t>, 8>
+             ownerKinds;
+         for (PnrIndex fragment : activeFragments) {
+           if (!fragmentIntersectsWitness(fragment))
+             continue;
+           const PnrIndex owner = fragments[fragment].owner;
+           const llvm::StringRef kind = ownerKind(models[owner].owner().kind());
+           auto found = llvm::find_if(
+               ownerKinds, [&](const auto &entry) { return entry.first == kind; });
+           if (found == ownerKinds.end())
+             ownerKinds.emplace_back(kind, 1);
+           else
+             ++found->second;
+         }
+         llvm::sort(ownerKinds,
+                    [](const auto &left, const auto &right) {
+                      return left.first < right.first;
+                    });
+         llvm::json::Array ownerKindSummary;
+         for (const auto &[kind, activeFragmentCount] : ownerKinds)
+           ownerKindSummary.push_back(llvm::json::Object{
+               {"owner_kind", kind},
+               {"active_fragment_count", activeFragmentCount},
+           });
+         fields["witness_active_owner_kinds"] = std::move(ownerKindSummary);
+         if (!enabled(Level::Decision))
+           return;
          const std::size_t sampleCount =
              enabled(Level::Detail)
                  ? frozenWitness.size()
@@ -94,10 +144,6 @@ void emitHandshakeCycleDiagnostic(
          llvm::json::Array arcs;
          const auto projectedArcs = index.projectionArcs();
          const auto signals = index.projectionNodeSignals();
-         const auto fragmentOffsets = index.projectionFragmentArcOffsets();
-         const auto fragmentArcs = index.projectionFragmentArcs();
-         const auto fragments = index.fragments();
-         const auto models = index.ownerModels();
          for (PnrIndex arc : frozenWitness.take_front(sampleCount)) {
            const FrozenSpatialHandshakeArc &record = projectedArcs[arc];
            llvm::json::Object entry;

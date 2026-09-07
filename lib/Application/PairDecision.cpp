@@ -34,8 +34,9 @@ unsupportedObjective(ApplicationObjectiveDimension dimension) {
 
 std::vector<ApplicationObjectiveObservation> makeUnsupportedObjectiveVector() {
   std::vector<ApplicationObjectiveObservation> result;
-  result.reserve(11);
-  for (std::uint8_t ordinal = 0; ordinal != 11; ++ordinal)
+  result.reserve(applicationObjectiveDimensionCount);
+  for (std::size_t ordinal = 0; ordinal != applicationObjectiveDimensionCount;
+       ++ordinal)
     result.push_back(unsupportedObjective(
         static_cast<ApplicationObjectiveDimension>(ordinal)));
   return result;
@@ -81,16 +82,27 @@ void setFunnelExactMeasurement(ApplicationPairMappingObservation &observation,
         static_cast<std::uint64_t>(error);
 }
 
-/// Pre-Mapping analytic dimensions of one candidate: the projection is exact
-/// structural provenance of the ownership, not a calibrated prediction.
-void setProjectedObjectiveDimensions(
+/// Runtime and host activity come from the same complete candidate model
+/// result. Root-coordinate cut projections remain separate analytic units.
+void setPlanningObjectiveDimensions(
     std::vector<ApplicationObjectiveObservation> &objective,
-    const dse::PreMappingCandidateProjection &projection) {
-  setObjective(objective[static_cast<std::size_t>(
-                   ApplicationObjectiveDimension::HostResidualWork)],
-               projection.hostDynamicLeafExecutions,
-               ApplicationObjectiveEvidence::Analytic,
-               analyticConfidencePermille, true);
+    const dse::PreMappingCandidatePlanningRecord &planning) {
+  if (planning.estimatedRuntimePicoseconds)
+    setObjective(
+        objective[static_cast<std::size_t>(
+            ApplicationObjectiveDimension::CandidateRuntimePicoseconds)],
+        *planning.estimatedRuntimePicoseconds,
+        ApplicationObjectiveEvidence::Analytic, analyticConfidencePermille,
+        true);
+  if (planning.hostDynamicLeafExecutions)
+    setObjective(objective[static_cast<std::size_t>(
+                     ApplicationObjectiveDimension::HostResidualWork)],
+                 *planning.hostDynamicLeafExecutions,
+                 ApplicationObjectiveEvidence::Analytic,
+                 analyticConfidencePermille, true);
+  if (!planning.projection)
+    return;
+  const auto &projection = *planning.projection;
   if (projection.estimatedCutTrafficBytes)
     setObjective(objective[static_cast<std::size_t>(
                      ApplicationObjectiveDimension::CutTransferWork)],
@@ -102,6 +114,18 @@ void setProjectedObjectiveDimensions(
                projection.launchSynchronizationCost,
                ApplicationObjectiveEvidence::Analytic,
                analyticConfidencePermille, true);
+}
+
+void setHostOnlyBaseline(ApplicationPairDecisionRecord &decision,
+                         std::optional<std::uint64_t> runtimePicoseconds) {
+  decision.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  if (!runtimePicoseconds)
+    return;
+  setObjective(decision.hostOnlyBaseline[static_cast<std::size_t>(
+                   ApplicationObjectiveDimension::HostOnlyRuntimePicoseconds)],
+               *runtimePicoseconds, ApplicationObjectiveEvidence::Analytic,
+               analyticConfidencePermille, true);
+  decision.hostOnlyBaselineComplete = true;
 }
 
 std::optional<long double>
@@ -419,8 +443,7 @@ ApplicationPairDecisionDisposition prioritizeIncompletePairDisposition(
       return 3U;
     case ApplicationPairDecisionDisposition::CancelledOrTimeout:
       return 4U;
-    case ApplicationPairDecisionDisposition::VerifiedAcceleration:
-    case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+    case ApplicationPairDecisionDisposition::VerifiedFeasible:
     case ApplicationPairDecisionDisposition::NoPromisingCandidate:
     case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
     case ApplicationPairDecisionDisposition::HardwareDseAlternative:
@@ -569,28 +592,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     result.pairIdentity = *identity;
   }
 
-  result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
-  if (prepared.preMappingSourceHostOnlyWork) {
-    setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
-                     ApplicationObjectiveDimension::HostOnlyWork)],
-                 *prepared.preMappingSourceHostOnlyWork,
-                 ApplicationObjectiveEvidence::RuntimeMeasured);
-    result.hostOnlyBaselineComplete = true;
-  }
-  for (const dse::PreMappingCandidatePlanningRecord &planning :
-       prepared.candidateInventory) {
-    if (result.hostOnlyBaselineComplete)
-      break;
-    if (!planning.estimatedRuntimePicoseconds)
-      continue;
-    setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
-                     ApplicationObjectiveDimension::HostOnlyWork)],
-                 *planning.estimatedRuntimePicoseconds,
-                 ApplicationObjectiveEvidence::Analytic,
-                 analyticConfidencePermille, true);
-    result.hostOnlyBaselineComplete = true;
-    break;
-  }
+  setHostOnlyBaseline(result,
+                      prepared.preMappingSourceHostOnlyRuntimePicoseconds);
   result.planningRecordCount = prepared.candidateInventory.size();
   result.qualityObjectiveDimensionLabels =
       summary.qualityObjectiveDimensionLabels;
@@ -654,16 +657,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     candidate.planningIncompleteReason = planning.incompleteReason;
     candidate.verifiedSpectrum = planning.verifiedSpectrum;
     candidate.objective = makeUnsupportedObjectiveVector();
-    if (planning.estimatedRuntimePicoseconds) {
-      setObjective(candidate.objective[static_cast<std::size_t>(
-                       ApplicationObjectiveDimension::HostOnlyWork)],
-                   *planning.estimatedRuntimePicoseconds,
-                   ApplicationObjectiveEvidence::Analytic,
-                   analyticConfidencePermille, true);
-    }
-    if (planning.projection)
-      setProjectedObjectiveDimensions(candidate.objective,
-                                      *planning.projection);
+    setPlanningObjectiveDimensions(candidate.objective, planning);
     for (const ApplicationMappingCandidateOutcome &outcome : outcomes) {
       if (outcome.preMappingCandidateRecordOrdinal != ordinal)
         continue;
@@ -846,12 +840,6 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
             ApplicationObjectiveDimension::DfgCycles)];
         const auto cgra = objective[static_cast<std::size_t>(
             ApplicationObjectiveDimension::CgraCycles)];
-        if (dfg.value) {
-          setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
-                           ApplicationObjectiveDimension::DfgCycles)],
-                       *dfg.value,
-                       ApplicationObjectiveEvidence::RuntimeMeasured);
-        }
         result.selectedObjective = objective;
         setObjective(result.selectedObjective[static_cast<std::size_t>(
                          ApplicationObjectiveDimension::MappingWork)],
@@ -862,9 +850,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         setCalibratedPhysicalDimensions(result.selectedObjective, summary,
                                         *summary.selectedMapping,
                                         outcome.cgraCycles);
-        result.finalApplicationQorComplete = result.hostOnlyBaselineComplete &&
-                                             dfg.value.has_value() &&
-                                             cgra.value.has_value();
+        // Complete target runtime and resource-use observations are not
+        // supplied by this Spatial replay. The full application QoR gate
+        // remains incomplete even when feasibility and predictions are known.
         if (result.portfolioInput &&
             outcome.runtimeDisposition ==
                 ApplicationMappingRuntimeDisposition::Completed &&
@@ -884,8 +872,6 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
             !result.portfolioInput || result.portfolioExecutionBinding ==
                                           ApplicationPortfolioExecutionBinding::
                                               CanonicalSimulationAndOracle;
-        result.finalApplicationQorComplete =
-            result.finalApplicationQorComplete && portfolioExecutionComplete;
         if (outcome.runtimeDisposition !=
             ApplicationMappingRuntimeDisposition::Completed) {
           const auto setRuntimeDetail = [&](llvm::StringRef fallback) {
@@ -937,12 +923,9 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         } else if (outcome.system != prepared.preMappingFabric) {
           result.disposition =
               ApplicationPairDecisionDisposition::HardwareDseAlternative;
-        } else if (dfg.value && cgra.value && *cgra.value < *dfg.value) {
-          result.disposition =
-              ApplicationPairDecisionDisposition::VerifiedAcceleration;
         } else if (dfg.value && cgra.value) {
-          result.disposition = ApplicationPairDecisionDisposition::
-              VerifiedFeasibleButNotBeneficial;
+          result.disposition =
+              ApplicationPairDecisionDisposition::VerifiedFeasible;
         } else {
           result.disposition =
               ApplicationPairDecisionDisposition::MappingProofNotEstablished;
@@ -1048,9 +1031,7 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         case ApplicationPairDecisionDisposition::BudgetExhausted:
           result.detail = "bounded application Mapping work was exhausted";
           break;
-        case ApplicationPairDecisionDisposition::VerifiedAcceleration:
-        case ApplicationPairDecisionDisposition::
-            VerifiedFeasibleButNotBeneficial:
+        case ApplicationPairDecisionDisposition::VerifiedFeasible:
         case ApplicationPairDecisionDisposition::NoPromisingCandidate:
         case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
         case ApplicationPairDecisionDisposition::HardwareDseAlternative:
@@ -1069,7 +1050,7 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     const std::optional<ArtifactRootReference> &runtimeInput,
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
-    std::optional<std::uint64_t> sourceHostOnlyWork,
+    std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds,
     std::optional<std::array<std::uint8_t, 32>> invocationRunKey,
     bool ownerVerifiedPreAdmission,
     std::optional<SelectedApplicationInput> portfolioInput) {
@@ -1103,25 +1084,10 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
   result.workload = workload;
   result.runtimeInput = runtimeInput;
   result.planningRecordCount = inventory.size();
-  result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
-  if (sourceHostOnlyWork) {
-    setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
-                     ApplicationObjectiveDimension::HostOnlyWork)],
-                 *sourceHostOnlyWork,
-                 ApplicationObjectiveEvidence::RuntimeMeasured);
-    result.hostOnlyBaselineComplete = true;
-  }
+  setHostOnlyBaseline(result, sourceHostOnlyRuntimePicoseconds);
   result.candidates.reserve(inventory.size());
   for (std::size_t ordinal = 0; ordinal != inventory.size(); ++ordinal) {
     const auto &record = inventory[ordinal];
-    if (!result.hostOnlyBaselineComplete &&
-        record.estimatedRuntimePicoseconds) {
-      setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
-                       ApplicationObjectiveDimension::HostOnlyWork)],
-                   *record.estimatedRuntimePicoseconds,
-                   ApplicationObjectiveEvidence::Analytic, 250, true);
-      result.hostOnlyBaselineComplete = true;
-    }
     if (!record.candidateIdentity) {
       ++result.nonCandidatePlanningRecordCount;
       continue;
@@ -1141,11 +1107,7 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     candidate.planningIncompleteReason = record.incompleteReason;
     candidate.verifiedSpectrum = record.verifiedSpectrum;
     candidate.objective = makeUnsupportedObjectiveVector();
-    if (record.estimatedRuntimePicoseconds)
-      setObjective(candidate.objective[static_cast<std::size_t>(
-                       ApplicationObjectiveDimension::HostOnlyWork)],
-                   *record.estimatedRuntimePicoseconds,
-                   ApplicationObjectiveEvidence::Analytic, 250, true);
+    setPlanningObjectiveDimensions(candidate.objective, record);
     result.candidates.push_back(std::move(candidate));
   }
   if (sourceProgram && fabric && workload && runtimeInput) {
@@ -1179,6 +1141,55 @@ ApplicationPairDecisionRecord makePreAdmissionFailurePairDecision(
 }
 
 } // namespace build_detail
+
+ApplicationBenefitStatus
+deriveApplicationBenefitStatus(const ApplicationPairDecisionRecord &decision) {
+  if (!decision.sourceProgram || !decision.fabric || !decision.workload ||
+      !decision.runtimeInput || decision.selectedSystem != decision.fabric ||
+      !decision.selectedCandidateIdentity)
+    return ApplicationBenefitStatus::Unknown;
+  const auto source =
+      llvm::find_if(decision.hostOnlyBaseline, [](const auto &item) {
+        return item.dimension ==
+               ApplicationObjectiveDimension::HostOnlyRuntimePicoseconds;
+      });
+  const ApplicationPairCandidateRecord *selected = nullptr;
+  for (const auto &candidate : decision.candidates) {
+    if (!candidate.selected)
+      continue;
+    if (selected ||
+        candidate.candidateIdentity != decision.selectedCandidateIdentity ||
+        !candidate.structuredProgram)
+      return ApplicationBenefitStatus::Unknown;
+    selected = &candidate;
+  }
+  if (!selected || source == decision.hostOnlyBaseline.end() ||
+      !source->value ||
+      source->evidence != ApplicationObjectiveEvidence::Analytic)
+    return ApplicationBenefitStatus::Unknown;
+  const auto runtime = llvm::find_if(selected->objective, [](const auto &item) {
+    return item.dimension ==
+           ApplicationObjectiveDimension::CandidateRuntimePicoseconds;
+  });
+  if (runtime == selected->objective.end() || !runtime->value ||
+      runtime->evidence != ApplicationObjectiveEvidence::Analytic)
+    return ApplicationBenefitStatus::Unknown;
+  return *runtime->value < *source->value
+             ? ApplicationBenefitStatus::PredictedBeneficial
+             : ApplicationBenefitStatus::PredictedNotBeneficial;
+}
+
+llvm::StringRef toString(ApplicationBenefitStatus value) {
+  switch (value) {
+  case ApplicationBenefitStatus::Unknown:
+    return "unknown";
+  case ApplicationBenefitStatus::PredictedBeneficial:
+    return "predicted_beneficial";
+  case ApplicationBenefitStatus::PredictedNotBeneficial:
+    return "predicted_not_beneficial";
+  }
+  llvm_unreachable("unknown application benefit status");
+}
 
 llvm::StringRef toString(ApplicationPairManifestJoinStatus value) {
   switch (value) {

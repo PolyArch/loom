@@ -436,6 +436,28 @@ bool FabricSwitchSelectedContention::activates(
   llvm_unreachable("closed switch contention relation domain");
 }
 
+bool FabricSwitchSelectedContention::selectedCrosspointInRelationComponent(
+    const FabricSwitchHandshakeContentionRelation &relation,
+    const FabricSwitchSelectedCrosspoint &crosspoint) const {
+  if (!activates(relation) || !selected(crosspoint.input, crosspoint.output))
+    return false;
+  using Kind = FabricSwitchHandshakeContentionRelationKind;
+  switch (relation.relation) {
+  case Kind::ReadyInputValid:
+  case Kind::ReadyTreeInputParent:
+  case Kind::ReadyTreeOutputParent:
+  case Kind::ReadyRootBridge:
+  case Kind::InputReady:
+  case Kind::FixedInputValid:
+  case Kind::FixedSelectedCrosspoint:
+    return componentOf(relation.input) == componentOf(crosspoint.input);
+  case Kind::RoundRobinOutputValid:
+  case Kind::FixedUnselectedCrosspoint:
+    return componentOfOutput(relation.output) == componentOf(crosspoint.input);
+  }
+  llvm_unreachable("closed switch contention relation domain");
+}
+
 llvm::Expected<HandshakeOwnerModel> detail::compileSwitchHandshakeModel(
     const FabricArtifactView &view, FabricSwitchOccurrenceRef owner,
     llvm::ArrayRef<const FabricPhysicalTraversalView *> traversals) {

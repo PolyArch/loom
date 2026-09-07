@@ -175,9 +175,8 @@ private:
   static llvm::Expected<SpatialTagAssignmentState>
   create(const FrozenSpatialPnrProblem &problem,
          llvm::ArrayRef<RouteTreeStateHandle> routes);
-  llvm::Expected<SpatialTagAssignmentSummary>
-  projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes,
-                        bool includeDomainDetails = false) const;
+  llvm::Expected<SpatialTagAssignmentState>
+  projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes) const;
   llvm::Expected<SpatialTagAssignmentSummary>
   summarizeCurrentState(bool includeDomainDetails) const;
   llvm::Expected<SpatialTagAssignmentDelta>
@@ -187,8 +186,10 @@ private:
                         llvm::ArrayRef<PnrIndex> changedDomains) const;
   llvm::ArrayRef<PnrIndex>
   changedDomains(const SpatialTagAssignmentScratch &scratch) const;
+  /// Nets with staged route continuity or tag values. Marginal domain
+  /// prices use the broader synchronized inventory in summarizeCurrentDelta.
   llvm::ArrayRef<PnrIndex>
-  synchronizedNets(const SpatialTagAssignmentScratch &scratch) const;
+  changedNets(const SpatialTagAssignmentScratch &scratch) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,

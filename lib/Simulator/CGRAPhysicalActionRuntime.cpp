@@ -1,5 +1,7 @@
 #include "CGRAPhysicalActionRuntime.h"
 
+#include "CgraFabricActivityRuntime.h"
+
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -41,7 +43,8 @@ decodePayload(std::uint64_t payload) {
 
 llvm::Expected<CgraPhysicalActionRuntime>
 CgraPhysicalActionRuntime::create(const CgraResourceRuntimePlan &resources,
-                                  llvm::ArrayRef<CgraPhysicalUseTiming> uses) {
+                                  llvm::ArrayRef<CgraPhysicalUseTiming> uses,
+                                  CgraFabricActivityRuntime *activity) {
   if (uses.size() != resources.selectedUses.size())
     return invalid(
         "CGRA physical timing must cover every selected resource use");
@@ -60,7 +63,8 @@ CgraPhysicalActionRuntime::create(const CgraResourceRuntimePlan &resources,
   auto runtime = CgraResourceRuntime::create(resources);
   if (!runtime)
     return runtime.takeError();
-  return CgraPhysicalActionRuntime(std::move(frozen), std::move(*runtime));
+  return CgraPhysicalActionRuntime(std::move(frozen), std::move(*runtime),
+                                   activity);
 }
 
 llvm::Error
@@ -135,7 +139,7 @@ CgraPhysicalActionRuntime::requestBatch(
       slot = actions_.size();
       actions_.push_back(
           Action{request.actionOrdinal, request.occurrenceOrdinal,
-                 ActionState::Requested, std::nullopt, false, false, false});
+                 ActionState::Requested, std::nullopt, false, false});
     } else {
       slot = freeActionSlots_.back();
       freeActionSlots_.pop_back();
@@ -143,7 +147,6 @@ CgraPhysicalActionRuntime::requestBatch(
                               request.occurrenceOrdinal,
                               ActionState::Requested,
                               std::nullopt,
-                              false,
                               false,
                               false};
     }
@@ -204,17 +207,18 @@ llvm::Error CgraPhysicalActionRuntime::satisfyCausalRelease(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>>
+llvm::Expected<std::optional<CgraPhysicalLifecycleFrameView>>
 CgraPhysicalActionRuntime::advance() {
+  frameEvents_.clear();
   auto next = events_.popNextFrameView();
   if (!next)
     return next.takeError();
   if (!*next)
-    return std::optional<CgraPhysicalLifecycleFrame>{};
+    return std::optional<CgraPhysicalLifecycleFrameView>{};
 
   const CgraEventFrameView internal = **next;
   lastCoordinate_ = internal.coordinate;
-  CgraPhysicalLifecycleFrame result{internal.coordinate, {}};
+  const SpatialEventCoordinate coordinate = internal.coordinate;
 
   struct Due final {
     std::uint64_t slot = 0;
@@ -230,7 +234,8 @@ CgraPhysicalActionRuntime::advance() {
     due.push_back({slot, kind, event.order.ownerEventOrdinal});
   }
 
-  llvm::stable_sort(due, [](const Due &lhs, const Due &rhs) {
+  // The calendar rejects duplicate action/event keys, so these keys are unique.
+  llvm::sort(due, [](const Due &lhs, const Due &rhs) {
     return std::make_tuple(lhs.kind, lhs.slot, lhs.ownerEventOrdinal) <
            std::make_tuple(rhs.kind, rhs.slot, rhs.ownerEventOrdinal);
   });
@@ -245,9 +250,9 @@ CgraPhysicalActionRuntime::advance() {
     case InternalKind::Commit:
       if (action.state != ActionState::Granted)
         return invalid("CGRA physical commit precedes resource grant");
-      result.events.push_back({CgraPhysicalLifecycleKind::Committed,
-                               action.actionOrdinal, action.occurrenceOrdinal,
-                               event.ownerEventOrdinal, result.coordinate});
+      frameEvents_.push_back({CgraPhysicalLifecycleKind::Committed,
+                              action.actionOrdinal, action.occurrenceOrdinal,
+                              event.ownerEventOrdinal, coordinate});
       break;
     case InternalKind::Release:
       if (action.state != ActionState::Granted || !action.envelope)
@@ -257,6 +262,10 @@ CgraPhysicalActionRuntime::advance() {
         break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
+      if (activity_)
+        if (llvm::Error error = activity_->observeReleased(
+                action.actionOrdinal, resources_, coordinate))
+          return std::move(error);
       releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
@@ -264,22 +273,26 @@ CgraPhysicalActionRuntime::advance() {
           std::make_pair(action.actionOrdinal, action.occurrenceOrdinal));
       --activeActionCount_;
       freeActionSlots_.push_back(event.slot);
-      result.events.push_back({CgraPhysicalLifecycleKind::Retired,
-                               action.actionOrdinal, action.occurrenceOrdinal,
-                               event.ownerEventOrdinal, result.coordinate});
+      frameEvents_.push_back({CgraPhysicalLifecycleKind::Retired,
+                              action.actionOrdinal, action.occurrenceOrdinal,
+                              event.ownerEventOrdinal, coordinate});
       break;
     case InternalKind::CommitRelease:
       if (action.state != ActionState::Granted || !action.envelope)
         return invalid(
             "CGRA atomic commit/release has no active claim envelope");
-      result.events.push_back({CgraPhysicalLifecycleKind::Committed,
-                               action.actionOrdinal, action.occurrenceOrdinal,
-                               event.ownerEventOrdinal, result.coordinate});
+      frameEvents_.push_back({CgraPhysicalLifecycleKind::Committed,
+                              action.actionOrdinal, action.occurrenceOrdinal,
+                              event.ownerEventOrdinal, coordinate});
       action.intrinsicReleaseReached = true;
       if (use.requiresCausalRelease && !action.causalReleaseReached)
         break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
+      if (activity_)
+        if (llvm::Error error = activity_->observeReleased(
+                action.actionOrdinal, resources_, coordinate))
+          return std::move(error);
       releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
@@ -287,12 +300,12 @@ CgraPhysicalActionRuntime::advance() {
           std::make_pair(action.actionOrdinal, action.occurrenceOrdinal));
       --activeActionCount_;
       freeActionSlots_.push_back(event.slot);
-      result.events.push_back({CgraPhysicalLifecycleKind::Retired,
-                               action.actionOrdinal, action.occurrenceOrdinal,
-                               event.ownerEventOrdinal, result.coordinate});
+      frameEvents_.push_back({CgraPhysicalLifecycleKind::Retired,
+                              action.actionOrdinal, action.occurrenceOrdinal,
+                              event.ownerEventOrdinal, coordinate});
       break;
     case InternalKind::Acquire:
-      if (action.state != ActionState::Requested || action.acquisitionParked)
+      if (action.state != ActionState::Requested)
         return invalid("CGRA physical acquisition has invalid action state");
       requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
       requestSlots.push_back(event.slot);
@@ -300,15 +313,17 @@ CgraPhysicalActionRuntime::advance() {
     }
   }
 
-  if (releasedCapacity)
-    for (auto [slot, action] : llvm::enumerate(actions_)) {
-      if (action.state != ActionState::Requested || !action.acquisitionParked)
-        continue;
-      action.acquisitionParked = false;
+  if (releasedCapacity) {
+    for (std::uint64_t slot : parkedAcquisitions_) {
+      Action &action = actions_[slot];
+      assert(action.state == ActionState::Parked);
+      action.state = ActionState::Requested;
       const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
       requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
       requestSlots.push_back(slot);
     }
+    parkedAcquisitions_.clear();
+  }
 
   if (!requests.empty()) {
     llvm::SmallVector<CgraResourceGrant, 8> grants;
@@ -328,21 +343,26 @@ CgraPhysicalActionRuntime::advance() {
       auto accepted = granted.find(
           std::make_pair(use.selectedUseOrdinal, action.occurrenceOrdinal));
       if (accepted == granted.end()) {
-        action.acquisitionParked = true;
+        action.state = ActionState::Parked;
+        parkedAcquisitions_.push_back(slot);
         continue;
       }
 
       action.state = ActionState::Granted;
       action.envelope = accepted->second;
-      result.events.push_back({CgraPhysicalLifecycleKind::Granted,
-                               action.actionOrdinal, action.occurrenceOrdinal,
-                               use.acquireEventOrdinal, result.coordinate});
+      if (activity_)
+        if (llvm::Error error = activity_->observeGranted(
+                action.actionOrdinal, resources_, coordinate))
+          return std::move(error);
+      frameEvents_.push_back({CgraPhysicalLifecycleKind::Granted,
+                              action.actionOrdinal, action.occurrenceOrdinal,
+                              use.acquireEventOrdinal, coordinate});
       const bool combinedCommitRelease =
           use.commitRank && *use.commitRank == use.releaseRank &&
           *use.commitEventOrdinal == use.releaseEventOrdinal;
       if (combinedCommitRelease) {
         auto commitRelease =
-            addCycles(result.coordinate, *use.commitRank - use.acquireRank);
+            addCycles(coordinate, *use.commitRank - use.acquireRank);
         if (!commitRelease)
           return commitRelease.takeError();
         if (llvm::Error error =
@@ -350,8 +370,7 @@ CgraPhysicalActionRuntime::advance() {
                          *use.commitEventOrdinal))
           return std::move(error);
       } else if (use.commitRank) {
-        auto commit =
-            addCycles(result.coordinate, *use.commitRank - use.acquireRank);
+        auto commit = addCycles(coordinate, *use.commitRank - use.acquireRank);
         if (!commit)
           return commit.takeError();
         if (llvm::Error error = schedule(slot, InternalKind::Commit, *commit,
@@ -359,8 +378,7 @@ CgraPhysicalActionRuntime::advance() {
           return std::move(error);
       }
       if (!combinedCommitRelease) {
-        auto release =
-            addCycles(result.coordinate, use.releaseRank - use.acquireRank);
+        auto release = addCycles(coordinate, use.releaseRank - use.acquireRank);
         if (!release)
           return release.takeError();
         if (llvm::Error error = schedule(slot, InternalKind::Release, *release,
@@ -370,14 +388,15 @@ CgraPhysicalActionRuntime::advance() {
     }
   }
 
-  llvm::stable_sort(result.events, [](const CgraPhysicalLifecycleEvent &lhs,
-                                      const CgraPhysicalLifecycleEvent &rhs) {
+  llvm::sort(frameEvents_, [](const CgraPhysicalLifecycleEvent &lhs,
+                              const CgraPhysicalLifecycleEvent &rhs) {
     return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal,
                     lhs.ownerEventOrdinal, lhs.kind) <
            std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal,
                     rhs.ownerEventOrdinal, rhs.kind);
   });
-  return std::optional<CgraPhysicalLifecycleFrame>(std::move(result));
+  return std::optional<CgraPhysicalLifecycleFrameView>(
+      CgraPhysicalLifecycleFrameView{coordinate, frameEvents_});
 }
 
 std::vector<CgraPendingPhysicalActionDiagnostic>
@@ -392,7 +411,29 @@ CgraPhysicalActionRuntime::pendingActionDiagnostics() const {
     result.push_back(
         {key.first, key.second, action.state == ActionState::Granted,
          use.commitRank.has_value(), use.requiresCausalRelease,
-         action.intrinsicReleaseReached, action.causalReleaseReached});
+         action.intrinsicReleaseReached, action.causalReleaseReached, {}});
+    if (action.state != ActionState::Parked)
+      continue;
+    for (const auto &blocker :
+         resources_.capacityBlockers(use.selectedUseOrdinal)) {
+      for (const auto &[holderKey, holderSlot] : activeActions_) {
+        const auto &holder = actions_[holderSlot];
+        if (!holder.envelope ||
+            holder.envelope->slot != blocker.holder.slot ||
+            holder.envelope->generation != blocker.holder.generation)
+          continue;
+        result.back().capacityWaits.push_back(
+            {holderKey.first, holderKey.second, blocker.dimensionOrdinal,
+             blocker.capacity, blocker.occupancy, blocker.requestedAmount,
+             blocker.heldAmount});
+      }
+    }
+    llvm::sort(result.back().capacityWaits, [](const auto &lhs, const auto &rhs) {
+      return std::tie(lhs.dimensionOrdinal, lhs.holdingActionOrdinal,
+                      lhs.holdingOccurrenceOrdinal) <
+             std::tie(rhs.dimensionOrdinal, rhs.holdingActionOrdinal,
+                      rhs.holdingOccurrenceOrdinal);
+    });
   }
   llvm::sort(result, [](const auto &lhs, const auto &rhs) {
     return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal) <

@@ -7,7 +7,13 @@ import argparse
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from loom_evidence_portfolio import (  # noqa: E402
+    FEASIBLE_DISPOSITIONS, PAIR_DECISION_SCHEMA, PAIR_DECISION_VERSION,
+)
 
 
 def read_object(path: Path) -> dict[str, Any]:
@@ -143,16 +149,11 @@ def main() -> int:
     ):
         raise ValueError("visualization bundle has no Deployment reference")
     pair = bundle.get("pair_decision")
-    successful = {
-        "verified_acceleration",
-        "verified_feasible_but_not_beneficial",
-        "hardware_dse_alternative",
-    }
     if (
         not isinstance(pair, dict)
-        or pair.get("schema") != "loom.application_pair_decision"
-        or pair.get("version") != "1.2"
-        or pair.get("disposition") not in successful
+        or pair.get("schema") != PAIR_DECISION_SCHEMA
+        or pair.get("version") != PAIR_DECISION_VERSION
+        or pair.get("disposition") not in FEASIBLE_DISPOSITIONS
     ):
         raise ValueError("visualization bundle has no successful pair decision")
     if pair.get("quality_disposition") not in {

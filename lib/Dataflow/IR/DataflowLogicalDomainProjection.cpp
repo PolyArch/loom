@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -187,7 +188,19 @@ private:
       operands.push_back(*constant);
     }
 
-    mlir::Operation *probe = definition->clone();
+    // A fold is permitted to modify its receiver. Clone it, but remap every
+    // source operand to an unattached local block argument first: cloning then
+    // never adds a use to the shared finalized program.
+    mlir::Block localOperands;
+    mlir::IRMapping mapping;
+    llvm::DenseMap<mlir::Value, mlir::Value> sourceByLocalOperand;
+    for (mlir::Value operand : definition->getOperands()) {
+      mlir::Value local =
+          localOperands.addArgument(operand.getType(), definition->getLoc());
+      mapping.map(operand, local);
+      sourceByLocalOperand.try_emplace(local, operand);
+    }
+    mlir::Operation *probe = definition->clone(mapping);
     llvm::SmallVector<mlir::OpFoldResult> folded;
     const mlir::LogicalResult status = probe->fold(operands, folded);
     std::optional<mlir::Attribute> replacement;
@@ -199,7 +212,10 @@ private:
       } else if (mlir::Value foldedValue =
                      llvm::dyn_cast<mlir::Value>(selected);
                  foldedValue.getDefiningOp() != probe) {
-        replacement = evaluate(foldedValue);
+        auto source = sourceByLocalOperand.find(foldedValue);
+        replacement = evaluate(source == sourceByLocalOperand.end()
+                                   ? foldedValue
+                                   : source->second);
       }
     }
     probe->erase();

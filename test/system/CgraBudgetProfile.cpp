@@ -1,17 +1,23 @@
+#include "ADG/Builder.h"
+#include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialTransportCegar.h"
+#include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
+#include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/ProductionRegistry.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricEnums.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -42,6 +48,13 @@
 #include <variant>
 
 namespace {
+
+constexpr llvm::StringLiteral kHardwareSearchSchema =
+    "loom.cgra_qualification_hardware_search.1";
+
+constexpr llvm::StringLiteral kProfileSchema = "loom.cgra_budget_profile.6";
+constexpr llvm::StringLiteral kProfileOutcomeSchema =
+    "loom.cgra_budget_profile_outcome.3";
 
 constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
@@ -356,6 +369,230 @@ SourceCase readSourceCase(llvm::StringRef path) {
           take(loom::parseArtifactRootReferenceJson(*runtimeInput))};
 }
 
+loom::ResolvedConfig qualificationConfig() {
+  loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  const auto &target = loom::adg::builtinLargeTarget;
+  auto scale = target.scale;
+  scale.temporalResidentContexts = 16;
+  config.hardwareTarget = {target.templateIdentity.str(),
+                           {target.schemaMajor, target.schemaMinor},
+                           scale};
+  return config;
+}
+
+loom::ArtifactRootReference publishConfig(const loom::ResolvedConfig &config,
+                                          loom::ArtifactStore &artifacts) {
+  return {loom::ResolvedConfig::artifactSchema.identity.str(),
+          loom::ResolvedConfig::artifactSchema.version,
+          take(artifacts.put(loom::ResolvedConfig::artifactSchema,
+                             loom::canonicalResolvedConfigBytes(config)))};
+}
+
+llvm::json::Value readJson(llvm::StringRef path) {
+  auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
+  if (!buffer)
+    fail("cannot read qualification input: " + buffer.getError().message());
+  return take(llvm::json::parse((*buffer)->getBuffer()));
+}
+
+struct QualificationSource final {
+  std::string workload;
+  std::string operatorId;
+  std::string protocolSymbol;
+  SourceCase source;
+};
+
+llvm::json::Object sourceIdentityJson(const QualificationSource &source) {
+  return llvm::json::Object{
+      {"workload", source.workload},
+      {"operator_id", source.operatorId},
+      {"protocol_symbol", source.protocolSymbol},
+      {"canonical_dataflow", referenceJson(source.source.dataflow)},
+      {"simulation_workload", referenceJson(source.source.workload)},
+      {"simulation_runtime_input", referenceJson(source.source.runtimeInput)}};
+}
+
+llvm::json::Object selectQualificationHardware(
+    llvm::StringRef requestPath, const loom::ResolvedConfig &config,
+    const loom::ArtifactRootReference &configReference,
+    loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+  auto requestDocument = readJson(requestPath);
+  const auto *requests = requestDocument.getAsArray();
+  require(requests && !requests->empty(),
+          "qualification hardware requires the source suite");
+  std::vector<QualificationSource> sources;
+  for (const auto &value : *requests) {
+    const auto *request = value.getAsObject();
+    require(request && request->size() == 4 && request->getString("workload") &&
+                request->getString("operator_id") &&
+                request->getString("protocol_symbol") &&
+                request->getString("source_report"),
+            "qualification source request is malformed");
+    const auto name = *request->getString("workload");
+    require(llvm::none_of(
+                sources,
+                [&](const auto &source) { return source.workload == name; }),
+            "qualification source repeats a workload");
+    sources.push_back({name.str(), request->getString("operator_id")->str(),
+                       request->getString("protocol_symbol")->str(),
+                       readSourceCase(*request->getString("source_report"))});
+  }
+
+  const MonotonicExecutionDeadline deadline(kSpatialPnrQualificationLimit);
+  const auto control = deadline.control();
+  PhaseLedger ledger;
+  loom::adg::DesignBuilder builder(artifacts);
+  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
+      builder, config.hardwareTarget.parameters));
+  if (auto error = expansion.spatialCore.close(expansion.outputs))
+    fail(llvm::toString(std::move(error)));
+  auto design = take(std::move(builder).finalize());
+  require(design.roots().size() == 1,
+          "qualification hardware did not produce one module");
+  auto module = design.roots().front();
+  const auto initialFabric = module.reference();
+  const auto techConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(config));
+  const auto techBinding =
+      take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
+          techConfig));
+  if (auto error =
+          loom::dse::registerSpatialMicroarchitectureCandidateGenerator())
+    fail(llvm::toString(std::move(error)));
+  llvm::json::Array rounds;
+  bool ready = false;
+  for (;;) {
+    llvm::json::Array evaluations;
+    std::optional<loom::mapping::TechMappingComputeContextHallDeficit> pressure;
+    ready = true;
+    for (const auto &source : sources) {
+      auto inputs =
+          take(loom::dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
+              {source.source.dataflow}, module.reference()));
+      auto result = take(loom::dse::invokeCandidateGenerator(
+          inputs, techBinding, artifacts, blobs, control));
+      const bool mapped = !candidateArtifacts(result).empty();
+      const auto *incomplete =
+          std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+              &result.outcome);
+      ready &= mapped && (!incomplete ||
+                          incomplete->reason ==
+                              loom::dse::CandidateGeneratorIncompleteReason::
+                                  SemanticLimitReached);
+      auto evaluation = sourceIdentityJson(source);
+      evaluation["tech_mapping_search"] = candidateGeneratorResultJson(
+          loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor(),
+          result);
+      evaluation["owner_feedback"] =
+          result.ownerFeedback
+              ? llvm::json::Value(llvm::toHex(*result.ownerFeedback, true))
+              : llvm::json::Value(nullptr);
+      if (!mapped && result.ownerFeedback)
+        loom::mapping::retainTechMappingComputeContextHallFeedback(
+            pressure,
+            take(loom::mapping::adoptTechMappingComputeContextHallFeedback(
+                *result.ownerFeedback, module.view())));
+      evaluations.push_back(std::move(evaluation));
+    }
+    llvm::json::Object round{{"fabric", referenceJson(module.reference())},
+                             {"evaluations", std::move(evaluations)},
+                             {"hardware_growth", nullptr}};
+    if (ready || !pressure || control.stopRequested()) {
+      rounds.push_back(std::move(round));
+      break;
+    }
+    auto growth =
+        take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
+            *pressure, module.view()));
+    require(growth.addedContextCount > 0 && !growth.decisions.empty(),
+            "qualification hardware feedback made no progress");
+    const loom::dse::SpatialMicroarchitectureDecisionDomain domain =
+        loom::dse::ResizeInstructionStoresDomain{growth.decisions};
+    auto growthConfig = take(
+        loom::dse::resolveSpatialMicroarchitectureRewriteConfig({domain}, 1));
+    auto growthBinding = take(
+        loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+            growthConfig));
+    auto growthInputs =
+        take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+            {module.reference()}));
+    auto result = take(loom::dse::invokeCandidateGenerator(
+        growthInputs, growthBinding, artifacts, blobs, control));
+    round["hardware_growth"] = llvm::json::Object{
+        {"owner_feedback",
+         llvm::toHex(loom::mapping::encodeTechMappingComputeContextHallFeedback(
+                         *pressure),
+                     true)},
+        {"canonical_config",
+         llvm::toHex(growthBinding.canonicalConfigBytes(), true)},
+        {"result",
+         candidateGeneratorResultJson(
+             loom::dse::spatialMicroarchitectureCandidateGeneratorDescriptor(),
+             result)}};
+    rounds.push_back(std::move(round));
+    if (!std::holds_alternative<loom::dse::CompletedCandidateGeneratorResult>(
+            result.outcome))
+      break;
+    require(candidateArtifacts(result).size() == 1,
+            "qualification hardware did not publish one atomic child");
+    module = take(loom::fabric::importEntireFabricRoot(
+        candidateArtifacts(result).front(), artifacts));
+  }
+  ledger.record("shared_hardware_search");
+  return llvm::json::Object{
+      {"schema", kHardwareSearchSchema},
+      {"resolved_config", referenceJson(configReference)},
+      {"initial_fabric", referenceJson(initialFabric)},
+      {"fabric", referenceJson(module.reference())},
+      {"ready", ready && !control.stopRequested()},
+      {"deadline_ns", static_cast<std::uint64_t>(
+                          std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              kSpatialPnrQualificationLimit)
+                              .count())},
+      {"deadline_overrun_ns", deadline.overrunNanoseconds()},
+      {"rounds", std::move(rounds)},
+      {"phase_ledger", ledger.release()}};
+}
+
+loom::fabric::FinalizedFabricRoot
+readQualificationHardware(llvm::StringRef path,
+                          const QualificationSource &source,
+                          const loom::ArtifactRootReference &configReference,
+                          const loom::ArtifactStore &artifacts) {
+  auto document = readJson(path);
+  const auto *report = document.getAsObject();
+  require(report && report->getString("schema") == kHardwareSearchSchema &&
+              report->getBoolean("ready") == true &&
+              report->getObject("resolved_config") &&
+              report->getObject("fabric") && report->getArray("rounds"),
+          "qualification hardware search is incomplete");
+  require(take(loom::parseArtifactRootReferenceJson(
+              *report->getObject("resolved_config"))) == configReference,
+          "qualification hardware uses a foreign resolved config");
+  const auto *round = report->getArray("rounds")->empty()
+                          ? nullptr
+                          : report->getArray("rounds")->back().getAsObject();
+  const auto *evaluations = round ? round->getArray("evaluations") : nullptr;
+  require(evaluations, "qualification hardware omits the source suite");
+  const auto identity = sourceIdentityJson(source);
+  require(llvm::any_of(*evaluations,
+                       [&](const auto &value) {
+                         const auto *evaluation = value.getAsObject();
+                         if (!evaluation)
+                           return false;
+                         for (const auto &field : identity) {
+                           const auto *observed = evaluation->get(field.first);
+                           if (!observed || *observed != field.second)
+                             return false;
+                         }
+                         return true;
+                       }),
+          "qualification profile is absent from the hardware source suite");
+  return take(loom::fabric::importEntireFabricRoot(
+      take(loom::parseArtifactRootReferenceJson(*report->getObject("fabric"))),
+      artifacts));
+}
+
 void emitClosedWaitDiagnostic(
     const loom::sim::CgraClosedWaitSetDiagnostic &diagnostic) {
   llvm::errs() << "CGRA closed wait: actors=" << diagnostic.pendingActorFirings
@@ -565,11 +802,13 @@ llvm::json::Object measurementJson(
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 6 && argc != 8) {
+  const bool selectHardware = argc == 4 && llvm::StringRef(argv[1]) == "--hardware";
+  if (!selectHardware && argc != 7) {
     llvm::errs() << "usage: " << argv[0]
+                 << " --hardware ARTIFACT_STORE SOURCE_REQUESTS\n       "
+                 << argv[0]
                  << " ARTIFACT_STORE SOURCE_REPORT WORKLOAD_NAME OPERATOR_ID "
-                    "PROTOCOL_SYMBOL [INTERCONNECT_FIFO_DEPTH "
-                    "INTERCONNECT_FIFO_QUEUE_DISCIPLINE]\n";
+                    "PROTOCOL_SYMBOL HARDWARE_SEARCH_REPORT\n";
     return EXIT_FAILURE;
   }
 
@@ -577,48 +816,28 @@ int main(int argc, char **argv) {
           loom::evaluation::registerProductionEvaluationRegistry())
     fail(llvm::toString(std::move(error)));
   PhaseLedger ledger;
-  loom::ArtifactStore artifacts(argv[1]);
-  llvm::SmallString<256> blobPath(argv[1]);
+  const char *storePath = argv[selectHardware ? 2 : 1];
+  loom::ArtifactStore artifacts(storePath);
+  llvm::SmallString<256> blobPath(storePath);
   llvm::sys::path::append(blobPath, "blobs");
   loom::BlobStore blobs(blobPath);
-  const SourceCase source = readSourceCase(argv[2]);
-  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
-  const loom::adg::BuiltinTargetDescriptor &qualificationBaseTarget =
-      loom::adg::builtinLargeTarget;
-  loom::adg::BuiltinTargetScale qualificationScale =
-      qualificationBaseTarget.scale;
-  qualificationScale.temporalResidentContexts = 16;
-  if (argc == 8) {
-    // Hardware-candidate selection through the same typed scale the resolved
-    // config owns; the qualification gate passes no override and gets the
-    // production target.
-    std::uint32_t depth = 0;
-    if (llvm::StringRef(argv[6]).getAsInteger(10, depth) || depth == 0)
-      fail("interconnect FIFO depth must be a positive integer");
-    qualificationScale.interconnectFifoDepth = depth;
-    const auto discipline =
-        ::fabric::symbolizeFifoQueueDiscipline(argv[7]);
-    if (!discipline)
-      fail("unknown interconnect FIFO queue discipline");
-    qualificationScale.interconnectFifoQueueDiscipline = *discipline;
+  const loom::ResolvedConfig resolvedConfig = qualificationConfig();
+  const auto resolvedConfigReference = publishConfig(resolvedConfig, artifacts);
+  if (selectHardware) {
+    auto report = selectQualificationHardware(
+        argv[3], resolvedConfig, resolvedConfigReference, artifacts, blobs);
+    llvm::outs() << llvm::formatv("{0:2}\n", llvm::json::Value(std::move(report)));
+    return EXIT_SUCCESS;
   }
-  resolvedConfig.hardwareTarget = {
-      qualificationBaseTarget.templateIdentity.str(),
-      {qualificationBaseTarget.schemaMajor,
-       qualificationBaseTarget.schemaMinor},
-      qualificationScale};
-  const loom::adg::BuiltinTargetScale targetScale =
-      resolvedConfig.hardwareTarget.parameters;
-  const loom::pnr::ResolvedPnrConfigView spatialPnrConfig =
+  const SourceCase source = readSourceCase(argv[2]);
+  auto module = readQualificationHardware(
+      argv[6], {argv[3], argv[4], argv[5], source}, resolvedConfigReference,
+      artifacts);
+  const auto targetScale = resolvedConfig.hardwareTarget.parameters;
+  const auto spatialPnrConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolvedConfig));
-  const loom::mapping::ResolvedTechMappingConfigView techMappingConfig =
+  const auto techMappingConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolvedConfig));
-  const loom::ArtifactIdentity resolvedConfigIdentity =
-      take(artifacts.put(loom::ResolvedConfig::artifactSchema,
-                         loom::canonicalResolvedConfigBytes(resolvedConfig)));
-  const loom::ArtifactRootReference resolvedConfigReference{
-      loom::ResolvedConfig::artifactSchema.identity.str(),
-      loom::ResolvedConfig::artifactSchema.version, resolvedConfigIdentity};
   auto dataflow =
       take(dataflow::importCanonicalDataflow(source.dataflow, artifacts));
   const MonotonicExecutionDeadline spatialPnrDeadline(
@@ -627,8 +846,8 @@ int main(int argc, char **argv) {
       spatialPnrDeadline.control();
   ledger.record("setup");
   auto pnrInvocation =
-      take(loom::eda::test::invokeMappedBuiltinSpatialPnrFixture(
-          "cgra-budget-profile", dataflow, targetScale, techMappingConfig,
+      take(loom::eda::test::invokeMappedSpatialPnrFixture(
+          "cgra-budget-profile", dataflow, std::move(module), techMappingConfig,
           spatialPnrConfig, spatialPnrExecution, artifacts, blobs));
   const std::uint64_t spatialPnrDeadlineOverrun =
       spatialPnrDeadline.overrunNanoseconds();
@@ -637,7 +856,7 @@ int main(int argc, char **argv) {
       pnrInvocation.techMappingResult);
   if (!pnrInvocation.spatialPnrResult) {
     llvm::json::Object report{
-        {"schema", "loom.cgra_budget_profile_outcome.2"},
+        {"schema", kProfileOutcomeSchema},
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
@@ -661,7 +880,7 @@ int main(int argc, char **argv) {
       candidateArtifacts(*pnrInvocation.spatialPnrResult);
   if (publishedSpatialMappings.empty()) {
     llvm::json::Object report{
-        {"schema", "loom.cgra_budget_profile_outcome.2"},
+        {"schema", kProfileOutcomeSchema},
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
@@ -675,6 +894,10 @@ int main(int argc, char **argv) {
     return EXIT_SUCCESS;
   }
   ledger.record("spatial_pnr");
+  // One exact Fabric owner is shared by every Mapping in this invocation.
+  // Nested strict imports reuse this bounded session; dynamic executions and
+  // Mapping-specific preparations keep their existing separate lifetimes.
+  loom::fabric::FabricArtifactImportSession fabricImports;
   // Every published Spatial candidate cost a complete restart, and the
   // published order is canonical artifact identity, not quality. Screen the
   // whole frontier against the one dynamic oracle that the static Mapping
@@ -693,6 +916,7 @@ int main(int argc, char **argv) {
   std::optional<std::pair<std::uint64_t, std::uint64_t>> repairScore;
   for (const loom::ArtifactRootReference &candidate :
        publishedSpatialMappings) {
+    PhaseLedger screeningPhases;
     auto imported =
         take(loom::mapping::importSpatialMapping(candidate, artifacts));
     const loom::ArtifactRootReference candidateTechMapping{
@@ -703,11 +927,13 @@ int main(int argc, char **argv) {
         selectedFifoTraversalCounts(imported.view());
     auto candidateHardware = loom::eda::test::MappedSpatialMappingFixture{
         pnrInvocation.module, candidateTechMapping, std::move(imported)};
+    screeningPhases.record("mapping_import");
     auto candidatePrepared =
         take(loom::evaluation::models::prepareCgraSimulationEvaluation(
             source.dataflow, candidateHardware.module.reference(),
             candidateHardware.spatialMapping.reference(), source.workload,
             source.runtimeInput, resolvedConfig, artifacts, blobs));
+    screeningPhases.record("preparation");
     const bool last = candidate == publishedSpatialMappings.back();
     const auto screeningDeadline =
         std::chrono::steady_clock::now() + (selectedWarmup || !last
@@ -718,6 +944,25 @@ int main(int argc, char **argv) {
             candidatePrepared,
             {loom::runtime::gem5MaximumSpatialWork, screeningDeadline},
             artifacts, blobs));
+    screeningPhases.record("evaluation");
+    loom::emitInvocationDiagnostic(
+        loom::DiagnosticVerbosity::Summary,
+        loom::InvocationDiagnosticStage::SystemPnr,
+        loom::InvocationDiagnosticEvent::Statistics, [&] {
+          llvm::json::Object fields{
+              {"operation", "cgra_candidate_screening"},
+              {"spatial_mapping", referenceJson(candidate)},
+              {"phase_ledger", screeningPhases.release()}};
+          if (screened.attemptProfile) {
+            const auto &profile = *screened.attemptProfile;
+            fields["active_wall_nanoseconds"] = profile.activeWallNanoseconds;
+            fields["engine_active_wall_nanoseconds"] =
+                profile.engineActiveWallNanoseconds;
+            fields["artifact_publication_wall_nanoseconds"] =
+                profile.artifactPublicationWallNanoseconds;
+          }
+          return llvm::json::Value(std::move(fields));
+        });
     const bool retired = completed(screened);
     if (!retired)
       llvm::errs() << "CGRA screening outcome: "
@@ -793,6 +1038,9 @@ int main(int argc, char **argv) {
     }
   }
   ledger.record("candidate_screening");
+  loom::fabric::emitFabricArtifactImportSessionStatistics(
+      loom::fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
+      loom::InvocationDiagnosticStage::SystemPnr, fabricImports.statistics());
   require(selectedHardware || repairHardware,
           "screened Spatial frontier has no retiring or proven closed-wait "
           "candidate");
@@ -820,6 +1068,7 @@ int main(int argc, char **argv) {
                                : std::move(*repairWarmup);
   std::optional<loom::ArtifactRootReference> preRepairEvidence;
   std::optional<loom::ArtifactRootReference> parentSystemMapping;
+  std::optional<loom::dse::SpatialTransportCegarTermination> repairTermination;
   llvm::json::Array transportRepairAttempts;
   if (!completed(warmup)) {
     preRepairEvidence = take(loom::evaluation::publishEvaluationEvidence(
@@ -847,7 +1096,7 @@ int main(int argc, char **argv) {
         "cgra-budget-profile", dataflow, system,
         {hardware.spatialMapping.reference()}, artifacts);
     parentSystemMapping = systemMapping.reference();
-    auto dataflowView = take(dataflow.view());
+    const auto &dataflowView = dataflow.view();
     auto techMapping =
         take(loom::mapping::importTechMapping(hardware.techMapping, artifacts));
     auto parentConstraints =
@@ -872,6 +1121,7 @@ int main(int argc, char **argv) {
          loom::runtime::gem5MaximumSpatialWork,
          cegarDeadline},
         artifacts, blobs));
+    repairTermination = cegar.termination;
     llvm::errs() << "CGRA CEGAR termination: "
                  << loom::dse::spatialTransportCegarTerminationSpelling(
                         cegar.termination)
@@ -907,14 +1157,16 @@ int main(int argc, char **argv) {
       transportRepairAttempts.push_back(llvm::json::Object{
           {"parent_spatial_mapping", referenceJson(iteration.parentMapping)},
           {"runtime_evidence", referenceJson(iteration.runtimeEvidence)},
-          {"constraint_set",
-           referenceJson(iteration.accumulatedConstraints)},
+          {"constraint_set", referenceJson(iteration.accumulatedConstraints)},
           {"child_spatial_mapping",
            iteration.childMapping
                ? llvm::json::Value(referenceJson(*iteration.childMapping))
                : llvm::json::Value(nullptr)},
-          {"repair_kind",
-           static_cast<std::uint64_t>(iteration.repair.kind)},
+          {"child_evidence",
+           iteration.childEvidence
+               ? llvm::json::Value(referenceJson(*iteration.childEvidence))
+               : llvm::json::Value(nullptr)},
+          {"repair_kind", static_cast<std::uint64_t>(iteration.repair.kind)},
           {"solver_calls", iteration.repair.solverCalls},
           {"logical_solver_calls", iteration.repair.logicalSolverCalls},
           {"action_count", iteration.repair.actionCount},
@@ -942,7 +1194,7 @@ int main(int argc, char **argv) {
       // screened frontier, every repair attempt, and the phase ledger. Exiting
       // without it would discard work that was already paid for.
       llvm::json::Object report{
-          {"schema", "loom.cgra_budget_profile_outcome.2"},
+          {"schema", kProfileOutcomeSchema},
           {"workload", argv[3]},
           {"operator_id", argv[4]},
           {"protocol_symbol", argv[5]},
@@ -951,11 +1203,15 @@ int main(int argc, char **argv) {
           {"fabric", referenceJson(pnrInvocation.module.reference())},
           {"tech_mapping_search", std::move(techMappingResult)},
           {"spatial_pnr", std::move(pnrResult)},
+          {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
           {"spatial_candidate_screening", std::move(candidateScreening)},
           {"transport_repair",
            llvm::json::Object{
                {"parent_system_mapping", referenceJson(*parentSystemMapping)},
                {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+               {"termination",
+                loom::dse::spatialTransportCegarTerminationSpelling(
+                    *repairTermination)},
                {"attempts", std::move(transportRepairAttempts)}}},
           {"phase_ledger", ledger.release()}};
       llvm::outs() << llvm::formatv("{0:2}\n",
@@ -982,7 +1238,7 @@ int main(int argc, char **argv) {
 
   ledger.record("measurements");
   llvm::json::Object report{
-      {"schema", "loom.cgra_budget_profile.5"},
+      {"schema", kProfileSchema},
       {"workload", argv[3]},
       {"operator_id", argv[4]},
       {"protocol_symbol", argv[5]},
@@ -1006,6 +1262,9 @@ int main(int argc, char **argv) {
            ? llvm::json::Value(llvm::json::Object{
                  {"parent_system_mapping", referenceJson(*parentSystemMapping)},
                  {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+                 {"termination",
+                  loom::dse::spatialTransportCegarTerminationSpelling(
+                      *repairTermination)},
                  {"attempts", std::move(transportRepairAttempts)}})
            : llvm::json::Value(nullptr)},
       {"warmup_evidence", referenceJson(warmupEvidence)},

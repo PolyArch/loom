@@ -83,12 +83,14 @@ bool waitForControlIo(int socket, short events, ControlDeadline deadline) {
     }
     const int result = ::poll(&descriptor, 1, timeout);
     if (result > 0) {
+      // A peer may close after sending its final acknowledgement. Consume
+      // ready bytes before treating the hangup as an incomplete message.
+      if (descriptor.revents & events)
+        return true;
       if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
         errno = ECONNRESET;
         return false;
       }
-      if (descriptor.revents & events)
-        return true;
       continue;
     }
     if (result == 0) {
@@ -184,9 +186,8 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
                      std::ios::binary | std::ios::trunc),
       serviceEvent([this] { service(); }, name() + ".service") {
   panic_if(!workload, "LoomThreadDispatch workload is absent");
-  panic_if(records.empty(), "LoomThreadDispatch has no target records");
-  panic_if(logicalTargetCount == 0,
-           "LoomThreadDispatch has no logical targets");
+  panic_if((logicalTargetCount == 0) != records.empty(),
+           "LoomThreadDispatch target domain is inconsistent");
   panic_if(endpointTargetOffsets.empty(),
            "LoomThreadDispatch has no runtime endpoint");
   panic_if(endpointDispatchEnabled.size() != endpointTargetOffsets.size(),
@@ -200,6 +201,11 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
     panic_if(endpointDispatchEnabled[endpoint] > 1,
              "LoomThreadDispatch endpoint dispatch flag is invalid");
   }
+  panic_if(logicalTargetCount == 0 &&
+               (endpointTargetOffsets != std::vector<std::uint64_t>{0} ||
+                endpointDispatchEnabled != std::vector<std::uint64_t>{0} ||
+                !params.root_event_control_path.empty()),
+           "host-only Thread Dispatch contains an active endpoint");
   panic_if(records.size() > gem5MaximumDynamicSpatialInvocations,
            "LoomThreadDispatch target count exceeds the Runtime ABI bound");
   fatal_if(params.root_event_trace_path.empty(),

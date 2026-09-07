@@ -153,16 +153,14 @@ const Replica *findReplica(llvm::ArrayRef<Replica> replicas, ActorId id) {
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumeratePureComputeFanoutDecisions(const CanonicalDataflowArtifact &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto replicas = collectReplicas(*view);
+  const auto &view = parent.view();
+  auto replicas = collectReplicas(view);
   if (!replicas)
     return replicas.takeError();
 
   std::vector<DataflowRewriteDecision> decisions;
   for (const Replica &replica : *replicas) {
-    auto sinks = completeSinkOperands(*view, replica);
+    auto sinks = completeSinkOperands(view, replica);
     if (!sinks)
       return sinks.takeError();
     if (sinks->size() >= 2)
@@ -193,10 +191,8 @@ materializePureComputeFanoutRewriteProjection(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
     llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto replicas = collectReplicas(*view);
+  const auto &view = parent.view();
+  auto replicas = collectReplicas(view);
   if (!replicas)
     return replicas.takeError();
 
@@ -209,7 +205,7 @@ materializePureComputeFanoutRewriteProjection(
     const Replica *source = findReplica(*replicas, replicate->compute);
     if (!source)
       return invalid("replication source is not an eligible Compute actor");
-    auto sinks = completeSinkOperands(*view, *source);
+    auto sinks = completeSinkOperands(view, *source);
     if (!sinks)
       return sinks.takeError();
     if (sinks->size() < 2)

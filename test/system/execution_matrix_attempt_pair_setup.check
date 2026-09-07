@@ -2,7 +2,10 @@
 # each Fabric root, ConfigurationABI, SystemMapping, and configuration-image
 # projection once (one construction per miss, no uncached construction) and
 # reuses it, and never touches the gem5 facts session.
-# CHECK: execution-matrix-cache schema=loom.execution_matrix_cache.4 cell=[[CELL]] scope=attempt_pair cache=artifact_import hit_validation=artifact_revalidation requests=0 hits=0 misses=0
+# The Spatial workload's strict import seeds the artifact session with its
+# one canonical Dataflow owner, retained for both execution attempts.
+# CHECK: execution-matrix-cache schema=loom.execution_matrix_cache.4 cell=[[CELL]] scope=attempt_pair cache=artifact_import hit_validation=artifact_revalidation requests=1 hits=0 misses=1 construction_attempts=1 unique_constructions=1 uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count=0
+# CHECK-SAME: entries=1
 # CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.4 cell=[[CELL]] scope=attempt_pair cache=fabric_import hit_validation=artifact_revalidation requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#FABRIC:]]
 # CHECK-SAME: construction_attempts=[[#FABRIC]] unique_constructions=[[#FABRIC]] uncached_constructions=0 unsupported_constructions=0 failed_constructions=0 revalidation_count={{[1-9][0-9]*}} revalidated_artifact_bytes={{[1-9][0-9]*}} revalidated_blob_bytes=0 construction_wall_ns={{[1-9][0-9]*}} minimum_retained_bytes={{[1-9][0-9]*}} entries=[[#FABRIC]]
 # CHECK-NEXT: execution-matrix-cache schema=loom.execution_matrix_cache.4 cell=[[CELL]] scope=attempt_pair cache=configuration_abi_import hit_validation=immutable_session_domain requests={{[1-9][0-9]*}} hits={{[1-9][0-9]*}} misses=[[#ABI:]]

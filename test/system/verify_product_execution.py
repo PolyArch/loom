@@ -14,6 +14,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from loom_evidence_portfolio import (  # noqa: E402
+    APPLICATION_OBJECTIVE_DIMENSIONS,
     RUNTIME_BINDING_SCHEMA,
     RUNTIME_BINDING_VERSION,
     RUNTIME_MANIFEST_SCHEMA,
@@ -23,6 +24,7 @@ from loom_evidence_portfolio import (  # noqa: E402
     validate_resource_time_mapping_repair_transition,
     validate_portfolio_pair,
     validate_portfolio_product_execution,
+    validate_system_qor,
 )
 
 
@@ -510,8 +512,7 @@ def validate_mapping_work(
     require(
         pair_decision.get("disposition")
         in {
-            "verified_acceleration",
-            "verified_feasible_but_not_beneficial",
+            "verified_feasible",
             "hardware_dse_alternative",
         },
         "successful product Mapping published a non-success pair decision",
@@ -519,10 +520,6 @@ def validate_mapping_work(
     require(
         pair_decision.get("host_only_baseline_complete") is True,
         "successful product decision omitted the host-only baseline",
-    )
-    require(
-        pair_decision.get("final_application_qor_complete") is True,
-        "successful product decision omitted application QoR evidence",
     )
     if portfolio_application is not None:
         portfolio = pair_decision.get("portfolio_input")
@@ -562,11 +559,11 @@ def validate_mapping_work(
         if isinstance(observation, dict)
     }
     require(
-        isinstance(baseline_values.get("host_only_work"), dict)
-        and isinstance(baseline_values["host_only_work"].get("value"), int)
-        and baseline_values["host_only_work"].get("evidence")
-        in {"exact", "sound_bound", "analytic", "calibrated", "runtime_measured"},
-        "host-only baseline has no typed work observation",
+        isinstance(baseline_values.get("host_only_runtime_picoseconds"), dict)
+        and isinstance(baseline_values["host_only_runtime_picoseconds"].get("value"), int)
+        and baseline_values["host_only_runtime_picoseconds"].get("evidence")
+        == "analytic",
+        "host-only baseline has no exact-source analytic picosecond observation",
     )
     for dimension in ("dfg_cycles", "cgra_cycles"):
         require(
@@ -719,7 +716,7 @@ def validate_mapping_work(
         objective_vectors.append(selected_objective)
     for vector in objective_vectors:
         require(
-            isinstance(vector, list) and len(vector) == 11,
+            isinstance(vector, list) and len(vector) == len(APPLICATION_OBJECTIVE_DIMENSIONS),
             "pair decision objective vector is not structurally complete",
         )
         for observation in vector:
@@ -799,7 +796,7 @@ def validate_mapping_work(
     )
     # A repair may stop in its lower prerequisites before System PnR, and
     # completed invocations can publish multiple roots. Reconcile the actual
-    # provider ledger with observed search rows instead of inventing two
+    # provider ledger with observed invocation rows instead of inventing two
     # System searches per transition.
     repair_system_invocations = sum(
         transition[f"{side}_provider_work"]["system_pnr_invocations"]
@@ -838,6 +835,51 @@ def validate_mapping_work(
             closure_status = row.get("closure_status")
             publications = row.get("candidate_publications")
             seed_slots = row.get("seed_attempt_slots")
+            if closure_status == "proven_infeasible":
+                proof_kind = row.get("infeasibility_proof_kind")
+                require(
+                    name == "System"
+                    and proof_kind
+                    in {
+                        "frozen_static_context",
+                        "frozen_active_problem",
+                        "imported_capacity_relation",
+                        "initializer_relation",
+                    }
+                    and publications == 0
+                    and row.get("finalized_restarts") == 0
+                    and row.get("publication_slots") == 0
+                    and row.get("final_verification_attempts") == 0,
+                    "infeasible System invocation has no typed empty outcome",
+                )
+                counters = {
+                    key: value
+                    for key, value in row.items()
+                    if key
+                    not in {
+                        "statistics_kind",
+                        "closure_status",
+                        "infeasibility_proof_kind",
+                    }
+                }
+                require(
+                    all(
+                        isinstance(value, int) and value >= 0
+                        for value in counters.values()
+                    )
+                    and all(
+                        row.get(key.removeprefix("planned_")) == value
+                        for key, value in counters.items()
+                        if key.startswith("planned_")
+                    ),
+                    "infeasible System invocation left admitted work open",
+                )
+                if proof_kind in {"frozen_static_context", "frozen_active_problem"}:
+                    require(
+                        all(value == 0 for value in counters.values()),
+                        "System freeze failure fabricated semantic search work",
+                    )
+                continue
             require(
                 isinstance(seed_slots, int)
                 and seed_slots >= 1
@@ -1088,6 +1130,7 @@ def validate_manifest(
     require_register_fifo: bool,
     require_packed_switch_row: bool,
     require_temporal_dispatch: bool,
+    require_stream_pipeline: bool,
     dense_coordinate_rank: int | None,
     require_unique_dense_coordinates: bool,
     minimum_unique_acc_cores: int,
@@ -1099,7 +1142,7 @@ def validate_manifest(
         "cgra",
     }
     require(
-        manifest.get("schema") == "loom.execution_matrix_workspace.2.0",
+        manifest.get("schema") == "loom.execution_matrix_workspace.3.0",
         "execution workspace has the wrong schema",
     )
     for field in (
@@ -1126,6 +1169,8 @@ def validate_manifest(
             "mapped_rtl_deployment" not in manifest,
             "non-RTL execution unexpectedly names a mapped RTL Deployment",
         )
+    qor_errors = validate_system_qor(manifest, require_target=portfolio_selection is not None)
+    require(not qor_errors, f"post-execution System QoR is incomplete: {qor_errors}")
     expected_result = format(expected_i32 & 0xFFFFFFFF, "X")
     require(
         manifest.get("value_results") == [[expected_result]],
@@ -1356,19 +1401,27 @@ def validate_manifest(
         or require_register_fifo
         or require_packed_switch_row
         or require_temporal_dispatch
+        or require_stream_pipeline
         or expected_fifo_queue_discipline is not None
     ):
         require(
             mapping_inspector is not None,
             "Mapping feature validation requires a Mapping inspector",
         )
-        mapping_identities = {
-            run["spatial_mapping"]["artifact"] for run in spatial_runs
+        mapping_requests = {
+            (
+                run["spatial_mapping"]["artifact"],
+                run["workload"]["artifact"] if require_stream_pipeline else "",
+            )
+            for run in spatial_runs
         }
         reports: list[dict[str, Any]] = []
-        for identity in sorted(mapping_identities):
+        for identity, workload in sorted(mapping_requests):
+            command = [mapping_inspector, str(manifest_path.parent / "objects"), identity]
+            if workload:
+                command.append(workload)
             completed = subprocess.run(
-                [mapping_inspector, str(manifest_path.parent / "objects"), identity],
+                command,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1381,7 +1434,18 @@ def validate_manifest(
                 report.get("schema") == "loom.test.product_mapping_inspection.1",
                 "Mapping inspection report has the wrong schema",
             )
+            if workload:
+                require(
+                    report.get("workload_identity") == workload,
+                    "Mapping inspection report names a different invocation workload",
+                )
             reports.append(report)
+        if require_stream_pipeline:
+            require(
+                any(report.get("invocation_stream_input_count", 0) > 0 for report in reports)
+                and any(report.get("invocation_stream_output_count", 0) > 0 for report in reports),
+                "executed Spatial invocations contain no stream producer/consumer pipeline",
+            )
         if require_actor_multicast:
             require(
                 any(
@@ -1519,6 +1583,7 @@ def main() -> None:
     parser.add_argument("--require-register-fifo", action="store_true")
     parser.add_argument("--require-packed-switch-row", action="store_true")
     parser.add_argument("--require-temporal-dispatch", action="store_true")
+    parser.add_argument("--require-stream-pipeline", action="store_true")
     parser.add_argument(
         "--require-schedule-edge",
         action="append",
@@ -1599,8 +1664,8 @@ def main() -> None:
         require(
             evaluation is not None
             and evaluation["typed_complete"]
-            and evaluation["canonical_qor_complete"],
-            f"production pair evidence did not close canonical QoR: {evaluation}",
+            and evaluation["canonical_mapping_complete"],
+            f"production pair evidence did not close canonical Mapping: {evaluation}",
         )
     if arguments.require_spatial_unconditional_handshake:
         validate_spatial_unconditional_handshake(events)
@@ -1629,6 +1694,7 @@ def main() -> None:
         arguments.require_register_fifo,
         arguments.require_packed_switch_row,
         arguments.require_temporal_dispatch,
+        arguments.require_stream_pipeline,
         arguments.dense_coordinate_rank,
         arguments.require_unique_dense_coordinates,
         arguments.minimum_unique_acc_cores,

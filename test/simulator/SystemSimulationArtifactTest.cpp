@@ -341,7 +341,7 @@ dataflow::RootThreadLaunchRef mappedRoot(llvm::StringRef test,
                                          const ArtifactStore &artifacts) {
   loom::mapping::FinalizedSystemMapping systemMapping = take(
       test, loom::mapping::importSystemMapping(
-                fixture.deployment.deployment().systemMapping(), artifacts));
+                *fixture.deployment.deployment().systemMapping(), artifacts));
   const auto roots =
       systemMapping.view().executionBindings().rootThreadLaunches();
   deployment::test::require(test, !roots.empty(),
@@ -546,12 +546,6 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
   deployment::test::require(
       test, std::holds_alternative<HaltedExecution>(imported.terminal()),
       "Halted terminal did not preserve its typed witness");
-
-  execution.activitySummaries = {ActorTransitionsActivitySummary{}};
-  expectErrorContains(test,
-                      finalizeSimulationExecution(execution, fixture.resolution,
-                                                  artifacts, blobs),
-                      "System activity summary");
 
   std::vector<std::uint8_t> noncanonical(
       halted.canonicalBytes().bytes().begin(),

@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_PNR_HANDSHAKECYCLEDIAGNOSTICS_H
 #define LOOM_LIB_PNR_HANDSHAKECYCLEDIAGNOSTICS_H
 
+#include "Common/DiagnosticVerbosity.h"
 #include "PnR/SpatialPnrProblem.h"
 
 namespace loom::pnr::detail {
@@ -13,7 +14,8 @@ void emitHandshakeCycleDiagnostic(
     const FrozenSpatialHandshakeIndex &index, HandshakeCycleOrigin origin,
     llvm::ArrayRef<PnrIndex> frozenWitness,
     llvm::ArrayRef<PnrIndex> activeFragments,
-    llvm::ArrayRef<PnrIndex> fragmentRefcounts);
+    llvm::ArrayRef<PnrIndex> fragmentRefcounts,
+    DiagnosticVerbosity minimum);
 
 } // namespace loom::pnr::detail
 

@@ -396,15 +396,13 @@ llvm::Error applyMatch(const Match &match) {
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateCardinalityCommuteDecisions(const CanonicalDataflowArtifact &parent) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = parent.view();
   llvm::DenseMap<mlir::Operation *, ActorId> ids;
-  for (const CanonicalActorView &actor : view->actors())
+  for (const CanonicalActorView &actor : view.actors())
     ids.try_emplace(actor.op, actor.ref.entity);
 
   std::vector<DataflowRewriteDecision> decisions;
-  for (const CanonicalActorView &actor : view->actors()) {
+  for (const CanonicalActorView &actor : view.actors()) {
     for (CardinalityCommuteDirection direction :
          {CardinalityCommuteDirection::MoveInside,
           CardinalityCommuteDirection::MoveOutside}) {
@@ -432,10 +430,8 @@ materializeCardinalityCommuteRewriteProjection(
   if (!llvm::is_contained(*decisions, DataflowRewriteDecision{decision}))
     return invalid("decision is not a complete legal parent shell");
 
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto resolved = view->resolve(ActorRef{parent.identity(), decision.compute});
+  const auto &view = parent.view();
+  auto resolved = view.resolve(ActorRef{parent.identity(), decision.compute});
   if (!resolved)
     return resolved.takeError();
   mlir::IRMapping mapping;
@@ -447,7 +443,7 @@ materializeCardinalityCommuteRewriteProjection(
   std::vector<Match> matches = matchesFor(compute, decision.direction);
   llvm::SmallPtrSet<mlir::Operation *, 4> expectedAdapters;
   for (ActorId id : decision.adapters) {
-    auto adapter = view->resolve(ActorRef{parent.identity(), id});
+    auto adapter = view.resolve(ActorRef{parent.identity(), id});
     if (!adapter)
       return adapter.takeError();
     mlir::Operation *cloned = mapping.lookupOrNull(adapter->op);

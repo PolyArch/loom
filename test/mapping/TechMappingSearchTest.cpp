@@ -147,6 +147,53 @@ void boundedConstructiveFrontierDoesNotFallThrough() {
     fail("bounded constructive frontier fell through to exhaustive search");
 }
 
+void constructiveForcedClosureRetainsCompleteDemand() {
+  constexpr std::size_t actorCount = 65;
+  constexpr std::size_t initialContextCount = 32;
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  domain.computeContextValueCount = initialContextCount;
+  std::vector<std::size_t> contexts;
+  for (std::size_t ordinal = 0; ordinal != initialContextCount; ++ordinal) {
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
+    contexts.push_back(ordinal);
+  }
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    domain.actors.push_back(actor(owner, ordinal));
+    domain.rows.push_back(
+        row(static_cast<std::uint8_t>(ordinal), {ordinal}, contexts));
+  }
+  loom::mapping::TechMappingGenerationAccounting rejectedAccounting;
+  const auto rejected = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(actorCount, 1), rejectedAccounting);
+  const auto &feedback = rejected.feedback.computeContextHall;
+  if (!rejected.exhausted || !rejected.covers.empty() || !feedback ||
+      feedback->hallDemandCount() != actorCount ||
+      feedback->hallContextValueCount() != initialContextCount ||
+      feedback->deficit() != actorCount - initialContextCount)
+    fail("forced-closure feedback described only the first failed prefix");
+
+  // The last authorized row may complete a cover; the expansion ceiling
+  // prevents another choice, not publication of this already selected cover.
+  for (std::size_t ordinal = initialContextCount; ordinal != actorCount;
+       ++ordinal) {
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
+    contexts.push_back(ordinal);
+  }
+  domain.computeContextValueCount = actorCount;
+  for (auto &candidate : domain.rows)
+    candidate.computeContextValues = contexts;
+  loom::mapping::TechMappingGenerationAccounting admittedAccounting;
+  const auto admitted = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(actorCount, 1), admittedAccounting);
+  if (admitted.covers.size() != 1 ||
+      admitted.covers.front().size() != actorCount ||
+      admittedAccounting.partialCoverExpansions != actorCount)
+    fail("a forced cover completed at its expansion ceiling was discarded");
+}
+
 void sealedCoversFollowFormalRank() {
   const loom::ArtifactIdentity owner = identity();
   loom::mapping::detail::TechMatchDomain domain;
@@ -268,6 +315,76 @@ void exactComputeContextSupplyShapesFrontier() {
       feedback->groups().front().demandCount != 4 ||
       feedback->groups().front().compatibleContexts.size() != 3)
     fail("partial-cover pruning lost its typed Hall deficit");
+}
+
+void disjointActorsRespectSharedContextCapacity() {
+  constexpr std::size_t contextBankSize = 32;
+  constexpr std::size_t actorCount = 2 * contextBankSize;
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  domain.computeContextValueCount = actorCount;
+  std::vector<std::size_t> firstBank;
+  std::vector<std::size_t> secondBank;
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    domain.actors.push_back(actor(owner, ordinal));
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
+    (ordinal < contextBankSize ? firstBank : secondBank).push_back(ordinal);
+  }
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    for (std::size_t bank = 0; bank != 2; ++bank) {
+      auto candidate = row(static_cast<std::uint8_t>(2 * ordinal + bank),
+                            {ordinal}, bank == 0 ? firstBank : secondBank);
+      std::get<loom::mapping::TechComputeRealizationView>(candidate.realization)
+          .capabilityTemplate = {loom::fabric::FabricFuTemplateRef(bank), 0};
+      domain.rows.push_back(std::move(candidate));
+    }
+  }
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(4 * actorCount, 1), accounting);
+  if (result.covers.size() != 1 || result.covers.front().size() != actorCount)
+    fail("independent actor choices exhausted the budget before sharing "
+         "compute-context capacity");
+  std::array<std::size_t, 2> bankDemand{};
+  for (const auto *selected : result.covers.front())
+    ++bankDemand[selected->computeContextValues.front() / contextBankSize];
+  if (bankDemand[0] != contextBankSize || bankDemand[1] != contextBankSize)
+    fail("the retained cover overcommitted one compute-context bank");
+
+  domain.actors.push_back(actor(owner, actorCount));
+  for (std::size_t bank = 0; bank != 2; ++bank) {
+    auto candidate = row(static_cast<std::uint8_t>(2 * actorCount + bank),
+                          {actorCount}, bank == 0 ? firstBank : secondBank);
+    std::get<loom::mapping::TechComputeRealizationView>(candidate.realization)
+        .capabilityTemplate = {loom::fabric::FabricFuTemplateRef(bank), 0};
+    domain.rows.push_back(std::move(candidate));
+  }
+  loom::mapping::TechMappingGenerationAccounting rejectedAccounting;
+  const auto rejected = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1, 1), rejectedAccounting);
+  const auto &hall = rejected.feedback.computeContextHall;
+  if (!rejected.exhausted || !rejected.covers.empty() || !hall ||
+      hall->hallDemandCount() != actorCount + 1 ||
+      hall->hallContextValueCount() != actorCount ||
+      hall->groups().size() != 1 ||
+      hall->groups().front().capabilities.size() != 2)
+    fail("unavoidable demand across alternative banks lost its full Hall set");
+
+  // A two-actor realization removes one context demand. The necessary
+  // relation must not treat either of its actors as a mandatory singleton.
+  auto fused = row(static_cast<std::uint8_t>(2 * actorCount + 2),
+                    {actorCount - 1, actorCount}, secondBank);
+  std::get<loom::mapping::TechComputeRealizationView>(fused.realization)
+      .capabilityTemplate = {loom::fabric::FabricFuTemplateRef(1), 0};
+  domain.rows.push_back(std::move(fused));
+  loom::mapping::TechMappingGenerationAccounting fusedAccounting;
+  const auto recovered = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 1), fusedAccounting);
+  if (recovered.covers.size() != 1 ||
+      recovered.covers.front().size() != actorCount)
+    fail("unavoidable-context pruning rejected a legal fused realization");
 }
 
 void exactMemoryOccurrenceSupplyShapesFrontier() {
@@ -413,8 +530,10 @@ int main() {
   independentComponentFrontierIsCompact();
   realizationCountLowerBoundIsAdmissible();
   exactComputeContextSupplyShapesFrontier();
+  disjointActorsRespectSharedContextCapacity();
   exactMemoryOccurrenceSupplyShapesFrontier();
   boundedConstructiveFrontierDoesNotFallThrough();
+  constructiveForcedClosureRetainsCompleteDemand();
   completedProductSurvivesExpansionLimit();
   sealedCoversFollowFormalRank();
   prospectiveSeedHasOneKeyedOutcome();

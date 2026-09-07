@@ -505,9 +505,7 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
       ::dataflow::importCanonicalDataflow(*dataflowReference, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflowArtifact->view();
   auto systemArtifact = fabric::importEntireFabricRoot(*systemReference, store);
   if (!systemArtifact)
     return systemArtifact.takeError();
@@ -518,11 +516,11 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
                                                       store);
   if (!constraints)
     return constraints.takeError();
-  if (constraints->view().dataflowIdentity() != dataflowView->identity() ||
+  if (constraints->view().dataflowIdentity() != dataflowView.identity() ||
       constraints->view().fabricIdentity() != systemView->artifact().identity())
     return invalid("checkpoint constraint owners disagree with its inputs");
   for (const auto &binding : threadBindings) {
-    auto resolved = dataflowView->resolve(binding.root);
+    auto resolved = dataflowView.resolve(binding.root);
     if (!resolved)
       return resolved.takeError();
     if (!llvm::is_contained(systemView->artifact().accCoreOccurrences(),
@@ -530,13 +528,13 @@ importSystemExecutionBindingCheckpoint(const ArtifactRootReference &reference,
       return invalid("checkpoint names a foreign AccCore occurrence");
   }
   for (const auto &binding : graphBindings) {
-    auto resolved = dataflowView->resolve(binding.launch);
+    auto resolved = dataflowView.resolve(binding.launch);
     if (!resolved)
       return resolved.takeError();
     auto mapping = importSpatialMapping(binding.target, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflowView->identity())
+    if (mapping->view().dataflowIdentity() != dataflowView.identity())
       return invalid("checkpoint names a foreign SpatialMapping Dataflow");
     bool importedModule = false;
     for (const fabric::FabricDirectDependency &dependency :

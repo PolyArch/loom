@@ -40,28 +40,30 @@ void requireRejected(std::vector<std::uint8_t> bytes,
 
 void envelopeRoundTrip() {
   const Gem5BridgeMessage original{Gem5BridgeMessageKind::ChannelTransfer,
+                                   17,
                                    0x1020304050607080ULL,
                                    {0x00, 0x7f, 0x80, 0xff}};
   const auto bytes = encodeGem5BridgeMessage(original);
   const auto decoded = take(decodeGem5BridgeMessage(bytes));
   require(decoded.kind == original.kind &&
+              decoded.bridgeSessionOrdinal == original.bridgeSessionOrdinal &&
               decoded.sequence == original.sequence &&
               decoded.payload == original.payload,
           "message round-trip changed semantic fields");
 
   auto badMagic = bytes;
   badMagic.front() ^= 0xff;
-  requireRejected(std::move(badMagic), "wrong ABI magic");
+  requireRejected(std::move(badMagic), "causal bridge message header");
 
   auto unknownKind = bytes;
   unknownKind[4] = 0;
   unknownKind[5] = 0;
   unknownKind[6] = 0;
-  unknownKind[7] = 5;
+  unknownKind[7] = 7;
   requireRejected(std::move(unknownKind), "unknown message kind");
 
   auto wrongLength = bytes;
-  wrongLength[23] += 1;
+  wrongLength[31] += 1;
   requireRejected(std::move(wrongLength), "payload length");
 }
 

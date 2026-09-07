@@ -7,9 +7,43 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace loom::sim {
+
+namespace detail {
+class CgraMemoryRuntime;
+}
+
+/// An execution-owned logical request identity. The retained domain prevents
+/// a completion from another execution, including a destroyed execution whose
+/// storage address has since been reused, from naming this request.
+class CgraExternalMemoryRequestId final {
+public:
+  bool operator==(const CgraExternalMemoryRequestId &other) const {
+    return domain_ == other.domain_ &&
+           semanticActorOrdinal_ == other.semanticActorOrdinal_ &&
+           actorOccurrenceOrdinal_ == other.actorOccurrenceOrdinal_;
+  }
+
+private:
+  struct Domain final {};
+
+  CgraExternalMemoryRequestId(std::shared_ptr<const Domain> domain,
+                              std::uint64_t semanticActorOrdinal,
+                              std::uint64_t actorOccurrenceOrdinal)
+      : domain_(std::move(domain)), semanticActorOrdinal_(semanticActorOrdinal),
+        actorOccurrenceOrdinal_(actorOccurrenceOrdinal) {}
+
+  std::shared_ptr<const Domain> domain_;
+  std::uint64_t semanticActorOrdinal_;
+  std::uint64_t actorOccurrenceOrdinal_;
+
+  friend class detail::CgraMemoryRuntime;
+};
 
 enum class CgraExternalMemoryOperation : std::uint32_t {
   Read = 0,
@@ -30,6 +64,7 @@ struct CgraExternalMemoryElement final {
 /// operation shape, Mapping owns the endpoint, and the provider owns external
 /// timing and dynamic state.
 struct CgraExternalMemoryRequest final {
+  CgraExternalMemoryRequestId id;
   ::loom::fabric::ManagerEndpointRef endpoint;
   std::uint64_t objectOrdinal = 0;
   CgraExternalMemoryOperation operation = CgraExternalMemoryOperation::Read;
@@ -42,16 +77,24 @@ struct CgraExternalMemoryResponse final {
   std::vector<std::vector<std::uint8_t>> readData;
 };
 
+/// The provider retained the request and will complete it through the issuing
+/// execution session. One logical response still covers every request element.
+struct CgraExternalMemoryPending final {};
+
+using CgraExternalMemorySubmission =
+    std::variant<CgraExternalMemoryResponse, CgraExternalMemoryPending>;
+
 /// Execution-scoped provider for manager-dispatched CGRA memory requests.
-/// The call returns only after the selected external service has completed the
-/// one logical request. Provider-internal beats remain invisible to actor
-/// firing and retirement identity.
+/// A completed local service returns its response. An external service may
+/// retain the request and return Pending; the execution then suspends its
+/// current model frame until the matching response arrives. Provider-internal
+/// beats remain invisible to actor firing and retirement identity.
 class CgraExternalMemoryProvider {
 public:
   virtual ~CgraExternalMemoryProvider() = default;
 
-  virtual llvm::Expected<CgraExternalMemoryResponse>
-  transact(const CgraExternalMemoryRequest &request) = 0;
+  virtual llvm::Expected<CgraExternalMemorySubmission>
+  submit(const CgraExternalMemoryRequest &request) = 0;
 };
 
 } // namespace loom::sim

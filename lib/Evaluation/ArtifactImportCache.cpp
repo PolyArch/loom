@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <list>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -16,7 +17,7 @@
 namespace loom::evaluation {
 namespace {
 
-thread_local ArtifactImportCache *currentCache = nullptr;
+thread_local std::shared_ptr<ArtifactImportCache> currentCache;
 
 struct CacheKey final {
   std::type_index type;
@@ -66,6 +67,7 @@ public:
     std::shared_ptr<const void> value;
     std::uint64_t constructionNanoseconds = 0;
     std::uint64_t minimumRetainedBytes = 0;
+    std::list<const CacheKey *>::iterator recency;
   };
 
   const ArtifactStore *artifacts = nullptr;
@@ -73,6 +75,7 @@ public:
   std::size_t entryLimit = 0;
   std::mutex mutex;
   std::map<CacheKey, Entry> entries;
+  std::list<const CacheKey *> recency;
   ArtifactImportCacheStatistics statistics;
 };
 
@@ -107,6 +110,8 @@ ArtifactImportCache::lookup(std::type_index type,
     add(impl_->statistics.cacheMisses, 1);
     return {};
   }
+  impl_->recency.splice(impl_->recency.begin(), impl_->recency,
+                        found->second.recency);
   return {found->second.value, found->second.constructionNanoseconds,
           found->second.minimumRetainedBytes};
 }
@@ -119,18 +124,36 @@ std::shared_ptr<const void> ArtifactImportCache::insert(
   add(impl_->statistics.uniqueConstructions, 1);
   add(impl_->statistics.constructionNanoseconds, constructionNanoseconds);
   add(impl_->statistics.deterministicWork, 1);
-  if (impl_->entries.size() >= impl_->entryLimit) {
+  auto key = makeKey(type, references);
+  auto existing = impl_->entries.find(key);
+  if (existing != impl_->entries.end()) {
+    impl_->recency.splice(impl_->recency.begin(), impl_->recency,
+                          existing->second.recency);
+    return existing->second.value;
+  }
+  if (impl_->entryLimit == 0) {
     add(impl_->statistics.uncachedConstructions, 1);
     return value;
   }
-  auto [found, inserted] = impl_->entries.try_emplace(
-      makeKey(type, references),
-      Impl::Entry{std::move(value), constructionNanoseconds,
-                  minimumRetainedBytes});
-  if (inserted) {
-    add(impl_->statistics.minimumRetainedBytes, minimumRetainedBytes);
-    impl_->statistics.entryCount = impl_->entries.size();
+  if (impl_->entries.size() == impl_->entryLimit) {
+    // The bound limits current retention; later inputs must remain reusable.
+    auto oldest = impl_->entries.find(*impl_->recency.back());
+    impl_->statistics.minimumRetainedBytes -=
+        oldest->second.minimumRetainedBytes;
+    impl_->recency.pop_back();
+    impl_->entries.erase(oldest);
   }
+  auto found =
+      impl_->entries
+          .try_emplace(std::move(key), Impl::Entry{std::move(value),
+                                                   constructionNanoseconds,
+                                                   minimumRetainedBytes,
+                                                   {}})
+          .first;
+  impl_->recency.push_front(&found->first);
+  found->second.recency = impl_->recency.begin();
+  add(impl_->statistics.minimumRetainedBytes, minimumRetainedBytes);
+  impl_->statistics.entryCount = impl_->entries.size();
   return found->second.value;
 }
 
@@ -174,10 +197,14 @@ ArtifactImportCacheScope::ArtifactImportCacheScope(
   if (previous_ && previous_->owns(artifacts, blobs)) {
     active_ = previous_;
   } else {
-    owned_ =
-        std::make_unique<ArtifactImportCache>(artifacts, blobs, entryLimit);
-    active_ = owned_.get();
+    active_ =
+        std::make_shared<ArtifactImportCache>(artifacts, blobs, entryLimit);
   }
+  currentCache = active_;
+}
+
+ArtifactImportCacheScope::ArtifactImportCacheScope(const Attachment &attachment)
+    : active_(attachment.cache_), previous_(currentCache) {
   currentCache = active_;
 }
 
@@ -216,6 +243,6 @@ void emitArtifactImportCacheStatistics(
       });
 }
 
-ArtifactImportCache *currentArtifactImportCache() { return currentCache; }
+ArtifactImportCache *currentArtifactImportCache() { return currentCache.get(); }
 
 } // namespace loom::evaluation

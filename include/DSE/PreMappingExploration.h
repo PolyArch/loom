@@ -131,6 +131,10 @@ struct PreMappingCandidatePlanningRecord final {
   /// Generation intent is provenance only. It is never an endpoint
   /// classification and is excluded from candidateIdentity.
   std::optional<PreMappingScheduleIntent> scheduleIntent;
+  /// Complete exact candidate host activity from StructuredFabricAnalytic.
+  /// Protocol-root subsets do not supply this observation. Like Runtime,
+  /// this derived invocation observation is excluded from candidate identity.
+  std::optional<std::uint64_t> hostDynamicLeafExecutions = std::nullopt;
 
   friend bool operator==(const PreMappingCandidatePlanningRecord &lhs,
                          const PreMappingCandidatePlanningRecord &rhs) {
@@ -147,7 +151,8 @@ struct PreMappingCandidatePlanningRecord final {
            lhs.incompleteReason == rhs.incompleteReason &&
            lhs.verifiedSpectrum == rhs.verifiedSpectrum &&
            lhs.candidateIdentity == rhs.candidateIdentity &&
-           lhs.scheduleIntent == rhs.scheduleIntent;
+           lhs.scheduleIntent == rhs.scheduleIntent &&
+           lhs.hostDynamicLeafExecutions == rhs.hostDynamicLeafExecutions;
   }
 };
 
@@ -224,7 +229,7 @@ struct CompletedPreMappingSelection final {
   std::optional<PreMappingShadowRecall> shadowRecall;
   /// Exact source-only native work observed once by the pre-Mapping owner.
   /// This is a derived baseline measure, not candidate identity or DSE rank.
-  std::optional<std::uint64_t> sourceHostOnlyWork;
+  std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds;
 
   bool searchComplete() const {
     return completeness.exactComplete();
@@ -245,7 +250,7 @@ struct CompletedPreMappingNoFeasibleCandidate final {
   std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
   PreMappingSearchCompleteness completeness;
   std::optional<ComponentViewDigest> frontierPolicyDigest;
-  std::optional<std::uint64_t> sourceHostOnlyWork;
+  std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds;
   /// The typed finalization refusals of the ownership coordinates, retained
   /// when the bounded front-end kept no Dataflow candidate: they are then the
   /// only proof of why nothing was retained, and the application decision
@@ -271,7 +276,7 @@ struct IncompletePreMappingExploration final {
   /// continuing independent coordinates.
   std::optional<ComponentViewDigest> resolvedDseConfigViewDigest =
       std::nullopt;
-  std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt;
+  std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds = std::nullopt;
 };
 
 using PreMappingExplorationOutcome =

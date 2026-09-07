@@ -6,9 +6,12 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::runtime {
+
+inline constexpr int gem5TickSecondsExponent = -12;
 
 struct Gem5RiscvCpuParameters final {
   std::uint64_t cpuId = 0;
@@ -35,6 +38,10 @@ struct Gem5SpatialBridgeParameters final {
   }
 };
 
+/// Native 12.8 GiB/s SimpleMemory service cost after gem5 rounds to integer
+/// ticks at 1 ps per tick. Every accepted request occupies size * cost ticks.
+inline constexpr std::uint64_t gem5SimpleMemoryServiceTicksPerByte = 73;
+
 struct Gem5SimpleMemoryParameters final {
   std::uint64_t baseAddress = 0;
   std::uint64_t sizeBytes = 0;
@@ -47,6 +54,11 @@ struct Gem5SimpleMemoryParameters final {
            lhs.latencyTicks == rhs.latencyTicks;
   }
 };
+
+/// One shared physical SimpleMemory for all memory/service correspondences.
+/// Missing, unsupported, or distinct memory objects do not establish this domain.
+llvm::Expected<std::optional<Gem5SimpleMemoryParameters>>
+projectGem5SharedMemory(const Gem5SimulationBinding &binding);
 
 const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel();
 const Gem5ModelContractDescriptor &gem5RiscvO3CpuModel();

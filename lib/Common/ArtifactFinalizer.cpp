@@ -1,11 +1,11 @@
 #include "Common/ArtifactFinalizer.h"
+#include "Common/BlobDigest.h"
 
 #include "ArtifactFinalizerInternal.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/SHA256.h"
 
 #include <algorithm>
 #include <cassert>
@@ -132,7 +132,7 @@ detail::parseArtifactIdentityPreimage(llvm::ArrayRef<std::uint8_t> preimage) {
 ArtifactIdentity detail::finalizeArtifactIdentityPreimage(
     llvm::ArrayRef<std::uint8_t> preimage) {
   return llvm::cantFail(
-      ArtifactIdentity::fromBytes(llvm::SHA256::hash(preimage)));
+      ArtifactIdentity::fromBytes(computeBlobDigest(preimage).bytes()));
 }
 
 ArtifactIdentity

@@ -6,8 +6,10 @@
 #include "Common/InvocationDiagnosticLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CgraClosedWait.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -20,6 +22,7 @@
 
 #include <time.h>
 
+#include <array>
 #include <chrono>
 #include <limits>
 #include <optional>
@@ -270,7 +273,7 @@ const ResolvedModelConfigViewContract kConfigView{
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "cgra_simulator",
-    "loom.cgra_simulator.exact_mapping.v3",
+    "loom.cgra_simulator.exact_mapping.v5",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -286,8 +289,8 @@ const EvaluationModelDescriptor kModelDescriptor{
     ProviderForm::InProcess};
 
 llvm::Expected<std::vector<MetricResult>>
-cycleMetricResults(const EvaluationRequest &request,
-                   std::uint64_t cycleCount, bool subjectRetired) {
+cycleMetricResults(const EvaluationRequest &request, std::uint64_t cycleCount,
+                   bool subjectRetired) {
   if (cycleCount >
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return llvm::createStringError(
@@ -302,14 +305,14 @@ cycleMetricResults(const EvaluationRequest &request,
           "cgra_simulation_model_invalid: unsupported metric request");
     MetricObservationValue observation =
         subjectRetired
-            ? MetricObservationValue(PointObservation{IntegerValue(
-                  static_cast<std::int64_t>(cycleCount))})
+            ? MetricObservationValue(PointObservation{
+                  IntegerValue(static_cast<std::int64_t>(cycleCount))})
             : MetricObservationValue(CensoredObservation{
-                  MetricValue(IntegerValue(
-                      static_cast<std::int64_t>(cycleCount))),
+                  MetricValue(
+                      IntegerValue(static_cast<std::int64_t>(cycleCount))),
                   std::nullopt, CensoredReason::SubjectDidNotComplete});
-    metrics.push_back(MetricResult{UncertaintyKind::ExactWithinModel,
-                                   std::move(observation), {}});
+    metrics.push_back(MetricResult{
+        UncertaintyKind::ExactWithinModel, std::move(observation), {}});
   }
   return metrics;
 }
@@ -333,8 +336,7 @@ terminalFindingResults(const EvaluationRequest &request, bool closedWait) {
 }
 
 llvm::Expected<EvaluationModelResult> publishCompletedExecution(
-    const EvaluationRequest &request,
-    const CaseArtifactResolution &resolution,
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     sim::SpatialSimulationExecution execution, std::uint64_t cycleCount,
     bool closedWait, const ArtifactStore &artifactStore,
     const BlobStore &blobStore,
@@ -354,9 +356,9 @@ llvm::Expected<EvaluationModelResult> publishCompletedExecution(
                           attemptProfile->observationProjectionCpuNanoseconds);
     attemptProfile->activeWallNanoseconds +=
         attemptProfile->observationProjectionWallNanoseconds;
-    attemptProfile->processCpuNanoseconds = sumCpuNanoseconds(
-        attemptProfile->processCpuNanoseconds,
-        attemptProfile->observationProjectionCpuNanoseconds);
+    attemptProfile->processCpuNanoseconds =
+        sumCpuNanoseconds(attemptProfile->processCpuNanoseconds,
+                          attemptProfile->observationProjectionCpuNanoseconds);
   }
   const auto publicationBegin = beginAttemptInterval(attemptProfile != nullptr);
   auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
@@ -443,8 +445,8 @@ public:
       objects_.push_back(object.initialBytes);
   }
 
-  llvm::Expected<sim::CgraExternalMemoryResponse>
-  transact(const sim::CgraExternalMemoryRequest &request) override {
+  llvm::Expected<sim::CgraExternalMemorySubmission>
+  submit(const sim::CgraExternalMemoryRequest &request) override {
     if (request.elements.empty())
       return llvm::createStringError(
           std::errc::invalid_argument,
@@ -832,6 +834,18 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                   {"from", ownerJson(edge.from)},
                   {"to", ownerJson(edge.to)},
                   {"kind", static_cast<std::uint64_t>(edge.kind)},
+                  {"physical_capacity", edge.physicalCapacity
+                      ? llvm::json::Value(llvm::json::Object{
+                            {"waitingActionOrdinal", edge.physicalCapacity->waitingActionOrdinal},
+                            {"waitingOccurrenceOrdinal", edge.physicalCapacity->waitingOccurrenceOrdinal},
+                            {"holdingActionOrdinal", edge.physicalCapacity->holdingActionOrdinal},
+                            {"holdingOccurrenceOrdinal", edge.physicalCapacity->holdingOccurrenceOrdinal},
+                            {"dimensionOrdinal", edge.physicalCapacity->dimensionOrdinal},
+                            {"capacity", edge.physicalCapacity->capacity},
+                            {"occupancy", edge.physicalCapacity->occupancy},
+                            {"requestedAmount", edge.physicalCapacity->requestedAmount},
+                            {"heldAmount", edge.physicalCapacity->heldAmount},
+                        }) : llvm::json::Value(nullptr)},
                   {"waiting_input", edge.waitingInputOrdinal},
                   {"waiting_channel", edge.waitingChannelOrdinal},
                   {"binding", edge.bindingOrdinal},
@@ -851,10 +865,9 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                    edge.awaitedTagValue
                        ? llvm::json::Value(tagText(*edge.awaitedTagValue))
                        : llvm::json::Value(nullptr)},
-                  {"head_tag",
-                   edge.headTagValue
-                       ? llvm::json::Value(tagText(*edge.headTagValue))
-                       : llvm::json::Value(nullptr)},
+                  {"head_tag", edge.headTagValue ? llvm::json::Value(tagText(
+                                                       *edge.headTagValue))
+                                                 : llvm::json::Value(nullptr)},
                   {"head_binding", edge.headBindingOrdinal},
                   {"head_occurrence", edge.headOccurrenceOrdinal},
                   {"head_destination_actor", edge.headDestinationActorOrdinal},
@@ -918,9 +931,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         std::move(outcome->halted->progress),
         {}};
     return publishCompletedExecution(
-        request, resolution, std::move(halted), cycleCount, true,
-        artifactStore, blobStore, executionContext, projectionBegin,
-        attemptProfile);
+        request, resolution, std::move(halted), cycleCount, true, artifactStore,
+        blobStore, executionContext, projectionBegin, attemptProfile);
   }
   const auto &progress = outcome->retired->progress;
   const auto &retirement = progress.graphRetirementVisible;
@@ -1199,37 +1211,87 @@ resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
                           const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerCgraSimulationModel())
     return std::move(error);
-  auto importedMapping =
-      mapping::importSpatialMapping(spatialMapping, artifactStore);
-  if (!importedMapping)
-    return importedMapping.takeError();
-  const ArtifactRootReference dataflowReference{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version,
-      importedMapping->view().dataflowIdentity()};
-  const ArtifactRootReference fabricReference{
-      fabric::fabricArtifactSchema.identity.str(),
-      fabric::fabricArtifactSchema.version,
-      importedMapping->view().fabricIdentity()};
-  const ArtifactRootReference techMappingReference{
-      mapping::mappingArtifactSchema.identity.str(),
-      mapping::mappingArtifactSchema.version,
-      importedMapping->view().techMappingIdentity()};
+  struct CgraCaseOwnerClosure final {
+    sim::CgraExecutionOwnerReferences owners;
+    std::vector<ArtifactRootReference> fabricDependencies;
+  };
+  const auto revalidateOwners = [&](const CgraCaseOwnerClosure &closure)
+      -> llvm::Expected<std::uint64_t> {
+    const auto &owners = closure.owners;
+    std::uint64_t byteCount = 0;
+    const auto revalidate =
+        [&](const ArtifactRootReference &reference) -> llvm::Error {
+      auto bytes = artifactStore.get(reference);
+      if (!bytes)
+        return bytes.takeError();
+      const std::uint64_t size = bytes->bytes().size();
+      byteCount = size > std::numeric_limits<std::uint64_t>::max() - byteCount
+                      ? std::numeric_limits<std::uint64_t>::max()
+                      : byteCount + size;
+      return llvm::Error::success();
+    };
+    for (const ArtifactRootReference *root :
+         {&owners.dataflow, &owners.fabric, &owners.techMapping})
+      if (llvm::Error error = revalidate(*root))
+        return std::move(error);
+    for (const ArtifactRootReference &dependency : closure.fabricDependencies)
+      if (llvm::Error error = revalidate(dependency))
+        return std::move(error);
+    return byteCount;
+  };
+  const std::array<ArtifactRootReference, 1> references{spatialMapping};
+  auto closure = importCachedArtifact<CgraCaseOwnerClosure>(
+      artifactStore, nullptr, references,
+      [&]() -> llvm::Expected<CgraCaseOwnerClosure> {
+        // An enclosing Mapping session may already retain the strict view.
+        // Revalidate the exact root before deriving the case owner references.
+        auto bytes = artifactStore.get(spatialMapping);
+        if (!bytes)
+          return bytes.takeError();
+        auto imported =
+            mapping::importSpatialMapping(spatialMapping, artifactStore);
+        if (!imported)
+          return imported.takeError();
+        sim::CgraExecutionOwnerReferences resolved{
+            {dataflow::canonicalDataflowSchema.identity.str(),
+             dataflow::canonicalDataflowSchema.version,
+             imported->view().dataflowIdentity()},
+            {fabric::fabricArtifactSchema.identity.str(),
+             fabric::fabricArtifactSchema.version,
+             imported->view().fabricIdentity()},
+            {mapping::mappingArtifactSchema.identity.str(),
+             mapping::mappingArtifactSchema.version,
+             imported->view().techMappingIdentity()},
+            spatialMapping};
+        auto fabric =
+            fabric::importEntireFabricRoot(resolved.fabric, artifactStore);
+        if (!fabric)
+          return fabric.takeError();
+        CgraCaseOwnerClosure importedClosure{std::move(resolved), {}};
+        for (const auto &dependency : fabric->directDependencies())
+          importedClosure.fabricDependencies.push_back(dependency.root);
+        auto verified = revalidateOwners(importedClosure);
+        if (!verified)
+          return verified.takeError();
+        return importedClosure;
+      },
+      revalidateOwners);
+  if (!closure)
+    return closure.takeError();
+  const auto &owners = (*closure)->owners;
   auto inputs =
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow.identity() != dataflowReference.artifact)
+  if (inputs->dataflow->identity() != owners.dataflow.artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: workload names a foreign Dataflow "
         "owner");
-  auto resolution = buildResolution({dataflowReference, fabricReference,
-                                     techMappingReference, spatialMapping},
-                                    workload, runtimeInput);
+  auto resolution = buildResolution(owners, workload, runtimeInput);
   if (!resolution)
     return resolution.takeError();
-  return ResolvedCgraSimulationCase{dataflowReference, fabricReference,
+  return ResolvedCgraSimulationCase{owners.dataflow, owners.fabric,
                                     std::move(*resolution)};
 }
 
@@ -1255,7 +1317,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow.identity() != canonicalDataflow.artifact)
+  if (inputs->dataflow->identity() != canonicalDataflow.artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: workload names a foreign Dataflow "
@@ -1285,8 +1347,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
   if (!cycleCount)
     return cycleCount.takeError();
   auto closedWait = FindingRequest::get(
-      FindingQuery{CgraClosedWait,
-                   EvaluationScope{kWholeExactCaseScope, {}}},
+      FindingQuery{CgraClosedWait, EvaluationScope{kWholeExactCaseScope, {}}},
       {}, *evaluationCase, *resolution, artifactStore);
   if (!closedWait)
     return closedWait.takeError();

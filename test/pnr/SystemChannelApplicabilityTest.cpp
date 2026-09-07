@@ -282,9 +282,8 @@ enum class SystemSearchProbeDomain : std::uint8_t {
   Routing,
 };
 
-loom::ResolvedConfig
-buildResolvedConfig(SystemSearchProbeDomain probeDomain =
-                        SystemSearchProbeDomain::Routing) {
+loom::ResolvedConfig buildResolvedConfig(
+    SystemSearchProbeDomain probeDomain = SystemSearchProbeDomain::Routing) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
   resolved.dse.objectiveCatalogs.dimensions = {
@@ -627,7 +626,7 @@ int main() {
   auto dataflowArtifact = buildDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto system =
@@ -894,8 +893,7 @@ int main() {
                   "routing-domain search performed no endpoint probes");
         require(
             firstAnnealed->threadChoices() == secondAnnealed->threadChoices() &&
-                firstAnnealed->graphChoices() ==
-                    secondAnnealed->graphChoices(),
+                firstAnnealed->graphChoices() == secondAnnealed->graphChoices(),
             "System transactional search changed decisions on replay");
         if (llvm::Error error = firstAnnealed->verify())
           fail(llvm::toString(std::move(error)));
@@ -926,8 +924,7 @@ int main() {
   auto assignmentProblem =
       take(loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
           dataflow, system, assignmentSearchDomain, assignmentConfig,
-          constraints,
-          store));
+          constraints, store));
   require(assignmentProblem->threadDecisions().size() ==
                   problem->threadDecisions().size() &&
               assignmentProblem->graphDecisions().size() ==
@@ -973,25 +970,58 @@ int main() {
   auto rerouted = loom::pnr::probeSystemAction(
       distinctOwners, objective, loom::pnr::SystemMappingAction{*reroute},
       rerouteWork);
-  require(!rerouted, "ring routing silently restored an excluded broadcast leg");
-  bool intrinsicallyInvalid = false;
-  if (llvm::Error error = llvm::handleErrors(
-          rerouted.takeError(),
-          [&](const loom::pnr::SystemActionTransitionFailure &failure) {
-            intrinsicallyInvalid =
-                failure.kind() ==
-                loom::pnr::SystemActionTransitionFailureKind::IntrinsicInvalid;
-          }))
-    fail(llvm::toString(std::move(error)));
-  require(intrinsicallyInvalid && rerouteWork.assignmentAttempts == 0 &&
-              rerouteWork.negotiationIterations != 0,
-          "mandatory ring branch exclusion lost its routing refusal");
+  // A whole-leg routing Action excludes the pattern-leg traversal the parent
+  // selected. Two outcomes are admissible for these fixed ring endpoints: the
+  // router finds no other admissible tree and refuses, or it returns a tree
+  // that avoids the excluded traversal. Which branch is taken depends on the
+  // provider's sink
+  // ordering and cost model, so neither is pinned here.
+  const auto legRouteNodes = [&](const loom::pnr::SystemCandidateState &state) {
+    const auto &route = state.serviceRoutes()[*channelLeg];
+    return state.serviceRouteNodes().slice(route.nodeOffset, route.nodeCount);
+  };
+  const auto before = legRouteNodes(*distinctOwners);
+  const auto excluded = llvm::find_if(before, [&](const auto &node) {
+    return node.incomingTraversal != loom::pnr::getInvalidPnrIndex() &&
+           problem->routingTopology()
+                   .traversals()[node.incomingTraversal]
+                   .reference.kind() ==
+               loom::fabric::FabricPhysicalTraversalKind::
+                   SystemTransferPatternLeg;
+  });
+  require(excluded != before.end(),
+          "whole-leg reroute fixture has no selected pattern traversal");
+  if (rerouted) {
+    const auto after = legRouteNodes(*rerouted->candidate);
+    require(llvm::none_of(after,
+                          [&](const auto &node) {
+                            return node.incomingTraversal ==
+                                   excluded->incomingTraversal;
+                          }),
+            "whole-leg reroute retained the excluded pattern traversal");
+  } else {
+    bool intrinsicallyInvalid = false;
+    if (llvm::Error error = llvm::handleErrors(
+            rerouted.takeError(),
+            [&](const loom::pnr::SystemActionTransitionFailure &failure) {
+              intrinsicallyInvalid =
+                  failure.kind() ==
+                  loom::pnr::SystemActionTransitionFailureKind::
+                      IntrinsicInvalid;
+            }))
+      fail(llvm::toString(std::move(error)));
+    require(intrinsicallyInvalid,
+            "an exhausted mandatory ring branch lost its typed routing "
+            "refusal");
+  }
+  require(rerouteWork.assignmentAttempts == 0,
+          "a routing Action escaped its domain into thread assignment");
   if (llvm::Error error = distinctOwners->verify())
     fail(llvm::toString(std::move(error)));
 
-  // The ring has one broadcast route for these fixed endpoints. Moving only
-  // the producer gives a legal changed service that is still shared with the
-  // preserved consumer, so a producer-only migration cone must reject it.
+  // Moving only the producer gives a legal changed service that is still
+  // shared with the preserved consumer, so a producer-only migration cone
+  // must reject it.
   std::vector<loom::pnr::PnrIndex> changedThreadChoices(
       distinctOwners->threadChoices().begin(),
       distinctOwners->threadChoices().end());

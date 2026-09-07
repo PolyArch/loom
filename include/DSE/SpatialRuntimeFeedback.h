@@ -217,7 +217,7 @@ enum class SpatialTransportRuntimeFeedbackDisposition : std::uint8_t {
 };
 
 enum class SpatialTransportRuntimeFeedbackReason : std::uint8_t {
-  ExactClosedStorageWait,
+  ExactClosedWait,
   MissingOwnerReferences,
   OwnerMismatch,
   /// The supplied parent SpatialMapping was not admitted by the exact current
@@ -236,9 +236,6 @@ enum class SpatialTransportRuntimeFeedbackReason : std::uint8_t {
   /// The selected SpatialMapping has no exact current constraint-set lineage,
   /// so a persistent accumulated clause cannot be derived safely.
   UnboundConstraintLineage,
-  /// The certificate projected cleanly but named no exact Mapping choice, so
-  /// there is no non-empty clause to publish.
-  EmptyLiteralSet,
   /// Traversal and attachment projection is diagnostic-only until every
   /// Mapping decision needed to preserve the closed wait, including Physical
   /// Tag queue class and durable certificate provenance, is independently

@@ -489,7 +489,7 @@ void orderedFanoutMaterializesOneMulticastChannel() {
 
   auto d0 = take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
       selected.structuredProgram));
-  auto view = take(d0.view());
+  const auto &view = d0.view();
   std::optional<dataflow::ChannelProducerRef> producer;
   view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef rooted) {
     dataflow::GraphRef graphRef = take(view.resolve(rooted));

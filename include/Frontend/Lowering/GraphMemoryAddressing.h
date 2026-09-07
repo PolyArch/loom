@@ -1,11 +1,13 @@
 #ifndef LOOM_FRONTEND_LOWERING_GRAPHMEMORYADDRESSING_H
 #define LOOM_FRONTEND_LOWERING_GRAPHMEMORYADDRESSING_H
 
-#include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Analysis/MemoryAddressProjection.h"
+#include "Frontend/Analysis/StoredMemoryProvenance.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -15,63 +17,12 @@
 
 namespace loom::lowering {
 
-struct ExactElementStrideScale {
-  std::int64_t scale = 1;
-  unsigned exactSignedDivideShift = 0;
-};
-
-std::optional<ExactElementStrideScale>
-resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
-                               std::uint64_t elementBytes);
-
-struct LinearByteTerm {
-  mlir::Value index;
-  std::int64_t byteStride = 1;
-};
-
-struct LinearElementTerm {
-  mlir::Value index;
-  std::int64_t scale = 1;
-  unsigned exactSignedDivideShift = 0;
-};
-
-struct ResolvedLinearMemoryAddress {
-  mlir::Value root;
-  llvm::SmallVector<LinearByteTerm, 4> terms;
-  llvm::SmallVector<LinearElementTerm, 4> elementTerms;
-  mlir::Type indexType;
-  std::int64_t byteBias = 0;
-  std::int64_t elementBias = 0;
-  unsigned byteToElementShift = 0;
-  std::uint64_t elementAllocByteCount = 0;
-  std::uint64_t accessByteCount = 0;
-  unsigned addressBitWidth = 0;
-  llvm::SmallVector<mlir::Operation *, 4> gepsLeafToRoot;
-};
-
-std::optional<ResolvedLinearMemoryAddress>
-resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
-                           unsigned canonicalIndexBits);
-
-/// Resolves an exact root-relative address while stopping at the service root
-/// owned by the caller's projection boundary. The root predicate changes only
-/// where the shared GEP walk stops; DataLayout and element-index proofs remain
-/// identical to graph lowering.
-std::optional<ResolvedLinearMemoryAddress> resolveLinearMemoryAddress(
-    mlir::Value pointer, mlir::Type accessType, unsigned canonicalIndexBits,
-    llvm::function_ref<bool(mlir::Value)> isBoundaryRoot);
-
-/// Resolves one typed LLVM GEP chain as an exact DataLayout byte address.
-/// Unlike the RootRelative overload above, this projection derives its
-/// arithmetic width from the pointer address space and does not require a
-/// synthetic canonical element-index representation.
-std::optional<ResolvedLinearMemoryAddress>
-resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType);
-
 /// One direct scalar LLVM access whose complete byte geometry is exactly one
 /// point-coordinate partition of an enclosing loop domain. The projection is
 /// shared by SCoP admission and independent-iteration proofs so neither owner
 /// can silently interpret a GEP as an unscaled element index.
+/// Its root is the loop-invariant direct GEP base, which may itself be an
+/// enclosing loop's row address; alias proofs still follow its provenance.
 struct ExactPointerPointAccess {
   mlir::Operation *operation = nullptr;
   mlir::Value root;
@@ -111,9 +62,20 @@ ExactPointerPointAccessPairKind
 classifyExactPointerPointAccessPair(const ExactPointerPointAccess &lhs,
                                     const ExactPointerPointAccess &rhs);
 
-std::optional<ResolvedLinearMemoryAddress>
-resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
-                           mlir::Type accessType, unsigned canonicalIndexBits);
+/// Temporary compiler projection from a descriptor input to the object input
+/// represented by every pointer read from that descriptor in the selected
+/// body. It is derived from immutable source IR, mapped only through explicit
+/// IR cloning, and consumed during the same publication. It is never serialized
+/// or used as an independent authority for another input artifact.
+using PointerServiceBindings = llvm::DenseMap<mlir::Value, mlir::Value>;
+using PointerServiceBindingsOutcome =
+    std::variant<PointerServiceBindings,
+                 frontend::analysis::StoredPointerRefusal>;
+
+PointerServiceBindingsOutcome projectPointerServiceBindings(
+    llvm::ArrayRef<mlir::Operation *> selectedBody,
+    llvm::ArrayRef<mlir::Value> boundaryValues,
+    frontend::analysis::StoredMemoryProvenance &provenance);
 
 /// Resolves the one memory-service boundary root of an LLVM pointer lineage.
 /// `isBoundaryRoot` is the only context-dependent policy: graph lowering uses
@@ -121,7 +83,13 @@ resolveLinearMemoryAddress(mlir::Value pointer, dataflow::GraphOp graph,
 /// values crossing the selected scope. The lineage rules themselves have one
 /// owner so preflight cannot drift from lowering.
 mlir::Value resolveMemoryServiceBoundaryRoot(
-    mlir::Value pointer, llvm::function_ref<bool(mlir::Value)> isBoundaryRoot);
+    mlir::Value pointer, llvm::function_ref<bool(mlir::Value)> isBoundaryRoot,
+    const PointerServiceBindings &bindings = PointerServiceBindings());
+
+/// Returns whether a pointer lineage contains an LLVM pointer value loaded
+/// from memory. Source-origin completion is required only for this case;
+/// graph-memory lowering owns direct branch selections among boundary roots.
+bool usesLoadedPointerService(mlir::Value pointer);
 
 } // namespace loom::lowering
 

@@ -30,6 +30,10 @@ struct ProductBuildOptions final {
   std::uint64_t mappingTechCandidateLimit = defaultProductTechCandidateLimit;
   std::uint64_t mappingWallTimeLimitMilliseconds =
       defaultProductMappingWallTimeLimitMilliseconds;
+  /// Aggregate DFG wavefront allowance for each source-backed functional
+  /// replay. Absent derives a finite aggregate from exact observed source
+  /// activations through the Structured exploration budget owner.
+  std::optional<std::uint64_t> mappingReplayWavefrontLimit;
   /// Mapping-repair admission per exact runtime witness. Absent keeps the
   /// joint repair owner's default; the hardware reopen budget is separate.
   std::optional<std::uint64_t> mappingRepairCandidateLimit;

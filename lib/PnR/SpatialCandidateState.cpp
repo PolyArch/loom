@@ -70,29 +70,6 @@ tagValueViews(const SpatialTagAssignmentState &assignments,
   return result;
 }
 
-llvm::Expected<std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>>>
-tagValueViews(const SpatialTagAssignmentSummary &assignments,
-              std::size_t logicalNetCount) {
-  if (assignments.netTagValueOffsets.size() != logicalNetCount + 1 ||
-      assignments.netTagValueOffsets.empty() ||
-      assignments.netTagValueOffsets.front() != 0 ||
-      assignments.netTagValueOffsets.back() != assignments.netTagValues.size())
-    return candidateError(
-        "projected tag assignment has incomplete logical-net offsets");
-  std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> result;
-  result.reserve(logicalNetCount);
-  for (std::size_t logicalNet = 0; logicalNet < logicalNetCount; ++logicalNet) {
-    const std::size_t begin = assignments.netTagValueOffsets[logicalNet];
-    const std::size_t end = assignments.netTagValueOffsets[logicalNet + 1];
-    if (begin > end || end > assignments.netTagValues.size())
-      return candidateError(
-          "projected tag assignment logical-net range is invalid");
-    result.push_back(
-        llvm::ArrayRef(assignments.netTagValues).slice(begin, end - begin));
-  }
-  return result;
-}
-
 llvm::Expected<HandshakeCandidateStateHandle> createInitialHandshakeState(
     const FrozenSpatialPnrProblemHandle &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
@@ -146,8 +123,9 @@ llvm::Expected<bool> projectHandshakeSelections(
     llvm::ArrayRef<PnrIndex> memoryOperationPlans,
     llvm::ArrayRef<PnrIndex> registerFifoTransfers,
     llvm::ArrayRef<const RouteTreeState *> routes,
-    llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues,
-    HandshakeProjectionScratch &projectionScratch) {
+    llvm::ArrayRef<PnrIndex> switchFragments,
+    HandshakeProjectionScratch &projectionScratch,
+    std::vector<PnrIndex> *frozenCycleWitness) {
   std::vector<PnrIndex> selectedFragments;
   for (const SpatialComputeBindingSelection &binding : computeBindings)
     llvm::append_range(
@@ -200,13 +178,10 @@ llvm::Expected<bool> projectHandshakeSelections(
         return std::move(error);
     }
   }
-  auto switchFragments = detail::deriveSpatialTemporalSwitchHandshakeFragments(
-      problem, routes, tagValues);
-  if (!switchFragments)
-    return switchFragments.takeError();
-  llvm::append_range(selectedFragments, *switchFragments);
+  llvm::append_range(selectedFragments, switchFragments);
   return projectionScratch.projectAcyclic(problem.handshake(),
-                                          selectedFragments, traversalUses);
+                                          selectedFragments, traversalUses,
+                                          frozenCycleWitness);
 }
 
 } // namespace
@@ -391,7 +366,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
            ? memoryConstraintScratch_->retainedStorageBytes()
            : 0);
   for (const auto &scratch : routeScratch_)
-    bytes += scratch->retainedRollbackStorageBytes();
+    bytes += scratch->retainedStorageBytes();
   bytes +=
       retainedBytes(computeJournalMarks_) + retainedBytes(memoryJournalMarks_) +
       retainedBytes(portJournalMarks_) + retainedBytes(boundaryJournalMarks_) +
@@ -1342,7 +1317,8 @@ llvm::Expected<SpatialCandidateRouteProjection>
 SpatialCandidateState::projectVerifiedRoutes(
     llvm::ArrayRef<const RouteTreeState *> routes,
     SpatialTagAssignmentSummary *tagSummary,
-    HandshakeProjectionScratch &handshakeProjectionScratch) const {
+    HandshakeProjectionScratch &handshakeProjectionScratch,
+    std::vector<PnrIndex> *frozenCycleWitness) const {
   if (routes.size() != routeTrees_.size())
     return candidateError("projected route count does not match the candidate");
   std::uint64_t unrouted = 0;
@@ -1393,20 +1369,35 @@ SpatialCandidateState::projectVerifiedRoutes(
       return projectedRecurrence.takeError();
     recurrenceTiming = std::move(*projectedRecurrence);
   }
-  auto tags = tagAssignments_.projectVerifiedRoutes(
-      routes, /*includeDomainDetails=*/true);
+  // Rebuild tag continuity and demands once for this independent projection.
+  // Both the tag summary and handshake selection derive from that fresh owner.
+  auto projectedTags = tagAssignments_.projectVerifiedRoutes(routes);
+  if (!projectedTags)
+    return projectedTags.takeError();
+  auto tags = projectedTags->summarizeCurrentState(/*includeDomainDetails=*/true);
   if (!tags)
     return tags.takeError();
   const std::uint64_t tagResidentCapacityOveruse =
       tags->residentCapacityOveruse;
   const std::uint64_t tagUnassignedCount = tags->unassignedCount;
   const std::uint64_t tagConflictCount = tags->conflictCount;
-  auto tagValues = tagValueViews(*tags, routes.size());
-  if (!tagValues)
-    return tagValues.takeError();
+  const auto tagValues = tagValueViews(*projectedTags, routes.size());
+  auto switchFragmentsByDomain =
+      detail::deriveSpatialTemporalSwitchHandshakeFragmentsByDomain(
+          *problem_, *projectedTags->storage_);
+  if (!switchFragmentsByDomain)
+    return switchFragmentsByDomain.takeError();
+  std::vector<PnrIndex> switchFragments;
+  for (const auto &fragments : *switchFragmentsByDomain)
+    llvm::append_range(switchFragments, fragments);
+  llvm::sort(switchFragments);
+  switchFragments.erase(
+      std::unique(switchFragments.begin(), switchFragments.end()),
+      switchFragments.end());
   auto handshakeAcyclic = projectHandshakeSelections(
       *problem_, computeBindings_, portAttachments_, memoryOperationPlans_,
-      registerFifoTransfers_, routes, *tagValues, handshakeProjectionScratch);
+      registerFifoTransfers_, routes, switchFragments, handshakeProjectionScratch,
+      frozenCycleWitness);
   if (!handshakeAcyclic)
     return handshakeAcyclic.takeError();
   if (tagSummary)
@@ -1424,7 +1415,7 @@ SpatialCandidateState::projectVerifiedRoutes(
   }
 
   auto noGoodViolation =
-      countRuntimeCounterexampleViolations(routes, *tagValues);
+      countRuntimeCounterexampleViolations(routes, tagValues);
   if (!noGoodViolation)
     return noGoodViolation.takeError();
 

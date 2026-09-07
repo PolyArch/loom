@@ -36,6 +36,9 @@ struct StructuredSpatialGraphProjection final {
 struct ProjectedCanonicalDataflow final {
   dataflow::CanonicalDataflowArtifact artifact;
   std::vector<StructuredSpatialGraphProjection> spatialGraphs;
+  /// Exact operation-result correspondence through mechanical lowering.
+  /// These values belong to artifact and remain invocation-local.
+  std::vector<mlir::Value> trackedValues = {};
 };
 
 /// Returns a lowering-owned reason when `scope` contains a structural
@@ -77,7 +80,8 @@ lowerStructuredProgramToCanonicalDataflow(
 llvm::Expected<ProjectedCanonicalDataflow>
 lowerStructuredProgramToCanonicalDataflowWithProjection(
     const frontend::StructuredProgramCandidate &candidate,
-    CanonicalDataflowLoweringOptions options = {});
+    CanonicalDataflowLoweringOptions options = {},
+    llvm::ArrayRef<mlir::OpResult> trackedValues = {});
 
 } // namespace loom::lowering
 

@@ -1160,9 +1160,7 @@ strictImport(const ArtifactIdentity &mappingIdentity,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
 
   auto fabricIdentity = decodeIdentity(parsed->root.getFabric());
   if (!fabricIdentity)
@@ -1175,7 +1173,7 @@ strictImport(const ArtifactIdentity &mappingIdentity,
     return fabric.takeError();
 
   auto view = TechMappingView::import(mappingIdentity, parsed->root,
-                                      *dataflowView, fabric->view());
+                                      dataflowView, fabric->view());
   if (!view)
     return view.takeError();
   auto rewritten = writeCanonicalMappingAssembly(parsed->root);
@@ -1313,10 +1311,8 @@ llvm::Expected<FinalizedTechMapping> rebaseTechMapping(
       store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  return finalizeTechMapping(parsed->root, *dataflowView, childFabric, store);
+  const auto &dataflowView = dataflow->view();
+  return finalizeTechMapping(parsed->root, dataflowView, childFabric, store);
 }
 
 } // namespace loom::mapping

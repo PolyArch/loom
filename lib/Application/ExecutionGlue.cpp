@@ -1,5 +1,6 @@
 #include "ExecutionGlue.h"
 #include "LoomFreestandingMathBitcode.h"
+#include "LoomFreestandingMemoryBitcode.h"
 
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -152,48 +153,6 @@ llvm::Value *bytePointer(llvm::IRBuilder<> &builder, llvm::Value *storage,
   return builder.CreateInBoundsGEP(
       storageType, storage,
       {llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i64, offset)});
-}
-
-void emitFixedMemoryCopy(llvm::IRBuilder<> &builder, llvm::Value *destination,
-                         llvm::Value *source, std::uint64_t byteCount) {
-  llvm::LLVMContext &context = builder.getContext();
-  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
-  // The freestanding host image has no memcpy symbol, so the copy must be
-  // materialized in place. Forced inline expansion turns every byte into a
-  // straight-line unaligned access and a multi-kilobyte capture into one
-  // giant basic block whose instruction selection cost is superlinear; a
-  // compact byte loop keeps both code generation and the emitted image small.
-  constexpr std::uint64_t inlineCopyLimitBytes = 64;
-  if (byteCount <= inlineCopyLimitBytes) {
-    builder.CreateMemCpyInline(destination, llvm::MaybeAlign(1), source,
-                               llvm::MaybeAlign(1),
-                               llvm::ConstantInt::get(i64, byteCount));
-    return;
-  }
-  llvm::Type *i8 = llvm::Type::getInt8Ty(context);
-  llvm::Function *function = builder.GetInsertBlock()->getParent();
-  llvm::BasicBlock *preheader = builder.GetInsertBlock();
-  llvm::BasicBlock *loop =
-      llvm::BasicBlock::Create(context, "fixed.copy.loop", function);
-  llvm::BasicBlock *done =
-      llvm::BasicBlock::Create(context, "fixed.copy.done", function);
-  builder.CreateBr(loop);
-  builder.SetInsertPoint(loop);
-  llvm::PHINode *index = builder.CreatePHI(i64, 2, "fixed.copy.index");
-  index->addIncoming(llvm::ConstantInt::get(i64, 0), preheader);
-  llvm::LoadInst *byte =
-      builder.CreateLoad(i8, builder.CreateGEP(i8, source, index));
-  byte->setAlignment(llvm::Align(1));
-  llvm::StoreInst *store =
-      builder.CreateStore(byte, builder.CreateGEP(i8, destination, index));
-  store->setAlignment(llvm::Align(1));
-  llvm::Value *next =
-      builder.CreateAdd(index, llvm::ConstantInt::get(i64, 1));
-  index->addIncoming(next, loop);
-  builder.CreateCondBr(
-      builder.CreateICmpULT(next, llvm::ConstantInt::get(i64, byteCount)),
-      loop, done);
-  builder.SetInsertPoint(done);
 }
 
 llvm::CallInst *findDirectCall(llvm::Function &caller,
@@ -448,11 +407,10 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
           bytePointer(builder, wire, wireType,
                       wireLayout.memoryAddressOffsets[indexed.index()]));
       addressStore->setAlignment(llvm::Align(1));
-      emitFixedMemoryCopy(
-          builder,
+      builder.CreateMemCpy(
           bytePointer(builder, wire, wireType,
                       wireLayout.memoryPayloadOffsets[indexed.index()]),
-          base, object.byteCount);
+          llvm::MaybeAlign(1), base, llvm::MaybeAlign(1), object.byteCount);
     }
 
     std::vector<llvm::Value *> rootByteOffsets;
@@ -728,9 +686,7 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
     llvm::LLVMContext &context) {
   if (callablePlan.launchOrdinals.empty())
     return invalid("selected host control has no Spatial launches");
-  auto view = dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = dataflow.view();
 
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> selected(
@@ -752,7 +708,7 @@ llvm::Expected<TranslatedSelectedCallable> translateSelectedCallable(
       return invalid("selected callable launch ordinal is out of range");
     const ApplicationSpatialInvocationPlan::Launch &launch =
         plan.launches[launchOrdinal];
-    auto resolvedRoot = view->resolve(launch.root);
+    auto resolvedRoot = view.resolve(launch.root);
     if (!resolvedRoot)
       return resolvedRoot.takeError();
     auto rootLaunch = llvm::dyn_cast_or_null<dataflow::ThreadLaunchOp>(
@@ -1046,7 +1002,7 @@ llvm::Expected<std::uint64_t> fixedStoreSize(const llvm::DataLayout &layout,
 llvm::Error addHostEntry(
     llvm::Module &module,
     const ApplicationSourceInvocation &sourceInvocation,
-    llvm::GlobalVariable &dispatchBase, std::uint64_t targetCount) {
+    llvm::GlobalVariable *dispatchBase, std::uint64_t targetCount) {
   if (module.getFunction(applicationHostEntrySymbol))
     return invalid("final-linked module defines the reserved host entry");
   llvm::Function *application =
@@ -1263,7 +1219,8 @@ llvm::Error addHostEntry(
   builder.SetInsertPoint(failed);
   builder.CreateBr(failed);
   builder.SetInsertPoint(invoke);
-  builder.CreateStore(dispatch, &dispatchBase);
+  if (dispatchBase)
+    builder.CreateStore(dispatch, dispatchBase);
   llvm::CallInst *programResult =
       builder.CreateCall(application, applicationArguments);
   llvm::StoreInst *store = builder.CreateStore(
@@ -1275,13 +1232,18 @@ llvm::Error addHostEntry(
   return llvm::Error::success();
 }
 
+constexpr llvm::StringLiteral freestandingRuntimeEntryPoints[] = {
+    "memcpy", "memmove", "memset", "expf"};
+
 llvm::Error pruneHostExecutableClosure(llvm::Module &module) {
   llvm::Function *entry = module.getFunction(applicationHostEntrySymbol);
   if (!entry || entry->isDeclaration())
     return invalid("host executable closure has no defined ABI entry");
   llvm::internalizeModule(module, [&](const llvm::GlobalValue &global) {
     return &global == entry ||
-           (global.getName() == "expf" && !global.isDeclaration());
+           (llvm::is_contained(freestandingRuntimeEntryPoints,
+                               global.getName()) &&
+            !global.isDeclaration());
   });
   llvm::ModuleAnalysisManager analyses;
   (void)llvm::GlobalDCEPass().run(module, analyses);
@@ -1290,7 +1252,40 @@ llvm::Error pruneHostExecutableClosure(llvm::Module &module) {
   return llvm::Error::success();
 }
 
+llvm::Error linkFreestandingRuntimeModule(llvm::Module &module,
+                                          llvm::StringRef bytes,
+                                          llvm::StringRef name) {
+  auto runtime = llvm::parseBitcodeFile(llvm::MemoryBufferRef(bytes, name),
+                                        module.getContext());
+  if (!runtime)
+    return invalid("cannot import the freestanding runtime: " +
+                   llvm::toString(runtime.takeError()));
+  if ((*runtime)->getTargetTriple().normalize() !=
+          module.getTargetTriple().normalize() ||
+      (*runtime)->getDataLayout() != module.getDataLayout())
+    return invalid("freestanding runtime has a foreign compiler target");
+  // Runtime providers fill the target's libcall closure while an application
+  // definition remains authoritative for a symbol it already supplies.
+  for (llvm::StringRef entryName : freestandingRuntimeEntryPoints)
+    if (llvm::Function *function = (*runtime)->getFunction(entryName))
+      if (!function->isDeclaration())
+        function->setLinkage(llvm::GlobalValue::WeakAnyLinkage);
+  llvm::Linker linker(module);
+  if (linker.linkInModule(std::move(*runtime)))
+    return invalid("cannot link the freestanding runtime");
+  return llvm::Error::success();
+}
+
 llvm::Error linkFreestandingRuntime(llvm::Module &module) {
+  // Target instruction selection can create memory libcalls after IR closure
+  // pruning. Keep the admitted memory runtime entries available for that step.
+  if (llvm::Error error = linkFreestandingRuntimeModule(
+          module,
+          llvm::StringRef(
+              reinterpret_cast<const char *>(freestandingMemoryBitcode),
+              sizeof(freestandingMemoryBitcode)),
+          "loom-freestanding-memory.bc"))
+    return error;
   llvm::Function *requiredExp = module.getFunction("expf");
   bool requiresExp =
       requiredExp && requiredExp->isDeclaration() && !requiredExp->use_empty();
@@ -1311,19 +1306,9 @@ llvm::Error linkFreestandingRuntime(llvm::Module &module) {
   const llvm::StringRef bytes(
       reinterpret_cast<const char *>(freestandingMathBitcode),
       sizeof(freestandingMathBitcode));
-  auto runtime = llvm::parseBitcodeFile(
-      llvm::MemoryBufferRef(bytes, "loom-freestanding-math.bc"),
-      module.getContext());
-  if (!runtime)
-    return invalid("cannot import the freestanding math runtime: " +
-                   llvm::toString(runtime.takeError()));
-  if ((*runtime)->getTargetTriple().normalize() !=
-          module.getTargetTriple().normalize() ||
-      (*runtime)->getDataLayout() != module.getDataLayout())
-    return invalid("freestanding math runtime has a foreign compiler target");
-  llvm::Linker linker(module);
-  if (linker.linkInModule(std::move(*runtime)))
-    return invalid("cannot link the freestanding math runtime");
+  if (llvm::Error error = linkFreestandingRuntimeModule(
+          module, bytes, "loom-freestanding-math.bc"))
+    return error;
   llvm::Function *linkedExp = module.getFunction("expf");
   if (!linkedExp || linkedExp->isDeclaration())
     return invalid("freestanding math runtime did not define required expf");
@@ -1405,6 +1390,21 @@ void emitInstructionEntry(llvm::Module &module, std::uint64_t ordinal) {
 }
 
 } // namespace
+
+llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostOnlyModule(
+    const llvm::Module &finalLinkedModule,
+    const ApplicationSourceInvocation &sourceInvocation) {
+  auto module = llvm::CloneModule(finalLinkedModule);
+  if (llvm::Error error = addHostEntry(*module, sourceInvocation, nullptr, 0))
+    return std::move(error);
+  if (llvm::Error error = linkFreestandingRuntime(*module))
+    return std::move(error);
+  if (llvm::Error error = pruneHostExecutableClosure(*module))
+    return std::move(error);
+  if (llvm::verifyModule(*module, &llvm::errs()))
+    return invalid("materialized host-only module does not verify");
+  return module;
+}
 
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
@@ -1587,7 +1587,7 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     ++helperOrdinal;
   }
   if (llvm::Error error =
-          addHostEntry(*module, sourceInvocation, *dispatchBase, targetCount))
+          addHostEntry(*module, sourceInvocation, dispatchBase, targetCount))
     return std::move(error);
   if (llvm::Error error = linkFreestandingRuntime(*module))
     return std::move(error);

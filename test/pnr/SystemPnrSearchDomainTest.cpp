@@ -252,7 +252,7 @@ int main() {
 
   auto dataflow = buildDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto dataflowView = take(dataflow.view());
+  const auto &dataflowView = dataflow.view();
   require(dataflowView.rootThreadLaunches().size() == 2,
           "fixture must contain two root launches");
   require(dataflowView.staticGraphLaunches().size() == 2,
@@ -483,7 +483,7 @@ int main() {
 
   auto conditional = buildConditionalDataflow(context);
   take(dataflow::publishCanonicalDataflow(conditional, store));
-  auto conditionalView = take(conditional.view());
+  const auto &conditionalView = conditional.view();
   auto conditionalRoot = conditionalView.rootThreadLaunches().front().ref;
   std::vector<dataflow::RootedGraphLaunchRef> nestedGraphKeys;
   conditionalView.forEachRootedGraphLaunch(

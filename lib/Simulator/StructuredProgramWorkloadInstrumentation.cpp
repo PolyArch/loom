@@ -1,3 +1,4 @@
+#include "Frontend/Analysis/MemoryAddressProjection.h"
 #include "StructuredProgramNativeExecutionInternal.h"
 
 #include "Common/PointerLayout.h"
@@ -47,23 +48,19 @@ struct ProgramObjectCaptureSite final {
     mlir::Value runtimeValue;
     std::uint64_t fixedValue = 1;
   } extentFactor0, extentFactor1;
-  mlir::Operation *registration = nullptr;
+  llvm::SmallVector<mlir::Operation *> registrations;
 
   bool isGlobal() const { return static_cast<bool>(global); }
-};
 
-std::optional<std::uint64_t> constantUnsignedValue(mlir::Value value) {
-  mlir::Attribute attribute;
-  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
-    attribute = constant.getValue();
-  else if (auto constant = value.getDefiningOp<mlir::LLVM::ConstantOp>())
-    attribute = constant.getValue();
-  auto integer = llvm::dyn_cast_if_present<mlir::IntegerAttr>(attribute);
-  if (!integer || integer.getValue().isNegative() ||
-      integer.getValue().getActiveBits() > 64)
-    return std::nullopt;
-  return integer.getValue().getZExtValue();
-}
+  mlir::Operation *firstRegistrationInBlock(mlir::Block *block) const {
+    mlir::Operation *first = nullptr;
+    for (mlir::Operation *registration : registrations)
+      if (registration->getBlock() == block &&
+          (!first || registration->isBeforeInBlock(first)))
+        first = registration;
+    return first;
+  }
+};
 
 std::optional<std::uint64_t>
 fixedTypeByteCountForCapture(mlir::Operation *scope, mlir::Type type) {
@@ -71,18 +68,6 @@ fixedTypeByteCountForCapture(mlir::Operation *scope, mlir::Type type) {
   if (bytes.isScalable() || bytes.getFixedValue() == 0)
     return std::nullopt;
   return bytes.getFixedValue();
-}
-
-std::optional<std::uint64_t>
-fixedAllocationByteCountForCapture(mlir::LLVM::AllocaOp allocation) {
-  std::optional<std::uint64_t> count =
-      constantUnsignedValue(allocation.getArraySize());
-  std::optional<std::uint64_t> elementBytes = fixedTypeByteCountForCapture(
-      allocation.getOperation(), allocation.getElemType());
-  if (!count || *count == 0 || !elementBytes ||
-      *count > std::numeric_limits<std::uint64_t>::max() / *elementBytes)
-    return std::nullopt;
-  return *count * *elementBytes;
 }
 
 llvm::Expected<std::vector<ProgramObjectCaptureSite>>
@@ -100,7 +85,7 @@ collectProgramObjectCaptureSites(mlir::ModuleOp module) {
   sites.reserve(allocations.size() + globals.size() + calls.size());
   for (mlir::LLVM::AllocaOp allocation : allocations) {
     std::optional<std::uint64_t> byteCount =
-        fixedAllocationByteCountForCapture(allocation);
+        frontend::analysis::projectFixedAllocationByteCount(allocation);
     if (!byteCount)
       continue;
     ProgramObjectCaptureSite site;
@@ -267,6 +252,27 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (!objectSites)
     return objectSites.takeError();
 
+  llvm::SmallVector<mlir::Operation *> stackOwners;
+  llvm::DenseSet<mlir::Operation *> seenStackOwners;
+  bool hasStackLifetimeEnd = false;
+  for (const ProgramObjectCaptureSite &site : *objectSites) {
+    auto allocation = site.base
+                          ? site.base.getDefiningOp<mlir::LLVM::AllocaOp>()
+                          : mlir::LLVM::AllocaOp{};
+    if (!allocation)
+      continue;
+    mlir::Operation *owner =
+        allocation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (!owner)
+      owner = allocation->getParentOfType<dataflow::ThreadOp>();
+    if (!owner)
+      return invalid("stack allocation has no executable owner");
+    if (seenStackOwners.insert(owner).second)
+      stackOwners.push_back(owner);
+    for (mlir::Operation *user : allocation.getRes().getUsers())
+      hasStackLifetimeEnd |= llvm::isa<mlir::LLVM::LifetimeEndOp>(user);
+  }
+
   mlir::MLIRContext *context = module.getContext();
   mlir::Location location = selectedOperation->getLoc();
   mlir::OpBuilder declarations(context);
@@ -278,8 +284,10 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       mlir::LLVM::LLVMFunctionType::get(voidType, {});
   const mlir::Type memoryRootType =
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer});
-  const mlir::Type objectRegistrationType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64, i64});
+  const mlir::Type objectRegistrationType = mlir::LLVM::LLVMFunctionType::get(
+      voidType, {pointer, i64, i64, i64, i64});
+  const mlir::Type stackObjectEndType =
+      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64});
   const mlir::Type valueType =
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer, i64});
   const mlir::Type memoryWriteType =
@@ -290,11 +298,28 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       voidType, {pointer, pointer, i64, i64, i64});
 
   WorkloadCaptureCallbackNames names;
+  names.programObjectSources.reserve(objectSites->size());
+  for (ProgramObjectCaptureSite &site : *objectSites) {
+    auto source = projectNativeProgramMemoryObjectSource(
+        site.global ? site.global.getOperation() : site.base.getDefiningOp());
+    if (!source)
+      return source.takeError();
+    names.programObjectSources.push_back(std::move(*source));
+  }
   names.begin = uniqueMlirSymbolName(module, "__loom_workload_capture_begin");
   names.end = uniqueMlirSymbolName(module, "__loom_workload_capture_end");
   if (!objectSites->empty())
     names.registerObject =
         uniqueMlirSymbolName(module, "__loom_workload_capture_register_object");
+  if (hasStackLifetimeEnd)
+    names.endStackObject = uniqueMlirSymbolName(
+        module, "__loom_workload_capture_end_stack_object");
+  if (!stackOwners.empty()) {
+    names.enterStackFrame = uniqueMlirSymbolName(
+        module, "__loom_workload_capture_enter_stack_frame");
+    names.leaveStackFrame = uniqueMlirSymbolName(
+        module, "__loom_workload_capture_leave_stack_frame");
+  }
   if (!plan.denseCoordinates.empty())
     names.coordinate =
         uniqueMlirSymbolName(module, "__loom_workload_capture_coordinate");
@@ -337,6 +362,15 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (names.registerObject)
     mlir::LLVM::LLVMFuncOp::create(
         declarations, location, *names.registerObject, objectRegistrationType);
+  if (names.endStackObject)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location,
+                                   *names.endStackObject, stackObjectEndType);
+  if (names.enterStackFrame) {
+    mlir::LLVM::LLVMFuncOp::create(declarations, location,
+                                   *names.enterStackFrame, lifecycleType);
+    mlir::LLVM::LLVMFuncOp::create(declarations, location,
+                                   *names.leaveStackFrame, lifecycleType);
+  }
   if (names.coordinate)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.coordinate,
                                    valueType);
@@ -380,26 +414,67 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
           return mlir::Value(mlir::LLVM::ZExtOp::create(
               builder, factorLocation, i64, factor.runtimeValue));
         };
-    for (ProgramObjectCaptureSite &site : *objectSites) {
-      mlir::OpBuilder registration(context);
-      mlir::Location siteLocation = location;
+    for (auto [ordinal, site] : llvm::enumerate(*objectSites)) {
+      llvm::SmallVector<mlir::Operation *> lifetimeStarts;
+      llvm::SmallVector<mlir::Operation *> lifetimeEnds;
+      ProgramObjectCaptureKind kind =
+          ProgramObjectCaptureKind::RuntimeAllocation;
       if (site.isGlobal()) {
-        siteLocation = site.global.getLoc();
-        registration.setInsertionPointToStart(captureEntry);
-        site.base = mlir::LLVM::AddressOfOp::create(registration, siteLocation,
-                                                    site.global);
-      } else {
-        siteLocation = site.base.getLoc();
-        registration.setInsertionPointAfter(site.base.getDefiningOp());
+        kind = ProgramObjectCaptureKind::Global;
+      } else if (auto allocation =
+                     site.base.getDefiningOp<mlir::LLVM::AllocaOp>()) {
+        kind = ProgramObjectCaptureKind::StackAllocation;
+        for (mlir::Operation *user : allocation.getRes().getUsers()) {
+          if (llvm::isa<mlir::LLVM::LifetimeStartOp>(user))
+            lifetimeStarts.push_back(user);
+          if (llvm::isa<mlir::LLVM::LifetimeEndOp>(user))
+            lifetimeEnds.push_back(user);
+        }
       }
-      mlir::Value extentFactor0 = materializeExtentFactor(
-          registration, siteLocation, site.extentFactor0);
-      mlir::Value extentFactor1 = materializeExtentFactor(
-          registration, siteLocation, site.extentFactor1);
-      auto call = mlir::LLVM::CallOp::create(
-          registration, siteLocation, mlir::TypeRange{}, *names.registerObject,
-          mlir::ValueRange{site.base, extentFactor0, extentFactor1});
-      site.registration = call.getOperation();
+      auto emitRegistration = [&](mlir::OpBuilder &registration,
+                                  mlir::Location siteLocation) {
+        mlir::Value extentFactor0 = materializeExtentFactor(
+            registration, siteLocation, site.extentFactor0);
+        mlir::Value extentFactor1 = materializeExtentFactor(
+            registration, siteLocation, site.extentFactor1);
+        mlir::Value storageKind = mlir::LLVM::ConstantOp::create(
+            registration, siteLocation, i64,
+            registration.getI64IntegerAttr(static_cast<std::uint64_t>(kind)));
+        mlir::Value allocation = mlir::LLVM::ConstantOp::create(
+            registration, siteLocation, i64,
+            registration.getI64IntegerAttr(ordinal));
+        auto call = mlir::LLVM::CallOp::create(
+            registration, siteLocation, mlir::TypeRange{},
+            *names.registerObject,
+            mlir::ValueRange{site.base, extentFactor0, extentFactor1,
+                             storageKind, allocation});
+        site.registrations.push_back(call.getOperation());
+      };
+      if (site.isGlobal()) {
+        mlir::OpBuilder registration(context);
+        registration.setInsertionPointToStart(captureEntry);
+        site.base = mlir::LLVM::AddressOfOp::create(
+            registration, site.global.getLoc(), site.global);
+        emitRegistration(registration, site.global.getLoc());
+      } else if (lifetimeStarts.empty()) {
+        mlir::OpBuilder registration(context);
+        registration.setInsertionPointAfter(site.base.getDefiningOp());
+        emitRegistration(registration, site.base.getLoc());
+      } else {
+        for (mlir::Operation *start : lifetimeStarts) {
+          mlir::OpBuilder registration(start);
+          registration.setInsertionPointAfter(start);
+          emitRegistration(registration, start->getLoc());
+        }
+      }
+      for (mlir::Operation *end : lifetimeEnds) {
+        mlir::OpBuilder finish(end);
+        mlir::Value allocation = mlir::LLVM::ConstantOp::create(
+            finish, end->getLoc(), i64, finish.getI64IntegerAttr(ordinal));
+        mlir::LLVM::CallOp::create(finish, end->getLoc(), mlir::TypeRange{},
+                                   *names.endStackObject,
+                                   mlir::ValueRange{site.base, allocation});
+      }
     }
   }
 
@@ -560,7 +635,7 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       includePrelude(coordinate.boundaryValue.getDefiningOp());
     for (const ProgramObjectCaptureSite &site : *objectSites)
       if (site.isGlobal())
-        includePrelude(site.registration);
+        includePrelude(site.firstRegistrationInBlock(entry));
     for (const WorkloadBackedMemoryRootCapture &root : plan.memoryRoots) {
       includePrelude(root.boundaryPointer.getDefiningOp());
       mlir::Value base = programObjectBase(root.boundaryPointer);
@@ -568,7 +643,7 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         continue;
       for (const ProgramObjectCaptureSite &site : *objectSites)
         if (site.base == base)
-          includePrelude(site.registration);
+          includePrelude(site.firstRegistrationInBlock(entry));
     }
     if (lastPrelude)
       before.setInsertionPointAfter(lastPrelude);
@@ -595,7 +670,7 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         continue;
       for (const ProgramObjectCaptureSite &site : *objectSites)
         if (site.base == base)
-          includePrelude(site.registration);
+          includePrelude(site.firstRegistrationInBlock(body));
     }
     if (lastPrelude)
       before.setInsertionPointAfter(lastPrelude);
@@ -852,9 +927,118 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         mlir::ValueRange{load.getAddr(), load.getResult(), addressSpace,
                          representationBits, addressBits});
   }
+  for (mlir::Operation *owner : stackOwners) {
+    mlir::Block &entry = owner->getRegion(0).front();
+    mlir::OpBuilder enter = mlir::OpBuilder::atBlockBegin(&entry);
+    mlir::LLVM::CallOp::create(enter, owner->getLoc(), mlir::TypeRange{},
+                               *names.enterStackFrame, mlir::ValueRange{});
+    owner->walk([&](mlir::Operation *operation) {
+      if (!llvm::isa<mlir::LLVM::ReturnOp, dataflow::ThreadYieldOp>(operation))
+        return;
+      mlir::OpBuilder leave(operation);
+      mlir::LLVM::CallOp::create(leave, operation->getLoc(), mlir::TypeRange{},
+                                 *names.leaveStackFrame, mlir::ValueRange{});
+    });
+  }
   if (mlir::failed(mlir::verify(module)))
     return invalid("workload-backed capture instrumentation does not verify");
   return names;
 }
 
 } // namespace loom::sim::native_detail
+
+namespace loom::sim {
+namespace {
+template <typename Op>
+llvm::Expected<std::uint64_t> memorySourceOperationOrdinal(
+    mlir::Operation *callable, mlir::Operation *selected) {
+  std::uint64_t ordinal = 0;
+  bool found = false;
+  callable->walk([&](Op operation) {
+    if (found)
+      return;
+    if (operation.getOperation() == selected)
+      found = true;
+    else
+      ++ordinal;
+  });
+  if (!found)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory source operation is absent");
+  return ordinal;
+}
+template <typename Op>
+llvm::Expected<mlir::Operation *> memorySourceOperationAt(
+    mlir::Operation *callable, std::uint64_t ordinal) {
+  mlir::Operation *result = nullptr;
+  std::uint64_t current = 0;
+  callable->walk([&](Op operation) {
+    if (current++ == ordinal)
+      result = operation.getOperation();
+  });
+  if (!result)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory source locator is absent");
+  return result;
+}
+} // namespace
+
+llvm::Expected<NativeMemoryObjectSource>
+projectNativeProgramMemoryObjectSource(mlir::Operation *operation) {
+  if (auto global = llvm::dyn_cast_or_null<mlir::LLVM::GlobalOp>(operation))
+    return NativeMemoryObjectSource(
+        NativeGlobalMemoryObjectSource{global.getSymName().str()});
+  mlir::Operation *callable = nullptr;
+  for (mlir::Operation *owner = operation ? operation->getParentOp() : nullptr;
+       owner; owner = owner->getParentOp())
+    if (llvm::isa<mlir::LLVM::LLVMFuncOp, dataflow::ThreadOp>(owner)) {
+      callable = owner;
+      break;
+    }
+  if (!callable)
+    return llvm::createStringError(std::errc::not_supported,
+                                   "memory source has no LLVM callable");
+  if (llvm::isa<mlir::LLVM::AllocaOp>(operation)) {
+    auto ordinal = memorySourceOperationOrdinal<mlir::LLVM::AllocaOp>(
+        callable, operation);
+    if (!ordinal)
+      return ordinal.takeError();
+    return NativeMemoryObjectSource(
+        NativeStackMemoryObjectSource{mlir::SymbolTable::getSymbolName(callable).str(), *ordinal, std::nullopt});
+  }
+  if (llvm::isa<mlir::LLVM::CallOp>(operation)) {
+    auto ordinal = memorySourceOperationOrdinal<mlir::LLVM::CallOp>(
+        callable, operation);
+    if (!ordinal)
+      return ordinal.takeError();
+    return NativeMemoryObjectSource(NativeAllocationMemoryObjectSource{
+        mlir::SymbolTable::getSymbolName(callable).str(), *ordinal});
+  }
+  return llvm::createStringError(std::errc::not_supported,
+                                 "memory source is not an allocation");
+}
+
+llvm::Expected<mlir::Operation *> resolveNativeProgramMemoryObjectSource(
+    mlir::ModuleOp module, const NativeMemoryObjectSource &source) {
+  if (const auto *global = std::get_if<NativeGlobalMemoryObjectSource>(&source)) {
+    auto operation = module.lookupSymbol<mlir::LLVM::GlobalOp>(global->symbol);
+    if (operation)
+      return operation.getOperation();
+  }
+  if (const auto *stack = std::get_if<NativeStackMemoryObjectSource>(&source)) {
+    auto callable = module.lookupSymbol(stack->callableSymbol);
+    if (callable)
+      return memorySourceOperationAt<mlir::LLVM::AllocaOp>(
+          callable, stack->allocationOrdinal);
+  }
+  if (const auto *allocation =
+          std::get_if<NativeAllocationMemoryObjectSource>(&source)) {
+    auto callable = module.lookupSymbol(allocation->callableSymbol);
+    if (callable)
+      return memorySourceOperationAt<mlir::LLVM::CallOp>(
+          callable, allocation->callOrdinal);
+  }
+  return llvm::createStringError(std::errc::not_supported,
+                                 "memory source has no program allocation");
+}
+} // namespace loom::sim

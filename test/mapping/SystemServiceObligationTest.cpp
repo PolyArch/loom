@@ -170,25 +170,18 @@ void requireUnderLengthKeyRejection(
                          "truncated ordinal or size");
 }
 
-dataflow::CanonicalDataflowProgramView buildView(llvm::StringRef program) {
-  static std::vector<std::unique_ptr<mlir::MLIRContext>> contexts;
-  static std::vector<dataflow::CanonicalDataflowArtifact> artifacts;
+dataflow::CanonicalDataflowArtifact buildProgram(llvm::StringRef program) {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect>();
-  auto context = std::make_unique<mlir::MLIRContext>(
-      registry, mlir::MLIRContext::Threading::DISABLED);
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(program, context.get());
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(program, &context);
   require(static_cast<bool>(module), "fixture did not parse");
-  dataflow::CanonicalDataflowArtifact artifact =
-      take(dataflow::finalizeCanonicalDataflow(*module));
-  contexts.push_back(std::move(context));
-  artifacts.push_back(std::move(artifact));
-  return take(artifacts.back().view());
+  return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::CanonicalDataflowProgramView buildServiceView() {
-  return buildView(R"mlir(
+dataflow::CanonicalDataflowArtifact buildServiceProgram() {
+  return buildProgram(R"mlir(
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
 } {
@@ -223,8 +216,8 @@ module attributes {
 )mlir");
 }
 
-dataflow::CanonicalDataflowProgramView buildMulticastView() {
-  return buildView(R"mlir(
+dataflow::CanonicalDataflowArtifact buildMulticastProgram() {
+  return buildProgram(R"mlir(
 module {
   dataflow.graph private @consumer(%start: none, %input: i32) -> ()
       attributes {input_segments = array<i32: 0, 1, 0>,
@@ -266,7 +259,8 @@ module {
 }
 
 void exactServiceClosure() {
-  dataflow::CanonicalDataflowProgramView dataflow = buildServiceView();
+  auto program = buildServiceProgram();
+  const auto &dataflow = program.view();
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const dataflow::CanonicalRootThreadLaunchView &root :
        dataflow.rootThreadLaunches())
@@ -375,7 +369,8 @@ void exactServiceClosure() {
 }
 
 void channelMulticastClosure() {
-  dataflow::CanonicalDataflowProgramView dataflow = buildMulticastView();
+  auto program = buildMulticastProgram();
+  const auto &dataflow = program.view();
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const dataflow::CanonicalRootThreadLaunchView &root :
        dataflow.rootThreadLaunches())

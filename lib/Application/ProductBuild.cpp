@@ -233,7 +233,8 @@ private:
       : root_(root.str()), deploymentPath_(deploymentPath.str()),
         artifactPath_(child(root, "artifacts")),
         blobPath_(child(root, "blobs")), journalPath_(child(root, "journal")),
-        linkerPath_(child(root, "linker")), artifacts_(artifactPath_),
+        linkerPath_(child(root, "linker")),
+        artifacts_(artifactPath_, ArtifactStore::Durability::Transient),
         blobs_(blobPath_) {}
 
   std::string root_;
@@ -952,6 +953,9 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
        1}};
   preMappingOptions.ownership.selectionMode =
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  if (options.mappingReplayWavefrontLimit)
+    preMappingOptions.ownership.functionalReplayLimits.maxWavefrontSteps =
+        *options.mappingReplayWavefrontLimit;
   preMappingOptions.frontier.stoppingPolicy = options.mappingStoppingPolicy;
   preMappingOptions.executionControl = executionControl;
   dse::ResourceTimeFrontierPolicy resourceTimePolicy;
@@ -1182,8 +1186,7 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
         return productError(
             "loom_mapping_spectrum_endpoint_hardware_incompatible",
             "requested endpoint is incompatible with the exact hardware");
-      case ApplicationPairDecisionDisposition::VerifiedAcceleration:
-      case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+      case ApplicationPairDecisionDisposition::VerifiedFeasible:
       case ApplicationPairDecisionDisposition::HardwareDseAlternative:
         return productError(
             "loom_mapping_spectrum_endpoint_decision_inconsistent",
@@ -1292,6 +1295,10 @@ llvm::Error validateProductOptions(const ProductBuildOptions &options) {
   if (options.mappingWallTimeLimitMilliseconds == 0)
     return productError("loom_product_option_invalid",
                         "Mapping wall-time limit must be positive");
+  if (options.mappingReplayWavefrontLimit &&
+      *options.mappingReplayWavefrontLimit == 0)
+    return productError("loom_product_option_invalid",
+                        "Mapping replay wavefront limit must be positive");
   if (options.mappingRepairCandidateLimit &&
       *options.mappingRepairCandidateLimit == 0)
     return productError("loom_product_option_invalid",

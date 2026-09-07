@@ -87,18 +87,15 @@ llvm::cl::opt<std::int64_t> expectedEntryResult(
 
 llvm::cl::opt<std::uint64_t>
     maxEventSteps("max-event-steps",
-                  llvm::cl::desc("maximum aggregate DFG event wavefronts"),
-                  llvm::cl::init(100000));
+                  llvm::cl::desc("explicit maximum aggregate DFG event wavefronts"));
 
 llvm::cl::opt<std::uint64_t>
     maxEventCount("max-event-count",
-                  llvm::cl::desc("maximum aggregate DFG event count"),
-                  llvm::cl::init(1000000));
+                  llvm::cl::desc("explicit maximum aggregate DFG event count"));
 
 llvm::cl::opt<std::uint64_t>
     maxCaptureBytes("max-capture-bytes",
-                    llvm::cl::desc("maximum retained capture bytes"),
-                    llvm::cl::init(256ULL * 1024ULL * 1024ULL));
+                    llvm::cl::desc("maximum retained capture bytes"));
 
 llvm::cl::opt<double> maxSimulationWallSeconds(
     "max-simulation-wall-seconds",
@@ -255,11 +252,13 @@ compileTarget(std::unique_ptr<llvm::Module> module,
   exploration.ownership.selectionMode =
       loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
   exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
-  exploration.ownership.functionalReplayLimits.maxWavefrontSteps =
-      maxEventSteps;
-  exploration.ownership.functionalReplayLimits.maxEventCount = maxEventCount;
-  exploration.ownership.functionalReplayLimits.maxRetainedCaptureBytes =
-      maxCaptureBytes;
+  if (maxEventSteps.getNumOccurrences())
+    exploration.ownership.functionalReplayLimits.maxWavefrontSteps = maxEventSteps;
+  if (maxEventCount.getNumOccurrences())
+    exploration.ownership.functionalReplayLimits.maxEventCount = maxEventCount;
+  if (maxCaptureBytes.getNumOccurrences())
+    exploration.ownership.functionalReplayLimits.maxRetainedCaptureBytes =
+        maxCaptureBytes;
   exploration.ownership.functionalReplayLimits.maxSimulationWallTime =
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(maxSimulationWallSeconds));
@@ -564,11 +563,11 @@ int main(int argc, char **argv) {
       "report its source-backed DFG semantic replay.\n");
   if (candidateJobs == 0)
     return reportError(invalid("candidate-jobs must be positive"));
-  if (maxEventSteps == 0)
+  if (maxEventSteps.getNumOccurrences() && maxEventSteps == 0)
     return reportError(invalid("max-event-steps must be positive"));
-  if (maxEventCount == 0)
+  if (maxEventCount.getNumOccurrences() && maxEventCount == 0)
     return reportError(invalid("max-event-count must be positive"));
-  if (maxCaptureBytes == 0)
+  if (maxCaptureBytes.getNumOccurrences() && maxCaptureBytes == 0)
     return reportError(invalid("max-capture-bytes must be positive"));
   if (!std::isfinite(maxSimulationWallSeconds) ||
       maxSimulationWallSeconds <= 0.0)
@@ -614,14 +613,12 @@ int main(int argc, char **argv) {
                                 *config, store, blobs);
   if (!selected)
     return reportError(selected.takeError());
-  auto view = selected->selected.compilation.canonicalDataflow.view();
-  if (!view)
-    return reportError(view.takeError());
+  const auto &view = selected->selected.compilation.canonicalDataflow.view();
   if (llvm::Error error = writeCanonicalDataflow(
           canonicalOutputPath,
           selected->selected.compilation.canonicalDataflow))
     return reportError(std::move(error));
-  if (view->graphs().empty())
+  if (view.graphs().empty())
     return reportError(unsupported("selected program is graph-free"));
   if (!selected->selected.functionalReplay ||
       selected->selected.functionalReplay->status !=
@@ -638,8 +635,8 @@ int main(int argc, char **argv) {
   auto sourceFiles = selectedSourceFiles(selected->selected);
   if (!sourceFiles)
     return reportError(sourceFiles.takeError());
-  if (llvm::Error error = writeReport(outputPath, *sourceFiles, *selected,
-                                      *view, *compilerTargets, replay))
+  if (llvm::Error error = writeReport(outputPath, *sourceFiles, *selected, view,
+                                      *compilerTargets, replay))
     return reportError(std::move(error));
   return 0;
 }

@@ -39,6 +39,16 @@ the product owner's declared positive `fast` tier from the canonical
 Mapping invocation is not supported. An external process timeout may remain a
 final containment mechanism, but it is not the semantic cancellation owner.
 
+`--loom-mapping-replay-wavefront-limit` optionally supplies the positive
+aggregate DFG wavefront allowance for each source-backed functional replay.
+The product owner forwards it to the existing Structured exploration limit;
+omitting it preserves that owner's default. Each dynamic activation contributes
+its complete wavefront count, including repeated exact inputs. The allowance
+does not extend the shared Mapping deadline or change event and capture limits,
+and it never enters ResolvedConfig, candidate identity, or Artifact bytes.
+The direct `loom-application-build` driver exposes the same product option as
+`--mapping-replay-wavefront-limit`.
+
 `--loom-mapping-stopping-policy=first_verified|bounded_quality` selects the
 application Mapping stopping contract. `first_verified` is the product
 default and reports the first runtime-qualified SystemMapping. The explicit
@@ -152,7 +162,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.4`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.5`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -338,6 +348,16 @@ silently insert the new hard violation. Authoring-source re-resolution
 preserves the semantics of an 11.3 Mapping only when its selected handshake
 graph is acyclic; a Mapping with a previously unmodeled selected cycle must be
 remapped rather than migrated as legal.
+
+Version 11.5 persists the exact Generate and Promote descriptor versions in
+the single DSE plan-node codec, shared with DSE component view 1.4. Registry
+3.3 therefore changes the canonical plan and ResolvedConfig identity rather
+than allowing an old kind ordinal to acquire a new implementation. The 11.4
+to 11.5 transition requires authoring-source re-resolution; old plan payloads
+are not accepted as current or relabeled. Existing run keys already include
+ResolvedConfig identity, so no additional run-key field or binding codec is
+introduced. Historical terminal recovery remains exact within its pinned
+registry and producer closure; it cannot supply a new closure.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.
 Feedback remains invocation-local until the Mapping owner verifies replayed

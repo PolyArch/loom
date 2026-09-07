@@ -280,7 +280,7 @@ struct DerivedRows final {
 };
 
 struct CollectedRows final {
-  dataflow::CanonicalDataflowProgramView dataflow;
+  const dataflow::CanonicalDataflowProgramView &dataflow;
   dataflow::CanonicalActorView actor;
   std::vector<loom::mapping::detail::TechMatchRow> rows;
   std::uint64_t capabilityRejections = 0;
@@ -290,7 +290,7 @@ CollectedRows collectRows(dataflow::CanonicalDataflowArtifact &artifact,
                           dataflow::OperationSchemaId schema,
                           const loom::fabric::FinalizedFabricRoot &fabric,
                           loom::ArtifactStore &store) {
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *selected = nullptr;
   for (const auto &actor : view.actors())
     if (dataflow::requireOperationSchema(actor.op) == schema) {
@@ -396,7 +396,7 @@ void activityProofGatesProspectiveSeeds(llvm::StringRef storeRoot) {
   if (definedRows.rows.empty())
     fail("strict-import fixture has no valid physical correspondence");
   take(dataflow::publishCanonicalDataflow(unproved, store));
-  auto unprovedView = take(unproved.view());
+  const auto &unprovedView = unproved.view();
   const dataflow::CanonicalActorView *unprovedActor = nullptr;
   for (const auto &actor : unprovedView.actors())
     if (dataflow::requireOperationSchema(actor.op) ==

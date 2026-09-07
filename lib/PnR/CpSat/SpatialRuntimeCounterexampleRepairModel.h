@@ -39,6 +39,9 @@ struct SpatialRuntimeCounterexampleBreaker final {
   /// Derived exact replacement for NetTag. It is never persisted and is
   /// ignored for every other kind.
   std::optional<llvm::APInt> physicalTagValue;
+  /// MappingIdentity searches one owner region at a time. Port decisions are
+  /// derived through their realization owner; graph-boundary owners stand alone.
+  PnrIndex bindingDecision = getInvalidPnrIndex();
 
   friend bool operator==(const SpatialRuntimeCounterexampleBreaker &lhs,
                          const SpatialRuntimeCounterexampleBreaker &rhs) {
@@ -46,7 +49,8 @@ struct SpatialRuntimeCounterexampleBreaker final {
            lhs.clauseLocalLiteralOrdinal ==
                rhs.clauseLocalLiteralOrdinal &&
            lhs.kind == rhs.kind &&
-           lhs.physicalTagValue == rhs.physicalTagValue;
+           lhs.physicalTagValue == rhs.physicalTagValue &&
+           lhs.bindingDecision == rhs.bindingDecision;
   }
 };
 
@@ -56,7 +60,8 @@ struct SpatialRuntimeCounterexampleBreaker final {
 /// second persistent literal kind.
 llvm::Expected<std::vector<SpatialRuntimeCounterexampleBreaker>>
 enumerateSpatialRuntimeCounterexampleBreakers(
-    const SpatialCandidateState &candidate, PnrIndex clauseOrdinal);
+    const SpatialCandidateState &candidate, PnrIndex clauseOrdinal,
+    llvm::ArrayRef<PnrIndex> preferredBindingDecisions = {});
 
 /// Returns the exact frozen literal named by one canonical breaker.
 llvm::Expected<const FrozenNoGoodResolvedLiteral *>

@@ -16,6 +16,24 @@ namespace fabric {
 
 enum class TemporalOperandQueueUse : std::uint32_t { Enqueue, Dequeue };
 
+enum class TemporalRegisterFifoCapacity : std::uint32_t {
+  OccupiedEntry,
+  FirstPortService,
+  SecondPortService,
+};
+
+inline constexpr CapacityDimensionKey
+temporalRegisterFifoCapacity(TemporalRegisterFifoCapacity dimension) {
+  return CapacityDimensionKey(static_cast<std::uint32_t>(dimension));
+}
+
+/// Rebuilds the operand-buffer projection from its sealed Fabric declaration.
+/// The complete PE contract remains the owner of its state and use keys.
+llvm::Expected<TemporalOperandBufferContract>
+deriveTemporalPeOperandBufferContract(
+    const loom::fabric::FabricArtifactView &view,
+    loom::fabric::FabricPeOccurrenceRef pe);
+
 /// The complete resource declaration of one temporal PE. Operand buffering
 /// and register FIFOs are parts of the same physical owner and therefore share
 /// one ResourceContract and one owner-local key domain.

@@ -69,6 +69,8 @@ bool isMemoryCapability(Type type) {
 Value viewBase(Operation *op) {
   if (auto cast = dyn_cast<memref::CastOp>(op))
     return cast.getOperand();
+  if (auto view = dyn_cast<memref::ViewOp>(op))
+    return view.getSource();
   return Value();
 }
 

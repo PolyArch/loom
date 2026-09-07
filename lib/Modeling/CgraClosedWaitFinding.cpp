@@ -91,7 +91,7 @@ const FindingDescriptor descriptor{
     scopeForms,
     {},
     sim::terminalWitnessRefOccurrenceCodec(),
-    FindingTerminalWitnessCodec{{"loom.cgra_closed_wait_certificate", {1, 0}},
+    FindingTerminalWitnessCodec{{"loom.cgra_closed_wait_certificate", {1, 1}},
                                 &encodeWitness, &decodeWitness,
                                 &validateWitness}};
 

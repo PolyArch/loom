@@ -206,7 +206,7 @@ struct ResolvedScopeActivity final {
   std::uint64_t dynamicActivations = 0;
 };
 
-using CachedMetrics = std::optional<detail::LowConfidenceMetricSet>;
+using CachedAnalysis = detail::StructuredAnalyticResult;
 
 detail::StructuredAnalyticCacheKey
 metricCacheKey(const ArtifactRootReference &structuredProgram,
@@ -731,7 +731,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
                      request.modelBinding().resolvedModelConfig().digest());
   StructuredEvaluationInvocationCache *cache =
       detail::currentStructuredEvaluationCache();
-  std::shared_ptr<const CachedMetrics> cachedMetrics;
+  std::shared_ptr<const CachedAnalysis> cachedAnalysis;
   using AnalyticFlightMap =
       decltype(std::declval<StructuredEvaluationInvocationCache::Impl &>()
                    .analyticFlights);
@@ -743,7 +743,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     while (true) {
       auto found = impl.analyticResults.find(cacheKey);
       if (found != impl.analyticResults.end()) {
-        cachedMetrics = found->second;
+        cachedAnalysis = found->second;
         impl.analyticHitCount.fetch_add(1, std::memory_order_relaxed);
         break;
       }
@@ -766,8 +766,9 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     }
   }
 
-  CachedMetrics metrics;
-  if (cachedMetrics) {
+  CachedAnalysis analysis;
+  auto &metrics = analysis.metrics;
+  if (cachedAnalysis) {
     if (auto stored = artifactStore.get(structured.front()); !stored)
       return stored.takeError();
     if (auto stored = artifactStore.get(fabric.front()); !stored)
@@ -776,7 +777,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       return stored.takeError();
     if (auto stored = artifactStore.get(*request.runtimeInput()); !stored)
       return stored.takeError();
-    metrics = *cachedMetrics;
+    analysis = *cachedAnalysis;
   } else {
     auto program =
         frontend::importStructuredProgram(structured.front(), artifactStore);
@@ -823,7 +824,6 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
           code ? code : llvm::inconvertibleErrorCode(), "%s", message.c_str());
     }
     std::optional<lowering::ProjectedCanonicalDataflow> projected;
-    std::optional<dataflow::CanonicalDataflowProgramView> projectedView;
     if (hasSpatialOwnership) {
       auto lowered =
           lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
@@ -831,29 +831,28 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       if (!lowered)
         return lowered.takeError();
       projected.emplace(std::move(*lowered));
-      auto view = projected->artifact.view();
-      if (!view)
-        return view.takeError();
-      projectedView.emplace(std::move(*view));
     }
     auto activity = projectBlockActivity(*program, *observations);
     if (!activity)
       return activity.takeError();
     auto computed = estimateMetrics(
-        *activity, **fabricRoot, projectedView ? &*projectedView : nullptr,
+        *activity, **fabricRoot,
+        projected ? &projected->artifact.view() : nullptr,
         projected
             ? llvm::ArrayRef(projected->spatialGraphs)
             : llvm::ArrayRef<lowering::StructuredSpatialGraphProjection>{});
     if (!computed)
       return computed.takeError();
     metrics = std::move(*computed);
+    analysis.hostDynamicLeafExecutions =
+        activity->hostInstructionLeafExecutions;
     if (cache) {
       auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
-      auto cached = std::make_shared<const CachedMetrics>(metrics);
+      auto cached = std::make_shared<const CachedAnalysis>(analysis);
       std::lock_guard<std::mutex> lock(impl.mutex);
       if (auto existing = impl.analyticResults.find(cacheKey);
           existing != impl.analyticResults.end()) {
-        if (*existing->second != metrics)
+        if (*existing->second != analysis)
           return llvm::createStringError(
               llvm::inconvertibleErrorCode(),
               "structured_fabric_model_invalid: nondeterministic cached "
@@ -864,7 +863,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
       } else {
         auto [found, inserted] =
             impl.analyticResults.try_emplace(cacheKey, std::move(cached));
-        if (!inserted && *found->second != metrics)
+        if (!inserted && *found->second != analysis)
           return llvm::createStringError(
               llvm::inconvertibleErrorCode(),
               "structured_fabric_model_invalid: nondeterministic cached "
@@ -922,6 +921,25 @@ projectStructuredScopeActivity(
                       activity->instructionLeafExecutions});
   }
   return result;
+}
+
+llvm::Expected<std::vector<std::uint64_t>>
+projectStructuredScopeActivationCounts(
+    const frontend::StructuredProgramCandidate &program,
+    const sim::NativeStructuredProgramObservations &observations,
+    llvm::ArrayRef<frontend::StructuredEntityRef> scopes) {
+  auto projection = projectBlockActivity(program, observations);
+  if (!projection)
+    return projection.takeError();
+  std::vector<std::uint64_t> counts;
+  counts.reserve(scopes.size());
+  for (const auto &scope : scopes) {
+    auto activity = resolveScopeActivity(*projection, scope);
+    if (!activity)
+      return activity.takeError();
+    counts.push_back(activity->dynamicActivations);
+  }
+  return counts;
 }
 
 llvm::Error registerStructuredFabricAnalyticModel() {
@@ -1158,13 +1176,6 @@ llvm::Error primeStructuredFabricAnalyticResult(
       cacheImpl.flightChanged.wait(lock, [&] { return entry->complete; });
     }
   }
-  std::optional<dataflow::CanonicalDataflowProgramView> dataflowView;
-  if (candidate.canonicalDataflow) {
-    auto view = candidate.canonicalDataflow->view();
-    if (!view)
-      return view.takeError();
-    dataflowView.emplace(std::move(*view));
-  }
   auto sourceActivity = projectBlockActivity(invocation.sourceProgram,
                                              invocation.sourceObservations);
   if (!sourceActivity)
@@ -1195,15 +1206,19 @@ llvm::Error primeStructuredFabricAnalyticResult(
     activity = &*projectedActivity;
   }
   auto metrics = estimateMetrics(*activity, fabricRoot,
-                                 dataflowView ? &*dataflowView : nullptr,
+                                 candidate.canonicalDataflow
+                                     ? &candidate.canonicalDataflow->view()
+                                     : nullptr,
                                  candidate.spatialGraphs);
   if (!metrics)
     return metrics.takeError();
-  auto cached = std::make_shared<const CachedMetrics>(*metrics);
+  const CachedAnalysis analysis{std::move(*metrics),
+                                activity->hostInstructionLeafExecutions};
+  auto cached = std::make_shared<const CachedAnalysis>(analysis);
   std::lock_guard<std::mutex> lock(cacheImpl.mutex);
   if (auto existing = cacheImpl.analyticResults.find(key);
       existing != cacheImpl.analyticResults.end()) {
-    if (*existing->second != *metrics)
+    if (*existing->second != analysis)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "structured_fabric_model_invalid: nondeterministic cached result");
@@ -1219,7 +1234,7 @@ llvm::Error primeStructuredFabricAnalyticResult(
   }
   auto [found, inserted] =
       cacheImpl.analyticResults.try_emplace(key, std::move(cached));
-  if (!inserted && *found->second != *metrics)
+  if (!inserted && *found->second != analysis)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: nondeterministic cached result");
@@ -1228,8 +1243,8 @@ llvm::Error primeStructuredFabricAnalyticResult(
   return llvm::Error::success();
 }
 
-llvm::Expected<std::optional<std::uint64_t>>
-lookupStructuredFabricAnalyticRuntimeEstimate(
+llvm::Expected<std::optional<StructuredFabricAnalyticEstimate>>
+lookupStructuredFabricAnalyticEstimate(
     const ArtifactRootReference &structuredProgram,
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
@@ -1243,9 +1258,15 @@ lookupStructuredFabricAnalyticRuntimeEstimate(
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(cache);
   std::lock_guard<std::mutex> lock(impl.mutex);
   auto found = impl.analyticResults.find(key);
-  if (found == impl.analyticResults.end() || !*found->second)
-    return std::optional<std::uint64_t>{};
-  return std::optional<std::uint64_t>((**found->second).runtimePicoseconds);
+  if (found == impl.analyticResults.end())
+    return std::optional<StructuredFabricAnalyticEstimate>{};
+  const auto &analysis = *found->second;
+  return std::optional<StructuredFabricAnalyticEstimate>(
+      StructuredFabricAnalyticEstimate{
+          analysis.metrics ? std::optional<std::uint64_t>(
+                                 analysis.metrics->runtimePicoseconds)
+                           : std::nullopt,
+          analysis.hostDynamicLeafExecutions});
 }
 
 llvm::Expected<bool> hasStructuredFabricAnalyticResult(

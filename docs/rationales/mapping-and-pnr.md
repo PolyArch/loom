@@ -549,22 +549,46 @@ repairs from exchanging one witness for a worse set of violations without
 creating a repair-private score. Remaining violations outside the region
 retain their ordinary Mapping owners.
 
-The repair model and the Action transaction must route the same dependency
-closure. Reconstructing a WitnessRegion Action from only the opening witness
-after the repair owner has already expanded realization, relation, and
-ownership dependencies would create a second, narrower region owner. The
-repair therefore projects its canonical affected-net set into ordinary
-WholeNet Actions; the executor still owns routing, while the repair model
-remains the sole owner of its bounded region.
+The repair model owns the bounded placement, attachment, and local-disposition
+choices. Actions apply changed selections and seed routing from the opening
+witness or exact runtime breaker. That initial routing set is insufficient
+when the provisional paths create a conflict involving other selected routes;
+the router must discover and close those dependencies before rejecting the
+assignment.
 
-Route conflicts discovered while probing an exact assignment are different
-from that canonical model region. They depend on provisional paths selected by
-the assignment's transaction, so retaining their union after rollback makes a
-failed route history an independent region owner. It also makes later
-assignments reroute nets that their own paths may never touch. The router
-therefore closes conflicts transitively inside each probe, while rejection
-discards both the route overlay and its derived closure. The repair invocation
-retains only the largest observed closure size for deterministic accounting.
+Route conflicts depend on provisional paths selected by the assignment's
+transaction. The router closes them transitively inside each probe, while
+rejection discards both the route overlay and its routing closure. A switch
+contention fragment depends on its complete selected component, so merely
+collecting traversals whose own fragments intersect a cycle omits other
+routes that enable that contention. Fabric's existing component owner supplies
+these dependencies without a second contention graph. If an unresolved cycle
+requires binding choices outside the repair model, its net anchors expand the
+bounded model on the next probe. Neither route-region growth nor that model
+expansion creates a persistent legality clause; both retain ordinary bounds
+and work accounting.
+
+A selected crosspoint can be shared by several logical routes. Omitting it
+from one route leaves the same physical handshake active while any other user
+remains. The exact probe therefore releases and reroutes all current users as
+one trial inside its closed region. Removing one crosspoint can expose another
+cycle, so successful route changes accumulate in the same transaction. A
+strictly growing set of temporary traversal omissions prevents later routes
+from undoing retained changes. The full provisional handshake owner supplies
+each next cycle and remains part of the final closure gate. Each trial
+restores the same complete overlay before another traversal is considered.
+Selecting the first reachable group makes traversal identity an accidental
+quality rule: a compatible detour may remove a cycle while imposing avoidable
+capacity pressure. Instead, the existing Mapping selected-rank owner compares
+all compatible group projections from that baseline. Frozen traversal order
+only breaks ties. One captured winning route group is installed through the
+same projection owner; replaying its search or keeping multiple live overlays
+would add unnecessary work and state. This does not require improvement over
+the baseline because several omissions may be needed to remove a cycle.
+The finite witnessed group set is evaluated once per iteration, and no new
+search budget is introduced. The ordinary iteration and no-progress bounds limit this search, and failure
+under its temporary exclusions remains incomplete. The frozen capacity-cut
+proof never reads those exclusions.
 
 Raw local-choice order is insufficient as the repair objective. In a coupled
 placement and attachment region, its lexicographically first assignment can
@@ -596,6 +620,15 @@ upstream solver heuristic or version-internal ordering from selecting a
 different persistent Mapping. A local infeasible repair region proves only
 infeasibility under its fixed boundary; it is not global proof unless the
 region is the complete exact problem.
+
+The per-call deterministic-work limit and the caller's solver-call limit bound
+different work. A solver may return `UNKNOWN` or an unproved `FEASIBLE`
+incumbent before the call count reaches its limit. These are incomplete proof
+results, not evidence that all admitted calls were consumed. Keeping these
+causes distinct preserves the proof contract while exposing which bound or
+solver status prevented closure. Actual and logical call counts remain
+separate because a completed-solve memo hit avoids native work without
+changing the bounded search prefix.
 
 Canonical mixed-radix packing uses the pinned solver's own exact
 integer-expression overflow predicate. Checking only C++ `int64` bounds can
@@ -883,6 +916,15 @@ therefore limits mutations and defines local route closure, while the existing
 global `SelectedObjectiveClosure` remains the sole retained-iterate and repair
 acceptance order. Strict improvement in that finite order prevents witness
 exchange without duplicating objective policy.
+
+A repair region rooted at one unrouted net need not contain another independent
+unrouted net. Requiring every global obligation to be closed before committing
+that region would reject useful repairs and repeatedly enumerate equivalent
+local successes. A region that removes its primary witness, preserves atomic
+capacity and progress admission, and strictly improves the global selected
+rank can therefore commit before the next global closure attempt. The
+equal-rank or worse-rank fallback remains restricted to complete transport
+closure, and every published Mapping still passes cold global verification.
 
 Canonical exact-repair enumeration also cannot distinguish candidates only by
 an instruction-context ordinal when the compute placement is unchanged. The

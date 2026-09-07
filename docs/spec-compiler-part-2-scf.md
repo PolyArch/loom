@@ -748,13 +748,16 @@ and unit step. Each memory statement is a scalar, nonvolatile, nonatomic LLVM
 load or store whose address is one direct inbounds, single-index GEP. The GEP
 index is exactly the induction variable, and the shared DataLayout address
 resolver must prove zero bias and one access-element stride from a root outside
-the loop. SCoP admission and independent parallelization consume this one
-byte-aware projection. A same-root write-bearing pair is iteration-local only
+the loop. That root is the direct GEP base and may be an invariant row address
+computed by an enclosing scope; its allocation provenance remains owned by
+`MemoryProvenance`. SCoP admission and independent parallelization consume this
+one byte-aware projection. A same-root write-bearing pair is iteration-local only
 when both accesses prove the identical byte partition; unequal access widths
 receive `AccessRelationProofNotEstablished`. Different roots use the common
 `MemoryProvenance` distinctness proof. Mixed memref/pointer effects, pointer
-chains, non-scalar accesses, unknown roots or layouts, other index expressions,
-and every non-lossless loop form remain typed refusals. The materializer
+chains inside the selected loop, non-scalar accesses, unknown roots or layouts,
+other index expressions, and every non-lossless loop form remain typed refusals.
+The materializer
 reconstructs the frozen coordinate as the source `i64` before cloning its
 statements. When the enclosing ownership decision selected `RootRelative`,
 each admitted load/store retains that owner's `loom.root_relative_address`
@@ -950,6 +953,10 @@ allocation operations, distinct static object symbols, allocation-versus-input
 provenance, or explicit `llvm.noalias` on both distinct function arguments.
 Exact direct-call inlining may expose caller allocations that establish this
 proof for one ownership candidate while the uninlined callee remains serial.
+An LLVM read outside the exact point-address subset may pass the effect and
+alias proof when its memory root is proven distinct from every write. This
+does not admit atomic or volatile effects, relax any write's byte geometry,
+or infer same-root independence from equal unscaled GEP indices.
 The child stores the logical parallel domain in ordinary SCF; it carries no
 physical coordinate, AccCore binding, placement, or routing fact. A later
 ownership decision may retain that domain inside one Spatial graph or
@@ -1684,6 +1691,29 @@ that pointer representation always belongs to InstructionCore. Once the
 mechanical Structured-to-Dataflow transaction begins, a residual memory
 operation remains an invocation failure and is never reclassified by its
 diagnostic text.
+
+A loaded-pointer service may be completed by a source proof of its stored
+representation. The proof owns one complete invocation domain, finite
+allocation extents from the exact DataLayout, every possibly overlapping
+write, and initialization of the queried bytes. Full typed stores and complete
+byte-copy transfers share this reaching-memory relation; unknown aliases,
+partial representations, uninitialized or out-of-bounds bytes, unsupported
+pointer representations, and distinct non-null origins remain typed refusals.
+A possible null payload is preserved as pointer data. An all-null value does
+not provide a memory-service origin.
+
+The proven non-null object base must dominate the selected scope and become
+an explicit live-in when not already present. Preflight and Graph lowering
+consume the same boundary service relation. Only pairs of explicit boundary
+values survive the mechanical ownership and publication clones; source
+analyses end before those rewrites and are rebuilt from the next phase's
+immutable input when needed. No stored descriptor schema, runtime observation,
+raw host address, or serialized proof cache establishes this relation.
+An owned-thread invocation is treated as a serial interval only when its
+explicit matching wait proves retirement; its launch start and wait completion
+bound the source effects. A root-relative view additionally requires its exact
+base and offset relation. A unique target object alone does not replace the
+value of a dynamically offset pointer.
 
 Sn uses two ownership carriers:
 

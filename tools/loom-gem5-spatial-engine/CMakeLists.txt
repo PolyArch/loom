@@ -2,6 +2,7 @@ foreach(engine IN ITEMS dfg cgra)
   set(target "loom-gem5-${engine}-engine")
   add_llvm_executable(${target}
     loom-gem5-spatial-engine.cpp
+    SpatialEngineSession.cpp
   )
   llvm_update_compile_flags(${target})
   string(TOUPPER "${engine}" engine_upper)

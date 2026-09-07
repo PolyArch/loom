@@ -1,5 +1,7 @@
 #include "Arbitration.h"
 #include "Components.h"
+#include "MemoryAccess.h"
+#include "MemoryDiagnostics.h"
 
 #include "Common/InvocationDiagnosticLog.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
@@ -128,22 +130,6 @@ unsigned roleWidth(Role role, unsigned addressWidth, unsigned dataWidth,
   llvm_unreachable("unknown Canonical Service role");
 }
 
-struct AccessCase final {
-  std::uint32_t physicalPort = 0;
-  std::uint32_t capability = 0;
-  std::uint32_t accessClass = 0;
-  bool read = false;
-  ::dataflow::semantics::MemoryAccessForm accessForm =
-      ::dataflow::semantics::MemoryAccessForm::Element;
-  ::dataflow::semantics::MemoryAddressForm addressForm =
-      ::dataflow::semantics::MemoryAddressForm::RootRelative;
-  std::uint64_t elementWidthBits = 0;
-  std::vector<std::uint32_t> addressWidths;
-  std::vector<::fabric::UnsignedInterval> laneCounts;
-  std::vector<bool> dynamicMasks;
-  std::vector<::fabric::UnsignedInterval> storageRegions;
-};
-
 struct MemoryMaterializationMetrics final {
   std::uint64_t beginOperations = 0;
   std::uint64_t rowTransportOperations = 0;
@@ -178,162 +164,6 @@ void replaceAll(std::string &text, llvm::StringRef from, llvm::StringRef to) {
     text.replace(position, from.size(), to.str());
     position += to.size();
   }
-}
-
-/// The finite address-width inventory of one access class. The support
-/// ceiling of a lane width is not decided here: the portable address
-/// arithmetic derived from the complete layout rejects a module whose widest
-/// lane exceeds the byte-address domain before any access case is built.
-llvm::Expected<std::vector<std::uint32_t>>
-finiteWidths(const ::fabric::MemoryAccessClass &access) {
-  std::vector<std::uint32_t> result;
-  if (const auto *widths = access.rootRelativeIndexWidths()) {
-    for (const ::fabric::UnsignedInterval interval : widths->intervals()) {
-      if (interval.upper - interval.lower > 8)
-        return unsupported("portable memory address-width domain is too wide");
-      for (std::uint64_t width = interval.lower; width <= interval.upper;
-           ++width)
-        result.push_back(static_cast<std::uint32_t>(width));
-    }
-  } else {
-    const auto *formats = access.addressPointerFormats();
-    if (!formats)
-      return invalid("pointer-addressed memory access has no format domain");
-    for (const ::fabric::PointerFormat &format : formats->formats()) {
-      if (format.representationBits == 0)
-        return invalid("portable memory pointer representation is empty");
-      result.push_back(format.representationBits);
-    }
-  }
-  llvm::sort(result);
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  if (result.empty())
-    return invalid("memory access has an empty address-width domain");
-  return result;
-}
-
-llvm::Expected<std::vector<AccessCase>>
-deriveAccessCases(const fabric::FabricArtifactView &fabric,
-                  fabric::FabricMemoryOccurrenceRef memory) {
-  std::vector<AccessCase> result;
-  for (auto [portOrdinal, portRef] :
-       llvm::enumerate(fabric.memoryOperationPorts(memory))) {
-    const auto *port = fabric.memoryOperationPort(portRef);
-    if (!port)
-      return invalid("memory operation port does not resolve");
-    for (auto [capabilityOrdinal, capability] :
-         llvm::enumerate(port->capabilityAlternatives())) {
-      const auto schema = capability.actorContractDomain.actorSchema();
-      const bool read = schema == ::dataflow::OperationSchemaId::DataflowLoad;
-      if (!read && schema != ::dataflow::OperationSchemaId::DataflowStore)
-        return unsupported(
-            "portable memory profile admits only plain load and store");
-      if (!capability.accessDomain)
-        return unsupported(
-            "portable load/store capability has no access domain");
-      for (auto [classOrdinal, access] :
-           llvm::enumerate(capability.accessDomain->accessClasses())) {
-        auto addressWidths = finiteWidths(access);
-        if (!addressWidths)
-          return addressWidths.takeError();
-        for (const ::fabric::UnsignedInterval interval :
-             access.elementWidths().intervals()) {
-          if (interval.lower == 0 || interval.upper > 4096 ||
-              interval.upper - interval.lower > 64)
-            return unsupported(
-                "portable memory element-width domain is too wide");
-          for (std::uint64_t elementWidth = interval.lower;
-               elementWidth <= interval.upper; ++elementWidth) {
-            if (elementWidth % 8 != 0)
-              continue;
-            AccessCase selected;
-            selected.physicalPort = static_cast<std::uint32_t>(portOrdinal);
-            selected.capability = static_cast<std::uint32_t>(capabilityOrdinal);
-            selected.accessClass = static_cast<std::uint32_t>(classOrdinal);
-            selected.read = read;
-            selected.accessForm = access.accessForm();
-            selected.addressForm = access.addressForm();
-            selected.elementWidthBits = elementWidth;
-            selected.addressWidths = *addressWidths;
-            selected.laneCounts.assign(
-                access.flattenedLaneCounts().intervals().begin(),
-                access.flattenedLaneCounts().intervals().end());
-            for (const ::fabric::MaskInactivePair pair :
-                 access.maskInactivePairs())
-              selected.dynamicMasks.push_back(
-                  pair.mask == ::dataflow::semantics::MemoryMaskForm::Dynamic);
-            result.push_back(std::move(selected));
-          }
-        }
-      }
-    }
-  }
-  return result;
-}
-
-llvm::Expected<std::vector<AccessCase>>
-deriveLocalServiceAccessCases(const fabric::FabricArtifactView &fabric,
-                              fabric::FabricMemoryOccurrenceRef memory) {
-  std::vector<AccessCase> result;
-  const auto *service = fabric.localMemoryService(memory);
-  if (!service)
-    return result;
-  for (auto [capabilityOrdinal, capability] :
-       llvm::enumerate(service->capabilities())) {
-    const auto schema = capability.actorContractDomain.actorSchema();
-    const bool read = schema == ::dataflow::OperationSchemaId::DataflowLoad;
-    if (!read && schema != ::dataflow::OperationSchemaId::DataflowStore)
-      return unsupported(
-          "portable local service admits only plain load and store");
-    if (!capability.accessDomain)
-      return unsupported("portable local load/store has no access domain");
-    for (auto [classOrdinal, access] :
-         llvm::enumerate(capability.accessDomain->accessClasses())) {
-      auto addressWidths = finiteWidths(access);
-      if (!addressWidths)
-        return addressWidths.takeError();
-      for (const ::fabric::UnsignedInterval interval :
-           access.elementWidths().intervals()) {
-        if (interval.lower == 0 || interval.upper > 4096 ||
-            interval.upper - interval.lower > 64)
-          return unsupported(
-              "portable local-service element-width domain is too wide");
-        for (std::uint64_t elementWidth = interval.lower;
-             elementWidth <= interval.upper; ++elementWidth) {
-          if (elementWidth % 8 != 0)
-            continue;
-          AccessCase selected;
-          selected.capability = static_cast<std::uint32_t>(capabilityOrdinal);
-          selected.accessClass = static_cast<std::uint32_t>(classOrdinal);
-          selected.read = read;
-          selected.accessForm = access.accessForm();
-          selected.addressForm = access.addressForm();
-          selected.elementWidthBits = elementWidth;
-          selected.addressWidths = *addressWidths;
-          selected.laneCounts.assign(
-              access.flattenedLaneCounts().intervals().begin(),
-              access.flattenedLaneCounts().intervals().end());
-          for (const ::fabric::MaskInactivePair pair :
-               access.maskInactivePairs())
-            selected.dynamicMasks.push_back(
-                pair.mask == ::dataflow::semantics::MemoryMaskForm::Dynamic);
-          for (std::uint64_t regionOrdinal : capability.serviceRegionOrdinals) {
-            const auto &region = service->regions()[regionOrdinal];
-            if (region.behavior !=
-                ::fabric::MemoryServiceRegionBehavior::Storage)
-              return unsupported(
-                  "portable local-memory profile does not implement MMIO "
-                  "regions");
-            selected.storageRegions.push_back(
-                {region.addressBaseBytes,
-                 region.addressBaseBytes + region.sizeBytes - 1});
-          }
-          result.push_back(std::move(selected));
-        }
-      }
-    }
-  }
-  return result;
 }
 
 struct RowSignals final {
@@ -429,7 +259,7 @@ RowSignals decodeRow(mlir::OpBuilder &builder, mlir::Location location,
 }
 
 mlir::Value accessCaseMatches(mlir::OpBuilder &builder, mlir::Location location,
-                              const RowSignals &row, const AccessCase &access,
+                              const RowSignals &row, const MemoryAccessCase &access,
                               std::optional<std::uint32_t> spatialPort) {
   llvm::SmallVector<mlir::Value> terms{
       row.active, equals(builder, location, row.capability, access.capability),
@@ -555,33 +385,9 @@ void setRequestOutputs(circt::hw::HWModulePortAccessor &accessor,
   accessor.setOutput(ports.requestValid.getName(), request.valid);
 }
 
-std::uint64_t
-accessFormCode(::dataflow::semantics::MemoryAccessForm accessForm) {
-  switch (accessForm) {
-  case ::dataflow::semantics::MemoryAccessForm::Element:
-    return 0;
-  case ::dataflow::semantics::MemoryAccessForm::Contiguous:
-    return 1;
-  case ::dataflow::semantics::MemoryAccessForm::Indexed:
-    return 2;
-  }
-  llvm_unreachable("unknown memory access form");
-}
-
-std::uint64_t
-addressFormCode(::dataflow::semantics::MemoryAddressForm addressForm) {
-  switch (addressForm) {
-  case ::dataflow::semantics::MemoryAddressForm::RootRelative:
-    return 0;
-  case ::dataflow::semantics::MemoryAddressForm::PointerAddressed:
-    return 1;
-  }
-  llvm_unreachable("unknown memory address form");
-}
-
 mlir::Value selectedAccessForm(mlir::OpBuilder &builder,
                                mlir::Location location,
-                               llvm::ArrayRef<AccessCase> accesses,
+                               llvm::ArrayRef<MemoryAccessCase> accesses,
                                llvm::ArrayRef<mlir::Value> matches,
                                bool addressForm) {
   assert(accesses.size() == matches.size() &&
@@ -599,7 +405,7 @@ mlir::Value selectedAccessForm(mlir::OpBuilder &builder,
 
 mlir::Value selectedDynamicMask(mlir::OpBuilder &builder,
                                 mlir::Location location, const RowSignals &row,
-                                llvm::ArrayRef<AccessCase> accesses,
+                                llvm::ArrayRef<MemoryAccessCase> accesses,
                                 llvm::ArrayRef<mlir::Value> matches) {
   assert(accesses.size() == matches.size() &&
          "access projection must cover its exact domain");
@@ -689,7 +495,7 @@ struct AddressedByte final {
 mlir::Value serviceAccessMatches(mlir::OpBuilder &builder,
                                  mlir::Location location,
                                  const ServiceRequestSignals &request,
-                                 const AccessCase &access) {
+                                 const MemoryAccessCase &access) {
   llvm::SmallVector<mlir::Value> terms{
       equals(builder, location, request.kind, access.read ? 0 : 1),
       equals(builder, location, request.accessForm,
@@ -730,7 +536,7 @@ mlir::Value serviceAccessMatches(mlir::OpBuilder &builder,
 
 AddressedByte serviceAddressByte(
     mlir::OpBuilder &builder, mlir::Location location,
-    const ServiceRequestSignals &request, const AccessCase &access,
+    const ServiceRequestSignals &request, const MemoryAccessCase &access,
     mlir::Value accessSelected, std::uint64_t byte,
     const PortableMemoryServiceLayout &layout,
     const PortableMemoryAddressArithmetic &arithmetic) {
@@ -801,7 +607,7 @@ struct LocalRequestProjection final {
 
 LocalRequestProjection projectLocalRequest(
     mlir::OpBuilder &builder, mlir::Location location,
-    const ServiceRequestSignals &request, llvm::ArrayRef<AccessCase> accesses,
+    const ServiceRequestSignals &request, llvm::ArrayRef<MemoryAccessCase> accesses,
     std::uint64_t dataBytes, const PortableMemoryServiceLayout &layout,
     const PortableMemoryAddressArithmetic &arithmetic) {
   const unsigned calculationWidth = arithmetic.calculationWidthBits;
@@ -810,7 +616,7 @@ LocalRequestProjection projectLocalRequest(
   std::vector<AddressedByte> bytes(
       dataBytes, AddressedByte{bitConstant(builder, location, false),
                                zero(builder, location, calculationWidth)});
-  for (const AccessCase &access : accesses) {
+  for (const MemoryAccessCase &access : accesses) {
     mlir::Value accessSelected =
         serviceAccessMatches(builder, location, request, access);
     supported =
@@ -980,10 +786,10 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
     return unsupported(
         "portable memory address lane exceeds the byte-address domain");
 
-  auto accessCases = deriveAccessCases(fabric, memory);
+  auto accessCases = deriveMemoryAccessCases(fabric, memory);
   if (!accessCases)
     return accessCases.takeError();
-  auto serviceAccessCases = deriveLocalServiceAccessCases(fabric, memory);
+  auto serviceAccessCases = deriveLocalMemoryServiceAccessCases(fabric, memory);
   if (!serviceAccessCases)
     return serviceAccessCases.takeError();
 
@@ -1003,7 +809,7 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
   unsigned addressWidth = 1;
   unsigned dataWidth = 1;
   unsigned maskWidth = 1;
-  for (const AccessCase &access : *accessCases) {
+  for (const MemoryAccessCase &access : *accessCases) {
     const auto *port = fabric.memoryOperationPort(
         fabric::FabricMemoryOperationPortRef{memory, access.physicalPort});
     const auto &capability = port->capabilityAlternatives()[access.capability];
@@ -1498,7 +1304,7 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
                   : std::nullopt;
           std::vector<mlir::Value> rowAccessMatches;
           rowAccessMatches.reserve(accessCases->size());
-          for (const AccessCase &access : *accessCases) {
+          for (const MemoryAccessCase &access : *accessCases) {
             mlir::Value matches = accessCaseMatches(
                 bodyBuilder, location, rows[row], access, spatialPort);
             rowAccessMatches.push_back(matches);
@@ -2024,6 +1830,36 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
               bodyBuilder, location, completedRequest[requester],
               completionData, subordinateData[ordinal], true));
         }
+        std::vector<MemoryRowDiagnostics> diagnosticRows;
+        diagnosticRows.reserve(rowCount);
+        for (std::uint32_t row = 0; row != rowCount; ++row) {
+          MemoryRowDiagnostics &diagnostic = diagnosticRows.emplace_back();
+          diagnostic.context = requests[row].context;
+          diagnostic.active = rows[row].active;
+          diagnostic.write = requests[row].kind;
+          diagnostic.requestValid = requests[row].valid;
+          diagnostic.issued = issued[row];
+          diagnostic.response = completedRequest[row];
+          diagnostic.released = released[row];
+          diagnostic.occupied = occupied[row];
+          diagnostic.completed = completed[row];
+          diagnostic.selected = resultSelected[row];
+          diagnostic.address = requests[row].address;
+          diagnostic.data = requests[row].data;
+          diagnostic.result = resultData[row];
+          diagnostic.resultNext = resultDataNext[row];
+          for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
+            const auto &queue = operandQueues[row][role];
+            diagnostic.operands.push_back(
+                {static_cast<Role>(role), rows[row].sourcePresent[role],
+                 sources[row][role].valid, rows[row].sourceInternal[role],
+                 rows[row].sourceEndpoint[role], rows[row].sourceTag[role],
+                 queue.occupied, queue.enqueue, queue.dequeue, queue.data,
+                 queue.enqueueData});
+          }
+        }
+        emitMemoryDiagnostics(bodyBuilder, location, accessor,
+                              requestContextBase, *endpoints, diagnosticRows);
         metrics.completionOperations =
             blockOperationCount(bodyBuilder) - metrics.beginOperations -
             metrics.rowTransportOperations -

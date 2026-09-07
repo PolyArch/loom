@@ -29,7 +29,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationActivationDecisionSchema{
-    "loom.application.activation_decision", SchemaVersion{2, 0}};
+    "loom.application.activation_decision", SchemaVersion{3, 0}};
 
 enum class ApplicationActivationDecisionErrorReason : std::uint8_t {
   ForeignSchema,
@@ -77,6 +77,17 @@ struct ApplicationActivationPlanningPreimage final {
 struct ApplicationActivationDecisionDependencyProjection final {
   std::vector<ArtifactRootReference> artifacts;
   std::vector<BlobDigest> blobs;
+};
+
+/// Derived facts of one strictly imported application Evidence join. They
+/// are retained with the immutable decision and never serialized as another
+/// owner. Request dependencies and execution outputs are canonical root sets.
+struct ApplicationRuntimeEvidenceJoin final {
+  std::uint64_t dfgCycles = 0;
+  std::uint64_t cgraCycles = 0;
+  std::vector<ArtifactRootReference> requestDependencies;
+  std::vector<ArtifactRootReference> executionOutputs;
+  bool allCgraExecutionsRetired = true;
 };
 
 struct ApplicationActivationDecisionDraft final {
@@ -162,10 +173,15 @@ public:
   const CanonicalSemanticBytes &canonicalBytes() const {
     return canonicalBytes_;
   }
+  const ApplicationRuntimeEvidenceJoin &runtimeEvidenceJoin() const {
+    return runtimeEvidenceJoin_;
+  }
 
 private:
-  ApplicationActivationDecision(ApplicationActivationDecisionDraft draft,
-                                CanonicalSemanticBytes canonicalBytes)
+  ApplicationActivationDecision(
+      ApplicationActivationDecisionDraft draft,
+      CanonicalSemanticBytes canonicalBytes,
+      ApplicationRuntimeEvidenceJoin runtimeEvidenceJoin)
       : sourceProgram_(std::move(draft.sourceProgram)),
         fabric_(std::move(draft.fabric)), workload_(std::move(draft.workload)),
         runtimeInput_(std::move(draft.runtimeInput)),
@@ -185,7 +201,8 @@ private:
             std::move(draft.selectedHardwareMutationRepairRecord)),
         hardwareMutationRepairRecords_(
             std::move(draft.hardwareMutationRepairRecords)),
-        canonicalBytes_(std::move(canonicalBytes)) {}
+        canonicalBytes_(std::move(canonicalBytes)),
+        runtimeEvidenceJoin_(std::move(runtimeEvidenceJoin)) {}
 
   ArtifactRootReference sourceProgram_;
   ArtifactRootReference fabric_;
@@ -207,6 +224,7 @@ private:
   std::optional<ArtifactRootReference> selectedHardwareMutationRepairRecord_;
   std::vector<ArtifactRootReference> hardwareMutationRepairRecords_;
   CanonicalSemanticBytes canonicalBytes_;
+  ApplicationRuntimeEvidenceJoin runtimeEvidenceJoin_;
 };
 
 class FinalizedApplicationActivationDecision final {

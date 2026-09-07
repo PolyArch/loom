@@ -7,6 +7,7 @@
 
 #include "Common/ArtifactText.h"
 #include "Common/IndexWidth.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -56,7 +57,6 @@ std::error_code NonRetiredDFGExecutionError::convertToErrorCode() const {
 struct PreparedDfgExecution::Impl {
   std::unique_ptr<dataflow::CanonicalDataflowArtifact> program;
   dataflow::RootedGraphLaunchRef launch;
-  dataflow::CanonicalDataflowProgramView view;
   detail::ResolvedLaunchContext context;
   detail::PreparedGraphExecution execution;
 };
@@ -448,7 +448,7 @@ primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
 
 static bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp, mlir::memref::AllocOp,
-                   mlir::memref::CastOp>(op);
+                   mlir::memref::CastOp, mlir::memref::ViewOp>(op);
 }
 
 std::string unsupportedOperationLabel(mlir::Operation *op) {
@@ -903,6 +903,28 @@ finalizeDfgRun(DfgRun &run, const CanonicalSimulationWorkload *typedWorkload,
             : "graph stopped before retirement outputs were complete");
   }
   projectRunObservations(run.state, run.report);
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Detail,
+      loom::mapping_debug::Stage::DataflowLowering,
+      loom::mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+        fields["operation"] = "dfg_execution";
+        fields["graph"] = run.report.graph;
+        fields["status"] = run.report.status;
+        fields["retirement_observed"] = run.retirementObserved;
+        fields["wavefront_steps"] = run.report.wavefrontSteps;
+        fields["event_count"] = run.report.eventCount;
+        fields["dynamic_work_items"] = run.report.dynamicWorkItems;
+        if (typedWorkload)
+          fields["workload"] =
+              loom::formatArtifactIdentityHex(typedWorkload->identity());
+        if (typedRuntimeInput)
+          fields["runtime_input"] =
+              loom::formatArtifactIdentityHex(typedRuntimeInput->identity());
+        llvm::json::Object fireCounts;
+        for (const auto &[schema, count] : run.report.operationFireCounts)
+          fireCounts[dataflow::operationSchemaSpelling(schema)] = count;
+        fields["operation_fire_counts"] = std::move(fireCounts);
+      });
   if (retiredObservations && run.report.status == "pass") {
     if (!typedWorkload || !typedRuntimeInput || !typedContext ||
         !typedProgramView)
@@ -927,6 +949,8 @@ struct loom::sim::DfgExecutionSession::Impl {
   const ResolvedLaunchContext *context = nullptr;
   const dataflow::CanonicalDataflowProgramView *programView = nullptr;
   SimulatorState dynamicState;
+  ExternalStreamInputState streamInputs;
+  std::optional<CanonicalSimulationRuntimeInput> capturedRuntimeInput;
   DFGSimulationReport report;
   DfgRun run;
   DfgExecutionSessionState lifecycle = DfgExecutionSessionState::Runnable;
@@ -980,10 +1004,54 @@ loom::sim::DfgExecutionSession::advance(
         std::errc::invalid_argument,
         "DFG execution advance requires a positive wavefront budget");
 
-  switch (advanceDfgRun(impl_->run, maxWavefrontSteps, executionDeadline)) {
+  DfgAdvanceStop stop = DfgAdvanceStop::Yielded;
+  if (impl_->streamInputs.ordinals.empty()) {
+    stop = advanceDfgRun(impl_->run, maxWavefrontSteps, executionDeadline);
+  } else {
+    const std::uint64_t initialWave = impl_->report.wavefrontSteps;
+    do {
+      if (!impl_->run.retirementObserved && impl_->report.status == "pass" &&
+          impl_->dynamicState.failure == RunFailure::None &&
+          impl_->dynamicState.diagnostics.empty()) {
+        auto cycle = evaluation::ExactRatio::get(impl_->report.wavefrontSteps, 1);
+        if (!cycle)
+          return cycle.takeError();
+        auto requested = impl_->streamInputs.request(
+            impl_->dynamicState, *impl_->context, {std::move(*cycle), 0},
+            [](ChannelOrdinal, std::uint64_t) -> llvm::Expected<bool> {
+              return true;
+            });
+        if (!requested) {
+          impl_->lifecycle = DfgExecutionSessionState::Failed;
+          return requested.takeError();
+        }
+        if (*requested) {
+          impl_->lifecycle =
+              DfgExecutionSessionState::WaitingForExternalStreamInput;
+          return impl_->lifecycle;
+        }
+      }
+      // Inspect demand at every committed wavefront, before independent
+      // actors can advance the activation past that receive's readiness.
+      stop = advanceDfgRun(impl_->run, 1, executionDeadline);
+    } while (stop == DfgAdvanceStop::Yielded &&
+             impl_->report.wavefrontSteps - initialWave < maxWavefrontSteps);
+  }
+  switch (stop) {
   case DfgAdvanceStop::Yielded:
     return impl_->lifecycle;
   case DfgAdvanceStop::Retired:
+    if (!impl_->streamInputs.ordinals.empty()) {
+      auto captured = impl_->streamInputs.capture(
+          impl_->dynamicState, *impl_->workload, *impl_->runtimeInput,
+          *impl_->context, *impl_->programView);
+      if (!captured) {
+        impl_->lifecycle = DfgExecutionSessionState::Failed;
+        return captured.takeError();
+      }
+      impl_->capturedRuntimeInput.emplace(std::move(*captured));
+      impl_->runtimeInput = &*impl_->capturedRuntimeInput;
+    }
     impl_->lifecycle = DfgExecutionSessionState::Retired;
     return impl_->lifecycle;
   case DfgAdvanceStop::Stopped:
@@ -1001,7 +1069,8 @@ llvm::Expected<loom::sim::DfgExecutionSession>
 loom::sim::startDfgExecutionSession(
     const PreparedDfgExecution &prepared,
     const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput) {
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    llvm::ArrayRef<std::uint64_t> liveStreamInputs) {
   if (!prepared.impl_)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "prepared DFG execution is empty");
@@ -1015,15 +1084,15 @@ loom::sim::startDfgExecutionSession(
         std::errc::invalid_argument,
         "runtime workload does not name the prepared rooted graph launch");
 
-  auto graphRef =
-      admitDfgSpatialSimulation(workload, runtimeInput, prepared.impl_->view);
+  auto graphRef = admitDfgSpatialSimulation(workload, runtimeInput,
+                                            prepared.impl_->program->view());
   if (!graphRef)
     return graphRef.takeError();
   if (*graphRef != prepared.impl_->context.graph)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "runtime workload resolves to a different prepared graph");
-  auto graphView = prepared.impl_->view.resolve(*graphRef);
+  auto graphView = prepared.impl_->program->view().resolve(*graphRef);
   if (!graphView)
     return graphView.takeError();
   dataflow::GraphOp graph = mlir::cast<dataflow::GraphOp>(graphView->op);
@@ -1038,7 +1107,10 @@ loom::sim::startDfgExecutionSession(
   report.status = "pass";
   auto impl = std::make_unique<DfgExecutionSession::Impl>(
       graph, prepared.impl_->execution, std::move(report), workload,
-      runtimeInput, prepared.impl_->context, prepared.impl_->view);
+      runtimeInput, prepared.impl_->context, prepared.impl_->program->view());
+  if (llvm::Error error =
+          impl->streamInputs.initialize(runtimeInput, liveStreamInputs))
+    return std::move(error);
   if (llvm::Error error = initializeTypedGraphExecutionState(
           impl->dynamicState, prepared.impl_->execution, graph, workload,
           runtimeInput, prepared.impl_->context))
@@ -1049,6 +1121,63 @@ loom::sim::startDfgExecutionSession(
   return DfgExecutionSession(std::move(impl));
 }
 
+const std::optional<loom::sim::SpatialStreamInputRequest> &
+loom::sim::DfgExecutionSession::pendingStreamInput() const {
+  static const std::optional<SpatialStreamInputRequest> empty;
+  return impl_ ? impl_->streamInputs.pending : empty;
+}
+
+llvm::Error loom::sim::DfgExecutionSession::completeStreamInput(
+    const SpatialStreamInputRequest &request,
+    const CanonicalValueSequence &value) {
+  if (!impl_ || impl_->resultTaken ||
+      impl_->lifecycle != DfgExecutionSessionState::WaitingForExternalStreamInput)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG session has no pending stream input");
+  if (llvm::Error error = impl_->streamInputs.complete(
+          impl_->dynamicState, *impl_->context, *impl_->runtimeInput,
+          request, value)) {
+    impl_->lifecycle = DfgExecutionSessionState::Failed;
+    return error;
+  }
+  impl_->lifecycle = DfgExecutionSessionState::Runnable;
+  return llvm::Error::success();
+}
+
+const loom::sim::CanonicalSimulationRuntimeInput *
+loom::sim::DfgExecutionSession::retiredRuntimeInput() const {
+  return impl_ && impl_->lifecycle == DfgExecutionSessionState::Retired
+             ? impl_->runtimeInput
+             : nullptr;
+}
+
+static llvm::Expected<RetiredDFGSimulation>
+requireRetiredDfgExecution(llvm::Expected<DFGSimulationReport> report,
+                           SpatialFunctionalObservations observations,
+                           std::uint64_t maxEventSteps) {
+  if (!report)
+    return report.takeError();
+  if (report->status == "pass")
+    return RetiredDFGSimulation{std::move(*report), std::move(observations)};
+
+  std::string message = "DFG execution did not retire: " + report->status;
+  if (!report->diagnostics.empty())
+    message += ": " + report->diagnostics.front();
+  if (report->status == "unsupported")
+    return llvm::createStringError(std::errc::not_supported, "%s",
+                                   message.c_str());
+  if (report->status == "execution_limit")
+    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
+  if (report->status == "blocked" && report->wavefrontSteps == maxEventSteps &&
+      llvm::is_contained(report->diagnostics, "maximum event steps reached"))
+    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
+  if (report->status == "blocked" || report->status == "invalid")
+    return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
+  return llvm::createStringError(std::errc::state_not_recoverable, "%s",
+                                 message.c_str());
+}
+
+
 llvm::Expected<loom::sim::RetiredDFGSimulation>
 loom::sim::DfgExecutionSession::takeRetiredSimulation() {
   if (!impl_)
@@ -1057,26 +1186,19 @@ loom::sim::DfgExecutionSession::takeRetiredSimulation() {
   if (impl_->resultTaken)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "DFG execution result was already taken");
-  if (impl_->lifecycle != DfgExecutionSessionState::Retired)
+  if (impl_->lifecycle == DfgExecutionSessionState::Runnable ||
+      impl_->lifecycle == DfgExecutionSessionState::WaitingForExternalStreamInput)
     return llvm::createStringError(
         std::errc::state_not_recoverable,
-        "DFG execution session has not retired successfully");
+        "DFG execution session has not reached a terminal boundary");
 
   SpatialFunctionalObservations observations;
   auto report =
       finalizeDfgRun(impl_->run, impl_->workload, impl_->runtimeInput,
                      impl_->context, impl_->programView, &observations);
   impl_->resultTaken = true;
-  if (!report)
-    return report.takeError();
-  if (report->status != "pass") {
-    std::string message = "DFG execution did not retire: " + report->status;
-    if (!report->diagnostics.empty())
-      message += ": " + report->diagnostics.front();
-    return llvm::createStringError(std::errc::state_not_recoverable, "%s",
-                                   message.c_str());
-  }
-  return RetiredDFGSimulation{std::move(*report), std::move(observations)};
+  return requireRetiredDfgExecution(std::move(report), std::move(observations),
+                                    std::numeric_limits<std::uint64_t>::max());
 }
 
 static llvm::Expected<DFGSimulationReport> simulateDataflowGraphImpl(
@@ -1362,49 +1484,20 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                    nullptr, nullptr, nullptr, nullptr);
 }
 
-static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
+llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
     const dataflow::CanonicalDataflowArtifact &program,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps,
-    SpatialFunctionalObservations *retiredObservations,
-    std::optional<std::chrono::steady_clock::time_point> executionDeadline =
-        std::nullopt,
-    const dataflow::CanonicalDataflowProgramView *preparedView = nullptr,
-    const ResolvedLaunchContext *preparedContext = nullptr,
-    const PreparedGraphExecution *preparedExecution = nullptr,
-    const dataflow::RootedGraphLaunchRef *preparedLaunch = nullptr) {
-  std::optional<dataflow::CanonicalDataflowProgramView> ownedView;
-  if (!preparedView) {
-    auto view = program.view();
-    if (!view)
-      return view.takeError();
-    ownedView.emplace(std::move(*view));
-    preparedView = &*ownedView;
-  }
-  if (preparedLaunch && workload.spatial()->launchRef != *preparedLaunch)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "runtime workload does not name the prepared rooted graph launch");
+    std::uint64_t maxEventSteps) {
+  const auto &view = program.view();
   llvm::Expected<dataflow::GraphRef> graphRef =
-      admitDfgSpatialSimulation(workload, runtimeInput, *preparedView);
+      admitDfgSpatialSimulation(workload, runtimeInput, view);
   if (!graphRef)
     return graphRef.takeError();
-  std::optional<ResolvedLaunchContext> ownedContext;
-  if (!preparedContext) {
-    auto context =
-        resolveLaunchContext(*preparedView, workload.spatial()->launchRef);
-    if (!context)
-      return context.takeError();
-    ownedContext.emplace(std::move(*context));
-    preparedContext = &*ownedContext;
-  }
-  if (preparedContext->graph != *graphRef)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "runtime workload resolves to a different prepared graph");
-  llvm::Expected<dataflow::CanonicalGraphView> graph =
-      preparedView->resolve(*graphRef);
+  auto context = resolveLaunchContext(view, workload.spatial()->launchRef);
+  if (!context)
+    return context.takeError();
+  llvm::Expected<dataflow::CanonicalGraphView> graph = view.resolve(*graphRef);
   if (!graph)
     return graph.takeError();
 
@@ -1413,9 +1506,8 @@ static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
       mlir::cast<dataflow::GraphOp>(graph->op).getSymName().str();
   options.workloadName = formatArtifactIdentityHex(workload.identity());
   options.maxEventSteps = maxEventSteps;
-  options.executionDeadline = executionDeadline;
   if (std::optional<std::string> reason =
-          unsupportedTypedDfgInput(workload, runtimeInput, *preparedContext)) {
+          unsupportedTypedDfgInput(workload, runtimeInput, *context)) {
     DFGSimulationReport report;
     report.graph = options.graphName;
     report.workload = options.workloadName;
@@ -1425,8 +1517,7 @@ static llvm::Expected<DFGSimulationReport> simulateTypedDfgWorkload(
   }
   return simulateDataflowGraphImpl(
       program.module(), options, mlir::cast<dataflow::GraphOp>(graph->op),
-      &workload, &runtimeInput, preparedContext, preparedView,
-      retiredObservations, preparedExecution);
+      &workload, &runtimeInput, &*context, &view, nullptr, nullptr);
 }
 
 llvm::Expected<PreparedDfgExecution> loom::sim::prepareDfgExecution(
@@ -1438,13 +1529,14 @@ llvm::Expected<PreparedDfgExecution> loom::sim::prepareDfgExecution(
     return imported.takeError();
   auto owned = std::make_unique<dataflow::CanonicalDataflowArtifact>(
       std::move(*imported));
-  auto view = owned->view();
-  if (!view)
-    return view.takeError();
-  auto context = resolveLaunchContext(*view, launch);
+  // This private owner is not shared until preparation returns. Keep its
+  // verifier serial instead of starting a nested MLIR worker pool.
+  owned->module().getContext()->disableMultithreading();
+  const auto &view = owned->view();
+  auto context = resolveLaunchContext(view, launch);
   if (!context)
     return context.takeError();
-  auto graphView = view->resolve(context->graph);
+  auto graphView = view.resolve(context->graph);
   if (!graphView)
     return graphView.takeError();
   auto prepared = prepareGraphExecution(
@@ -1463,45 +1555,11 @@ llvm::Expected<PreparedDfgExecution> loom::sim::prepareDfgExecution(
                                        : std::errc::invalid_argument,
                                    "%s", message.c_str());
   }
+  owned->module().getContext()->enableMultithreading();
   return PreparedDfgExecution(
       std::make_unique<PreparedDfgExecution::Impl>(PreparedDfgExecution::Impl{
-          std::move(owned), launch, std::move(*view), std::move(*context),
+          std::move(owned), launch, std::move(*context),
           std::move(std::get<PreparedGraphExecution>(*prepared))}));
-}
-
-llvm::Expected<DFGSimulationReport> loom::sim::simulateDfgWorkload(
-    const dataflow::CanonicalDataflowArtifact &program,
-    const CanonicalSimulationWorkload &workload,
-    const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::uint64_t maxEventSteps) {
-  return simulateTypedDfgWorkload(program, workload, runtimeInput,
-                                  maxEventSteps, nullptr);
-}
-
-static llvm::Expected<RetiredDFGSimulation>
-requireRetiredDfgExecution(llvm::Expected<DFGSimulationReport> report,
-                           SpatialFunctionalObservations observations,
-                           std::uint64_t maxEventSteps) {
-  if (!report)
-    return report.takeError();
-  if (report->status == "pass")
-    return RetiredDFGSimulation{std::move(*report), std::move(observations)};
-
-  std::string message = "DFG execution did not retire: " + report->status;
-  if (!report->diagnostics.empty())
-    message += ": " + report->diagnostics.front();
-  if (report->status == "unsupported")
-    return llvm::createStringError(std::errc::not_supported, "%s",
-                                   message.c_str());
-  if (report->status == "execution_limit")
-    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
-  if (report->status == "blocked" && report->wavefrontSteps == maxEventSteps &&
-      llvm::is_contained(report->diagnostics, "maximum event steps reached"))
-    return llvm::createStringError(std::errc::timed_out, "%s", message.c_str());
-  if (report->status == "blocked" || report->status == "invalid")
-    return llvm::make_error<NonRetiredDFGExecutionError>(std::move(*report));
-  return llvm::createStringError(std::errc::state_not_recoverable, "%s",
-                                 message.c_str());
 }
 
 llvm::Expected<RetiredDFGSimulation> loom::sim::simulateRetiredDfgWorkload(

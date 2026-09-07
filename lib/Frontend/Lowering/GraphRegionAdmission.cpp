@@ -4,6 +4,7 @@
 
 #include "Common/IndexWidth.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
+#include "Frontend/Analysis/PointerLoopProjection.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -20,7 +21,8 @@ namespace loom::lowering {
 namespace {
 
 bool isGraphMemoryAddressLeaf(mlir::Operation *operation) {
-  return llvm::isa<mlir::memref::CastOp, mlir::memref::GetGlobalOp,
+  return llvm::isa<mlir::memref::CastOp, mlir::memref::ViewOp,
+                   mlir::memref::GetGlobalOp,
                    mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp>(operation);
 }
 
@@ -105,6 +107,13 @@ bool isGraphRegionRepresentationBitcast(mlir::Operation *operation) {
 } // namespace detail
 
 GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
+  if (auto compare = llvm::dyn_cast<mlir::LLVM::ICmpOp>(operation)) {
+    auto loop = compare->getParentOfType<mlir::scf::WhileOp>();
+    auto projection = frontend::analysis::projectPointerLoopTermination(loop);
+    return projection && projection->comparison == compare
+               ? GraphLeafLowering::Implemented
+               : GraphLeafLowering::Unsupported;
+  }
   const bool isEffectFree =
       mlir::isMemoryEffectFree(operation) ||
       dataflow::isCanonicalDataflowActor(

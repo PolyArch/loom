@@ -690,7 +690,7 @@ void exactFabricAndWholeProgramDataflow() {
     fail(test, "pre-Mapping result lost exact Fabric target identity");
   if (!compiled.canonicalDataflow.module().lookupSymbol("main"))
     fail(test, "whole-program Dataflow artifact lost LLVM callable envelope");
-  auto view = take(test, compiled.canonicalDataflow.view());
+  const auto &view = compiled.canonicalDataflow.view();
   if (!view.graphs().empty())
     fail(test, "mechanical compilation invented a SpatialCore graph");
   auto published =
@@ -797,7 +797,7 @@ void explicitWholeCallableSpatialOwnership() {
   if (sawOriginalCompute)
     fail(test, "ABI callable retained a competing InstructionCore body");
 
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "selected callable did not publish one nonempty graph");
   std::set<dataflow::OperationSchemaId> schemas;
@@ -850,7 +850,7 @@ void wholeCallableExternalizesGlobalMemoryCapability() {
   if (addressCount != 1)
     fail(test, "stored-program wrapper does not own the global address");
 
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1)
     fail(test, "global-memory ownership did not publish exactly one graph");
   auto graph = llvm::cast<dataflow::GraphOp>(view.graphs().front().op);
@@ -907,7 +907,7 @@ void wholeCallableExternalizesUndefValue() {
                 compiled.structuredProgram,
                 findCallable(test, compiled.structuredProgram, "undef_store"),
                 design.roots().front()));
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1)
     fail(test, "undef boundary did not produce one graph");
   auto graph = mlir::cast<dataflow::GraphOp>(view.graphs().front().op);
@@ -960,7 +960,7 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
       take(test, loom::getIndexBitWidth(selected.structuredProgram.module()));
   if (indexWidth != 32)
     fail(test, "whole-callable index decision was not materialized");
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "whole-callable index decision did not publish its graph");
 
@@ -970,7 +970,7 @@ void wholeCallableRequiresCanonicalAddressIndexDecision() {
                compiled.structuredProgram,
                findCallable(test, compiled.structuredProgram, "unsigned_index"),
                design.roots().front(), options));
-  auto unsignedView = take(test, unsignedIndex.canonicalDataflow.view());
+  const auto &unsignedView = unsignedIndex.canonicalDataflow.view();
   if (unsignedView.graphs().size() != 1 || unsignedView.actors().empty())
     fail(test, "proven nonnegative extended index did not publish its graph");
 
@@ -1044,7 +1044,7 @@ void wholeCallableNormalizesPointerInduction() {
     take(test, selectedStructuredView.resolve(lineage.childBlock));
     take(test, sourceStructuredView.resolve(lineage.parentBlock));
   }
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   bool sawLoad = false;
   bool sawStore = false;
   for (const dataflow::CanonicalActorView &actor : view.actors()) {
@@ -1089,7 +1089,7 @@ void wholeCallableNormalizesPointerInduction() {
 
   auto runtimeStride =
       materializeExactAddressDomain("runtime_stride_pointer_induction");
-  auto runtimeStrideView = take(test, runtimeStride.canonicalDataflow.view());
+  const auto &runtimeStrideView = runtimeStride.canonicalDataflow.view();
   if (runtimeStrideView.graphs().size() != 1 ||
       runtimeStrideView.actors().empty())
     fail(test, "loop-invariant runtime stride did not publish its graph");
@@ -1100,7 +1100,7 @@ void wholeCallableNormalizesPointerInduction() {
         fail(test, "runtime pointer stride became memory carry state");
 
   auto bounded = materializeExactAddressDomain("bounded_pointer_induction");
-  auto boundedView = take(test, bounded.canonicalDataflow.view());
+  const auto &boundedView = bounded.canonicalDataflow.view();
   if (boundedView.graphs().size() != 1 || boundedView.actors().empty())
     fail(test, "runtime-bounded pointer induction did not publish its graph");
   for (const dataflow::CanonicalActorView &actor : boundedView.actors())
@@ -1110,7 +1110,7 @@ void wholeCallableNormalizesPointerInduction() {
         fail(test, "runtime-bounded pointer induction retained pointer state");
 
   auto ordered = materializeExactAddressDomain("ordered_pointer_induction");
-  auto orderedView = take(test, ordered.canonicalDataflow.view());
+  const auto &orderedView = ordered.canonicalDataflow.view();
   if (orderedView.graphs().size() != 1 || orderedView.actors().empty())
     fail(test, "ordered pointer induction did not publish its graph");
   for (const dataflow::CanonicalActorView &actor : orderedView.actors())
@@ -1147,7 +1147,7 @@ void wholeCallableNormalizesNestedPointerInduction() {
                                  findCallable(test, compiled.structuredProgram,
                                               "nested_pointer_induction"),
                                  design.roots().front(), options));
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "nested pointer induction did not publish its graph");
   for (const dataflow::CanonicalActorView &actor : view.actors())
@@ -1277,7 +1277,7 @@ void explicitOperationSpatialOwnership() {
       !llvm::isa<mlir::NoneType>(threadEntry.getArguments().back().getType()))
     fail(test, "rank-zero thread does not carry exactly one ctrl argument");
 
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "selected operation did not publish one nonempty graph");
   bool sawStore = false;
@@ -1367,7 +1367,7 @@ void operationOwnershipInternalizesConstants() {
   if (!thread || thread.getFunctionType().getNumInputs() != 2)
     fail(test, "compile-time constants escaped through the thread ABI");
 
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   bool sawConstant = false;
   bool sawLoad = false;
   bool sawStore = false;
@@ -1538,7 +1538,7 @@ void operationFmulAddDecisionIsCandidateLocal() {
   auto selected = take(test, loom::frontend::finalizeSpatialOwnershipCandidate(
                                  std::move(shaped), design.roots().front()));
 
-  auto graph = take(test, selected.canonicalDataflow.view());
+  const auto &graph = selected.canonicalDataflow.view();
   bool sawFma = false;
   for (const dataflow::CanonicalActorView &actor : graph.actors()) {
     auto projection =
@@ -1648,7 +1648,7 @@ void unifiedOwnershipDomainMaterializesExplicitDecision() {
                      {loom::raising::FMulAddExecutionShape::Fused}));
   auto selected = take(test, loom::frontend::finalizeSpatialOwnershipCandidate(
                                  std::move(shaped), design.roots().front()));
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail(test, "unified materialization did not produce Spatial workload");
   bool sawFma = false;
@@ -1727,7 +1727,7 @@ void operationSpatialOwnershipExternalizesEscapedResult() {
     fail(test,
          "thread did not publish the escaped value through its result slot");
 
-  auto view = take(test, selected.canonicalDataflow.view());
+  const auto &view = selected.canonicalDataflow.view();
   auto graph = view.graphs().size() == 1
                    ? llvm::dyn_cast<dataflow::GraphOp>(view.graphs().front().op)
                    : dataflow::GraphOp{};

@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import tempfile
 import sys
 from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,17 +20,17 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from config.timeout_budgets import Tier, seconds as timeout_seconds  # noqa: E402
 import simulation_conformance  # noqa: E402
+import cgra_qualification  # noqa: E402
 
 
 MINIMAL_RUNTIME = REPOSITORY_ROOT / "test" / "frontend" / "Inputs" / "minimal-c-runtime"
-QUALIFICATION_ROOT = REPOSITORY_ROOT / "temp" / "cgra-budget-qualification"
+SOURCE_PREPARATION_WORKERS = 2
+SOURCE_CANDIDATE_JOBS = 4
 COMPILATION_TIMEOUT_SECONDS = 120.0
 SOURCE_PIPELINE_TIMEOUT_SECONDS = 900.0
 SPATIAL_PNR_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
 PROFILE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.XLONG))
-PROFILE_TIMEOUT_MARGIN_SECONDS = (
-    PROFILE_TIMEOUT_SECONDS - SPATIAL_PNR_TIMEOUT_SECONDS
-)
+PROFILE_TIMEOUT_MARGIN_SECONDS = PROFILE_TIMEOUT_SECONDS - SPATIAL_PNR_TIMEOUT_SECONDS
 if PROFILE_TIMEOUT_MARGIN_SECONDS <= 0:
     raise ValueError("CGRA profile wrapper has no deadline margin")
 
@@ -63,7 +64,7 @@ class QualificationStopped(RuntimeError):
 
 
 def resolve_workloads() -> tuple[str, tuple[ResolvedSourceWorkload, ...]]:
-    digest, operator_rows = simulation_conformance.load_cgra_representative_operators()
+    digest, operator_rows = cgra_qualification.load_cgra_representative_operators()
     rows_by_workload = {row.workload: row for row in operator_rows}
     resolved = tuple(
         ResolvedSourceWorkload(
@@ -73,7 +74,7 @@ def resolve_workloads() -> tuple[str, tuple[ResolvedSourceWorkload, ...]]:
             rows_by_workload[workload].protocol_symbol,
             rows_by_workload[workload].compiler_flags,
         )
-        for workload in simulation_conformance.CGRA_REPRESENTATIVE_WORKLOADS
+        for workload in cgra_qualification.CGRA_REPRESENTATIVE_WORKLOADS
     )
     for workload in resolved:
         if workload.source.suffix not in {".c", ".cpp"}:
@@ -84,12 +85,35 @@ def resolve_workloads() -> tuple[str, tuple[ResolvedSourceWorkload, ...]]:
 
 
 def run(
-    command: Sequence[str], timeout_seconds: float, environment: dict[str, str]
+    command: Sequence[str],
+    timeout_seconds: float,
+    environment: dict[str, str],
+    trace: Path,
 ) -> simulation_conformance.ProcessExecution:
     completed = simulation_conformance.execute_process(
         command,
         timeout_seconds,
         environment=environment,
+    )
+    # Preserve completed work even when a later workload prevents publication
+    # of the suite gate. These are diagnostics, never a partial gate authority.
+    trace.with_suffix(".stdout").write_text(completed.stdout, encoding="utf-8")
+    trace.with_suffix(".stderr").write_text(completed.stderr, encoding="utf-8")
+    trace.with_suffix(".execution.json").write_text(
+        json.dumps(
+            {
+                "command": completed.command,
+                "budget_seconds": timeout_seconds,
+                "disposition": completed.disposition.value,
+                "return_code": completed.return_code,
+                "elapsed_seconds": completed.elapsed_seconds,
+                "process_group_terminated": completed.process_group_terminated,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="ascii",
     )
     if completed.disposition is not simulation_conformance.ProcessDisposition.COMPLETED:
         diagnostic = completed.stderr.strip() or completed.stdout.strip()
@@ -130,30 +154,30 @@ def compile_command(
     return command
 
 
-def qualify_workload(
+def prepare_workload(
     workload: ResolvedSourceWorkload,
     loom_cc: Path,
     loom_dfg_run: Path,
-    cgra_profile: Path,
     environment: dict[str, str],
-) -> dict[str, object]:
-    root = QUALIFICATION_ROOT / workload.name
+    qualification_root: Path,
+    store: Path,
+) -> Path:
+    root = qualification_root / workload.name
     root.mkdir(parents=True)
     llvm_ir = root / "input.ll"
     report = root / "source-report.json"
     canonical = root / "dataflow.mlir"
-    store = root / "store"
-    store.mkdir()
     run(
         compile_command(loom_cc, workload, llvm_ir),
         COMPILATION_TIMEOUT_SECONDS,
         environment,
+        root / "compile",
     )
     run(
         (
             str(loom_dfg_run),
             f"--artifact-store={store}",
-            "--candidate-jobs=4",
+            f"--candidate-jobs={SOURCE_CANDIDATE_JOBS}",
             f"--operator-protocol-symbol={workload.protocol_symbol}",
             "--expected-entry-result=0",
             f"--canonical-output={canonical}",
@@ -162,7 +186,21 @@ def qualify_workload(
         ),
         SOURCE_PIPELINE_TIMEOUT_SECONDS,
         environment,
+        root / "source",
     )
+    return report
+
+
+def qualify_workload(
+    workload: ResolvedSourceWorkload,
+    cgra_profile: Path,
+    environment: dict[str, str],
+    qualification_root: Path,
+    store: Path,
+    hardware_report: Path,
+) -> dict[str, object]:
+    root = qualification_root / workload.name
+    report = root / "source-report.json"
     profiled = run(
         (
             str(cgra_profile),
@@ -171,21 +209,23 @@ def qualify_workload(
             workload.name,
             workload.operator_id,
             workload.protocol_symbol,
+            str(hardware_report),
         ),
         PROFILE_TIMEOUT_SECONDS,
         environment,
+        root / "profile",
     )
     parsed = json.loads(profiled.stdout)
     if not isinstance(parsed, dict):
         raise RuntimeError(f"CGRA profile for {workload.name} is not an object")
-    if parsed.get("schema") == "loom.cgra_budget_profile_outcome.2":
-        if parsed.get("workload") != workload.name or parsed.get(
-            "operator_id"
-        ) != workload.operator_id or parsed.get(
-            "protocol_symbol"
-        ) != workload.protocol_symbol:
+    if parsed.get("schema") == cgra_qualification.CGRA_PROFILE_OUTCOME_SCHEMA:
+        if (
+            parsed.get("workload") != workload.name
+            or parsed.get("operator_id") != workload.operator_id
+            or parsed.get("protocol_symbol") != workload.protocol_symbol
+        ):
             raise RuntimeError("CGRA profile outcome has a foreign workload")
-        outcome, reason = simulation_conformance.validate_cgra_profile_outcome(parsed)
+        outcome, reason = cgra_qualification.validate_cgra_profile_outcome(parsed)
         if outcome == "incomplete" and reason is not None:
             raise QualificationStopped(
                 QualificationDisposition.INCOMPLETE,
@@ -205,7 +245,7 @@ def qualify_workload(
                 f"{workload.name}: completed_empty",
             )
         raise RuntimeError("CGRA PnR outcome has an invalid disposition")
-    if parsed.get("schema") != "loom.cgra_budget_profile.5":
+    if parsed.get("schema") != cgra_qualification.CGRA_PROFILE_SCHEMA:
         raise RuntimeError("CGRA profile has a foreign schema")
     return parsed
 
@@ -223,26 +263,65 @@ def main() -> int:
     cgra_profile = arguments.cgra_profile.resolve(strict=True)
     operator_gate_sha256, workloads = resolve_workloads()
     if tuple(workload.name for workload in workloads) != (
-        simulation_conformance.CGRA_REPRESENTATIVE_WORKLOADS
+        cgra_qualification.CGRA_REPRESENTATIVE_WORKLOADS
     ):
         raise RuntimeError("qualification workload inventory drifted from the gate")
-    shutil.rmtree(QUALIFICATION_ROOT, ignore_errors=True)
-    QUALIFICATION_ROOT.mkdir(parents=True)
+    temporary_root = REPOSITORY_ROOT / "temp"
+    temporary_root.mkdir(exist_ok=True)
+    qualification_root = Path(tempfile.mkdtemp(
+        prefix="cgra-budget-qualification-", dir=temporary_root
+    ))
+    store = qualification_root / "store"
+    store.mkdir()
     environment = dict(os.environ)
-    environment["TMPDIR"] = str(QUALIFICATION_ROOT)
+    environment["TMPDIR"] = str(qualification_root)
+    print(f"qualification evidence: {qualification_root}", file=sys.stderr, flush=True)
     profiles: list[dict[str, object]] = []
     try:
+        requests = []
+        # Each source pipeline already bounds its candidate work to four jobs.
+        # Prepare two independent sources at a time, retaining canonical report
+        # order and finishing all preparation before hardware/profile execution.
+        with ThreadPoolExecutor(max_workers=SOURCE_PREPARATION_WORKERS) as pool:
+            preparations = [
+                pool.submit(
+                    prepare_workload, workload, loom_cc, loom_dfg_run,
+                    environment, qualification_root, store,
+                )
+                for workload in workloads
+            ]
+            for workload, preparation in zip(workloads, preparations):
+                report = preparation.result()
+                print(f"prepared {workload.name}", file=sys.stderr, flush=True)
+                requests.append({
+                    "workload": workload.name,
+                    "operator_id": workload.operator_id,
+                    "protocol_symbol": workload.protocol_symbol,
+                    "source_report": str(report),
+                })
+        request_path = qualification_root / "source-requests.json"
+        request_path.write_text(json.dumps(requests, indent=2) + "\n", encoding="ascii")
+        selected = run(
+            (str(cgra_profile), "--hardware", str(store), str(request_path)),
+            SPATIAL_PNR_TIMEOUT_SECONDS, environment, qualification_root / "hardware",
+        )
+        hardware = json.loads(selected.stdout)
+        hardware_report = qualification_root / "hardware-search.json"
+        hardware_report.write_text(
+            json.dumps(hardware, indent=2, sort_keys=True) + "\n", encoding="ascii"
+        )
+        if not cgra_qualification.validate_cgra_hardware_search(hardware):
+            raise QualificationStopped(
+                QualificationDisposition.INCOMPLETE,
+                "hardware_search_incomplete",
+                "shared hardware search did not admit every source case",
+            )
         for workload in workloads:
             print(f"qualifying {workload.name}", file=sys.stderr, flush=True)
-            profiles.append(
-                qualify_workload(
-                    workload,
-                    loom_cc,
-                    loom_dfg_run,
-                    cgra_profile,
-                    environment,
-                )
-            )
+            profiles.append(qualify_workload(
+                workload, cgra_profile, environment, qualification_root, store,
+                hardware_report,
+            ))
     except QualificationStopped as stopped:
         print(
             json.dumps(
@@ -257,23 +336,23 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    budget = simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles)
+    budget = cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles)
     output = {
-        "schema": "loom.cgra_simulation_gate.5",
+        "schema": cgra_qualification.CGRA_GATE_SCHEMA,
         "policy": {
             "qualification_limit_nanoseconds": (
-                simulation_conformance.CGRA_QUALIFICATION_LIMIT_NANOSECONDS
+                cgra_qualification.CGRA_QUALIFICATION_LIMIT_NANOSECONDS
             ),
-            "warmup_runs": simulation_conformance.CGRA_QUALIFICATION_WARMUP_RUNS,
+            "warmup_runs": cgra_qualification.CGRA_QUALIFICATION_WARMUP_RUNS,
             "measurement_runs": (
-                simulation_conformance.CGRA_QUALIFICATION_MEASUREMENT_RUNS
+                cgra_qualification.CGRA_QUALIFICATION_MEASUREMENT_RUNS
             ),
             "reference_rate_target_cycles_per_second": (
-                simulation_conformance.REFERENCE_RATE_TARGET_CYCLES_PER_SECOND
+                cgra_qualification.REFERENCE_RATE_TARGET_CYCLES_PER_SECOND
             ),
         },
         "operator_gate": {
-            "path": simulation_conformance.CGRA_OPERATOR_GATE_RELATIVE_PATH,
+            "path": cgra_qualification.CGRA_OPERATOR_GATE_RELATIVE_PATH,
             "sha256": operator_gate_sha256,
         },
         "spatial_absolute_budget_nanoseconds": budget,

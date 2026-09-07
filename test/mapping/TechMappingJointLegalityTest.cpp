@@ -265,7 +265,7 @@ generate(dataflow::CanonicalDataflowArtifact &artifact,
          const loom::fabric::FinalizedFabricRoot &fabric,
          loom::ArtifactStore &store) {
   take(dataflow::publishCanonicalDataflow(artifact, store));
-  const auto dataflow = take(artifact.view());
+  const auto &dataflow = artifact.view();
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 64;
   const auto config =

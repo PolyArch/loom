@@ -78,7 +78,7 @@ bool isLaunchAvailableValueInput(dataflow::GraphOp graph, mlir::Value value) {
 }
 
 bool isSupportedMemoryView(mlir::Operation *op) {
-  return llvm::isa<mlir::memref::CastOp>(op);
+  return llvm::isa<mlir::memref::CastOp, mlir::memref::ViewOp>(op);
 }
 
 bool isProtocolEstablishedMemory(dataflow::GraphOp graph, mlir::Value value) {
@@ -861,7 +861,7 @@ private:
             def))
       return false;
     if (!dataflow::isCanonicalDataflowActor(def) &&
-        !llvm::isa<mlir::memref::CastOp>(def))
+        !isSupportedMemoryView(def))
       return false;
     return llvm::all_of(def->getOperands(), [&](mlir::Value operand) {
       return availableWhenSelected(operand, selector, lane, visited);
@@ -974,7 +974,7 @@ private:
                   dataflow::UnpackOp, dataflow::SerializeOp>(def))
       return false;
     if (!dataflow::isCanonicalDataflowActor(def) &&
-        !llvm::isa<mlir::memref::CastOp>(def))
+        !isSupportedMemoryView(def))
       return false;
     bool hasSelectedOperand = false;
     const bool laneSelectedOnce =
@@ -1405,7 +1405,7 @@ private:
                     dataflow::DemuxOp>(def))
         return false;
       if (!dataflow::isCanonicalDataflowActor(def) &&
-          !llvm::isa<mlir::memref::CastOp>(def))
+          !isSupportedMemoryView(def))
         return false;
 
       bool hasRequiredOperand = false;
@@ -1598,8 +1598,9 @@ private:
       return false;
     if (llvm::isa<mlir::memref::AllocOp>(def))
       return true;
-    if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(def))
-      return isExactOne(cast.getSource());
+    if (isSupportedMemoryView(def))
+      return isExactOne(
+          mlir::cast<mlir::ViewLikeOpInterface>(def).getViewSource());
     if (dataflow::isCanonicalDataflowActor(def))
       return allOperandsExact(def);
     return false;
@@ -1695,7 +1696,8 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
       return mlir::WalkResult::interrupt();
     }
     if (!dataflow::isCanonicalDataflowActor(op) &&
-        !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op)) {
+        !llvm::isa<mlir::memref::AllocOp>(op) &&
+        !isSupportedMemoryView(op)) {
       structuralError = graphError(
           llvm::Twine("finalized graph contains unregistered actor '") +
           op->getName().getStringRef() + "'");
@@ -1713,7 +1715,8 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 
   bool hasRealWork =
       llvm::any_of(entry.without_terminator(), [&](mlir::Operation &op) {
-        return !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op);
+        return !llvm::isa<mlir::memref::AllocOp>(op) &&
+               !isSupportedMemoryView(&op);
       });
   if (hasRealWork && llvm::is_contained(ret.getComplete(), graph.getStart()))
     return graphError(

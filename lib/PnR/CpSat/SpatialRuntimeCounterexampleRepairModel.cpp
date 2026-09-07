@@ -303,7 +303,8 @@ llvm::Error addTraversalLocalTerminalConstraints(
 
 llvm::Expected<std::vector<SpatialRuntimeCounterexampleBreaker>>
 loom::pnr::detail::enumerateSpatialRuntimeCounterexampleBreakers(
-    const SpatialCandidateState &candidate, PnrIndex clauseOrdinal) {
+    const SpatialCandidateState &candidate, PnrIndex clauseOrdinal,
+    llvm::ArrayRef<PnrIndex> preferredBindingDecisions) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const auto clauses = problem.constraints().resolvedNoGoods();
   const auto literals = problem.constraints().resolvedNoGoodLiterals();
@@ -352,16 +353,38 @@ loom::pnr::detail::enumerateSpatialRuntimeCounterexampleBreakers(
     }
     result.push_back({clauseOrdinal, local, kind, std::nullopt});
   }
-  // A learned clause carries the complete-assignment literal beside one or
-  // more certificate-derived local anchors. Breaking any such anchor also
-  // makes the exact parent Mapping identity false, so a separate identity
-  // branch would only reopen unrelated decisions. An explicitly authored
-  // identity-only clause has no local anchor and retains its own typed branch.
-  if (result.empty() && mappingIdentityLiteral)
-    result.push_back(
-        {clauseOrdinal, *mappingIdentityLiteral,
-         SpatialRuntimeCounterexampleBreakerKind::MappingIdentity,
-         std::nullopt});
+  // Local literal breakers already change the exact Mapping identity. An
+  // identity-only clause instead enumerates each finite owner region, with
+  // certificate-related owners first. This changes ordering, not admissibility
+  // or the domain of remaining owners. Ports belong to realization regions;
+  // graph boundaries own their attachment decisions independently.
+  if (result.empty() && mappingIdentityLiteral) {
+    const auto &bindings = candidate.problem().bindingRelations();
+    std::set<PnrIndex> inserted;
+    const auto appendOwner = [&](PnrIndex decision) -> llvm::Error {
+      if (decision >= bindings.decisionCount() ||
+          (decision >= bindings.realizationDecisionCount() &&
+           decision < bindings.graphBoundaryDecisionOffset()))
+        return invalid("identity breaker seed is not a binding owner decision");
+      if (inserted.insert(decision).second)
+        result.push_back(
+            {clauseOrdinal, *mappingIdentityLiteral,
+             SpatialRuntimeCounterexampleBreakerKind::MappingIdentity,
+             std::nullopt, decision});
+      return llvm::Error::success();
+    };
+    for (PnrIndex decision : preferredBindingDecisions)
+      if (llvm::Error error = appendOwner(decision))
+        return std::move(error);
+    for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+         ++decision)
+      if (llvm::Error error = appendOwner(decision))
+        return std::move(error);
+    for (PnrIndex decision = bindings.graphBoundaryDecisionOffset();
+         decision < bindings.decisionCount(); ++decision)
+      if (llvm::Error error = appendOwner(decision))
+        return std::move(error);
+  }
   return result;
 }
 

@@ -17,6 +17,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/IntervalMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -1103,6 +1104,9 @@ struct SimulatorState {
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::SmallVector<mlir::Value, 8> pendingObservedValues;
+  // The exact initial runtime-object registry remains available to convert
+  // later live stream events, including their typed pointer provenance.
+  llvm::SmallVector<std::shared_ptr<MemoryValue>> runtimeMemoryObjects;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
   llvm::DenseMap<mlir::Value, MemoryView> memoryViews;
   llvm::DenseMap<mlir::Value, std::uint64_t> memoryRootIds;
@@ -1266,6 +1270,33 @@ materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
 llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
                                        SimulatorState &state);
 llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state);
+/// Execution-local catalog and one pending live graph-input event. Dataflow
+/// actor probes own demand; the provider-specific arrival predicate prevents
+/// requesting another event when the demanded occurrence is already in flight.
+struct ExternalStreamInputState final {
+  std::vector<std::uint64_t> ordinals;
+  std::optional<SpatialStreamInputRequest> pending;
+
+  llvm::Error initialize(const CanonicalSimulationRuntimeInput &runtimeInput,
+                         llvm::ArrayRef<std::uint64_t> liveInputs);
+  llvm::Expected<bool> request(
+      SimulatorState &state, const ResolvedLaunchContext &context,
+      SpatialEventCoordinate coordinate,
+      llvm::function_ref<llvm::Expected<bool>(ChannelOrdinal, std::uint64_t)>
+          ingressAvailable);
+  llvm::Error complete(SimulatorState &state,
+                        const ResolvedLaunchContext &context,
+                        const CanonicalSimulationRuntimeInput &runtimeInput,
+                        const SpatialStreamInputRequest &request,
+                        const CanonicalValueSequence &value);
+  llvm::Expected<CanonicalSimulationRuntimeInput> capture(
+      const SimulatorState &state,
+      const CanonicalSimulationWorkload &workload,
+      const CanonicalSimulationRuntimeInput &runtimeInput,
+      const ResolvedLaunchContext &context,
+      const dataflow::CanonicalDataflowProgramView &program) const;
+};
+
 llvm::Error initializeTypedGraphExecutionState(
     SimulatorState &state, const PreparedGraphExecution &execution,
     dataflow::GraphOp graph, const CanonicalSimulationWorkload &workload,

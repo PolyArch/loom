@@ -130,9 +130,7 @@ selectResourceTimePartitionMapping(
       ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
 
   const std::vector<ArtifactRootReference> mappings = mappingRoots(execution);
   std::uint64_t partitionMatchingCandidates = 0;
@@ -186,7 +184,7 @@ selectResourceTimePartitionMapping(
       return invalid("resource-time Mapping selection found a foreign "
                      "Fabric owner");
     auto contexts = mapping::projectSystemExecutionContexts(
-        *dataflow, imported->view().executionBindings());
+        dataflow, imported->view().executionBindings());
     if (!contexts)
       return contexts.takeError();
     bool matches = true;

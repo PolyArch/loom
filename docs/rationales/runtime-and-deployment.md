@@ -277,10 +277,13 @@ The same separation applies to control progress. A channel consumer may be the
 first mapped thread submitted, so Host glue must preserve launch handles and
 defer its join to the source wait. Each target has independent transient
 dispatch state; one global busy bit would serialize otherwise independent
-InstructionCores. Once a Spatial launch is sent, gem5 socket readiness is an
-external event, not a reason to block the simulator thread. Using gem5's poll
-queue lets a pending consumer coexist with the producer whose publication will
-make it ready, while gem5 remains the sole simulated-time authority.
+InstructionCores. A causal engine advance distinguishes pending host
+computation from a consumer waiting for an unavailable channel. gem5 yields
+at the input tick while the driver obtains the engine's complete finite
+response outside device callbacks. An explicit quiescent response then lets
+gem5 run the producer whose publication will make the consumer ready. This
+preserves gem5's time authority without charging host computation time to the
+modeled device or preventing other InstructionCores from progressing.
 Targets sharing one InstructionCore are reconsidered when its running worker
 reports completion, rather than polling the same busy state every simulated
 cycle.

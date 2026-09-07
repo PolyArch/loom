@@ -118,13 +118,7 @@ std::vector<std::uint8_t> bytesOf(const CanonicalDataflowArtifact &artifact) {
   llvm::ArrayRef<std::uint8_t> bytes = artifact.canonicalBytes().bytes();
   return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
 }
-CanonicalDataflowProgramView viewOf(const char *test,
-                                    const CanonicalDataflowArtifact &artifact) {
-  llvm::Expected<CanonicalDataflowProgramView> view = artifact.view();
-  if (!view)
-    fail(test, "view import failed: " + llvm::toString(view.takeError()));
-  return std::move(*view);
-}
+
 CanonicalActorView actorByName(const char *test,
                                const CanonicalDataflowProgramView &view,
                                llvm::StringRef opName) {
@@ -278,7 +272,7 @@ module {
               bytesOf(ten) == bytesOf(tenReversed),
           "symmetric isomorphic presentations have equal canonical bytes and "
           "identity in any order");
-  CanonicalDataflowProgramView sym = viewOf(test, ten);
+  const CanonicalDataflowProgramView &sym = ten.view();
   std::set<std::uint64_t> ids;
   for (const CanonicalGraphView &g : sym.graphs())
     ids.insert(g.ref.entity.value());
@@ -490,7 +484,7 @@ module {
   }
 }
 )mlir");
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(test, view.graphs().empty() && view.actors().empty(),
           "stored-program LLVM operations must not become Spatial actors");
 }
@@ -525,7 +519,7 @@ module attributes {
 void finalizeImportRejections() {
   const char *test = "finalizeImportRejections";
   CanonicalDataflowArtifact artifact = finalize(test, allKindsProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   // No Mapping Artifact is consulted: the view resolves the five kinds
   // directly.
   bool sawGraph = view.graphs().size() == 1;
@@ -572,9 +566,6 @@ module {
 )mlir";
   require(test, identityOf(test, authored) == identityOf(test, cleanTwin),
           "authored entity IDs are stripped to the clean identity");
-  require(test, !errored(artifact.view().takeError()),
-          "a clean finalized artifact re-imports");
-
   // Import rejects every inconsistent materialized ID: stale/noncanonical,
   // missing, and duplicate.
   auto importAfter = [&](auto mutate) -> bool {
@@ -662,7 +653,7 @@ module {
 }
 )mlir";
   CanonicalDataflowArtifact artifact = finalize(test, program);
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   // One thread reached from two roots yields two distinct rooted launches.
   unsigned count = 0;
   bool resolves = true;
@@ -873,7 +864,7 @@ RootThreadLaunchRef sendingRoot(const char *test,
 void channelMulticastTerminals() {
   const char *test = "channelMulticastTerminals";
   CanonicalDataflowArtifact artifact = finalize(test, multicastProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   ChannelProducerRef producer{
       ThreadChannelSendSiteRef{sendingRoot(test, view), 0}};
   llvm::Expected<llvm::ArrayRef<ChannelConsumerBinding>> consumers =
@@ -1031,7 +1022,7 @@ void memoryViewExposureService() {
   const char *test = "memoryViewExposureService";
   CanonicalDataflowArtifact artifact =
       finalize(test, memoryCompositionProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(test, view.logicalMemoryRoots().size() == 2,
           "two distinct thread memory formals are two roots");
   RootThreadLaunchRef root = view.rootThreadLaunches().front().ref;
@@ -1225,7 +1216,7 @@ module attributes {
 void pointerValueAndLayoutRoundTrip() {
   const char *test = "pointerValueAndLayoutRoundTrip";
   CanonicalDataflowArtifact artifact = finalize(test, pointerValueProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(test, view.logicalMemoryRoots().empty(),
           "a pointer value became a logical memory capability");
   require(test,
@@ -1272,7 +1263,7 @@ module attributes {
   }
 }
 )mlir");
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   require(test, view.logicalMemoryRoots().size() == 1,
           "one memory service did not produce one logical root");
   const CanonicalLogicalMemoryRootView &root =
@@ -1340,7 +1331,7 @@ module {
   }
 }
 )mlir");
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   CanonicalActorView actor = actorByName(test, view, "llvm.call_intrinsic");
   require(test, operationSchemaOf(actor.op) == OperationSchemaId::LLVMFPToSISat,
           "canonical import lost the intrinsic instance selector");

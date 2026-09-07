@@ -190,7 +190,7 @@ dataflow::RootedGraphLaunchRef projectLaunch(
 std::pair<ArtifactRootReference, ArtifactRootReference> publishSpatialInputs(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
     ArtifactStore &artifacts, bool paired) {
-  const auto view = take(test, dataflow.view());
+  const auto &view = dataflow.view();
   sim::SpatialSimulationWorkload workloadDraft{projectLaunch(test, view, paired)};
   if (!paired)
     workloadDraft.observableContract.streamOutputs = {0};

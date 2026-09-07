@@ -48,11 +48,11 @@ llvm::Error rejectUnsupportedMemoryContracts(
   return llvm::Error::success();
 }
 
-void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
+void selectEarlier(const std::optional<SpatialEventCoordinate> &candidate,
                    std::optional<SpatialEventCoordinate> &selected) {
   if (candidate &&
       (!selected || compareSpatialEventCoordinates(*candidate, *selected) < 0))
-    selected = std::move(candidate);
+    selected = candidate;
 }
 
 bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
@@ -69,13 +69,15 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const CgraFrozenExecutionPlan &plan,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
-    const PreparedGraphExecution &execution, SimulatorState &state,
+    const PreparedGraphExecution &execution,
+    const CgraTransportGraph &transportGraph, SimulatorState &state,
     bool captureMicroarchitecture,
-    CgraExternalMemoryProvider *externalMemoryProvider) {
+    CgraExternalMemoryProvider *externalMemoryProvider,
+    CgraFabricActivityRuntime *activity) {
   if (llvm::Error error = rejectUnsupportedMemoryContracts(dataflow, execution))
     return std::move(error);
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
-      plan.resources, plan.physicalUseTimings);
+      plan.resources, plan.physicalUseTimings, activity);
   if (!physicalRuntime)
     return physicalRuntime.takeError();
   auto physical =
@@ -89,8 +91,8 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
                                 *physical, externalMemoryProvider);
   if (!memoryRuntime)
     return memoryRuntime.takeError();
-  auto transportRuntime = CgraTransportRuntime::create(
-      plan, dataflow, graph, execution, state, *physical);
+  auto transportRuntime =
+      CgraTransportRuntime::create(plan, transportGraph, state, *physical);
   if (!transportRuntime)
     return transportRuntime.takeError();
   auto compute =
@@ -111,15 +113,24 @@ llvm::Error CgraGraphActivationRuntime::start(
   if (started_)
     return invalid("CGRA graph activation was already started");
   started_ = true;
+  if (llvm::Error error = transport_->initializeActivity(coordinate))
+    return error;
   if (llvm::Error error = compute_->start(coordinate))
     return error;
   if (llvm::Error error = memory_->start(coordinate))
     return error;
   state_->nextActorCandidates.reset();
-  llvm::DenseMap<unsigned, std::uint64_t> nextOccurrence;
-  pendingGraphIngress_.reserve(ingress.size());
+  return appendGraphIngress(coordinate, ingress);
+}
+
+llvm::Error CgraGraphActivationRuntime::appendGraphIngress(
+    const SpatialEventCoordinate &coordinate,
+    llvm::MutableArrayRef<GraphIngressEmission> ingress) {
+  if (!started_)
+    return invalid("CGRA graph ingress precedes its activation");
+  pendingGraphIngress_.reserve(pendingGraphIngress_.size() + ingress.size());
   for (GraphIngressEmission &emission : ingress) {
-    std::uint64_t &next = nextOccurrence[emission.argumentOrdinal];
+    std::uint64_t &next = nextIngressOccurrence_[emission.argumentOrdinal];
     if (emission.occurrenceOrdinal != next)
       return invalid("CGRA graph ingress sequence is not dense");
     if (next == std::numeric_limits<std::uint64_t>::max())
@@ -198,14 +209,12 @@ CgraGraphActivationRuntime::nextActorOccurrenceOrdinal(
   return memory_->nextActorOccurrenceOrdinal(semanticActorOrdinal);
 }
 
-std::optional<std::uint64_t>
-CgraGraphActivationRuntime::channelArrivalCount(
+std::optional<std::uint64_t> CgraGraphActivationRuntime::channelArrivalCount(
     std::uint64_t channelOrdinal) const {
   return transport_->channelArrivalCount(channelOrdinal);
 }
 
-std::uint64_t
-CgraGraphActivationRuntime::traversalStorageCount() const {
+std::uint64_t CgraGraphActivationRuntime::traversalStorageCount() const {
   return transport_->storageCount();
 }
 
@@ -240,14 +249,14 @@ CgraGraphActivationRuntime::pendingPhysicalActionDiagnostics() const {
       continue;
     const CgraPhysicalUseClientKind client =
         plan_->physicalUseClients[action.actionOrdinal];
-    std::optional<std::uint64_t> semanticActor;
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> semanticFiring;
     if (client == CgraPhysicalUseClientKind::ComputeTransition)
-      semanticActor = compute_->physicalActionSemanticActor(
+      semanticFiring = compute_->physicalActionSemanticFiring(
           action.actionOrdinal, action.occurrenceOrdinal);
     else if (client == CgraPhysicalUseClientKind::MemoryTransition)
-      semanticActor = memory_->physicalActionSemanticActor(
+      semanticFiring = memory_->physicalActionSemanticFiring(
           action.actionOrdinal, action.occurrenceOrdinal);
-    result.push_back({std::move(action), client, semanticActor});
+    result.push_back({std::move(action), client, semanticFiring});
   }
   return result;
 }
@@ -395,9 +404,14 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
     if (!firingByOccurrence_.contains(key))
       return invalid("CGRA actor emission has no same-frame commit");
   }
-  if (!frame.actorEvents.empty())
-    if (llvm::Error error = transport_->acceptActorCommits(frame.actorEvents))
+  if (!frame.actorEvents.empty()) {
+    auto completed = transport_->acceptActorCommits(frame.actorEvents);
+    if (!completed)
+      return completed.takeError();
+    if (llvm::Error error =
+            consumeTransportCompletions(*completed, frame.coordinate, result))
       return error;
+  }
   if (!frame.actorEmissions.empty())
     if (llvm::Error error = transport_->acceptActorEmissions(
             frame.coordinate, frame.actorEmissions))
@@ -437,9 +451,14 @@ llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
     if (!firingByOccurrence_.contains(
             {emission.semanticActorOrdinal, emission.occurrenceOrdinal}))
       return invalid("CGRA memory emission has no committed actor firing");
-  if (!frame.actorEvents.empty())
-    if (llvm::Error error = transport_->acceptActorCommits(frame.actorEvents))
+  if (!frame.actorEvents.empty()) {
+    auto completed = transport_->acceptActorCommits(frame.actorEvents);
+    if (!completed)
+      return completed.takeError();
+    if (llvm::Error error =
+            consumeTransportCompletions(*completed, frame.coordinate, result))
       return error;
+  }
   if (!frame.actorEmissions.empty())
     if (llvm::Error error = transport_->acceptActorEmissions(
             frame.coordinate, frame.actorEmissions))
@@ -577,20 +596,50 @@ llvm::Error CgraGraphActivationRuntime::schedulePendingGraphIngress(
   return transport_->acceptGraphIngressEmissions(coordinate, selected);
 }
 
+llvm::Error CgraGraphActivationRuntime::finishPhysicalFrame(
+    const CgraPhysicalLifecycleFrameView &physicalFrame,
+    CgraMemoryLifecycleFrame &&memoryFrame, CgraGraphActivationFrame &result) {
+  if (llvm::Error error = consumeMemoryFrame(std::move(memoryFrame), result))
+    return error;
+  auto completions = transport_->acceptPhysicalEvents(physicalFrame);
+  if (!completions)
+    return completions.takeError();
+  if (llvm::Error error = consumeTransportCompletions(
+          *completions, physicalFrame.coordinate, result))
+    return error;
+  result.sourceMask |= 8;
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::optional<CgraGraphActivationFrame>>
 CgraGraphActivationRuntime::advance() {
   if (!started_)
     return invalid("CGRA graph activation has not started");
-  const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
+  if (memory_->waitingForExternalMemory())
+    return std::optional<CgraGraphActivationFrame>{};
+  const std::optional<SpatialEventCoordinate> coordinate =
+      suspendedFrame_ ? std::optional<SpatialEventCoordinate>(
+                            suspendedFrame_->graph.coordinate)
+                      : nextCoordinate();
   if (!coordinate)
     return std::optional<CgraGraphActivationFrame>{};
   CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}, 0};
+  if (suspendedFrame_) {
+    SuspendedFrame &suspended = *suspendedFrame_;
+    if (llvm::Error error = memory_->resumeExternalMemory(suspended.memory))
+      return std::move(error);
+    if (memory_->waitingForExternalMemory())
+      return std::optional<CgraGraphActivationFrame>{};
+    result = std::move(suspended.graph);
+    if (llvm::Error error = finishPhysicalFrame(
+            suspended.physical, std::move(suspended.memory), result))
+      return std::move(error);
+    suspendedFrame_.reset();
+  }
 
   while (true) {
     const auto computeCoordinate = compute_->nextCoordinate();
     const auto memoryCoordinate = memory_->nextCoordinate();
-    auto transportCoordinate = transport_->nextCoordinate();
-    auto physicalCoordinate = physical_->nextCoordinate();
     bool progressed = false;
     if (isAt(computeCoordinate, *coordinate)) {
       auto frame = compute_->advance();
@@ -602,8 +651,6 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 1;
       progressed = true;
-      transportCoordinate = transport_->nextCoordinate();
-      physicalCoordinate = physical_->nextCoordinate();
     }
     if (isAt(memoryCoordinate, *coordinate)) {
       auto frame = memory_->advance();
@@ -615,10 +662,8 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 2;
       progressed = true;
-      transportCoordinate = transport_->nextCoordinate();
-      physicalCoordinate = physical_->nextCoordinate();
     }
-    if (isAt(transportCoordinate, *coordinate)) {
+    if (isAt(transport_->nextCoordinate(), *coordinate)) {
       auto frame = transport_->advance();
       if (!frame)
         return frame.takeError();
@@ -628,9 +673,8 @@ CgraGraphActivationRuntime::advance() {
         return std::move(error);
       result.sourceMask |= 4;
       progressed = true;
-      physicalCoordinate = physical_->nextCoordinate();
     }
-    if (isAt(physicalCoordinate, *coordinate)) {
+    if (isAt(physical_->nextCoordinate(), *coordinate)) {
       auto physicalFrame = physical_->advance();
       if (!physicalFrame)
         return physicalFrame.takeError();
@@ -652,16 +696,14 @@ CgraGraphActivationRuntime::advance() {
       auto memoryFrame = memory_->acceptPhysicalEvents(**physicalFrame);
       if (!memoryFrame)
         return memoryFrame.takeError();
-      if (llvm::Error error =
-              consumeMemoryFrame(std::move(*memoryFrame), result))
+      if (memory_->waitingForExternalMemory()) {
+        suspendedFrame_.emplace(SuspendedFrame{
+            std::move(result), std::move(*memoryFrame), **physicalFrame});
+        return std::optional<CgraGraphActivationFrame>{};
+      }
+      if (llvm::Error error = finishPhysicalFrame(
+              **physicalFrame, std::move(*memoryFrame), result))
         return std::move(error);
-      auto completions = transport_->acceptPhysicalEvents(**physicalFrame);
-      if (!completions)
-        return completions.takeError();
-      if (llvm::Error error = consumeTransportCompletions(
-              *completions, (*physicalFrame)->coordinate, result))
-        return std::move(error);
-      result.sourceMask |= 8;
       progressed = true;
     }
     if (!progressed)

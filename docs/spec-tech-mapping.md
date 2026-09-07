@@ -284,15 +284,42 @@ also provide complete, nonconflicting internal-edge and exposed-boundary
 classification. Materialization assigns Mapping-local identities only after a
 complete cover has been selected.
 
-The production search is deterministic and lazy. For every actor-row incidence
-component, the rectangular search surface is the product of its actor and row
-counts. A maximum component surface above the stable threshold 4096 selects
+The production search is deterministic and lazy. Rows are connected when
+they share an actor or an exact compatible compute-context value. Shared
+contexts couple their all-different capacity constraint even when the actors
+are disjoint. Each context joins rows through one representative, without
+constructing a pairwise row clique. For every resulting incidence component,
+the rectangular search surface is the product of its actor and row counts. A maximum component surface above the stable threshold 4096 selects
 the bounded constructive exact-cover search; otherwise the canonical lazy
 component-product search is used. The threshold selects an algorithm family
 and is independent of the resolved expansion budget. The resolved
 `partial_cover_expansion_limit` bounds either family, and a limited
 constructive search does not fall through into the component-product search.
 An empty limited frontier is `ProofNotEstablished`, not infeasibility.
+
+Before expanding either frontier, the search checks an optimistic necessary
+compute-context relation. An actor whose available rows are all single-actor
+compute realizations must consume one context from the union of those rows'
+compatible contexts. A memory or fused alternative removes that actor from
+this necessary relation. Failure of its exact matching proves that the
+available row domain has no cover; an unfinished row domain still yields
+`ProofNotEstablished`. Its Hall feedback retains each demand's complete
+allowed capability set, so hardware repair closes the shared shortage rather
+than an arbitrarily selected implementation's smaller context bank. This
+projection consumes no row choice or partial-cover expansion.
+
+The constructive search closes each chain of singleton rows before checking
+shared supply. Every row in that chain is mandatory under the selected prefix,
+so a rejected chain reports the complete observed Hall demand to hardware
+repair. Supply is checked before the next branch, at a complete cover, or at
+the expansion boundary. Each forced row still consumes an expansion; the last
+authorized expansion may complete and publish a cover without authorizing
+another row choice.
+
+Context matching first takes an available direct assignment before searching
+alternating paths through existing assignments. Every examined edge remains
+accounted. The maximum matching and Hall relation retain the same physical
+legality meaning.
 
 Within either family, a cover's supply breadth is the saturated sum of the
 exact compatible compute-context or memory-occurrence domain cardinalities of
@@ -309,8 +336,9 @@ keys. The search then proceeds as follows:
 3. choose the uncovered actor with the fewest remaining compatible rows,
    breaking ties by canonical `ActorRef`;
 4. visit that actor's remaining rows in canonical row order;
-5. factor independent actor-row incidence components and search each component
-   independently. A partial cover's realization-count lower bound is its
+5. factor actor-row incidence components joined by shared compute-context
+   supply and search each component independently. Cross-component memory
+   supply remains checked by the complete-cover admission owner. A partial cover's realization-count lower bound is its
    selected-row count plus the uncovered-actor count divided upward by the
    largest number of still-uncovered actors any compatible row can cover. At
    that count, its canonical-key lower bound is the selected rows unioned with

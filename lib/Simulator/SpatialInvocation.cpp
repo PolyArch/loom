@@ -62,7 +62,7 @@ validateInvocationOwner(const runtime::SpatialInvocationWire &wire,
   std::string wireDiagnostic;
   if (!runtime::validateSpatialInvocationWire(wire, wireDiagnostic))
     return invalid(wireDiagnostic);
-  if (wire.canonicalDataflowIdentity != workload.dataflow.identity().bytes())
+  if (wire.canonicalDataflowIdentity != workload.dataflow->identity().bytes())
     return invalid("invocation names a foreign Canonical Dataflow owner");
   if (wire.rootThreadLaunchEntity !=
           spatial.launchRef.rootThreadLaunch.entity.value() ||
@@ -168,18 +168,16 @@ materializeSpatialInvocationRuntimeInput(
     return invalid("workload lost its Spatial payload");
   if (llvm::Error error = validateInvocationOwner(wire, workload, *spatial))
     return std::move(error);
-  auto view = workload.dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = workload.dataflow->view();
   auto shapes =
-      projectSpatialSimulationBoundaryShapes(*view, spatial->launchRef);
+      projectSpatialSimulationBoundaryShapes(view, spatial->launchRef);
   if (!shapes)
     return shapes.takeError();
-  auto memoryInputs = view->graphMemoryInputs(spatial->launchRef);
+  auto memoryInputs = view.graphMemoryInputs(spatial->launchRef);
   if (!memoryInputs)
     return memoryInputs.takeError();
   auto writableRoots =
-      projectSpatialInvocationWritableMemoryRoots(*view, spatial->launchRef);
+      projectSpatialInvocationWritableMemoryRoots(view, spatial->launchRef);
   if (!writableRoots)
     return writableRoots.takeError();
   if (spatial->observableContract.memories.size() != writableRoots->size())
@@ -216,14 +214,14 @@ materializeSpatialInvocationRuntimeInput(
        wire.memoryRootBindings)
     draft.memoryRootBindings.push_back(
         {dataflow::LogicalMemoryRootRef{
-             view->identity(),
+             view.identity(),
              dataflow::LogicalMemoryRootId(binding.logicalMemoryRootEntity)},
          binding.objectOrdinal, binding.byteOffset});
 
-  auto graphRef = view->resolve(spatial->launchRef);
+  auto graphRef = view.resolve(spatial->launchRef);
   if (!graphRef)
     return graphRef.takeError();
-  auto graphView = view->resolve(*graphRef);
+  auto graphView = view.resolve(*graphRef);
   if (!graphView)
     return graphView.takeError();
   auto graph = llvm::dyn_cast<dataflow::GraphOp>(graphView->op);
@@ -250,7 +248,7 @@ materializeSpatialInvocationRuntimeInput(
           *wire.values[ordinal].pointerTarget;
       if (target.objectOrdinal >= wire.memoryObjects.size())
         return invalid("invocation pointer target object is absent");
-      auto pointerLayout = view->pointerLayout(pointerType.getAddressSpace());
+      auto pointerLayout = view.pointerLayout(pointerType.getAddressSpace());
       if (!pointerLayout)
         return pointerLayout.takeError();
       if (pointerLayout->representationBits != wire.values[ordinal].bitCount ||
@@ -277,7 +275,7 @@ materializeSpatialInvocationRuntimeInput(
         return invalid("invocation pointer input is not scalar");
       const runtime::SpatialInvocationPointerTarget &target =
           *wire.values[ordinal].pointerTarget;
-      auto pointerLayout = view->pointerLayout(pointerType.getAddressSpace());
+      auto pointerLayout = view.pointerLayout(pointerType.getAddressSpace());
       if (!pointerLayout)
         return pointerLayout.takeError();
       lanes->front().pointerTarget = PointerTarget{
@@ -289,7 +287,7 @@ materializeSpatialInvocationRuntimeInput(
   }
   if (llvm::Error error = validateResultDestinations(wire, *spatial, *shapes))
     return std::move(error);
-  return finalizeSimulationRuntimeInput(draft, workload.workload, *view);
+  return finalizeSimulationRuntimeInput(draft, workload.workload, view);
 }
 
 llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
@@ -299,9 +297,7 @@ llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
   const SpatialSimulationRuntimeInput *effective = runtimeInput.spatial();
   if (!effective)
     return invalid("effective invocation runtime input is not Spatial");
-  auto view = workload.dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = workload.dataflow->view();
 
   SpatialSimulationRuntimeInputDraft normalized{effective->workloadIdentity};
   normalized.runtimeValues = effective->runtimeValues;
@@ -313,7 +309,7 @@ llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
                                              binding.binding.objectOrdinal,
                                              binding.binding.byteOffset});
   auto normalizedInput =
-      finalizeSimulationRuntimeInput(normalized, workload.workload, *view);
+      finalizeSimulationRuntimeInput(normalized, workload.workload, view);
   if (!normalizedInput)
     return normalizedInput.takeError();
   auto invocationInput =
@@ -348,11 +344,9 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
   const SpatialSimulationWorkload *spatial = workload.spatial();
   if (!spatial)
     return invalid("workload lost its Spatial payload");
-  auto view = dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = dataflow.view();
   auto shapes =
-      projectSpatialSimulationBoundaryShapes(*view, spatial->launchRef);
+      projectSpatialSimulationBoundaryShapes(view, spatial->launchRef);
   if (!shapes)
     return shapes.takeError();
   if (llvm::Error error = validateResultDestinations(wire, *spatial, *shapes))
@@ -381,7 +375,7 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
   }
 
   auto writableRoots =
-      projectSpatialInvocationWritableMemoryRoots(*view, spatial->launchRef);
+      projectSpatialInvocationWritableMemoryRoots(view, spatial->launchRef);
   if (!writableRoots)
     return writableRoots.takeError();
   if (writableRoots->size() != observations.memories.size())
@@ -465,7 +459,7 @@ projectSpatialInvocationResultWrites(
     const runtime::SpatialInvocationWire &wire,
     const ImportedSpatialSimulationInputs &inputs,
     const SpatialFunctionalObservations &observations) {
-  return projectResultWrites(wire, inputs.dataflow, inputs.workload,
+  return projectResultWrites(wire, *inputs.dataflow, inputs.workload,
                              observations);
 }
 
@@ -474,7 +468,7 @@ projectSpatialInvocationResultWrites(
     const runtime::SpatialInvocationWire &wire,
     const ImportedSpatialSimulationWorkload &workload,
     const SpatialFunctionalObservations &observations) {
-  return projectResultWrites(wire, workload.dataflow, workload.workload,
+  return projectResultWrites(wire, *workload.dataflow, workload.workload,
                              observations);
 }
 

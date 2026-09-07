@@ -67,19 +67,23 @@ struct WrittenMemoryVersionRef final {
 using MemoryVersionRef =
     std::variant<InitialMemoryVersionRef, WrittenMemoryVersionRef>;
 
-struct TransitionPhysicalActionParent final {
+struct TransitionPhysicalActionOccurrenceRef final {
   ActorTransitionOccurrenceRef transition;
-};
-struct TokenPhysicalActionParent final {
-  TokenOccurrenceRef token;
-};
-using PhysicalActionParent =
-    std::variant<TransitionPhysicalActionParent, TokenPhysicalActionParent>;
-
-struct PhysicalActionOccurrenceRef final {
-  PhysicalActionParent parent;
   std::uint64_t localActionOrdinal = 0;
 };
+struct TokenPhysicalActionOccurrenceRef final {
+  TokenOccurrenceRef token;
+  std::uint64_t localActionOrdinal = 0;
+};
+struct FabricUsePhysicalActionOccurrenceRef final {
+  GraphInvocationOccurrenceRef invocation;
+  ::loom::fabric::FabricUsePatternRef usePattern;
+  std::uint64_t occurrenceOrdinal = 0;
+};
+using PhysicalActionOccurrenceRef =
+    std::variant<TransitionPhysicalActionOccurrenceRef,
+                 TokenPhysicalActionOccurrenceRef,
+                 FabricUsePhysicalActionOccurrenceRef>;
 
 struct PhysicalUseTarget final {
   ::loom::fabric::FabricUsePatternRef usePattern;

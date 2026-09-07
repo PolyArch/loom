@@ -1350,9 +1350,7 @@ llvm::Expected<DerivedRuntimeImages> deriveRuntimeImages(
     return dataflowArtifact.takeError();
   if (!fabricArtifact)
     return fabricArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflowArtifact->view();
   auto system = fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
@@ -1387,7 +1385,7 @@ llvm::Expected<DerivedRuntimeImages> deriveRuntimeImages(
         "StableKeyLookup has no versioned Thread Dispatch or Spatial Launch "
         "image contract");
 
-  ReferenceEncoder encoder(dataflowView->identity());
+  ReferenceEncoder encoder(dataflowView.identity());
   auto groups = buildActivationGroups(*closure, encoder);
   if (!groups)
     return groups.takeError();
@@ -1400,16 +1398,16 @@ llvm::Expected<DerivedRuntimeImages> deriveRuntimeImages(
   if (!admission)
     return admission.takeError();
   auto thread =
-      deriveThreadDispatchImage(systemMappingReference, *dataflowView, *closure,
+      deriveThreadDispatchImage(systemMappingReference, dataflowView, *closure,
                                 systemMapping->view().fabricIdentity(),
                                 *binaries, encoder, artifacts, *groups);
   if (!thread)
     return thread.takeError();
   std::optional<CanonicalSemanticBytes> spatial;
   if (!closure->executionContexts.spatialDomains.empty()) {
-    auto image = deriveSpatialLaunchImage(systemMappingReference, *dataflowView,
-                                          *closure, configurationImages,
-                                          artifacts, encoder);
+    auto image =
+        deriveSpatialLaunchImage(systemMappingReference, dataflowView, *closure,
+                                 configurationImages, artifacts, encoder);
     if (!image)
       return image.takeError();
     spatial = std::move(*image);

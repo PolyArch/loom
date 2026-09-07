@@ -786,7 +786,7 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
   systemSpec.transportMode = transportMode;
   const auto system = buildSystem(test, module, artifacts, {}, systemSpec);
   auto dataflowArtifact = buildDataflow(test, artifacts);
-  auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto systemView = take(test, fabric::requireSystemRoot(system.view()));
   const auto cores = systemView.artifact().accCoreOccurrences();
   require(test, cores.size() >= dataflow.rootThreadLaunches().size(),
@@ -959,7 +959,7 @@ FinalizedDeployment buildMappedSpatialDeployment(
     const mapping::FinalizedSpatialMapping &spatialMapping,
     llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree) {
-  auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto systemMapping = buildSystemMapping(
       test, dataflow, system, artifacts, {spatialMapping.reference()});
   return buildMappedSystemDeployment(test, dataflowArtifact, system,
@@ -974,7 +974,7 @@ mapping::FinalizedSystemMapping buildMappedSystemMapping(
     llvm::ArrayRef<ArtifactRootReference> spatialMappings,
     ArtifactStore &artifacts,
     llvm::ArrayRef<fabric::AccCoreOccurrenceRef> rootThreadTargets) {
-  auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   return buildSystemMapping(test, dataflow, system, artifacts, spatialMappings,
                             rootThreadTargets);
 }
@@ -987,7 +987,7 @@ FinalizedDeployment buildMappedSystemDeployment(
     llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
     BlobStore &blobs, const TemporaryTree &tree) {
-  auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   require(test, !dataflow.rootThreadLaunches().empty(),
           "mapped fixture did not contain a root thread launch");
   const ArtifactRootReference dataflowReference{

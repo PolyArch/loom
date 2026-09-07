@@ -187,12 +187,10 @@ deriveConfiguredHardwareProjection(const FinalizedSystemMapping &mapping,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
 
   auto contexts = projectSystemExecutionContexts(
-      *dataflowView, mapping.view().executionBindings());
+      dataflowView, mapping.view().executionBindings());
   if (!contexts)
     return contexts.takeError();
 

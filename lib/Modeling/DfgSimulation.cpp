@@ -7,6 +7,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelProvider.h"
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -14,6 +15,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -176,8 +178,9 @@ classifyExecutionFailure(llvm::Error error) {
       ExecutionFailedEvidence{OutcomeReason::AdapterFailure}};
 }
 
-llvm::Expected<EvaluationModelResult> evaluateWithLimits(
+llvm::Expected<EvaluationModelResult> evaluateWithInputs(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const sim::ImportedSpatialSimulationInputs &inputs,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
     DfgSimulationAttemptLimits limits) {
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())
@@ -196,18 +199,30 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
     return llvm::createStringError(
         std::errc::invalid_argument,
         "dfg_simulation_model_invalid: Request inputs are not total");
-  auto inputs = sim::importSpatialSimulationInputs(
-      *request.workload(), *request.runtimeInput(), artifactStore);
-  if (!inputs)
-    return inputs.takeError();
-  if (inputs->dataflow.identity() != subjects.front().artifact)
+  if (inputs.workload.identity() != request.workload()->artifact ||
+      inputs.runtimeInput.identity() != request.runtimeInput()->artifact)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "dfg_simulation_model_invalid: prepared inputs name another Request");
+  if (inputs.dataflow->identity() != subjects.front().artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "dfg_simulation_model_invalid: workload names a foreign Dataflow "
         "owner");
 
+  // The exact workload owns the rooted launch and coordinate domain. Every
+  // evaluation still starts a fresh session from its own runtime input.
+  const std::array<ArtifactRootReference, 2> preparationReferences{
+      subjects.front(), *request.workload()};
+  auto prepared = importCachedArtifact<sim::PreparedDfgExecution>(
+      artifactStore, nullptr, preparationReferences, [&] {
+        return sim::prepareDfgExecution(*inputs.dataflow,
+                                        inputs.workload.spatial()->launchRef);
+      });
+  if (!prepared)
+    return classifyExecutionFailure(prepared.takeError());
   auto retired = sim::simulateRetiredDfgWorkload(
-      inputs->dataflow, inputs->workload, inputs->runtimeInput,
+      **prepared, inputs.workload, inputs.runtimeInput,
       limits.maxWavefrontSteps, limits.executionDeadline);
   if (!retired)
     return classifyExecutionFailure(retired.takeError());
@@ -384,8 +399,32 @@ llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
          const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  return evaluateWithLimits(request, resolution, artifactStore, blobStore,
-                            DfgSimulationAttemptLimits{});
+  if (!request.workload() || !request.runtimeInput())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "dfg_simulation_model_invalid: Request inputs are not total");
+  auto inputs = sim::importSpatialSimulationInputs(
+      *request.workload(), *request.runtimeInput(), artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  return evaluateWithInputs(request, resolution, *inputs, artifactStore,
+                            blobStore, DfgSimulationAttemptLimits{});
+}
+
+llvm::Expected<CaseArtifactResolution>
+buildResolution(const ArtifactRootReference &canonicalDataflow,
+                const ArtifactRootReference &workload,
+                const ArtifactRootReference &runtimeInput,
+                const sim::ImportedSpatialSimulationInputs &inputs) {
+  if (inputs.dataflow->identity() != canonicalDataflow.artifact)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "dfg_simulation_model_invalid: workload names a foreign Dataflow "
+        "owner");
+  return CaseArtifactResolution::get(
+      {{canonicalDataflow, {}},
+       {workload, {canonicalDataflow}},
+       {runtimeInput, {canonicalDataflow, workload}}});
 }
 
 const EvaluationModelProvider kProvider{
@@ -410,15 +449,7 @@ resolveDfgSimulationCase(const ArtifactRootReference &canonicalDataflow,
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow.identity() != canonicalDataflow.artifact)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "dfg_simulation_model_invalid: workload names a foreign Dataflow "
-        "owner");
-  return CaseArtifactResolution::get(
-      {{canonicalDataflow, {}},
-       {workload, {canonicalDataflow}},
-       {runtimeInput, {canonicalDataflow, workload}}});
+  return buildResolution(canonicalDataflow, workload, runtimeInput, *inputs);
 }
 
 llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
@@ -428,8 +459,12 @@ llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerDfgSimulationModel())
     return std::move(error);
-  auto resolution = resolveDfgSimulationCase(canonicalDataflow, workload,
-                                             runtimeInput, artifactStore);
+  auto inputs =
+      sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
+  if (!inputs)
+    return inputs.takeError();
+  auto resolution =
+      buildResolution(canonicalDataflow, workload, runtimeInput, *inputs);
   if (!resolution)
     return resolution.takeError();
   auto bindings = EvaluationSubjectBindings::get(
@@ -460,7 +495,8 @@ llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
   if (!requestReference)
     return requestReference.takeError();
   return PreparedDfgSimulationEvaluation{std::move(*request),
-                                         std::move(*resolution)};
+                                         std::move(*resolution),
+                                         std::move(*inputs)};
 }
 
 llvm::Expected<EvaluationEvidence>
@@ -471,8 +507,9 @@ evaluateDfgSimulation(const PreparedDfgSimulationEvaluation &prepared,
   RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
-  auto result = evaluateWithLimits(prepared.request, prepared.resolution,
-                                   artifactStore, blobStore, std::move(limits));
+  auto result = evaluateWithInputs(prepared.request, prepared.resolution,
+                                   prepared.inputs, artifactStore, blobStore,
+                                   std::move(limits));
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(prepared.request,

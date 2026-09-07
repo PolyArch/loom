@@ -92,11 +92,9 @@ importProjection(const ArtifactRootReference &reference,
       ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto contexts = ::loom::mapping::projectSystemExecutionContexts(
-      *dataflow, mapping->view().executionBindings());
+      dataflow, mapping->view().executionBindings());
   if (!contexts)
     return contexts.takeError();
 
@@ -109,7 +107,7 @@ importProjection(const ArtifactRootReference &reference,
     return system.takeError();
   auto resourceTimeProgress =
       ::loom::mapping::qualifySystemMappingResourceTimeProgress(
-          *mapping, *dataflow, *system);
+          *mapping, dataflow, *system);
   if (!resourceTimeProgress)
     return resourceTimeProgress.takeError();
   ImportedMappingProjection result{reference,
@@ -120,7 +118,7 @@ importProjection(const ArtifactRootReference &reference,
   for (const ResourceTimeRegionMapping &region : regions) {
     if (region.root.artifact != dataflowReference.artifact)
       return invalid("region correspondence has a foreign Dataflow root");
-    auto resolved = dataflow->resolve(region.root);
+    auto resolved = dataflow.resolve(region.root);
     if (!resolved)
       return resolved.takeError();
     std::vector<::loom::fabric::FabricPhysicalOccurrenceOwnerRef> resources;
@@ -618,9 +616,7 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
       ::dataflow::importCanonicalDataflow(verifiedDataflowReference, store);
   if (!verifiedDataflowArtifact)
     return verifiedDataflowArtifact.takeError();
-  auto verifiedDataflow = verifiedDataflowArtifact->view();
-  if (!verifiedDataflow)
-    return verifiedDataflow.takeError();
+  const auto &verifiedDataflow = verifiedDataflowArtifact->view();
 
   auto fabricArtifact = ::loom::fabric::importEntireFabricRoot(*fabric, store);
   if (!fabricArtifact)
@@ -671,7 +667,7 @@ llvm::Expected<ResourceTimeSpectrumVerification> verifyResourceTimeSpectrum(
                 ::loom::mapping::mappingProgressClosureReasonSpelling(
                     mapping->second.resourceTimeProgress.reason),
             imported.size())};
-      if (llvm::Error error = verifiedDataflow->validate(state.event))
+      if (llvm::Error error = verifiedDataflow.validate(state.event))
         return ResourceTimeSpectrumVerification{incomplete(
             ResourceTimeSpectrumIncompleteReason::ProofNotEstablished,
             "resource-time state event is not owned by its verified "
@@ -970,7 +966,7 @@ verifyResourceTimeMappingFinalists(
           endpoint.deployment, store, *blobs);
       if (!deployment)
         return deployment.takeError();
-      if (deployment->deployment().systemMapping() != endpoint.mapping)
+      if (!deployment->deployment().systemMapping() || *deployment->deployment().systemMapping() != endpoint.mapping)
         return invalid("resource-time Deployment endpoint does not select its "
                        "paired SystemMapping");
     }

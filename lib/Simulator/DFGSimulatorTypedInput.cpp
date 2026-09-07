@@ -244,7 +244,165 @@ seedTypedDfgInputs(SimulatorState &state, dataflow::GraphOp graph,
         memory, argument,
         static_cast<std::int64_t>(binding->binding.byteOffset), elementType};
   }
+  state.runtimeMemoryObjects = std::move(objects);
   return llvm::Error::success();
+}
+
+llvm::Error ExternalStreamInputState::initialize(
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    llvm::ArrayRef<std::uint64_t> liveInputs) {
+  const auto *input = runtimeInput.spatial();
+  if (!input)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "live graph inputs require Spatial input");
+  ordinals.assign(liveInputs.begin(), liveInputs.end());
+  llvm::sort(ordinals);
+  for (std::size_t index = 0; index != ordinals.size(); ++index) {
+    const std::uint64_t ordinal = ordinals[index];
+    if (ordinal >= input->runtimeStreams.size() ||
+        (index != 0 && ordinals[index - 1] == ordinal))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "live graph input catalog is invalid");
+    if (input->runtimeStreams[ordinal].values.tokenCount != 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "live graph input has a competing supplied token sequence");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool> ExternalStreamInputState::request(
+    SimulatorState &state, const ResolvedLaunchContext &context,
+    SpatialEventCoordinate coordinate,
+    llvm::function_ref<llvm::Expected<bool>(ChannelOrdinal, std::uint64_t)>
+        ingressAvailable) {
+  if (pending)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "live graph input request is still pending");
+  dataflow::GraphOp graph = context.graphOp;
+  mlir::Block &entry = graph.getBody().front();
+  const std::uint64_t streamBase = 1 + context.numValueInputs;
+  for (std::uint64_t ordinal : ordinals) {
+    mlir::BlockArgument argument = entry.getArgument(streamBase + ordinal);
+    const std::uint64_t occurrence = state.seededTokenCounts.lookup(argument);
+    for (mlir::OpOperand &use : argument.getUses()) {
+      const auto channel = state.execution->channelOrdinals.find(&use);
+      if (channel == state.execution->channelOrdinals.end())
+        continue;
+      const ChannelSlot &slot = state.channelSlots[channel->second];
+      if (!slot.ready.empty() || slot.ownerActorOrdinal == InvalidActorOrdinal)
+        continue;
+      auto available = ingressAvailable(channel->second, occurrence);
+      if (!available)
+        return available.takeError();
+      if (!*available)
+        continue;
+      const ActorExecutionPlan &actor =
+          state.execution->actorPlans[slot.ownerActorOrdinal];
+      auto probe = probeActorTransition(actor, state);
+      if (!probe)
+        return probe.takeError();
+      if (probe->readiness != ActorTransitionReadiness::Blocked ||
+          !llvm::is_contained(probe->shape.requiredInputs,
+                              use.getOperandNumber()))
+        continue;
+      if (occurrence == std::numeric_limits<std::uint64_t>::max())
+        return llvm::createStringError(std::errc::value_too_large,
+                                       "live graph input sequence is exhausted");
+      pending.emplace(SpatialStreamInputRequest{ordinal, occurrence,
+                                                std::move(coordinate)});
+      return true;
+    }
+  }
+  return false;
+}
+
+llvm::Error ExternalStreamInputState::complete(
+    SimulatorState &state, const ResolvedLaunchContext &context,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const SpatialStreamInputRequest &request,
+    const CanonicalValueSequence &value) {
+  if (!pending || pending->streamInputOrdinal != request.streamInputOrdinal ||
+      pending->occurrenceOrdinal != request.occurrenceOrdinal ||
+      compareSpatialEventCoordinates(pending->readyCoordinate,
+                                      request.readyCoordinate) != 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "live graph input has no matching request");
+  const auto &input = *runtimeInput.spatial();
+  const LaneShape &shape = context.streamInputShapes[request.streamInputOrdinal];
+  if (value.tokenCount != 1)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "live graph input must supply one event");
+  if (llvm::Error error = validateValueSequence(
+          value, shape, "live graph input", input.memoryObjects.size()))
+    return error;
+  if (llvm::Error error = validateCanonicalPointerValueSequence(
+          value, shape, input.memoryObjects, context.graphOp,
+          "live graph input"))
+    return error;
+  dataflow::GraphOp graph = context.graphOp;
+  mlir::BlockArgument argument = graph.getBody().front().getArgument(
+      1 + context.numValueInputs + request.streamInputOrdinal);
+  if (state.seededTokenCounts.lookup(argument) != request.occurrenceOrdinal)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "live graph input sequence is not dense");
+  auto tokens = tokensFromSequence(value, argument.getType(), shape,
+                                   state.runtimeMemoryObjects,
+                                   context.graphOp);
+  if (!tokens)
+    return tokens.takeError();
+  seedBlockArgument(state, argument, tokens->front());
+  // The ordinary DFG queue path has no transport publication to wake users.
+  // CGRA captures this emission and wakes them at the existing physical
+  // publication boundary instead.
+  if (!state.graphIngressCapture) {
+    for (mlir::OpOperand &use : argument.getUses()) {
+      auto channel = state.execution->channelOrdinals.find(&use);
+      if (channel == state.execution->channelOrdinals.end())
+        continue;
+      const unsigned actor =
+          state.channelSlots[channel->second].ownerActorOrdinal;
+      if (actor == InvalidActorOrdinal)
+        continue;
+      state.nextActorCandidates.set(actor);
+      if (state.execution->actorPlans[actor].isPlainMemory())
+        state.plainMemoryCandidates.set(actor);
+    }
+  }
+  pending.reset();
+  return llvm::Error::success();
+}
+
+llvm::Expected<CanonicalSimulationRuntimeInput> ExternalStreamInputState::capture(
+    const SimulatorState &state, const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    const ResolvedLaunchContext &context,
+    const dataflow::CanonicalDataflowProgramView &program) const {
+  const auto &input = *runtimeInput.spatial();
+  SpatialSimulationRuntimeInputDraft draft{workload.identity()};
+  draft.runtimeValues = input.runtimeValues;
+  draft.runtimeStreams = input.runtimeStreams;
+  draft.memoryObjects = input.memoryObjects;
+  for (const MemoryRootBindingEntry &binding : input.memoryRootBindings)
+    draft.memoryRootBindings.push_back({binding.root,
+                                        binding.binding.objectOrdinal,
+                                        binding.binding.byteOffset});
+  dataflow::GraphOp graph = context.graphOp;
+  for (std::uint64_t ordinal : ordinals) {
+    mlir::BlockArgument argument = graph.getBody().front().getArgument(
+        1 + context.numValueInputs + ordinal);
+    llvm::ArrayRef<Token> tokens;
+    if (auto observed = state.observedOutputs.find(argument);
+        observed != state.observedOutputs.end())
+      tokens = observed->second;
+    auto sequence = canonicalValueSequenceFromTokens(tokens, argument.getType(),
+                                                      context.graphOp);
+    if (!sequence)
+      return sequence.takeError();
+    draft.runtimeStreams[ordinal] = {std::move(*sequence),
+                                     StreamTermination::ClosedAfterLast};
+  }
+  return finalizeSimulationRuntimeInput(draft, workload, program);
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

@@ -1187,18 +1187,20 @@ llvm::Error SpatialMoveTransaction::ripUpWholeRoute(PnrIndex logicalNet) {
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutes() {
-  return projectCurrentRoutesImpl(nullptr);
+  return projectCurrentRoutesImpl(nullptr, nullptr);
 }
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutes(
-    SpatialTagAssignmentSummary &tagSummary) {
-  return projectCurrentRoutesImpl(&tagSummary);
+    SpatialTagAssignmentSummary &tagSummary,
+    std::vector<PnrIndex> *frozenCycleWitness) {
+  return projectCurrentRoutesImpl(&tagSummary, frozenCycleWitness);
 }
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutesImpl(
-    SpatialTagAssignmentSummary *tagSummary) {
+    SpatialTagAssignmentSummary *tagSummary,
+    std::vector<PnrIndex> *frozenCycleWitness) {
   if (llvm::Error error = ensureCollecting())
     return std::move(error);
   if (llvm::Error error = synchronizeProgressTraversalDeltas())
@@ -1219,7 +1221,8 @@ SpatialMoveTransaction::projectCurrentRoutesImpl(
     routes.push_back(route);
   }
   return state_->projectVerifiedRoutes(routes, tagSummary,
-                                       scratch_->handshakeProjectionScratch_);
+                                       scratch_->handshakeProjectionScratch_,
+                                       frozenCycleWitness);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {
@@ -1314,7 +1317,7 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
     return std::move(error);
   tagDeltasCollected_ = true;
   for (PnrIndex logicalNet :
-       state_->tagAssignments_.synchronizedNets(scratch_->tagScratch_))
+       state_->tagAssignments_.changedNets(scratch_->tagScratch_))
     markNet(logicalNet);
   rebuildRouteViews();
   rebuildTagValueViews();

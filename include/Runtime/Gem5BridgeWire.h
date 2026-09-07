@@ -13,7 +13,10 @@
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v5";
+    "loom.gem5_spatial_bridge_abi.v6";
+
+inline constexpr std::uint64_t gem5BridgeDefaultMaximumMessageBytes =
+    64ULL * 1024ULL * 1024ULL;
 
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
@@ -21,10 +24,13 @@ enum class Gem5BridgeMessageKind : std::uint32_t {
   MemoryResponse = 2,
   ChannelTransfer = 3,
   Completion = 4,
+  ChannelCommit = 5,
+  ChannelCommitted = 6,
 };
 
 struct Gem5BridgeMessage final {
   Gem5BridgeMessageKind kind = Gem5BridgeMessageKind::SpatialLaunch;
+  std::uint64_t bridgeSessionOrdinal = 0;
   std::uint64_t sequence = 0;
   std::vector<std::uint8_t> payload;
 };
@@ -67,14 +73,13 @@ struct Gem5BridgeResultCollection final {
 };
 
 struct Gem5SpatialLaunchEnvelope final {
-  std::uint64_t bridgeSessionOrdinal = 0;
   std::vector<std::uint8_t> staticLaunch;
   std::vector<std::uint8_t> invocation;
 };
 
 inline constexpr std::array<std::uint8_t, 4> gem5SpatialLaunchMagic{'L', 'G',
-                                                                    'L', '2'};
-inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 28;
+                                                                    'L', '3'};
+inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 20;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{'L', 'G',
                                                                    'R', '1'};
@@ -85,8 +90,8 @@ inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultCollectionMagic{
 inline constexpr std::size_t gem5BridgeResultCollectionHeaderBytes = 12;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeWireMagic{'L', 'G', 'B',
-                                                                 '1'};
-inline constexpr std::size_t gem5BridgeWireHeaderBytes = 24;
+                                                                 '2'};
+inline constexpr std::size_t gem5BridgeWireHeaderBytes = 32;
 
 namespace detail {
 
@@ -125,7 +130,6 @@ encodeGem5SpatialLaunchEnvelope(const Gem5SpatialLaunchEnvelope &launch) {
                 launch.invocation.size());
   bytes.insert(bytes.end(), gem5SpatialLaunchMagic.begin(),
                gem5SpatialLaunchMagic.end());
-  detail::appendGem5BridgeU64(bytes, launch.bridgeSessionOrdinal);
   detail::appendGem5BridgeU64(bytes, launch.staticLaunch.size());
   detail::appendGem5BridgeU64(bytes, launch.invocation.size());
   bytes.insert(bytes.end(), launch.staticLaunch.begin(),
@@ -144,10 +148,9 @@ decodeGem5SpatialLaunchEnvelope(const std::vector<std::uint8_t> &bytes,
     error = "wrong or truncated Spatial launch envelope";
     return false;
   }
-  launch.bridgeSessionOrdinal = detail::readGem5BridgeU64(bytes.data() + 4);
-  const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 12);
+  const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 4);
   const std::uint64_t invocationSize =
-      detail::readGem5BridgeU64(bytes.data() + 20);
+      detail::readGem5BridgeU64(bytes.data() + 12);
   if (staticSize > std::numeric_limits<std::size_t>::max() ||
       invocationSize > std::numeric_limits<std::size_t>::max()) {
     error = "Spatial launch envelope length exceeds the host size domain";
@@ -171,6 +174,62 @@ decodeGem5SpatialLaunchEnvelope(const std::vector<std::uint8_t> &bytes,
   return true;
 }
 
+// One advance is a finite causal input or its complete next-boundary batch.
+// An empty response means all engine invocations are quiescent until gem5
+// supplies another input. Generation and causalTick are echoed unchanged.
+struct Gem5BridgeAdvance final {
+  std::uint64_t generation = 0;
+  std::uint64_t causalTick = 0;
+  std::vector<Gem5BridgeMessage> messages;
+};
+
+struct Gem5BridgeAdvanceHeader final {
+  std::uint64_t generation = 0;
+  std::uint64_t causalTick = 0;
+  std::uint64_t messageCount = 0;
+};
+
+struct Gem5BridgeWireHeader final {
+  Gem5BridgeMessageKind kind = Gem5BridgeMessageKind::SpatialLaunch;
+  std::uint64_t bridgeSessionOrdinal = 0;
+  std::uint64_t sequence = 0;
+  std::uint64_t payloadSize = 0;
+};
+
+inline constexpr std::array<std::uint8_t, 4> gem5BridgeAdvanceMagic{'L', 'G',
+                                                                    'A', '1'};
+inline constexpr std::size_t gem5BridgeAdvanceHeaderBytes = 28;
+
+inline std::vector<std::uint8_t>
+encodeGem5BridgeAdvanceHeader(const Gem5BridgeAdvance &advance) {
+  std::vector<std::uint8_t> bytes(gem5BridgeAdvanceMagic.begin(),
+                                  gem5BridgeAdvanceMagic.end());
+  detail::appendGem5BridgeU64(bytes, advance.generation);
+  detail::appendGem5BridgeU64(bytes, advance.causalTick);
+  detail::appendGem5BridgeU64(bytes, advance.messages.size());
+  return bytes;
+}
+
+inline bool
+decodeGem5BridgeAdvanceHeader(const std::vector<std::uint8_t> &bytes,
+                              Gem5BridgeAdvanceHeader &header,
+                              std::string &error) {
+  if (bytes.size() != gem5BridgeAdvanceHeaderBytes ||
+      !std::equal(gem5BridgeAdvanceMagic.begin(), gem5BridgeAdvanceMagic.end(),
+                  bytes.begin())) {
+    error = "wrong or truncated causal advance header";
+    return false;
+  }
+  header.generation = detail::readGem5BridgeU64(bytes.data() + 4);
+  header.causalTick = detail::readGem5BridgeU64(bytes.data() + 12);
+  header.messageCount = detail::readGem5BridgeU64(bytes.data() + 20);
+  if (header.generation == 0) {
+    error = "causal advance generation must be positive";
+    return false;
+  }
+  return true;
+}
+
 inline std::vector<std::uint8_t>
 encodeGem5BridgeWireMessage(const Gem5BridgeMessage &message) {
   std::vector<std::uint8_t> bytes;
@@ -178,40 +237,78 @@ encodeGem5BridgeWireMessage(const Gem5BridgeMessage &message) {
   bytes.insert(bytes.end(), gem5BridgeWireMagic.begin(),
                gem5BridgeWireMagic.end());
   detail::appendGem5BridgeU32(bytes, static_cast<std::uint32_t>(message.kind));
+  detail::appendGem5BridgeU64(bytes, message.bridgeSessionOrdinal);
   detail::appendGem5BridgeU64(bytes, message.sequence);
   detail::appendGem5BridgeU64(bytes, message.payload.size());
   bytes.insert(bytes.end(), message.payload.begin(), message.payload.end());
   return bytes;
 }
 
+inline bool decodeGem5BridgeWireHeader(const std::vector<std::uint8_t> &bytes,
+                                       Gem5BridgeWireHeader &header,
+                                       std::string &error) {
+  if (bytes.size() != gem5BridgeWireHeaderBytes ||
+      !std::equal(gem5BridgeWireMagic.begin(), gem5BridgeWireMagic.end(),
+                  bytes.begin())) {
+    error = "wrong or truncated causal bridge message header";
+    return false;
+  }
+  const std::uint32_t kind = detail::readGem5BridgeU32(bytes.data() + 4);
+  if (kind >
+      static_cast<std::uint32_t>(Gem5BridgeMessageKind::ChannelCommitted)) {
+    error = "unknown message kind";
+    return false;
+  }
+  header.kind = static_cast<Gem5BridgeMessageKind>(kind);
+  header.bridgeSessionOrdinal = detail::readGem5BridgeU64(bytes.data() + 8);
+  header.sequence = detail::readGem5BridgeU64(bytes.data() + 16);
+  header.payloadSize = detail::readGem5BridgeU64(bytes.data() + 24);
+  return true;
+}
+
 inline bool decodeGem5BridgeWireMessage(const std::vector<std::uint8_t> &bytes,
                                         Gem5BridgeMessage &message,
                                         std::string &error) {
   if (bytes.size() < gem5BridgeWireHeaderBytes) {
-    error = "truncated header";
+    error = "truncated causal bridge message";
     return false;
   }
-  if (!std::equal(gem5BridgeWireMagic.begin(), gem5BridgeWireMagic.end(),
-                  bytes.begin())) {
-    error = "wrong ABI magic";
+  Gem5BridgeWireHeader header;
+  if (!decodeGem5BridgeWireHeader(
+          {bytes.begin(), bytes.begin() + gem5BridgeWireHeaderBytes}, header,
+          error))
     return false;
-  }
-  const std::uint32_t kind = detail::readGem5BridgeU32(bytes.data() + 4);
-  if (kind > static_cast<std::uint32_t>(Gem5BridgeMessageKind::Completion)) {
-    error = "unknown message kind";
-    return false;
-  }
-  const std::uint64_t payloadSize =
-      detail::readGem5BridgeU64(bytes.data() + 16);
-  if (payloadSize > std::numeric_limits<std::size_t>::max() ||
-      payloadSize != bytes.size() - gem5BridgeWireHeaderBytes) {
+  if (header.payloadSize != bytes.size() - gem5BridgeWireHeaderBytes) {
     error = "payload length does not match the envelope";
     return false;
   }
-  message.kind = static_cast<Gem5BridgeMessageKind>(kind);
-  message.sequence = detail::readGem5BridgeU64(bytes.data() + 8);
-  message.payload.assign(bytes.begin() + gem5BridgeWireHeaderBytes,
-                         bytes.end());
+  message = {header.kind,
+             header.bridgeSessionOrdinal,
+             header.sequence,
+             {bytes.begin() + gem5BridgeWireHeaderBytes, bytes.end()}};
+  return true;
+}
+
+struct Gem5BridgeChannelCommit final {
+  std::uint64_t readyAfterTicks = 0;
+};
+
+inline std::vector<std::uint8_t>
+encodeGem5BridgeChannelCommit(const Gem5BridgeChannelCommit &commit) {
+  std::vector<std::uint8_t> bytes;
+  detail::appendGem5BridgeU64(bytes, commit.readyAfterTicks);
+  return bytes;
+}
+
+inline bool
+decodeGem5BridgeChannelCommit(const std::vector<std::uint8_t> &bytes,
+                              Gem5BridgeChannelCommit &commit,
+                              std::string &error) {
+  if (bytes.size() != sizeof(std::uint64_t)) {
+    error = "wrong channel commit payload size";
+    return false;
+  }
+  commit.readyAfterTicks = detail::readGem5BridgeU64(bytes.data());
   return true;
 }
 

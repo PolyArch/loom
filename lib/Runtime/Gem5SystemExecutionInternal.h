@@ -52,6 +52,8 @@ inline constexpr llvm::StringLiteral kDfgEnginePath =
     "drivers/loom-gem5-dfg-engine";
 inline constexpr llvm::StringLiteral kCgraEnginePath =
     "drivers/loom-gem5-cgra-engine";
+inline constexpr llvm::StringLiteral kBridgeSocketHeaderPath =
+    "drivers/Gem5BridgeSocket.h";
 inline constexpr llvm::StringLiteral kBridgeHeaderPath =
     "drivers/Gem5BridgeWire.h";
 inline constexpr llvm::StringLiteral kChannelPlanHeaderPath =
@@ -156,7 +158,7 @@ struct Gem5SystemFacts final {
   Gem5SystemEngine engine;
   ArtifactRootReference deployment;
   FinalizedGem5SimulationBinding binding;
-  ArtifactRootReference dataflow;
+  std::optional<ArtifactRootReference> dataflow;
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
   std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;

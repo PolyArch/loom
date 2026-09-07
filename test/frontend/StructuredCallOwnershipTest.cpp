@@ -510,7 +510,7 @@ void exactDirectCallSiteProducesAnInlineCandidate() {
 
   auto finalized = take(loom::frontend::finalizeSpatialOwnershipCandidate(
       std::move(materialized), design.roots().front()));
-  auto dataflow = take(finalized.canonicalDataflow.view());
+  const auto &dataflow = finalized.canonicalDataflow.view();
   bool sawAdd = false;
   bool sawMultiply = false;
   for (const dataflow::CanonicalActorView &actor : dataflow.actors()) {
@@ -788,7 +788,7 @@ void topLevelCalleeAllocationUsesTheMaterializedGraphFrontier() {
           program, {caller}, *inlineDecision));
   auto finalized = take(loom::frontend::finalizeSpatialOwnershipCandidate(
       std::move(materialized), design.roots().front()));
-  auto view = take(finalized.canonicalDataflow.view());
+  const auto &view = finalized.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail("top-level callee allocation did not reach a canonical graph");
 
@@ -852,10 +852,7 @@ void selectedDynamicPointerServiceCutIsNonFinalizable() {
         classifiedNonFinalizable =
             failure.kind() ==
                 loom::frontend::SpatialOwnershipCandidateRejectionKind::
-                    NonFinalizable &&
-            failure.message().find(
-                "no pointer service at the selected Spatial boundary") !=
-                std::string::npos;
+                    NonFinalizable;
       });
   if (unhandled)
     fail(

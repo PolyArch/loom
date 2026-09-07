@@ -12,6 +12,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -662,14 +663,16 @@ struct ImportedStructuredProgramSimulationInputs {
   CanonicalSimulationRuntimeInput runtimeInput;
 };
 
+/// Replay cases retain the exact immutable Dataflow owner. Distinct workload
+/// and runtime roots can share its strict import within one invocation.
 struct ImportedSpatialSimulationInputs {
-  dataflow::CanonicalDataflowArtifact dataflow;
+  std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
   CanonicalSimulationWorkload workload;
   CanonicalSimulationRuntimeInput runtimeInput;
 };
 
 struct ImportedSpatialSimulationWorkload {
-  dataflow::CanonicalDataflowArtifact dataflow;
+  std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
   CanonicalSimulationWorkload workload;
 };
 

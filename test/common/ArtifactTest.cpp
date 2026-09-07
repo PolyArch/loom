@@ -381,6 +381,8 @@ void postInsertionIoFailureKeepsCompleteObjectAndAllowsRetry() {
                 files.front() == objectPath(directory.path(), identity),
             "post-insertion failure left state other than the one complete "
             "object");
+    expectErrorContains(__func__, store.put(testSchema, bytes),
+                        "artifact_store_io");
   }
 
   require(__func__,
@@ -638,7 +640,7 @@ void resolvedConfigUsesArtifactFinalization() {
               llvm::StringRef("loom.config.resolved"),
           "ResolvedConfig schema identity changed");
   require(__func__,
-          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 4},
+          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 5},
           "ResolvedConfig schema version changed");
 
   const ResolvedConfig config = defaultResolvedConfig();
@@ -652,11 +654,11 @@ void resolvedConfigUsesArtifactFinalization() {
               finalizeArtifactIdentity(ResolvedConfig::artifactSchema, bytes),
           "ResolvedConfig did not use the common finalizer");
   constexpr ArtifactSchemaDescriptor legacySchema{
-      "loom.config.resolved", SchemaVersion{11, 3}};
+      "loom.config.resolved", SchemaVersion{11, 4}};
   require(__func__,
           resolvedConfigIdentity(config) !=
               finalizeArtifactIdentity(legacySchema, bytes),
-          "ResolvedConfig 11.3 and 11.4 identities became interchangeable");
+          "ResolvedConfig 11.4 and 11.5 identities became interchangeable");
 
   ResolvedConfig changed = config;
   ++changed.dse.structuredOwnership.scopeExpansionLimit;

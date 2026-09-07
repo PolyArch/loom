@@ -12,13 +12,17 @@ import subprocess
 import time
 
 import m5
+from m5.params import NULL
 from m5.objects import (
     AddrRange,
+    CommMonitor,
+    LoomMemoryServiceProbe,
     FUPool,
     FUDesc,
     IQUnit,
     LoomRiscvDeploymentWorkload,
     LoomSpatialBridge,
+    LoomSpatialEngineSession,
     LoomThreadDispatch,
     OpDesc,
     RiscvO3CPU,
@@ -32,8 +36,8 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.13"
-PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.5"
+CONFIG_SCHEMA = "loom.gem5_system_projection.14"
+PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.6"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
 
@@ -226,7 +230,6 @@ def start_engines(
             workloads = bridge["spatial_workloads"]
             if (
                 not isinstance(targets, list)
-                or not targets
                 or targets != sorted(set(targets))
                 or any(
                     not isinstance(target, int)
@@ -266,6 +269,10 @@ def start_engines(
                 isinstance(item, str) and item for item in command
             ):
                 raise ValueError(f"bridge {ordinal} engine command is invalid")
+            if bridge["engine_socket"] == "":
+                if targets or command:
+                    raise ValueError(f"idle bridge {ordinal} has an engine or targets")
+                continue
             socket_path = pathlib.Path(bridge["engine_socket"])
             if not command:
                 if not socket_path.is_socket():
@@ -399,9 +406,11 @@ def build_processor(processor: dict, ordinal: int):
     )
 
 
-def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
+def build_system(
+    projection: dict, collect_performance: bool
+) -> tuple[RiscvSystem, list[LoomSpatialEngineSession]]:
     memory = projection["memory"]
-    require_keys(memory, {"base", "size", "latency"}, "memory")
+    require_keys(memory, {"base", "size", "latency", "service_ticks_per_byte"}, "memory")
     host = projection["host"]
     require_keys(
         host,
@@ -439,8 +448,8 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
     logical_target_count = dispatch["logical_target_count"]
     endpoint_target_offsets = dispatch["endpoint_target_offsets"]
     endpoint_dispatch_enabled = dispatch["endpoint_dispatch_enabled"]
-    if not isinstance(logical_target_count, int) or logical_target_count <= 0:
-        raise ValueError("logical dispatch target count must be positive")
+    if not isinstance(logical_target_count, int) or logical_target_count < 0:
+        raise ValueError("logical dispatch target count must be nonnegative")
     if (
         not isinstance(endpoint_target_offsets, list)
         or not endpoint_target_offsets
@@ -492,8 +501,13 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
     target_bridge_addresses = []
     target_launch_addresses = []
     target_launch_sizes = []
-    if not isinstance(dispatch["targets"], list) or not dispatch["targets"]:
-        raise ValueError("Thread Dispatch requires at least one target")
+    if not isinstance(dispatch["targets"], list):
+        raise ValueError("Thread Dispatch targets must be an array")
+    if not dispatch["targets"] and (
+        logical_target_count != 0 or endpoint_target_offsets != [0]
+        or endpoint_dispatch_enabled != [0] or dispatch["root_event_control_path"]
+    ):
+        raise ValueError("host-only Thread Dispatch has an active endpoint")
     for ordinal, target in enumerate(dispatch["targets"]):
         require_keys(
             target,
@@ -565,8 +579,25 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         processors.append(cpu)
     system.cpu = processors
 
-    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"])
-    system.memory.port = system.membus.mem_side_ports
+    service_cost = memory["service_ticks_per_byte"]
+    if not isinstance(service_cost, int) or isinstance(service_cost, bool) or service_cost <= 0:
+        raise ValueError("shared System memory has no finite acceptance service cost")
+    bandwidth = 1e12 / service_cost
+    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"],
+                                 bandwidth=f"{bandwidth:.17g}B/s")
+    # This zero-delay monitor exposes the native accepted-request probe. Disable
+    # its unrelated histograms; the sole maintained observer integrates service.
+    system.memory_monitor = CommMonitor(
+        disable_burst_length_hists=True, disable_bandwidth_hists=True,
+        disable_latency_hists=True, disable_itt_dists=True,
+        disable_outstanding_hists=True, disable_transaction_hists=True,
+        disable_addr_dists=True,
+    )
+    system.memory_monitor.cpu_side_port = system.membus.mem_side_ports
+    system.memory_monitor.mem_side_port = system.memory.port
+    system.memory_service = LoomMemoryServiceProbe(
+        manager=[system.memory_monitor], service_ticks_per_byte=service_cost,
+    )
 
     system.loom_thread_dispatch = LoomThreadDispatch(
         pio_addr=dispatch["pio_address"],
@@ -580,6 +611,17 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
     )
     system.loom_thread_dispatch.pio = system.membus.mem_side_ports
 
+    engine_members = {}
+    for bridge in projection["bridges"]:
+        if bridge["engine_socket"]:
+            engine_members.setdefault(bridge["engine_socket"], []).append(bridge)
+    engine_sessions = {
+        socket: LoomSpatialEngineSession(engine_socket=socket, bridge_count=len(members))
+        for socket, members in engine_members.items()
+    }
+    sessions = list(engine_sessions.values())
+    if sessions:
+        system.loom_engine_sessions = sessions
     bridges = []
     for bridge in projection["bridges"]:
         if (
@@ -592,7 +634,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
             pio_size=bridge["pio_size"],
             pio_latency=bridge["pio_latency"],
             session_ordinal=bridge["session_ordinal"],
-            engine_socket=bridge["engine_socket"],
+            engine_session=engine_sessions.get(bridge["engine_socket"], NULL),
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
             max_invocations=bridge["maximum_invocations"],
@@ -602,7 +644,7 @@ def build_system(projection: dict, collect_performance: bool) -> RiscvSystem:
         device.dma = system.membus.cpu_side_ports
         bridges.append(device)
     system.loom_bridges = bridges
-    return system
+    return system, sessions
 
 
 def main() -> None:
@@ -611,6 +653,9 @@ def main() -> None:
     verify_running_binary(projection["gem5_binary_sha256"])
     diagnostics = arguments.performance_profile is not None
     configuration_started = time.monotonic_ns() if diagnostics else None
+    has_external_engines = any(
+        bridge.get("engine_socket") for bridge in projection["bridges"]
+    ) and not any(bridge.get("engine_command") for bridge in projection["bridges"])
     has_managed_engines = any(
         bridge.get("engine_command") for bridge in projection["bridges"]
     )
@@ -632,16 +677,34 @@ def main() -> None:
     )
     performance = None
     try:
-        system = build_system(projection, diagnostics)
+        m5.ticks.setGlobalFrequency("1ps")
+        system, engine_sessions = build_system(projection, diagnostics)
         Root(full_system=True, system=system)
         m5.instantiate()
+        memory_capacity = projection["memory"]
+        if system.memory.bandwidth.getValue() != memory_capacity["service_ticks_per_byte"]:
+            raise RuntimeError("native SimpleMemory bandwidth differs from its capacity contract")
         configuration_finished = time.monotonic_ns() if diagnostics else None
         entry_tick = int(m5.curTick())
+        system.memory_service.beginWindow()
         simulation_cpu_before = (
             resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
         )
         simulation_started = time.monotonic_ns() if diagnostics else None
-        event = m5.simulate(projection["maximum_ticks"])
+        deadline = entry_tick + projection["maximum_ticks"]
+        while True:
+            remaining = max(0, deadline - int(m5.curTick()))
+            event = m5.simulate(remaining)
+            if not any(
+                session.isAdvanceExit(event.getCause())
+                for session in engine_sessions
+            ):
+                break
+            for session in engine_sessions:
+                session.advance()
+            if int(m5.curTick()) >= deadline:
+                event = m5.simulate(0)
+                break
         simulation_finished = time.monotonic_ns() if diagnostics else None
         simulation_cpu_after = (
             resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
@@ -658,8 +721,10 @@ def main() -> None:
                 pathlib.Path(m5.options.outdir, "stats.txt")
             )
         system.workload.writeMemoryObservations()
+        memory_activity = {"occupied_ticks": int(system.memory_service.occupiedTicks())}
         result = {
-            "schema": "loom.gem5_system_attempt.1",
+            "schema": "loom.gem5_system_attempt.2",
+            "memory_activity": memory_activity,
             "entry_tick": entry_tick,
             "exit_tick": int(m5.curTick()),
             "cause": event.getCause(),
@@ -704,7 +769,7 @@ def main() -> None:
                     engine_readiness if has_managed_engines else None
                 ),
                 "external_engine_socket_readiness": (
-                    None if has_managed_engines else engine_readiness
+                    engine_readiness if has_external_engines else None
                 ),
                 "simulation_wall_nanoseconds": (
                     simulation_finished - simulation_started

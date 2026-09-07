@@ -5,11 +5,13 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -24,6 +26,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <future>
 #include <string>
 #include <utility>
 
@@ -69,7 +72,7 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *instance = [] {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                    mlir::func::FuncDialect>();
+                    mlir::DLTIDialect, mlir::func::FuncDialect>();
     auto *result =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
@@ -80,25 +83,27 @@ mlir::MLIRContext &context() {
 
 dataflow::CanonicalDataflowArtifact program() {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
-  dataflow.graph private @add(%ctrl: none, %lhs: i32, %rhs: i32) -> i32
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+  dataflow.graph private @add(%ctrl: none, %lhs: index, %rhs: index) -> index
       attributes {
         input_segments = array<i32: 2, 0, 0>,
         result_segments = array<i32: 1, 0, 0>
       } {
-    %sum = arith.addi %lhs, %rhs : i32
+    %sum = arith.addi %lhs, %rhs : index
     %published:2 = dataflow.sync %ctrl, %sum
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        : (none, index) -> (none, index)
+    dataflow.graph.return values(%published#1 : index) streams() memories()
         complete(%published#0 : none)
   }
   dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
-    %lhs = arith.constant 7 : i32
-    %rhs = arith.constant 9 : i32
+    %lhs = arith.constant 7 : index
+    %rhs = arith.constant 9 : index
     %value, %done = dataflow.graph.launch @add deps(%ctrl)
         values(%lhs, %rhs) stream_inputs() memories() stream_outputs()
-        : (none, i32, i32) -> (i32, none)
+        : (none, index, index) -> (index, none)
     dataflow.thread.yield %done : none
   }
   func.func private @host() {
@@ -135,8 +140,9 @@ void retiredExecutionBecomesEvidenceOutput() {
   if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
+  loom::evaluation::ArtifactImportCacheScope importCache(store, &blobs);
   dataflow::CanonicalDataflowArtifact dataflow = program();
-  dataflow::CanonicalDataflowProgramView view = take(dataflow.view());
+  const dataflow::CanonicalDataflowProgramView &view = dataflow.view();
   const loom::ArtifactRootReference dataflowRef =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
 
@@ -181,6 +187,17 @@ void retiredExecutionBecomesEvidenceOutput() {
       evidence.outputBindings().front().artifacts.front();
   auto execution = take(loom::sim::importSimulationExecution(
       executionRef, prepared.resolution, store, blobs));
+  const auto missingResolution =
+      take(loom::evaluation::CaseArtifactResolution::get({}));
+  const loom::ArtifactStore independentStore(directory.path());
+  for (const auto *domain : {&store, &independentStore}) {
+    auto unresolved = loom::sim::importSimulationExecution(
+        executionRef, missingResolution, *domain, blobs);
+    require(!unresolved,
+            "execution import accepted a missing resolution after a valid "
+            "import of the same Request");
+    llvm::consumeError(unresolved.takeError());
+  }
   require(execution.request() ==
               loom::evaluation::evaluationRequestReference(prepared.request),
           "execution is not coupled to the exact EvaluationRequest");
@@ -228,6 +245,53 @@ void retiredExecutionBecomesEvidenceOutput() {
       evidenceRef, prepared.resolution, store, blobs));
   require(importedEvidence.outputBindings() == evidence.outputBindings(),
           "Evidence strict import changed the execution binding");
+
+  runtimeDraft.runtimeValues.front().value = value(8);
+  const auto otherRuntime = take(
+      loom::sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+  const auto otherRuntimeRef =
+      take(loom::sim::publishSimulationRuntimeInput(otherRuntime, store));
+  auto otherPrepared =
+      take(loom::evaluation::models::prepareDfgSimulationEvaluation(
+          dataflowRef, workloadRef, otherRuntimeRef,
+          loom::defaultResolvedConfig(), store, blobs));
+  auto otherEvidence = take(loom::evaluation::models::evaluateDfgSimulation(
+      otherPrepared, {64, std::nullopt}, store, blobs));
+  const auto otherEvidenceRef =
+      take(loom::evaluation::publishEvaluationEvidence(otherEvidence, store));
+  auto otherExecution = take(loom::sim::importSimulationExecution(
+      otherEvidence.outputBindings().front().artifacts.front(),
+      otherPrepared.resolution, store, blobs));
+  const auto *otherPublished = std::get_if<loom::sim::PublishedValueResult>(
+      &otherExecution.spatialFunctionalObservations().valueResults.front());
+  require(otherPublished &&
+              otherPublished->value.lanes.front().bits.getZExtValue() == 17,
+          "retained preparation reused a previous runtime value");
+
+  const auto beforeWorkers = importCache.statistics();
+  const auto attachment = importCache.attachment();
+  const auto evaluate = [&](const auto &input) {
+    loom::evaluation::ArtifactImportCacheScope workerImports(attachment);
+    return loom::evaluation::models::evaluateDfgSimulation(
+        input, {64, std::nullopt}, store, blobs);
+  };
+  auto firstWorker =
+      std::async(std::launch::async, [&] { return evaluate(prepared); });
+  auto secondWorker =
+      std::async(std::launch::async, [&] { return evaluate(otherPrepared); });
+  auto firstParallel = take(firstWorker.get());
+  auto secondParallel = take(secondWorker.get());
+  require(loom::evaluation::evaluationEvidenceReference(firstParallel) ==
+                  evidenceRef &&
+              loom::evaluation::evaluationEvidenceReference(secondParallel) ==
+                  otherEvidenceRef,
+          "concurrent fresh sessions changed serial Evidence identities");
+  const auto afterWorkers = importCache.statistics();
+  require(afterWorkers.uniqueConstructions ==
+                  beforeWorkers.uniqueConstructions &&
+              afterWorkers.cacheHits > beforeWorkers.cacheHits &&
+              afterWorkers.entryCount == beforeWorkers.entryCount,
+          "worker attachment did not reuse the bounded invocation cache");
 }
 
 } // namespace

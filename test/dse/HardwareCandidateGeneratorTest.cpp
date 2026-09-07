@@ -425,7 +425,7 @@ void staticCapacityHardwareDomain() {
           "minimum, or the deeper control");
 }
 
-void computeContextFeedbackRoundTrip(
+void computeContextFeedbackReconstructsAlternativeSupply(
     Fixture &fixture, const loom::fabric::FinalizedFabricRoot &module) {
   require(!module.view().fuOccurrences().empty(),
           "builtin Module has no FU occurrence for Hall feedback");
@@ -444,9 +444,33 @@ void computeContextFeedbackRoundTrip(
                     placement.contexts.end());
   require(!contexts.empty(), "FU capability has no compatible context");
 
+  std::vector<loom::fabric::FabricFuCapabilityTemplateRef> alternatives{
+      capability};
+  for (auto alternativeDefinition : module.view().fuTemplates()) {
+    if (module.view().fuCapabilityTemplates(alternativeDefinition).empty())
+      continue;
+    const loom::fabric::FabricFuCapabilityTemplateRef alternative{
+        alternativeDefinition, 0};
+    const auto alternativePlacements =
+        take(loom::mapping::deriveSpatialComputeContextPlacementDomain(
+            alternative, module.view()));
+    std::vector<loom::fabric::InstructionContextRef> additional;
+    for (const auto &placement : alternativePlacements)
+      for (const auto context : placement.contexts)
+        if (std::find(contexts.begin(), contexts.end(), context) == contexts.end())
+          additional.push_back(context);
+    if (additional.empty())
+      continue;
+    alternatives.push_back(alternative);
+    contexts.insert(contexts.end(), additional.begin(), additional.end());
+    break;
+  }
+  require(alternatives.size() == 2,
+          "Hall feedback fixture has no independent capability supply");
+
   const std::uint64_t demandCount = contexts.size() + 1;
   const std::vector<loom::mapping::TechMappingComputeContextHallDemandGroup>
-      groups = {{capability, demandCount, contexts}};
+      groups = {{alternatives, demandCount, contexts}};
   auto feedback = take(loom::mapping::TechMappingComputeContextHallDeficit::get(
       demandCount, contexts.size(), groups));
   std::vector<std::uint8_t> bytes =
@@ -1439,7 +1463,7 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   auto program = scalarIntegerSynthesisProgram();
   const loom::ArtifactRootReference programReference =
       take(dataflow::publishCanonicalDataflow(program, fixture.store));
-  auto view = take(program.view());
+  const auto &view = program.view();
   const dataflow::GraphRef add = graphOccurrenceContaining(
       view, dataflow::OperationSchemaId::ArithAddI, 0);
   const dataflow::GraphRef sub = graphOccurrenceContaining(
@@ -1720,7 +1744,7 @@ void boundedFuReverseSynthesis(Fixture &fixture) {
   auto multiplyProgram = scalarIntegerMultiplyProgram();
   const loom::ArtifactRootReference multiplyReference =
       take(dataflow::publishCanonicalDataflow(multiplyProgram, fixture.store));
-  auto multiplyView = take(multiplyProgram.view());
+  const auto &multiplyView = multiplyProgram.view();
   const dataflow::GraphRef multiply = graphOccurrenceContaining(
       multiplyView, dataflow::OperationSchemaId::ArithMulI, 0);
   requireFuSynthesisFailure(
@@ -1759,7 +1783,7 @@ int main() {
   auto system = generateBuiltinSystem(fixture);
   parameterizedTemplateScale(fixture, system);
   auto module = importBuiltinModule(system, fixture);
-  computeContextFeedbackRoundTrip(fixture, module);
+  computeContextFeedbackReconstructsAlternativeSupply(fixture, module);
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);
   auto replacementModule = microarchitectureRewrite(fixture, module);

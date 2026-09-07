@@ -298,6 +298,8 @@ llvm::json::Object serializePreMappingCandidatePlanningRecord(
     object["projection"] = nullptr;
   addOptionalUnsigned(object, "estimated_runtime_ps",
                       record.estimatedRuntimePicoseconds);
+  addOptionalUnsigned(object, "host_dynamic_leaf_executions",
+                      record.hostDynamicLeafExecutions);
   addOptionalUnsigned(object, "preference_rank", record.preferenceRank);
   if (record.materializedProjection)
     object["materialized_projection"] =

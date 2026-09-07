@@ -48,7 +48,11 @@ public:
 
   void schedule(CgraScheduledEvent event);
 
-  std::optional<SpatialEventCoordinate> nextCoordinate() const;
+  std::optional<SpatialEventCoordinate> nextCoordinate() const {
+    if (heap_.empty())
+      return std::nullopt;
+    return heap_.front().order.coordinate;
+  }
 
   /// The returned event view remains valid until the next pop on this queue.
   llvm::Expected<std::optional<CgraEventFrameView>> popNextFrameView();

@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_CGRATRANSPORTRUNTIME_H
 
 #include "CgraComputeRuntime.h"
+#include "CgraTransportGraph.h"
 #include "CgraTransportStorageRuntime.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 
@@ -179,15 +180,13 @@ struct CgraOperandQueueHeadDiagnostic final {
   std::vector<std::pair<std::uint64_t, unsigned>> consumers;
 };
 
-/// Execution-local token transport for one mapped graph activation. It binds
-/// exact Dataflow endpoints to dense DFG channel slots once; dynamic events
-/// never search MLIR users or persistent-reference bytes.
+/// Token transport state for one mapped graph activation. The caller retains
+/// the frozen plan and graph at stable addresses throughout the runtime's
+/// lifetime; dynamic events use their dense bindings.
 class CgraTransportRuntime final {
 public:
   static llvm::Expected<CgraTransportRuntime>
-  create(const CgraFrozenExecutionPlan &plan,
-         const ::dataflow::CanonicalDataflowProgramView &dataflow,
-         ::dataflow::GraphRef graph, const PreparedGraphExecution &execution,
+  create(const CgraFrozenExecutionPlan &plan, const CgraTransportGraph &graph,
          SimulatorState &state, CgraPhysicalActionRuntime &physical);
 
   llvm::Error
@@ -200,16 +199,19 @@ public:
 
   llvm::Expected<bool> canAcceptGraphIngress(unsigned argumentOrdinal) const;
 
-  /// Applies the exact logical-input removals of committed actor transitions
-  /// to the Fabric-owned Temporal PE operand allocation units. Canonical actor
-  /// handshake cases own the dequeue set; this runtime owns only occupancy.
-  llvm::Error
+  /// Applies schema-owned input removals to declared operand storage and
+  /// acknowledges unbuffered presentations at the actual consumer transition.
+  /// Returned completions release only producers whose handoffs are complete.
+  llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptActorCommits(llvm::ArrayRef<CgraActorLifecycleEvent> events);
+
+  /// Samples seeded durable queues before any launch event advances.
+  llvm::Error initializeActivity(const SpatialEventCoordinate &coordinate);
 
   bool actorSourcesAvailable(std::uint64_t semanticActorOrdinal) const;
 
   llvm::Expected<std::vector<CgraTransportCompletion>>
-  acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+  acceptPhysicalEvents(const CgraPhysicalLifecycleFrameView &physicalFrame);
 
   llvm::Expected<CgraPhysicalTraceBinding>
   physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
@@ -251,16 +253,16 @@ public:
   /// the value is what the wire and a hardware arbiter observe. An ordinal
   /// outside the plan's tag inventory is invalid input, not channel zero.
   std::uint32_t tagVirtualChannelKey(std::uint64_t physicalTagOrdinal) const {
-    assert(physicalTagOrdinal < tagVirtualChannelKeys_.size() &&
+    assert(physicalTagOrdinal < graph_.tagVirtualChannelKeys.size() &&
            "Physical Tag ordinal outside the plan inventory");
-    return tagVirtualChannelKeys_[physicalTagOrdinal];
+    return graph_.tagVirtualChannelKeys[physicalTagOrdinal];
   }
 
   /// The complete rank cache, so a cold verifier can rebuild it from the
   /// plan's Physical Tag values with `internPhysicalTagChannelRanks` and
   /// compare rather than trust.
   llvm::ArrayRef<std::uint32_t> tagVirtualChannelRanks() const {
-    return tagVirtualChannelKeys_;
+    return graph_.tagVirtualChannelKeys;
   }
 
   /// The next index of one channel's dense arrival sequence, or absent when
@@ -280,78 +282,20 @@ public:
   std::optional<::fabric::FifoQueueDiscipline>
   storageQueueDiscipline(std::uint64_t storageOrdinal) const {
     if (storageOrdinal >= storages_.size() ||
-        storages_[storageOrdinal].kind != CgraTraversalStorageKind::BufferedFifo)
+        storages_[storageOrdinal].binding.kind !=
+            CgraTraversalStorageKind::BufferedFifo)
       return std::nullopt;
     return storages_[storageOrdinal].queue.discipline();
   }
 
 private:
-  enum class SinkKind : std::uint8_t { Channel, Observation };
-
-  struct SinkBinding final {
-    SinkKind kind = SinkKind::Channel;
-    ChannelOrdinal channel = 0;
-    mlir::Value observation;
-    std::uint64_t physicalUseOffset = 0;
-    std::uint32_t physicalUseCount = 0;
-    std::uint32_t consumedLocalActionOffset = 0;
-    std::uint64_t operandQueueBinding = invalidCgraTransportOrdinal;
-    std::uint64_t operandActivationOrdinal = invalidCgraTransportOrdinal;
-    std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
-    std::uint64_t semanticActorOrdinal = invalidCgraTransportOrdinal;
-    std::uint32_t inputOrdinal = std::numeric_limits<std::uint32_t>::max();
-    std::uint32_t traversalTerminalCount = 0;
-  };
-
-  struct PublicationBinding final {
-    std::uint64_t sinkOffset = 0;
-    std::uint32_t sinkCount = 0;
-    std::uint32_t consumedPhysicalUseCount = 0;
-  };
-
-  struct TransferBinding final {
-    ::dataflow::CanonicalGraphProducerEndpointRef producer;
-    std::uint64_t sinkOffset = 0;
-    std::uint32_t sinkCount = 0;
-    std::uint64_t physicalUseOffset = 0;
-    std::uint32_t physicalUseCount = 0;
-    std::uint64_t traversalNodeOffset = 0;
-    std::uint32_t traversalNodeCount = 0;
-    std::uint32_t traversalTerminalCount = 0;
-    std::uint32_t consumedPhysicalUseCount = 0;
-    std::uint64_t publicationOffset = 0;
-    std::uint32_t publicationCount = 0;
-    std::optional<std::uint64_t> semanticActorOrdinal;
-    std::uint64_t nextProducerSequenceOrdinal = 0;
-    bool discard = false;
-    bool sourceReserved = false;
-    /// A result is pending only until every sink accepts a durable handoff.
-    bool producerPending = false;
-  };
-
-  enum class TraversalNodeKind : std::uint8_t {
-    PhysicalAction,
-    BufferedStorage,
-    RegisterStorageWrite,
-    RegisterStorageRead,
-  };
-
-  struct TraversalNodeBinding final {
-    TraversalNodeKind kind = TraversalNodeKind::PhysicalAction;
-    std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
-    std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
-    std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
-    std::uint64_t targetTraversalOffset = 0;
-    std::uint32_t targetTraversalCount = 0;
-    std::uint64_t successorOffset = 0;
-    std::uint32_t successorCount = 0;
-    std::uint32_t predecessorCount = 0;
-    bool terminal = false;
-    std::vector<std::uint32_t> descendantSinks;
-    std::vector<std::uint32_t> terminalSinks;
-    std::vector<std::uint64_t> downstreamStorageNodes;
-    std::vector<std::uint32_t> unbufferedDescendantSinks;
-  };
+  using SinkKind = CgraTransportGraph::SinkKind;
+  using SinkBinding = CgraTransportGraph::SinkBinding;
+  using PublicationBinding = CgraTransportGraph::PublicationBinding;
+  using TransferBinding = CgraTransportGraph::TransferBinding;
+  using TraversalNodeKind = CgraTransportGraph::TraversalNodeKind;
+  using TraversalNodeBinding = CgraTransportGraph::TraversalNodeBinding;
+  using OperandBufferBinding = CgraTransportGraph::OperandBufferBinding;
 
   enum class TraversalNodeState : std::uint8_t {
     Idle,
@@ -411,6 +355,10 @@ private:
     /// Mutable route state belongs to this token occurrence. The selected DAG
     /// remains shared while earlier occurrences reside beyond durable storage.
     std::vector<TraversalState> traversals;
+    /// Derived worklist: roots enter at allocation, successors only when their
+    /// last predecessor is permitted. Scheduling consumes it in selected-node
+    /// order.
+    llvm::SmallVector<std::uint64_t, 4> readyTraversals;
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
@@ -470,34 +418,21 @@ private:
     std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
   };
 
-  struct StorageBinding final {
-    StorageBinding(CgraTransportStorageRuntime state,
-                   CgraTraversalStorageKind storageKind,
-                   bool independentServices)
-        : queue(std::move(state)), kind(storageKind),
-          independentReadWriteServices(independentServices) {}
+  struct StorageState final {
+    StorageState(const CgraTransportGraph::StorageBinding &binding,
+                 CgraTransportStorageRuntime queue)
+        : binding(binding), queue(std::move(queue)) {}
 
+    const CgraTransportGraph::StorageBinding &binding;
     CgraTransportStorageRuntime queue;
-    CgraTraversalStorageKind kind = CgraTraversalStorageKind::None;
-    std::uint64_t enqueueAction = invalidCgraTransportOrdinal;
-    std::uint64_t dequeueAction = invalidCgraTransportOrdinal;
-    std::uint64_t simultaneousAction = invalidCgraTransportOrdinal;
-    /// The OfferAdvance arbitration action of a virtual channel queue;
-    /// invalid for a strict queue.
-    std::uint64_t offerAdvanceAction = invalidCgraTransportOrdinal;
     std::vector<TraversalOccurrence> pendingEnqueueNodes;
     std::vector<TraversalOccurrence> pendingDequeueNodes;
-    bool independentReadWriteServices = false;
     bool eventScheduled = false;
     std::uint8_t activeActionCount = 0;
     std::uint32_t reservations = 0;
-    /// Consecutive refused offers since the last queue commit. A refused offer
-    /// on a virtual-channel queue rotates the cursor, so the port must be
-    /// re-evaluated on the next cycle; once every resident channel has been
-    /// presented and refused without a commit, the probe epoch ends and the
-    /// queue sleeps until an external event changes readiness.
+    /// A virtual-channel refusal rotates the cursor until every resident
+    /// channel has been refused. Only a readiness change then wakes the queue.
     std::uint32_t offerRefusalsSinceCommit = 0;
-    std::vector<std::uint64_t> upstreamStorageOrdinals;
   };
 
   struct StorageFrameCommit final {
@@ -508,65 +443,45 @@ private:
     bool touched = false;
   };
 
-  struct OperandQueueUnitBinding final {
-    ::loom::fabric::FabricPeOccurrenceRef pe;
-    std::uint32_t allocationUnit = 0;
-    std::uint32_t capacity = 0;
+  struct ProducerState final {
+    std::uint64_t nextProducerSequenceOrdinal = 0;
+    bool sourceReserved = false;
+    /// A result is pending until every sink accepts a durable handoff.
+    bool producerPending = false;
+  };
+
+  struct OperandQueueUnitState final {
+    explicit OperandQueueUnitState(
+        const CgraTransportGraph::OperandQueueUnitBinding &binding)
+        : binding(binding) {}
+
+    const CgraTransportGraph::OperandQueueUnitBinding &binding;
     std::uint32_t occupancy = 0;
     std::uint32_t reservations = 0;
     std::optional<::loom::evaluation::ExactRatio> admissionCycle;
     std::uint32_t admissionCredits = 0;
   };
 
-  struct OperandBufferBinding final {
-    ::loom::fabric::FabricPeOccurrenceRef pe;
-    ::fabric::TemporalOperandBufferContract contract;
-    std::vector<std::uint64_t> runtimeQueues;
-    std::vector<std::uint64_t> runtimeUnits;
-  };
-
-  struct OperandQueueBinding final {
-    struct Consumer final {
-      ChannelOrdinal channel = 0;
-      std::uint64_t semanticActorOrdinal = 0;
-      unsigned inputOrdinal = 0;
-    };
-
-    ::fabric::LogicalOperandQueueKey queue;
-    ::loom::fabric::FabricFuOccurrenceRef fu;
-    std::uint64_t bufferBinding = invalidCgraTransportOrdinal;
-    std::uint32_t contractQueue = 0;
-    std::uint64_t unitBinding = invalidCgraTransportOrdinal;
-    std::uint32_t occupancy = 0;
-    std::vector<Consumer> consumers;
+  struct OperandQueueState final {
     struct Entry final {
       std::uint64_t bindingOrdinal = invalidCgraTransportOrdinal;
       std::uint64_t occurrenceOrdinal = invalidCgraTransportOrdinal;
       std::uint64_t producerSequenceOrdinal = invalidCgraTransportOrdinal;
       llvm::APInt tag = llvm::APInt(1, 0);
     };
+
+    explicit OperandQueueState(
+        const CgraTransportGraph::OperandQueueBinding &binding)
+        : binding(binding) {}
+
+    const CgraTransportGraph::OperandQueueBinding &binding;
+    std::uint32_t occupancy = 0;
     std::deque<Entry> entries;
   };
 
-  CgraTransportRuntime(
-      const CgraFrozenExecutionPlan &plan, SimulatorState &state,
-      CgraPhysicalActionRuntime &physical,
-      std::vector<TransferBinding> bindings, std::vector<SinkBinding> sinks,
-      std::vector<PublicationBinding> publications,
-      std::vector<std::uint32_t> publicationSinks,
-      std::vector<std::uint64_t> physicalUses,
-      std::vector<TraversalNodeBinding> traversalNodes,
-      std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
-      std::vector<std::uint64_t> traversalSuccessors,
-      std::vector<StorageBinding> storages,
-      std::vector<OperandBufferBinding> operandBuffers,
-      std::vector<OperandQueueUnitBinding> operandQueueUnits,
-      std::vector<OperandQueueBinding> operandQueues,
-      llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-          actorSourceBindings,
-      llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings,
-      llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-          actorInputQueueBindings);
+  CgraTransportRuntime(const CgraFrozenExecutionPlan &plan,
+                       const CgraTransportGraph &graph, SimulatorState &state,
+                       CgraPhysicalActionRuntime &physical);
 
   bool ownsTraversal(std::uint64_t slot, std::uint64_t nodeOrdinal) const;
   TraversalState &traversalState(std::uint64_t slot, std::uint64_t nodeOrdinal);
@@ -604,8 +519,13 @@ private:
   reserveOperandQueueCapacity(std::uint64_t slot,
                               std::uint64_t publicationBinding,
                               const SpatialEventCoordinate &coordinate);
-  llvm::Error commitOperandQueueEnqueue(std::uint64_t slot,
-                                        std::uint64_t publicationBinding);
+  llvm::Error
+  observeOperandQueueActivity(std::uint64_t queueOrdinal,
+                              const SpatialEventCoordinate &coordinate);
+  llvm::Error
+  commitOperandQueueEnqueue(std::uint64_t slot,
+                            std::uint64_t publicationBinding,
+                            const SpatialEventCoordinate &coordinate);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
   llvm::Expected<std::optional<CgraTransportCompletion>>
   maybeCompleteProducer(std::uint64_t slot);
@@ -633,26 +553,13 @@ private:
   const CgraFrozenExecutionPlan *plan_ = nullptr;
   SimulatorState *state_ = nullptr;
   CgraPhysicalActionRuntime *physical_ = nullptr;
-  std::vector<TransferBinding> bindings_;
-  std::vector<SinkBinding> sinks_;
-  std::vector<PublicationBinding> publications_;
-  std::vector<std::uint32_t> publicationSinks_;
-  std::vector<std::uint64_t> physicalUses_;
-  std::vector<TraversalNodeBinding> traversalNodes_;
-  std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets_;
-  std::vector<std::uint64_t> traversalSuccessors_;
-  std::vector<StorageBinding> storages_;
-  std::vector<OperandBufferBinding> operandBuffers_;
-  std::vector<OperandQueueUnitBinding> operandQueueUnits_;
-  std::vector<OperandQueueBinding> operandQueues_;
+  const CgraTransportGraph &graph_;
+  std::vector<ProducerState> producerStates_;
+  std::vector<StorageState> storages_;
+  std::vector<OperandQueueUnitState> operandQueueUnits_;
+  std::vector<OperandQueueState> operandQueues_;
   std::vector<StorageFrameCommit> storageFrameCommits_;
   std::vector<std::uint64_t> touchedStorageFrameCommits_;
-  llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-      actorSourceBindings_;
-  std::vector<llvm::SmallVector<std::uint64_t, 2>> actorSourceBindingOrdinals_;
-  llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
-  llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
-      actorInputQueueBindings_;
   CgraEventQueue events_{"CGRA transport publication"};
   CgraEventQueue traversalEvents_{"CGRA traversal"};
   CgraEventQueue storageEvents_{"CGRA transport storage"};
@@ -660,8 +567,6 @@ private:
   CgraEventQueue requestedEvents_{"CGRA transport request"};
   std::vector<InFlight> inFlight_;
   std::vector<std::uint64_t> freeSlots_;
-  /// Indexed by plan Physical Tag ordinal; see `tagVirtualChannelKey`.
-  std::vector<std::uint32_t> tagVirtualChannelKeys_;
   /// Tokens delivered into each semantic channel by this transport. The value
   /// is the next index of the channel's dense arrival sequence, so a blocked
   /// input awaiting the channel's next token awaits exactly this producer

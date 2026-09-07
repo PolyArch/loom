@@ -82,6 +82,48 @@ llvm::Expected<pnr::PnrIndex> findPromotedClause(
   return *result;
 }
 
+/// Dynamic action ordinals are the exact parent Mapping ResourceUse order:
+/// CGRA freeze validates that invariant. These owners only order the existing
+/// finite repair regions; they do not strengthen or replace the no-good.
+llvm::Expected<std::vector<pnr::PnrIndex>> preferredCapacityBindingDecisions(
+    const sim::CgraClosedWaitCertificate &certificate,
+    const mapping::SpatialMappingView &spatial,
+    const pnr::FrozenSpatialPnrProblem &problem) {
+  std::vector<pnr::PnrIndex> result;
+  const auto &realizations = problem.realizations();
+  const auto remember = [&](pnr::PnrIndex decision) {
+    if (!llvm::is_contained(result, decision))
+      result.push_back(decision);
+  };
+  for (const auto &edge : certificate.edges) {
+    if (!edge.physicalCapacity)
+      continue;
+    for (const std::uint64_t action :
+         {edge.physicalCapacity->waitingActionOrdinal,
+          edge.physicalCapacity->holdingActionOrdinal}) {
+      if (action >= spatial.resourceUses().size())
+        return invalid("capacity certificate names a foreign Mapping action");
+      const auto &owner = spatial.resourceUses()[action].owner;
+      if (const auto *compute =
+              std::get_if<mapping::SpatialComputeResourceOwnerRef>(&owner)) {
+        for (auto [ordinal, realization] :
+             llvm::enumerate(realizations.computeRealizations()))
+          if (realization.reference.entity == compute->realization)
+            remember(static_cast<pnr::PnrIndex>(ordinal));
+      } else if (const auto *memory =
+                     std::get_if<mapping::SpatialMemoryEngineResourceOwnerRef>(
+                         &owner)) {
+        for (auto [ordinal, realization] :
+             llvm::enumerate(realizations.memoryRealizations()))
+          if (realization.reference.entity == memory->realization)
+            remember(static_cast<pnr::PnrIndex>(
+                realizations.computeRealizations().size() + ordinal));
+      }
+    }
+  }
+  return result;
+}
+
 std::uint64_t noGoodCount(
     const mapping::SpatialMappingConstraintSetView &constraints) {
   return llvm::count_if(constraints.clauses(), [](const auto &clause) {
@@ -139,9 +181,7 @@ executeSpatialTransportCegar(
   auto dataflow = dataflow::importCanonicalDataflow(owners.dataflow, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto tech = mapping::importTechMapping(owners.techMapping, artifacts);
   if (!tech)
     return tech.takeError();
@@ -218,7 +258,7 @@ executeSpatialTransportCegar(
 
     ExecutionResourceTracker freezeTracker;
     auto problem = pnr::freezeSpatialPnrProblem(
-        *dataflowView, tech->view(), fabricArtifact->view(), physicalTiming,
+        dataflowView, tech->view(), fabricArtifact->view(), physicalTiming,
         *spatialConfig, constraints.view());
     if (!problem)
       return problem.takeError();
@@ -240,6 +280,11 @@ executeSpatialTransportCegar(
     const ExecutionResourceStatistics warmSeedWork =
         warmSeedTracker.observe();
 
+    auto preferredBindings = preferredCapacityBindingDecisions(
+        currentEvidence.certificate(), parent->view(), **problem);
+    if (!preferredBindings)
+      return preferredBindings.takeError();
+
     ExecutionResourceTracker repairTracker;
     pnr::SpatialExactRepairScratch repair;
     pnr::DeterministicPnrRandomStream repairStream =
@@ -250,7 +295,7 @@ executeSpatialTransportCegar(
         **candidate, iteration, policy.maximumSolverCallsPerIteration,
         repairStream, {}, *clauseOrdinal,
         ExecutionControlView{&policy, cegarStopRequested,
-                             cegarRemainingTime});
+                             cegarRemainingTime}, *preferredBindings);
     if (!repaired)
       return repaired.takeError();
     const ExecutionResourceStatistics repairWork = repairTracker.observe();
@@ -292,7 +337,7 @@ executeSpatialTransportCegar(
       return error;
     ExecutionResourceTracker finalizationTracker;
     auto child = pnr::finalizeSpatialMappingCandidate(
-        **candidate, *dataflowView, tech->view(), fabricArtifact->view(),
+        **candidate, dataflowView, tech->view(), fabricArtifact->view(),
         constraints.view(), artifacts);
     if (!child)
       return child.takeError();
@@ -303,7 +348,7 @@ executeSpatialTransportCegar(
       return result;
     }
     if (llvm::Error error = mapping::admitSpatialMappingConstraints(
-            *dataflowView, tech->view(), fabricArtifact->view(),
+            dataflowView, tech->view(), fabricArtifact->view(),
             constraints.view(), child->view()))
       return error;
     record.work.childFinalization = finalizationTracker.observe();

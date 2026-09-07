@@ -65,7 +65,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v17",
+    "loom.mapping.spatial_pnr.generator.v21",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -321,9 +321,7 @@ resolveSpatialPnrCandidateGeneratorBinding(
       singleInput(inputBindings, DataflowInput), store);
   if (!dataflowArtifact)
     return invalidOutcome(llvm::toString(dataflowArtifact.takeError()));
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return invalidOutcome(llvm::toString(dataflow.takeError()));
+  const auto &dataflow = dataflowArtifact->view();
 
   auto fabric = ::loom::fabric::importEntireFabricRoot(
       singleInput(inputBindings, FabricInput), store);
@@ -343,15 +341,15 @@ resolveSpatialPnrCandidateGeneratorBinding(
   if (!constraints)
     return invalidOutcome(llvm::toString(constraints.takeError()));
 
-  if (tech->view().dataflowIdentity() != dataflow->identity() ||
+  if (tech->view().dataflowIdentity() != dataflow.identity() ||
       tech->view().fabricIdentity() != fabric->view().identity() ||
-      constraints->view().dataflowIdentity() != dataflow->identity() ||
+      constraints->view().dataflowIdentity() != dataflow.identity() ||
       constraints->view().techMappingIdentity() != tech->view().identity() ||
       constraints->view().fabricIdentity() != fabric->view().identity())
     return invalidOutcome("D/T/F/K binding has inconsistent artifact owners");
 
   return ::loom::pnr::generateSpatialMappings(
-      {*dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
+      {dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
        constraints->view(), store, candidateWorkerCount, executionControl,
        nullptr, nullptr, nullptr, true, maximumCandidatePublications,
        executionBudget});

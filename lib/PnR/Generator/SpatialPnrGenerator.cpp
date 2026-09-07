@@ -14,6 +14,7 @@
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialPnrExecution.h"
 #include "SpatialProgressIndex.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -152,150 +154,6 @@ void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
       });
 }
 
-struct SpatialPnrWorkerAllocation final {
-  std::uint32_t configuredWorkerCount = 1;
-  std::uint32_t restartCount = 1;
-  std::uint32_t actualWorkerCount = 1;
-  std::uint64_t activeRouteGraphUnitCount = 1;
-  std::uint64_t workerScratchReservationBytes = 0;
-  std::uint64_t maximumObservedWorkerScratchBytes = 0;
-  std::uint64_t sharedProblemRetainedBytes = 0;
-  std::optional<std::uint32_t> cpuLimitedWorkerCount;
-  std::optional<std::uint32_t> memoryLimitedWorkerCount;
-  std::uint32_t routeGraphLimitedWorkerCount = 1;
-  bool serialPrefix = false;
-  bool memoryCalibrated = false;
-};
-
-SpatialPnrWorkerAllocation
-resolveWorkerAllocation(std::uint32_t configuredWorkerCount,
-                        std::uint32_t restartCount,
-                        const SpatialActiveProblemStatistics &problemStatistics,
-                        std::uint64_t workerScratchReservationBytes,
-                        ExecutionResourceBudget executionBudget,
-                        bool serialPrefix, bool memoryCalibrated) {
-  SpatialPnrWorkerAllocation allocation;
-  allocation.configuredWorkerCount = configuredWorkerCount;
-  allocation.restartCount = restartCount;
-  allocation.sharedProblemRetainedBytes =
-      problemStatistics.context.retainedBytes;
-  const auto saturatingAdd = [](std::uint64_t lhs, std::uint64_t rhs) {
-    return rhs > std::numeric_limits<std::uint64_t>::max() - lhs
-               ? std::numeric_limits<std::uint64_t>::max()
-               : lhs + rhs;
-  };
-  allocation.activeRouteGraphUnitCount =
-      saturatingAdd(saturatingAdd(problemStatistics.activeEndpointCount,
-                                  problemStatistics.activeTraversalCount),
-                    problemStatistics.activeRoutingArcCount);
-  allocation.activeRouteGraphUnitCount =
-      std::max(UINT64_C(1), allocation.activeRouteGraphUnitCount);
-  allocation.routeGraphLimitedWorkerCount = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(allocation.activeRouteGraphUnitCount,
-                              std::numeric_limits<std::uint32_t>::max()));
-  allocation.workerScratchReservationBytes = workerScratchReservationBytes;
-  allocation.actualWorkerCount =
-      std::min({configuredWorkerCount, restartCount,
-                allocation.routeGraphLimitedWorkerCount});
-  if (executionBudget.cpuCores) {
-    allocation.cpuLimitedWorkerCount = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(*executionBudget.cpuCores,
-                                std::numeric_limits<std::uint32_t>::max()));
-    allocation.actualWorkerCount = std::min(allocation.actualWorkerCount,
-                                            *allocation.cpuLimitedWorkerCount);
-  }
-  if (executionBudget.memoryBytes) {
-    const std::uint64_t workerBytes =
-        *executionBudget.memoryBytes > allocation.sharedProblemRetainedBytes
-            ? *executionBudget.memoryBytes -
-                  allocation.sharedProblemRetainedBytes
-            : 0;
-    const std::uint64_t memoryWorkers =
-        allocation.workerScratchReservationBytes == 0
-            ? 1
-            : std::max(UINT64_C(1),
-                       workerBytes / allocation.workerScratchReservationBytes);
-    allocation.memoryLimitedWorkerCount =
-        static_cast<std::uint32_t>(std::min<std::uint64_t>(
-            memoryWorkers, std::numeric_limits<std::uint32_t>::max()));
-    allocation.actualWorkerCount = std::min(
-        allocation.actualWorkerCount, *allocation.memoryLimitedWorkerCount);
-  }
-  if (serialPrefix)
-    allocation.actualWorkerCount = 1;
-  allocation.serialPrefix = serialPrefix;
-  allocation.memoryCalibrated = memoryCalibrated;
-  return allocation;
-}
-
-void emitInvocationExecutionStatistics(
-    const SpatialPnrWorkerAllocation &allocation,
-    const SpatialActiveProblemStatistics &problemStatistics,
-    ExecutionResourceBudget executionBudget,
-    const ExecutionResourceTracker &resources, bool preparedSeedHandoff) {
-  if (!mapping_debug::enabled(mapping_debug::Level::Summary))
-    return;
-  const ExecutionResourceStatistics observation = resources.observe();
-  mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
-      mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
-        fields["statistics_kind"] = "spatial_pnr_execution";
-        fields["prepared_seed_handoff"] = preparedSeedHandoff;
-        fields["configured_worker_count"] = allocation.configuredWorkerCount;
-        fields["restart_count"] = allocation.restartCount;
-        fields["serial_prefix"] = allocation.serialPrefix;
-        fields["worker_count"] = allocation.actualWorkerCount;
-        fields["thread_count"] = allocation.actualWorkerCount;
-        fields["active_route_graph_unit_count"] =
-            allocation.activeRouteGraphUnitCount;
-        fields["route_graph_limited_worker_count"] =
-            allocation.routeGraphLimitedWorkerCount;
-        fields["worker_scratch_reservation_bytes"] =
-            allocation.workerScratchReservationBytes;
-        fields["maximum_observed_worker_scratch_bytes"] =
-            allocation.maximumObservedWorkerScratchBytes;
-        fields["shared_problem_retained_bytes"] =
-            allocation.sharedProblemRetainedBytes;
-        fields["memory_calibrated"] = allocation.memoryCalibrated;
-        if (allocation.cpuLimitedWorkerCount)
-          fields["cpu_limited_worker_count"] =
-              *allocation.cpuLimitedWorkerCount;
-        else
-          fields["cpu_limited_worker_count"] = nullptr;
-        if (allocation.memoryLimitedWorkerCount)
-          fields["memory_limited_worker_count"] =
-              *allocation.memoryLimitedWorkerCount;
-        else
-          fields["memory_limited_worker_count"] = nullptr;
-        if (executionBudget.memoryBytes)
-          fields["memory_budget_bytes"] = *executionBudget.memoryBytes;
-        else
-          fields["memory_budget_bytes"] = nullptr;
-        if (executionBudget.cpuCores)
-          fields["cpu_budget_cores"] = *executionBudget.cpuCores;
-        else
-          fields["cpu_budget_cores"] = nullptr;
-        fields["active_endpoint_count"] = problemStatistics.activeEndpointCount;
-        fields["active_traversal_count"] =
-            problemStatistics.activeTraversalCount;
-        fields["active_routing_arc_count"] =
-            problemStatistics.activeRoutingArcCount;
-        fields["active_wall_time_ns"] = observation.activeWallTimeNanoseconds;
-        if (observation.processCpuTimeDeltaNanoseconds)
-          fields["process_cpu_time_delta_ns"] =
-              *observation.processCpuTimeDeltaNanoseconds;
-        else
-          fields["process_cpu_time_delta_ns"] = nullptr;
-        fields["resource_observation_scope"] = "process";
-        fields["allocated_memory_bytes"] = observation.allocatedMemoryBytes;
-        if (observation.peakResidentMemoryBytes)
-          fields["peak_resident_memory_bytes"] =
-              *observation.peakResidentMemoryBytes;
-        else
-          fields["peak_resident_memory_bytes"] = nullptr;
-      });
-}
-
 enum class FreezeFailureKind : std::uint8_t {
   Invalid,
   ProvenInfeasible,
@@ -362,16 +220,13 @@ AttemptFailure classifyAttemptFailure(llvm::Error error) {
           result.kind = AttemptFailureKind::Internal;
           break;
         case EndpointRouteSearchFailureKind::ArithmeticOverflow:
-          result.kind = AttemptFailureKind::Rejected;
+          result.kind = AttemptFailureKind::Internal;
           break;
         }
         result.diagnostic = errorMessage(failure);
       },
       [&](const RoutingNegotiationError &failure) {
-        result.kind =
-            failure.kind() == RoutingNegotiationError::Kind::ArithmeticOverflow
-                ? AttemptFailureKind::Rejected
-                : AttemptFailureKind::Internal;
+        result.kind = AttemptFailureKind::Internal;
         result.diagnostic = errorMessage(failure);
       },
       [&](const SpatialPathFinderClosureFailure &failure) {
@@ -520,6 +375,16 @@ enum class SpatialRestartDisposition : std::uint8_t {
   Internal,
 };
 
+struct SpatialRestartCandidateSummary final {
+  std::optional<dse::ObjectiveVector> objective;
+  SpatialPnrClosureResidual residual;
+};
+
+struct SpatialFinalizedRestart final {
+  ArtifactRootReference reference;
+  SpatialRestartCandidateSummary summary;
+};
+
 struct SpatialRestartResult final {
   SpatialRestartDisposition disposition = SpatialRestartDisposition::Internal;
   SpatialPnrGenerationAccounting accounting;
@@ -533,6 +398,7 @@ struct SpatialRestartResult final {
   std::optional<SpatialGraphBoundaryEndpointHallDeficit>
       graphBoundaryEndpointHall = std::nullopt;
   std::uint64_t workerScratchRetainedBytes = 0;
+  std::optional<SpatialFinalizedRestart> finalized;
 };
 
 struct SpatialRestartScratch final {
@@ -600,7 +466,7 @@ llvm::StringRef spelling(InternalSpatialPnrGenerationReason reason) {
 }
 
 void emitRestartFailure(std::uint32_t ordinal,
-                        const SpatialRestartResult &restart) {
+                        const SpatialRestartResult &restart, bool contributesToResult) {
   if (restart.disposition == SpatialRestartDisposition::Candidate)
     return;
   mapping_debug::emit(
@@ -608,6 +474,7 @@ void emitRestartFailure(std::uint32_t ordinal,
       mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
         fields["failure_scope"] = "restart";
         fields["restart_ordinal"] = ordinal;
+        fields["contributes_to_result"] = contributesToResult;
         fields["closure_status"] = spelling(restart.disposition);
         fields["termination_owner"] =
             restart.disposition == SpatialRestartDisposition::Interrupted
@@ -1271,8 +1138,33 @@ accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
   LOOM_ACCUMULATE_SPATIAL_FIELD(adoptedLocalTransfers,
                                 "adopted local transfers");
   LOOM_ACCUMULATE_SPATIAL_FIELD(finalClosureAttempts, "final closure attempts");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(finalizedRestarts, "finalized restarts");
+  LOOM_ACCUMULATE_SPATIAL_FIELD(publicationSlots, "publication slots");
 #undef LOOM_ACCUMULATE_SPATIAL_FIELD
   return llvm::Error::success();
+}
+
+SpatialRestartCandidateSummary
+summarizeCandidate(const SpatialCandidateState &candidate) {
+  SpatialRestartCandidateSummary summary;
+  auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
+  if (objective)
+    summary.objective = std::move(*objective);
+  else
+    llvm::consumeError(objective.takeError());
+  std::array<std::optional<std::uint64_t>, resolvedPnrViolationKindCount>
+      values{};
+  for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
+       ++ordinal) {
+    auto value = spatialMappingViolationValue(
+        candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
+    if (value)
+      values[ordinal] = *value;
+    else
+      llvm::consumeError(value.takeError());
+  }
+  summary.residual.violationValues = values;
+  return summary;
 }
 
 SpatialPnrInterruptionSnapshot
@@ -1281,24 +1173,23 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
                             const SpatialPnrGenerationAccounting &accounting,
                             llvm::ArrayRef<SpatialRestartResult> restarts,
                             std::uint64_t retainedCandidates,
-                            const ExecutionResourceTracker &resources) {
-  const SpatialCandidateState *bestCandidate = nullptr;
-  std::optional<dse::ObjectiveVector> bestObjective;
+                            const ExecutionResourceTracker &resources,
+                            const MappingObjectiveProgram *objectiveProgram) {
+  std::optional<SpatialRestartCandidateSummary> best;
   for (const SpatialRestartResult &restart : restarts) {
-    if (!restart.candidate)
+    if (!restart.finalized && !restart.candidate)
       continue;
-    auto objective = restart.candidate->problem().objectiveProgram().evaluate(
-        *restart.candidate);
-    if (!objective) {
-      llvm::consumeError(objective.takeError());
-      if (!bestCandidate)
-        bestCandidate = restart.candidate.get();
+    SpatialRestartCandidateSummary summary =
+        restart.finalized ? restart.finalized->summary
+                          : summarizeCandidate(*restart.candidate);
+    if (!summary.objective) {
+      if (!best)
+        best = std::move(summary);
       continue;
     }
-    if (bestObjective) {
-      auto comparison =
-          restart.candidate->problem().objectiveProgram().compareSelectedRank(
-              *objective, {}, *bestObjective, {});
+    if (best && best->objective) {
+      auto comparison = objectiveProgram->compareSelectedRank(
+          *summary.objective, {}, *best->objective, {});
       if (!comparison) {
         llvm::consumeError(comparison.takeError());
         continue;
@@ -1306,8 +1197,7 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
       if (*comparison >= 0)
         continue;
     }
-    bestCandidate = restart.candidate.get();
-    bestObjective = std::move(*objective);
+    best = std::move(summary);
   }
 
   SpatialPnrInterruptionSnapshot snapshot;
@@ -1328,22 +1218,11 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
       accounting.finalizedRestarts,
       accounting.publicationSlots,
   };
-  if (bestObjective)
-    snapshot.bestSelectedRank = std::vector<std::uint64_t>(
-        bestObjective->codes().begin(), bestObjective->codes().end());
-  if (bestCandidate) {
-    std::array<std::optional<std::uint64_t>, resolvedPnrViolationKindCount>
-        values{};
-    for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
-         ++ordinal) {
-      auto value = spatialMappingViolationValue(
-          *bestCandidate, static_cast<ResolvedPnrViolationKind>(ordinal));
-      if (!value)
-        llvm::consumeError(value.takeError());
-      else
-        values[ordinal] = *value;
-    }
-    snapshot.closureResidual.violationValues = values;
+  if (best) {
+    if (best->objective)
+      snapshot.bestSelectedRank = std::vector<std::uint64_t>(
+          best->objective->codes().begin(), best->objective->codes().end());
+    snapshot.closureResidual = best->residual;
   }
   snapshot.closureResidual.retainedCandidates = retainedCandidates;
   snapshot.resources = resources.observe();
@@ -1432,13 +1311,14 @@ interruptedOutcome(SpatialPnrInterruptionStage stage,
                    SpatialPnrGenerationAccounting accounting,
                    std::vector<ArtifactRootReference> candidates,
                    llvm::ArrayRef<SpatialRestartResult> restarts,
-                   const ExecutionResourceTracker &resources) {
+                   const ExecutionResourceTracker &resources,
+                   const MappingObjectiveProgram *objectiveProgram = nullptr) {
   llvm::sort(candidates, artifactRootReferenceLess);
   candidates.erase(std::unique(candidates.begin(), candidates.end()),
                    candidates.end());
-  SpatialPnrInterruptionSnapshot snapshot =
-      projectInterruptionSnapshot(stage, restartOrdinal, accounting, restarts,
-                                  candidates.size(), resources);
+  SpatialPnrInterruptionSnapshot snapshot = projectInterruptionSnapshot(
+      stage, restartOrdinal, accounting, restarts, candidates.size(), resources,
+      objectiveProgram);
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
       mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
@@ -1513,8 +1393,11 @@ verifySpatialPnrWorkAccounting(const SpatialPnrGenerationAccounting &accounting,
   return llvm::Error::success();
 }
 
+namespace {
+
 SpatialPnrGenerationOutcome
-generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
+generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
+                            llvm::ThreadPoolInterface *invocationWorkers) {
   const ExecutionResourceTracker resources;
   SpatialPnrGenerationAccounting accounting;
   if (inputs.maximumCandidatePublications &&
@@ -1650,7 +1533,6 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   const bool firstVerifiedCandidate =
       inputs.config.policy().search.completionGoal ==
       ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  const bool serialPrefix = firstVerifiedCandidate;
   if (inputs.preparedCanonicalSeed) {
     const SpatialPathFinderSeedHandoff &handoff = *inputs.preparedCanonicalSeed;
     if (firstVerifiedCandidate || handoff.attemptOrdinal != 0 ||
@@ -1672,81 +1554,185 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           "problem"};
   }
   const FrozenSpatialPnrProblemHandle frozenProblem = *problem;
-  std::vector<SpatialRestartResult> restartResults;
+  std::vector<SpatialRestartResult> restartResults(restartCount);
+  const auto finalizeRestart = [&](SpatialRestartResult &restart) {
+    if (restart.disposition != SpatialRestartDisposition::Candidate)
+      return;
+    if (inputs.executionControl.stopRequested()) {
+      restart.disposition = SpatialRestartDisposition::Interrupted;
+      restart.interruptionStage =
+          SpatialPnrInterruptionStage::CandidateFinalization;
+      restart.diagnostic = "execution control requested stop";
+      return;
+    }
+    const auto failFinalization = [&](llvm::Error error) {
+      restart.disposition = SpatialRestartDisposition::Internal;
+      restart.internalReason =
+          InternalSpatialPnrGenerationReason::CandidateFinalization;
+      restart.diagnostic = llvm::toString(std::move(error));
+    };
+    ++restart.accounting.publicationSlots;
+    auto finalized = finalizeSpatialMappingCandidate(
+        *restart.candidate, inputs.dataflow, inputs.techMapping, inputs.fabric,
+        inputs.constraints, inputs.store, &derivedContexts->handshakeContext());
+    if (!finalized)
+      return failFinalization(finalized.takeError());
+    ++restart.accounting.finalizedRestarts;
+    const auto &view = finalized->view();
+    auto progress = ::loom::mapping::deriveSpatialMappingProgressClosure(
+        inputs.dataflow, inputs.techMapping, inputs.fabric,
+        view.computeBindings(), view.registerFifoTransfers(), view.routeTrees(),
+        view.resourceUses(), view.physicalTagSegments());
+    if (!progress)
+      return failFinalization(progress.takeError());
+    if (progress->kind !=
+        ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet) {
+      restart.diagnostic =
+          "proof_not_established: " +
+          ::loom::mapping::mappingProgressClosureReasonSpelling(
+              progress->reason)
+              .str();
+      return;
+    }
+    restart.finalized.emplace(SpatialFinalizedRestart{
+        finalized->reference(), summarizeCandidate(*restart.candidate)});
+    restart.candidate.reset();
+  };
+  std::atomic_uint32_t resultPrefixEnd{restartCount};
+  struct RestartExecutionControl final {
+    ExecutionControlView invocation;
+    const std::atomic_uint32_t &resultPrefixEnd;
+    std::uint32_t ordinal;
+  };
+  std::vector<std::uint8_t> completedRestarts(restartCount);
+  std::mutex publicationMutex;
+  std::uint32_t nextPublicationOrdinal = 0;
+  std::uint64_t admittedPublications = 0;
   const auto runRestart = [&](std::uint32_t attempt) {
     SpatialPathFinderSeedHandoffHandle handoff;
     if (attempt == 0)
       handoff = inputs.preparedCanonicalSeed;
-    return runSpatialRestart(frozenProblem, attempt, inputs.executionControl,
-                             std::move(handoff));
+    const RestartExecutionControl restartControl{
+        inputs.executionControl, resultPrefixEnd, attempt};
+    const ExecutionControlView control = firstVerifiedCandidate
+        ? ExecutionControlView{
+              &restartControl,
+              [](const void *context) {
+                const auto &control =
+                    *static_cast<const RestartExecutionControl *>(context);
+                return control.invocation.stopRequested() ||
+                       control.ordinal >= control.resultPrefixEnd.load(
+                                              std::memory_order_acquire);
+              },
+              [](const void *context) {
+                return static_cast<const RestartExecutionControl *>(context)
+                    ->invocation.remainingTime();
+              }}
+        : inputs.executionControl;
+    SpatialRestartResult result = runSpatialRestart(
+        frozenProblem, attempt, control, std::move(handoff));
+    if (!firstVerifiedCandidate && !inputs.maximumCandidatePublications) {
+      finalizeRestart(result);
+      restartResults[attempt] = std::move(result);
+      return;
+    }
+    // Publication and FirstVerified selection admit only an ordinal prefix.
+    // Later completed slots retain their actual work until the prefix closes.
+    std::lock_guard<std::mutex> lock(publicationMutex);
+    restartResults[attempt] = std::move(result);
+    completedRestarts[attempt] = 1;
+    while (nextPublicationOrdinal < resultPrefixEnd.load() &&
+           completedRestarts[nextPublicationOrdinal]) {
+      SpatialRestartResult &ready = restartResults[nextPublicationOrdinal++];
+      if (!inputs.maximumCandidatePublications ||
+          admittedPublications < *inputs.maximumCandidatePublications) {
+        finalizeRestart(ready);
+        admittedPublications += ready.accounting.publicationSlots;
+      }
+      if (firstVerifiedCandidate &&
+          (ready.finalized || ready.disposition ==
+                                  SpatialRestartDisposition::ProvenInfeasible))
+        resultPrefixEnd.store(nextPublicationOrdinal, std::memory_order_release);
+    }
   };
   const bool calibrateWorkerMemory =
-      executionBudget.memoryBytes && !serialPrefix && restartCount > 1;
+      executionBudget.memoryBytes && restartCount > 1;
   std::uint32_t firstPendingRestart = 0;
   std::uint64_t workerScratchReservationBytes = 0;
   if (calibrateWorkerMemory) {
-    restartResults.resize(restartCount);
-    restartResults.front() = runRestart(0);
+    runRestart(0);
     workerScratchReservationBytes =
         restartResults.front().workerScratchRetainedBytes;
     firstPendingRestart = 1;
   }
-  SpatialPnrWorkerAllocation workerAllocation = resolveWorkerAllocation(
-      inputs.candidateWorkerCount, restartCount, (*problem)->statistics(),
-      workerScratchReservationBytes, executionBudget, serialPrefix,
-      calibrateWorkerMemory);
+  detail::SpatialPnrWorkerAllocation workerAllocation =
+      detail::resolveWorkerAllocation(
+          inputs.candidateWorkerCount, restartCount, (*problem)->statistics(),
+          workerScratchReservationBytes, executionBudget, calibrateWorkerMemory);
   if (calibrateWorkerMemory)
     workerAllocation.actualWorkerCount =
         std::max(1U, std::min(workerAllocation.actualWorkerCount,
-                              restartCount - firstPendingRestart));
+                              resultPrefixEnd.load() - firstPendingRestart));
   const std::uint32_t workerCount = workerAllocation.actualWorkerCount;
+  workerAllocation.serialPrefix = firstVerifiedCandidate && workerCount == 1;
   auto emitExecutionStatisticsOnExit = llvm::scope_exit([&] {
-    emitInvocationExecutionStatistics(
+    detail::emitInvocationExecutionStatistics(
         workerAllocation, (*problem)->statistics(), executionBudget, resources,
-        inputs.preparedCanonicalSeed != nullptr);
+        inputs.preparedCanonicalSeed != nullptr, invocationWorkers != nullptr);
   });
 
-  if (serialPrefix) {
-    restartResults.reserve(restartCount);
-    std::uint64_t candidateRestarts = 0;
-    for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt) {
-      restartResults.push_back(runRestart(attempt));
-      if (restartResults.back().disposition ==
-          SpatialRestartDisposition::Candidate)
-        ++candidateRestarts;
-      if (restartResults.back().disposition ==
-              SpatialRestartDisposition::ProvenInfeasible ||
-          (firstVerifiedCandidate && candidateRestarts != 0))
-        break;
-    }
-  } else if (workerCount == 1) {
-    if (!calibrateWorkerMemory)
-      restartResults.reserve(restartCount);
-    for (std::uint32_t attempt = firstPendingRestart; attempt != restartCount;
-         ++attempt) {
-      if (calibrateWorkerMemory)
-        restartResults[attempt] = runRestart(attempt);
-      else
-        restartResults.push_back(runRestart(attempt));
-    }
+  if (workerCount == 1) {
+    while (firstPendingRestart < resultPrefixEnd.load())
+      runRestart(firstPendingRestart++);
   } else {
-    if (!calibrateWorkerMemory)
-      restartResults.resize(restartCount);
-    llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
-        static_cast<unsigned>(workerCount)));
-    std::atomic_uint32_t nextRestart{firstPendingRestart};
-    for (std::uint32_t worker = 0; worker != workerCount; ++worker)
-      pool.async([&] {
-        while (true) {
-          const std::uint32_t attempt =
-              nextRestart.fetch_add(1, std::memory_order_relaxed);
-          if (attempt >= restartCount)
-            break;
-          restartResults[attempt] = runRestart(attempt);
-        }
-      });
-    pool.wait();
+    std::optional<llvm::DefaultThreadPool> ownedWorkers;
+    if (!invocationWorkers)
+      ownedWorkers.emplace(llvm::heavyweight_hardware_concurrency(
+          static_cast<unsigned>(workerCount)));
+    llvm::ThreadPoolTaskGroup restarts(invocationWorkers ? *invocationWorkers
+                                                         : *ownedWorkers);
+    if (firstVerifiedCandidate) {
+      // A wave bounds both active workers and completed unselected state.
+      while (firstPendingRestart < resultPrefixEnd.load() &&
+             !inputs.executionControl.stopRequested()) {
+        const std::uint32_t waveEnd = firstPendingRestart +
+            std::min(workerCount, restartCount - firstPendingRestart);
+        for (; firstPendingRestart != waveEnd; ++firstPendingRestart)
+          restarts.async(runRestart, firstPendingRestart);
+        restarts.wait();
+      }
+    } else {
+      std::atomic_uint32_t nextRestart{firstPendingRestart};
+      for (std::uint32_t worker = 0; worker != workerCount; ++worker)
+        restarts.async([&] {
+          while (true) {
+            const std::uint32_t attempt =
+                nextRestart.fetch_add(1, std::memory_order_relaxed);
+            if (attempt >= restartCount)
+              break;
+            runRestart(attempt);
+          }
+        });
+      // Waiting runs child work in the borrowed pool without an idle parent.
+      restarts.wait();
+      firstPendingRestart = restartCount;
+    }
   }
+  restartResults.resize(firstPendingRestart);
+  const std::uint32_t resultRestartCount =
+      std::min(firstPendingRestart, resultPrefixEnd.load());
+  llvm::MutableArrayRef<SpatialRestartResult> resultRestarts(
+      restartResults.data(), resultRestartCount);
+  if (firstVerifiedCandidate)
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+        mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+          fields["statistics_kind"] = "spatial_first_verified_prefix";
+          fields["result_prefix_restart_count"] = resultRestartCount;
+          fields["started_restart_count"] = firstPendingRestart;
+          fields["speculative_suffix_restart_count"] =
+              firstPendingRestart - resultRestartCount;
+        });
   for (const SpatialRestartResult &restart : restartResults)
     workerAllocation.maximumObservedWorkerScratchBytes =
         std::max(workerAllocation.maximumObservedWorkerScratchBytes,
@@ -1756,29 +1742,30 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         workerAllocation.maximumObservedWorkerScratchBytes;
 
   std::vector<ArtifactRootReference> candidates;
-  bool semanticLimitReached = restartResults.size() != restartCount;
+  bool semanticLimitReached = resultRestartCount != restartCount;
   bool proofNotEstablished = false;
   std::string staticProgressDiagnostic;
   const SpatialRestartResult *incompleteRepresentative = nullptr;
   const SpatialRestartResult *semanticLimitRepresentative = nullptr;
   const SpatialRestartResult *interruptedRepresentative = nullptr;
   std::optional<std::uint32_t> interruptedOrdinal;
+  llvm::Error accountingErrors = llvm::Error::success();
   for (const auto indexedRestart : llvm::enumerate(restartResults)) {
     const SpatialRestartResult &restart = indexedRestart.value();
-    if (llvm::Error error =
-            accumulateRestartAccounting(restart.accounting, accounting))
-      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
+    accountingErrors = llvm::joinErrors(
+        std::move(accountingErrors),
+        accumulateRestartAccounting(restart.accounting, accounting));
     const bool requireClosedWork =
         restart.disposition != SpatialRestartDisposition::Interrupted &&
         restart.disposition != SpatialRestartDisposition::Internal;
-    if (llvm::Error error = verifySpatialPnrWorkAccounting(restart.accounting,
-                                                           requireClosedWork))
-      return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
-                      accounting, std::move(error));
+    accountingErrors = llvm::joinErrors(
+        std::move(accountingErrors),
+        verifySpatialPnrWorkAccounting(restart.accounting, requireClosedWork));
+    const bool contributesToResult = indexedRestart.index() < resultRestartCount;
     emitRestartFailure(static_cast<std::uint32_t>(indexedRestart.index()),
-                       restart);
-    if (restart.disposition == SpatialRestartDisposition::Interrupted &&
+                       restart, contributesToResult);
+    if (contributesToResult &&
+        restart.disposition == SpatialRestartDisposition::Interrupted &&
         (!interruptedRepresentative ||
          (interruptedRepresentative->accounting.preparedSeeds == 0 &&
           restart.accounting.preparedSeeds != 0))) {
@@ -1787,22 +1774,41 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     }
   }
 
+  if (accountingErrors)
+    return internal(InternalSpatialPnrGenerationReason::AccountingOverflow,
+                    accounting, std::move(accountingErrors));
+
+  for (const SpatialRestartResult &restart : restartResults)
+    if (restart.disposition == SpatialRestartDisposition::Internal &&
+        restart.internalReason ==
+            InternalSpatialPnrGenerationReason::AccountingOverflow)
+      return internal(restart.internalReason, accounting, restart.diagnostic);
+
   const bool hasCandidateRestart =
       llvm::any_of(restartResults, [](const SpatialRestartResult &restart) {
         return restart.disposition == SpatialRestartDisposition::Candidate;
       });
-  for (SpatialRestartResult &restart : restartResults) {
+  if (hasCandidateRestart &&
+      llvm::any_of(restartResults, [](const SpatialRestartResult &restart) {
+        return restart.disposition == SpatialRestartDisposition::ProvenInfeasible;
+      }))
+    return internal(
+        InternalSpatialPnrGenerationReason::CandidateVerification, accounting,
+        "one restart proved global infeasibility while another produced "
+        "a verified candidate");
+  for (SpatialRestartResult &restart : resultRestarts) {
     switch (restart.disposition) {
     case SpatialRestartDisposition::Candidate:
       semanticLimitReached |= restart.semanticLimitReached;
-      break;
+      if (restart.finalized)
+        candidates.push_back(restart.finalized->reference);
+      else if (restart.accounting.finalizedRestarts != 0) {
+        proofNotEstablished = true;
+        if (staticProgressDiagnostic.empty())
+          staticProgressDiagnostic = restart.diagnostic;
+      }
+      continue;
     case SpatialRestartDisposition::ProvenInfeasible: {
-      if (hasCandidateRestart)
-        return internal(
-            InternalSpatialPnrGenerationReason::CandidateVerification,
-            accounting,
-            "one restart proved global infeasibility while another produced "
-            "a verified candidate");
       emitInvocationAccounting(
           accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
       const bool hasGraphBoundaryHall =
@@ -1826,48 +1832,6 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     case SpatialRestartDisposition::Internal:
       return internal(restart.internalReason, accounting, restart.diagnostic);
     }
-
-    if (inputs.maximumCandidatePublications &&
-        accounting.publicationSlots >= *inputs.maximumCandidatePublications)
-      continue;
-
-    if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(
-          SpatialPnrInterruptionStage::CandidateFinalization, std::nullopt,
-          accounting, std::move(candidates), restartResults, resources);
-
-    ++accounting.publicationSlots;
-    auto finalized = finalizeSpatialMappingCandidate(
-        *restart.candidate, inputs.dataflow, inputs.techMapping, inputs.fabric,
-        inputs.constraints, inputs.store, &derivedContexts->handshakeContext());
-    if (!finalized)
-      return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
-                      accounting, finalized.takeError());
-    ++accounting.finalizedRestarts;
-    const ::loom::mapping::SpatialMappingView &view = finalized->view();
-    auto progress = ::loom::mapping::deriveSpatialMappingProgressClosure(
-        inputs.dataflow, inputs.techMapping, inputs.fabric,
-        view.computeBindings(), view.registerFifoTransfers(), view.routeTrees(),
-        view.resourceUses(), view.physicalTagSegments());
-    if (!progress)
-      return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
-                      accounting, progress.takeError());
-    if (progress->kind !=
-        ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet) {
-      proofNotEstablished = true;
-      if (staticProgressDiagnostic.empty())
-        staticProgressDiagnostic =
-            "proof_not_established: " +
-            ::loom::mapping::mappingProgressClosureReasonSpelling(
-                progress->reason)
-                .str();
-      continue;
-    }
-    candidates.push_back(finalized->reference());
-    if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(
-          SpatialPnrInterruptionStage::CandidateFinalization, std::nullopt,
-          accounting, std::move(candidates), restartResults, resources);
   }
 
   if (interruptedRepresentative || inputs.executionControl.stopRequested())
@@ -1875,8 +1839,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         interruptedRepresentative
             ? interruptedRepresentative->interruptionStage
             : SpatialPnrInterruptionStage::CandidateFinalization,
-        interruptedOrdinal, accounting, std::move(candidates), restartResults,
-        resources);
+        interruptedOrdinal, accounting, std::move(candidates), resultRestarts,
+        resources, &frozenProblem->objectiveProgram());
 
   if (!candidates.empty()) {
     llvm::sort(candidates, artifactRootReferenceLess);
@@ -1932,6 +1896,19 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           ? "no fixed restart reached independent final verification"
           : representative->diagnostic,
       std::move(*fifoCapacityShortfall)};
+}
+
+} // namespace
+
+SpatialPnrGenerationOutcome
+generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
+  return generateSpatialMappingsImpl(inputs, nullptr);
+}
+
+SpatialPnrGenerationOutcome
+generateSpatialMappings(const SpatialPnrGenerationInputs &inputs,
+                        llvm::ThreadPoolInterface &workers) {
+  return generateSpatialMappingsImpl(inputs, &workers);
 }
 
 } // namespace loom::pnr

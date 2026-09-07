@@ -606,6 +606,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
     llvm::SmallString<128> repairJournal(temporary.path());
     llvm::sys::path::append(repairJournal, "repair-quality-selection");
     const loom::dse::JointDesignExplorationPlan *firstRepairPlan = &firstPlan;
+    // The fixed-frontier repair is the lower-quality baseline for promotion.
     auto firstRepair = take(loom::dse::executeJointDesignWithHardwareReopen(
         llvm::ArrayRef<const loom::dse::JointDesignExplorationPlan *>(
             &firstRepairPlan, 1),
@@ -619,7 +620,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
          5,
          take(loom::dse::SiteCapacity::get(2, 0, 0)),
          take(loom::dse::PlanExecutionPolicy::get(
-             32, take(loom::dse::SiteResourceClaim::get(1, 0, 0))))},
+             32, take(loom::dse::SiteResourceClaim::get(1, 0, 0)))),
+         loom::dse::PreMappingSpectrumEndpoint::Automatic,
+         loom::dse::JointHardwareExplorationScope::FixedSystemFrontier},
         store, blobs));
     if (!firstRepair.summary.selectedMapping ||
         firstRepair.summary.qualityDisposition !=
@@ -833,7 +836,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
 
   auto mappedDataflow = take(dataflow::importCanonicalDataflow(
       plan.frontier.pairs.front().software.dataflow, store));
-  auto mappedDataflowView = take(mappedDataflow.view());
+  const auto &mappedDataflowView = mappedDataflow.view();
   std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
   for (const auto &root : mappedDataflowView.rootThreadLaunches())
     mappedRoots.push_back(root.ref);
@@ -1181,7 +1184,7 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
 
   auto transportDataflow = take(dataflow::importCanonicalDataflow(
       plan.frontier.pairs.front().software.dataflow, store));
-  auto transportDataflowView = take(transportDataflow.view());
+  const auto &transportDataflowView = transportDataflow.view();
   auto transportTech =
       take(loom::mapping::importTechMapping(operandTech, store));
   auto parentTransportConstraints =
@@ -1276,6 +1279,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   if (crossTagFeedback)
     fail("cross-tag witness admitted a discipline change on an untagged FIFO");
   llvm::consumeError(crossTagFeedback.takeError());
+  if (runFifoHardwareRepair)
+    joint_fixture::exerciseFifoDisciplineHardwareFeedback(
+        firstWorkload, temporary.path(), store, blobs);
   if (qualityRuns("fifo")) {
     if (!incompleteRepairQuality)
       fail("quality-promotion fixture lost its incomplete repair policy");

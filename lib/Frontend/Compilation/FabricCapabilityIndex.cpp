@@ -339,10 +339,8 @@ frontend::FabricCapabilityIndex::admittingMemoryResourceCount(
 llvm::Expected<std::optional<frontend::ExactFabricCapabilityMiss>>
 frontend::FabricCapabilityIndex::firstInadmissibleActor(
     const dataflow::CanonicalDataflowArtifact &program) const {
-  auto view = program.view();
-  if (!view)
-    return view.takeError();
-  for (const dataflow::CanonicalActorView &actor : view->actors()) {
+  const auto &view = program.view();
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
     auto projection =
         dataflow::projectRegisteredActorSchemaProjection(actor.op);
     if (!projection)

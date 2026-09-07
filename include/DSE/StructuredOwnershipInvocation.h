@@ -128,7 +128,7 @@ public:
       const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
       const lowering::CanonicalDataflowLoweringOptions &lowering,
       std::uint32_t candidateWorkerCount,
-      sim::SourceBackedDfgValidationLimits functionalReplayLimits,
+      StructuredFunctionalReplayBudget functionalReplayLimits,
       llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
           sourceProvenance = {},
       const StructuredOwnershipSharedEvaluation *sharedEvaluation = nullptr,

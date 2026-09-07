@@ -35,7 +35,12 @@ currentExactRepairBindingChoice(const SpatialCandidateState &candidate,
                                 const SpatialBindingRelationModel &bindings,
                                 PnrIndex decision);
 
-llvm::Expected<operations_research::sat::IntVar>
+struct ExactRepairMutationObjective final {
+  operations_research::sat::IntVar objective;
+  std::vector<int> proofPriorityVariables;
+};
+
+llvm::Expected<ExactRepairMutationObjective>
 addExactRepairMutationCountObjective(
     operations_research::sat::CpModelBuilder &model,
     llvm::ArrayRef<operations_research::sat::IntVar> variables,

@@ -113,8 +113,8 @@ projectJointSoftwareCoverage(const JointDesignExplorationPlan &plan,
 bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 
 llvm::Expected<PlanExecutionPolicy>
-fairBoundedQualityPlanPolicy(const PlanExecutionPolicy &base,
-                             std::uint64_t remainingPlanCount);
+fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
+                        std::uint64_t remainingPlanCount);
 
 std::size_t mappingCount(const JointDesignExecution &execution);
 

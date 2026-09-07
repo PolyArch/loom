@@ -620,9 +620,7 @@ strictImport(const ArtifactIdentity &identity,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
 
   ArtifactRootReference fabricReference{
       ::loom::fabric::fabricArtifactSchema.identity.str(),
@@ -635,7 +633,7 @@ strictImport(const ArtifactIdentity &identity,
     return system.takeError();
 
   auto view = SystemMappingConstraintSetView::import(
-      identity, parsed->root, *dataflowView, *system, store);
+      identity, parsed->root, dataflowView, *system, store);
   if (!view)
     return view.takeError();
   auto rewritten = writeCanonicalSystemConstraintAssembly(parsed->root);

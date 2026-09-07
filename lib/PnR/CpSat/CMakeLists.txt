@@ -2,6 +2,7 @@ add_mlir_library(LoomPnRCpSat
   CpSatExactProtocol.cpp
   SpatialExactRepair.cpp
   SpatialTransportExactRepair.cpp
+  SpatialTransportWitness.cpp
   SpatialExactRepairCapability.cpp
   SpatialExactRepairModel.cpp
   SpatialFixedTerminalCutConstraint.cpp

@@ -824,7 +824,7 @@ int main() {
 
   auto dataflow = buildMemoryDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflow, store));
-  auto dataflowView = take(dataflow.view());
+  const auto &dataflowView = dataflow.view();
   require(dataflowView.rootThreadLaunches().size() == 1,
           "fixture must contain one root launch");
 
@@ -1006,7 +1006,7 @@ int main() {
 
   auto dynamicDataflow = buildDynamicMemoryDataflow(context);
   take(dataflow::publishCanonicalDataflow(dynamicDataflow, store));
-  auto dynamicView = take(dynamicDataflow.view());
+  const auto &dynamicView = dynamicDataflow.view();
   std::vector<dataflow::RootThreadLaunchRef> dynamicRoots{
       dynamicView.rootThreadLaunches().front().ref};
   auto dynamicObligations = take(loom::mapping::projectSystemServiceObligations(
@@ -1096,7 +1096,7 @@ int main() {
 
   auto messageDataflow = buildMessageDataflow(context);
   take(dataflow::publishCanonicalDataflow(messageDataflow, store));
-  auto messageView = take(messageDataflow.view());
+  const auto &messageView = messageDataflow.view();
   require(messageView.rootThreadLaunches().size() == 1,
           "message fixture must contain one root launch");
   std::vector<dataflow::RootThreadLaunchRef> messageRoots{

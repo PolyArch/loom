@@ -7,6 +7,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -190,6 +191,39 @@ void malformedAndForeignReferencesFailClosed() {
   requireRejected(adoptResolvedDseConfigView(view.schemaDescriptorBytes(),
                                              trailing, trailingDigest),
                   "trailing bytes");
+
+  const GeneratePlanNodeDefinition generate{
+      take(CandidateGeneratorDescriptorRef::get(
+          candidateGeneratorDescriptorSchema, CandidateGeneratorKind(16))),
+      {}, {}, take(computeComponentViewDigest(acquisitionConfigSchema, {}))};
+  const std::array<std::uint8_t, 20> expectedGeneratePrefix = {
+      0, 0, 0, 0, 0, 0, 0, 1, // one node
+      0, 0, 0, 0,             // Generate
+      0, 0, 0, 3, 0, 0, 0, 4 // exact registry 3.4
+  };
+  auto generateBytes = canonicalDsePlanNodeBytes(generate);
+  if (generateBytes.size() < expectedGeneratePrefix.size() ||
+      !std::equal(expectedGeneratePrefix.begin(), expectedGeneratePrefix.end(),
+                  generateBytes.begin()))
+    fail("Generate plan dropped its exact descriptor version");
+  auto unversioned = generateBytes;
+  constexpr std::size_t descriptorVersionOffset = 12;
+  constexpr std::size_t descriptorVersionBytes = 8;
+  unversioned.erase(unversioned.begin() + descriptorVersionOffset,
+                    unversioned.begin() + descriptorVersionOffset +
+                        descriptorVersionBytes);
+  requireRejected(adoptDsePlanNode(unversioned),
+                  "count exceeds the remaining canonical bytes");
+  constexpr std::size_t descriptorMinorLastByte = 19;
+  generateBytes[descriptorMinorLastByte] = 3;
+  requireRejected(adoptDsePlanNode(generateBytes),
+                  "candidate generator descriptor schema is unsupported");
+
+  auto promoteBytes =
+      canonicalDsePlanNodeBytes(promoteNode(QualityGatePolicyRef(0)));
+  promoteBytes[descriptorMinorLastByte] = 1;
+  requireRejected(adoptDsePlanNode(promoteBytes),
+                  "promotion acquisition descriptor schema is unsupported");
 
   std::array<std::uint8_t, ComponentViewDigest::byteSize> stale =
       view.digest().bytes();

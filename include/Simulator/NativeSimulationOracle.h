@@ -13,15 +13,69 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <variant>
 #include <vector>
 
 namespace loom::sim {
+
+/// Address-free source locators owned by the native finite-object registry.
+/// Program operation ordinals use same-kind operations within one callable;
+/// consumers resolve them in the exact selected program and verify its identity.
+struct NativeInputMemoryObjectSource final {
+  std::uint64_t objectOrdinal = 0;
+  friend bool operator==(const NativeInputMemoryObjectSource &a,
+                         const NativeInputMemoryObjectSource &b) {
+    return a.objectOrdinal == b.objectOrdinal;
+  }
+};
+struct NativeStackMemoryObjectSource final {
+  std::string callableSymbol;
+  std::uint64_t allocationOrdinal = 0;
+  /// The registry fills this for a captured object. Zero denotes the active
+  /// capture frame; absent denotes a structural locator before execution.
+  std::optional<std::uint64_t> captureFrameDistance;
+  friend bool operator==(const NativeStackMemoryObjectSource &a,
+                         const NativeStackMemoryObjectSource &b) {
+    return a.callableSymbol == b.callableSymbol &&
+           a.allocationOrdinal == b.allocationOrdinal &&
+           a.captureFrameDistance == b.captureFrameDistance;
+  }
+};
+struct NativeGlobalMemoryObjectSource final {
+  std::string symbol;
+  friend bool operator==(const NativeGlobalMemoryObjectSource &a,
+                         const NativeGlobalMemoryObjectSource &b) {
+    return a.symbol == b.symbol;
+  }
+};
+struct NativeAllocationMemoryObjectSource final {
+  std::string callableSymbol;
+  std::uint64_t callOrdinal = 0;
+  friend bool operator==(const NativeAllocationMemoryObjectSource &a,
+                         const NativeAllocationMemoryObjectSource &b) {
+    return a.callableSymbol == b.callableSymbol &&
+           a.callOrdinal == b.callOrdinal;
+  }
+};
+using NativeMemoryObjectSource =
+    std::variant<NativeInputMemoryObjectSource, NativeStackMemoryObjectSource,
+                 NativeGlobalMemoryObjectSource,
+                 NativeAllocationMemoryObjectSource>;
+
+llvm::Expected<NativeMemoryObjectSource>
+projectNativeProgramMemoryObjectSource(mlir::Operation *operation);
+llvm::Expected<mlir::Operation *> resolveNativeProgramMemoryObjectSource(
+    mlir::ModuleOp module, const NativeMemoryObjectSource &source);
 
 struct NativeCapturedMemoryObject {
   std::vector<std::uint8_t> initialBytes;
   std::vector<std::uint8_t> finalBytes;
   std::vector<RuntimeMemoryPointer> initialPointers;
   std::vector<RuntimeMemoryPointer> finalPointers;
+  /// Present for workload-backed captures. This locator names the live source
+  /// allocation; it never contains a native address or captured byte heuristic.
+  std::optional<NativeMemoryObjectSource> source;
 };
 
 struct NativeSimulationCallCapture {

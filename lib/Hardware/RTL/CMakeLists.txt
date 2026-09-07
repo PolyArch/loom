@@ -8,6 +8,9 @@ add_library(LoomHardwareRTL
   Hierarchy/ConfigurationController.cpp
   Hierarchy/FuPe.cpp
   Hierarchy/Memory.cpp
+  Hierarchy/MemoryAccess.cpp
+  Hierarchy/MemoryDiagnostics.cpp
+  Hierarchy/TemporalPeDiagnostics.cpp
   Hierarchy/MemoryService.cpp
   Hierarchy/ModuleHierarchy.cpp
   Hierarchy/OperationShell.cpp

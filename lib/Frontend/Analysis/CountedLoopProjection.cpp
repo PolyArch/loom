@@ -1,9 +1,9 @@
-#include "Frontend/Raising/CountedLoopProjection.h"
+#include "Frontend/Analysis/CountedLoopProjection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
-namespace loom::raising {
+namespace loom::frontend::analysis {
 namespace {
 
 mlir::IntegerAttr integerConstant(mlir::Value value) {
@@ -91,8 +91,7 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
   mlir::Block *before = loop.getBeforeBody();
   mlir::scf::ConditionOp condition = loop.getConditionOp();
   auto compare = condition.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
-  if (!compare || compare->getParentRegion() != &loop.getBefore() ||
-      compare.getPredicate() != mlir::arith::CmpIPredicate::ne)
+  if (!compare || compare->getParentRegion() != &loop.getBefore())
     return std::nullopt;
 
   std::optional<ExactPostTestedCountedLoopProjection> projection;
@@ -120,15 +119,23 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
     if (!stepAttr || stepAttr.getType() != integer)
       continue;
 
+    // Every accepted condition is equivalent over the proven non-wrapping
+    // landing sequence. Reversing operands must reverse the order predicate,
+    // not logically negate it.
+    using Predicate = mlir::arith::CmpIPredicate;
+    Predicate predicate = compare.getPredicate();
     mlir::Value upperBound;
-    if (compare.getLhs() == update.getResult())
+    if (compare.getLhs() == update.getResult() &&
+        (predicate == Predicate::ne || predicate == Predicate::slt ||
+         predicate == Predicate::ult))
       upperBound = compare.getRhs();
-    else if (compare.getRhs() == update.getResult())
+    else if (compare.getRhs() == update.getResult() &&
+             (predicate == Predicate::ne || predicate == Predicate::sgt ||
+              predicate == Predicate::ugt))
       upperBound = compare.getLhs();
     else
       continue;
-    if (upperBound.getType() != integer ||
-        !isDefinedOutside(upperBound, loop))
+    if (upperBound.getType() != integer || !isDefinedOutside(upperBound, loop))
       continue;
 
     const unsigned arithmeticWidth = integer.getWidth() + 1;
@@ -161,4 +168,4 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
   return projection;
 }
 
-} // namespace loom::raising
+} // namespace loom::frontend::analysis

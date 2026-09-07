@@ -20,7 +20,7 @@
 namespace loom::dse {
 namespace {
 
-constexpr char schemaDescriptor[] = "loom.dse.config.1.3";
+constexpr char schemaDescriptor[] = "loom.dse.config.1.4";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -644,6 +644,8 @@ void encodePlanNodes(Encoder &encoder,
   for (const DsePlanNodeDefinition &node : nodes) {
     if (const auto *generate = std::get_if<GeneratePlanNodeDefinition>(&node)) {
       encoder.u32(0);
+      encoder.u32(generate->descriptor.descriptorSchema().version.major);
+      encoder.u32(generate->descriptor.descriptorSchema().version.minor);
       encoder.u32(generate->descriptor.kind().ordinal());
       encoder.u64(generate->inputBindings.size());
       for (const PlanInputBinding &input : generate->inputBindings)
@@ -654,6 +656,8 @@ void encodePlanNodes(Encoder &encoder,
     }
     const auto &promote = std::get<PromotePlanNodeDefinition>(node);
     encoder.u32(1);
+    encoder.u32(promote.acquisition.descriptorSchema().version.major);
+    encoder.u32(promote.acquisition.descriptorSchema().version.minor);
     encoder.u32(promote.acquisition.kind().ordinal());
     encoder.u64(promote.inputBindings.size());
     for (const PlanInputBinding &input : promote.inputBindings)
@@ -668,19 +672,25 @@ void encodePlanNodes(Encoder &encoder,
 
 llvm::Expected<std::vector<DsePlanNodeDefinition>>
 decodePlanNodes(Decoder &decoder) {
-  auto nodeCount = decoder.count(48);
+  auto nodeCount = decoder.count(64);
   if (!nodeCount)
     return nodeCount.takeError();
   std::vector<DsePlanNodeDefinition> nodes;
   nodes.reserve(*nodeCount);
   for (std::size_t nodeIndex = 0; nodeIndex != *nodeCount; ++nodeIndex) {
     auto tag = decoder.u32();
-    auto kind = decoder.u32();
-    auto inputCount = decoder.count(4);
     if (!tag)
       return tag.takeError();
+    auto major = decoder.u32();
+    if (!major)
+      return major.takeError();
+    auto minor = decoder.u32();
+    if (!minor)
+      return minor.takeError();
+    auto kind = decoder.u32();
     if (!kind)
       return kind.takeError();
+    auto inputCount = decoder.count(4);
     if (!inputCount)
       return inputCount.takeError();
     std::vector<PlanInputBinding> inputs;
@@ -692,14 +702,15 @@ decodePlanNodes(Decoder &decoder) {
       inputs.push_back(std::move(*input));
     }
     auto config = decoder.bytes();
-    auto digest = decoder.digest();
     if (!config)
       return config.takeError();
+    auto digest = decoder.digest();
     if (!digest)
       return digest.takeError();
     if (*tag == 0) {
       auto descriptor = CandidateGeneratorDescriptorRef::get(
-          candidateGeneratorDescriptorSchema, CandidateGeneratorKind(*kind));
+          {candidateGeneratorDescriptorSchema.identity, {*major, *minor}},
+          CandidateGeneratorKind(*kind));
       if (!descriptor)
         return descriptor.takeError();
       nodes.push_back(GeneratePlanNodeDefinition{*descriptor, std::move(inputs),
@@ -709,7 +720,7 @@ decodePlanNodes(Decoder &decoder) {
     if (*tag != 1)
       return invalid("plan node has an unknown tag");
     auto acquisition = PromotionAcquisitionDescriptorRef::get(
-        PromotionAcquisitionDescriptor::schema,
+        {PromotionAcquisitionDescriptor::schema.identity, {*major, *minor}},
         PromotionAcquisitionKind(*kind));
     if (!acquisition)
       return acquisition.takeError();

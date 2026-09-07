@@ -94,6 +94,7 @@ struct LoomDriverOptions final {
   std::string deploymentPath;
   std::string mappingTechCandidateLimit;
   std::string mappingWallTimeLimitMilliseconds;
+  std::string mappingReplayWavefrontLimit;
   std::string mappingRepairCandidateLimit;
   std::string mappingStoppingPolicy;
   std::string mappingSpectrumEndpoint;
@@ -113,6 +114,7 @@ struct LoomDriverOptions final {
            !localToolConfigPath.empty() || !deploymentPath.empty() ||
            !mappingTechCandidateLimit.empty() ||
            !mappingWallTimeLimitMilliseconds.empty() ||
+           !mappingReplayWavefrontLimit.empty() ||
            !mappingRepairCandidateLimit.empty() ||
            !mappingStoppingPolicy.empty() || !mappingSpectrumEndpoint.empty() ||
            !portfolioManifestPath.empty() || !portfolioRepositoryRoot.empty() ||
@@ -208,6 +210,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (!mappingWallTimeLimit)
       return mappingWallTimeLimit.takeError();
     if (*mappingWallTimeLimit)
+      continue;
+    auto mappingReplayWavefrontLimit = consumeLoomOption(
+        argument, "--loom-mapping-replay-wavefront-limit", index, arguments,
+        seen, options.mappingReplayWavefrontLimit);
+    if (!mappingReplayWavefrontLimit)
+      return mappingReplayWavefrontLimit.takeError();
+    if (*mappingReplayWavefrontLimit)
       continue;
     auto mappingRepairCandidateLimit = consumeLoomOption(
         argument, "--loom-mapping-repair-candidate-limit", index, arguments,
@@ -360,6 +369,15 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       return parsed.takeError();
     wallTimeLimit = *parsed;
   }
+  std::optional<std::uint64_t> mappingReplayWavefrontLimit;
+  if (!options.mappingReplayWavefrontLimit.empty()) {
+    auto parsed =
+        parsePositiveProductLimit(options.mappingReplayWavefrontLimit,
+                                  "--loom-mapping-replay-wavefront-limit");
+    if (!parsed)
+      return parsed.takeError();
+    mappingReplayWavefrontLimit = *parsed;
+  }
   std::optional<std::uint64_t> mappingRepairCandidateLimit;
   if (!options.mappingRepairCandidateLimit.empty()) {
     auto parsed =
@@ -390,6 +408,7 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       options.operatorProtocolSymbols,
       techCandidateLimit,
       wallTimeLimit,
+      mappingReplayWavefrontLimit,
       mappingRepairCandidateLimit,
       *stoppingPolicy,
       *spectrumEndpoint,

@@ -15,6 +15,11 @@
 
 namespace loom::sim::detail {
 
+const ::loom::mapping::SpatialPeOperandProgressFeedback &
+CgraTransportRuntime::operandQueueProgress() const {
+  return plan_->transport.operandQueueProgress;
+}
+
 std::vector<CgraPendingTransferDiagnostic>
 CgraTransportRuntime::pendingTransferDiagnostics() const {
   std::vector<CgraPendingTransferDiagnostic> result;
@@ -22,12 +27,12 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
   const auto appendTraversalTargets =
       [&](const TraversalNodeBinding &node,
           std::vector<::loom::fabric::FabricPhysicalTraversalRef> &targets) {
-        if (node.targetTraversalOffset > traversalTargets_.size() ||
+        if (node.targetTraversalOffset > graph_.traversalTargets.size() ||
             node.targetTraversalCount >
-                traversalTargets_.size() - node.targetTraversalOffset)
+                graph_.traversalTargets.size() - node.targetTraversalOffset)
           return;
         const auto selected =
-            llvm::ArrayRef(traversalTargets_)
+            llvm::ArrayRef(graph_.traversalTargets)
                 .slice(node.targetTraversalOffset, node.targetTraversalCount);
         targets.insert(targets.end(), selected.begin(), selected.end());
       };
@@ -69,7 +74,9 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
     CgraPendingTransferDiagnostic diagnostic;
     diagnostic.bindingOrdinal = transfer.bindingOrdinal;
     diagnostic.occurrenceOrdinal = transfer.occurrenceOrdinal;
-    diagnostic.blocked = blocked;
+    diagnostic.blocked = blocked ||
+                         (transfer.published &&
+                          !transfer.producerCompletionReported);
     diagnostic.arrivalScheduled = transfer.arrivalScheduled;
     diagnostic.publicationReady = transfer.publicationReady;
     diagnostic.published = transfer.published;
@@ -90,8 +97,8 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         static_cast<std::uint32_t>(transfer.publications.size());
     diagnostic.requestedPublicationCount = requestedPublicationCount;
     diagnostic.publishedPublicationCount = publishedPublicationCount;
-    if (transfer.bindingOrdinal < bindings_.size()) {
-      const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+    if (transfer.bindingOrdinal < graph_.bindings.size()) {
+      const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
       diagnostic.producer = binding.producer;
       diagnostic.sinkCount = binding.sinkCount;
       if (const auto *producer =
@@ -104,7 +111,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
            node != binding.traversalNodeOffset + binding.traversalNodeCount;
            ++node) {
         const std::uint64_t tagOrdinal =
-            traversalNodes_[node].physicalTagOrdinal;
+            graph_.traversalNodes[node].physicalTagOrdinal;
         if (tagOrdinal == invalidCgraTransportOrdinal)
           continue;
         diagnostic.physicalTagOrdinal = tagOrdinal;
@@ -123,10 +130,10 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         if (state != TraversalNodeState::WaitingStorage &&
             state != TraversalNodeState::Queued)
           continue;
-        const TraversalNodeBinding &traversal = traversalNodes_[node];
+        const TraversalNodeBinding &traversal = graph_.traversalNodes[node];
         if (traversal.storageOrdinal >= storages_.size())
           continue;
-        const StorageBinding &storage = storages_[traversal.storageOrdinal];
+        const StorageState &storage = storages_[traversal.storageOrdinal];
         diagnostic.blockingTraversalNodeOrdinal = node;
         diagnostic.blockingStorageOrdinal = traversal.storageOrdinal;
         appendTraversalTargets(traversal, diagnostic.blockingTraversals);
@@ -134,11 +141,11 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
              target !=
              traversal.targetTraversalOffset + traversal.targetTraversalCount;
              ++target) {
-          if (target >= traversalTargets_.size())
+          if (target >= graph_.traversalTargets.size())
             continue;
           const auto *fifo =
               std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
-                  &traversalTargets_[target].payload);
+                  &graph_.traversalTargets[target].payload);
           if (!fifo ||
               fifo->mode != ::loom::fabric::FabricFifoTraversalMode::Buffered)
             continue;
@@ -162,11 +169,12 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         if (!traversal.downstreamStorageNodes.empty()) {
           const std::uint64_t downstream =
               traversal.downstreamStorageNodes.front();
-          const TraversalNodeBinding &boundary = traversalNodes_[downstream];
+          const TraversalNodeBinding &boundary =
+              graph_.traversalNodes[downstream];
           appendTraversalTargets(boundary,
                                  diagnostic.blockingDownstreamTraversals);
           if (boundary.storageOrdinal < storages_.size()) {
-            const StorageBinding &downstreamStorage =
+            const StorageState &downstreamStorage =
                 storages_[boundary.storageOrdinal];
             diagnostic.blockingDownstreamStorageOrdinal =
                 boundary.storageOrdinal;
@@ -185,11 +193,19 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         break;
       }
       for (auto [localOrdinal, sink] :
-           llvm::enumerate(llvm::ArrayRef(sinks_).slice(binding.sinkOffset,
-                                                        binding.sinkCount))) {
+           llvm::enumerate(llvm::ArrayRef(graph_.sinks)
+                               .slice(binding.sinkOffset, binding.sinkCount))) {
         if (localOrdinal < transfer.publishedSinks.size() &&
-            transfer.publishedSinks[localOrdinal])
+            transfer.publishedSinks[localOrdinal]) {
+          if (!transfer.acceptedSinks[localOrdinal] &&
+              sink.kind == SinkKind::Channel &&
+              diagnostic.blockingActorOrdinal == invalidCgraTransportOrdinal) {
+            diagnostic.blockingActorOrdinal = sink.semanticActorOrdinal;
+            diagnostic.blockingReadyTokenCount =
+                state_->channelSlots[sink.channel].ready.size();
+          }
           continue;
+        }
         if (sink.kind != SinkKind::Channel) {
           diagnostic.unpublishedActorOrdinals.push_back(
               invalidCgraTransportOrdinal);
@@ -214,14 +230,14 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         }
         if (sink.operandQueueBinding >= operandQueues_.size())
           continue;
-        const OperandQueueBinding &queue =
+        const OperandQueueState &queue =
             operandQueues_[sink.operandQueueBinding];
-        if (queue.unitBinding >= operandQueueUnits_.size())
+        if (queue.binding.unitBinding >= operandQueueUnits_.size())
           continue;
-        const OperandQueueUnitBinding &unit =
-            operandQueueUnits_[queue.unitBinding];
-        if (unit.occupancy <= unit.capacity &&
-            unit.reservations < unit.capacity - unit.occupancy)
+        const OperandQueueUnitState &unit =
+            operandQueueUnits_[queue.binding.unitBinding];
+        if (unit.occupancy <= unit.binding.capacity &&
+            unit.reservations < unit.binding.capacity - unit.occupancy)
           continue;
         if (sink.operandActivationOrdinal >=
             plan_->transport.operandQueueActivations.size())
@@ -230,14 +246,14 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
             plan_->transport
                 .operandQueueActivations[sink.operandActivationOrdinal];
         diagnostic.operandQueueWaits.push_back(
-            {queue.queue, queue.fu, activation.ingress, activation.tag,
-             unit.allocationUnit, unit.occupancy, unit.reservations,
-             unit.capacity});
+            {queue.binding.queue, queue.binding.fu, activation.ingress,
+             activation.tag, unit.binding.allocationUnit, unit.occupancy,
+             unit.reservations, unit.binding.capacity});
         if (diagnostic.blockingActorOrdinal == invalidCgraTransportOrdinal) {
           diagnostic.blockingActorOrdinal = channel.ownerActorOrdinal;
           diagnostic.blockingQueueOccupancy = unit.occupancy;
           diagnostic.blockingQueueReservations = unit.reservations;
-          diagnostic.blockingQueueCapacity = unit.capacity;
+          diagnostic.blockingQueueCapacity = unit.binding.capacity;
         }
       }
     }
@@ -276,15 +292,15 @@ CgraTransportRuntime::storageResidencyDiagnostics(
     const InFlight &inFlight = inFlight_[entry.transferSlot];
     record.bindingOrdinal = inFlight.bindingOrdinal;
     record.occurrenceOrdinal = inFlight.occurrenceOrdinal;
-    if (inFlight.bindingOrdinal < bindings_.size()) {
-      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    if (inFlight.bindingOrdinal < graph_.bindings.size()) {
+      const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       record.producerActorOrdinal =
           binding.semanticActorOrdinal.value_or(invalidCgraTransportOrdinal);
       for (std::uint64_t sink = binding.sinkOffset;
            sink != binding.sinkOffset + binding.sinkCount; ++sink) {
-        if (sink >= sinks_.size())
+        if (sink >= graph_.sinks.size())
           break;
-        const SinkBinding &binding = sinks_[sink];
+        const SinkBinding &binding = graph_.sinks[sink];
         if (binding.kind != SinkKind::Channel)
           continue;
         record.destinationChannelOrdinals.push_back(binding.channel);
@@ -301,7 +317,7 @@ std::vector<CgraStorageOfferRotationDiagnostic>
 CgraTransportRuntime::exhaustedOfferRotationDiagnostics() const {
   std::vector<CgraStorageOfferRotationDiagnostic> result;
   for (auto [storageOrdinal, storage] : llvm::enumerate(storages_)) {
-    if (storage.kind != CgraTraversalStorageKind::BufferedFifo ||
+    if (storage.binding.kind != CgraTraversalStorageKind::BufferedFifo ||
         storage.queue.discipline() !=
             ::fabric::FifoQueueDiscipline::PerTagVirtualChannel ||
         storage.queue.empty())
@@ -332,18 +348,18 @@ CgraTransportRuntime::exhaustedOfferRotationDiagnostics() const {
         if (!seen)
           record.residentTagValues.push_back(value);
       }
-      if (entry.traversalNodeOrdinal >= traversalNodes_.size())
+      if (entry.traversalNodeOrdinal >= graph_.traversalNodes.size())
         continue;
       const TraversalNodeBinding &node =
-          traversalNodes_[entry.traversalNodeOrdinal];
+          graph_.traversalNodes[entry.traversalNodeOrdinal];
       for (std::uint64_t target = node.targetTraversalOffset;
            target != node.targetTraversalOffset + node.targetTraversalCount;
            ++target) {
-        if (target >= traversalTargets_.size())
+        if (target >= graph_.traversalTargets.size())
           continue;
         const auto *fifo =
             std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
-                &traversalTargets_[target].payload);
+                &graph_.traversalTargets[target].payload);
         if (!fifo ||
             fifo->mode != ::loom::fabric::FabricFifoTraversalMode::Buffered)
           continue;
@@ -368,15 +384,16 @@ std::vector<CgraOperandQueueHeadDiagnostic>
 CgraTransportRuntime::pendingOperandQueueHeadDiagnostics() const {
   std::vector<CgraOperandQueueHeadDiagnostic> result;
   result.reserve(operandQueues_.size());
-  for (const OperandQueueBinding &queue : operandQueues_) {
-    if (queue.unitBinding >= operandQueueUnits_.size())
+  for (const OperandQueueState &queue : operandQueues_) {
+    if (queue.binding.unitBinding >= operandQueueUnits_.size())
       continue;
-    const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
+    const OperandQueueUnitState &unit =
+        operandQueueUnits_[queue.binding.unitBinding];
     CgraOperandQueueHeadDiagnostic diagnostic{
-        queue.queue,
-        queue.fu,
-        unit.allocationUnit,
-        unit.capacity,
+        queue.binding.queue,
+        queue.binding.fu,
+        unit.binding.allocationUnit,
+        unit.binding.capacity,
         queue.occupancy,
         unit.reservations,
         invalidCgraTransportOrdinal,
@@ -389,12 +406,12 @@ CgraTransportRuntime::pendingOperandQueueHeadDiagnostics() const {
         // the complete occupancy.
         queue.entries.size() == queue.occupancy,
         {}};
-    diagnostic.consumers.reserve(queue.consumers.size());
-    for (const OperandQueueBinding::Consumer &consumer : queue.consumers)
+    diagnostic.consumers.reserve(queue.binding.consumers.size());
+    for (const auto &consumer : queue.binding.consumers)
       diagnostic.consumers.emplace_back(consumer.semanticActorOrdinal,
                                         consumer.inputOrdinal);
     if (!queue.entries.empty()) {
-      const OperandQueueBinding::Entry &head = queue.entries.front();
+      const OperandQueueState::Entry &head = queue.entries.front();
       diagnostic.headBindingOrdinal = head.bindingOrdinal;
       diagnostic.headOccurrenceOrdinal = head.occurrenceOrdinal;
       diagnostic.headProducerSequenceOrdinal = head.producerSequenceOrdinal;

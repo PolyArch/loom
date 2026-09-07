@@ -184,6 +184,15 @@ projectStructuredScopeActivity(
     const ::loom::sim::NativeStructuredProgramObservations &sourceObservations,
     llvm::ArrayRef<::loom::frontend::StructuredEntityRef> scopes);
 
+/// Projects only exact activation multiplicities for arbitrary selected
+/// Structured scopes, including already-owned Spatial carriers. This shares
+/// the validated native block-activity owner without interpreting leaf work.
+llvm::Expected<std::vector<std::uint64_t>>
+projectStructuredScopeActivationCounts(
+    const ::loom::frontend::StructuredProgramCandidate &program,
+    const ::loom::sim::NativeStructuredProgramObservations &observations,
+    llvm::ArrayRef<::loom::frontend::StructuredEntityRef> scopes);
+
 /// Primes the removable model-result cache from already finalized owner views.
 /// The full provider remains the oracle on a miss; this function only avoids
 /// re-importing and mechanically re-lowering an exact candidate that the
@@ -196,13 +205,21 @@ llvm::Error primeStructuredFabricAnalyticResult(
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);
 
-/// Reads the exact invocation-local runtime estimate already produced by this
-/// model for one candidate. An absent value means either that the model was
-/// inapplicable or that no result was primed under the complete exact key; it
-/// is never interpreted as infeasibility. The lookup performs no evaluation
-/// and owns no ranking policy.
-llvm::Expected<std::optional<std::uint64_t>>
-lookupStructuredFabricAnalyticRuntimeEstimate(
+/// Complete-candidate observations derived once from the exact Structured
+/// block profile. Runtime is a low-confidence model estimate in picoseconds;
+/// host work counts executable leaves outside Spatial ownership. Neither is
+/// a measured target execution time. Unsupported Runtime does not erase known
+/// host activity, and a missing cache entry does not become zero work.
+struct StructuredFabricAnalyticEstimate final {
+  std::optional<std::uint64_t> runtimePicoseconds;
+  std::uint64_t hostDynamicLeafExecutions = 0;
+};
+
+/// Reads the exact-key result without evaluating or ranking a candidate.
+/// An absent result means no entry; absent Runtime inside a result means that
+/// the model was inapplicable. Both remain distinct from zero-valued results.
+llvm::Expected<std::optional<StructuredFabricAnalyticEstimate>>
+lookupStructuredFabricAnalyticEstimate(
     const ::loom::ArtifactRootReference &structuredProgram,
     const ::loom::ArtifactRootReference &fabric,
     const ::loom::ArtifactRootReference &workload,

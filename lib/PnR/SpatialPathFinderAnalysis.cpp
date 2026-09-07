@@ -4,14 +4,19 @@
 #include "Fabric/Identity/FabricRefText.h"
 #include "SpatialPathFinderRouterInternal.h"
 #include "SpatialPhysicalTiming.h"
+#include "SpatialSwitchHandshakeProjection.h"
+#include "SpatialSwitchRowPacking.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <map>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loom::pnr;
@@ -841,4 +846,268 @@ llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
     return lhs.logicalNet < rhs.logicalNet;
   });
   return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<loom::pnr::detail::HandshakeCycleRouteTraversal>>
+loom::pnr::detail::selectedHandshakeCycleRouteTraversals(
+    const SpatialCandidateState &candidate,
+    const SpatialTagAssignmentSummary &tagSummary,
+    llvm::ArrayRef<PnrIndex> frozenWitness,
+    llvm::ArrayRef<PnrIndex> logicalNets) {
+  std::vector<HandshakeCycleRouteTraversal> result;
+  const auto &problem = candidate.problem();
+  const auto &handshake = problem.handshake();
+  const auto &routing = problem.routing();
+  llvm::SmallSet<PnrIndex, 32> cycleArcs;
+  for (PnrIndex arc : frozenWitness)
+    cycleArcs.insert(arc);
+  const auto fragmentOffsets = handshake.projectionFragmentArcOffsets();
+  const auto fragmentIntersectsCycle = [&](PnrIndex fragment) {
+    return llvm::any_of(
+        handshake.projectionFragmentArcs().slice(fragmentOffsets[fragment],
+                                                 fragmentOffsets[fragment + 1] -
+                                                     fragmentOffsets[fragment]),
+        [&](PnrIndex arc) { return cycleArcs.contains(arc); });
+  };
+
+  // Reuse the switch activation owner with the same provisional routes and
+  // freshly projected tags. The committed candidate handshake can still
+  // describe the routes that preceded this move and is not evidence here.
+  std::vector<const RouteTreeState *> routes;
+  std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> tags;
+  const auto values = llvm::ArrayRef(tagSummary.netTagValues);
+  for (PnrIndex net = 0; net < problem.transfers().logicalNets().size();
+       ++net) {
+    routes.push_back(&candidate.routeTree(net));
+    const std::size_t begin = tagSummary.netTagValueOffsets[net];
+    tags.push_back(
+        values.slice(begin, tagSummary.netTagValueOffsets[net + 1] - begin));
+  }
+  auto switchFragments =
+      deriveSpatialTemporalSwitchHandshakeFragments(problem, routes, tags);
+  if (!switchFragments)
+    return switchFragments.takeError();
+  std::vector<std::uint8_t> cycleTraversals(routing.traversals().size(), 0);
+  std::map<PnrIndex,
+           std::vector<::loom::fabric::FabricSwitchHandshakeContentionRelation>>
+      witnessedContention;
+  for (PnrIndex fragment : *switchFragments) {
+    if (!fragmentIntersectsCycle(fragment))
+      continue;
+    const auto record = handshake.fragments()[fragment];
+    const auto &owner = handshake.ownerModels()[record.owner];
+    const auto activation = owner.fragment(record.localFragment);
+    std::optional<::loom::fabric::FabricPhysicalTraversalRef> selectedTraversal;
+    if (activation.activationKind == ::loom::fabric::HandshakeActivationKind::
+                                         ExactSwitchActivationTraversal) {
+      selectedTraversal = owner.traversalWitness(activation.witnessOffset);
+    } else if (activation.activationKind ==
+               ::loom::fabric::HandshakeActivationKind::SwitchContention) {
+      const auto &relation = *activation.switchContention;
+      witnessedContention[record.owner].push_back(relation);
+      using Kind = ::loom::fabric::FabricSwitchHandshakeContentionRelationKind;
+      // The activation owner builds contention tree edges from selected
+      // crosspoints. These active relations therefore prove one exact
+      // traversal; component membership and unselected relations do not.
+      if (relation.relation == Kind::ReadyTreeInputParent ||
+          relation.relation == Kind::ReadyTreeOutputParent ||
+          relation.relation == Kind::FixedSelectedCrosspoint)
+        selectedTraversal =
+            ::loom::fabric::FabricPhysicalTraversalRef::switchTraversal(
+                relation.occurrence, relation.input, relation.output);
+    }
+    if (!selectedTraversal)
+      continue;
+    const auto traversal =
+        routing.topology().traversalOrdinal(*selectedTraversal);
+    if (!traversal)
+      return pathFinderError(
+          "selected switch fragment has no frozen traversal");
+    cycleTraversals[*traversal] = 1;
+  }
+
+  // Contention input, root and policy fragments depend on the complete
+  // selected component, including crosspoints whose own fragments miss the
+  // cycle. A different crosspoint can also change the owner's readiness
+  // forest. Include that component's routes as repair freedom; these seeds
+  // are not a claim that each traversal independently causes the cycle.
+  // Exact traversal fragments below are from the same resident-row projection
+  // above; overflow rows never create additional component crosspoints.
+  ::loom::fabric::FabricSwitchSelectedContention contention;
+  ::loom::fabric::FabricSwitchSelectedContentionScratch contentionScratch;
+  std::vector<::loom::fabric::FabricSwitchSelectedCrosspoint>
+      selectedCrosspoints;
+  for (const auto &[ownerOrdinal, relations] : witnessedContention) {
+    const auto occurrence = relations.front().occurrence;
+    const auto &owner = handshake.ownerModels()[ownerOrdinal];
+    selectedCrosspoints.clear();
+    for (PnrIndex fragment : *switchFragments) {
+      const auto record = handshake.fragments()[fragment];
+      if (record.owner != ownerOrdinal)
+        continue;
+      const auto activation = owner.fragment(record.localFragment);
+      if (activation.activationKind != ::loom::fabric::HandshakeActivationKind::
+                                           ExactSwitchActivationTraversal)
+        continue;
+      const auto traversal = owner.traversalWitness(activation.witnessOffset);
+      const auto &crosspoint =
+          std::get<::loom::fabric::FabricSwitchTraversalPayload>(
+              traversal.payload);
+      selectedCrosspoints.push_back({crosspoint.input, crosspoint.output});
+    }
+    contention.rebuild(occurrence, selectedCrosspoints, contentionScratch);
+    for (const auto &crosspoint : selectedCrosspoints) {
+      if (!llvm::any_of(relations, [&](const auto &relation) {
+            return contention.selectedCrosspointInRelationComponent(
+                relation, crosspoint);
+          }))
+        continue;
+      const auto traversal = routing.topology().traversalOrdinal(
+          ::loom::fabric::FabricPhysicalTraversalRef::switchTraversal(
+              occurrence, crosspoint.input, crosspoint.output));
+      if (!traversal)
+        return pathFinderError(
+            "selected switch contention crosspoint has no frozen traversal");
+      cycleTraversals[*traversal] = 1;
+    }
+  }
+
+  // Only RouteTree traversals can be changed by this negotiation. Direct
+  // AnyTraversal fragments are active because a selected route uses their
+  // witness; other fixed, local, placement and group activations stay
+  // untouched.
+  const auto traversalOffsets = handshake.traversalFragmentOffsets();
+  const auto appendNet = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (logicalNet >= problem.transfers().logicalNets().size())
+      return pathFinderError("handshake cycle traversal has a foreign net");
+    for (const RouteTreeNode &node :
+         candidate.routeTree(logicalNet).nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      const PnrIndex traversal =
+          routing.routingArcs()[node.parentArc].traversal;
+      if (!cycleTraversals[traversal])
+        cycleTraversals[traversal] = llvm::any_of(
+            handshake.traversalFragments().slice(
+                traversalOffsets[traversal],
+                traversalOffsets[traversal + 1] -
+                    traversalOffsets[traversal]),
+            fragmentIntersectsCycle);
+      if (!cycleTraversals[traversal])
+        continue;
+      result.push_back({logicalNet, traversal});
+    }
+    return llvm::Error::success();
+  };
+  if (logicalNets.empty()) {
+    for (PnrIndex logicalNet = 0;
+         logicalNet < problem.transfers().logicalNets().size(); ++logicalNet)
+      if (llvm::Error error = appendNet(logicalNet))
+        return std::move(error);
+  } else {
+    for (PnrIndex logicalNet : logicalNets)
+      if (llvm::Error error = appendNet(logicalNet))
+        return std::move(error);
+  }
+  llvm::sort(result, [](const HandshakeCycleRouteTraversal &left,
+                        const HandshakeCycleRouteTraversal &right) {
+    if (left.logicalNet != right.logicalNet)
+      return left.logicalNet < right.logicalNet;
+    return left.traversal < right.traversal;
+  });
+  result.erase(std::unique(result.begin(), result.end(),
+                           [](const HandshakeCycleRouteTraversal &left,
+                              const HandshakeCycleRouteTraversal &right) {
+                             return left.logicalNet == right.logicalNet &&
+                                    left.traversal == right.traversal;
+                           }),
+               result.end());
+  return result;
+}
+
+llvm::Expected<std::vector<SpatialHandshakeCycleTagSelection>>
+loom::pnr::detail::selectedHandshakeCycleTagSelections(
+    const SpatialCandidateState &candidate,
+    const SpatialTagAssignmentSummary &tagSummary,
+    llvm::ArrayRef<HandshakeCycleRouteTraversal> contributors) {
+  std::vector<SpatialHandshakeCycleTagSelection> result;
+  if (contributors.empty())
+    return result;
+  const auto &problem = candidate.problem();
+  const auto logicalNets = problem.transfers().logicalNets();
+  if (tagSummary.netTagValueOffsets.size() != logicalNets.size() + 1 ||
+      tagSummary.netTagValueOffsets.empty() ||
+      tagSummary.netTagValueOffsets.front() != 0 ||
+      tagSummary.netTagValueOffsets.back() != tagSummary.netTagValues.size())
+    return pathFinderError("handshake cycle tag summary has invalid offsets");
+
+  SpatialTagContinuityScratch continuityScratch;
+  SpatialTemporalSwitchDemandScratch demandScratch;
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNets.size();
+       ++logicalNet) {
+    const auto first = std::lower_bound(
+        contributors.begin(), contributors.end(), logicalNet,
+        [](const HandshakeCycleRouteTraversal &contributor, PnrIndex net) {
+          return contributor.logicalNet < net;
+        });
+    if (first == contributors.end() || first->logicalNet != logicalNet)
+      continue;
+    const auto last = std::upper_bound(
+        first, contributors.end(), logicalNet,
+        [](PnrIndex net, const HandshakeCycleRouteTraversal &contributor) {
+          return net < contributor.logicalNet;
+        });
+    SpatialTagContinuityProjection continuity;
+    if (llvm::Error error = rebuildSpatialTagContinuityUnchecked(
+            candidate.routeTree(logicalNet), continuity, continuityScratch))
+      return std::move(error);
+    auto demands = deriveSpatialTemporalSwitchSegmentDemands(
+        problem, logicalNet, candidate.routeTree(logicalNet), continuity,
+        demandScratch);
+    if (!demands)
+      return demands.takeError();
+    const std::size_t tagBegin = tagSummary.netTagValueOffsets[logicalNet];
+    const std::size_t tagEnd =
+        tagSummary.netTagValueOffsets[logicalNet + 1];
+    if (tagBegin > tagEnd || tagEnd > tagSummary.netTagValues.size())
+      return pathFinderError("handshake cycle tag range is invalid");
+    for (const SpatialTemporalSwitchSegmentDemand &demand : *demands) {
+      if (demand.logicalNet != logicalNet || demand.segment >= tagEnd - tagBegin)
+        return pathFinderError("handshake cycle switch demand has invalid tag");
+      if (demand.segment >= continuity.segments().size())
+        return pathFinderError(
+            "handshake cycle switch demand has invalid continuity segment");
+      bool selected = false;
+      for (const SpatialTemporalSwitchInputSignature &signature :
+           demand.signatures)
+        for (PnrIndex traversal : signature.traversals)
+          if (std::any_of(first, last, [&](const auto &contributor) {
+                return contributor.traversal == traversal;
+              })) {
+            selected = true;
+            break;
+          }
+      if (!selected)
+        continue;
+      result.push_back({logicalNet, demand.segment, demand.domain,
+                        continuity.segments()[demand.segment].tagWidthBits,
+                        tagSummary.netTagValues[tagBegin + demand.segment]});
+    }
+    demandScratch.recycle(std::move(*demands));
+  }
+  llvm::sort(result, [](const SpatialHandshakeCycleTagSelection &left,
+                        const SpatialHandshakeCycleTagSelection &right) {
+    return std::tie(left.logicalNet, left.segmentOrdinal, left.matchDomain) <
+           std::tie(right.logicalNet, right.segmentOrdinal, right.matchDomain);
+  });
+  result.erase(
+      std::unique(result.begin(), result.end(),
+                  [](const SpatialHandshakeCycleTagSelection &left,
+                     const SpatialHandshakeCycleTagSelection &right) {
+                    return left.logicalNet == right.logicalNet &&
+                           left.segmentOrdinal == right.segmentOrdinal &&
+                           left.matchDomain == right.matchDomain;
+                  }),
+      result.end());
+  return result;
 }

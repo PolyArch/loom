@@ -66,23 +66,19 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             4.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    6.0
+loom.deployment                    7.0
 ```
 
 ConfigurationABI 4.0 and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
-`loom.hardware_implementation 4.1` occurrence closure. Deployment 6.0 derives
-the exact required SpatialCore occurrence set from its SystemMapping execution
-projection and requires one HardwareImplementation and RuntimePlatformBinding
-per subject. An old validator cannot reinterpret that occurrence coverage or
-the required contextual memory reference under an earlier descriptor.
-Deployment 6.0 also requires each hardware binding to name an exact
-`loom.runtime_platform_binding 4.0` root. That dependency adds the
-provider-owned resource-time cost model to the accepted child language, so it
-is an incompatible change from Deployment 5.1 even though the outer canonical
-JSON field inventory is unchanged. A 6.0 importer rejects rather than
-reinterprets every Deployment 5.1 root; Loom provides no fallback or migration
-between those versions.
+`loom.hardware_implementation 4.1` occurrence closure. Deployment 7.0 has one
+closed execution-root choice: an exact mapped SystemMapping, or an exact
+HostCore-only Fabric System. Mapped deployments derive the complete required
+SpatialCore occurrence set from the Mapping and require one exact
+HardwareImplementation and RuntimePlatformBinding per subject. The host-only
+alternative carries the real HostCore executable on the same complete System,
+without mapping, accelerator binaries, programming images, or dispatch images.
+The 7.0 importer rejects prior Deployment schemas without fallback.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -457,12 +453,19 @@ equal bytes may share blob storage but do not permit implicit rebinding.
 
 ## Deployment
 
+Host-only execution uses the exact System's sole HostCore and compiler target.
+The host ELF retains the source program's static globals. Accelerator binaries,
+hardware bindings, configuration images, contextual static-memory images, and
+all dispatch/admission images must be absent. The physical System topology is
+preserved; zero dispatch means idle accelerator capacity, not deleted capacity.
+Mapped execution retains all existing Mapping-derived closure requirements.
+
 Deployment is one selected, executable system closure:
 
 ```text
 Deployment {
   version
-  system_mapping_ref
+  execution_root: Mapped(SystemMappingRef) | HostOnly(FabricSystemRef)
   host_program
   instruction_core_binary_refs[]
   hardware_bindings[] {
@@ -471,9 +474,9 @@ Deployment {
   }
   configuration_image_refs[]
   static_memory_images[]
-  thread_dispatch_image
+  thread_dispatch_image?
   spatial_launch_image?
-  admission_image
+  admission_image?
 }
 
 DeploymentProgramEntryRef =
@@ -483,7 +486,7 @@ DeploymentExternalInterfaceRef =
   (exact Deployment ArtifactIdentity, external_interface_ordinal)
 ```
 
-Deployment 6.0 admits either the payload-free `FabricModel` implementation
+A mapped Deployment 7.0 admits either the payload-free `FabricModel` implementation
 used by semantic DFG/CGRA providers or an explicitly materialized concrete
 implementation. The RuntimePlatformBinding for each occurrence names that
 exact HardwareImplementation. Selecting `FabricModel` never triggers RTL
@@ -491,7 +494,7 @@ generation as a side effect; an RTL qualification run explicitly selects its
 distinct `Rtl` HardwareImplementation.
 
 The exact Canonical Dataflow Program and architecture-only Fabric are recovered
-from `system_mapping_ref`. Exact Fabric, SpatialCore subject,
+from the mapped execution root. Exact Fabric, SpatialCore subject,
 ConfigurationABI, ImplementationPlatform target and corner facts, and
 provider-owned external bindings are recovered from each selected
 HardwareImplementation. Deployment does not duplicate those references. Its

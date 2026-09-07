@@ -3,7 +3,6 @@
 
 #include "Runtime/Gem5BridgeWire.h"
 
-#include "base/pollevent.hh"
 #include "base/stats/group.hh"
 #include "base/stats/units.hh"
 #include "dev/dma_device.hh"
@@ -12,38 +11,33 @@
 
 #include <chrono>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace gem5 {
 
+class LoomSpatialEngineSession;
+
 class LoomSpatialBridge final : public DmaDevice {
 public:
   using Params = LoomSpatialBridgeParams;
 
   explicit LoomSpatialBridge(const Params &params);
-  ~LoomSpatialBridge() override;
 
   AddrRangeList getAddrRanges() const override;
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
 
 private:
-  class EngineResponseEvent final : public PollEvent {
-  public:
-    EngineResponseEvent(LoomSpatialBridge &bridge, int descriptor);
-    void process(int revents) override;
-
-  private:
-    LoomSpatialBridge &bridge;
-  };
+  friend class LoomSpatialEngineSession;
 
   enum class State : std::uint32_t {
     Idle = 0,
     Running = 1,
     WaitingForMemory = 2,
+    WaitingForChannelCommit = 5,
+    WaitingForCompletion = 6,
     Complete = 3,
     Failed = 4,
   };
@@ -70,23 +64,17 @@ private:
     bool valid = false;
   };
 
-  static constexpr std::uint32_t statusBusy = 1u << 0;
-  static constexpr std::uint32_t statusDone = 1u << 1;
-  static constexpr std::uint32_t statusError = 1u << 2;
 
   const Addr pioAddress;
   const Addr pioSize;
   const Tick pioDelay;
   const std::uint64_t bridgeSessionOrdinal;
-  const std::string engineSocketPath;
+  LoomSpatialEngineSession *engineSession;
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;
   const std::uint64_t maximumInvocations;
   const bool collectPerformance;
 
-  int engineSocket = -1;
-  std::unique_ptr<EngineResponseEvent> engineResponseEvent;
-  bool engineCompletionReceived = false;
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;
@@ -111,15 +99,11 @@ private:
   EventFunctionWrapper launchEvent;
   EventFunctionWrapper staticLaunchCompletionEvent;
   EventFunctionWrapper invocationCompletionEvent;
+  EventFunctionWrapper memoryRequestEvent;
   EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
-  EventFunctionWrapper engineDisconnectEvent;
+  EventFunctionWrapper channelCommitEvent;
 
-  bool connectEngine();
-  void scheduleEngineDisconnect();
-  void disconnectEngine();
-  bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
-  bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
   CallbackAccounting beginCallbackAccounting();
   void finishCallbackAccounting(CallbackAccounting accounting);
   void runAccounted(void (LoomSpatialBridge::*action)());
@@ -129,7 +113,10 @@ private:
   void fetchStaticLaunch();
   void fetchInvocation();
   void startLaunch();
-  void consumeEngineMessage();
+  void acceptBoundary(const loom::runtime::Gem5BridgeMessage &message,
+                      Tick causalTick);
+  void completeChannelCommit();
+  void issueMemoryRequest();
   void completeMemoryRequest();
   void completeInvocation();
   void fail(std::uint32_t code, const std::string &message);

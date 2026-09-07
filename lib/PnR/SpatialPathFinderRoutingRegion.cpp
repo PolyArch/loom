@@ -71,15 +71,42 @@ SpatialPathFinderRouterScratch::expandRoutingRelationClosure(
 llvm::Expected<bool>
 SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
     const SpatialCandidateState &candidate, const SpatialRouteCostState &costs,
-    std::uint64_t logicalNetLimit) {
+    std::uint64_t logicalNetLimit, llvm::ArrayRef<PnrIndex> cycleLogicalNets) {
   if (!preparedProblem_)
     return routingRegionError("scratch is not prepared");
   const FrozenSpatialRoutingGraph &routing = preparedProblem_->routing();
   const FrozenSpatialResourceIndex &resources = preparedProblem_->resources();
   bool expanded = false;
+  const auto addNet = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (logicalNet >= routingRegionNetMarks_.size())
+      return routingRegionError("conflict closure contains a foreign net");
+    if (routingRegionNetMarks_[logicalNet])
+      return llvm::Error::success();
+    routingRegionNetMarks_[logicalNet] = 1;
+    routingRegionNets_.push_back(logicalNet);
+    expanded = true;
+    if (routingRegionNets_.size() > logicalNetLimit)
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          SpatialPathFinderClosureFailure::Kind::RegionalLimit,
+          "Spatial PathFinder conflict closure exceeds its regional "
+          "logical-net limit",
+          SpatialFixedTerminalCutCertificate{}, 0, 0, routingRegionNets_.size(),
+          logicalNetLimit);
+    return llvm::Error::success();
+  };
+  for (PnrIndex logicalNet : cycleLogicalNets)
+    if (llvm::Error error = addNet(logicalNet))
+      return std::move(error);
+  // A cycle can require a larger route region even when all capacities close.
+  // In that case its exact contributors suffice; no capacity scan is needed.
+  const bool hasPressure =
+      costs.hasCapacityOveruse() || costs.hasTagPressureViolation();
   for (PnrIndex logicalNet = 0;
+       hasPressure &&
        logicalNet < preparedProblem_->transfers().logicalNets().size();
        ++logicalNet) {
+    if (routingRegionNetMarks_[logicalNet])
+      continue;
     bool contributes = false;
     for (PnrIndex capacity = 0;
          capacity < resources.capacityDimensions().size(); ++capacity) {
@@ -121,18 +148,9 @@ SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
         }
       }
     }
-    if (!contributes || routingRegionNetMarks_[logicalNet])
-      continue;
-    routingRegionNetMarks_[logicalNet] = 1;
-    routingRegionNets_.push_back(logicalNet);
-    expanded = true;
-    if (routingRegionNets_.size() > logicalNetLimit)
-      return llvm::make_error<SpatialPathFinderClosureFailure>(
-          SpatialPathFinderClosureFailure::Kind::RegionalLimit,
-          "Spatial PathFinder conflict closure exceeds its regional "
-          "logical-net limit",
-          SpatialFixedTerminalCutCertificate{}, 0, 0, routingRegionNets_.size(),
-          logicalNetLimit);
+    if (contributes)
+      if (llvm::Error error = addNet(logicalNet))
+        return std::move(error);
   }
   auto relationExpanded = expandRoutingRelationClosure(logicalNetLimit);
   if (!relationExpanded)

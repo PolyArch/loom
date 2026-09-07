@@ -708,20 +708,7 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     return error;
 
   const auto publishReplayCase =
-      [&](const sim::CanonicalSimulationWorkload &replayWorkload,
-          const sim::CanonicalSimulationRuntimeInput &replayInput)
-      -> llvm::Expected<sim::SourceBackedDfgReplayCaseReference> {
-    auto workloadReference =
-        sim::publishSimulationWorkload(replayWorkload, artifactStore);
-    if (!workloadReference)
-      return workloadReference.takeError();
-    auto runtimeInputReference =
-        sim::publishSimulationRuntimeInput(replayInput, artifactStore);
-    if (!runtimeInputReference)
-      return runtimeInputReference.takeError();
-    return sim::SourceBackedDfgReplayCaseReference{
-        std::move(*workloadReference), std::move(*runtimeInputReference)};
-  };
+      detail::createSourceBackedReplayCasePublisher(artifactStore);
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
       invocation.sourceProgram, invocation.candidate,
       invocation.simulationWorkload, invocation.simulationRuntimeInput,

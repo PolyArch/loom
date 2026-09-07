@@ -96,6 +96,7 @@ target_compile_definitions(LoomGem5SystemExecution PRIVATE
   LOOM_GEM5_DFG_ENGINE_PATH="$<TARGET_FILE:loom-gem5-dfg-engine>"
   LOOM_GEM5_CGRA_ENGINE_PATH="$<TARGET_FILE:loom-gem5-cgra-engine>"
   LOOM_GEM5_RTL_ENGINE_SOURCE_PATH="${LOOM_SOURCE_DIR}/runtime/gem5/loom_gem5_rtl_engine.cpp"
+  LOOM_GEM5_BRIDGE_SOCKET_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5BridgeSocket.h"
   LOOM_GEM5_BRIDGE_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5BridgeWire.h"
   LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5SpatialChannelPlan.h"
   LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/SpatialInvocationWire.h"

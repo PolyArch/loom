@@ -19,6 +19,21 @@
 
 namespace loom::evaluation::models::detail {
 
+struct StructuredAnalyticResult final {
+  std::optional<LowConfidenceMetricSet> metrics;
+  std::uint64_t hostDynamicLeafExecutions = 0;
+
+  friend bool operator==(const StructuredAnalyticResult &lhs,
+                         const StructuredAnalyticResult &rhs) {
+    return lhs.metrics == rhs.metrics &&
+           lhs.hostDynamicLeafExecutions == rhs.hostDynamicLeafExecutions;
+  }
+  friend bool operator!=(const StructuredAnalyticResult &lhs,
+                         const StructuredAnalyticResult &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 struct StructuredAnalyticCacheKey final {
   ArtifactRootReference structuredProgram;
   ArtifactRootReference fabric;
@@ -134,6 +149,11 @@ private:
 
 StructuredEvaluationInvocationCache *currentStructuredEvaluationCache();
 
+/// Publishes source-backed replay inputs synchronously. The closure retains
+/// only the last Workload root after durable publication has succeeded.
+sim::SourceBackedDfgReplayCasePublisher
+createSourceBackedReplayCasePublisher(const ArtifactStore &store);
+
 /// Strict-imports on the first exact-reference miss and otherwise returns the
 /// sealed invocation-local view. The cache is removable and never repairs or
 /// substitutes an ArtifactStore object.
@@ -151,7 +171,7 @@ public:
       : limits(std::move(limits)) {}
 
   StructuredEvaluationInvocationCacheLimits limits;
-  using AnalyticResult = std::optional<detail::LowConfidenceMetricSet>;
+  using AnalyticResult = detail::StructuredAnalyticResult;
 
   mutable std::mutex mutex;
   std::map<detail::StructuredAnalyticCacheKey,

@@ -278,7 +278,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.6`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.10`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -487,6 +487,13 @@ An invalid owner tuple is `Invalid`. A well-formed capability selection absent
 from the provider is `Unsupported` where that outcome exists, or a fail-closed
 config-adoption error. Neither is evidence of Mapping infeasibility.
 
+A checked routing-cost arithmetic failure during search preserves its original
+typed error and diagnostic through Action rollback. It terminates the affected
+search as an internal failure; it cannot become an intrinsic-invalid Action,
+a cached inactive Action, a rejected exact binding assignment, or proof of
+infeasibility. Endpoint accumulation and negotiated-price overflow follow this
+same rule. The finite-cost domain remains checked without saturation.
+
 ## Generation Outcomes And Candidate Completeness
 
 The semantic outcome classes are:
@@ -665,17 +672,27 @@ FIFO-wide tag-match domain from which that equality could be inferred.
 
 A promoted runtime clause therefore carries exactly one
 `SpatialMappingIdentityEquals` literal matching its parent lineage in addition
-to its complete certificate-derived anchors. Equality to the replayed parent
-under the exact Request establishes the conservative invariant; the anchors
+to its complete certificate-derived anchors when such anchors exist. A
+physical-capacity closed wait can have no traversal-storage edge; its exact
+Mapping literal alone is a complete conservative no-good. The existing
+identity breaker then explores binding and local-disposition changes through
+finite owner regions. A realization region includes its dependent port and
+route decisions; each graph boundary has its own attachment region. Verified
+capacity actions may order their exact Mapping-owned realization regions
+first, but do not exclude other owners. The existing dependency closure, fixed
+boundary, region limit, shared solver budget, ordinary action execution, and
+independent admission apply to every branch. An incomplete or oversized region
+never proves the whole Mapping domain infeasible. Equality
+to the replayed parent under the exact Request establishes the invariant; the anchors
 do not independently claim sufficiency. If replay, anchor projection, identity
 comparison, or the Request-scoped invariant is unavailable, feedback returns
 `ProofNotEstablished(CausalCoreNotEstablished)`, exposes no executable partial
 clause, and publishes no constraint Artifact. Explicitly authored no-goods
 omit runtime lineage and remain valid ordinary admission inputs.
 
-The durable runtime carrier has one ownership chain. Evaluation registry 3.1
+The durable runtime carrier has one ownership chain. Evaluation registry 3.2
 owns `cgra_closed_wait`; the exact `SimulationExecution::Halted` terminal owns
-its `loom.cgra_closed_wait_certificate 1.0` witness; Completed Evidence owns
+its `loom.cgra_closed_wait_certificate 1.1` witness; Completed Evidence owns
 only a `TerminalWitnessRef` to that execution output. Persistent feedback
 strict-imports that chain from the Evidence root, reconstructs the exact CGRA
 Request from stored roots, deterministically replays the model, and requires
@@ -1251,8 +1268,16 @@ report arc and node ordinals in the same frozen projection index, marked by
 active fragment set. Verbosity two retains the bounded candidate witness;
 verbosity three includes complete candidate and projected witnesses. The
 projected witness comes from the existing independent reconstruction used to
-check dense scratch, so it cannot quote a previous candidate's graph. Disabled
-diagnostics introduce no witness reconstruction or output.
+check dense scratch, so it cannot quote a previous candidate's graph. Exact
+regional PathFinder closure additionally requests that witness on a negative
+provisional projection and carries its frozen arc ordinals in the typed
+`SelectedCombinationalHandshakeCycle` failure. A negotiation budget failure
+can carry the same evidence while retaining its `NoProgress` or `NonClosure`
+kind. This is a proof of the selected route overlay, not a proof that every
+route for its placements is infeasible.
+The same diagnostic encoder can report a bounded copy of this requested proof
+at verbosity one. Boolean projection queries introduce no witness
+reconstruction when diagnostics are disabled.
 
 `SharedOperandIngressPressure` is the sum, over Dataflow-owned co-firing input
 groups, of independently produced Temporal operand members beyond the number

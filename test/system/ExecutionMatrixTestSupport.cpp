@@ -409,7 +409,7 @@ void traceSpatialFixture(llvm::StringRef test, const SharedFixture &fixture,
   if (!mapping_debug::enabled(mapping_debug::Level::Detail))
     return;
 
-  const auto dataflow = take(test, fixture.dataflow.view());
+  const auto &dataflow = fixture.dataflow.view();
   const auto tech =
       take(test,
            mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
@@ -554,7 +554,7 @@ buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
   const auto systemView =
       take(test, fabric::requireSystemRoot(hardware.system.view()));
   const auto cores = systemView.artifact().accCoreOccurrences();
-  const auto dataflowView = take(test, dataflow.view());
+  const auto &dataflowView = dataflow.view();
   require(test, cores.size() == dataflowView.rootThreadLaunches().size(),
           "anchor core count does not match its root launch count");
   if (lifecycle)
@@ -1818,7 +1818,7 @@ void verifyHeterogeneousSystemAnchor() {
   SharedFixture fixture = buildSharedFixture(
       test, ExecutionMatrixCell::SpatialDfg, artifacts, blobs, tree);
 
-  const auto dataflow = take(test, fixture.dataflow.view());
+  const auto &dataflow = fixture.dataflow.view();
   require(test,
           dataflow.rootThreadLaunches().size() == 4 &&
               dataflow.staticGraphLaunches().size() == 4 &&

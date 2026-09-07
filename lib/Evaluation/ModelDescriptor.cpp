@@ -23,11 +23,6 @@ using detail::appendU32Be;
 using detail::appendU64Be;
 using detail::evaluationError;
 
-bool schemaContainsModelKind(SchemaVersion version,
-                             EvaluationModelKind) {
-  return version == evaluationSchemaVersion();
-}
-
 struct ModelDescriptorRegistryEntry {
   SchemaVersion version;
   const EvaluationModelDescriptor *descriptor;
@@ -513,16 +508,12 @@ EvaluationModelDescriptorRef::get(SchemaVersion schemaVersion,
                                   EvaluationModelKind modelKind) {
   if (schemaVersion != evaluationSchemaVersion())
     return evaluationError("unsupported Evaluation model descriptor version");
-  if (!schemaContainsModelKind(schemaVersion, modelKind))
-    return evaluationError("Evaluation model descriptor version does not "
-                           "contain model kind " +
-                           std::to_string(modelKind.ordinal()));
   return EvaluationModelDescriptorRef(schemaVersion, modelKind);
 }
 
 const EvaluationModelDescriptor *
 EvaluationModelDescriptorRef::descriptor() const {
-  if (!schemaContainsModelKind(schemaVersion_, modelKind_))
+  if (schemaVersion_ != evaluationSchemaVersion())
     return nullptr;
   return findEvaluationModelDescriptor(schemaVersion_, modelKind_);
 }

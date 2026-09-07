@@ -1,6 +1,7 @@
 #include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -244,4 +245,25 @@ loom::evaluation::models::detail::importCachedFabricRoot(
   }
   auto [found, inserted] = impl.fabricRoots.try_emplace(reference, sealed);
   return inserted ? sealed : found->second;
+}
+
+sim::SourceBackedDfgReplayCasePublisher
+loom::evaluation::models::detail::createSourceBackedReplayCasePublisher(
+    const ArtifactStore &store) {
+  return [&store, lastWorkload = std::optional<ArtifactRootReference>{}](
+             const sim::CanonicalSimulationWorkload &workload,
+             const sim::CanonicalSimulationRuntimeInput &runtimeInput) mutable
+      -> llvm::Expected<sim::SourceBackedDfgReplayCaseReference> {
+    if (!lastWorkload || lastWorkload->artifact != workload.identity()) {
+      auto published = sim::publishSimulationWorkload(workload, store);
+      if (!published)
+        return published.takeError();
+      lastWorkload = std::move(*published);
+    }
+    auto input = sim::publishSimulationRuntimeInput(runtimeInput, store);
+    if (!input)
+      return input.takeError();
+    return sim::SourceBackedDfgReplayCaseReference{*lastWorkload,
+                                                 std::move(*input)};
+  };
 }

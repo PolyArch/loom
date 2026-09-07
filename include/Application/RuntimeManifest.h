@@ -1,6 +1,7 @@
 #ifndef LOOM_APPLICATION_RUNTIMEMANIFEST_H
 #define LOOM_APPLICATION_RUNTIMEMANIFEST_H
 
+#include "Application/ActivationInputs.h"
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
 #include "Common/ComponentViewDigest.h"
@@ -29,7 +30,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{7, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{9, 0}};
 
 /// The product entry ABI derived from one selected Application row. For N
 /// cached inputs, arguments are N (pointer, byte-count) pairs followed by
@@ -84,6 +85,11 @@ private:
   std::string message_;
 };
 
+struct ApplicationHostOnlyBaseline final {
+  ArtifactRootReference deployment;
+  ApplicationActivationInputs inputs;
+};
+
 struct ApplicationRuntimeManifestDraft final {
   ArtifactRootReference sourceProgram;
   ArtifactRootReference fabric;
@@ -102,6 +108,7 @@ struct ApplicationRuntimeManifestDraft final {
   ArtifactRootReference deployment;
   ArtifactRootReference activationWorkload;
   ArtifactRootReference activationRuntimeInput;
+  ApplicationHostOnlyBaseline hostOnlyBaseline;
   std::vector<ArtifactRootReference> runtimeRequestDependencies;
   std::vector<ArtifactRootReference> runtimeEvidence;
   std::vector<ArtifactRootReference> oracleEvidence;
@@ -155,6 +162,9 @@ public:
   const ArtifactRootReference &activationRuntimeInput() const {
     return activationRuntimeInput_;
   }
+  const ApplicationHostOnlyBaseline &hostOnlyBaseline() const {
+    return hostOnlyBaseline_;
+  }
   llvm::ArrayRef<ArtifactRootReference> runtimeRequestDependencies() const {
     return runtimeRequestDependencies_;
   }
@@ -202,6 +212,7 @@ private:
         deployment_(std::move(draft.deployment)),
         activationWorkload_(std::move(draft.activationWorkload)),
         activationRuntimeInput_(std::move(draft.activationRuntimeInput)),
+        hostOnlyBaseline_(std::move(draft.hostOnlyBaseline)),
         runtimeRequestDependencies_(
             std::move(draft.runtimeRequestDependencies)),
         runtimeEvidence_(std::move(draft.runtimeEvidence)),
@@ -231,6 +242,7 @@ private:
   ArtifactRootReference deployment_;
   ArtifactRootReference activationWorkload_;
   ArtifactRootReference activationRuntimeInput_;
+  ApplicationHostOnlyBaseline hostOnlyBaseline_;
   std::vector<ArtifactRootReference> runtimeRequestDependencies_;
   std::vector<ArtifactRootReference> runtimeEvidence_;
   std::vector<ArtifactRootReference> oracleEvidence_;

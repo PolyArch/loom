@@ -104,9 +104,7 @@ llvm::Expected<ReopenedRootLowerMappingPlan> buildReopenedRootLowerMappingPlan(
       completePair.pair.software.dataflow, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto systemArtifact =
       fabric::importEntireFabricRoot(completePair.pair.system, artifacts);
   if (!systemArtifact)
@@ -115,7 +113,7 @@ llvm::Expected<ReopenedRootLowerMappingPlan> buildReopenedRootLowerMappingPlan(
   if (!system)
     return system.takeError();
   auto constraints = mapping::finalizeEmptySystemMappingConstraintSet(
-      *dataflow, *system, reopenedRoots, artifacts);
+      dataflow, *system, reopenedRoots, artifacts);
   if (!constraints)
     return constraints.takeError();
 
@@ -1473,9 +1471,33 @@ executeSpatialFifoHardwareFeedbackReopen(
     ArtifactRootReference currentModule = parentModule;
     for (const SpatialMicroarchitectureDecisionDomain &domain :
          alternatives[ordinal]) {
+      auto currentDomain = domain;
+      if (child) {
+        // A multi-step alternative changes FIFO discipline. Its targets are
+        // scoped to the original Module, while each rewrite may canonically
+        // relabel every remaining occurrence. Transport the target through
+        // the exact lineage before applying it to the current Module.
+        auto &target =
+            std::get<ChangeFifoQueueDisciplineDomain>(currentDomain).target;
+        const auto parentFifos = module->view().fifoOccurrences();
+        fabric::FabricModuleEntityReference entity{
+            fabric::FabricEntityKind::FabricFifoOccurrence, target.id(),
+            static_cast<std::uint64_t>(
+                llvm::find(parentFifos, target) - parentFifos.begin())};
+        for (const auto &impact : child->impacts) {
+          const auto mapped = llvm::find_if(
+              impact.moduleEntities, [&](const auto &correspondence) {
+                return correspondence.source == entity;
+              });
+          if (mapped == impact.moduleEntities.end())
+            return invalid("FIFO rewrite lineage lost a remaining target");
+          entity = mapped->target;
+        }
+        target = fabric::FabricFifoOccurrenceRef(entity.id);
+      }
       auto step = materializeJointModuleHardwareMutation(
-          parentPlan.resolvedConfig, currentSystem, currentModule, domain,
-          artifacts, blobs);
+          parentPlan.resolvedConfig, currentSystem, currentModule,
+          currentDomain, artifacts, blobs);
       if (!step)
         return step.takeError();
       currentSystem = step->system;

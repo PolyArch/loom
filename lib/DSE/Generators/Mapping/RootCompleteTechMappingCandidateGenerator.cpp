@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
@@ -144,7 +145,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
-    "loom.mapping.root_complete_tech_mapping.generator.v7",
+    "loom.mapping.root_complete_tech_mapping.generator.v10",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -160,7 +161,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationGraphDescriptor{
     applicationGraphTechMappingCandidateGeneratorKind,
     "mapping.application_graph_tech_mapping",
-    "loom.mapping.application_graph_tech_mapping.generator.v10",
+    "loom.mapping.application_graph_tech_mapping.generator.v13",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -339,7 +340,7 @@ void emitFeedback(
       [&](llvm::json::Object &fields) {
         fields["failure_scope"] = "tech_cover_compute_context_hall_demand";
         fields["closure_status"] = "proven_infeasible";
-        fields["proof_scope"] = "observed_cover_relation";
+        fields["proof_scope"] = "checked_compute_demand_relation";
         fields["cover_compute_demand_count"] = feedback->coverDemandCount();
         fields["cover_compute_maximum_matching"] =
             feedback->coverMaximumMatching();
@@ -349,6 +350,10 @@ void emitFeedback(
         llvm::json::Array groups;
         for (const auto &group : feedback->groups()) {
           llvm::json::Object value;
+          llvm::json::Array capabilities;
+          for (auto capability : group.capabilities)
+            capabilities.push_back(::loom::fabric::printFabricRef(capability));
+          value["capabilities"] = std::move(capabilities);
           value["demand_count"] = group.demandCount;
           value["compatible_context_count"] = group.compatibleContexts.size();
           groups.push_back(std::move(value));
@@ -477,15 +482,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         ::dataflow::importCanonicalDataflow(dataflowReference, store);
     if (!artifact)
       return artifact.takeError();
-    auto dataflow = artifact->view();
-    if (!dataflow)
-      return dataflow.takeError();
-    if (dataflow->graphs().empty())
+    const auto &dataflow = artifact->view();
+    if (dataflow.graphs().empty())
       continue;
 
     std::vector<::dataflow::GraphRef> completeCover;
-    completeCover.reserve(dataflow->graphs().size());
-    for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
+    completeCover.reserve(dataflow.graphs().size());
+    for (const ::dataflow::CanonicalGraphView &graph : dataflow.graphs())
       completeCover.push_back(graph.ref);
     std::optional<::loom::mapping::ResolvedTechMappingConfigView>
         boundedConfig;
@@ -500,12 +503,11 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       boundedConfig = std::move(*derived);
       generationConfig = &*boundedConfig;
     }
-    auto incomplete =
-        consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
-                                      {*dataflow, completeCover, fabric->view(),
-                                       *generationConfig, store,
-                                       executionControl}),
-                                  accounting, outputs, lineage, feedback);
+    auto incomplete = consumeTechMappingOutcome(
+        ::loom::mapping::generateTechMappings(
+            {dataflow, completeCover, fabric->view(), *generationConfig, store,
+             executionControl}),
+        accounting, outputs, lineage, feedback);
     if (!incomplete)
       return incomplete.takeError();
     if (*incomplete)
@@ -562,15 +564,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
       inputBindings[ApplicationDataflowInput].artifacts.front(), store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
       inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
       store);
   if (!constraints)
     return constraints.takeError();
-  if (constraints->view().dataflowIdentity() != dataflow->identity())
+  if (constraints->view().dataflowIdentity() != dataflow.identity())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "application_graph_tech_mapping_generator_invalid: constraints "
@@ -609,11 +609,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   std::vector<::dataflow::GraphRef> graphs;
   llvm::Error graphError = llvm::Error::success();
   for (const auto &root : constraints->view().rootThreadLaunches()) {
-    dataflow->forEachRootedGraphLaunch(
+    dataflow.forEachRootedGraphLaunch(
         [&](::dataflow::RootedGraphLaunchRef launch) {
           if (graphError || launch.rootThreadLaunch != root)
             return;
-          auto graph = dataflow->resolve(launch);
+          auto graph = dataflow.resolve(launch);
           if (graph)
             graphs.push_back(*graph);
           else
@@ -677,7 +677,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     std::uint64_t admittedForGraph = 0;
     std::uint64_t candidateOrdinalForGraph = 0;
     auto enumeration = ::loom::mapping::enumerateTechMappingCandidates(
-        {*dataflow, cover, fabric->view(), *config, store,
+        {dataflow, cover, fabric->view(), *config, store,
          invocation.executionControl()},
         [&](const ArtifactRootReference &candidate)
             -> llvm::Expected<
@@ -688,7 +688,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
           if (!tech)
             return tech.takeError();
           auto admission = ::loom::pnr::analyzeSpatialRootSupply(
-              tech->view(), *dataflow, fabric->view());
+              tech->view(), dataflow, fabric->view());
           if (!admission)
             return admission.takeError();
           const auto elapsed =

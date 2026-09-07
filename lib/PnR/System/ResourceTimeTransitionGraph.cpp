@@ -198,7 +198,7 @@ verifyResourceTimeTransitionGraph(const ResourceTimeTransitionGraph &graph,
                                                            artifacts, blobs);
     if (!deployment)
       return deployment.takeError();
-    if (deployment->deployment().systemMapping() != endpoint.mapping)
+    if (!deployment->deployment().systemMapping() || *deployment->deployment().systemMapping() != endpoint.mapping)
       return invalid("resource-time transition graph Deployment selects "
                      "another Mapping");
     if (dataflowIdentity &&

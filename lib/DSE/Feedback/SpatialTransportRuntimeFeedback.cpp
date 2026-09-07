@@ -88,6 +88,7 @@ bool crossesTransportStorage(const Diagnostic::WaitEdge &edge) {
     return isTraversalStorage(storageOwner(edge.to));
   case EdgeKind::ActorMissingInput:
   case EdgeKind::OperandQueueWait:
+  case EdgeKind::PhysicalCapacity:
     return false;
   }
   return false;
@@ -252,7 +253,7 @@ llvm::Expected<bool> verifyCompleteCausalCore(
     llvm::ArrayRef<mapping::SpatialNoGoodLiteral> literals) {
   if (runtimeEvidence.certificate().owners.spatialMapping.artifact !=
           spatialMapping.identity() ||
-      literals.size() < 2)
+      literals.empty())
     return false;
 
   std::uint64_t exactMappingLiteralCount = 0;
@@ -293,8 +294,8 @@ llvm::StringRef spatialTransportRuntimeFeedbackDispositionSpelling(
 llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
     SpatialTransportRuntimeFeedbackReason reason) {
   switch (reason) {
-  case SpatialTransportRuntimeFeedbackReason::ExactClosedStorageWait:
-    return "exact_closed_storage_wait";
+  case SpatialTransportRuntimeFeedbackReason::ExactClosedWait:
+    return "exact_closed_wait";
   case SpatialTransportRuntimeFeedbackReason::MissingOwnerReferences:
     return "missing_owner_references";
   case SpatialTransportRuntimeFeedbackReason::OwnerMismatch:
@@ -309,8 +310,6 @@ llvm::StringRef spatialTransportRuntimeFeedbackReasonSpelling(
     return "unbound_runtime_evidence";
   case SpatialTransportRuntimeFeedbackReason::UnboundConstraintLineage:
     return "unbound_constraint_lineage";
-  case SpatialTransportRuntimeFeedbackReason::EmptyLiteralSet:
-    return "empty_literal_set";
   case SpatialTransportRuntimeFeedbackReason::CausalCoreNotEstablished:
     return "causal_core_not_established";
   }
@@ -373,9 +372,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
       ::dataflow::importCanonicalDataflow(result.owners->dataflow, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto tech = mapping::importTechMapping(result.owners->techMapping, artifacts);
   if (!tech)
     return tech.takeError();
@@ -417,19 +414,19 @@ deriveSpatialTransportRuntimeFeedbackImpl(
   // parent constraint root must name one exact D/T/F/S closure. The no-good is
   // bound by that tuple and never by a SystemMapping.
   if (parentSpatialMapping != result.owners->spatialMapping ||
-      spatial->view().dataflowIdentity() != dataflowView->identity() ||
+      spatial->view().dataflowIdentity() != dataflowView.identity() ||
       spatial->view().techMappingIdentity() != tech->view().identity() ||
       spatial->view().fabricIdentity() != fabric->view().identity() ||
-      tech->view().dataflowIdentity() != dataflowView->identity() ||
+      tech->view().dataflowIdentity() != dataflowView.identity() ||
       tech->view().fabricIdentity() != fabric->view().identity() ||
       importedParentConstraints->view().dataflowIdentity() !=
-          dataflowView->identity() ||
+          dataflowView.identity() ||
       importedParentConstraints->view().techMappingIdentity() !=
           tech->view().identity() ||
       importedParentConstraints->view().fabricIdentity() !=
           fabric->view().identity() ||
       (parentSystem &&
-       (parentSystem->view().dataflowIdentity() != dataflowView->identity() ||
+       (parentSystem->view().dataflowIdentity() != dataflowView.identity() ||
         !llvm::is_contained(
             parentSystem->view().executionBindings().spatialMappingImports(),
             parentSpatialMapping)))) {
@@ -437,7 +434,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     return result;
   }
   if (llvm::Error error = mapping::admitSpatialMappingConstraints(
-          *dataflowView, tech->view(), fabric->view(),
+          dataflowView, tech->view(), fabric->view(),
           importedParentConstraints->view(), spatial->view())) {
     llvm::consumeError(std::move(error));
     result.reason =
@@ -497,7 +494,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
   std::map<std::string, mapping::SpatialNoGoodLiteral> literals;
   const auto remember =
       [&](mapping::SpatialNoGoodLiteral literal) -> llvm::Error {
-    auto key = literalKey(dataflowView->identity(), literal);
+    auto key = literalKey(dataflowView.identity(), literal);
     if (!key)
       return key.takeError();
     literals.try_emplace(std::move(*key), std::move(literal));
@@ -518,7 +515,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
                                bool requireSink) -> llvm::Expected<bool> {
     if (!transfer.producer)
       return false;
-    if (llvm::Error error = dataflowView->validate(*transfer.producer)) {
+    if (llvm::Error error = dataflowView.validate(*transfer.producer)) {
       llvm::consumeError(std::move(error));
       return false;
     }
@@ -531,14 +528,14 @@ deriveSpatialTransportRuntimeFeedbackImpl(
 
     ResolvedConsumer resolved{ConsumerResolution::Absent, std::nullopt};
     if (destinationActor)
-      resolved = resolveConsumer(*dataflowView, *transfer.producer,
+      resolved = resolveConsumer(dataflowView, *transfer.producer,
                                  *destinationActor, destinationInput);
     if (resolved.resolution == ConsumerResolution::Unresolved)
       return false;
     const std::optional<::dataflow::CanonicalGraphConsumerEndpointRef>
         &consumer = resolved.consumer;
     if (consumer)
-      if (llvm::Error error = dataflowView->validate(*consumer)) {
+      if (llvm::Error error = dataflowView.validate(*consumer)) {
         llvm::consumeError(std::move(error));
         return false;
       }
@@ -728,18 +725,8 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     }
   }
 
-  if (result.projectedEdgeCount == 0) {
-    result.reason =
-        SpatialTransportRuntimeFeedbackReason::UnjoinedCertificateEdge;
-    return result;
-  }
-  // The clause must be non-empty.
-  if (literals.empty()) {
-    result.reason = SpatialTransportRuntimeFeedbackReason::EmptyLiteralSet;
-    return result;
-  }
-
-  // Complete the core with the exact sealed parent Mapping. Under the exact
+  // The exact sealed parent Mapping supplies the complete core even when
+  // the wait has no traversal-storage edge. Under the exact
   // replay-verified Request this one literal mechanically fixes every
   // persistent Mapping choice, including choices that do not have an
   // SCC-local breaker representation. The certificate-derived literals above
@@ -754,9 +741,9 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     result.literals.push_back(literal);
   }
 
-  auto causalCore = verifyCompleteCausalCore(
-      *dataflowView, tech->view(), fabric->view(), spatial->view(),
-      runtimeEvidence, result.literals);
+  auto causalCore = verifyCompleteCausalCore(dataflowView, tech->view(),
+                                             fabric->view(), spatial->view(),
+                                             runtimeEvidence, result.literals);
   if (!causalCore)
     return causalCore.takeError();
   if (!*causalCore) {
@@ -790,7 +777,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
       std::make_shared<const mapping::FinalizedSpatialMappingConstraintSet>(
           std::move(*promoted));
   result.disposition = SpatialTransportRuntimeFeedbackDisposition::Exact;
-  result.reason = SpatialTransportRuntimeFeedbackReason::ExactClosedStorageWait;
+  result.reason = SpatialTransportRuntimeFeedbackReason::ExactClosedWait;
   return result;
 }
 

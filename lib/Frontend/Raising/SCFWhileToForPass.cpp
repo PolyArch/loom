@@ -30,11 +30,11 @@
 // domain and every exit result exact, so this pass can mechanically build
 // scf.for. Every other post-tested shape stays scf.while.
 
-#include "Frontend/Raising/CountedLoopProjection.h"
+#include "Frontend/Analysis/CountedLoopProjection.h"
 #include "Frontend/Raising/Passes.h"
 
-#include "Frontend/Analysis/CallableRegions.h"
 #include "ExactRewrite.h"
+#include "Frontend/Analysis/CallableRegions.h"
 #include "PreservedHints.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -61,8 +61,10 @@ struct UpliftExactPostTestedCountedWhileToFor
   ::mlir::LogicalResult
   matchAndRewrite(::mlir::scf::WhileOp loop,
                   ::mlir::PatternRewriter &rewriter) const override {
-    std::optional<loom::raising::ExactPostTestedCountedLoopProjection>
-        projection = loom::raising::projectExactPostTestedCountedLoop(loop);
+    std::optional<
+        loom::frontend::analysis::ExactPostTestedCountedLoopProjection>
+        projection =
+            loom::frontend::analysis::projectExactPostTestedCountedLoop(loop);
     if (!projection)
       return ::mlir::failure();
 

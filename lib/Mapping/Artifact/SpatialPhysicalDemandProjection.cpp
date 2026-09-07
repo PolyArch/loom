@@ -233,6 +233,16 @@ bool augmentComputeContextSupply(
     std::size_t demand, llvm::ArrayRef<std::vector<std::size_t>> domains,
     std::vector<std::optional<std::size_t>> &ownerByValue,
     std::vector<std::uint8_t> &visited, std::uint64_t &deterministicWork) {
+  // Prefer a direct free value before displacing an existing assignment.
+  // Dense overlapping domains otherwise rebuild long alternating paths even
+  // while a one-edge augmentation is available.
+  for (const std::size_t value : domains[demand]) {
+    saturatingIncrement(deterministicWork);
+    if (!ownerByValue[value]) {
+      ownerByValue[value] = demand;
+      return true;
+    }
+  }
   for (const std::size_t value : domains[demand]) {
     saturatingIncrement(deterministicWork);
     if (visited[value])

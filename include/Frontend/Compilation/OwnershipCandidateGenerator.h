@@ -362,6 +362,15 @@ llvm::Expected<std::vector<SpatialOwnershipDecisionPoint>>
 enumerateSpatialOwnershipDecisionDomain(
     const StructuredProgramCandidate &parent, const StructuredEntityRef &scope);
 
+/// Reports the production signed-index narrowing proof on the source scope of
+/// one ownership decision. This is a ranking signal, not a candidate refusal:
+/// inlining or specialization can change the proof before materialization.
+/// The closed decision domain and final typed disposition remain unchanged.
+llvm::Expected<std::optional<std::string>>
+explainSpatialOwnershipSourceIndexNarrowingRejection(
+    const StructuredProgramCandidateView &sourceView,
+    const SpatialOwnershipScope &scope, unsigned canonicalIndexWidth);
+
 /// Clone one exact parent and materialize one point from the selected scope's
 /// typed decision domain without changing ownership. Candidate publication and
 /// independent execution oracles both consume this single implementation.

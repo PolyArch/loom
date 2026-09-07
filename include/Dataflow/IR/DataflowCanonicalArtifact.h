@@ -510,7 +510,7 @@ private:
   friend llvm::Expected<FinalizedCanonicalDataflowProjection>
       finalizeCanonicalDataflowWithTrackedEntities(
           mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>,
-          llvm::ArrayRef<mlir::Operation *>);
+          llvm::ArrayRef<mlir::Operation *>, llvm::ArrayRef<mlir::Value>);
 
   // Assemble the typed ID maps and every closed structural inventory from an
   // already-computed canonical labeling. The importer calls this after
@@ -641,8 +641,9 @@ public:
 
   /// Returns the read-only projection sealed by finalization or strict import.
   /// This disposable native cache is derived from the canonical bytes and may
-  /// never replace them as the persistent authority.
-  llvm::Expected<CanonicalDataflowProgramView> view() const { return view_; }
+  /// never replace them as the persistent authority. The reference remains
+  /// valid until this Artifact is moved or destroyed.
+  const CanonicalDataflowProgramView &view() const { return view_; }
 
 private:
   friend llvm::Expected<CanonicalDataflowArtifact>
@@ -653,7 +654,7 @@ private:
   friend llvm::Expected<FinalizedCanonicalDataflowProjection>
       finalizeCanonicalDataflowWithTrackedEntities(
           mlir::ModuleOp, llvm::ArrayRef<mlir::Operation *>,
-          llvm::ArrayRef<mlir::Operation *>);
+          llvm::ArrayRef<mlir::Operation *>, llvm::ArrayRef<mlir::Value>);
   friend llvm::Expected<CanonicalDataflowArtifact>
   importCanonicalDataflow(const ::loom::ArtifactIdentity &,
                           const ::loom::CanonicalSemanticBytes &);
@@ -661,14 +662,11 @@ private:
   importCanonicalDataflow(const ::loom::ArtifactRootReference &,
                           const ::loom::ArtifactStore &);
 
-  CanonicalDataflowArtifact(
-      ::loom::ArtifactIdentity identity,
-      mlir::OwningOpRef<mlir::ModuleOp> module,
-      ::loom::CanonicalSemanticBytes bytes, CanonicalDataflowProgramView view,
-      std::unique_ptr<mlir::MLIRContext> context = nullptr)
-      : identity_(identity), context_(std::move(context)),
-        module_(std::move(module)), bytes_(std::move(bytes)),
-        view_(std::move(view)) {}
+  CanonicalDataflowArtifact(::loom::ArtifactIdentity identity,
+                            mlir::OwningOpRef<mlir::ModuleOp> module,
+                            ::loom::CanonicalSemanticBytes bytes,
+                            CanonicalDataflowProgramView view,
+                            std::unique_ptr<mlir::MLIRContext> context);
 
   ::loom::ArtifactIdentity identity_;
   // Declaration order makes the module release before its owning context.
@@ -686,6 +684,9 @@ struct FinalizedCanonicalDataflowProjection final {
   CanonicalDataflowArtifact artifact;
   std::vector<StaticGraphLaunchRef> trackedStaticGraphLaunches;
   std::vector<ActorRef> trackedActors;
+  /// Borrowed SSA values carried through cloning and parser normalization.
+  /// These values are owned by artifact and never enter persistent bytes.
+  std::vector<mlir::Value> trackedValues = {};
 };
 
 /// Failure-atomic finalization. Operates on a private clone of `source`, strips
@@ -712,7 +713,8 @@ llvm::Expected<FinalizedCanonicalDataflowProjection>
 finalizeCanonicalDataflowWithTrackedEntities(
     mlir::ModuleOp source,
     llvm::ArrayRef<mlir::Operation *> trackedStaticGraphLaunches,
-    llvm::ArrayRef<mlir::Operation *> trackedActors);
+    llvm::ArrayRef<mlir::Operation *> trackedActors,
+    llvm::ArrayRef<mlir::Value> trackedValues = {});
 
 /// Strictly imports one exact stored canonical Dataflow payload. The family
 /// importer independently rebuilds canonical labels and materialized entity

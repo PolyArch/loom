@@ -190,14 +190,11 @@ llvm::Expected<bool> hasDeterministicExactRelation(
         std::errc::invalid_argument,
         "simulation_comparison_model_invalid: execution Request has no "
         "Spatial inputs");
-  auto inputs = sim::importSpatialSimulationInputs(
-      *request->workload(), *request->runtimeInput(), store);
+  auto inputs = sim::importSpatialSimulationWorkload(*request->workload(), store);
   if (!inputs)
     return inputs.takeError();
-  auto view = inputs->dataflow.view();
-  if (!view)
-    return view.takeError();
-  for (const dataflow::CanonicalActorView &actor : view->actors()) {
+  const auto &view = inputs->dataflow->view();
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
     auto projection =
         dataflow::projectRegisteredActorSchemaProjection(actor.op);
     if (!projection)
@@ -244,6 +241,44 @@ compareExecutions(const sim::CanonicalSimulationExecution &reference,
 }
 
 llvm::Expected<EvaluationModelResult>
+evaluateWithExecutions(const EvaluationRequest &request,
+         const CaseArtifactResolution &resolution,
+         const sim::CanonicalSimulationExecution &reference,
+         const sim::CanonicalSimulationExecution &candidate,
+         const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  const auto references =
+      request.subjectBindings().subjects(kReferenceExecutionRole);
+  const auto candidates =
+      request.subjectBindings().subjects(kCandidateExecutionRole);
+  if (references.size() != 1 || candidates.size() != 1)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "simulation_comparison_model_invalid: Request roles are not total");
+  if (reference.identity() != references.front().artifact ||
+      candidate.identity() != candidates.front().artifact)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "simulation_comparison_model_invalid: prepared executions name "
+        "another Request");
+  auto deterministic = hasDeterministicExactRelation(reference, resolution,
+                                                     artifactStore, blobStore);
+  if (!deterministic)
+    return deterministic.takeError();
+
+  std::vector<FindingResult> findings;
+  findings.reserve(request.findingRequests().size());
+  for (const FindingRequest &finding : request.findingRequests()) {
+    if (finding.query().kind != standard_findings::FunctionalMismatch)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "simulation_comparison_model_invalid: unsupported finding");
+    findings.push_back(
+        compareExecutions(reference, candidate, *deterministic));
+  }
+  return EvaluationModelResult{{}, CompletedEvidence{{}, std::move(findings)}};
+}
+
+llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
          const ArtifactStore &artifactStore, const BlobStore &blobStore) {
@@ -263,22 +298,8 @@ evaluate(const EvaluationRequest &request,
       candidates.front(), resolution, artifactStore, blobStore);
   if (!candidate)
     return candidate.takeError();
-  auto deterministic = hasDeterministicExactRelation(*reference, resolution,
-                                                     artifactStore, blobStore);
-  if (!deterministic)
-    return deterministic.takeError();
-
-  std::vector<FindingResult> findings;
-  findings.reserve(request.findingRequests().size());
-  for (const FindingRequest &finding : request.findingRequests()) {
-    if (finding.query().kind != standard_findings::FunctionalMismatch)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "simulation_comparison_model_invalid: unsupported finding");
-    findings.push_back(
-        compareExecutions(*reference, *candidate, *deterministic));
-  }
-  return EvaluationModelResult{{}, CompletedEvidence{{}, std::move(findings)}};
+  return evaluateWithExecutions(request, resolution, *reference, *candidate,
+                                artifactStore, blobStore);
 }
 
 const EvaluationModelProvider kProvider{
@@ -368,6 +389,28 @@ mergeResolutions(const ArtifactRootReference &referenceExecution,
   return CaseArtifactResolution::get(std::move(result));
 }
 
+llvm::Expected<CaseArtifactResolution> resolveExecutionLineage(
+    const ArtifactRootReference &referenceExecution,
+    const CaseArtifactResolution &referenceResolution,
+    const ArtifactRootReference &candidateExecution,
+    const CaseArtifactResolution &candidateResolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto referenceRequest = sim::simulationExecutionRequestReference(
+      referenceExecution, artifactStore);
+  if (!referenceRequest)
+    return referenceRequest.takeError();
+  auto candidateRequest = sim::simulationExecutionRequestReference(
+      candidateExecution, artifactStore);
+  if (!candidateRequest)
+    return candidateRequest.takeError();
+  auto resolution = mergeResolutions(referenceExecution, referenceResolution,
+                                     *referenceRequest, candidateExecution,
+                                     candidateResolution, *candidateRequest);
+  if (!resolution)
+    return resolution.takeError();
+  return resolution;
+}
+
 } // namespace
 
 llvm::Error registerSimulationComparisonModel() {
@@ -392,17 +435,9 @@ llvm::Expected<CaseArtifactResolution> resolveSimulationComparisonCase(
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerSimulationComparisonModel())
     return std::move(error);
-  auto referenceRequest = sim::simulationExecutionRequestReference(
-      referenceExecution, artifactStore);
-  if (!referenceRequest)
-    return referenceRequest.takeError();
-  auto candidateRequest = sim::simulationExecutionRequestReference(
-      candidateExecution, artifactStore);
-  if (!candidateRequest)
-    return candidateRequest.takeError();
-  auto resolution = mergeResolutions(referenceExecution, referenceResolution,
-                                     *referenceRequest, candidateExecution,
-                                     candidateResolution, *candidateRequest);
+  auto resolution = resolveExecutionLineage(
+      referenceExecution, referenceResolution, candidateExecution,
+      candidateResolution, artifactStore, blobStore);
   if (!resolution)
     return resolution.takeError();
   if (auto imported = sim::importSimulationExecution(
@@ -426,11 +461,20 @@ prepareSimulationComparisonEvaluation(
     const BlobStore &blobStore) {
   if (llvm::Error error = registerSimulationComparisonModel())
     return std::move(error);
-  auto resolution = resolveSimulationComparisonCase(
+  auto resolution = resolveExecutionLineage(
       referenceExecution, referenceResolution, candidateExecution,
       candidateResolution, artifactStore, blobStore);
   if (!resolution)
     return resolution.takeError();
+
+  auto reference = sim::importSimulationExecution(
+      referenceExecution, *resolution, artifactStore, blobStore);
+  if (!reference)
+    return reference.takeError();
+  auto candidate = sim::importSimulationExecution(
+      candidateExecution, *resolution, artifactStore, blobStore);
+  if (!candidate)
+    return candidate.takeError();
 
   auto bindings = EvaluationSubjectBindings::get(
       {{kReferenceExecutionRole, {referenceExecution}},
@@ -461,7 +505,8 @@ prepareSimulationComparisonEvaluation(
   if (!published)
     return published.takeError();
   return PreparedSimulationComparisonEvaluation{
-      std::move(*request), std::move(*resolution), FindingRequestOrdinal(0)};
+      std::move(*request), std::move(*resolution), FindingRequestOrdinal(0),
+      std::move(*reference), std::move(*candidate)};
 }
 
 llvm::Expected<EvaluationEvidence> evaluateSimulationComparison(
@@ -470,8 +515,9 @@ llvm::Expected<EvaluationEvidence> evaluateSimulationComparison(
   RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
-  auto result =
-      evaluate(prepared.request, prepared.resolution, artifactStore, blobStore);
+  auto result = evaluateWithExecutions(
+      prepared.request, prepared.resolution, prepared.reference,
+      prepared.candidate, artifactStore, blobStore);
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(prepared.request,

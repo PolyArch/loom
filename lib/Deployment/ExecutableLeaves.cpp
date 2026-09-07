@@ -625,17 +625,15 @@ llvm::Error validateStaticMemoryImageLeaf(const StaticMemoryImageLeaf &leaf,
           validateLayoutCompatibility(dataflowLayout.getValue(),
                                       target->binding()))
     return error;
-  auto view = program->view();
-  if (!view)
-    return view.takeError();
-  auto memoryInputs = view->graphMemoryInputs(leaf.rootedGraphLaunch());
+  const auto &view = program->view();
+  auto memoryInputs = view.graphMemoryInputs(leaf.rootedGraphLaunch());
   if (!memoryInputs)
     return invalid("rooted graph launch is invalid: " +
                    llvm::toString(memoryInputs.takeError()));
   if (leaf.logicalMemoryRoot().artifact !=
       leaf.canonicalDataflow().artifact)
     return invalid("logical memory root has a foreign Dataflow owner");
-  auto root = view->resolve(leaf.logicalMemoryRoot());
+  auto root = view.resolve(leaf.logicalMemoryRoot());
   if (!root)
     return invalid("logical memory root is invalid: " +
                    llvm::toString(root.takeError()));
@@ -650,7 +648,7 @@ llvm::Error validateStaticMemoryImageLeaf(const StaticMemoryImageLeaf &leaf,
   if (!isSource)
     return invalid("logical memory root is not a source of the rooted graph "
                    "launch");
-  auto extent = view->staticMemoryByteExtent(
+  auto extent = view.staticMemoryByteExtent(
       dataflow::LogicalMemoryRootOrViewRef{leaf.logicalMemoryRoot()});
   if (!extent)
     return extent.takeError();

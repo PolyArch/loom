@@ -85,7 +85,7 @@ void graphBindingWorkflow() {
   auto dataflowArtifact = buildDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto baselineDesign = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   require(baselineDesign.roots().size() == 1,
@@ -157,7 +157,7 @@ void graphBindingWorkflow() {
   auto pressureDataflowArtifact = buildCapacityPressureDataflow(context);
   const auto pressureDataflowReference =
       take(dataflow::publishCanonicalDataflow(pressureDataflowArtifact, store));
-  auto pressureDataflow = take(pressureDataflowArtifact.view());
+  const auto &pressureDataflow = pressureDataflowArtifact.view();
   std::vector<loom::ArtifactRootReference> pressureSpatialMappings;
   for (const auto &graph : pressureDataflow.graphs())
     pressureSpatialMappings.push_back(generateSpatialMapping(

@@ -1438,9 +1438,7 @@ importSystemMapping(const ArtifactRootReference &reference,
       store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto fabric = ::loom::fabric::importEntireFabricRoot(
       {::loom::fabric::fabricArtifactSchema.identity.str(),
        ::loom::fabric::fabricArtifactSchema.version, *fabricIdentity},
@@ -1452,7 +1450,7 @@ importSystemMapping(const ArtifactRootReference &reference,
     return system.takeError();
   std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure;
   auto view =
-      importSystemMappingView(reference.artifact, parsed->root, *dataflowView,
+      importSystemMappingView(reference.artifact, parsed->root, dataflowView,
                               *system, store, nullptr, &verifiedClosure, {});
   if (!view)
     return view.takeError();
@@ -1757,10 +1755,8 @@ llvm::Expected<FinalizedSystemMapping> rebaseSystemMapping(
       store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  return finalizeSystemMapping(parsed->root, *dataflowView, childFabric,
+  const auto &dataflowView = dataflow->view();
+  return finalizeSystemMapping(parsed->root, dataflowView, childFabric,
                                childConstraints, store, spatialMappings);
 }
 

@@ -144,17 +144,15 @@ buildFuReverseSynthesisCandidateWorkflow(const ArtifactRootReference &dataflow,
   auto importedDataflow = ::dataflow::importCanonicalDataflow(dataflow, store);
   if (!importedDataflow)
     return importedDataflow.takeError();
-  auto dataflowView = importedDataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  if (llvm::Error error = verifyFullyRootReachableGraphDomain(*dataflowView))
+  const auto &dataflowView = importedDataflow->view();
+  if (llvm::Error error = verifyFullyRootReachableGraphDomain(dataflowView))
     return std::move(error);
   std::vector<::dataflow::GraphRef> graphDomain;
-  graphDomain.reserve(dataflowView->graphs().size());
-  for (const ::dataflow::CanonicalGraphView &graph : dataflowView->graphs())
+  graphDomain.reserve(dataflowView.graphs().size());
+  for (const ::dataflow::CanonicalGraphView &graph : dataflowView.graphs())
     graphDomain.push_back(graph.ref);
-  if (llvm::Error error = verifyScalarIntegerAddSubFuSynthesisDomain(
-          *dataflowView, graphDomain))
+  if (llvm::Error error =
+          verifyScalarIntegerAddSubFuSynthesisDomain(dataflowView, graphDomain))
     return std::move(error);
 
   auto techConfig =
@@ -316,20 +314,18 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
       ::dataflow::importCanonicalDataflow(artifacts.dataflow, store);
   if (!importedDataflow)
     return importedDataflow.takeError();
-  auto dataflow = importedDataflow->view();
-  if (!dataflow)
-    return dataflow.takeError();
-  if (llvm::Error error = verifyFullyRootReachableGraphDomain(*dataflow))
+  const auto &dataflow = importedDataflow->view();
+  if (llvm::Error error = verifyFullyRootReachableGraphDomain(dataflow))
     return error;
   std::vector<::dataflow::GraphRef> synthesisGraphs;
-  synthesisGraphs.reserve(dataflow->graphs().size());
-  for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
+  synthesisGraphs.reserve(dataflow.graphs().size());
+  for (const ::dataflow::CanonicalGraphView &graph : dataflow.graphs())
     synthesisGraphs.push_back(graph.ref);
   auto module = ::loom::fabric::importEntireFabricRoot(artifacts.module, store);
   if (!module)
     return module.takeError();
   if (llvm::Error error = verifyScalarIntegerAddSubFuFabricLineage(
-          *dataflow, synthesisGraphs, *module, store))
+          dataflow, synthesisGraphs, *module, store))
     return error;
   auto system = ::loom::fabric::importEntireFabricRoot(artifacts.system, store);
   if (!system)
@@ -365,7 +361,7 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
     if (!mapping)
       return mapping.takeError();
     if (llvm::Error error = verifyScalarIntegerAddSubFuMappingLineage(
-            *dataflow, synthesisGraphs, *module, *mapping, store))
+            dataflow, synthesisGraphs, *module, *mapping, store))
       return error;
     if (mapping->view().covers().size() != 1 ||
         llvm::is_contained(coveredGraphs, mapping->view().covers().front()))
@@ -373,9 +369,9 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
     coveredGraphs.push_back(mapping->view().covers().front());
     techMappings.push_back(std::move(*mapping));
   }
-  if (coveredGraphs.size() != dataflow->graphs().size())
+  if (coveredGraphs.size() != dataflow.graphs().size())
     return invalid("workflow TechMappings do not cover every graph");
-  for (const auto &graph : dataflow->graphs())
+  for (const auto &graph : dataflow.graphs())
     if (!llvm::is_contained(coveredGraphs, graph.ref))
       return invalid("workflow TechMappings omit an input graph");
 
@@ -384,7 +380,7 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
   if (!jointTechMapping)
     return jointTechMapping.takeError();
   if (llvm::Error error = verifyScalarIntegerAddSubFuJointMappingLineage(
-          *dataflow, synthesisGraphs, *module, *jointTechMapping, store))
+          dataflow, synthesisGraphs, *module, *jointTechMapping, store))
     return error;
   const llvm::ArrayRef<::loom::mapping::FinalizedTechMapping> jointTechMappings(
       &*jointTechMapping, 1);
@@ -396,7 +392,7 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
     auto mapping = ::loom::mapping::importSpatialMapping(reference, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflow->identity() ||
+    if (mapping->view().dataflowIdentity() != dataflow.identity() ||
         mapping->view().fabricIdentity() != module->view().identity())
       return invalid("workflow SpatialMapping has foreign owners");
     if (!findTechMapping(techMappings, mapping->view().techMappingIdentity()))
@@ -416,7 +412,7 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
     auto mapping = ::loom::mapping::importSpatialMapping(reference, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflow->identity() ||
+    if (mapping->view().dataflowIdentity() != dataflow.identity() ||
         mapping->view().fabricIdentity() != module->view().identity() ||
         mapping->view().techMappingIdentity() !=
             jointTechMapping->view().identity())
@@ -432,18 +428,18 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
       store, artifacts.systemMappings.size(),
       ::loom::mapping::SystemMappingImportSessionMode::New);
   std::vector<::dataflow::RootedGraphLaunchRef> rootedLaunches;
-  dataflow->forEachRootedGraphLaunch(
+  dataflow.forEachRootedGraphLaunch(
       [&](::dataflow::RootedGraphLaunchRef launch) {
         rootedLaunches.push_back(launch);
       });
   std::vector<::dataflow::RootThreadLaunchRef> rootThreads;
-  for (const auto &root : dataflow->rootThreadLaunches())
+  for (const auto &root : dataflow.rootThreadLaunches())
     rootThreads.push_back(root.ref);
   for (const auto &reference : artifacts.systemMappings) {
     auto mapping = ::loom::mapping::importSystemMapping(reference, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflow->identity() ||
+    if (mapping->view().dataflowIdentity() != dataflow.identity() ||
         mapping->view().fabricIdentity() != system->view().identity())
       return invalid("workflow SystemMapping has foreign owners");
     const auto &execution = mapping->view().executionBindings();
@@ -467,21 +463,21 @@ llvm::Error verifyFuReverseSynthesisWorkflowArtifacts(
       std::size_t targetCount = 0;
       for (const auto &clause : binding.clauses) {
         if (llvm::Error error = verifyGraphBindingTarget(
-                *dataflow, binding.key, clause.target, jointSpatialMappings,
+                dataflow, binding.key, clause.target, jointSpatialMappings,
                 jointTechMappings))
           return error;
         ++targetCount;
       }
       if (binding.defaultTarget) {
         if (llvm::Error error = verifyGraphBindingTarget(
-                *dataflow, binding.key, *binding.defaultTarget,
+                dataflow, binding.key, *binding.defaultTarget,
                 jointSpatialMappings, jointTechMappings))
           return error;
         ++targetCount;
       }
       for (const auto &entry : binding.stableKeyEntries) {
         if (llvm::Error error = verifyGraphBindingTarget(
-                *dataflow, binding.key, entry.target, jointSpatialMappings,
+                dataflow, binding.key, entry.target, jointSpatialMappings,
                 jointTechMappings))
           return error;
         ++targetCount;

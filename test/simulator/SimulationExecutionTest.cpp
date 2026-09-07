@@ -383,7 +383,7 @@ prepareInputs(llvm::StringRef test, const ArtifactStore &store,
   llvm::cantFail(registerEvaluationModelDescriptor(descriptor));
 
   auto program = makeProgram(test);
-  auto view = take(test, program.view());
+  const auto &view = program.view();
   const ArtifactRootReference dataflowRef =
       take(test, dataflow::publishCanonicalDataflow(program, store));
 
@@ -571,16 +571,17 @@ void actorActivityUsesTheRootedGraphInventory() {
       RetiredExecution{},
       observations(PublishedValueResult{value(16)}, true),
       retiredProgress(__func__),
-      {{ActivityWindow::LaunchToTerminal,
-        ActivityCoverage::Partial,
-        {{inputs.actor, {3, 3}}}}}};
+      {{ActivityWindow::LaunchToTerminal, ActivityCoverage::Partial,
+        ActorTransitionsActivity{{{inputs.actor, {3, 3}}}}}}};
   auto finalized =
       take(__func__,
            finalizeSimulationExecution(draft, inputs.resolution, store, blobs));
   require(__func__, finalized.spatialActivitySummaries().size() == 1,
           "execution dropped its typed actor activity summary");
 
-  draft.activitySummaries.front().transitions.front().counts = {2, 3};
+  std::get<ActorTransitionsActivity>(draft.activitySummaries.front().payload)
+      .transitions.front()
+      .counts = {2, 3};
   expectErrorContains(
       __func__,
       finalizeSimulationExecution(draft, inputs.resolution, store, blobs),

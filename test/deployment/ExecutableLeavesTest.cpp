@@ -267,7 +267,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
       "llvm.data_layout",
       mlir::StringAttr::get(&context(), llvmDataLayout));
   auto finalized = take(test, dataflow::finalizeCanonicalDataflow(*module));
-  auto view = take(test, finalized.view());
+  const auto &view = finalized.view();
   require(test, view.logicalMemoryRoots().size() == 1,
           "fixture did not expose one logical memory root");
   std::vector<dataflow::RootedGraphLaunchRef> launches;
@@ -319,7 +319,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
                                                         &context());
   require(test, static_cast<bool>(module), "failed to parse Dataflow fixture");
   auto finalized = take(test, dataflow::finalizeCanonicalDataflow(*module));
-  auto view = take(test, finalized.view());
+  const auto &view = finalized.view();
   std::vector<dataflow::RootedGraphLaunchRef> launches;
   view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
     launches.push_back(launch);

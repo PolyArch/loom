@@ -1,7 +1,6 @@
 add_mlir_library(LoomFrontendRaising
   CandidateHints.cpp
   ConstantCallbackSpecialization.cpp
-  CountedLoopProjection.cpp
   DeduplicateSCFWhileStatePass.cpp
   LiftCFToSCFPass.cpp
   LLVMArithToArithPass.cpp

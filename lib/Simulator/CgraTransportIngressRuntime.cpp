@@ -37,7 +37,8 @@ bool CgraTransportRuntime::ownsTraversal(std::uint64_t slot,
                                          std::uint64_t nodeOrdinal) const {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return false;
-  const TransferBinding &binding = bindings_[inFlight_[slot].bindingOrdinal];
+  const TransferBinding &binding =
+      graph_.bindings[inFlight_[slot].bindingOrdinal];
   return nodeOrdinal >= binding.traversalNodeOffset &&
          nodeOrdinal - binding.traversalNodeOffset < binding.traversalNodeCount;
 }
@@ -48,8 +49,9 @@ CgraTransportRuntime::traversalState(std::uint64_t slot,
   assert(ownsTraversal(slot, nodeOrdinal) &&
          "CGRA traversal state must name its token occurrence");
   InFlight &transfer = inFlight_[slot];
-  return transfer.traversals[nodeOrdinal - bindings_[transfer.bindingOrdinal]
-                                               .traversalNodeOffset];
+  return transfer
+      .traversals[nodeOrdinal -
+                  graph_.bindings[transfer.bindingOrdinal].traversalNodeOffset];
 }
 
 const CgraTransportRuntime::TraversalState &
@@ -58,17 +60,19 @@ CgraTransportRuntime::traversalState(std::uint64_t slot,
   assert(ownsTraversal(slot, nodeOrdinal) &&
          "CGRA traversal state must name its token occurrence");
   const InFlight &transfer = inFlight_[slot];
-  return transfer.traversals[nodeOrdinal - bindings_[transfer.bindingOrdinal]
-                                               .traversalNodeOffset];
+  return transfer
+      .traversals[nodeOrdinal -
+                  graph_.bindings[transfer.bindingOrdinal].traversalNodeOffset];
 }
 
 void CgraTransportRuntime::completeSource(InFlight &transfer) {
-  TransferBinding &binding = bindings_[transfer.bindingOrdinal];
-  assert(!transfer.producerCompletionReported && binding.producerPending &&
-         !binding.sourceReserved &&
+  const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
+  ProducerState &source = producerStates_[transfer.bindingOrdinal];
+  assert(!transfer.producerCompletionReported && source.producerPending &&
+         !source.sourceReserved &&
          "CGRA durable handoff must release its pending producer exactly once");
   transfer.producerCompletionReported = true;
-  binding.producerPending = false;
+  source.producerPending = false;
   if (binding.semanticActorOrdinal &&
       actorSourcesAvailable(*binding.semanticActorOrdinal))
     state_->nextActorCandidates.set(*binding.semanticActorOrdinal);
@@ -77,8 +81,8 @@ void CgraTransportRuntime::completeSource(InFlight &transfer) {
 std::uint64_t CgraTransportRuntime::allocate(
     std::uint64_t bindingOrdinal, std::uint64_t occurrenceOrdinal,
     std::uint64_t producerSequenceOrdinal, Token token) {
-  assert(bindingOrdinal < bindings_.size() &&
-         !bindings_[bindingOrdinal].producerPending &&
+  assert(bindingOrdinal < graph_.bindings.size() &&
+         !producerStates_[bindingOrdinal].producerPending &&
          "CGRA transport allocation requires a validated source");
   assert(activeTransferCount_ != std::numeric_limits<std::uint64_t>::max() &&
          "preflighted active transfer count must fit u64");
@@ -91,7 +95,7 @@ std::uint64_t CgraTransportRuntime::allocate(
     slot = freeSlots_.back();
     freeSlots_.pop_back();
   }
-  TransferBinding &binding = bindings_[bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[bindingOrdinal];
   InFlight transfer;
   transfer.active = true;
   transfer.bindingOrdinal = bindingOrdinal;
@@ -104,12 +108,17 @@ std::uint64_t CgraTransportRuntime::allocate(
   transfer.readySinks.assign(binding.sinkCount, false);
   transfer.publications.resize(binding.publicationCount);
   transfer.traversals.resize(binding.traversalNodeCount);
-  for (std::uint32_t local = 0; local != binding.traversalNodeCount; ++local)
-    transfer.traversals[local].remainingPredecessors =
-        traversalNodes_[binding.traversalNodeOffset + local].predecessorCount;
+  for (std::uint32_t local = 0; local != binding.traversalNodeCount; ++local) {
+    const std::uint64_t node = binding.traversalNodeOffset + local;
+    const std::uint32_t predecessors =
+        graph_.traversalNodes[node].predecessorCount;
+    transfer.traversals[local].remainingPredecessors = predecessors;
+    if (predecessors == 0)
+      transfer.readyTraversals.push_back(node);
+  }
   inFlight_[slot] = std::move(transfer);
-  binding.producerPending = true;
-  binding.sourceReserved = false;
+  producerStates_[bindingOrdinal].producerPending = true;
+  producerStates_[bindingOrdinal].sourceReserved = false;
   ++activeTransferCount_;
   return slot;
 }
@@ -164,12 +173,12 @@ CgraTransportRuntime::requestActions(
   };
 
   for (const PendingActionTransfer &transfer : transfers) {
-    if (transfer.bindingOrdinal >= bindings_.size())
+    if (transfer.bindingOrdinal >= graph_.bindings.size())
       return invalid("CGRA transport action names an unknown binding");
-    const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
+    const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
     if (stage == ActionStage::Produced) {
       for (auto [localActionOrdinal, action] : llvm::enumerate(
-               llvm::ArrayRef(physicalUses_)
+               llvm::ArrayRef(graph_.physicalUses)
                    .slice(binding.physicalUseOffset, binding.physicalUseCount)))
         if (llvm::Error error = appendAction(
                 transfer.transferSlot, invalidCgraTransportOrdinal,
@@ -183,7 +192,8 @@ CgraTransportRuntime::requestActions(
               binding.traversalNodeOffset + binding.traversalNodeCount)
         return invalid("CGRA traversal action names another transfer DAG");
       const std::uint64_t action =
-          traversalNodes_[transfer.traversalNodeOrdinal].physicalUseOrdinal;
+          graph_.traversalNodes[transfer.traversalNodeOrdinal]
+              .physicalUseOrdinal;
       const std::uint64_t localActionOrdinal = binding.physicalUseCount +
                                                transfer.traversalNodeOrdinal -
                                                binding.traversalNodeOffset;
@@ -198,18 +208,18 @@ CgraTransportRuntime::requestActions(
             binding.publicationOffset + binding.publicationCount)
       return invalid("CGRA consumed action names another publication");
     const PublicationBinding &publication =
-        publications_[transfer.publicationBinding];
+        graph_.publications[transfer.publicationBinding];
     for (std::uint32_t localSink :
-         llvm::ArrayRef(publicationSinks_)
+         llvm::ArrayRef(graph_.publicationSinks)
              .slice(publication.sinkOffset, publication.sinkCount)) {
       if (localSink >= binding.sinkCount)
         return invalid("CGRA publication names an unknown sink");
-      const SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
+      const SinkBinding &sink = graph_.sinks[binding.sinkOffset + localSink];
       std::uint64_t localActionOrdinal = binding.physicalUseCount +
                                          binding.traversalNodeCount +
                                          sink.consumedLocalActionOffset;
       for (std::uint64_t action :
-           llvm::ArrayRef(physicalUses_)
+           llvm::ArrayRef(graph_.physicalUses)
                .slice(sink.physicalUseOffset, sink.physicalUseCount))
         if (llvm::Error error = appendAction(
                 transfer.transferSlot, invalidCgraTransportOrdinal,
@@ -266,19 +276,20 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
   llvm::SmallVector<PendingActionTransfer, 4> producedTransfers;
   producedTransfers.reserve(transfers.size());
   for (auto [transfer, slot] : llvm::zip(transfers, prospectiveSlots)) {
-    if (!transfer.token || transfer.bindingOrdinal >= bindings_.size())
+    if (!transfer.token || transfer.bindingOrdinal >= graph_.bindings.size())
       return invalid("CGRA transport received a malformed source emission");
-    const TransferBinding &binding = bindings_[transfer.bindingOrdinal];
-    if (binding.nextProducerSequenceOrdinal ==
+    const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
+    const ProducerState &source = producerStates_[transfer.bindingOrdinal];
+    if (source.nextProducerSequenceOrdinal ==
         std::numeric_limits<std::uint64_t>::max())
       return llvm::createStringError(
           std::errc::value_too_large,
           "CGRA producer sequence ordinal overflows u64");
     if (std::holds_alternative<::dataflow::GraphIngressTokenRef>(
             binding.producer) &&
-        transfer.occurrenceOrdinal != binding.nextProducerSequenceOrdinal)
+        transfer.occurrenceOrdinal != source.nextProducerSequenceOrdinal)
       return invalid("CGRA graph-ingress producer sequence is not dense");
-    producerSequences.push_back(binding.nextProducerSequenceOrdinal);
+    producerSequences.push_back(source.nextProducerSequenceOrdinal);
     producedTransfers.push_back({slot, transfer.bindingOrdinal});
   }
 
@@ -295,7 +306,7 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
         allocate(transfer.bindingOrdinal, transfer.occurrenceOrdinal,
                  producerSequence, std::move(*transfer.token));
     assert(slot == expectedSlot && "transport slot projection changed");
-    ++bindings_[transfer.bindingOrdinal].nextProducerSequenceOrdinal;
+    ++producerStates_[transfer.bindingOrdinal].nextProducerSequenceOrdinal;
     slots.push_back(slot);
   }
   for (const CgraPhysicalLifecycleEvent &event : *requested)
@@ -304,7 +315,8 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
           event.ownerEventOrdinal},
          0});
   for (std::uint64_t slot : slots) {
-    const TransferBinding &binding = bindings_[inFlight_[slot].bindingOrdinal];
+    const TransferBinding &binding =
+        graph_.bindings[inFlight_[slot].bindingOrdinal];
     if (binding.physicalUseCount == 0) {
       auto directReady = markDirectSinksReady(slot);
       if (!directReady)
@@ -346,11 +358,11 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
   transfers.reserve(emissions.size());
   for (CgraActorEmission &emission : emissions) {
-    auto binding = actorSourceBindings_.find(
+    auto binding = graph_.actorSourceBindings.find(
         {emission.semanticActorOrdinal, emission.resultOrdinal});
-    if (binding == actorSourceBindings_.end())
+    if (binding == graph_.actorSourceBindings.end())
       return invalid("CGRA actor emission has no selected transfer binding");
-    if (bindings_[binding->second].producerPending)
+    if (producerStates_[binding->second].producerPending)
       return invalid(llvm::Twine("CGRA actor ") +
                      llvm::Twine(emission.semanticActorOrdinal) +
                      " occurrence " + llvm::Twine(emission.occurrenceOrdinal) +
@@ -376,10 +388,10 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
   transfers.reserve(emissions.size());
   for (GraphIngressEmission &emission : emissions) {
-    auto binding = ingressSourceBindings_.find(emission.argumentOrdinal);
-    if (binding == ingressSourceBindings_.end())
+    auto binding = graph_.ingressSourceBindings.find(emission.argumentOrdinal);
+    if (binding == graph_.ingressSourceBindings.end())
       return invalid("CGRA graph ingress has no selected transfer binding");
-    if (bindings_[binding->second].producerPending ||
+    if (producerStates_[binding->second].producerPending ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA graph ingress batch reuses a pending source");
     transfers.push_back(
@@ -390,22 +402,23 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
 
 llvm::Expected<bool>
 CgraTransportRuntime::canAcceptGraphIngress(unsigned argumentOrdinal) const {
-  auto binding = ingressSourceBindings_.find(argumentOrdinal);
-  if (binding == ingressSourceBindings_.end())
+  auto binding = graph_.ingressSourceBindings.find(argumentOrdinal);
+  if (binding == graph_.ingressSourceBindings.end())
     return invalid("CGRA graph ingress has no selected transfer binding");
-  if (binding->second >= bindings_.size())
+  if (binding->second >= graph_.bindings.size())
     return invalid("CGRA graph ingress binding exceeds the transport plan");
-  return !bindings_[binding->second].producerPending;
+  return !producerStates_[binding->second].producerPending;
 }
 
 bool CgraTransportRuntime::actorSourcesAvailable(
     std::uint64_t semanticActorOrdinal) const {
-  if (semanticActorOrdinal >= actorSourceBindingOrdinals_.size())
+  if (semanticActorOrdinal >= graph_.actorSourceBindingOrdinals.size())
     return false;
   for (std::uint64_t binding :
-       actorSourceBindingOrdinals_[semanticActorOrdinal])
-    if (binding >= bindings_.size() || bindings_[binding].sourceReserved ||
-        bindings_[binding].producerPending)
+       graph_.actorSourceBindingOrdinals[semanticActorOrdinal])
+    if (binding >= graph_.bindings.size() ||
+        producerStates_[binding].sourceReserved ||
+        producerStates_[binding].producerPending)
       return false;
   return true;
 }
@@ -425,7 +438,7 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
       return invalid("CGRA blocked transfer has no in-flight token");
     blocked_.reset(slot);
     InFlight &inFlight = inFlight_[slot];
-    const TransferBinding &selected = bindings_[inFlight.bindingOrdinal];
+    const TransferBinding &selected = graph_.bindings[inFlight.bindingOrdinal];
     bool retryCapacity = false;
     bool retryPublication = false;
     for (std::uint32_t localPublication = 0;
@@ -439,7 +452,7 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
       retryPublication |=
           state.consumedRequested && !state.published &&
           state.consumedPermitted ==
-              publications_[selected.publicationOffset + localPublication]
+              graph_.publications[selected.publicationOffset + localPublication]
                   .consumedPhysicalUseCount;
     }
     if (retryPublication && !inFlight.publicationScheduled) {
@@ -457,7 +470,7 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
       if (state != TraversalNodeState::WaitingStorage &&
           state != TraversalNodeState::Queued)
         continue;
-      const std::uint64_t storage = traversalNodes_[node].storageOrdinal;
+      const std::uint64_t storage = graph_.traversalNodes[node].storageOrdinal;
       if (storage >= storages_.size())
         return invalid("CGRA blocked traversal has no storage owner");
       // A publication changed this queue's downstream readiness: restart any

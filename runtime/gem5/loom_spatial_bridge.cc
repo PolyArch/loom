@@ -2,22 +2,17 @@
 
 #include "Runtime/Gem5SpatialBridgeABI.h"
 #include "Runtime/SpatialInvocationWire.h"
+#include "runtime/gem5/loom_spatial_engine_session.hh"
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "mem/packet.hh"
 
-#include <cerrno>
 #include <chrono>
-#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <limits>
 #include <optional>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 namespace gem5 {
 namespace {
@@ -33,36 +28,6 @@ bool launchFitsMessageLimit(std::uint64_t staticBytes,
   return envelopeBytes <= limit && staticBytes != 0 &&
          staticBytes <= limit - envelopeBytes &&
          invocationBytes <= limit - envelopeBytes - staticBytes;
-}
-
-bool readAll(int descriptor, std::uint8_t *bytes, std::size_t size) {
-  while (size != 0) {
-    const ssize_t count = ::read(descriptor, bytes, size);
-    if (count == 0)
-      return false;
-    if (count < 0) {
-      if (errno == EINTR)
-        continue;
-      return false;
-    }
-    bytes += count;
-    size -= static_cast<std::size_t>(count);
-  }
-  return true;
-}
-
-bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
-  while (size != 0) {
-    const ssize_t count = ::write(descriptor, bytes, size);
-    if (count < 0) {
-      if (errno == EINTR)
-        continue;
-      return false;
-    }
-    bytes += count;
-    size -= static_cast<std::size_t>(count);
-  }
-  return true;
 }
 
 std::optional<std::uint64_t> threadCpuNanoseconds() {
@@ -97,38 +62,12 @@ LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
       ADD_STAT(clockFailureCount, statistics::units::Count::get(),
                "Host performance clock samples that failed") {}
 
-LoomSpatialBridge::EngineResponseEvent::EngineResponseEvent(
-    LoomSpatialBridge &bridge, int descriptor)
-    : PollEvent(descriptor, POLLIN | POLLERR | POLLHUP | POLLNVAL),
-      bridge(bridge) {}
-
-void LoomSpatialBridge::EngineResponseEvent::process(int revents) {
-  EventQueue::ScopedMigration migrate(bridge.eventQueue());
-  const bool terminal = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
-  // A single-use engine may close immediately after sending its canonical
-  // completion. The completion event can still be pending in simulated time.
-  if (terminal &&
-      (bridge.engineCompletionReceived || bridge.state == State::Complete)) {
-    bridge.finishEngineWait();
-    bridge.scheduleEngineDisconnect();
-    return;
-  }
-  if ((revents & POLLIN) != 0) {
-    bridge.runAccounted(&LoomSpatialBridge::consumeEngineMessage);
-    return;
-  }
-  if (terminal) {
-    bridge.finishEngineWait();
-    bridge.fail(6, "Spatial engine connection became unavailable");
-  }
-}
-
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
     : DmaDevice(params), performanceStatistics(this),
       pioAddress(params.pio_addr), pioSize(params.pio_size),
       pioDelay(params.pio_latency),
       bridgeSessionOrdinal(params.session_ordinal),
-      engineSocketPath(params.engine_socket), resultPath(params.result_path),
+      engineSession(params.engine_session), resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
       maximumInvocations(params.max_invocations),
       collectPerformance(params.collect_performance),
@@ -141,15 +80,20 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       invocationCompletionEvent(
           [this] { runAccounted(&LoomSpatialBridge::startLaunch); },
           name() + ".invocation_completion"),
+      memoryRequestEvent(
+          [this] { runAccounted(&LoomSpatialBridge::issueMemoryRequest); },
+          name() + ".memory_request"),
       dmaCompletionEvent(
           [this] { runAccounted(&LoomSpatialBridge::completeMemoryRequest); },
           name() + ".dma_completion"),
       completionEvent(
           [this] { runAccounted(&LoomSpatialBridge::completeInvocation); },
           name() + ".completion"),
-      engineDisconnectEvent([this] { disconnectEngine(); },
-                            name() + ".engine_disconnect") {
-  panic_if(engineSocketPath.empty(), "LoomSpatialBridge socket is empty");
+      channelCommitEvent(
+          [this] { runAccounted(&LoomSpatialBridge::completeChannelCommit); },
+          name() + ".channel_commit") {
+  if (engineSession)
+    engineSession->registerBridge(bridgeSessionOrdinal, *this);
   panic_if(resultPath.empty(), "LoomSpatialBridge result path is empty");
   panic_if(maximumMessageBytes < loom::runtime::gem5BridgeWireHeaderBytes,
            "LoomSpatialBridge message limit is too small");
@@ -162,12 +106,6 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
            "LoomSpatialBridge could not publish its empty result");
 }
 
-LoomSpatialBridge::~LoomSpatialBridge() {
-  if (engineDisconnectEvent.scheduled())
-    deschedule(&engineDisconnectEvent);
-  disconnectEngine();
-}
-
 AddrRangeList LoomSpatialBridge::getAddrRanges() const {
   return {AddrRange(pioAddress, pioAddress + pioSize - 1)};
 }
@@ -178,6 +116,8 @@ std::uint32_t LoomSpatialBridge::status() const {
     return 0;
   case State::Running:
   case State::WaitingForMemory:
+  case State::WaitingForChannelCommit:
+  case State::WaitingForCompletion:
     return gem5SpatialBridgeBusy;
   case State::Complete:
     return gem5SpatialBridgeDone;
@@ -276,7 +216,9 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
   } else if (value & gem5SpatialBridgeReset) {
     resetBridge();
   } else if (value & gem5SpatialBridgeStart) {
-    if (state != State::Idle && state != State::Complete)
+    if (!engineSession)
+      fail(3, "launch requested on a bridge without an executable session");
+    else if (state != State::Idle && state != State::Complete)
       fail(3, "launch requested while the bridge is not idle");
     else if (nextSequence >= maximumInvocations)
       fail(20, "launch count exceeds the bridge session limit");
@@ -288,7 +230,6 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
       activeStaticLaunchSize = staticLaunchSize;
       activeInvocationAddress = invocationAddress;
       activeInvocationSize = invocationSize;
-      engineCompletionReceived = false;
       state = State::Running;
       errorCode = 0;
       schedule(&launchEvent, clockEdge());
@@ -318,75 +259,6 @@ void LoomSpatialBridge::fetchInvocation() {
   }
   dmaRead(activeInvocationAddress, static_cast<int>(activeInvocationSize),
           &invocationCompletionEvent, invocationPayload.data());
-}
-
-bool LoomSpatialBridge::connectEngine() {
-  if (engineSocket >= 0)
-    return true;
-  engineSocket = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (engineSocket < 0)
-    return false;
-  sockaddr_un address{};
-  if (engineSocketPath.size() >= sizeof(address.sun_path)) {
-    ::close(engineSocket);
-    engineSocket = -1;
-    return false;
-  }
-  address.sun_family = AF_UNIX;
-  std::memcpy(address.sun_path, engineSocketPath.c_str(),
-              engineSocketPath.size() + 1);
-  if (::connect(engineSocket, reinterpret_cast<sockaddr *>(&address),
-                sizeof(address)) != 0) {
-    ::close(engineSocket);
-    engineSocket = -1;
-    return false;
-  }
-  engineResponseEvent =
-      std::make_unique<EngineResponseEvent>(*this, engineSocket);
-  pollQueue.schedule(engineResponseEvent.get());
-  return true;
-}
-
-void LoomSpatialBridge::scheduleEngineDisconnect() {
-  if (!engineDisconnectEvent.scheduled())
-    schedule(&engineDisconnectEvent, curTick());
-}
-
-void LoomSpatialBridge::disconnectEngine() {
-  finishEngineWait();
-  if (engineResponseEvent && engineResponseEvent->queued())
-    pollQueue.remove(engineResponseEvent.get());
-  if (engineSocket >= 0) {
-    ::close(engineSocket);
-    engineSocket = -1;
-  }
-}
-
-bool LoomSpatialBridge::sendMessage(
-    const loom::runtime::Gem5BridgeMessage &message) {
-  const std::vector<std::uint8_t> bytes =
-      loom::runtime::encodeGem5BridgeWireMessage(message);
-  return bytes.size() <= maximumMessageBytes &&
-         writeAll(engineSocket, bytes.data(), bytes.size());
-}
-
-bool LoomSpatialBridge::receiveMessage(
-    loom::runtime::Gem5BridgeMessage &message) {
-  std::vector<std::uint8_t> bytes(loom::runtime::gem5BridgeWireHeaderBytes);
-  if (!readAll(engineSocket, bytes.data(), bytes.size()))
-    return false;
-  const std::uint64_t payloadSize =
-      loom::runtime::detail::readGem5BridgeU64(bytes.data() + 16);
-  if (payloadSize > maximumMessageBytes - bytes.size() ||
-      payloadSize > std::numeric_limits<std::size_t>::max())
-    return false;
-  const std::size_t headerSize = bytes.size();
-  bytes.resize(headerSize + static_cast<std::size_t>(payloadSize));
-  if (payloadSize != 0 && !readAll(engineSocket, bytes.data() + headerSize,
-                                   static_cast<std::size_t>(payloadSize)))
-    return false;
-  std::string diagnostic;
-  return loom::runtime::decodeGem5BridgeWireMessage(bytes, message, diagnostic);
 }
 
 LoomSpatialBridge::CallbackAccounting
@@ -438,34 +310,32 @@ void LoomSpatialBridge::finishEngineWait() {
 }
 
 void LoomSpatialBridge::startLaunch() {
-  if (!connectEngine()) {
-    fail(4, "could not connect to the Spatial engine");
-    return;
-  }
-  std::vector<std::uint8_t> launchPayload =
-      loom::runtime::encodeGem5SpatialLaunchEnvelope(
-          {bridgeSessionOrdinal, staticLaunchPayload, invocationPayload});
-  const loom::runtime::Gem5BridgeMessage launch{
-      loom::runtime::Gem5BridgeMessageKind::SpatialLaunch, nextSequence,
-      launchPayload};
-  if (!sendMessage(launch)) {
-    fail(5, "could not send the Spatial launch");
-    return;
-  }
-  startEngineWait();
+  engineSession->submit({loom::runtime::Gem5BridgeMessageKind::SpatialLaunch,
+                        bridgeSessionOrdinal, nextSequence,
+                        loom::runtime::encodeGem5SpatialLaunchEnvelope(
+                            {staticLaunchPayload, invocationPayload})});
 }
 
-void LoomSpatialBridge::consumeEngineMessage() {
-  loom::runtime::Gem5BridgeMessage message;
-  const bool received = receiveMessage(message);
-  finishEngineWait();
-  if (!received) {
-    fail(6, "could not receive a canonical Spatial engine message");
+void LoomSpatialBridge::acceptBoundary(
+    const loom::runtime::Gem5BridgeMessage &message, Tick causalTick) {
+  ++performanceStatistics.messageCount;
+  if (state != State::Running || message.sequence != nextSequence ||
+      message.bridgeSessionOrdinal != bridgeSessionOrdinal ||
+      causalTick != curTick()) {
+    fail(7, "Spatial engine boundary has the wrong invocation or causal state");
     return;
   }
-  ++performanceStatistics.messageCount;
-  if (message.sequence != nextSequence) {
-    fail(7, "Spatial engine response has the wrong sequence");
+  if (message.kind == loom::runtime::Gem5BridgeMessageKind::ChannelCommit) {
+    loom::runtime::Gem5BridgeChannelCommit commit;
+    std::string diagnostic;
+    if (!loom::runtime::decodeGem5BridgeChannelCommit(message.payload, commit,
+                                                      diagnostic) ||
+        commit.readyAfterTicks > MaxTick - causalTick) {
+      fail(8, "Spatial channel commit has an invalid causal delay");
+      return;
+    }
+    state = State::WaitingForChannelCommit;
+    schedule(&channelCommitEvent, causalTick + commit.readyAfterTicks);
     return;
   }
   if (message.kind == loom::runtime::Gem5BridgeMessageKind::MemoryRequest ||
@@ -482,7 +352,8 @@ void LoomSpatialBridge::consumeEngineMessage() {
       fail(9, "channel transfer is not a write transaction");
       return;
     }
-    if (pendingMemory.size > std::numeric_limits<int>::max()) {
+    if (pendingMemory.size > std::numeric_limits<int>::max() ||
+        pendingMemory.readyAfterTicks > MaxTick - causalTick) {
       fail(10, "memory transaction is too large");
       return;
     }
@@ -491,15 +362,7 @@ void LoomSpatialBridge::consumeEngineMessage() {
         loom::runtime::Gem5BridgeMemoryOperation::Read)
       memoryBuffer.assign(static_cast<std::size_t>(pendingMemory.size), 0);
     state = State::WaitingForMemory;
-    if (pendingMemory.operation ==
-        loom::runtime::Gem5BridgeMemoryOperation::Read)
-      dmaRead(pendingMemory.address, static_cast<int>(pendingMemory.size),
-              &dmaCompletionEvent, memoryBuffer.data(),
-              pendingMemory.readyAfterTicks);
-    else
-      dmaWrite(pendingMemory.address, static_cast<int>(pendingMemory.size),
-               &dmaCompletionEvent, memoryBuffer.data(),
-               pendingMemory.readyAfterTicks);
+    schedule(&memoryRequestEvent, causalTick + pendingMemory.readyAfterTicks);
     return;
   }
   if (message.kind != loom::runtime::Gem5BridgeMessageKind::Completion) {
@@ -519,8 +382,27 @@ void LoomSpatialBridge::consumeEngineMessage() {
     fail(19, "Spatial completion names a foreign invocation");
     return;
   }
-  engineCompletionReceived = true;
-  schedule(&completionEvent, curTick() + pendingCompletion.readyAfterTicks);
+  if (pendingCompletion.readyAfterTicks > MaxTick - causalTick) {
+    fail(12, "Spatial completion delay exceeds the tick domain");
+    return;
+  }
+  state = State::WaitingForCompletion;
+  schedule(&completionEvent, causalTick + pendingCompletion.readyAfterTicks);
+}
+
+void LoomSpatialBridge::issueMemoryRequest() {
+  if (state != State::WaitingForMemory) {
+    fail(13, "memory issue arrived in the wrong bridge state");
+    return;
+  }
+  // DmaDevice's delay argument postpones only its completion callback. Issue
+  // the request from this event so memory cannot observe it before readiness.
+  if (pendingMemory.operation == loom::runtime::Gem5BridgeMemoryOperation::Read)
+    dmaRead(pendingMemory.address, static_cast<int>(pendingMemory.size),
+            &dmaCompletionEvent, memoryBuffer.data());
+  else
+    dmaWrite(pendingMemory.address, static_cast<int>(pendingMemory.size),
+             &dmaCompletionEvent, memoryBuffer.data());
 }
 
 void LoomSpatialBridge::completeMemoryRequest() {
@@ -534,14 +416,23 @@ void LoomSpatialBridge::completeMemoryRequest() {
           ? memoryBuffer
           : std::vector<std::uint8_t>{}};
   const loom::runtime::Gem5BridgeMessage message{
-      loom::runtime::Gem5BridgeMessageKind::MemoryResponse, nextSequence,
+      loom::runtime::Gem5BridgeMessageKind::MemoryResponse,
+      bridgeSessionOrdinal, nextSequence,
       loom::runtime::encodeGem5BridgeMemoryResponse(response)};
-  if (!sendMessage(message)) {
-    fail(14, "could not send the memory response");
+  state = State::Running;
+  engineSession->submit(message);
+}
+
+void LoomSpatialBridge::completeChannelCommit() {
+  if (state != State::WaitingForChannelCommit) {
+    fail(13, "channel commit arrived in the wrong bridge state");
     return;
   }
-  startEngineWait();
   state = State::Running;
+  engineSession->submit({loom::runtime::Gem5BridgeMessageKind::ChannelCommitted,
+                        bridgeSessionOrdinal,
+                        nextSequence,
+                        {}});
 }
 
 LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
@@ -577,8 +468,8 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
                static_cast<std::streamsize>(member.size()));
   std::vector<std::uint8_t> count;
   count.reserve(sizeof(std::uint64_t));
-  loom::runtime::detail::appendGem5BridgeU64(
-      count, completedResults.results.size());
+  loom::runtime::detail::appendGem5BridgeU64(count,
+                                             completedResults.results.size());
   output.seekp(loom::runtime::gem5BridgeResultCollectionMagic.size(),
                std::ios::beg);
   output.write(reinterpret_cast<const char *>(count.data()),
@@ -618,7 +509,6 @@ void LoomSpatialBridge::completeInvocation() {
   errorCode = pendingCompletion.status;
   state = pendingCompletion.status == 0 ? State::Complete : State::Failed;
   ++performanceStatistics.invocationCount;
-  engineCompletionReceived = false;
   ++nextSequence;
 }
 
@@ -630,7 +520,9 @@ void LoomSpatialBridge::fail(std::uint32_t code, const std::string &message) {
 }
 
 void LoomSpatialBridge::resetBridge() {
-  panic_if(dmaPending(), "cannot reset LoomSpatialBridge with pending DMA");
+  panic_if(dmaPending() || (state != State::Idle && state != State::Complete &&
+                            state != State::Failed),
+           "cannot reset LoomSpatialBridge with an active invocation");
   engineWaitStarted.reset();
   if (launchEvent.scheduled())
     deschedule(&launchEvent);
@@ -638,14 +530,17 @@ void LoomSpatialBridge::resetBridge() {
     deschedule(&staticLaunchCompletionEvent);
   if (invocationCompletionEvent.scheduled())
     deschedule(&invocationCompletionEvent);
+  if (memoryRequestEvent.scheduled())
+    deschedule(&memoryRequestEvent);
   if (completionEvent.scheduled())
     deschedule(&completionEvent);
+  if (channelCommitEvent.scheduled())
+    deschedule(&channelCommitEvent);
   memoryBuffer.clear();
   staticLaunchPayload.clear();
   invocationPayload.clear();
   pendingMemory = {};
   pendingCompletion = {};
-  engineCompletionReceived = false;
   errorCode = 0;
   staticLaunchAddress = 0;
   staticLaunchSize = 0;

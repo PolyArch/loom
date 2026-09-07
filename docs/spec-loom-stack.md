@@ -499,8 +499,8 @@ prove that every declared session entry occurred; selecting only the first or
 final activation, or assuming one member per target, is not valid System
 execution.
 
-The driver's `loom.execution_matrix_workspace.2.0` manifest is a nonsemantic
-workspace projection. Version 2.0 incompatibly requires the exact Application
+The driver's `loom.execution_matrix_workspace.3.0` manifest is a nonsemantic
+workspace projection. Version 3.0 requires the exact Application
 runtime-manifest root and a nullable product profile, and each System row has
 nullable product-oracle Request and Evidence roots. It records the exact
 Deployment, binding, workload, runtime-input, Request, Evidence,
@@ -508,7 +508,19 @@ SimulationExecution, Dataflow, SpatialMapping, and HardwareImplementation
 references that already own the run. A mapped-RTL execution adds the exact
 `mapped_rtl_deployment` reference and one Spatial run with engine `rtl` per
 invocation beside the `dfg` and `cgra` runs; it does not select another
-workspace schema. Each Spatial cell also records the dense coordinate tuple decoded from
+workspace schema. The required `paired_system_execution` section is the
+Application owner's `loom.application.system_qor_projection` 1.0. It records the
+host-only and mapped candidate Request/Evidence/Execution roots, exact runtime
+manifest and gem5 binding, complete program tick durations, and native shared
+memory acceptance-service busy ticks. Both execution paths retain all physical
+CPUs and bridges. Qualification imports and joins both Runtime and product
+oracle Evidence, matches full output observations, and derives speedup and
+service utilization. The real-application gate requires strict speedup and more
+than 90 percent memory service utilization; unmeasured compute occupancy is not
+assumed. The workspace projects that owner result and cannot change the earlier
+immutable planning decision into a measured performance claim.
+
+Each Spatial cell also records the dense coordinate tuple decoded from
 the actual System invocation wire; the DFG and CGRA cells for one invocation
 must agree on that tuple. It also records the dispatch target ordinal,
 canonical AccCore reference, and canonical Spatial execution-context key from

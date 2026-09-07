@@ -2,6 +2,7 @@
 #define LOOM_FRONTEND_LOWERING_GRAPH_MEMORY_LOWERING_H
 
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -32,7 +33,8 @@ struct GraphMemoryInputProjection {
 
 ::mlir::LogicalResult lowerGraphMemory(
     ::mlir::ModuleOp module,
-    ::llvm::SmallVectorImpl<GraphMemoryInputProjection> *projections = nullptr);
+    ::llvm::SmallVectorImpl<GraphMemoryInputProjection> *projections = nullptr,
+    const PointerServiceBindings &pointerServices = PointerServiceBindings());
 
 } // namespace lowering
 } // namespace loom

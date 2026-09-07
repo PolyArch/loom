@@ -85,18 +85,32 @@ llvm::Error appendMemoryActionKey(std::vector<std::uint8_t> &bytes,
 
 llvm::Error appendPhysicalActionKey(std::vector<std::uint8_t> &bytes,
                                     const PhysicalActionOccurrenceRef &ref) {
-  appendU32(bytes, static_cast<std::uint32_t>(ref.parent.index()));
-  if (const auto *transition =
-          std::get_if<TransitionPhysicalActionParent>(&ref.parent)) {
-    if (llvm::Error error = appendTransitionKey(bytes, transition->transition))
-      return error;
-  } else if (llvm::Error error = appendTokenKey(
-                 bytes,
-                 std::get<TokenPhysicalActionParent>(ref.parent).token)) {
-    return error;
-  }
-  appendU64(bytes, ref.localActionOrdinal);
-  return llvm::Error::success();
+  appendU32(bytes, static_cast<std::uint32_t>(ref.index()));
+  return std::visit(
+      Overloaded{
+          [&](const TransitionPhysicalActionOccurrenceRef &transition)
+              -> llvm::Error {
+            if (llvm::Error error =
+                    appendTransitionKey(bytes, transition.transition))
+              return error;
+            appendU64(bytes, transition.localActionOrdinal);
+            return llvm::Error::success();
+          },
+          [&](const TokenPhysicalActionOccurrenceRef &token) -> llvm::Error {
+            if (llvm::Error error = appendTokenKey(bytes, token.token))
+              return error;
+            appendU64(bytes, token.localActionOrdinal);
+            return llvm::Error::success();
+          },
+          [&](const FabricUsePhysicalActionOccurrenceRef &use) -> llvm::Error {
+            appendU64(bytes, use.invocation.invocationOrdinal);
+            const auto pattern =
+                ::loom::fabric::canonicalFabricBytes(use.usePattern);
+            bytes.insert(bytes.end(), pattern.begin(), pattern.end());
+            appendU64(bytes, use.occurrenceOrdinal);
+            return llvm::Error::success();
+          }},
+      ref);
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -135,6 +149,12 @@ llvm::Error validateEvent(const SpatialTraceEvent &event) {
   const auto *requested = std::get_if<PhysicalRequestedTraceEvent>(&event);
   if (!requested)
     return llvm::Error::success();
+  if (const auto *use = std::get_if<FabricUsePhysicalActionOccurrenceRef>(
+          &requested->action)) {
+    const auto *target = std::get_if<PhysicalUseTarget>(&requested->target);
+    if (!target || target->usePattern != use->usePattern)
+      return invalid("physical use occurrence and target disagree");
+  }
   const auto *transfer =
       std::get_if<PhysicalTransferTarget>(&requested->target);
   if (!transfer)

@@ -11,9 +11,10 @@ import re
 def render(symbol: str, data: bytes) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
         raise ValueError("symbol must be a C++ identifier")
+    guard = f"LOOM_GENERATED_{symbol}_H"
     lines = [
-        "#ifndef LOOM_GENERATED_FREESTANDING_RUNTIME_BITCODE_H",
-        "#define LOOM_GENERATED_FREESTANDING_RUNTIME_BITCODE_H",
+        f"#ifndef {guard}",
+        f"#define {guard}",
         "",
         "#include <cstdint>",
         "",
@@ -30,7 +31,7 @@ def render(symbol: str, data: bytes) -> str:
             "",
             "} // namespace loom::application::detail",
             "",
-            "#endif // LOOM_GENERATED_FREESTANDING_RUNTIME_BITCODE_H",
+            f"#endif // {guard}",
             "",
         ]
     )

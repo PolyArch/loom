@@ -162,9 +162,7 @@ buildValidatedBinary(detail::DecodedInstructionCoreBinaryFields fields,
       dataflow::importCanonicalDataflow(fields.canonicalDataflow, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflowArtifact->view();
   auto target =
       importCompilerTargetBinding(fields.compilerTargetBinding, artifacts);
   if (!target)
@@ -190,7 +188,7 @@ buildValidatedBinary(detail::DecodedInstructionCoreBinaryFields fields,
     return binaryError("instruction_core_binary_not_canonical",
                        "thread_entry_table is not in canonical key order");
   if (llvm::Error error =
-          validateThreadEntries(*entries, *dataflowView, parsedElf->entryCount))
+          validateThreadEntries(*entries, dataflowView, parsedElf->entryCount))
     return std::move(error);
 
   auto imports = detail::canonicalizeRuntimeImports(fields.runtimeImports,
@@ -272,9 +270,7 @@ finalizeInstructionCoreBinary(InstructionCoreBinaryDraft draft,
       dataflow::importCanonicalDataflow(draft.canonicalDataflow, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflowArtifact->view();
   auto target =
       importCompilerTargetBinding(draft.compilerTargetBinding, artifacts);
   if (!target)
@@ -293,7 +289,7 @@ finalizeInstructionCoreBinary(InstructionCoreBinaryDraft draft,
   if (!entries)
     return entries.takeError();
   if (llvm::Error error =
-          validateThreadEntries(*entries, *dataflowView, parsedElf->entryCount))
+          validateThreadEntries(*entries, dataflowView, parsedElf->entryCount))
     return std::move(error);
   auto imports = detail::canonicalizeRuntimeImports(draft.runtimeImports,
                                                     target->binding());

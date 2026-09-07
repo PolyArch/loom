@@ -234,7 +234,7 @@ and measured sample; no count is replaced by a product-local default. Oracle
 bytes never enter the runtime input, guest arguments, or candidate identity;
 only the independent Evaluation comparison receives them.
 
-The `loom.application_pair_decision` version `1.2` projection records the
+The `loom.application_pair_decision` version `3.0` projection records the
 resolved application identity, input name, source/build selection,
 input-specific compiler options, declared workload and runtime-input names,
 declared oracle and bounded profile, and referenced cache digests. Its typed
@@ -266,11 +266,25 @@ has no parent Mapping repair and therefore names no such record. A
 pre-admission or unsupported profile decision remains `declared_only` and
 cannot be interpreted as correctness Evidence.
 
-Version 1.2 adds that derived resource-time Mapping-repair summary to version
-1.1. The counters and typed reason are presentation-only projections of the
-retained application observations; they do not enter pair identity, Mapping
-selection, or transition legality. The enclosing successful evidence envelope
-moves to 1.2 for the same additive projection.
+The manifest profile deadline bounds host executable wall time under the
+bounded host runner contract. Mapping runtime validation uses the invocation's
+existing Mapping execution deadline. It admits the complete source-backed
+replay sequence and performs DFG execution, CGRA execution, and independent
+comparison for each replay, including durable Request, Execution, and Evidence
+publication within that Mapping budget. Independent replays may execute
+concurrently within the existing execution site's in-process CPU claim.
+Workers share one bounded invocation import cache through retained
+attachments; they do not multiply its capacity. Immutable preparations may be
+shared, while inputs, queues, memory, reservations, and execution counters
+belong to each fresh session. Results are joined in the original replay
+ordinal order. A failed run retains the prefix through the earliest failed
+ordinal, independent of worker completion order, and no partial replay set
+establishes the application oracle.
+
+The derived resource-time Mapping-repair counters and typed reason remain
+presentation-only projections of the retained application observations;
+they do not enter pair identity, Mapping selection, or transition legality.
+All pair projections use the same current decision vocabulary and fixed units.
 
 A complete bounded front-end that retains no candidate because the exact
 Fabric refused every representable ownership coordinate publishes
@@ -305,19 +319,47 @@ file remains the manifest-owned authority; that Blob is derived only after
 digest and exact line/order/extent validation.
 
 A successful decision is published inside
-`loom.application_pair_evidence` version `1.2`. That envelope is the canonical
+`loom.application_pair_evidence` version `3.0`. That envelope is the canonical
 join of candidate and analytic-gate inventories, actual Tech/Spatial/System
 work, selected Mapping checkpoint, failure-cone counters, work ledgers,
 Mapping outcome inventory, exact promoted-parent hardware attempt lineage,
 and the pair decision. A pre-admission or causal
-failure uses `loom.application_pair_disposition` version `1.2` and retains the
+failure uses `loom.application_pair_disposition` version `2.0` and retains the
 same typed decision without fabricating Mapping work.
 Each Mapping observation names `runtime_mapping` only when its runtime fields
 were measured for that exact SystemMapping. The surrounding generated Mapping
 frontier cannot stand in for this identity.
 The successful envelope's repair-record inventory is derived from the same
-`loom.application.activation_decision` 2.0 owner projected by runtime manifest
-7.0. When the selected
+`loom.application.activation_decision` 3.0 owner projected by runtime manifest
+9.0. The strict activation decision is also the sole application replay and
+Evidence join owner. Its immutable object retains derived cycle totals,
+Request dependency roots, execution output roots, and the aggregate CGRA
+retirement predicate; these facts are never separately serialized or assigned
+an identity. Runtime manifest construction strictly imports that decision in
+its current ArtifactStore, checks exact source and selection equality, and
+uses those facts for its own Deployment closure and activation constraints.
+Cold import continues to recompute the full proof at the activation owner.
+
+The join strictly resolves every declared source replay input through the DFG
+model owner in the current ArtifactStore, then reuses that exact resolution
+for its DFG Evidence. Source input availability, canonical runtime bytes and
+workload lineage are dependency obligations. Value construction and standalone
+joins report an invalid declared source input as `DependencyMismatch`. Cold
+decision decoding first imports its typed invocation reference; failures at
+that boundary retain `InvocationMismatch`. CGRA
+Mapping and Fabric ownership remain validated by the CGRA model owner.
+Per-case runtime buffers are released after resolution; the input resolutions
+remain local to that join invocation.
+
+A coherent CGRA closed-wait result remains distinct from retirement, and the
+runtime manifest rejects it as `RuntimeEvidenceMismatch`. A CGRA claim with an incompatible model or incoherent
+terminal/finding pair fails earlier at the activation Evidence owner as
+`EvidenceMismatch`; a manifest importing that decision reports
+`ActivationDecisionMismatch`. This reflects the strict proof owner's
+responsibility rather than preserving duplicate validation for historical
+error ordering.
+
+When the selected
 `hardware_dse_alternative` observation names a mutation repair, the runtime
 manifest names the same unique record. Omitting a unique record that selects
 the activation SystemMapping is invalid; a general hardware-frontier selection
@@ -327,22 +369,88 @@ Promotion lineage is invocation-scoped. Each `quality_invocations` entry owns
 one InvocationManifest run key, local plan-ordinal base, promotion count,
 promotion observations, and the attempts they caused. Consumers must complete
 the parent-to-child join inside that entry; aggregate Mapping attempts are not a
-substitute for an invocation identity. Version `1.2` is the compatible extension
-of `1.1` that adds the invocation-local promotion count and attempt inventory.
+substitute for an invocation identity. The invocation-local promotion
+count and attempt inventory remain mandatory in version 2.0.
 
-Every objective dimension is a non-negative integer in a fixed unit owned by
-`ApplicationObjectiveDimension`. Host-only work, DFG and CGRA cycles,
-resource-core cost, and Mapping work are runtime-measured. Host residual work
-(dynamic leaf executions left on the host), cut transfer work (bytes crossing
-the host/accelerator cut), and launch/synchronization work are analytic
-projections of the selected candidate's exact pre-Mapping ownership and carry
-the analytic evidence grade. Area in square micrometers, power (dynamic plus
-leakage) in microwatts, and the energy of one measured CGRA execution at the
+Version 2.0 replaces the ambiguous host-work observation with
+`host_only_runtime_picoseconds` and adds `candidate_runtime_picoseconds`.
+The former is the exact source program's host-only Runtime estimate; the
+latter is the complete Structured candidate's Runtime estimate. Both use the
+same `StructuredFabricLowConfidence` model binding, exact Fabric, workload,
+and runtime input, and both carry the analytic evidence grade. A block
+activation count, a dynamic leaf count, a native wall time, or a candidate
+estimate cannot populate the source baseline. Missing or inapplicable model
+results remain unsupported with null values. The host-only vector contains
+no selected candidate's DFG or CGRA observation.
+
+Every objective dimension is a non-negative integer in the fixed unit owned
+by `ApplicationObjectiveDimension`. DFG and CGRA cycles, resource-core cost,
+and Mapping work are runtime-measured. Host residual work is the complete
+selected Structured candidate's executable host leaf count weighted by its
+exact observed block activations. It is derived by the Structured analytic
+owner over all modeled executable blocks, including work outside the
+pre-Mapping protocol-root domain, and carries the analytic evidence grade.
+The block observation or exact activity-preserving lineage is the source of
+truth; overlapping scope sums and unselected protocol roots are not a
+whole-program residual. External calls remain executable Structured leaves;
+the count is not a target instruction count or measured host cycles.
+Cut transfer work remains bytes crossing the host/accelerator cut, and
+launch/synchronization work remains the planning projection's structural
+count. They carry analytic grade and are never added to cycle or leaf counts.
+The Structured analytic model owns all conversions used in its complete
+Runtime estimate; consumers cannot add those modeled costs a second time.
+Area in square micrometers, power (dynamic plus leakage) in microwatts, and the energy of one measured CGRA execution at the
 predicted limiting clock in picojoules are joined only from the selected
 Mapping's completed calibrated FPA observation under the invocation's frozen
 `EdaPredictionModelWeight`; they carry the calibrated evidence grade. Without
 that observation they remain explicit unsupported observations with null
 values; the exact decimal metrics stay owned by the FPA Evidence root.
+
+The completed same-hardware disposition is `verified_feasible`.
+It proves Mapping and functional execution feasibility, not acceleration.
+The decision's `benefit_status` is a mechanically derived closed value:
+`unknown`, `predicted_beneficial`, or `predicted_not_beneficial`. Only matched
+analytic source/candidate runtimes can produce a prediction, with strict
+less-than defining predicted benefit. A selected hardware alternative or an
+absent exact candidate/runtime join yields unknown. The prediction neither
+overrides the central DSE ordering policy nor becomes runtime-measured
+Evidence. This immutable planning boundary has no final-application QoR
+completion field. Build success enables execution evidence acquisition.
+
+`qualifyApplicationSystemQor` owns the post-execution relation. It strictly joins
+the exact runtime manifest, host-only and mapped System executions, their
+completed Runtime Evidence, and each required passing product-oracle Evidence.
+Both requests use identical gem5 binding, model, model inputs, configuration,
+conditions, and replicate index. Their complete functional observations agree.
+The exact Runtime values must equal the complete program tick windows. Native
+shared-memory acceptance-service occupancy supplies System resource evidence.
+The result is derived from immutable owners, not stored as another Artifact or
+written back into the earlier pair decision.
+
+The owner's `loom.application.system_qor_projection` version `1.0` reports exact
+roots, durations, native busy ticks, utilization ratios, speedup, and a derived
+`qualified` or `not_qualified` status. Qualification currently establishes the
+bandwidth branch: strictly positive complete-program speedup and strictly more
+than 90 percent of existing shared-memory service capacity. A compute-occupancy
+measurement is not yet available and is never inferred from elapsed accelerator
+time. `not_qualified` preserves the observed measurements without claiming that
+unmeasured compute occupancy failed its alternative target. Capacity is fixed
+by the exact System model and cannot be reduced to improve utilization.
+
+The System driver always retains valid measured results, including regressions.
+The real-application verifier and portfolio qualification consume this
+post-execution result and enforce its performance target. Ordinary semantic
+fixtures require a complete valid pair without asserting a useful acceleration
+for an intentionally tiny program. Neither flow asks the pre-execution decision
+to contain future measurements.
+`host_only_baseline_complete` means that the exact source analytic baseline
+is available; it does not make target runtime or the full QoR gate complete.
+An honest unknown benefit, a feasible artifact, or a rejected incidental
+initialization graph does not close the real-application optimization gate.
+The compiler must retain the incomplete result while continuing the bounded
+candidate workflow toward a useful application kernel. Product qualification
+must preserve the declared kernel launch, full input, independent oracle,
+performance budget, and required resource-use objective.
 
 The selected candidate may retain several Mapping observations. The envelope's
 selected plan ordinal and Mapping root must identify exactly one of them; that

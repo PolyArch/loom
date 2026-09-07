@@ -17,34 +17,19 @@
 
 namespace loom::sim {
 
-int compareSpatialEventCoordinates(const SpatialEventCoordinate &lhs,
-                                   const SpatialEventCoordinate &rhs) {
-  if (lhs.referenceCycle.denominator() == rhs.referenceCycle.denominator()) {
-    if (lhs.referenceCycle.numerator() != rhs.referenceCycle.numerator())
-      return lhs.referenceCycle.numerator() < rhs.referenceCycle.numerator()
-                 ? -1
-                 : 1;
-    if (lhs.delta == rhs.delta)
-      return 0;
-    return lhs.delta < rhs.delta ? -1 : 1;
-  }
-  using u128 = unsigned __int128;
-  const u128 lhsScaled = static_cast<u128>(lhs.referenceCycle.numerator()) *
-                         rhs.referenceCycle.denominator();
-  const u128 rhsScaled = static_cast<u128>(rhs.referenceCycle.numerator()) *
-                         lhs.referenceCycle.denominator();
-  if (lhsScaled != rhsScaled)
-    return lhsScaled < rhsScaled ? -1 : 1;
-  if (lhs.delta == rhs.delta)
-    return 0;
-  return lhs.delta < rhs.delta ? -1 : 1;
-}
-
 std::optional<std::uint64_t>
 integralSpatialReferenceCycleDistance(const SpatialEventCoordinate &from,
                                       const SpatialEventCoordinate &to) {
   if (compareSpatialEventCoordinates(to, from) < 0)
     return std::nullopt;
+  if (from.referenceCycle.denominator() == to.referenceCycle.denominator()) {
+    const std::uint64_t difference =
+        to.referenceCycle.numerator() - from.referenceCycle.numerator();
+    const std::uint64_t denominator = from.referenceCycle.denominator();
+    if (difference % denominator != 0)
+      return std::nullopt;
+    return difference / denominator;
+  }
   using u128 = unsigned __int128;
   const u128 fromValue = static_cast<u128>(from.referenceCycle.numerator()) *
                          to.referenceCycle.denominator();
@@ -65,18 +50,6 @@ namespace {
 
 using detail::WireReader;
 using detail::WireWriter;
-
-llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
-importCachedRequest(const ArtifactRootReference &reference,
-                    const evaluation::CaseArtifactResolution &resolution,
-                    const ArtifactStore &store, const BlobStore &blobs) {
-  const std::array<ArtifactRootReference, 1> references{reference};
-  return evaluation::importCachedArtifact<evaluation::EvaluationRequest>(
-      store, &blobs, references, [&]() {
-        return evaluation::importEvaluationRequest(reference, resolution, store,
-                                                   blobs);
-      });
-}
 
 llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
 importCachedSpatialInputs(const ArtifactRootReference &workload,
@@ -265,7 +238,7 @@ llvm::Error validateExecution(const SpatialSimulationExecution &execution,
     return detail::invalid("simulation execution: model output slot does not "
                            "retain StoppedByLimit execution");
   if (!execution.activitySummaries.empty()) {
-    if (llvm::Error error = detail::validateActorActivitySummaries(
+    if (llvm::Error error = detail::validateActivitySummaries(
             execution.activitySummaries, execution.terminal,
             execution.progressObservations, context))
       return error;
@@ -297,7 +270,7 @@ encodeExecution(const SpatialSimulationExecution &execution,
   detail::encodeSpatialFunctionalObservations(
       writer, execution.functionalObservations, context);
   encodeProgress(writer, execution.progressObservations);
-  detail::encodeActorActivitySummaries(writer, execution.activitySummaries);
+  detail::encodeActivitySummaries(writer, execution.activitySummaries);
   std::vector<std::uint8_t> tail = writer.take();
   bytes.insert(bytes.end(), tail.begin(), tail.end());
   return bytes;
@@ -377,7 +350,7 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
   auto progress = decodeProgress(reader);
   if (!progress)
     return progress.takeError();
-  auto activities = detail::decodeActorActivitySummaries(reader);
+  auto activities = detail::decodeActivitySummaries(reader);
   if (!activities)
     return activities.takeError();
   if (!reader.atEnd())
@@ -399,6 +372,18 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
 } // namespace
 
 namespace detail {
+
+llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
+importExecutionRequest(const ArtifactRootReference &reference,
+                       const evaluation::CaseArtifactResolution &resolution,
+                       const ArtifactStore &store, const BlobStore &blobs) {
+  auto request =
+      evaluation::importEvaluationRequest(reference, resolution, store, blobs);
+  if (!request)
+    return request.takeError();
+  return std::make_shared<const evaluation::EvaluationRequest>(
+      std::move(*request));
+}
 
 llvm::Expected<evaluation::ArtifactCollectionCardinality>
 resolveSimulationOutputCardinality(
@@ -448,7 +433,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
   auto request =
-      importCachedRequest(requestReference, resolution, store, blobs);
+      importExecutionRequest(requestReference, resolution, store, blobs);
   if (!request)
     return request.takeError();
   auto stoppedCardinality = resolveSimulationOutputCardinality(**request);
@@ -461,11 +446,9 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
                                           *(*request)->runtimeInput(), store);
   if (!inputs)
     return inputs.takeError();
-  auto view = (*inputs)->dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = (*inputs)->dataflow->view();
   auto launch =
-      resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
+      resolveLaunchContext(view, (*inputs)->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
   const CanonicalSimulationWorkload *workload = &(*inputs)->workload;
@@ -475,7 +458,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
                                  std::move(*inputs),
                                  workload,
                                  runtimeInput,
-                                 std::move(*view),
+                                 view,
                                  std::move(*launch),
                                  *stoppedCardinality,
                                  &resolution,
@@ -491,11 +474,9 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
                                           runtimeInputReference, store);
   if (!inputs)
     return inputs.takeError();
-  auto view = (*inputs)->dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = (*inputs)->dataflow->view();
   auto launch =
-      resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
+      resolveLaunchContext(view, (*inputs)->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
   const CanonicalSimulationWorkload *workload = &(*inputs)->workload;
@@ -506,7 +487,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       std::move(*inputs),
       workload,
       runtimeInput,
-      std::move(*view),
+      view,
       std::move(*launch),
       evaluation::ArtifactCollectionCardinality::OneOrMore,
       nullptr,
@@ -516,11 +497,9 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
 
 llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
     const ImportedSpatialSimulationInputs &inputs) {
-  auto view = inputs.dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = inputs.dataflow->view();
   auto launch =
-      resolveLaunchContext(*view, inputs.workload.spatial()->launchRef);
+      resolveLaunchContext(view, inputs.workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
   return SpatialExecutionContext{
@@ -528,7 +507,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       {},
       &inputs.workload,
       &inputs.runtimeInput,
-      std::move(*view),
+      view,
       std::move(*launch),
       evaluation::ArtifactCollectionCardinality::OneOrMore,
       nullptr,
@@ -545,10 +524,8 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       spatialRuntime->workloadIdentity != workload.workload.identity())
     return invalid("simulation execution: Spatial engine context owners are "
                    "inconsistent");
-  auto view = workload.dataflow.view();
-  if (!view)
-    return view.takeError();
-  auto launch = resolveLaunchContext(*view, spatialWorkload->launchRef);
+  const auto &view = workload.dataflow->view();
+  auto launch = resolveLaunchContext(view, spatialWorkload->launchRef);
   if (!launch)
     return launch.takeError();
   return SpatialExecutionContext{
@@ -556,7 +533,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       {},
       &workload.workload,
       &runtimeInput,
-      std::move(*view),
+      view,
       std::move(*launch),
       evaluation::ArtifactCollectionCardinality::OneOrMore,
       nullptr,

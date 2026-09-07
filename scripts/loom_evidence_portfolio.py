@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import re
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 
 EXECUTION_SELECTIONS = ("smoke", "validation", "scale_eda")
 APPLICATION_OBJECTIVE_DIMENSIONS = (
-    "host_only_work",
+    "host_only_runtime_picoseconds",
     "dfg_cycles",
     "cgra_cycles",
     "host_residual_work",
@@ -21,6 +22,7 @@ APPLICATION_OBJECTIVE_DIMENSIONS = (
     "area",
     "power",
     "energy",
+    "candidate_runtime_picoseconds",
 )
 OBJECTIVE_EVIDENCE = {
     "exact",
@@ -32,8 +34,7 @@ OBJECTIVE_EVIDENCE = {
 }
 UNSUPPORTED_SEMANTIC_DISPOSITION = "unsupported_semantic"
 PAIR_DISPOSITIONS = {
-    "verified_acceleration",
-    "verified_feasible_but_not_beneficial",
+    "verified_feasible",
     "no_promising_candidate",
     "exact_hardware_incompatible",
     "mapping_proof_not_established",
@@ -43,12 +44,11 @@ PAIR_DISPOSITIONS = {
     "implementation_failure",
     "hardware_dse_alternative",
 }
-SUCCESS_DISPOSITIONS = {
-    "verified_acceleration",
-    "verified_feasible_but_not_beneficial",
+FEASIBLE_DISPOSITIONS = {
+    "verified_feasible",
     "hardware_dse_alternative",
 }
-CAUSAL_DISPOSITIONS = PAIR_DISPOSITIONS - SUCCESS_DISPOSITIONS
+CAUSAL_DISPOSITIONS = PAIR_DISPOSITIONS - FEASIBLE_DISPOSITIONS
 CANONICAL_QOR_APPLICATIONS = (
     "gapbs-pagerank",
     "llama2c-kernels",
@@ -70,13 +70,13 @@ _PAIR_DIAGNOSTIC_OWNER = (
 ).read_text(encoding="utf-8")
 
 
-def _owned_projection_literal(name: str) -> str:
+def _owned_projection_literal(name: str, owner: str = _PAIR_DIAGNOSTIC_OWNER) -> str:
     value = re.search(
         rf'\b{re.escape(name)}\s*=\s*"([^"]+)"',
-        _PAIR_DIAGNOSTIC_OWNER,
+        owner,
     )
     if value is None:
-        raise RuntimeError("application pair diagnostic ABI owner is malformed")
+        raise RuntimeError("application projection ABI owner is malformed")
     return value.group(1)
 
 
@@ -115,6 +115,15 @@ RUNTIME_MANIFEST_SCHEMA = _runtime_manifest_schema[1]
 RUNTIME_MANIFEST_VERSION = (
     f"{_runtime_manifest_schema[2]}.{_runtime_manifest_schema[3]}"
 )
+
+_SYSTEM_QOR_OWNER = (_ROOT / "include/Application/SystemQor.h").read_text(encoding="utf-8")
+SYSTEM_QOR_SCHEMA = _owned_projection_literal("applicationSystemQorProjectionSchema", _SYSTEM_QOR_OWNER)
+SYSTEM_QOR_VERSION = _owned_projection_literal("applicationSystemQorProjectionVersion", _SYSTEM_QOR_OWNER)
+_MEMORY_TARGET = Fraction(*[
+    int(re.search(rf"\b{name} = (\d+)", _SYSTEM_QOR_OWNER).group(1))
+    for name in ("applicationMinimumMemoryUtilizationNumerator",
+                 "applicationMinimumMemoryUtilizationDenominator")
+])
 
 
 def _integer(value: Any) -> int | None:
@@ -776,6 +785,10 @@ def _validate_objective_vector(value: Any, context: str) -> tuple[list[str], lis
         dimension = observation.get("dimension")
         evidence = observation.get("evidence")
         measured = observation.get("value")
+        if dimension in {
+            "host_only_runtime_picoseconds", "candidate_runtime_picoseconds"
+        } and evidence not in {"analytic", "unsupported"}:
+            reasons.append(f"{context}_{dimension}_model_grade_invalid")
         confidence = _integer(observation.get("confidence_permille"))
         if evidence not in OBJECTIVE_EVIDENCE:
             reasons.append(f"{context}_{dimension}_evidence_invalid")
@@ -1007,6 +1020,10 @@ def validate_portfolio_pair(
         typed_reasons.append("manifest_selection_mismatch")
 
     disposition = decision.get("disposition")
+    if decision.get("benefit_status") not in {
+        "unknown", "predicted_beneficial", "predicted_not_beneficial"
+    }:
+        typed_reasons.append("benefit_status_invalid")
     if disposition not in PAIR_DISPOSITIONS:
         typed_reasons.append("invalid_disposition")
     join_status = decision.get("invocation_manifest_join_status")
@@ -1081,8 +1098,6 @@ def validate_portfolio_pair(
         closure_reasons.append("execution_binding_incomplete")
     if decision.get("host_only_baseline_complete") is not True:
         closure_reasons.append("host_baseline_incomplete")
-    if decision.get("final_application_qor_complete") is not True:
-        closure_reasons.append("application_qor_incomplete")
     if join_status != MANIFEST_JOIN_COMPLETE:
         closure_reasons.append("invocation_manifest_join_incomplete")
 
@@ -1100,7 +1115,8 @@ def validate_portfolio_pair(
         if (
             not isinstance(host_work, dict)
             or _integer(host_work.get("value")) is None
-            or host_work.get("evidence") == "unsupported"
+            or host_work.get("dimension") != "host_only_runtime_picoseconds"
+            or host_work.get("evidence") != "analytic"
         ):
             closure_reasons.append("host_work_observation_missing")
     selected_objective = decision.get("selected_objective")
@@ -1171,6 +1187,45 @@ def validate_portfolio_pair(
         or noncandidate_count != planning_count - len(candidates)
     ):
         typed_reasons.append("candidate_inventory_count_mismatch")
+    expected_benefit = "unknown"
+    if (
+        len(selected_candidates) == 1
+        and _artifact_root(decision.get("source_program"))
+        and _artifact_root(decision.get("workload"))
+        and _artifact_root(decision.get("runtime_input"))
+        and decision.get("selected_system") == decision.get("fabric")
+        and selected_candidates[0].get("candidate_identity")
+        == decision.get("selected_candidate_identity")
+        and _artifact_root(selected_candidates[0].get("structured_program"))
+    ):
+        candidate_objective = selected_candidates[0].get("objective")
+        model_values = {
+            item.get("dimension"): item
+            for item in candidate_objective if isinstance(item, dict)
+        } if isinstance(candidate_objective, list) else {}
+        candidate_runtime = model_values.get("candidate_runtime_picoseconds", {})
+        host_runtime = baseline[0] if isinstance(baseline, list) and baseline else {}
+        if (
+            isinstance(host_runtime, dict)
+            and host_runtime.get("evidence") == "analytic"
+            and candidate_runtime.get("evidence") == "analytic"
+            and _integer(host_runtime.get("value")) is not None
+            and _integer(candidate_runtime.get("value")) is not None
+        ):
+            expected_benefit = (
+                "predicted_beneficial"
+                if candidate_runtime["value"] < host_runtime["value"]
+                else "predicted_not_beneficial"
+            )
+        final_values = {
+            item.get("dimension"): item
+            for item in selected_objective if isinstance(item, dict)
+        } if isinstance(selected_objective, list) else {}
+        for dimension in ("candidate_runtime_picoseconds", "host_residual_work"):
+            if final_values.get(dimension) != model_values.get(dimension):
+                typed_reasons.append(f"selected_{dimension}_candidate_join_mismatch")
+    if decision.get("benefit_status") != expected_benefit:
+        typed_reasons.append("benefit_status_model_join_mismatch")
     if len(selected_candidates) != 1:
         closure_reasons.append("selected_candidate_not_unique")
     else:
@@ -1236,7 +1291,7 @@ def validate_portfolio_pair(
                     or selected_repair not in repair_records
                 ):
                     typed_reasons.append("selected_hardware_repair_mismatch")
-            if disposition in SUCCESS_DISPOSITIONS:
+            if disposition in FEASIBLE_DISPOSITIONS:
                 objective_by_dimension = {
                     observation.get("dimension"): observation
                     for observation in (
@@ -1261,7 +1316,7 @@ def validate_portfolio_pair(
                     ):
                         typed_reasons.append(f"selected_{dimension}_join_mismatch")
 
-    if disposition in SUCCESS_DISPOSITIONS:
+    if disposition in FEASIBLE_DISPOSITIONS:
         if not has_mapping_evidence:
             typed_reasons.append("success_mapping_evidence_missing")
         for field in ("pair_identity", "selected_candidate_identity"):
@@ -1288,7 +1343,7 @@ def validate_portfolio_pair(
         "disposition": disposition,
         "typed_complete": not typed_reasons,
         "typed_incomplete_reasons": typed_reasons,
-        "canonical_qor_complete": disposition in SUCCESS_DISPOSITIONS
+        "canonical_mapping_complete": disposition in FEASIBLE_DISPOSITIONS
         and not typed_reasons
         and not closure_reasons,
         "closure_residuals": closure_reasons,
@@ -1307,6 +1362,81 @@ PRODUCT_PROFILE_FIELDS = {
     "expected_output_sha256",
     "output_interface_ordinal",
 }
+
+
+def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list[str]:
+    """Validate the Application owner's post-execution projection and root joins."""
+    qor = workspace.get("paired_system_execution")
+    if not isinstance(qor, dict) or set(qor) != {
+        "schema", "version", "application_runtime_manifest", "gem5_binding",
+        "host_only", "candidate", "speedup", "status", "target",
+    }:
+        return ["system_qor_projection_missing_or_malformed"]
+    errors: list[str] = []
+    if qor["schema"] != SYSTEM_QOR_SCHEMA or qor["version"] != SYSTEM_QOR_VERSION:
+        errors.append("system_qor_schema_invalid")
+    for field in ("application_runtime_manifest", "gem5_binding"):
+        if _root_reference(qor[field]) is None or qor[field] != workspace.get(field):
+            errors.append(f"system_qor_{field}_mismatch")
+    product = workspace.get("product_profile") is not None
+    elapsed: dict[str, int] = {}
+    occupied: dict[str, int] = {}
+    for role in ("host_only", "candidate"):
+        run = qor[role]
+        fields = {"request", "evidence", "execution", "elapsed_ticks", "shared_memory"}
+        if product:
+            fields |= {"product_oracle_request", "product_oracle_evidence"}
+        if not isinstance(run, dict) or set(run) != fields:
+            errors.append(f"system_qor_{role}_shape_invalid")
+            continue
+        roots = [("request", "evaluation.request"), ("evidence", "evaluation.evidence"),
+                 ("execution", "loom.simulation_execution")]
+        if product:
+            roots += [("product_oracle_request", "evaluation.request"),
+                      ("product_oracle_evidence", "evaluation.evidence")]
+        for field, schema in roots:
+            if _root_reference(run[field], schema) is None:
+                errors.append(f"system_qor_{role}_{field}_invalid")
+        duration = _integer(run["elapsed_ticks"])
+        memory = run["shared_memory"]
+        if duration is None or duration <= 0 or not isinstance(memory, dict) or set(memory) != {
+            "occupied_ticks", "utilization"
+        }:
+            errors.append(f"system_qor_{role}_window_invalid")
+            continue
+        busy = _integer(memory["occupied_ticks"])
+        if busy is None or busy < 0 or busy > duration:
+            errors.append(f"system_qor_{role}_occupancy_invalid")
+            continue
+        utilization = Fraction(busy, duration)
+        if memory["utilization"] != {"numerator": utilization.numerator,
+                                      "denominator": utilization.denominator}:
+            errors.append(f"system_qor_{role}_utilization_mismatch")
+        elapsed[role], occupied[role] = duration, busy
+    if len(elapsed) != 2:
+        return errors
+    if any(qor["host_only"][field] == qor["candidate"][field]
+           for field in ("request", "evidence", "execution")):
+        errors.append("system_qor_host_candidate_identity_alias")
+    runs = workspace.get("runs")
+    candidates = [run for run in runs if isinstance(run, dict)
+                  and run.get("scope") == "system" and run.get("engine") == "cgra"] if isinstance(runs, list) else []
+    if len(candidates) != 1 or any(candidates[0].get(field) != qor["candidate"][field]
+                                 for field, _ in roots):
+        errors.append("system_qor_candidate_run_join_invalid")
+    speedup = Fraction(elapsed["host_only"], elapsed["candidate"])
+    if qor["speedup"] != {"numerator": speedup.numerator, "denominator": speedup.denominator}:
+        errors.append("system_qor_speedup_mismatch")
+    if qor["target"] != {"strict_speedup": True, "minimum_memory_utilization_exclusive": {
+        "numerator": _MEMORY_TARGET.numerator, "denominator": _MEMORY_TARGET.denominator
+    }}:
+        errors.append("system_qor_target_mismatch")
+    qualifies = speedup > 1 and Fraction(occupied["candidate"], elapsed["candidate"]) > _MEMORY_TARGET
+    if qor["status"] != ("qualified" if qualifies else "not_qualified"):
+        errors.append("system_qor_status_mismatch")
+    if require_target and not qualifies:
+        errors.append("system_qor_performance_target_not_met")
+    return errors
 
 
 def validate_portfolio_product_execution(
@@ -1402,7 +1532,8 @@ def validate_portfolio_product_execution(
 
     oracle_evidence: list[dict[str, str]] = []
     for workspace in matching_workspaces:
-        if workspace.get("schema") != "loom.execution_matrix_workspace.2.0":
+        reasons.extend(validate_system_qor(workspace, require_target=True))
+        if workspace.get("schema") != "loom.execution_matrix_workspace.3.0":
             reasons.append("product_execution_workspace_schema_invalid")
         if candidate_bindings:
             binding = candidate_bindings[0]
@@ -1547,9 +1678,6 @@ def evaluate_portfolio(
         typed_pair_complete = bool(pairs) and all(
             pair["typed_complete"] for pair in pairs
         )
-        canonical_application_qor_complete = any(
-            pair["canonical_qor_complete"] for pair in pairs
-        )
         build = row.get("build")
         product_required = isinstance(build, dict) and isinstance(
             build.get("product_execution"), dict
@@ -1564,11 +1692,16 @@ def evaluate_portfolio(
             for evidence in pair_records_by_key.get(key, [])
             if (
                 (validated := validate_portfolio_pair(evidence, row)) is not None
-                and validated["canonical_qor_complete"]
+                and validated["canonical_mapping_complete"]
             )
         ]
         product_execution_complete = not product_required or (
             bool(product_executions)
+            and all(execution["complete"] for execution in product_executions)
+        )
+        canonical_application_qor_complete = (
+            any(pair["canonical_mapping_complete"] for pair in pairs)
+            and bool(product_executions)
             and all(execution["complete"] for execution in product_executions)
         )
         application = key[0]

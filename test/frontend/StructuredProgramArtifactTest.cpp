@@ -430,7 +430,7 @@ module {
       loom::lowering::lowerStructuredProgramToCanonicalDataflow(structured));
   require(test, dataflow.module().lookupSymbol<mlir::func::FuncOp>("main"),
           "graph-free Dataflow artifact lost the InstructionCore program");
-  auto view = take(test, dataflow.view());
+  const auto &view = dataflow.view();
   require(test, view.graphs().empty(),
           "a graph-free candidate unexpectedly acquired a SpatialCore graph");
 }

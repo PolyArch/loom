@@ -1,6 +1,9 @@
 #include "Simulator/SourceBackedDfgValidation.h"
+#include "Frontend/Analysis/MemoryAddressProjection.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
+#include "Common/MappingDebugLog.h"
 
 #include "SimulationPointerCapture.h"
 #include "SimulationWireInternal.h"
@@ -20,6 +23,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
 #include <cstdint>
@@ -386,13 +390,13 @@ struct SelectedActivationCapture final {
 };
 
 llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
-    const frontend::MaterializedOwnershipCandidate &candidate,
+    const frontend::StructuredProgramCandidate &program,
     const dataflow::CanonicalDataflowProgramView &view,
     dataflow::RootedGraphLaunchRef launch,
     frontend::StructuredEntityRef spatialRegion) {
   dataflow::ThreadOp thread;
   loom::SpatialRegionOp spatial;
-  auto structuredView = candidate.structuredProgram.view();
+  auto structuredView = program.view();
   if (!structuredView)
     return structuredView.takeError();
   auto entity = structuredView->resolve(spatialRegion);
@@ -408,7 +412,7 @@ llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> module(
       llvm::cast<mlir::ModuleOp>(
-          candidate.structuredProgram.module()->clone(mapping)));
+          program.module()->clone(mapping)));
   spatial = llvm::dyn_cast_or_null<loom::SpatialRegionOp>(
       mapping.lookupOrNull(sourceSpatial.getOperation()));
   thread = llvm::dyn_cast_or_null<dataflow::ThreadOp>(
@@ -720,9 +724,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     ownedSourceObservations.emplace(std::move(*observed));
     sourceObservations = &*ownedSourceObservations;
   }
-  auto view = candidate.canonicalDataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = candidate.canonicalDataflow.view();
   const StructuredProgramSimulationWorkload *structuredWorkload =
       workload.structuredProgram();
   if (!structuredWorkload)
@@ -737,7 +739,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entry->operation);
   if (!entryFunction)
     return invalid("source-backed replay entry is not an LLVM function");
-  auto reachableRoots = view->projectRootThreadLaunchesReachableFromAbiEntry(
+  auto reachableRoots = view.projectRootThreadLaunchesReachableFromAbiEntry(
       entryFunction.getSymName());
   if (!reachableRoots)
     return reachableRoots.takeError();
@@ -765,8 +767,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   std::chrono::steady_clock::duration remainingSimulationWallTime =
       limits.maxSimulationWallTime;
   for (frontend::StructuredEntityRef spatialRegion : spatialRegions) {
-    auto launch = selectReachableRootedLaunch(candidate, *view, spatialRegion,
-                                               *reachableRoots);
+    auto launch = selectReachableRootedLaunch(candidate, view, spatialRegion,
+                                              *reachableRoots);
     if (!launch)
       return launch.takeError();
     if (!*launch)
@@ -775,23 +777,44 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         prepareDfgExecution(candidate.canonicalDataflow, **launch);
     if (!preparedDfg)
       return preparedDfg.takeError();
-    auto launchContext = detail::resolveLaunchContext(*view, **launch);
+    auto launchContext = detail::resolveLaunchContext(view, **launch);
     if (!launchContext)
       return launchContext.takeError();
-    auto selected = deriveSelectedActivationCapture(
-        candidate, *view, **launch, spatialRegion);
+    auto selected = deriveSelectedActivationCapture(candidate.structuredProgram, view, **launch,
+                                                    spatialRegion);
     if (!selected)
       return selected.takeError();
     const WorkloadBackedSimulationInputCapturePlan &replayPlan = selected->plan;
     const std::uint64_t firstRegionActivation = result.dynamicActivations;
     std::uint64_t capturedActivationCount = 0;
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "source_backed_dfg_replay";
+          fields["structured_program"] =
+              formatArtifactIdentityHex(candidate.structuredProgram.identity());
+          fields["canonical_dataflow"] =
+              formatArtifactIdentityHex(candidate.canonicalDataflow.identity());
+          std::string structuredIr;
+          {
+            llvm::raw_string_ostream stream(structuredIr);
+            selected->spatial->print(stream);
+          }
+          fields["structured_region_ir"] = std::move(structuredIr);
+          std::string graphIr;
+          {
+            llvm::raw_string_ostream stream(graphIr);
+            launchContext->graphOp->print(stream);
+          }
+          fields["graph_ir"] = std::move(graphIr);
+        });
 
     auto replayActivation =
         [&](NativeSimulationCallCapture &&call) -> llvm::Error {
       if (result.wavefrontSteps >= limits.maxWavefrontSteps)
         return executionLimit("aggregate wavefront budget exhausted");
       auto replayWorkload =
-          finalizeReplayWorkload(replayPlan, call.denseCoordinates, *view);
+          finalizeReplayWorkload(replayPlan, call.denseCoordinates, view);
       if (!replayWorkload)
         return replayWorkload.takeError();
       if (call.memoryRootObjectOrdinals.size() !=
@@ -810,7 +833,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
             root.root, call.memoryRootObjectOrdinals[ordinal],
             call.memoryRootByteOffsets[ordinal]});
       auto replayInput =
-          finalizeSimulationRuntimeInput(draft, *replayWorkload, *view);
+          finalizeSimulationRuntimeInput(draft, *replayWorkload, view);
       if (!replayInput)
         return replayInput.takeError();
       if (publishReplayCase) {
@@ -842,6 +865,23 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
           limits.maxWavefrontSteps - result.wavefrontSteps, executionDeadline);
       const auto stopped = std::chrono::steady_clock::now();
       const auto elapsed = stopped - started;
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+            fields["operation"] = "source_backed_dfg_activation";
+            fields["workload"] =
+                formatArtifactIdentityHex(replayWorkload->identity());
+            fields["runtime_input"] =
+                formatArtifactIdentityHex(replayInput->identity());
+            fields["activation_ordinal"] = result.dynamicActivations;
+            fields["aggregate_wavefront_steps_before"] = result.wavefrontSteps;
+            fields["remaining_wavefront_step_limit"] =
+                limits.maxWavefrontSteps - result.wavefrontSteps;
+            fields["retired"] = static_cast<bool>(execution);
+            fields["duration_ns"] =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                    .count();
+          });
       result.simulationSeconds +=
           std::chrono::duration<double>(elapsed).count();
       if (remainingSimulationWallTime !=
@@ -916,6 +956,16 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
                                 std::move(*deferredReplayFailure));
       return selectedObservations.takeError();
     }
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+          fields["operation"] = "source_backed_dfg_region";
+          fields["first_activation_ordinal"] = firstRegionActivation;
+          fields["captured_activations"] = capturedActivationCount;
+          fields["replayed_activations"] =
+              result.dynamicActivations - firstRegionActivation;
+          fields["replay_failed"] = deferredReplayFailure.has_value();
+        });
     const bool wholeProgramMismatch =
         sourceObservations && !haveEquivalentFunctionalObservations(
                                   *sourceObservations, *selectedObservations);
@@ -948,6 +998,179 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   result.replayCases.erase(
       std::unique(result.replayCases.begin(), result.replayCases.end()),
       result.replayCases.end());
+  return result;
+}
+
+llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const ImportedStructuredProgramSimulationInputs &sourceInputs,
+    std::uint64_t maxRetainedCaptureBytes) {
+  const CanonicalSimulationWorkload &workload = sourceInputs.workload;
+  const CanonicalSimulationRuntimeInput &runtimeInput = sourceInputs.runtimeInput;
+  const auto *structuredWorkload = workload.structuredProgram();
+  if (!structuredWorkload)
+    return invalid("memory provenance requires a Structured workload");
+  auto sourceView = sourceInputs.structuredProgram.view();
+  if (!sourceView)
+    return sourceView.takeError();
+  auto entry = sourceView->resolve(structuredWorkload->entryRef);
+  if (!entry)
+    return entry.takeError();
+  auto entryFunction =
+      llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entry->operation);
+  if (!entryFunction)
+    return invalid("memory provenance entry is not an LLVM function");
+  auto reachable = dataflow.projectRootThreadLaunchesReachableFromAbiEntry(
+      entryFunction.getSymName());
+  if (!reachable)
+    return reachable.takeError();
+  auto projected = lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+      selectedProgram);
+  if (!projected)
+    return projected.takeError();
+  if (projected->artifact.identity() != dataflow.identity())
+    return invalid("memory provenance program does not derive this Dataflow");
+  WorkloadBoundMemoryCapture result{selectedProgram.identity(),
+                                    sourceInputs.structuredProgram.identity(),
+                                    dataflow.identity(), workload.identity(),
+                                    runtimeInput.identity(), {}};
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  dataflow.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    if (llvm::is_contained(*reachable, launch.rootThreadLaunch))
+      launches.push_back(launch);
+  });
+  for (dataflow::RootedGraphLaunchRef launch : launches) {
+    auto context = detail::resolveLaunchContext(dataflow, launch);
+    if (!context)
+      return context.takeError();
+    const auto projection = llvm::find_if(projected->spatialGraphs,
+        [&](const lowering::StructuredSpatialGraphProjection &source) {
+          return source.staticGraphLaunch == launch.staticGraphLaunch;
+        });
+    if (projection == projected->spatialGraphs.end())
+      return invalid("memory provenance has no selected Spatial projection");
+    auto selected = deriveSelectedActivationCapture(selectedProgram, dataflow,
+                                                     launch, projection->spatialRegion);
+    if (!selected)
+      return selected.takeError();
+    const WorkloadBackedSimulationInputCapturePlan &plan = selected->plan;
+    auto selectedThread = selected->spatial->getParentOfType<dataflow::ThreadOp>();
+    std::size_t staticInvocations = 0;
+    selected->module->walk([&](dataflow::ThreadLaunchOp invocation) {
+      if (mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
+              invocation, invocation.getCalleeAttr()) == selectedThread)
+        ++staticInvocations;
+    });
+    if (staticInvocations != 1)
+      return llvm::createStringError(std::errc::not_supported,
+          "source-bound memory capture has multiple static invocation contexts");
+    WorkloadBoundGraphMemory graph{launch, {}, 0};
+    auto visit = [&](NativeSimulationCallCapture &&capture) -> llvm::Error {
+      if (capture.memoryRootObjectOrdinals.size() != plan.memoryRoots.size())
+        return invalid("native memory provenance differs from graph roots");
+      for (auto [ordinal, root] : llvm::enumerate(plan.memoryRoots)) {
+        const std::uint64_t objectOrdinal =
+            capture.memoryRootObjectOrdinals[ordinal];
+        if (objectOrdinal >= capture.objects.size())
+          return invalid("native memory provenance exceeds captured objects");
+        const NativeCapturedMemoryObject &object = capture.objects[objectOrdinal];
+        if (!object.source || object.initialBytes.empty())
+          return llvm::createStringError(std::errc::not_supported,
+                                         "captured object has no finite source");
+        if (graph.dynamicActivations == 0) {
+          graph.roots.push_back({root.root, *object.source, {},
+                                 object.initialBytes.size()});
+        } else if (!(graph.roots[ordinal].source == *object.source) ||
+                   graph.roots[ordinal].byteCount != object.initialBytes.size()) {
+          return llvm::createStringError(std::errc::not_supported,
+              "one graph root selects distinct source objects or extents");
+        }
+        for (std::size_t prior = 0; prior < ordinal; ++prior) {
+          const bool sharedObject =
+              capture.memoryRootObjectOrdinals[prior] == objectOrdinal;
+          const bool sharedSource = graph.roots[prior].source == *object.source;
+          if (sharedObject != sharedSource)
+            return llvm::createStringError(std::errc::not_supported,
+                "one allocation source has multiple simultaneous instances");
+        }
+      }
+      if (graph.dynamicActivations == std::numeric_limits<std::uint64_t>::max())
+        return invalid("memory provenance activation count overflows");
+      ++graph.dynamicActivations;
+      return llvm::Error::success();
+    };
+    auto observed = native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+        std::move(selected->module), selected->spatial, plan,
+        sourceInputs.structuredProgram, workload,
+        runtimeInput, maxRetainedCaptureBytes, visit);
+    if (!observed)
+      return observed.takeError();
+    if (graph.dynamicActivations == 0)
+      return llvm::createStringError(std::errc::not_supported,
+                                     "memory provenance has no dynamic evidence");
+    result.graphs.push_back(std::move(graph));
+  }
+  std::vector<mlir::OpResult> hostAllocations;
+  std::vector<std::pair<WorkloadBoundMemoryRoot *, std::size_t>> sourceBindings;
+  for (WorkloadBoundGraphMemory &graph : result.graphs)
+    for (WorkloadBoundMemoryRoot &root : graph.roots) {
+      if (std::holds_alternative<NativeInputMemoryObjectSource>(root.source))
+        continue;
+      if (!std::holds_alternative<NativeStackMemoryObjectSource>(root.source))
+        return llvm::createStringError(std::errc::not_supported,
+            "source-bound deployment requires an ABI or fixed stack object");
+      const auto &stack = std::get<NativeStackMemoryObjectSource>(root.source);
+      if (!stack.captureFrameDistance || *stack.captureFrameDistance != 0)
+        return llvm::createStringError(std::errc::not_supported,
+            "captured stack object belongs to a different invocation frame");
+      auto source = resolveNativeProgramMemoryObjectSource(
+          selectedProgram.module(), root.source);
+      if (!source)
+        return source.takeError();
+      auto allocation = llvm::dyn_cast<mlir::LLVM::AllocaOp>(*source);
+      auto owner = allocation
+                       ? allocation->getParentOfType<mlir::LLVM::LLVMFuncOp>()
+                       : mlir::LLVM::LLVMFuncOp{};
+      if (!owner || allocation->getBlock() != &owner.getBody().front() ||
+          !allocation->getBlock()->hasNoPredecessors())
+        return llvm::createStringError(std::errc::not_supported,
+            "captured stack source is not a once-per-invocation entry allocation");
+      auto found = llvm::find(hostAllocations, allocation.getRes());
+      const std::size_t ordinal = std::distance(hostAllocations.begin(), found);
+      if (found == hostAllocations.end())
+        hostAllocations.push_back(llvm::cast<mlir::OpResult>(allocation.getRes()));
+      sourceBindings.push_back({&root, ordinal});
+    }
+  if (sourceBindings.empty())
+    return result;
+  auto tracked = lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+      selectedProgram, {}, hostAllocations);
+  if (!tracked)
+    return tracked.takeError();
+  if (tracked->artifact.identity() != dataflow.identity())
+    return invalid("tracked host bases changed the canonical Dataflow identity");
+  auto rootView = dataflow.resolve(result.graphs.front().launch.rootThreadLaunch);
+  if (!rootView)
+    return rootView.takeError();
+  auto targetModule = rootView->op->getParentOfType<mlir::ModuleOp>();
+  for (auto [root, ordinal] : sourceBindings) {
+    auto canonicalSource = projectNativeProgramMemoryObjectSource(
+        tracked->trackedValues[ordinal].getDefiningOp());
+    if (!canonicalSource)
+      return canonicalSource.takeError();
+    auto rebound = resolveNativeProgramMemoryObjectSource(targetModule,
+                                                          *canonicalSource);
+    if (!rebound)
+      return rebound.takeError();
+    auto allocation = llvm::dyn_cast<mlir::LLVM::AllocaOp>(*rebound);
+    if (!allocation)
+      return invalid("lowered stack source is not an allocation");
+    auto extent = frontend::analysis::projectFixedAllocationByteCount(allocation);
+    if (!extent || *extent != root->byteCount)
+      return invalid("lowered stack extent differs from captured source");
+    root->programBase = allocation.getRes();
+  }
   return result;
 }
 

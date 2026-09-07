@@ -87,9 +87,9 @@ public:
   operator=(RouteTreeTransactionScratch &&) = delete;
   ~RouteTreeTransactionScratch();
 
-  // Counts retained rollback and semantic-comparison storage, excluding
+  // Counts all retained transaction scratch storage, excluding
   // allocator metadata.
-  std::size_t retainedRollbackStorageBytes() const;
+  std::size_t retainedStorageBytes() const;
 
 private:
   enum class DeltaKind {

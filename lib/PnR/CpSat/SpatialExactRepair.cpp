@@ -105,7 +105,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     DeterministicPnrRandomStream &exactRepairStream,
     SpatialPnrWorkLedgerView workLedger,
     std::optional<PnrIndex> runtimeCounterexampleClause,
-    ExecutionControlView executionControl) {
+    ExecutionControlView executionControl,
+    llvm::ArrayRef<PnrIndex> preferredRuntimeBindingDecisions) {
   workLedger_ = workLedger;
   executionControl_ = executionControl;
   accountedRegionDecisionCount_ = 0;
@@ -138,7 +139,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
           "capacity violation");
     return repairTransportClosure(candidate, restartOrdinal, solverCallLimit,
                                   exactRepairStream,
-                                  runtimeCounterexampleClause);
+                                  runtimeCounterexampleClause,
+                                  preferredRuntimeBindingDecisions);
   }
   if (candidate.progressProofDebtWitnessCount() != 0 &&
       candidate.hardProgressViolation() == 0 &&
@@ -363,8 +365,9 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
   auto solved = detail::solveCanonicalCpSat(
-      model.Build(), canonicalVariables, mutationCount->index(),
-      solverCallLimit, solverSeed, workLedger_);
+      model.Build(), canonicalVariables, mutationCount->objective.index(),
+      solverCallLimit, solverSeed, workLedger_,
+      mutationCount->proofPriorityVariables);
   if (!solved)
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, 0, 0,
@@ -373,9 +376,13 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     return repairResult(
         SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
         *regionDecisionCount, solved->solverCalls);
-  if (solved->kind == detail::CpSatCanonicalResultKind::UnknownBudgetExhausted)
+  if (solved->kind != detail::CpSatCanonicalResultKind::Assignment)
     return repairResult(SpatialExactRepairResultKind::UnknownBudgetExhausted,
-                        *regionDecisionCount, solved->solverCalls);
+                        *regionDecisionCount, solved->solverCalls, 0,
+                        (llvm::Twine("atomic exact repair incomplete: ") +
+                         detail::cpSatCanonicalResultKindSpelling(solved->kind))
+                            .str(),
+                        0, 0, solved->logicalSolverCalls);
   if (solved->assignment.size() != decisions_.size())
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, solved->solverCalls, 0,

@@ -95,7 +95,7 @@ void memoryServiceWorkflow() {
 
   auto memoryDataflowArtifact = buildMemoryDataflow(context);
   take(dataflow::publishCanonicalDataflow(memoryDataflowArtifact, store));
-  auto memoryDataflow = take(memoryDataflowArtifact.view());
+  const auto &memoryDataflow = memoryDataflowArtifact.view();
   auto endpointDesign = loom::pnr::test::buildHeterogeneousSystem(
       store, baselineDesign.roots().front(), primaryModule, primaryModule,
       context, /*extraSupportsRead=*/false,

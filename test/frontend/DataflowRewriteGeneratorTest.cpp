@@ -279,7 +279,7 @@ module {
 dataflow::ActorRef
 actorForSchema(const dataflow::CanonicalDataflowArtifact &artifact,
                dataflow::OperationSchemaId schema) {
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) == schema)
       return actor.ref;

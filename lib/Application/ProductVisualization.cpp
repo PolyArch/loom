@@ -362,7 +362,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
                               "independent closure: " +
                               llvm::toString(std::move(error)));
   const pnr::ResourceTimeTransitionEndpointReference expectedEntry{
-      application.deployment.deployment().systemMapping(),
+      *application.deployment.deployment().systemMapping(),
       application.deployment.reference()};
   if (graph.entry != expectedEntry ||
       !execution.execution.summary.selectedMapping ||
@@ -504,11 +504,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
       return visualizationError("cannot independently import the resource-time "
                                 "Dataflow: " +
                                 llvm::toString(canonicalDataflow.takeError()));
-    auto dataflowView = canonicalDataflow->view();
-    if (!dataflowView)
-      return visualizationError("cannot independently view the resource-time "
-                                "Dataflow: " +
-                                llvm::toString(dataflowView.takeError()));
+    const auto &dataflowView = canonicalDataflow->view();
 
     std::size_t parentMatches = 0;
     for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
@@ -532,7 +528,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
         if (!llvm::is_contained(scenario.systemMappings, state.mapping))
           return visualizationError("parent spectrum state is outside its "
                                     "Mapping inventory");
-        if (llvm::Error error = dataflowView->validate(state.event))
+        if (llvm::Error error = dataflowView.validate(state.event))
           return visualizationError("parent spectrum state has a foreign "
                                     "Dataflow event: " +
                                     llvm::toString(std::move(error)));
@@ -612,7 +608,7 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
         if (state.mapping != evidence.transition.child.mapping)
           return visualizationError("child spectrum state names another "
                                     "Mapping");
-        if (llvm::Error error = dataflowView->validate(state.event))
+        if (llvm::Error error = dataflowView.validate(state.event))
           return visualizationError("child spectrum state has a foreign "
                                     "Dataflow event: " +
                                     llvm::toString(std::move(error)));

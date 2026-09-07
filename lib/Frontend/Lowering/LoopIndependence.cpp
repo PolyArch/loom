@@ -425,126 +425,56 @@ std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
   return linearExpr(value, iv, loop, visited);
 }
 
-std::optional<LinearExpr> linearGepOffset(::mlir::LLVM::GEPOp gep,
-                                          ::mlir::Value iv,
-                                          ::mlir::scf::ForOp loop) {
-  // The conservative provider currently proves only one-index GEPs. A
-  // multidimensional GEP needs DataLayout-aware affine scaling and is kept
-  // serial until that proof is available.
-  if (gep.getIndices().size() != 1)
-    return std::nullopt;
-  LinearExpr total;
-  bool sawIndex = false;
-  for (::mlir::Value operand : gep->getOperands()) {
-    if (operand == gep.getBase())
-      continue;
-    auto expr = linearExpr(operand, iv, loop);
-    if (!expr)
-      return std::nullopt;
-    auto added = addLinear(total, *expr);
-    if (!added)
-      return std::nullopt;
-    total = *added;
-    sawIndex = true;
-  }
-  if (!sawIndex)
-    return std::nullopt;
-  return total;
-}
-
-std::optional<LinearExpr> storeLinearAddress(::mlir::Operation *store,
-                                             ::mlir::scf::ForOp loop) {
-  ::mlir::Value iv = loop.getInductionVar();
-  if (auto memrefStore = ::mlir::dyn_cast<::mlir::memref::StoreOp>(store)) {
-    if (memrefStore.getIndices().size() != 1)
-      return std::nullopt;
-    return linearExpr(memrefStore.getIndices().front(), iv, loop);
-  }
-  if (auto llvmStore = ::mlir::dyn_cast<::mlir::LLVM::StoreOp>(store)) {
-    ::mlir::Value addr = llvmStore.getAddr();
-    if (auto gep = addr.getDefiningOp<::mlir::LLVM::GEPOp>())
-      return linearGepOffset(gep, iv, loop);
-    return std::nullopt;
-  }
-  return std::nullopt;
-}
-
-std::optional<LinearExpr> memoryLinearAddress(::mlir::Operation *op,
-                                              ::mlir::scf::ForOp loop) {
-  if (auto memrefLoad = ::mlir::dyn_cast<::mlir::memref::LoadOp>(op)) {
-    if (memrefLoad.getIndices().size() != 1)
-      return std::nullopt;
-    return linearExpr(memrefLoad.getIndices().front(), loop.getInductionVar(),
-                      loop);
-  }
-  if (auto memrefStore = ::mlir::dyn_cast<::mlir::memref::StoreOp>(op)) {
-    if (memrefStore.getIndices().size() != 1)
-      return std::nullopt;
-    return linearExpr(memrefStore.getIndices().front(), loop.getInductionVar(),
-                      loop);
-  }
-  if (auto llvmLoad = ::mlir::dyn_cast<::mlir::LLVM::LoadOp>(op)) {
-    if (auto gep = llvmLoad.getAddr().getDefiningOp<::mlir::LLVM::GEPOp>())
-      return linearGepOffset(gep, loop.getInductionVar(), loop);
-    return std::nullopt;
-  }
-  if (auto llvmStore = ::mlir::dyn_cast<::mlir::LLVM::StoreOp>(op)) {
-    if (auto gep = llvmStore.getAddr().getDefiningOp<::mlir::LLVM::GEPOp>())
-      return linearGepOffset(gep, loop.getInductionVar(), loop);
-    return std::nullopt;
-  }
-  return std::nullopt;
-}
-
-bool sameLinearExpr(LinearExpr lhs, LinearExpr rhs) {
-  return lhs.ivCoeff == rhs.ivCoeff && lhs.constant == rhs.constant;
-}
-
-bool sameBaseReadWriteAccessesAreIterationLocal(
-    ::llvm::ArrayRef<::mlir::Operation *> loads,
-    ::llvm::ArrayRef<::mlir::Operation *> stores, ::mlir::scf::ForOp loop) {
+bool sameBaseMemrefReadWriteAccessesAreIterationLocal(
+    ::llvm::ArrayRef<::mlir::memref::LoadOp> loads,
+    ::llvm::ArrayRef<::mlir::memref::StoreOp> stores, ::mlir::scf::ForOp loop) {
   if (loads.empty() || stores.empty())
     return true;
 
   std::optional<LinearExpr> first;
-  for (::mlir::Operation *op :
-       ::llvm::concat<::mlir::Operation *const>(loads, stores)) {
-    auto expr = memoryLinearAddress(op, loop);
+  const auto sameElement = [&](::mlir::ValueRange indices) {
+    if (indices.size() != 1)
+      return false;
+    auto expr = linearExpr(indices.front(), loop.getInductionVar(), loop);
     if (!expr || expr->ivCoeff == 0)
       return false;
-    if (!first) {
+    if (!first)
       first = *expr;
-      continue;
-    }
-    if (!sameLinearExpr(*first, *expr))
-      return false;
-  }
-  return true;
+    return *first == *expr;
+  };
+  return ::llvm::all_of(
+             loads,
+             [&](auto load) { return sameElement(load.getIndices()); }) &&
+         ::llvm::all_of(stores, [&](auto store) {
+           return sameElement(store.getIndices());
+         });
 }
 
-bool sameBaseStoresAreLaneDisjoint(::llvm::ArrayRef<::mlir::Operation *> stores,
-                                   ::mlir::scf::ForOp loop) {
+bool sameBaseMemrefStoresAreLaneDisjoint(
+    ::llvm::ArrayRef<::mlir::memref::StoreOp> stores, ::mlir::scf::ForOp loop) {
   if (stores.empty())
     return true;
   auto stepConst = getConstantInt(loop.getStep());
   if (!stepConst || *stepConst == 0)
     return false;
-  if (stores.size() == 1)
-    if (auto store =
-            ::mlir::dyn_cast<::mlir::memref::StoreOp>(stores.front())) {
-      for (::mlir::Value index : store.getIndices()) {
-        auto expr = linearExpr(index, loop.getInductionVar(), loop);
-        if (expr && expr->ivCoeff != 0)
-          return true;
-      }
-      return false;
+  if (stores.size() == 1) {
+    auto store = stores.front();
+    for (::mlir::Value index : store.getIndices()) {
+      auto expr = linearExpr(index, loop.getInductionVar(), loop);
+      if (expr && expr->ivCoeff != 0)
+        return true;
     }
+    return false;
+  }
 
   std::optional<int64_t> expectedCoeff;
   ::llvm::DenseSet<int64_t> residues;
   int64_t stride = 0;
-  for (::mlir::Operation *store : stores) {
-    auto expr = storeLinearAddress(store, loop);
+  for (::mlir::memref::StoreOp store : stores) {
+    if (store.getIndices().size() != 1)
+      return false;
+    auto expr =
+        linearExpr(store.getIndices().front(), loop.getInductionVar(), loop);
     if (!expr || expr->ivCoeff == 0)
       return false;
     if (!expectedCoeff) {
@@ -640,13 +570,20 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
   ::mlir::Value iv = loop.getInductionVar();
   ::llvm::DenseSet<::mlir::Value> readBases;
   ::llvm::DenseSet<::mlir::Value> writeBases;
-  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
-      loadsByBase;
+  ::llvm::DenseMap<::mlir::Value,
+                   ::llvm::SmallVector<::mlir::memref::LoadOp, 4>>
+      memrefLoadsByBase;
   ::llvm::SmallVector<::mlir::Operation *, 8> stores;
-  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
-      storesByBase;
+  ::llvm::DenseMap<::mlir::Value,
+                   ::llvm::SmallVector<::mlir::memref::StoreOp, 4>>
+      memrefStoresByBase;
   ::llvm::SmallVector<::loom::lowering::ExactPointerPointAccess, 8>
       exactPointerAccesses;
+  // Read-only roots need no cross-iteration address proof. An unsupported
+  // read coordinate, such as one computed by an enclosing loop, is safe only
+  // when the root is proven distinct from every write. LLVM writes always
+  // require the shared byte-aware point proof.
+  ::llvm::DenseSet<::mlir::Value> inexactPointerReadBases;
 
   if (bodyHasMultipleSuccessorTerminator(loop))
     return ::mlir::failure();
@@ -683,22 +620,30 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
         if (::mlir::Value loadPtr = getLoadPointer(op, isVol)) {
           if (isVol)
             return ::mlir::WalkResult::interrupt();
+          ::mlir::Value base =
+              loom::frontend::analysis::projectMemoryRoot(loadPtr);
           if (::mlir::isa<::mlir::LLVM::LoadOp>(op)) {
             auto projected = ::loom::lowering::projectExactPointerPointAccess(
                 op, loop.getOperation(), [&](::mlir::Value coordinate) {
                   return isSameSignedCoordinate(coordinate, iv, loop);
                 });
-            auto *access =
-                std::get_if<::loom::lowering::ExactPointerPointAccess>(
-                    &projected);
-            if (!access)
-              return ::mlir::WalkResult::interrupt();
-            exactPointerAccesses.push_back(*access);
+            if (auto *access =
+                    std::get_if<::loom::lowering::ExactPointerPointAccess>(
+                        &projected))
+              exactPointerAccesses.push_back(*access);
+            else {
+              if (std::get<::loom::lowering::ExactPointerPointAccessRefusal>(
+                      projected) ==
+                  ::loom::lowering::ExactPointerPointAccessRefusal::
+                      UnsupportedEffect)
+                return ::mlir::WalkResult::interrupt();
+              inexactPointerReadBases.insert(base);
+            }
+          } else {
+            memrefLoadsByBase[base].push_back(
+                ::mlir::cast<::mlir::memref::LoadOp>(op));
           }
-          ::mlir::Value base =
-              loom::frontend::analysis::projectMemoryRoot(loadPtr);
           readBases.insert(base);
-          loadsByBase[base].push_back(op);
           return ::mlir::WalkResult::advance();
         }
 
@@ -707,6 +652,8 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
         if (::mlir::Value storePtr = getStorePointer(op, isVol)) {
           if (isVol)
             return ::mlir::WalkResult::interrupt();
+          ::mlir::Value base =
+              loom::frontend::analysis::projectMemoryRoot(storePtr);
           if (::mlir::isa<::mlir::LLVM::StoreOp>(op)) {
             auto projected = ::loom::lowering::projectExactPointerPointAccess(
                 op, loop.getOperation(), [&](::mlir::Value coordinate) {
@@ -718,12 +665,12 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
             if (!access)
               return ::mlir::WalkResult::interrupt();
             exactPointerAccesses.push_back(*access);
+          } else {
+            memrefStoresByBase[base].push_back(
+                ::mlir::cast<::mlir::memref::StoreOp>(op));
           }
-          ::mlir::Value base =
-              loom::frontend::analysis::projectMemoryRoot(storePtr);
           writeBases.insert(base);
           stores.push_back(op);
-          storesByBase[base].push_back(op);
           return ::mlir::WalkResult::advance();
         }
 
@@ -756,9 +703,10 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
   // same-element in-place form. Shifted read/write forms keep the loop
   // serial because they carry a cross-iteration dependence.
   for (::mlir::Value w : writeBases) {
-    if (readBases.count(w) &&
-        !sameBaseReadWriteAccessesAreIterationLocal(
-            loadsByBase.lookup(w), storesByBase.lookup(w), loop))
+    if (inexactPointerReadBases.contains(w) ||
+        (readBases.count(w) &&
+         !sameBaseMemrefReadWriteAccessesAreIterationLocal(
+             memrefLoadsByBase.lookup(w), memrefStoresByBase.lookup(w), loop)))
       return ::mlir::failure();
     for (::mlir::Value read : readBases)
       if (read != w &&
@@ -774,12 +722,8 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
   // such as out[3*i + {0,1,2}], where the per-iteration address residue
   // classes are provably disjoint. LLVM pointer stores already passed the
   // shared byte-aware point proof above. Anything else remains serial.
-  for (auto &entry : storesByBase) {
-    ::llvm::SmallVector<::mlir::Operation *, 4> memrefStores;
-    for (::mlir::Operation *store : entry.second)
-      if (::mlir::isa<::mlir::memref::StoreOp>(store))
-        memrefStores.push_back(store);
-    if (!sameBaseStoresAreLaneDisjoint(memrefStores, loop))
+  for (auto &entry : memrefStoresByBase) {
+    if (!sameBaseMemrefStoresAreLaneDisjoint(entry.second, loop))
       return ::mlir::failure();
   }
 

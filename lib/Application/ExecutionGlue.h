@@ -75,6 +75,23 @@ deriveApplicationSpatialInvocationPlan(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::StringRef entrySymbol);
 
+/// Retry a statically unsupported memory relation using exact source-backed
+/// finite-object provenance. All references are verified through their owners.
+llvm::Expected<ApplicationSpatialInvocationPlan>
+deriveApplicationSpatialInvocationPlan(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::StringRef entrySymbol,
+    const ArtifactRootReference &selectedProgram,
+    const ArtifactRootReference &sourceWorkload,
+    const ArtifactRootReference &sourceRuntimeInput,
+    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes);
+
+/// Preserves the source callable closure and shares the System entry ABI;
+/// no source invocation is rewritten into accelerator dispatch.
+llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostOnlyModule(
+    const llvm::Module &finalLinkedModule,
+    const ApplicationSourceInvocation &sourceInvocation);
+
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
     const dataflow::CanonicalDataflowArtifact &dataflow,

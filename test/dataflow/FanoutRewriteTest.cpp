@@ -145,7 +145,7 @@ module {
 
 template <typename Op>
 dataflow::ActorId actorId(const dataflow::CanonicalDataflowArtifact &artifact) {
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (llvm::isa<Op>(actor.op))
       return actor.ref.entity;

@@ -105,7 +105,7 @@ loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle,
 
 void localRealizationEdgePublishesThroughExactConsumer() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *add = nullptr;
   const dataflow::CanonicalActorView *sync = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors()) {
@@ -144,8 +144,10 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   initializeRunState(state, *prepared);
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
-  auto runtime = take(CgraTransportRuntime::create(plan, view, add->graph,
-                                                   *prepared, state, physical));
+  auto runtimeTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, add->graph, *prepared));
+  auto runtime = take(CgraTransportRuntime::create(plan, runtimeTransportGraph,
+                                                   state, physical));
   llvm::SmallVector<GraphIngressEmission, 2> ingress;
   state.graphIngressCapture = &ingress;
   seedBlockArgument(
@@ -179,20 +181,21 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   require(static_cast<bool>(rejected),
           "partially bound actor emissions were accepted");
   llvm::consumeError(std::move(rejected));
-  require(!runtime.hasPendingEvents(),
+  require(!runtime.nextCoordinate(),
           "rejected actor emission batch changed transport state");
 
   const CgraActorLifecycleEvent committed{
       CgraActorLifecycleKind::Committed, 0, 0, 0, 1, coordinate(3)};
-  if (llvm::Error error = runtime.acceptActorCommits({committed}))
-    fail(llvm::toString(std::move(error)));
+  channelQueue(state, add->op->getOpOperand(0)).pop_front();
+  require(take(runtime.acceptActorCommits({committed})).empty(),
+          "graph input consumption reported an actor producer");
   require(!runtime.actorSourcesAvailable(0),
           "actor commit did not reserve its transport source");
-  llvm::Error repeatedCommit = runtime.acceptActorCommits(
+  auto repeatedCommit = runtime.acceptActorCommits(
       {{CgraActorLifecycleKind::Committed, 0, 1, 0, 1, coordinate(3)}});
-  require(static_cast<bool>(repeatedCommit),
+  require(!repeatedCommit,
           "a second actor firing reused a reserved transport source");
-  llvm::consumeError(std::move(repeatedCommit));
+  llvm::consumeError(repeatedCommit.takeError());
 
   emissions.clear();
   emissions.push_back(
@@ -216,9 +219,21 @@ void localRealizationEdgePublishesThroughExactConsumer() {
               channelQueue(state, sync->op->getOpOperand(1)).front(),
               mlir::IntegerType::get(&context(), 32))) == llvm::APInt(32, 16),
       "FU-local transfer did not publish one exact consumer token");
-  require(runtime.actorSourcesAvailable(0),
-          "transport release did not clear the actor source reservation");
+  require(!runtime.actorSourcesAvailable(0) && frame->completions.empty(),
+          "unbuffered presentation released the producer before consumption");
   channelQueue(state, sync->op->getOpOperand(1)).pop_front();
+  const auto syncSemantic = static_cast<std::uint64_t>(std::distance(
+      prepared->actorPlans.begin(),
+      llvm::find_if(prepared->actorPlans, [&](const auto &actor) {
+        return actor.operation == sync->op;
+      })));
+  auto consumed = take(runtime.acceptActorCommits(
+      {{CgraActorLifecycleKind::Committed, syncSemantic, 0, 0, 0,
+        coordinate(4)}}));
+  require(consumed.size() == 1 && consumed.front().semanticActorOrdinal == 0 &&
+              consumed.front().occurrenceOrdinal == 0 &&
+              runtime.actorSourcesAvailable(0),
+          "actual consumer transition did not release the held producer");
 
   CgraFrozenExecutionPlan physicalPlan = plan;
   physicalPlan.transport.localTransfers.pop_back();
@@ -277,8 +292,10 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       {{dataflow::ActorTokenOperandRef{sync->ref, 1}}, 1, 1});
   auto selectedPhysical = take(CgraPhysicalActionRuntime::create(
       physicalPlan.resources, physicalPlan.physicalUseTimings));
+  auto selectedTransportTransportGraph =
+      take(freezeCgraTransportGraph(physicalPlan, view, add->graph, *prepared));
   auto selectedTransport = take(CgraTransportRuntime::create(
-      physicalPlan, view, add->graph, *prepared, state, selectedPhysical));
+      physicalPlan, selectedTransportTransportGraph, state, selectedPhysical));
   emissions.clear();
   emissions.push_back(
       {0, 1, 0, 0,
@@ -394,8 +411,10 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   }
   auto bufferedPhysical = take(CgraPhysicalActionRuntime::create(
       bufferedPlan.resources, bufferedPlan.physicalUseTimings));
+  auto bufferedTransportTransportGraph =
+      take(freezeCgraTransportGraph(bufferedPlan, view, add->graph, *prepared));
   auto bufferedTransport = take(CgraTransportRuntime::create(
-      bufferedPlan, view, add->graph, *prepared, state, bufferedPhysical));
+      bufferedPlan, bufferedTransportTransportGraph, state, bufferedPhysical));
 
   channelQueue(state, sync->op->getOpOperand(1)).clear();
   channelQueue(state, sync->op->getOpOperand(1))
@@ -467,7 +486,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
 
 void registerFifoWriteAndReadShareOneDurableQueue() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *add = nullptr;
   const dataflow::CanonicalActorView *sync = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors()) {
@@ -531,8 +550,10 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   initializeRunState(state, *prepared);
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  auto transportTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, add->graph, *prepared));
   auto transport = take(CgraTransportRuntime::create(
-      plan, view, add->graph, *prepared, state, physical));
+      plan, transportTransportGraph, state, physical));
   llvm::SmallVector<CgraActorEmission, 1> emissions;
   emissions.push_back(
       {0, 0, 0, 0,
@@ -615,8 +636,10 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   initializeRunState(dualState, *prepared);
   auto dualPhysical = take(CgraPhysicalActionRuntime::create(
       dualPlan.resources, dualPlan.physicalUseTimings));
+  auto dualTransportTransportGraph =
+      take(freezeCgraTransportGraph(dualPlan, view, add->graph, *prepared));
   auto dualTransport = take(CgraTransportRuntime::create(
-      dualPlan, view, add->graph, *prepared, dualState, dualPhysical));
+      dualPlan, dualTransportTransportGraph, dualState, dualPhysical));
   channelQueue(dualState, add->op->getOpOperand(0))
       .push_back(take(tokenFromBitPattern(
           llvm::APInt(32, 99), mlir::IntegerType::get(&context(), 32))));
@@ -715,7 +738,7 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
 
 void ordinaryFanoutPublicationsProgressIndependently() {
   auto artifact = fanoutProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -750,8 +773,10 @@ void ordinaryFanoutPublicationsProgressIndependently() {
       llvm::APInt(32, 7), mlir::IntegerType::get(&context(), 32))));
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  auto transportTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, left.graph, *prepared));
   auto transport = take(CgraTransportRuntime::create(
-      plan, view, left.graph, *prepared, state, physical));
+      plan, transportTransportGraph, state, physical));
 
   llvm::SmallVector<GraphIngressEmission, 1> ingress;
   ingress.push_back(
@@ -786,7 +811,7 @@ void ordinaryFanoutPublicationsProgressIndependently() {
 
 void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   auto artifact = fanoutProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -827,7 +852,9 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
 
   CgraFrozenExecutionPlan plan;
   plan.transport.operandBuffers.push_back(
-      {pe, fabric::OperandBufferMode::PerInstruction, 1, 2, {1, 1}});
+      {pe,
+       take(fabric::TemporalOperandBufferContract::create(
+           {pe, 1, {1, 1}, fabric::OperandBufferMode::PerInstruction, 2}))});
   plan.transport.localTransfers.push_back({producer, left.graph, 0, 2});
   plan.transport.localTransferSinks.push_back({leftSink});
   plan.transport.localTransferSinks.push_back({rightSink});
@@ -862,8 +889,10 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
       llvm::APInt(32, 7), mlir::IntegerType::get(&context(), 32))));
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  auto transportTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, left.graph, *prepared));
   auto transport = take(CgraTransportRuntime::create(
-      plan, view, left.graph, *prepared, state, physical));
+      plan, transportTransportGraph, state, physical));
 
   llvm::SmallVector<GraphIngressEmission, 1> first;
   first.push_back(
@@ -898,8 +927,8 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   const std::array<CgraActorLifecycleEvent, 1> committed = {
       CgraActorLifecycleEvent{CgraActorLifecycleKind::Committed, leftSemantic,
                               0, 0, 0, blocked->coordinate}};
-  if (llvm::Error error = transport.acceptActorCommits(committed))
-    fail(llvm::toString(std::move(error)));
+  require(take(transport.acceptActorCommits(committed)).empty(),
+          "durable operand queue consumption completed an upstream producer");
   if (llvm::Error error = transport.retryBlocked(blocked->coordinate))
     fail(llvm::toString(std::move(error)));
   auto replacement = take(transport.advance());
@@ -917,7 +946,7 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
 
 void temporalOperandQueueAdmissionPrioritizesComplement() {
   auto artifact = fanoutProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *add = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -955,7 +984,8 @@ void temporalOperandQueueAdmissionPrioritizesComplement() {
 
   CgraFrozenExecutionPlan plan;
   plan.transport.operandBuffers.push_back(
-      {pe, fabric::OperandBufferMode::PerInstruction, 1, 2, {2}});
+      {pe, take(fabric::TemporalOperandBufferContract::create(
+               {pe, 1, {2}, fabric::OperandBufferMode::PerInstruction, 2}))});
   plan.transport.localTransfers.push_back({lhsProducer, add->graph, 0, 1});
   plan.transport.localTransferSinks.push_back({lhsSink});
   plan.transport.localTransfers.push_back({rhsProducer, add->graph, 1, 1});
@@ -990,8 +1020,10 @@ void temporalOperandQueueAdmissionPrioritizesComplement() {
       llvm::APInt(32, 5), mlir::IntegerType::get(&context(), 32))));
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  auto transportTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, add->graph, *prepared));
   auto transport = take(CgraTransportRuntime::create(
-      plan, view, add->graph, *prepared, state, physical));
+      plan, transportTransportGraph, state, physical));
 
   llvm::SmallVector<GraphIngressEmission, 2> arrivals;
   arrivals.push_back(
@@ -1030,7 +1062,7 @@ void temporalOperandQueueAdmissionPrioritizesComplement() {
 /// drains that channel and the remaining channel closes again.
 void virtualChannelNoComplementRotationIsAClosedWait() {
   auto artifact = fanoutProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -1089,20 +1121,31 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
   plan.transport.physicalTags.push_back({llvm::APInt(4, 5), std::nullopt});
   for (std::uint64_t tag = 0; tag != 2; ++tag)
     plan.transport.routeNodes.push_back(
-        {std::numeric_limits<std::uint32_t>::max(),
-         invalidCgraTransportOrdinal, tag});
+        {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal,
+         tag});
   plan.transport.routeSinks.push_back(
-      {{dataflow::ActorTokenOperandRef{sum.ref, 0}}, 0,
+      {{dataflow::ActorTokenOperandRef{sum.ref, 0}},
+       0,
        invalidCgraTransportOrdinal});
   plan.transport.routeSinks.push_back(
-      {{dataflow::ActorTokenOperandRef{sum.ref, 1}}, 0,
+      {{dataflow::ActorTokenOperandRef{sum.ref, 1}},
+       0,
        invalidCgraTransportOrdinal});
+  plan.transport.routes.push_back({{dataflow::ActorTokenResultRef{left.ref, 0}},
+                                   left.graph,
+                                   0,
+                                   0,
+                                   1,
+                                   0,
+                                   1});
   plan.transport.routes.push_back(
-      {{dataflow::ActorTokenResultRef{left.ref, 0}}, left.graph, 0, 0, 1, 0,
+      {{dataflow::ActorTokenResultRef{right.ref, 0}},
+       right.graph,
+       0,
+       1,
+       1,
+       1,
        1});
-  plan.transport.routes.push_back(
-      {{dataflow::ActorTokenResultRef{right.ref, 0}}, right.graph, 0, 1, 1,
-       1, 1});
 
   SimulatorState state;
   state.graphScope = graph.getOperation();
@@ -1119,8 +1162,10 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
   rightSink.push_back(token(2));
   auto physical = take(CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings));
+  auto transportTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, left.graph, *prepared));
   auto transport = take(CgraTransportRuntime::create(
-      plan, view, left.graph, *prepared, state, physical));
+      plan, transportTransportGraph, state, physical));
 
   struct EpochObservation final {
     std::uint64_t offerAdvances = 0;
@@ -1155,8 +1200,8 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
       const bool advancePhysical =
           physicalCoordinate &&
           (!transportCoordinate ||
-           loom::sim::compareSpatialEventCoordinates(*physicalCoordinate,
-                                                     *transportCoordinate) <= 0);
+           loom::sim::compareSpatialEventCoordinates(
+               *physicalCoordinate, *transportCoordinate) <= 0);
       if (advancePhysical) {
         auto frame = take(physical.advance());
         require(frame.has_value(), "virtual-channel physical event vanished");
@@ -1213,9 +1258,8 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
   require(witnesses.size() == 1, "exhausted rotation produced no witness");
   const CgraStorageOfferRotationDiagnostic &witness = witnesses.front();
   require(witness.storageOrdinal == 0 && witness.residentChannelCount == 2 &&
-              witness.refusedOffersSinceCommit == 2 &&
-              witness.occupancy == 2 && witness.capacity == 2 &&
-              witness.residentTagValues.size() == 2 &&
+              witness.refusedOffersSinceCommit == 2 && witness.occupancy == 2 &&
+              witness.capacity == 2 && witness.residentTagValues.size() == 2 &&
               witness.residentTagValues[0] == llvm::APInt(4, 3) &&
               witness.residentTagValues[1] == llvm::APInt(4, 5),
           "exhausted rotation witness misstates the resident channels");
@@ -1243,7 +1287,8 @@ void virtualChannelNoComplementRotationIsAClosedWait() {
   require(leftSink.size() == 1,
           "the refused channel published into a full consumer channel");
   const auto remaining = transport.exhaustedOfferRotationDiagnostics();
-  require(remaining.size() == 1 && remaining.front().residentChannelCount == 1 &&
+  require(remaining.size() == 1 &&
+              remaining.front().residentChannelCount == 1 &&
               remaining.front().refusedOffersSinceCommit == 1 &&
               remaining.front().occupancy == 1 &&
               remaining.front().residentTagValues.size() == 1 &&

@@ -284,25 +284,25 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Evaluation registry schema 3.1 owns every case, model, MetricKind,
+Evaluation registry schema 3.2 owns every case, model, MetricKind,
 FindingKind, condition-kind, capability-enum, scope-form, and related registry
 ordinal. It registers these exact case signatures used by the pre-Mapping,
 DFG-simulation, FPA, and system-simulation flows described here:
 
-Registry 3.1 is the exact current catalog. Its case and model descriptors bind
+Registry 3.2 is the exact current catalog. Its case and model descriptors bind
 the current Fabric, ConfigurationABI, occurrence-scoped HardwareImplementation,
-Deployment, and runtime contracts. It appends the `cgra_closed_wait` Finding
-and makes that Finding a mandatory terminal query of `cgra_simulator`; no 3.0
-descriptor changes meaning in place. Exact 2.0, 2.1, and 3.0 references are
-unsupported by an ordinary 3.1 importer and are never reinterpreted as 3.1. A
-3.0 CGRA Request must be reconstructed from its authoring case, exact inputs,
-and ResolvedConfig under the 3.1 descriptor, and its Evidence must be rerun;
-an old Evidence root cannot be relabeled because it did not request or report
-the mandatory terminal Finding. The
+Deployment, and runtime contracts. It retains `cgra_closed_wait` as a mandatory
+terminal Finding of `cgra_simulator` and binds the corrected CGRA and System-CGRA
+transport and round-robin execution implementations. Updating an implementation
+string alone cannot change the immutable descriptor selected by a persisted
+registry reference. Exact 2.0, 2.1, 3.0, and 3.1 references are unsupported by an
+ordinary 3.2 importer. A prior Request must be reconstructed from its authoring
+case, exact inputs, and ResolvedConfig under the 3.2 descriptor, and its Evidence
+must be rerun. An old Evidence root cannot be relabeled. The
 `evaluation.request.1.0` and
 `evaluation.evidence.1.0` root record shapes remain unchanged because they
 already carry exact versioned descriptor and Artifact references; newly
-constructed roots use registry-3.1 refs.
+constructed roots use registry-3.2 refs.
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -319,7 +319,7 @@ constructed roots use registry-3.1 refs.
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
 | 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.1`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
-| 13 | `application_product_oracle` | `0: loom.application.runtime_manifest 7.0`, `1: System SimulationExecution` | both forbidden; the execution Request must use the manifest's exact activation workload and runtime input |
+| 13 | `application_product_oracle` | `0: loom.application.runtime_manifest 9.0`, `1: System SimulationExecution` | both forbidden; the execution Request must use the manifest's exact activation workload and runtime input |
 
 The matching initial model descriptors are:
 
@@ -346,6 +346,17 @@ The matching initial model descriptors are:
 | 20 | `openroad_routed_static_fpa` | 5 | OpenROAD ToolMeasurement point observations of limiting clock frequency, total area, dynamic power, and leakage power for one exact routed implementation target |
 | 21 | `mapped_rtl_simulator` | 12 | deterministic external Simulation of the exact Spatial workload on one mapped RTL implementation, with one `SimulationExecution` output and exact whole-case CycleCount |
 | 22 | `application_product_oracle` | 13 | deterministic comparison of one retired System execution's complete product status and output-memory observation with the Application runtime manifest's independent expected-output Blob, producing only the whole-case `functional_mismatch` finding |
+
+The Structured analytic owner derives complete candidate host activity
+from exact block observations or total activity-preserving lineage. Its
+invocation cache retains that count and the optional Runtime estimate together
+under the exact candidate, Fabric, workload, runtime input, and resolved model
+configuration. Pre-Mapping planning copies these derived observations with the
+exact Structured root; it does not reinterpret protocol-root activity as the
+complete residual program. Source host-only Runtime is obtained through the
+same model using the exact source root, before candidate enumeration. These
+are analytic picosecond observations, not native or target clock measurements.
+Candidate ranking continues to belong to the central ObjectiveProgram.
 
 Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
@@ -673,8 +684,31 @@ Artifacts published to analytic evaluation; the later Promote node owns the
 smaller terminal functional-replay width. Exact rejection of an early decision
 therefore consumes an attempt but not a publication slot. A publication or
 attempt truncation remains `SemanticLimitReached`; neither one proves the
-unseen domain infeasible. Special-math choice/mechanical closure uses the same
-separation between its materialization grant and published child bound.
+unseen domain infeasible.
+
+The ownership provider uses one deterministic admission protocol for both
+materialization attempts and distinct published children. Eligible decisions
+retain their existing scope-frontier order and canonical order within each
+scope. If a bound truncates that list, admission first preserves the first
+eligible representative of each present closed address class: no projection,
+root-relative I32, root-relative I64, and pointer-addressed. A required logical
+thread domain first preserves its pointer-addressed representative. These
+representatives consume slots from the unchanged bound.
+
+Remaining slots are assigned in rounds over eligible scopes in frontier order,
+one remaining decision per scope per round. Within each scope, decisions whose
+source signed-index narrowing proof fails follow the other decisions, retaining
+canonical order within either group. The proof is a hint from the canonical
+Frontend address normalizer, evaluated once per exact parent/scope/width; it
+cannot prune a decision or supply its final disposition. Inlining and
+specialization may change the proof in the private materialization clone.
+Decisions outside a truncated prefix remain unattempted, not rejected. Before
+execution, retained attempts return to canonical work order. After exact child
+deduplication, publication applies the same admission protocol to the surviving
+eligible decisions, so canonical dispatch order is not a second ranking rule.
+
+Special-math choice/mechanical closure uses the same separation between its
+materialization grant and published child bound.
 
 Only a terminal beam survivor is functionally replayed. A survivor retained
 solely as the immutable parent of another transformation layer is an analytic
@@ -795,7 +829,7 @@ FindingRequest {
 
 `MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
 owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
-those wire roots carry registry-3.1 references and do not own their ordinals.
+those wire roots carry registry-3.2 references and do not own their ordinals.
 The two request sets are independent. Their total cardinality must be nonzero
 unless the selected model descriptor declares at least one output slot whose
 `Completed` cardinality is `ExactlyOne` or `OneOrMore`. In that one case the
@@ -857,7 +891,7 @@ ProviderForm =
   | ExternalPrepareImport  // tag 1
 ```
 
-Evaluation registry schema 3.1 owns the following capability enums and retains
+Evaluation registry schema 3.2 owns the following capability enums and retains
 their stable zero-based `uint32` wire tags:
 
 ```text
@@ -1313,7 +1347,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 2.0` dependency direction is therefore:
+`loom.simulation_execution 3.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1325,7 +1359,7 @@ as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
 summaries, and the mandatory narrow root-lifecycle progress sequence for
-System execution. `loom.simulation_execution 2.0` contains no general
+System execution. `loom.simulation_execution 3.0` contains no general
 diagnostic-trace field; diagnostic traces and waveforms remain attempt or
 scratch state. A simulator cannot replace them with paths, opaque bytes, or
 provider-private references in the Artifact. `SimulationExecution` contains no
@@ -1620,10 +1654,8 @@ The provider for catalog and decision schema 2.0 has implementation semantic
 identity `loom.compiler.dataflow_rewrite.generator.v4`. Its lineage validator
 replays the typed decision and requires the declared output's exact child
 identity; a legal child from another decision cannot borrow the payload. The
-existing `loom.compiler.dataflow_rewrite.generator.v2` and v3 identities remain
-bound to their earlier behavior and cannot be reinterpreted. Registry, binding,
-manifest, cache, and lineage validation therefore distinguish the providers
-without a compatibility flag or cache invalidation exception.
+exact current candidate-generator registry reference binds this contract in
+bindings, manifests, caches, and lineage validation.
 
 The Spatial Mapping feedback provider shares this exact rewrite-lineage
 contract. Its implementation semantic identity is therefore
@@ -1861,7 +1893,9 @@ plus the closed lineage contributions admitted by the exact generator
 descriptor.
 
 The built-in root-complete TechMapping generator is one such descriptor-owned
-composition. It consumes a finite set of exact Canonical Dataflow Artifacts
+composition, with implementation semantic identity
+`loom.mapping.root_complete_tech_mapping.generator.v10`. It consumes a finite
+set of exact Canonical Dataflow Artifacts
 and one exact Fabric Artifact, derives each Dataflow root's complete canonical
 graph cover through the Dataflow owner, and delegates candidate construction
 to the TechMapping owner. This is not a central-controller default: an
@@ -1873,7 +1907,7 @@ is introduced.
 The built-in application-graph TechMapping generator is the corresponding
 System-composition adapter. Its descriptor has kind 21, spelling
 `mapping.application_graph_tech_mapping`, and implementation semantic identity
-`loom.mapping.application_graph_tech_mapping.generator.v5`. Its exact input
+`loom.mapping.application_graph_tech_mapping.generator.v13`. Its exact input
 slots are `dataflow: ExactlyOne`, `system_constraints: ExactlyOne`, and
 `fabric: ExactlyOne`; the constraint root must bind the same Dataflow and a
 System whose attached Module catalog contains the exact Fabric input. The
@@ -1900,8 +1934,8 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v25`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v17`. It consumes the
+`loom.mapping.root_complete_spatial_pnr.generator.v30`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v21`. It consumes the
 finite TechMapping output and the same exact Fabric Artifact. Each `T` already
 binds one unique Canonical Dataflow identity, so the descriptor strictly
 recovers `D` from `T` instead of accepting a second `D` slot. It mechanically
@@ -1916,10 +1950,16 @@ does not acquire a constraint language, Mapping state, or search algorithm.
 The root-complete adapter preserves the resolved completion goal. Under
 `ExhaustConfiguredWork`, it may construct an initial routed candidate for each
 prepared `T`, rank those candidates through the selected Spatial objective,
-and traverse the resulting complete quality order. Under
+and traverse the resulting complete quality order. Every prepared `T` executes
+its configured restart sequence even when an earlier candidate already
+covers the same graph references. Graph coverage and output retention do not
+truncate exhaustive work or create unexecuted planned slots. Under
 `FirstVerifiedCandidate`, candidate quality outside the verified prefix is not
 part of the requested result. The adapter therefore performs no speculative
-routing for ordering. It repeatedly selects the prepared `T` covering the
+routing for ordering. The delegated Spatial restart owner may execute bounded
+parallel waves with canonical finalized-prefix admission; this does not
+speculate across the adapter's `T` preference order. It repeatedly selects the
+prepared `T` covering the
 greatest number of not-yet-covered graph references, breaks ties by ascending
 physical occurrence demand, then by descending absorbed dependences, and then
 by canonical Artifact reference, and invokes ordinary Spatial PnR. Absorbed
@@ -1939,7 +1979,11 @@ only after that invocation publishes a finalized candidate; failure continues
 to the next alternative. Traversal stops when every graph represented by the
 input set has one verified SpatialMapping or when a typed limit, cancellation,
 or proven-infeasible frontier prevents closure. Work accounting includes only
-search actually executed for ranking or verification under the selected goal.
+search actually executed for ranking or verification under the selected goal,
+including any executed Spatial restart suffix. The delegated owner retains
+suffix diagnostics without promoting an unselected suffix failure into the
+canonical prefix result. Accounting failure and contradictory global proofs
+remain fatal owner outcomes.
 
 Neither Spatial adapter currently registers an owner infeasibility-proof
 contract. Internal `FrozenDerivedContext`, `FrozenActiveProblem`,
@@ -2221,10 +2265,17 @@ ResolvedDseConfigView {
 }
 ```
 
-Its exact descriptor is `loom.dse.config.1.3`. Version 1.3 admits the
+Its exact descriptor is `loom.dse.config.1.4`. Version 1.3 admitted the
 `RuntimeCounterexampleViolation` objective source introduced by Mapping
 objective registry 3.3. Earlier component-view bytes are not current replay
 inputs and must be re-projected from their owning ResolvedConfig.
+Version 1.4 records the exact descriptor major/minor version and kind in each
+Generate and Promote plan node. The node form fixes the descriptor family.
+The same codec owns `ResolvedConfig.resolved_plan_nodes`, so a registry change
+changes ResolvedConfig identity and its derived run key without another
+implementation-identity field. A stored node never adopts the currently
+registered version in place of its recorded version. Old payloads must be
+re-resolved from authoring input, not reinterpreted.
 
 Authoring-level allowed models resolve only to `model_authorizations`.
 Authoring-level required Evidence resolves only to
@@ -2642,13 +2693,21 @@ Candidate generation preserves domain semantics while using one central plan.
 Generator capability is registered through a static typed descriptor rather
 than a persistent Artifact:
 
-Candidate-generator descriptor registry schema 3.0 is the exact current
+Candidate-generator descriptor registry schema 3.4 is the exact current
 registry namespace. Its descriptor reference uses the shared owner-local
-registry framing with `loom.candidate_generator_descriptor`, version 3.0, and
-the generator kind. Registry 3.0 admits exact occurrence-scoped
-HardwareImplementation 4.0 slots and assigns kind 16 to the per-SpatialCore
-portable RTL generator. Exact 1.0 and 2.0 references are unsupported and are
-never reinterpreted as current descriptors.
+registry framing with `loom.candidate_generator_descriptor`, version 3.4, and
+the generator kind. Registry 3.2 admitted exact occurrence-scoped
+HardwareImplementation 4.1 slots, assigns kind 16 to the per-SpatialCore
+portable RTL generator, and binds the current Mapping search and feedback
+semantics. Registry 3.3 binds ordered canonical restart completion and exact
+first-verified frontier stopping. Registry 3.4 binds geometric capacity growth
+in RouteTree mutation preflight and complete retained storage accounting for
+RouteTreeTransactionScratch. Positive memory grants admit workers using that
+full retained capacity, which may reduce the admitted worker count. Earlier
+registry references are unsupported.
+The registry version
+fixes the entire descriptor, including its implementation semantic identity;
+changing that identity alone cannot version a binding or invocation.
 
 ```text
 CandidateGeneratorDescriptor {
@@ -2965,7 +3024,7 @@ different provider.
 
 Hardware DSE begins from at least one exact seed: a finalized builtin Fabric,
 a user-supplied finalized Fabric, or one output of the template generator. It
-never begins from an empty mutable graph. Candidate-generator registry 3.0
+never begins from an empty mutable graph. The candidate-generator registry
 assigns these initial hardware and parameter-training kinds without changing
 kinds 0 through 11:
 
@@ -3252,11 +3311,15 @@ memory-service-owned region resize. This lineage records structural descent
 only and does not claim that parent and child resources are interchangeable.
 
 The TechMapping providers may return
-`loom.mapping.tech_compute_context_hall_feedback.1.0`. It represents one exact
-Hall-deficient compute-cover relation observed by Mapping, not a proof that the
-entire bounded TechMapping domain is infeasible. Its canonical payload carries
-the cover demand and matching counts plus a canonical capability-to-demand
-multiplicity set. Compatible resident contexts and the resulting Hall gap are
+`loom.mapping.tech_compute_context_hall_feedback.2.0`. It represents one exact
+Hall-deficient necessary compute-demand relation observed by Mapping. A
+selected realization has one allowed capability; an unavoidable single-actor
+demand may retain several alternatives. The payload alone is not a proof that
+the entire bounded TechMapping domain is infeasible. Its canonical payload
+carries the checked demand and matching counts plus a canonical set of
+allowed-capability-set and demand-multiplicity pairs. Each capability set is
+nonempty, sorted, and unique. Compatible resident contexts are the union of
+the contexts admitted by those capabilities. That union and the Hall gap are
 rebuilt from the exact Fabric through the same physical-demand projection used
 by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
@@ -3376,10 +3439,13 @@ certificate edge waits for one tag behind the head of another. Its
 `ChangeFifoQueueDiscipline` alternative rewrites that exact occurrence set
 through consecutive Spatial-microarchitecture candidate decisions and the
 ordinary Module-to-System replacement path. Their lineage composes into one
-child, and the global Spatial reopen makes the preserve-first plan a typed
-cold fallback. The ordinary candidate generators, `HardwareImpactProjection`,
-and the shared mutation executor own the change; runtime owns neither a second
-Fabric writer nor a Mapping exception.
+child. Each later target is transported through the preceding decisions'
+canonical entity correspondences before the next rewrite. Reuse is derived
+from the ordinary `HardwareImpactProjection`: a single occurrence reopens its
+affected Spatial cone and requires a fresh progress proof; a composed impact
+without a supported local repair uses typed cold fallback. The ordinary
+candidate generators and the shared mutation executor own the change; runtime
+owns neither a second Fabric writer nor a Mapping exception.
 
 FIFO semantics remain owner-defined. A depth-one registered FIFO may enqueue
 and dequeue in one cycle only when it was non-full at cycle start. A full
@@ -3480,16 +3546,16 @@ generator), `instruction_capacity` (Temporal instruction-store resize), and
 same executor and record as the FU, memory, FIFO, operand-buffer, switch,
 SpatialCore, AccCore, transport, service, and combined families.
 Application mapping provenance supplies the canonical set of these record
-roots to `loom.application.activation_decision` 2.0, which is the durable
+roots to `loom.application.activation_decision` 3.0, which is the durable
 application owner of the exact evaluated set and nullable selected record.
-Runtime manifest 7.0 is a checked projection of that owner, and Application
+Runtime manifest 8.0 is a checked projection of that owner, and Application
 package closure carries the set and the complete parent/child System and
 SystemMapping closures. Removing the DSE journal or build store therefore
 cannot erase the mutation evidence selected or rejected while the pair was
 evaluated.
 
 The mutation record does not name a `FinalizedDeployment` or a
-`ResourceTimeTransition`. Runtime manifest 7.0 joins only the selected repair
+`ResourceTimeTransition`. Runtime manifest 8.0 joins only the selected repair
 record to its selected Mapping and Deployment. The current resource-time
 transition owner requires both endpoint SystemMappings to name the same
 immutable Fabric, so a parent-to-hardware-child transition is rejected rather

@@ -832,7 +832,7 @@ ChainedAddProblem freezeChainedAddProblem(ArtifactStore &store,
                                           std::size_t addCount) {
   auto dataflowArtifact = buildChainedAddDataflow(context, addCount);
   (void)take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  const auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
 
   ResolvedConfig resolved = defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -1142,7 +1142,7 @@ void exerciseSpatialRegisterFifoRuntimeCounterexampleExactRepair() {
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   (void)dataflowReference;
-  const auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildRegisterFifoFabric(store);
   exerciseStaticallyClosedRegisterFifoDomain(
       store, context,

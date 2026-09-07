@@ -208,8 +208,8 @@ const Gem5ModelContractDescriptor &gem5SpatialBridgeModel() {
 
 const Gem5ModelContractDescriptor &gem5SimpleMemoryModel() {
   static const Gem5ModelContractDescriptor descriptor{
-      {"loom.gem5.simple_memory", {1, 0}},
-      "loom.gem5.simple_memory.v1",
+      {"loom.gem5.simple_memory", {2, 0}},
+      "loom.gem5.simple_memory.v2",
       "SimpleMemory",
       Gem5ModelObjectClass::MemoryOrService,
       true,
@@ -323,6 +323,25 @@ decodeGem5SimpleMemoryParameters(llvm::ArrayRef<std::uint8_t> bytes) {
           std::numeric_limits<std::uint64_t>::max() - result.sizeBytes)
     return invalid("SimpleMemory parameters are outside the supported domain");
   return result;
+}
+
+llvm::Expected<std::optional<Gem5SimpleMemoryParameters>>
+projectGem5SharedMemory(const Gem5SimulationBinding &binding) {
+  std::optional<Gem5SimpleMemoryParameters> memory;
+  for (const auto &row : binding.correspondences()) {
+    const auto *service = std::get_if<Gem5MemoryOrServiceCorrespondence>(&row);
+    if (!service)
+      continue;
+    if (service->simObject.contract != gem5ModelContractDescriptorRef(gem5SimpleMemoryModel()))
+      return std::nullopt;
+    auto parameters = decodeGem5SimpleMemoryParameters(service->simObject.payload);
+    if (!parameters)
+      return parameters.takeError();
+    if (memory && !(*memory == *parameters))
+      return std::nullopt;
+    memory = *parameters;
+  }
+  return memory;
 }
 
 } // namespace loom::runtime

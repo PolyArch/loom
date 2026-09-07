@@ -207,3 +207,120 @@ loom::pnr::detail::summarizeTagAssignmentDelta(
   }
   return delta;
 }
+
+llvm::ArrayRef<SpatialTagContinuitySegment>
+SpatialTagAssignmentState::segments(PnrIndex logicalNet) const {
+  assert(logicalNet < storage_->nets.size());
+  return storage_->nets[logicalNet].continuity.segments();
+}
+
+llvm::ArrayRef<PnrIndex>
+SpatialTagAssignmentState::nodeSegments(PnrIndex logicalNet) const {
+  assert(logicalNet < storage_->nets.size());
+  return storage_->nets[logicalNet].continuity.nodeSegments();
+}
+
+llvm::ArrayRef<std::optional<llvm::APInt>>
+SpatialTagAssignmentState::values(PnrIndex logicalNet) const {
+  assert(logicalNet < storage_->nets.size());
+  return storage_->nets[logicalNet].values;
+}
+
+llvm::ArrayRef<PnrIndex>
+SpatialTagAssignmentState::segmentDomains(PnrIndex logicalNet,
+                                          PnrIndex segment) const {
+  assert(logicalNet < storage_->nets.size());
+  return ::loom::pnr::detail::tagSegmentDomains(storage_->nets[logicalNet],
+                                                segment);
+}
+
+std::uint64_t SpatialTagAssignmentState::unassignedCount() const {
+  return storage_->unassignedCount;
+}
+
+std::uint64_t SpatialTagAssignmentState::conflictCount() const {
+  return storage_->conflictCount;
+}
+
+std::uint64_t SpatialTagAssignmentState::residentCapacityOveruse() const {
+  return storage_->residentCapacityOveruse;
+}
+
+std::uint64_t
+SpatialTagAssignmentState::domainResidentCount(PnrIndex domain) const {
+  assert(domain < storage_->residentCounts.size());
+  return storage_->residentCounts[domain];
+}
+
+std::uint64_t SpatialTagAssignmentState::domainResidentCapacityOveruse(
+    PnrIndex domain) const {
+  assert(domain < storage_->residentCounts.size());
+  const auto matchDomains =
+      storage_->problem->routing().tagContinuity().matchDomains();
+  assert(domain < matchDomains.size());
+  return ::loom::pnr::detail::tagDomainResidentOveruse(
+      storage_->residentCounts[domain],
+      matchDomains[domain].residentEntryCapacity);
+}
+
+std::uint64_t
+SpatialTagAssignmentState::domainConflictCount(PnrIndex domain) const {
+  const std::uint64_t conflicts = ::loom::pnr::detail::tagDomainConflictCount(
+      storage_->occupancy, storage_->interference, domain);
+  assert(conflicts <= storage_->conflictCount);
+  return conflicts;
+}
+
+bool SpatialTagAssignmentState::domainValueConflicts(
+    PnrIndex domain, const llvm::APInt &value) const {
+  assert(domain < storage_->occupancy.size());
+  const auto found = storage_->occupancy[domain].find(value);
+  if (found == storage_->occupancy[domain].end())
+    return false;
+  for (std::size_t lhs = 0; lhs != found->second.size(); ++lhs)
+    for (std::size_t rhs = lhs + 1; rhs != found->second.size(); ++rhs)
+      if (storage_->interference.interferes(domain, found->second[lhs],
+                                            found->second[rhs]))
+        return true;
+  return false;
+}
+
+llvm::Expected<SpatialTagAssignmentSummary>
+SpatialTagAssignmentState::summarizeCurrentState(
+    bool includeDomainDetails) const {
+  return detail::summarizeTagAssignmentState(*storage_, includeDomainDetails);
+}
+
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialTagAssignmentState::summarizeCurrentDelta(
+    const SpatialTagAssignmentScratch &scratch) const {
+  const auto &transaction = *scratch.storage_;
+  if (!transaction.active || transaction.problem != storage_->problem)
+    return invalid("tag assignment delta has no active transaction");
+  return detail::summarizeTagAssignmentDelta(
+      *storage_, transaction.synchronizedNets, transaction.changedDomains);
+}
+
+llvm::Expected<SpatialTagAssignmentDelta>
+SpatialTagAssignmentState::summarizeCurrentDelta(
+    llvm::ArrayRef<PnrIndex> logicalNets,
+    llvm::ArrayRef<PnrIndex> changedDomains) const {
+  return detail::summarizeTagAssignmentDelta(*storage_, logicalNets,
+                                             changedDomains);
+}
+
+llvm::ArrayRef<PnrIndex> SpatialTagAssignmentState::changedDomains(
+    const SpatialTagAssignmentScratch &scratch) const {
+  const auto &transaction = *scratch.storage_;
+  assert(transaction.active && transaction.problem == storage_->problem);
+  return transaction.changedDomains;
+}
+
+llvm::ArrayRef<PnrIndex> SpatialTagAssignmentState::changedNets(
+    const SpatialTagAssignmentScratch &scratch) const {
+  assert(scratch.storage_ && scratch.storage_->problem == storage_->problem &&
+         "Physical Tag scratch belongs to another state");
+  if (!scratch.storage_->active)
+    return {};
+  return scratch.storage_->touchedRoutes;
+}

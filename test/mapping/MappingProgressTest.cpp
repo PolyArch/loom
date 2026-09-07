@@ -150,7 +150,7 @@ module {
   if (!module)
     fail("cannot parse cyclic progress fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const auto uncovered = take(loom::mapping::deriveMappingDataflowProgressBasis(
       view, /*coveredGraphs=*/{}));
   if (uncovered.kind !=
@@ -299,7 +299,7 @@ module {
   if (!module)
     fail("cannot parse completion-frontier fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   std::vector<dataflow::RootThreadLaunchRef> roots;
   std::vector<dataflow::EventFamilyKey> events;
   for (const auto &root : view.rootThreadLaunches()) {
@@ -403,7 +403,7 @@ module {
     fail("cannot parse external-dependency fixture");
   auto externalArtifact =
       take(dataflow::finalizeCanonicalDataflow(*externalDependencyModule));
-  const auto externalView = take(externalArtifact.view());
+  const auto &externalView = externalArtifact.view();
   if (externalView.rootThreadLaunches().size() != 2)
     fail("external-dependency fixture lost a root launch");
   std::optional<dataflow::RootThreadLaunchRef> externallyBlocked;
@@ -457,7 +457,7 @@ module {
     fail("cannot parse stored-wait fixture");
   auto storedWaitArtifact =
       take(dataflow::finalizeCanonicalDataflow(*storedWaitModule));
-  const auto storedWaitView = take(storedWaitArtifact.view());
+  const auto &storedWaitView = storedWaitArtifact.view();
   std::optional<dataflow::ThreadWaitOp> storedWait;
   storedWaitArtifact.module()->walk([&](dataflow::ThreadWaitOp wait) {
     if (storedWait)
@@ -705,7 +705,7 @@ module {
   if (!module)
     fail("cannot parse buffer-dependency fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const auto model =
       take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
   loom::mapping::MappingProgressProjection projection;
@@ -902,7 +902,7 @@ module {
   if (!module)
     fail("cannot parse reconvergent capacity fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const auto model =
       take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
   loom::mapping::MappingProgressProjection projection;

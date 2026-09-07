@@ -15,9 +15,12 @@ using namespace fabric;
 
 namespace {
 
-constexpr CapacityDimensionKey occupiedEntry{0};
-constexpr CapacityDimensionKey firstPortService{1};
-constexpr CapacityDimensionKey secondPortService{2};
+constexpr CapacityDimensionKey occupiedEntry =
+    temporalRegisterFifoCapacity(TemporalRegisterFifoCapacity::OccupiedEntry);
+constexpr CapacityDimensionKey firstPortService = temporalRegisterFifoCapacity(
+    TemporalRegisterFifoCapacity::FirstPortService);
+constexpr CapacityDimensionKey secondPortService = temporalRegisterFifoCapacity(
+    TemporalRegisterFifoCapacity::SecondPortService);
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -52,6 +55,28 @@ void appendRequesters(GrantPolicyDeclaration &policy,
 }
 
 } // namespace
+
+llvm::Expected<TemporalOperandBufferContract>
+fabric::deriveTemporalPeOperandBufferContract(
+    const loom::fabric::FabricArtifactView &view,
+    loom::fabric::FabricPeOccurrenceRef pe) {
+  if (llvm::Error error = loom::fabric::validateFabricRef(view, pe))
+    return std::move(error);
+  if (view.peSchedule(pe) != Schedule::Temporal)
+    return invalid("operand-buffer owner is not a temporal PE");
+  const auto mode = view.peOperandBufferMode(pe);
+  const auto entries = view.peOperandBufferSize(pe);
+  auto schema = view.temporalPeConfigurationSchema(pe);
+  if (!schema)
+    return schema.takeError();
+  if (!mode || entries == 0)
+    return invalid("operand buffer has no exact Fabric declaration");
+  std::vector<std::uint32_t> fuInputCounts;
+  for (const auto &fu : schema->layout().fus)
+    fuInputCounts.push_back(fu.inputCount);
+  return TemporalOperandBufferContract::create(
+      {pe, schema->layout().contextCount, fuInputCounts, *mode, entries});
+}
 
 llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
     const TemporalPeResourceDeclaration &declaration) {

@@ -606,15 +606,15 @@ DeploymentCodecAccess::runtimeImage(ArtifactSchemaDescriptor schema,
 }
 
 Deployment DeploymentCodecAccess::deployment(
-    ArtifactRootReference systemMapping, HostProgramLeaf hostProgram,
+    DeploymentExecutionRoot executionRoot, HostProgramLeaf hostProgram,
     std::vector<ArtifactRootReference> instructionCoreBinaries,
     std::vector<DeploymentHardwareBinding> hardwareBindings,
     std::vector<ArtifactRootReference> configurationImages,
     std::vector<StaticMemoryImageLeaf> staticMemoryImages,
-    InlineRuntimeImage threadDispatchImage,
+    std::optional<InlineRuntimeImage> threadDispatchImage,
     std::optional<InlineRuntimeImage> spatialLaunchImage,
-    InlineRuntimeImage admissionImage) {
-  return Deployment(std::move(systemMapping), std::move(hostProgram),
+    std::optional<InlineRuntimeImage> admissionImage) {
+  return Deployment(std::move(executionRoot), std::move(hostProgram),
                     std::move(instructionCoreBinaries),
                     std::move(hardwareBindings), std::move(configurationImages),
                     std::move(staticMemoryImages),
@@ -642,7 +642,7 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("canonical bytes must contain a JSON object");
   if (llvm::Error error = rejectUnknownFields(
           *root, "Deployment",
-          {"schema", "schema_version", "system_mapping_ref", "host_program",
+          {"schema", "schema_version", "execution_root", "host_program",
            "instruction_core_binary_refs", "hardware_bindings",
            "configuration_image_refs", "static_memory_images",
            "thread_dispatch_image", "spatial_launch_image", "admission_image"}))
@@ -657,8 +657,26 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
       *version != formatSchemaVersion(deploymentSchema.version))
     return invalid("root has the wrong schema descriptor");
 
-  auto system =
-      parseRootReferenceField(*root, "system_mapping_ref", "Deployment");
+  auto executionObject = requireObject(*root, "execution_root", "Deployment");
+  if (!executionObject)
+    return executionObject.takeError();
+  if (llvm::Error error = rejectUnknownFields(
+          **executionObject, "execution_root", {"kind", "reference"}))
+    return std::move(error);
+  auto kind = requireString(**executionObject, "kind", "execution_root");
+  auto reference = parseRootReferenceField(**executionObject, "reference",
+                                            "execution_root");
+  if (!kind)
+    return kind.takeError();
+  if (!reference)
+    return reference.takeError();
+  DeploymentExecutionRoot executionRoot = *reference;
+  if (*kind == "mapped")
+    executionRoot = std::move(*reference);
+  else if (*kind == "host_only")
+    executionRoot = HostOnlyDeploymentRoot{std::move(*reference)};
+  else
+    return invalid("execution_root has an unknown kind");
   auto hostObject = requireObject(*root, "host_program", "Deployment");
   auto binaries =
       requireArray(*root, "instruction_core_binary_refs", "Deployment");
@@ -668,8 +686,6 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
   const llvm::json::Value *thread = root->get("thread_dispatch_image");
   const llvm::json::Value *spatial = root->get("spatial_launch_image");
   const llvm::json::Value *admission = root->get("admission_image");
-  if (!system)
-    return system.takeError();
   if (!hostObject)
     return hostObject.takeError();
   if (!binaries)
@@ -680,15 +696,22 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
     return images.takeError();
   if (!staticMemory)
     return staticMemory.takeError();
-  if (!thread)
-    return invalid("Deployment is missing field 'thread_dispatch_image'");
-  if (!admission)
-    return invalid("Deployment is missing field 'admission_image'");
   auto host = parseHostProgram(**hostObject);
-  auto parsedThread = parseInlineImage(*thread, threadDispatchImageSchema,
-                                       "thread_dispatch_image");
-  auto parsedAdmission =
-      parseInlineImage(*admission, admissionImageSchema, "admission_image");
+  const auto parseOptionalImage = [&](const llvm::json::Value *value,
+                                       const ArtifactSchemaDescriptor &schema,
+                                       llvm::StringRef field)
+      -> llvm::Expected<std::optional<llvm::json::Value>> {
+    if (!value)
+      return std::nullopt;
+    auto parsed = parseInlineImage(*value, schema, field);
+    if (!parsed)
+      return parsed.takeError();
+    return std::optional<llvm::json::Value>(std::move(*parsed));
+  };
+  auto parsedThread = parseOptionalImage(thread, threadDispatchImageSchema,
+                                          "thread_dispatch_image");
+  auto parsedAdmission = parseOptionalImage(admission, admissionImageSchema,
+                                             "admission_image");
   if (!host)
     return host.takeError();
   if (!parsedThread)
@@ -769,7 +792,7 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
     parsedSpatial = std::move(*value);
   }
   return ParsedDeployment{
-      std::move(*system),         std::move(*host),
+      std::move(executionRoot),   std::move(*host),
       std::move(parsedBinaries),  std::move(parsedHardware),
       std::move(parsedImages),    std::move(parsedStaticMemory),
       std::move(*parsedThread),   std::move(parsedSpatial),
@@ -779,14 +802,18 @@ parseDeployment(llvm::ArrayRef<std::uint8_t> bytes) {
 llvm::Expected<CanonicalSemanticBytes>
 serializeDeployment(const ParsedDeployment &deployment,
                     const DerivedRuntimeImages &images) {
-  auto thread = parseCanonicalInlineBytes(images.threadDispatch,
-                                          threadDispatchImageSchema);
-  auto admission =
-      parseCanonicalInlineBytes(images.admission, admissionImageSchema);
-  if (!thread)
-    return thread.takeError();
-  if (!admission)
-    return admission.takeError();
+  if (images.threadDispatch) {
+    auto thread = parseCanonicalInlineBytes(*images.threadDispatch,
+                                            threadDispatchImageSchema);
+    if (!thread)
+      return thread.takeError();
+  }
+  if (images.admission) {
+    auto admission = parseCanonicalInlineBytes(*images.admission,
+                                               admissionImageSchema);
+    if (!admission)
+      return admission.takeError();
+  }
   if (images.spatialLaunch) {
     auto spatial = parseCanonicalInlineBytes(*images.spatialLaunch,
                                              spatialLaunchImageSchema);
@@ -801,8 +828,16 @@ serializeDeployment(const ParsedDeployment &deployment,
     json.attribute("schema", deploymentSchema.identity);
     json.attribute("schema_version",
                    formatSchemaVersion(deploymentSchema.version));
-    json.attributeObject("system_mapping_ref", [&] {
-      writeRootReference(json, deployment.systemMapping);
+    json.attributeObject("execution_root", [&] {
+      const auto *mapping =
+          std::get_if<ArtifactRootReference>(&deployment.executionRoot);
+      json.attribute("kind", mapping ? "mapped" : "host_only");
+      json.attributeObject("reference", [&] {
+        writeRootReference(json, mapping
+                                     ? *mapping
+                                     : std::get<HostOnlyDeploymentRoot>(
+                                           deployment.executionRoot).fabric);
+      });
     });
     json.attributeObject("host_program", [&] {
       writeHostProgram(json, deployment.hostProgram);
@@ -833,11 +868,13 @@ serializeDeployment(const ParsedDeployment &deployment,
       for (const StaticMemoryImageLeaf &memory : deployment.staticMemoryImages)
         json.object([&] { writeStaticMemory(json, memory); });
     });
-    json.attributeBegin("thread_dispatch_image");
-    json.rawValue(llvm::StringRef(
-        reinterpret_cast<const char *>(images.threadDispatch.bytes().data()),
-        images.threadDispatch.bytes().size()));
-    json.attributeEnd();
+    if (images.threadDispatch) {
+      json.attributeBegin("thread_dispatch_image");
+      json.rawValue(llvm::StringRef(
+          reinterpret_cast<const char *>(images.threadDispatch->bytes().data()),
+          images.threadDispatch->bytes().size()));
+      json.attributeEnd();
+    }
     if (images.spatialLaunch) {
       json.attributeBegin("spatial_launch_image");
       json.rawValue(llvm::StringRef(
@@ -845,11 +882,13 @@ serializeDeployment(const ParsedDeployment &deployment,
           images.spatialLaunch->bytes().size()));
       json.attributeEnd();
     }
-    json.attributeBegin("admission_image");
-    json.rawValue(llvm::StringRef(
-        reinterpret_cast<const char *>(images.admission.bytes().data()),
-        images.admission.bytes().size()));
-    json.attributeEnd();
+    if (images.admission) {
+      json.attributeBegin("admission_image");
+      json.rawValue(llvm::StringRef(
+          reinterpret_cast<const char *>(images.admission->bytes().data()),
+          images.admission->bytes().size()));
+      json.attributeEnd();
+    }
   });
   return CanonicalSemanticBytes(
       std::vector<std::uint8_t>(storage.begin(), storage.end()));

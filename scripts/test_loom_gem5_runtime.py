@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from enum import Enum, auto
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import socket
 import struct
@@ -14,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -28,15 +32,17 @@ M5OP_SOURCE = GEM5_SOURCE / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S"
 M5_INCLUDE = GEM5_SOURCE / "include"
 TEST_RUN_ROOT = REPOSITORY_ROOT / "temp" / "g5"
 
-WIRE_MAGIC = b"LGB1"
+WIRE_MAGIC = b"LGB2"
+ADVANCE_MAGIC = b"LGA1"
 RESULT_MAGIC = b"LGR1"
 RESULT_COLLECTION_MAGIC = b"LGC1"
-SPATIAL_LAUNCH_MAGIC = b"LGL2"
+SPATIAL_LAUNCH_MAGIC = b"LGL3"
 INVOCATION_RESULT_MAGIC = b"LGX3"
-WIRE_HEADER = struct.Struct(">4sIQQ")
+WIRE_HEADER = struct.Struct(">4sIQQQ")
+ADVANCE_HEADER = struct.Struct(">4sQQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
-SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQQ")
+SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
 ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQQIQ")
 ROOT_EVENT_CONTROL_REQUEST = struct.Struct(">4sQQQIQQ")
@@ -49,6 +55,8 @@ SPATIAL_LAUNCH = 0
 MEMORY_REQUEST = 1
 MEMORY_RESPONSE = 2
 COMPLETION = 4
+CHANNEL_COMMIT = 5
+CHANNEL_COMMITTED = 6
 MEMORY_READ = 0
 MEMORY_WRITE = 1
 
@@ -56,6 +64,12 @@ HOST_LOAD_ADDRESS = 0x80000000
 INSTRUCTION_LOAD_ADDRESS = 0x80100000
 MEMORY_BASE = 0x80000000
 MEMORY_SIZE = 0x04000000
+# The native model descriptor owns the exact memory service cost.
+_bandwidth_header = (REPOSITORY_ROOT / "include/Runtime/Gem5BuiltinModels.h").read_text()
+_bandwidth_match = re.search(r"gem5SimpleMemoryServiceTicksPerByte = (\d+)", _bandwidth_header)
+if _bandwidth_match is None:
+    raise RuntimeError("SimpleMemory capacity definition is missing")
+MEMORY_SERVICE_TICKS_PER_BYTE = int(_bandwidth_match.group(1))
 LAUNCH_ADDRESS = 0x82000000
 SECOND_LAUNCH_ADDRESS = 0x82004000
 EXTERNAL_VALUE_ADDRESS = 0x82001000
@@ -311,19 +325,37 @@ def serve_root_event_control(
         server.close()
 
 
-def receive_message(connection: socket.socket) -> tuple[int, int, bytes]:
-    magic, kind, sequence, payload_size = WIRE_HEADER.unpack(
+def receive_advance(connection: socket.socket) -> tuple[int, int, tuple[int, int, int, bytes]]:
+    magic, generation, tick, count = ADVANCE_HEADER.unpack(
+        read_exact(connection, ADVANCE_HEADER.size)
+    )
+    if magic != ADVANCE_MAGIC or count != 1 or generation == 0:
+        raise RuntimeError("engine received a noncanonical causal advance")
+    magic, kind, ordinal, sequence, payload_size = WIRE_HEADER.unpack(
         read_exact(connection, WIRE_HEADER.size)
     )
-    if magic != WIRE_MAGIC:
-        raise RuntimeError("bridge message has the wrong magic")
-    return kind, sequence, read_exact(connection, payload_size)
+    if magic != WIRE_MAGIC or payload_size > 1048576 - WIRE_HEADER.size:
+        raise RuntimeError("bridge message has the wrong magic or length")
+    return generation, tick, (kind, ordinal, sequence, read_exact(connection, payload_size))
 
 
-def decode_spatial_launch_envelope(payload: bytes) -> tuple[int, bytes, bytes]:
+def send_advance(
+    connection: socket.socket, generation: int, tick: int,
+    messages: list[tuple[int, int, int, bytes]],
+) -> None:
+    # Deliberately vary host computation time. Causal bridge ticks must depend
+    # only on the input coordinate and the modeled action delay below.
+    time.sleep(0.005 * (1 + generation % 3))
+    connection.sendall(ADVANCE_HEADER.pack(ADVANCE_MAGIC, generation, tick, len(messages)))
+    for kind, ordinal, sequence, payload in messages:
+        connection.sendall(WIRE_HEADER.pack(WIRE_MAGIC, kind, ordinal, sequence, len(payload)))
+        connection.sendall(payload)
+
+
+def decode_spatial_launch_envelope(payload: bytes) -> tuple[bytes, bytes]:
     if len(payload) < SPATIAL_LAUNCH_HEADER.size:
         raise RuntimeError("Spatial launch envelope is truncated")
-    magic, bridge_ordinal, static_size, invocation_size = (
+    magic, static_size, invocation_size = (
         SPATIAL_LAUNCH_HEADER.unpack_from(payload)
     )
     if magic != SPATIAL_LAUNCH_MAGIC:
@@ -332,7 +364,6 @@ def decode_spatial_launch_envelope(payload: bytes) -> tuple[int, bytes, bytes]:
         raise RuntimeError("Spatial launch envelope lengths are not canonical")
     static_end = SPATIAL_LAUNCH_HEADER.size + static_size
     return (
-        bridge_ordinal,
         payload[SPATIAL_LAUNCH_HEADER.size : static_end],
         payload[static_end:],
     )
@@ -378,33 +409,28 @@ def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
     return payload[INVOCATION_RESULT_HEADER.size : invocation_end], payload[invocation_end:]
 
 
-def send_message(
-    connection: socket.socket, kind: int, sequence: int, payload: bytes
-) -> None:
-    connection.sendall(WIRE_HEADER.pack(WIRE_MAGIC, kind, sequence, len(payload)))
-    connection.sendall(payload)
-
-
-def require_memory_response(
-    connection: socket.socket,
-    sequence: int,
-    request_id: int,
-    expected_data: bytes,
-) -> None:
-    kind, response_sequence, payload = receive_message(connection)
-    if kind != MEMORY_RESPONSE or response_sequence != sequence:
-        raise RuntimeError("bridge returned the wrong memory response envelope")
+def require_memory_response(payload: bytes, request_id: int, expected_data: bytes) -> None:
     if len(payload) < MEMORY_RESPONSE_HEADER.size:
         raise RuntimeError("bridge returned a truncated memory response")
     response_id, success, data_size = MEMORY_RESPONSE_HEADER.unpack_from(payload)
     data = payload[MEMORY_RESPONSE_HEADER.size :]
-    if (
-        response_id != request_id
-        or success != 1
-        or data_size != len(data)
-        or data != expected_data
-    ):
+    if response_id != request_id or success != 1 or data_size != len(data) or data != expected_data:
         raise RuntimeError("bridge returned a noncanonical memory response")
+
+
+class EngineBoundary(Enum):
+    WAITING_FOR_PEER = auto()
+    MEMORY_WRITE = auto()
+    MEMORY_READ = auto()
+    CHANNEL_COMMIT = auto()
+
+
+@dataclass
+class EngineInvocation:
+    launch: bytes
+    invocation: bytes
+    boundary: EngineBoundary = EngineBoundary.WAITING_FOR_PEER
+    completion_tick: int | None = None
 
 
 def run_engine(arguments: argparse.Namespace) -> int:
@@ -428,57 +454,79 @@ def run_engine(arguments: argparse.Namespace) -> int:
     arguments.socket.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(arguments.socket))
-    server.listen(len(entries))
+    server.listen(1)
     try:
-        pending = dict(entries)
-        while pending:
-            connection, _ = server.accept()
-            with connection:
-                kind, sequence, payload = receive_message(connection)
-                bridge_ordinal, launch, invocation = decode_spatial_launch_envelope(
-                    payload
-                )
-                entry = pending.pop(bridge_ordinal, None)
-                if (
-                    kind != SPATIAL_LAUNCH
-                    or sequence != 0
-                    or entry is None
-                    or launch != entry[0].read_bytes()
-                    or invocation
-                ):
-                    raise RuntimeError("bridge launch differs from the expected payload")
-
-                value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
-                write_payload = MEMORY_REQUEST_HEADER.pack(
-                    MEMORY_WRITE, 7, 1, EXTERNAL_VALUE_ADDRESS, len(value)
-                ) + value
-                send_message(connection, MEMORY_REQUEST, sequence, write_payload)
-                require_memory_response(connection, sequence, 1, b"")
-
-                read_payload = MEMORY_REQUEST_HEADER.pack(
-                    MEMORY_READ, 11, 2, EXTERNAL_VALUE_ADDRESS, len(value)
-                )
-                send_message(connection, MEMORY_REQUEST, sequence, read_payload)
-                require_memory_response(connection, sequence, 2, value)
-
-                result = invocation_result(invocation, EXPECTED_RESULT)
-                completion = COMPLETION_HEADER.pack(13, 0, len(result))
-                send_message(connection, COMPLETION, sequence, completion + result)
-                entry[1].write_text(
-                    json.dumps(
-                        {
-                            "bridge_ordinal": bridge_ordinal,
-                            "launch_sha256": hashlib.sha256(launch).hexdigest(),
-                            "memory_address": EXTERNAL_VALUE_ADDRESS,
-                            "memory_value": EXPECTED_VALUE,
-                            "sequence": sequence,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
+        connection, _ = server.accept()
+        with connection:
+            active: dict[int, EngineInvocation] = {}
+            completed: set[int] = set()
+            last_generation = 0
+            last_tick = 0
+            value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
+            while len(completed) != len(entries):
+                generation, tick, (kind, ordinal, sequence, payload) = receive_advance(connection)
+                if generation != last_generation + 1 or tick < last_tick:
+                    raise RuntimeError("engine received stale causal input identity")
+                last_generation, last_tick = generation, tick
+                if ordinal not in entries or sequence != 0 or ordinal in completed:
+                    raise RuntimeError("engine received a foreign invocation")
+                messages = []
+                if kind == SPATIAL_LAUNCH:
+                    launch, invocation = decode_spatial_launch_envelope(payload)
+                    if ordinal in active or launch != entries[ordinal][0].read_bytes() or invocation:
+                        raise RuntimeError("bridge launch differs from the expected payload")
+                    active[ordinal] = EngineInvocation(launch, invocation)
+                    # The first bridge explicitly quiesces until its peer
+                    # launches. One later advance wakes both physical bridges.
+                    if len(active) == len(entries):
+                        for target, state in sorted(active.items()):
+                            state.boundary = EngineBoundary.MEMORY_WRITE
+                            write = MEMORY_REQUEST_HEADER.pack(
+                                MEMORY_WRITE, 7, 1, EXTERNAL_VALUE_ADDRESS, len(value)
+                            ) + value
+                            messages.append((MEMORY_REQUEST, target, sequence, write))
+                else:
+                    state = active.get(ordinal)
+                    if state is None:
+                        raise RuntimeError("continuation has no active invocation")
+                    if state.boundary == EngineBoundary.MEMORY_WRITE:
+                        if kind != MEMORY_RESPONSE:
+                            raise RuntimeError("write boundary received the wrong response kind")
+                        require_memory_response(payload, 1, b"")
+                        state.boundary = EngineBoundary.MEMORY_READ
+                        read = MEMORY_REQUEST_HEADER.pack(
+                            MEMORY_READ, 11, 2, EXTERNAL_VALUE_ADDRESS, len(value)
+                        )
+                        messages.append((MEMORY_REQUEST, ordinal, sequence, read))
+                    elif state.boundary == EngineBoundary.MEMORY_READ:
+                        if kind != MEMORY_RESPONSE:
+                            raise RuntimeError("read boundary received the wrong response kind")
+                        require_memory_response(payload, 2, value)
+                        state.boundary = EngineBoundary.CHANNEL_COMMIT
+                        state.completion_tick = tick + 13
+                        messages.append((CHANNEL_COMMIT, ordinal, sequence, struct.pack(">Q", 13)))
+                    elif state.boundary == EngineBoundary.CHANNEL_COMMIT:
+                        if kind != CHANNEL_COMMITTED or payload or tick != state.completion_tick:
+                            raise RuntimeError("channel commit escaped its causal gem5 tick")
+                        result = invocation_result(state.invocation, EXPECTED_RESULT)
+                        completion = COMPLETION_HEADER.pack(0, 0, len(result)) + result
+                        messages.append((COMPLETION, ordinal, sequence, completion))
+                        entries[ordinal][1].write_text(
+                            json.dumps(
+                                {
+                                    "bridge_ordinal": ordinal,
+                                    "launch_sha256": hashlib.sha256(state.launch).hexdigest(),
+                                    "memory_address": EXTERNAL_VALUE_ADDRESS,
+                                    "memory_value": EXPECTED_VALUE,
+                                    "sequence": sequence,
+                                    "completion_tick": state.completion_tick,
+                                }, sort_keys=True, separators=(",", ":"),
+                            ) + "\n", encoding="utf-8",
+                        )
+                        completed.add(ordinal)
+                    else:
+                        raise RuntimeError("quiescent bridge received an unsolicited continuation")
+                send_advance(connection, generation, tick, messages)
     finally:
         server.close()
         arguments.socket.unlink(missing_ok=True)
@@ -661,10 +709,11 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.13",
+            "schema": "loom.gem5_system_projection.14",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
-            "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
+            "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns",
+                       "service_ticks_per_byte": MEMORY_SERVICE_TICKS_PER_BYTE},
             "host": {
                 "elf": str(host_image),
                 "cpu_id": 0,
@@ -801,6 +850,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
             control_thread = threading.Thread(
                 target=serve_root_event_control,
+                daemon=True,
                 args=(
                     root_control_server,
                     acknowledged_events,
@@ -815,17 +865,23 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 if process.poll() is None:
                     process.kill()
                     process.wait()
+                # A failed simulator may exit before connecting to the root
+                # controller. End the listener's accept with the process.
+                try:
+                    root_control_server.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # The completed controller already closed it.
         control_thread.join(timeout=timeout_seconds(Tier.FAST))
         if control_thread.is_alive():
             raise RuntimeError("root event controller did not terminate")
-        if control_errors:
-            raise RuntimeError(f"root event controller failed: {control_errors[0]}")
         if return_code != 0:
             sys.stderr.write(gem5_log_path.read_text(encoding="utf-8"))
             raise RuntimeError(f"gem5 runtime smoke exited with {return_code}")
+        if control_errors:
+            raise RuntimeError(f"root event controller failed: {control_errors[0]}")
 
         system_result = json.loads(system_result_path.read_text(encoding="utf-8"))
-        if system_result["schema"] != "loom.gem5_system_attempt.1":
+        if system_result["schema"] != "loom.gem5_system_attempt.2":
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
             retained_root = root.with_name(root.name + "-failed")
@@ -901,6 +957,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             trace = json.loads(engine_trace_path.read_text(encoding="utf-8"))
             if (
                 trace["bridge_ordinal"] != ordinal
+                or trace["completion_tick"] != completion_tick
                 or trace["launch_sha256"]
                 != hashlib.sha256(EXPECTED_LAUNCH).hexdigest()
                 or trace["memory_value"] != EXPECTED_VALUE

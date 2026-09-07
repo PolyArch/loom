@@ -492,7 +492,7 @@ int main() {
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   (void)dataflowReference;
-  auto dataflowView = take(dataflow.view());
+  const auto &dataflowView = dataflow.view();
   require(dataflowView.rootThreadLaunches().size() == 2,
           "fixture must expose two root thread launches");
 
@@ -981,7 +981,7 @@ int main() {
 
   auto foreignDataflow = buildDataflow(context, 8);
   take(dataflow::publishCanonicalDataflow(foreignDataflow, store));
-  auto foreignView = take(foreignDataflow.view());
+  const auto &foreignView = foreignDataflow.view();
   requireFailure(loom::mapping::finalizeEmptySystemMappingConstraintSet(
                      dataflowView, system,
                      {foreignView.rootThreadLaunches().front().ref}, store),

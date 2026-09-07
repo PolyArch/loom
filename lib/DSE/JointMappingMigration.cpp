@@ -763,9 +763,7 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
       dataflow::importCanonicalDataflow(pair.pair.software.dataflow, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
 
   std::vector<TechRecord> techRecords;
   techRecords.reserve(parentTech.size());
@@ -878,7 +876,7 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
           parent->view(), parentModule->view(), impact.spatial.placementRoots);
     }
     auto constraints = mapping::finalizeEmptySpatialMappingConstraintSet(
-        *dataflow, childTech->child.view(), childModule->view(), artifacts);
+        dataflow, childTech->child.view(), childModule->view(), artifacts);
     if (!constraints)
       return constraints.takeError();
     auto child = mapping::rebaseSpatialMapping(
@@ -932,13 +930,13 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     std::set<std::vector<std::uint8_t>> reopenedServices;
     if (!reopenedRoots.empty()) {
       auto obligations =
-          mapping::projectSystemServiceObligations(*dataflow, reopenedRoots);
+          mapping::projectSystemServiceObligations(dataflow, reopenedRoots);
       if (!obligations)
         return obligations.takeError();
       for (const mapping::SystemServiceObligationProjection &obligation :
            *obligations) {
         auto encoded = mapping::encodeSystemServiceObligationKey(
-            dataflow->identity(), obligation.key);
+            dataflow.identity(), obligation.key);
         if (!encoded)
           return encoded.takeError();
         reopenedServices.insert(std::move(*encoded));
@@ -948,7 +946,7 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
         [&](const mapping::SystemServiceObligationKey &service)
         -> llvm::Expected<bool> {
       auto encoded = mapping::encodeSystemServiceObligationKey(
-          dataflow->identity(), service);
+          dataflow.identity(), service);
       if (!encoded)
         return encoded.takeError();
       return reopenedServices.find(*encoded) != reopenedServices.end();

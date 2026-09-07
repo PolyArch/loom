@@ -50,6 +50,7 @@ public:
            std::uint64_t constructionNanoseconds);
   void abandon(const ArtifactRootReference &reference,
                std::uint64_t constructionNanoseconds);
+  void release(const ArtifactRootReference &reference);
   std::shared_ptr<const FabricHandshakeContext>
   lookupHandshakeContext(const ArtifactIdentity &fabric);
   void retainHandshakeContext(

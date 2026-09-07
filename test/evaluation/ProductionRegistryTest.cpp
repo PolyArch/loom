@@ -51,8 +51,8 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value) {
 
 void registryMajorMatchesCurrentArtifactContracts() {
   const llvm::StringRef test = __func__;
-  require(test, evaluationSchemaVersion() == SchemaVersion{3, 1},
-          "current Evaluation registry is not 3.1");
+  require(test, evaluationSchemaVersion() == SchemaVersion{3, 2},
+          "current Evaluation registry is not 3.2");
 
   const auto canonicalDataflowFabricCase = builtinEvaluationCaseSignatureRef(
       BuiltinEvaluationCase::CanonicalDataflowWithFabric);
@@ -61,25 +61,26 @@ void registryMajorMatchesCurrentArtifactContracts() {
                 BuiltinEvaluationModel::CanonicalDataflowFabricLowConfidence));
   const auto currentCase =
       take(test, EvaluationCaseSignatureRef::get(
-                     {3, 1}, canonicalDataflowFabricCase.caseKind()));
+                     {3, 2}, canonicalDataflowFabricCase.caseKind()));
   require(test, currentCase.descriptor() &&
                     currentCase.descriptor()->registryVersion ==
-                        SchemaVersion{3, 1},
-          "production case kind 1 is not registered in registry 3.1");
+                        SchemaVersion{3, 2},
+          "production case kind 1 is not registered in registry 3.2");
 
   const auto currentModel =
       take(test, EvaluationModelDescriptorRef::get(
-                     {3, 1}, canonicalDataflowFabricModel.modelKind()));
+                     {3, 2}, canonicalDataflowFabricModel.modelKind()));
   require(test,
           currentModel.descriptor() &&
               currentModel.descriptor()->registryVersion ==
-                  SchemaVersion{3, 1} &&
+                  SchemaVersion{3, 2} &&
               currentModel.descriptor()->caseSignature.schemaVersion() ==
-                  SchemaVersion{3, 1},
-          "production model kind 3 is not registered in registry 3.1");
+                  SchemaVersion{3, 2},
+          "production model kind 3 is not registered in registry 3.2");
 
   for (SchemaVersion obsolete :
-       {SchemaVersion{2, 0}, SchemaVersion{2, 1}, SchemaVersion{3, 0}}) {
+       {SchemaVersion{2, 0}, SchemaVersion{2, 1}, SchemaVersion{3, 0},
+        SchemaVersion{3, 1}}) {
     expectError(test, EvaluationCaseSignatureRef::get(
                           obsolete, canonicalDataflowFabricCase.caseKind()));
     expectError(test, EvaluationModelDescriptorRef::get(

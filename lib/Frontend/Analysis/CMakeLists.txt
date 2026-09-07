@@ -1,6 +1,10 @@
 add_mlir_library(LoomFrontendAnalysis
+  CountedLoopProjection.cpp
   DenseParallelMemoryProjection.cpp
+  MemoryAddressProjection.cpp
+  PointerLoopProjection.cpp
   MemoryProvenance.cpp
+  StoredMemoryProvenance.cpp
   StructuredProtocolDependencies.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -8,6 +12,7 @@ add_mlir_library(LoomFrontendAnalysis
 )
 
 target_link_libraries(LoomFrontendAnalysis PUBLIC
+  LoomCommon
   MLIRDataflow
   MLIRLoom
 )
@@ -16,7 +21,10 @@ mlir_target_link_libraries(LoomFrontendAnalysis PUBLIC
   MLIRFuncDialect
   MLIRFunctionInterfaces
   MLIRIR
+  MLIRInferIntRangeInterface
   MLIRLLVMDialect
   MLIRMemRefDialect
+  MLIRSCFDialect
+  MLIRTargetLLVMIRExport
   MLIRSupport
 )

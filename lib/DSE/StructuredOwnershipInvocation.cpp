@@ -106,22 +106,6 @@ std::optional<bool> inspectMaterializedLogicalThreadDomain(
   return logical;
 }
 
-sim::SourceBackedDfgValidationLimits boundedReplayLimits(
-    sim::SourceBackedDfgValidationLimits limits,
-    ExecutionControlView executionControl) {
-  if (executionControl.stopRequested()) {
-    limits.maxSimulationWallTime =
-        std::chrono::steady_clock::duration::zero();
-    return limits;
-  }
-  if (auto remaining = executionControl.remainingTime())
-    limits.maxSimulationWallTime =
-        std::min(limits.maxSimulationWallTime,
-                 std::max(*remaining,
-                          std::chrono::steady_clock::duration::zero()));
-  return limits;
-}
-
 llvm::Error requireProjectedDataflowOwner(
     const lowering::ProjectedCanonicalDataflow &projected,
     llvm::StringRef producer) {
@@ -517,7 +501,7 @@ public:
        const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
        const lowering::CanonicalDataflowLoweringOptions &lowering,
        std::uint32_t candidateWorkerCount,
-       sim::SourceBackedDfgValidationLimits functionalReplayLimits,
+       StructuredFunctionalReplayBudget functionalReplayLimits,
        llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
            sourceProvenance,
        const StructuredOwnershipSharedEvaluation *sharedEvaluation,
@@ -547,7 +531,7 @@ public:
   const ResolvedConfig &config;
   lowering::CanonicalDataflowLoweringOptions lowering;
   std::uint32_t candidateWorkerCount;
-  sim::SourceBackedDfgValidationLimits functionalReplayLimits;
+  StructuredFunctionalReplayBudget functionalReplayLimits;
   std::vector<frontend::StructuredOperationSourceProvenance> sourceProvenance;
   const StructuredOwnershipSharedEvaluation *sharedEvaluation = nullptr;
   ExecutionControlView executionControl;
@@ -713,7 +697,7 @@ StructuredOwnershipInvocation::StructuredOwnershipInvocation(
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const lowering::CanonicalDataflowLoweringOptions &lowering,
     std::uint32_t candidateWorkerCount,
-    sim::SourceBackedDfgValidationLimits functionalReplayLimits,
+    StructuredFunctionalReplayBudget functionalReplayLimits,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance,
     const StructuredOwnershipSharedEvaluation *sharedEvaluation,
@@ -884,12 +868,10 @@ StructuredOwnershipInvocation::selectedCandidateHasLogicalThreadDomain(
         impl_->generationParent, impl_->lowering);
     if (!projected)
       return projected.takeError();
-    auto view = projected->view();
-    if (!view)
-      return view.takeError();
+    const auto &view = projected->view();
     for (const dataflow::CanonicalRootThreadLaunchView &launch :
-         view->rootThreadLaunches()) {
-      auto domain = view->projectRootThreadLogicalDomain(launch.ref);
+         view.rootThreadLaunches()) {
+      auto domain = view.projectRootThreadLogicalDomain(launch.ref);
       if (!domain)
         return domain.takeError();
       if (domain->coordinateRank != 0)
@@ -919,12 +901,10 @@ StructuredOwnershipInvocation::selectedCandidateHasLogicalThreadDomain(
       // Keep the temporary artifact alive through the projection below. This
       // path is only used to classify an existing candidate; replay ownership
       // remains with the promotion provider.
-      auto view = lowered->view();
-      if (!view)
-        return view.takeError();
+      const auto &view = lowered->view();
       for (const dataflow::CanonicalRootThreadLaunchView &launch :
-           view->rootThreadLaunches()) {
-        auto domain = view->projectRootThreadLogicalDomain(launch.ref);
+           view.rootThreadLaunches()) {
+        auto domain = view.projectRootThreadLogicalDomain(launch.ref);
         if (!domain)
           return domain.takeError();
         if (domain->coordinateRank != 0)
@@ -938,12 +918,10 @@ StructuredOwnershipInvocation::selectedCandidateHasLogicalThreadDomain(
         ", generation_parent=" +
         llvm::toHex(encodeArtifactRootReference(*impl_->generationParentReference)));
   }
-  auto view = (*dataflow)->view();
-  if (!view)
-    return view.takeError();
+  const auto &view = (*dataflow)->view();
   for (const dataflow::CanonicalRootThreadLaunchView &launch :
-       view->rootThreadLaunches()) {
-    auto domain = view->projectRootThreadLogicalDomain(launch.ref);
+       view.rootThreadLaunches()) {
+    auto domain = view.projectRootThreadLogicalDomain(launch.ref);
     if (!domain)
       return domain.takeError();
     if (domain->coordinateRank != 0)
@@ -1895,14 +1873,18 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
   if (!stored->bytes().equals(
           materialized->second.structuredProgram.canonicalBytes().bytes()))
     return invalid("rematerialized candidate changed canonical bytes");
+  auto replayLimits = planStructuredFunctionalReplayBudget(
+      impl.functionalReplayLimits, materialized->second, impl.sourceProgram,
+      impl.workload, impl.runtimeInput, impl.sharedEvaluation, impl.executionControl);
+  if (!replayLimits)
+    return replayLimits.takeError();
   if (llvm::Error error =
           evaluation::models::primeStructuredProgramFunctionalReplay(
               candidate,
               {*impl.workloadReference, *impl.runtimeInputReference,
                impl.sourceProgram, materialized->second, impl.workload,
                impl.runtimeInput, *impl.sourceObservations,
-               boundedReplayLimits(impl.functionalReplayLimits,
-                                   impl.executionControl)},
+               *replayLimits},
               store))
     return error;
   impl.primedCandidates.insert(candidate);
@@ -1980,14 +1962,18 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
       parentState->second.ownedSpatialRegion,
       parentState->second.blockActivityLineage,
       parentState->second.sourceProvenance};
+  auto replayLimits = planStructuredFunctionalReplayBudget(
+      impl.functionalReplayLimits, candidate, impl.sourceProgram, impl.workload,
+      impl.runtimeInput, impl.sharedEvaluation, impl.executionControl);
+  if (!replayLimits)
+    return replayLimits.takeError();
   if (llvm::Error error =
           evaluation::models::primeCanonicalDataflowFunctionalReplay(
               dataflowCandidate, structuredParent,
               {*impl.workloadReference, *impl.runtimeInputReference,
                impl.sourceProgram, candidate, impl.workload, impl.runtimeInput,
                *impl.sourceObservations,
-               boundedReplayLimits(impl.functionalReplayLimits,
-                                   impl.executionControl)},
+               *replayLimits},
               store))
     return error;
   impl.primedDataflowCandidates.insert(key);

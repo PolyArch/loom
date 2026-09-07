@@ -1,6 +1,7 @@
 #include "DSE/StructuredOwnership.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
@@ -18,6 +19,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <queue>
 #include <utility>
@@ -35,7 +38,106 @@ llvm::Error invalid(const llvm::Twine &message) {
 struct OwnershipWorkItem final {
   frontend::SpatialOwnershipScope scope;
   frontend::SpatialOwnershipDecisionPoint decision;
+  bool sourceIndexNarrowingRejected = false;
 };
+
+enum class AddressProjectionClass : std::uint8_t {
+  None,
+  RootRelativeI32,
+  RootRelativeI64,
+  PointerAddressed,
+};
+
+AddressProjectionClass
+addressClass(const frontend::SpatialOwnershipDecisionPoint &decision) {
+  if (!decision.addressProjection)
+    return AddressProjectionClass::None;
+  if (std::holds_alternative<frontend::PointerAddressedAddressProjection>(
+          *decision.addressProjection))
+    return AddressProjectionClass::PointerAddressed;
+  const unsigned width = std::get<frontend::RootRelativeAddressProjection>(
+                             *decision.addressProjection)
+                             .canonicalIndexWidth;
+  return width == 32 ? AddressProjectionClass::RootRelativeI32
+                     : AddressProjectionClass::RootRelativeI64;
+}
+
+// Both admission boundaries use this protocol. Eligible work indices retain
+// canonical scope/decision order, regardless of worker completion order.
+std::vector<std::size_t>
+selectOwnershipWorkItems(llvm::ArrayRef<OwnershipWorkItem> workItems,
+                         llvm::ArrayRef<std::size_t> eligible,
+                         std::size_t limit,
+                         StructuredOwnershipGenerationIntent intent) {
+  if (limit >= eligible.size())
+    return {eligible.begin(), eligible.end()};
+  std::vector<std::size_t> selectedIndices;
+  selectedIndices.reserve(limit);
+  std::vector<bool> selected(workItems.size(), false);
+  const auto select = [&](std::size_t index) {
+    selected[index] = true;
+    selectedIndices.push_back(index);
+  };
+  const auto selectFirst = [&](auto predicate) {
+    if (selectedIndices.size() == limit)
+      return;
+    for (std::size_t index : eligible)
+      if (!selected[index] && predicate(workItems[index])) {
+        select(index);
+        return;
+      }
+  };
+  const bool requireLogical =
+      intent == StructuredOwnershipGenerationIntent::RequireLogicalThreadDomain;
+  const auto isLogical = [](const OwnershipWorkItem &item) {
+    return item.decision.forallOwnershipShape ==
+           frontend::ForallOwnershipShape::LogicalThreadDomain;
+  };
+  if (requireLogical)
+    selectFirst([&](const OwnershipWorkItem &item) {
+      return isLogical(item) && addressClass(item.decision) ==
+                                    AddressProjectionClass::PointerAddressed;
+    });
+  for (AddressProjectionClass category :
+       {AddressProjectionClass::None, AddressProjectionClass::RootRelativeI32,
+        AddressProjectionClass::RootRelativeI64,
+        AddressProjectionClass::PointerAddressed})
+    selectFirst([&](const OwnershipWorkItem &item) {
+      return addressClass(item.decision) == category &&
+             (!requireLogical || isLogical(item));
+    });
+
+  // A scope receives one remaining decision per round, so its address and
+  // transformation variants cannot consume every slot ahead of another scope.
+  std::vector<std::vector<std::size_t>> scopeDecisions;
+  std::optional<std::uint64_t> previousScope;
+  for (std::size_t index : eligible) {
+    if (selected[index])
+      continue;
+    const std::uint64_t scope = workItems[index].scope.selection.ordinal;
+    if (!previousScope || *previousScope != scope) {
+      scopeDecisions.emplace_back();
+      previousScope = scope;
+    }
+    scopeDecisions.back().push_back(index);
+  }
+  std::queue<std::pair<std::size_t, std::size_t>> nextDecisions;
+  for (auto [scope, decisions] : llvm::enumerate(scopeDecisions)) {
+    std::stable_partition(
+        decisions.begin(), decisions.end(), [&](std::size_t index) {
+          return !workItems[index].sourceIndexNarrowingRejected;
+        });
+    nextDecisions.emplace(scope, 0);
+  }
+  while (!nextDecisions.empty() && selectedIndices.size() != limit) {
+    auto [scope, ordinal] = nextDecisions.front();
+    nextDecisions.pop();
+    select(scopeDecisions[scope][ordinal]);
+    if (++ordinal < scopeDecisions[scope].size())
+      nextDecisions.emplace(scope, ordinal);
+  }
+  return selectedIndices;
+}
 
 struct MaterializedOwnershipWorkItem final {
   ArtifactRootReference reference;
@@ -204,9 +306,17 @@ generateStructuredOwnershipCandidatesImpl(
           scope["scope_ordinal"] = activity.scope.ordinal;
           scope["dynamic_activations"] = activity.dynamicActivations;
           scope["dynamic_leaf_executions"] = activity.dynamicLeafExecutions;
+          if (auto parent = domain->parentScopeOrdinal(ordinal))
+            scope["parent_domain_ordinal"] = *parent;
+          if (const auto *rejected =
+                  std::get_if<frontend::RejectedSpatialOwnershipScope>(
+                      &(*domain)[ordinal]))
+            scope["rejection"] = rejected->message;
           scopes.push_back(std::move(scope));
         }
         fields["context_kind"] = "structured_scope_activity";
+        fields["structured_program"] =
+            formatArtifactIdentityHex(parent.identity());
         fields["scope_count"] = scopeActivity->size();
         fields["scopes"] = std::move(scopes);
       });
@@ -309,30 +419,35 @@ generateStructuredOwnershipCandidatesImpl(
     }
   }
   const std::uint64_t plannedDecisionAttemptCount = workItems.size();
-  enum class AddressProjectionClass : std::uint8_t {
-    None,
-    RootRelativeI32,
-    RootRelativeI64,
-    PointerAddressed,
-  };
-  const auto addressClass = [](const frontend::SpatialOwnershipDecisionPoint
-                                   &decision) {
-    if (!decision.addressProjection)
-      return AddressProjectionClass::None;
-    if (std::holds_alternative<frontend::PointerAddressedAddressProjection>(
-            *decision.addressProjection))
-      return AddressProjectionClass::PointerAddressed;
-    const unsigned width =
-        std::get<frontend::RootRelativeAddressProjection>(
-            *decision.addressProjection)
-            .canonicalIndexWidth;
-    return width == 32 ? AddressProjectionClass::RootRelativeI32
-                       : AddressProjectionClass::RootRelativeI64;
-  };
-  const auto isLogical = [](const OwnershipWorkItem &item) {
-    return item.decision.forallOwnershipShape ==
-           frontend::ForallOwnershipShape::LogicalThreadDomain;
-  };
+  // A failed source proof is only an admission hint. The private clone can
+  // change the proof through inlining or specialization before materialization.
+  const bool admissionMayTruncate =
+      (options.maximumMaterializationAttempts &&
+       workItems.size() > *options.maximumMaterializationAttempts) ||
+      (options.maximumPublishedCandidates &&
+       workItems.size() > *options.maximumPublishedCandidates);
+  if (admissionMayTruncate) {
+    auto sourceView = parent.view();
+    if (!sourceView)
+      return sourceView.takeError();
+    std::map<std::pair<std::uint64_t, unsigned>, bool> sourceProofs;
+    for (OwnershipWorkItem &item : workItems) {
+      auto width = item.decision.rootRelativeIndexWidth();
+      if (!width)
+        continue;
+      const auto key = std::make_pair(item.scope.selection.ordinal, *width);
+      auto known = sourceProofs.find(key);
+      if (known == sourceProofs.end()) {
+        auto rejection =
+            frontend::explainSpatialOwnershipSourceIndexNarrowingRejection(
+                *sourceView, item.scope, *width);
+        if (!rejection)
+          return rejection.takeError();
+        known = sourceProofs.emplace(key, rejection->has_value()).first;
+      }
+      item.sourceIndexNarrowingRejected = known->second;
+    }
+  }
   bool candidateDomainTruncated = false;
   if (options.maximumMaterializationAttempts &&
       workItems.size() > *options.maximumMaterializationAttempts) {
@@ -341,49 +456,10 @@ generateStructuredOwnershipCandidatesImpl(
     if (retained == 0)
       return invalid("ownership materialization limit cannot be zero");
 
-    std::vector<std::size_t> selectedIndices;
-    selectedIndices.reserve(retained);
-    std::vector<bool> selected(workItems.size(), false);
-    const auto selectFirst = [&](auto predicate) {
-      if (selectedIndices.size() == retained)
-        return;
-      for (std::size_t index = 0; index != workItems.size(); ++index) {
-        if (selected[index] || !predicate(workItems[index]))
-          continue;
-        selected[index] = true;
-        selectedIndices.push_back(index);
-        return;
-      }
-    };
-    // Preserve one representative of every closed address domain before
-    // filling the remaining grant in canonical order. In particular, a
-    // pointer-addressed logical-domain candidate must not disappear merely
-    // because root-relative candidates precede it in the wire order.
-    if (options.generationIntent ==
-        StructuredOwnershipGenerationIntent::RequireLogicalThreadDomain)
-      selectFirst([&](const auto &item) {
-        return isLogical(item) &&
-               addressClass(item.decision) ==
-                   AddressProjectionClass::PointerAddressed;
-      });
-    for (AddressProjectionClass category : {
-             AddressProjectionClass::None,
-             AddressProjectionClass::RootRelativeI32,
-             AddressProjectionClass::RootRelativeI64,
-             AddressProjectionClass::PointerAddressed})
-      selectFirst([&](const auto &item) {
-        return addressClass(item.decision) == category &&
-               (options.generationIntent !=
-                    StructuredOwnershipGenerationIntent::RequireLogicalThreadDomain ||
-                isLogical(item));
-      });
-    for (std::size_t index = 0;
-         index != workItems.size() && selectedIndices.size() != retained;
-         ++index)
-      if (!selected[index]) {
-        selected[index] = true;
-        selectedIndices.push_back(index);
-      }
+    std::vector<std::size_t> eligible(workItems.size());
+    std::iota(eligible.begin(), eligible.end(), 0);
+    auto selectedIndices = selectOwnershipWorkItems(
+        workItems, eligible, retained, options.generationIntent);
     llvm::sort(selectedIndices);
 
     std::vector<std::size_t> remap(workItems.size(),
@@ -502,57 +578,15 @@ generateStructuredOwnershipCandidatesImpl(
   }
 
   std::vector<bool> publishedWorkItem(workItems.size(), false);
-  std::vector<std::size_t> publishedRepresentatives;
-  const std::size_t publicationLimit = options.maximumPublishedCandidates
-                                           ? static_cast<std::size_t>(std::min<
-                                                 std::uint64_t>(
-                                                 *options.maximumPublishedCandidates,
-                                                 successfulRepresentatives.size()))
-                                           : successfulRepresentatives.size();
-  publishedRepresentatives.reserve(
-      std::min(publicationLimit, successfulRepresentatives.size()));
-  std::vector<bool> selectedRepresentative(successfulRepresentatives.size(),
-                                           false);
-  const auto selectFirstPublished = [&](auto predicate) {
-    if (publishedRepresentatives.size() == publicationLimit)
-      return;
-    for (std::size_t ordinal = 0;
-         ordinal != successfulRepresentatives.size(); ++ordinal) {
-      const std::size_t workIndex = successfulRepresentatives[ordinal];
-      if (selectedRepresentative[ordinal] || !predicate(workItems[workIndex]))
-        continue;
-      selectedRepresentative[ordinal] = true;
-      publishedRepresentatives.push_back(workIndex);
-      return;
-    }
-  };
-  if (options.generationIntent ==
-      StructuredOwnershipGenerationIntent::RequireLogicalThreadDomain)
-    selectFirstPublished([&](const OwnershipWorkItem &item) {
-      return isLogical(item) &&
-             addressClass(item.decision) ==
-                 AddressProjectionClass::PointerAddressed;
-    });
-  for (AddressProjectionClass category : {
-           AddressProjectionClass::None,
-           AddressProjectionClass::RootRelativeI32,
-           AddressProjectionClass::RootRelativeI64,
-           AddressProjectionClass::PointerAddressed})
-    selectFirstPublished([&](const OwnershipWorkItem &item) {
-      return addressClass(item.decision) == category &&
-             (options.generationIntent !=
-                  StructuredOwnershipGenerationIntent::
-                      RequireLogicalThreadDomain ||
-              isLogical(item));
-    });
-  for (std::size_t ordinal = 0;
-       ordinal != successfulRepresentatives.size() &&
-       publishedRepresentatives.size() != publicationLimit;
-       ++ordinal)
-    if (!selectedRepresentative[ordinal]) {
-      selectedRepresentative[ordinal] = true;
-      publishedRepresentatives.push_back(successfulRepresentatives[ordinal]);
-    }
+  const std::size_t publicationLimit =
+      options.maximumPublishedCandidates
+          ? static_cast<std::size_t>(
+                std::min<std::uint64_t>(*options.maximumPublishedCandidates,
+                                        successfulRepresentatives.size()))
+          : successfulRepresentatives.size();
+  auto publishedRepresentatives =
+      selectOwnershipWorkItems(workItems, successfulRepresentatives,
+                               publicationLimit, options.generationIntent);
   for (std::size_t representative : publishedRepresentatives) {
     const auto *selected = std::get_if<MaterializedOwnershipWorkItem>(
         &*results[representative].attempt);
@@ -570,14 +604,44 @@ generateStructuredOwnershipCandidatesImpl(
     candidateDomainTruncated = true;
 
   mapping_debug::emit(
-      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "structured_ownership_work_funnel";
+        fields["structured_program"] =
+            formatArtifactIdentityHex(parent.identity());
         fields["planned_decision_attempts"] = plannedDecisionAttemptCount;
         fields["consumed_decision_attempts"] = workItems.size();
         fields["successful_candidates"] = successfulRepresentatives.size();
         fields["published_candidates"] = publishedRepresentatives.size();
         fields["candidate_domain_truncated"] = candidateDomainTruncated;
+        llvm::json::Array scopes;
+        for (std::size_t ordinal : plannedScopeOrdinals)
+          scopes.push_back(ordinal);
+        fields["planned_scope_ordinals"] = std::move(scopes);
+        llvm::json::Array attempts;
+        for (std::size_t index = 0; index != results.size(); ++index) {
+          llvm::json::Object attempt;
+          attempt["scope_ordinal"] = workItems[index].scope.selection.ordinal;
+          attempt["address_projection_ordinal"] =
+              static_cast<unsigned>(addressClass(workItems[index].decision));
+          attempt["source_index_narrowing_hint_failed"] =
+              workItems[index].sourceIndexNarrowingRejected;
+          const OwnershipAttemptResult &result = *results[index].attempt;
+          if (const auto *materialized =
+                  std::get_if<MaterializedOwnershipWorkItem>(&result)) {
+            attempt["structured_program"] =
+                formatArtifactIdentityHex(materialized->reference.artifact);
+            attempt["published"] = static_cast<bool>(publishedWorkItem[index]);
+          } else {
+            const auto &rejection =
+                std::get<StructuredOwnershipCandidateRejectionRecord>(result);
+            attempt["rejection_kind_ordinal"] =
+                static_cast<unsigned>(rejection.kind);
+            attempt["rejection"] = rejection.message;
+          }
+          attempts.push_back(std::move(attempt));
+        }
+        fields["attempts"] = std::move(attempts);
       });
 
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;

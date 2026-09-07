@@ -176,7 +176,8 @@ llvm::Expected<PnrIndex> loom::pnr::detail::currentExactRepairBindingChoice(
   return *choice;
 }
 
-llvm::Expected<IntVar> loom::pnr::detail::addExactRepairMutationCountObjective(
+llvm::Expected<loom::pnr::detail::ExactRepairMutationObjective>
+loom::pnr::detail::addExactRepairMutationCountObjective(
     CpModelBuilder &model, llvm::ArrayRef<IntVar> variables,
     const SpatialCandidateState &candidate,
     const SpatialBindingRelationModel &bindings,
@@ -242,7 +243,12 @@ llvm::Expected<IntVar> loom::pnr::detail::addExactRepairMutationCountObjective(
       model.NewIntVar(Domain(0, static_cast<std::int64_t>(changed.size())));
   model.AddEquality(mutationCount, LinearExpr::Sum(changed));
   model.Minimize(mutationCount);
-  return mutationCount;
+  ExactRepairMutationObjective result;
+  result.objective = mutationCount;
+  result.proofPriorityVariables.reserve(changed.size());
+  for (const BoolVar variable : changed)
+    result.proofPriorityVariables.push_back(variable.index());
+  return result;
 }
 
 void loom::pnr::detail::addExactRepairInitializerRelationConstraint(

@@ -70,7 +70,7 @@ module {
 
 void chunkAndScalarizePreserveExternalObservations() {
   auto parent = vectorProgram();
-  auto view = take(parent.view());
+  const auto &view = parent.view();
   auto compute = llvm::find_if(view.actors(),
                                [](const dataflow::CanonicalActorView &actor) {
                                  return dataflow::operationSchemaOf(actor.op) ==

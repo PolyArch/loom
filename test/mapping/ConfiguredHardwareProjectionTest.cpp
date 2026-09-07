@@ -485,7 +485,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   auto dataflowArtifact = buildDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();

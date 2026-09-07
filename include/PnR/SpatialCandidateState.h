@@ -633,7 +633,8 @@ private:
   llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
       SpatialTagAssignmentSummary *tagSummary,
-      HandshakeProjectionScratch &handshakeProjectionScratch) const;
+      HandshakeProjectionScratch &handshakeProjectionScratch,
+      std::vector<PnrIndex> *frozenCycleWitness) const;
   /// Counts no-good clauses whose every literal holds under `routeTrees` and
   /// the current attachment and local-disposition decisions. This is the single
   /// owner of no-good truth: `projectVerifiedRoutes` calls it with provisional
@@ -759,7 +760,8 @@ public:
   llvm::Error ripUpWholeRoute(PnrIndex logicalNet);
   llvm::Expected<SpatialCandidateRouteProjection> projectCurrentRoutes();
   llvm::Expected<SpatialCandidateRouteProjection>
-  projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary);
+  projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary,
+                       std::vector<PnrIndex> *frozenCycleWitness = nullptr);
 
   llvm::Expected<bool> close();
   /// Re-materializes the pending handshake graph of a still-open move whose
@@ -789,7 +791,8 @@ private:
                          SpatialCandidateScratch &scratch);
 
   llvm::Expected<SpatialCandidateRouteProjection>
-  projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary);
+  projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary,
+                           std::vector<PnrIndex> *frozenCycleWitness);
   llvm::Error ensureCollecting() const;
   llvm::Expected<RouteTreeTransaction *> routeTransaction(PnrIndex logicalNet);
   llvm::Error captureSwitchHandshakeBaseline();

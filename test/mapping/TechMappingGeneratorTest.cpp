@@ -653,7 +653,7 @@ void serialComputeTemplateAcceptsExactActorChain() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildIntegerAddChainDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSerialIntegerAddFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
@@ -684,7 +684,7 @@ void matchRowLimitPreservesGlobalActorOrder() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildInterleavedSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildTokenSyncFabric(store, 4, 3);
 
   std::vector<std::uint64_t> pairActors;
@@ -757,7 +757,7 @@ void serialTopologyPrunesIndependentActorScale() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildIndependentIntegerAddsDataflow(context, 1000);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSerialIntegerAddFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
@@ -788,7 +788,7 @@ void narrowTokenSyncUsesCanonicalFamilyEmbedding() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildTokenSyncFabric(store, 4);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
@@ -818,7 +818,7 @@ void branchingFuBoundariesEnumerateLegalCorrespondences() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildBranchingTokenSyncFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
@@ -860,7 +860,7 @@ void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
   auto dataflowArtifact =
       buildIndependentIntegerAddsDataflow(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
@@ -901,7 +901,7 @@ void forcedComputeAndMemoryRowsPublishDeterministically() {
 
   auto dataflowArtifact = buildMixedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   if (dataflow.graphs().size() != 1 || dataflow.actors().size() != 2)
     fail("mixed fixture did not retain exactly two actors");
 
@@ -960,7 +960,7 @@ void mixedRowFamiliesCannotStarveMemory() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildMixedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
   const std::array<dataflow::GraphRef, 1> covers = {
       dataflow.graphs().front().ref};
@@ -1001,7 +1001,7 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
 
   auto dataflowArtifact = buildMemoryChainDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric =
       buildSmallFabric(store, loom::adg::BuiltinTargetPreset::Coverage);
 
@@ -1080,7 +1080,7 @@ void internalMemoryEdgeIsAnExplicitCandidateChoice() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildMemoryChainDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
       store, fabric::Schedule::Spatial);
 
@@ -1130,7 +1130,7 @@ void temporalIngressUsesSelectedInternalEdges() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildMemoryControlFanoutDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
       store, fabric::Schedule::Temporal);
 
@@ -1236,7 +1236,7 @@ void semanticLimitsDoNotBecomeInfeasibilityProofs() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildMixedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
   const std::array<dataflow::GraphRef, 1> covers = {
       dataflow.graphs().front().ref};
@@ -1283,7 +1283,7 @@ void completedCoverSurvivesExpansionLimit() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildBranchingTokenSyncFabric(store);
   const std::array<dataflow::GraphRef, 1> covers = {
       dataflow.graphs().front().ref};
@@ -1323,7 +1323,7 @@ void deadResultDerivesPhysicalDiscardWithoutSoftwareBoundary() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSyncWithDeadResultDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildTokenSyncFabric(store);
   const std::array<dataflow::GraphRef, 1> covers = {
       dataflow.graphs().front().ref};
@@ -1359,7 +1359,7 @@ void exhaustiveUnsupportedActorProvesInfeasible() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildUnsupportedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
   loom::ResolvedConfig exhaustive = loom::defaultResolvedConfig();
   exhaustive.dse.techMapping.candidatePublicationLimit = 65536;
@@ -1392,7 +1392,7 @@ void nonmatchingMemoryCapabilityDoesNotEnterSeedDomain() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildUnsupportedMemoryDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
       store, fabric::Schedule::Spatial);
 
@@ -1416,7 +1416,7 @@ void publicationLimitDoesNotTruncateComponentProofs() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSupportedAndUnsupportedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
 
   loom::ResolvedConfig limited = loom::defaultResolvedConfig();
@@ -1440,7 +1440,7 @@ void malformedGraphCoversReturnTypedInvalidOutcomes() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildMixedDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
   const auto config = take(loom::mapping::projectResolvedTechMappingConfigView(
       loom::defaultResolvedConfig()));
@@ -1485,7 +1485,7 @@ void interruptionReturnsProviderOwnedSearchSnapshot() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const auto fabric = buildSmallFabric(store);
   const auto config = take(loom::mapping::projectResolvedTechMappingConfigView(
       loom::defaultResolvedConfig()));

@@ -12,17 +12,14 @@
 #include "DSE/InvocationManifest.h"
 #include "DSE/PreMappingExploration.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameterBundle.h"
-#include "Evaluation/Models/CgraSimulation.h"
-#include "Evaluation/Models/DfgSimulation.h"
-#include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
-#include "Simulator/SimulationExecution.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -32,6 +29,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -1131,8 +1129,14 @@ bool isEvidenceRoot(const ArtifactRootReference &root) {
              evaluation::EvaluationEvidence::artifactSchema.version;
 }
 
+struct ActivationDependencySet final {
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> artifacts{
+      artifactRootReferenceLess};
+  std::vector<BlobDigest> blobs;
+};
+
 llvm::Error
-addDependencyRoot(ApplicationActivationDecisionDependencyProjection &projection,
+addDependencyRoot(ActivationDependencySet &projection,
                   const ArtifactRootReference &root,
                   const ArtifactStore &artifacts) {
   auto stored = artifacts.get(root);
@@ -1140,13 +1144,12 @@ addDependencyRoot(ApplicationActivationDecisionDependencyProjection &projection,
     return reject(ApplicationActivationDecisionErrorReason::DependencyMismatch,
                   "activation dependency is unavailable: " +
                       llvm::toString(stored.takeError()));
-  if (!llvm::is_contained(projection.artifacts, root))
-    projection.artifacts.push_back(root);
+  projection.artifacts.insert(root);
   return llvm::Error::success();
 }
 
 llvm::Error addRequestPayloadBlobs(
-    ApplicationActivationDecisionDependencyProjection &projection,
+    ActivationDependencySet &projection,
     llvm::ArrayRef<ArtifactRootReference> requestDependencies,
     const ArtifactStore &artifacts) {
   for (const ArtifactRootReference &root : requestDependencies) {
@@ -1166,7 +1169,7 @@ llvm::Error addRequestPayloadBlobs(
 }
 
 llvm::Error addEvidenceDependencies(
-    ApplicationActivationDecisionDependencyProjection &projection,
+    ActivationDependencySet &projection,
     const ArtifactRootReference &evidence, const ArtifactStore &artifacts) {
   if (!isEvidenceRoot(evidence))
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
@@ -1206,7 +1209,7 @@ llvm::Error addEvidenceDependencies(
 }
 
 llvm::Error addInvocationDependencies(
-    ApplicationActivationDecisionDependencyProjection &projection,
+    ActivationDependencySet &projection,
     const dse::InvocationManifest &manifest, const ArtifactStore &artifacts) {
   for (const ArtifactRootReference &root : manifest.closure().semanticInputs())
     if (llvm::Error error = addDependencyRoot(projection, root, artifacts))
@@ -1279,344 +1282,16 @@ llvm::Error addInvocationDependencies(
 
 } // namespace
 
-namespace detail {
 
-llvm::Expected<ApplicationRuntimeEvidenceJoin>
-resolveApplicationRuntimeEvidenceJoin(
-    llvm::ArrayRef<ArtifactRootReference> runtimeEvidence,
-    llvm::ArrayRef<ArtifactRootReference> oracleEvidence,
-    const ArtifactRootReference &dataflow,
-    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference> replayCases,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  if (runtimeEvidence.empty() || oracleEvidence.empty())
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "application runtime requires runtime and oracle Evidence");
-  const auto hasDuplicateRoot =
-      [](llvm::ArrayRef<ArtifactRootReference> roots) {
-        std::vector<ArtifactRootReference> ordered(roots.begin(), roots.end());
-        llvm::sort(ordered, artifactRootReferenceLess);
-        return std::adjacent_find(ordered.begin(), ordered.end()) !=
-               ordered.end();
-      };
-  if (hasDuplicateRoot(runtimeEvidence))
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence repeats an Evidence root");
-  if (hasDuplicateRoot(oracleEvidence))
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "oracle Evidence repeats an Evidence root");
-  for (const ArtifactRootReference &oracle : oracleEvidence) {
-    if (!llvm::is_contained(runtimeEvidence, oracle))
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "oracle Evidence is outside the runtime Evidence set");
-  }
-
-  enum class ExecutionKind : std::uint8_t { Dfg, Cgra };
-  struct ExecutionRecord final {
-    ArtifactRootReference evidence;
-    ArtifactRootReference execution;
-    ArtifactRootReference workload;
-    ArtifactRootReference runtimeInput;
-    evaluation::CaseArtifactResolution resolution;
-    ExecutionKind kind;
-  };
-  struct EvidenceFacts final {
-    ArtifactRootReference evidence;
-    evaluation::EvaluationEvidenceDependencyProjection projection;
-    std::vector<ArtifactRootReference> requestReferences;
-  };
-  std::vector<EvidenceFacts> evidenceFacts;
-  std::vector<ExecutionRecord> executions;
-  ApplicationRuntimeEvidenceJoin result;
-  evidenceFacts.reserve(runtimeEvidence.size());
-  executions.reserve(runtimeEvidence.size());
-  for (const ArtifactRootReference &evidence : runtimeEvidence) {
-    auto projection = evaluation::importEvaluationEvidenceDependencyProjection(
-        evidence, artifacts);
-    if (!projection)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence failed dependency projection: " +
-                        llvm::toString(projection.takeError()));
-    if (projection->outcomeKind != evaluation::EvidenceOutcomeKind::Completed)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence is not completed");
-    auto requestReferences =
-        evaluation::importEvaluationRequestArtifactReferences(
-            projection->request, artifacts);
-    if (!requestReferences)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence Request cannot be imported: " +
-                        llvm::toString(requestReferences.takeError()));
-    for (const evaluation::ModelOutputBinding &binding :
-         projection->outputBindings)
-      for (const ArtifactRootReference &root : binding.artifacts) {
-        auto stored = artifacts.get(root);
-        if (!stored)
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "runtime Evidence output is unavailable: " +
-                  llvm::toString(stored.takeError()));
-      }
-    EvidenceFacts row{evidence, std::move(*projection),
-                      std::move(*requestReferences)};
-    std::optional<ArtifactRootReference> workload;
-    std::optional<ArtifactRootReference> runtimeInput;
-    for (const ArtifactRootReference &reference : row.requestReferences) {
-      if (reference.schemaIdentity == sim::simulationWorkloadSchema.identity &&
-          reference.schemaVersion == sim::simulationWorkloadSchema.version) {
-        if (workload)
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "runtime Evidence Request repeats its SimulationWorkload");
-        workload = reference;
-      }
-      if (reference.schemaIdentity ==
-              sim::simulationRuntimeInputSchema.identity &&
-          reference.schemaVersion ==
-              sim::simulationRuntimeInputSchema.version) {
-        if (runtimeInput)
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "runtime Evidence Request repeats its SimulationRuntimeInput");
-        runtimeInput = reference;
-      }
-    }
-    const bool hasDataflow =
-        llvm::is_contained(row.requestReferences, dataflow);
-    std::vector<ArtifactRootReference> selectedMappings;
-    for (const ArtifactRootReference &mapping : spatialMappings)
-      if (llvm::is_contained(row.requestReferences, mapping))
-        selectedMappings.push_back(mapping);
-    if (!hasDataflow && selectedMappings.empty()) {
-      if (!llvm::is_contained(oracleEvidence, evidence))
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "non-execution Evidence is not declared as oracle Evidence");
-      evidenceFacts.push_back(std::move(row));
-      continue;
-    }
-    if (!workload || !runtimeInput)
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "runtime Evidence Request has no exact workload and runtime input");
-    if (selectedMappings.size() > 1)
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "runtime Evidence Request repeats a selected SpatialMapping");
-    std::optional<evaluation::CaseArtifactResolution> resolution;
-    ExecutionKind kind = ExecutionKind::Dfg;
-    if (!selectedMappings.empty()) {
-      auto resolved = evaluation::models::resolveCgraSimulationCase(
-          selectedMappings.front(), *workload, *runtimeInput, artifacts);
-      if (!resolved)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "cannot resolve selected CGRA runtime case: " +
-                llvm::toString(resolved.takeError()));
-      if (resolved->canonicalDataflow != dataflow)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "CGRA runtime case names a foreign canonical Dataflow");
-      resolution.emplace(std::move(resolved->resolution));
-      kind = ExecutionKind::Cgra;
-    } else {
-      auto resolved = evaluation::models::resolveDfgSimulationCase(
-          dataflow, *workload, *runtimeInput, artifacts);
-      if (!resolved)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "cannot resolve DFG runtime case: " +
-                llvm::toString(resolved.takeError()));
-      resolution.emplace(std::move(*resolved));
-    }
-    auto strict = evaluation::importEvaluationEvidence(evidence, *resolution,
-                                                       artifacts, blobs);
-    if (!strict)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence failed strict import: " +
-                        llvm::toString(strict.takeError()));
-    if (strict->requestRef() != row.projection.request ||
-        strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed)
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "strict runtime Evidence differs from its dependency projection");
-    const auto *completed =
-        std::get_if<evaluation::CompletedEvidence>(&strict->outcome());
-    const auto *point =
-        completed && completed->metricResults.size() == 1
-            ? std::get_if<evaluation::PointObservation>(
-                  &completed->metricResults.front().observation)
-            : nullptr;
-    const auto *cycles =
-        point ? std::get_if<evaluation::IntegerValue>(&point->value) : nullptr;
-    if (!cycles || cycles->value() < 0)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence has no nonnegative cycle metric");
-    std::uint64_t &cycleTotal =
-        kind == ExecutionKind::Dfg ? result.dfgCycles : result.cgraCycles;
-    const std::uint64_t cycleValue =
-        static_cast<std::uint64_t>(cycles->value());
-    if (cycleValue > std::numeric_limits<std::uint64_t>::max() - cycleTotal)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence cycle total overflowed");
-    cycleTotal += cycleValue;
-    std::optional<ArtifactRootReference> execution;
-    for (const evaluation::ModelOutputBinding &binding :
-         strict->outputBindings())
-      for (const ArtifactRootReference &output : binding.artifacts)
-        if (output.schemaIdentity == sim::simulationExecutionSchema.identity &&
-            output.schemaVersion == sim::simulationExecutionSchema.version) {
-          if (execution)
-            return reject(
-                ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                "runtime Evidence repeats its SimulationExecution output");
-          execution = output;
-        }
-    if (!execution)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence has no SimulationExecution output");
-    auto executionRequest =
-        sim::simulationExecutionRequestReference(*execution, artifacts);
-    if (!executionRequest || *executionRequest != row.projection.request)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "SimulationExecution and Evidence name different Requests");
-    executions.push_back({evidence, *execution, *workload, *runtimeInput,
-                          std::move(*resolution), kind});
-    evidenceFacts.push_back(std::move(row));
-  }
-  if (executions.empty() ||
-      !llvm::any_of(executions,
-                    [](const ExecutionRecord &record) {
-                      return record.kind == ExecutionKind::Dfg;
-                    }) ||
-      !llvm::any_of(executions, [](const ExecutionRecord &record) {
-        return record.kind == ExecutionKind::Cgra;
-      }))
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence does not bind both DFG and CGRA execution");
-
-  struct InputPair final {
-    ArtifactRootReference workload;
-    ArtifactRootReference runtimeInput;
-    bool operator==(const InputPair &other) const {
-      return workload == other.workload && runtimeInput == other.runtimeInput;
-    }
-  };
-  const auto pairLess = [](const InputPair &lhs, const InputPair &rhs) {
-    if (lhs.workload != rhs.workload)
-      return artifactRootReferenceLess(lhs.workload, rhs.workload);
-    return artifactRootReferenceLess(lhs.runtimeInput, rhs.runtimeInput);
-  };
-  auto canonicalizePairs = [&](std::vector<InputPair> &pairs) {
-    llvm::sort(pairs, pairLess);
-    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
-  };
-  std::vector<InputPair> expectedPairs;
-  for (const sim::SourceBackedDfgReplayCaseReference &replay : replayCases)
-    expectedPairs.push_back({replay.workload, replay.runtimeInput});
-  const std::size_t expectedPairCount = expectedPairs.size();
-  std::vector<InputPair> dfgPairs;
-  std::vector<InputPair> cgraPairs;
-  for (const ExecutionRecord &record : executions)
-    (record.kind == ExecutionKind::Dfg ? dfgPairs : cgraPairs)
-        .push_back({record.workload, record.runtimeInput});
-  const std::size_t dfgExecutionCount = dfgPairs.size();
-  const std::size_t cgraExecutionCount = cgraPairs.size();
-  canonicalizePairs(expectedPairs);
-  canonicalizePairs(dfgPairs);
-  canonicalizePairs(cgraPairs);
-  if (expectedPairs.empty() || expectedPairs.size() != expectedPairCount ||
-      dfgPairs != expectedPairs || cgraPairs != expectedPairs ||
-      dfgExecutionCount != expectedPairs.size() ||
-      cgraExecutionCount != expectedPairs.size())
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence does not join through exact source-backed "
-                  "replay inputs");
-
-  std::vector<InputPair> comparisonPairs;
-  std::vector<ArtifactRootReference> comparisonEvidence;
-  for (const EvidenceFacts &row : evidenceFacts) {
-    if (!llvm::is_contained(oracleEvidence, row.evidence))
-      continue;
-    std::vector<const ExecutionRecord *> compared;
-    for (const ArtifactRootReference &reference : row.requestReferences)
-      if (reference.schemaIdentity == sim::simulationExecutionSchema.identity &&
-          reference.schemaVersion == sim::simulationExecutionSchema.version) {
-        auto found =
-            llvm::find_if(executions, [&](const ExecutionRecord &record) {
-              return record.execution == reference;
-            });
-        if (found == executions.end())
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "oracle Evidence names a foreign SimulationExecution");
-        compared.push_back(&*found);
-      }
-    if (compared.size() != 2 || compared[0]->kind == compared[1]->kind)
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence does not compare one DFG and one CGRA execution");
-    const ExecutionRecord *dfg =
-        compared[0]->kind == ExecutionKind::Dfg ? compared[0] : compared[1];
-    const ExecutionRecord *cgra =
-        compared[0]->kind == ExecutionKind::Cgra ? compared[0] : compared[1];
-    const InputPair dfgPair{dfg->workload, dfg->runtimeInput};
-    const InputPair cgraPair{cgra->workload, cgra->runtimeInput};
-    if (!(dfgPair == cgraPair))
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence compares executions from different replay inputs");
-    auto resolution = evaluation::models::resolveSimulationComparisonCase(
-        dfg->execution, dfg->resolution, cgra->execution, cgra->resolution,
-        artifacts, blobs);
-    if (!resolution)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "cannot resolve SimulationComparison Evidence: " +
-                        llvm::toString(resolution.takeError()));
-    auto strict = evaluation::importEvaluationEvidence(
-        row.evidence, *resolution, artifacts, blobs);
-    if (!strict || strict->requestRef() != row.projection.request ||
-        strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed)
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence failed strict SimulationComparison import");
-    const auto *completed =
-        std::get_if<evaluation::CompletedEvidence>(&strict->outcome());
-    if (!completed || completed->findingResults.size() != 1 ||
-        !std::holds_alternative<evaluation::AbsentFinding>(
-            completed->findingResults.front().result))
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence did not establish an absent comparison finding");
-    comparisonPairs.push_back(dfgPair);
-    comparisonEvidence.push_back(row.evidence);
-  }
-  const std::size_t comparisonCount = comparisonPairs.size();
-  canonicalizePairs(comparisonPairs);
-  llvm::sort(comparisonEvidence, artifactRootReferenceLess);
-  std::vector<ArtifactRootReference> expectedOracleEvidence(
-      oracleEvidence.begin(), oracleEvidence.end());
-  llvm::sort(expectedOracleEvidence, artifactRootReferenceLess);
-  if (comparisonEvidence != expectedOracleEvidence ||
-      comparisonPairs != expectedPairs ||
-      comparisonCount != expectedPairs.size())
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "oracle Evidence does not provide exact one-to-one "
-                  "SimulationComparison coverage for the source-backed "
-                  "replay inputs");
-  return result;
-}
-
-} // namespace detail
 
 namespace {
 
-llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
+llvm::Expected<ApplicationRuntimeEvidenceJoin>
+validateDecision(ApplicationActivationDecisionDraft &draft,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs) {
   switch (draft.disposition) {
-  case ApplicationPairDecisionDisposition::VerifiedAcceleration:
-  case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+  case ApplicationPairDecisionDisposition::VerifiedFeasible:
   case ApplicationPairDecisionDisposition::HardwareDseAlternative:
     break;
   default:
@@ -1687,11 +1362,7 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
     return reject(ApplicationActivationDecisionErrorReason::PlanningMismatch,
                   "selected CanonicalDataflow failed strict import: " +
                       llvm::toString(dataflow.takeError()));
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return reject(ApplicationActivationDecisionErrorReason::PlanningMismatch,
-                  "selected CanonicalDataflow has no strict view: " +
-                      llvm::toString(dataflowView.takeError()));
+  const auto &dataflowView = dataflow->view();
 
   auto candidate = deriveSelectedCandidateIdentity(
       draft.planning, draft.sourceProgram, draft.fabric, draft.workload,
@@ -1723,26 +1394,35 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
                   "activation decision has no source-backed replay case");
   for (const sim::SourceBackedDfgReplayCaseReference &replay :
        draft.sourceBackedReplayCases) {
-    auto imported = sim::importSpatialSimulationInputs(
-        replay.workload, replay.runtimeInput, artifacts);
+    auto imported =
+        sim::importSpatialSimulationWorkload(replay.workload, artifacts);
     if (!imported)
       return reject(
           ApplicationActivationDecisionErrorReason::DependencyMismatch,
-          "source-backed replay case failed strict import: " +
+          "source-backed replay workload failed strict import: " +
               llvm::toString(imported.takeError()));
-    if (imported->dataflow.identity() !=
+    if (imported->dataflow->identity() !=
         draft.planning.canonicalDataflow.artifact)
       return reject(
           ApplicationActivationDecisionErrorReason::DependencyMismatch,
           "source-backed replay case names a foreign CanonicalDataflow");
   }
 
+  auto spatialMappings =
+      mapping->view().executionBindings().spatialMappingImports();
+  auto evidenceJoin = detail::resolveApplicationRuntimeEvidenceJoin(
+      draft.runtimeEvidence, draft.oracleEvidence,
+      draft.planning.canonicalDataflow, spatialMappings,
+      draft.sourceBackedReplayCases, artifacts, blobs);
+  if (!evidenceJoin)
+    return evidenceJoin.takeError();
+
   if (draft.selectedScheduleHints.empty())
     return reject(ApplicationActivationDecisionErrorReason::ScheduleMismatch,
                   "activation decision has no selected schedule hint");
   for (const dse::ResourceTimeScheduleHint &hint : draft.selectedScheduleHints)
     if (llvm::Error error = validateScheduleHint(
-            hint, *dataflowView, draft.planning.canonicalDataflow.artifact))
+            hint, dataflowView, draft.planning.canonicalDataflow.artifact))
       return error;
 
   auto invocation = dse::importJointDesignInvocationManifest(
@@ -1778,6 +1458,10 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
   if (!llvm::is_contained(ownedMappings, draft.selectedMapping))
     return reject(ApplicationActivationDecisionErrorReason::InvocationMismatch,
                   "DSE invocation does not own the selected Mapping");
+  const auto semanticInputs = invocation->closure().semanticInputs();
+  const std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
+      invocationInputs(semanticInputs.begin(), semanticInputs.end(),
+                       artifactRootReferenceLess);
   for (const auto &[owned, subject] :
        {std::pair<const ArtifactRootReference &, llvm::StringRef>{
             draft.sourceProgram, "source program"},
@@ -1786,16 +1470,14 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
         {draft.runtimeInput, "runtime input"},
         {draft.planning.canonicalDataflow, "CanonicalDataflow"},
         {draft.selectedSystem, "selected System"}})
-    if (!llvm::is_contained(invocation->closure().semanticInputs(), owned))
+    if (invocationInputs.find(owned) == invocationInputs.end())
       return reject(
           ApplicationActivationDecisionErrorReason::InvocationMismatch,
           "DSE invocation does not own the exact application " + subject);
   for (const sim::SourceBackedDfgReplayCaseReference &replay :
        draft.sourceBackedReplayCases)
-    if (!llvm::is_contained(invocation->closure().semanticInputs(),
-                            replay.workload) ||
-        !llvm::is_contained(invocation->closure().semanticInputs(),
-                            replay.runtimeInput))
+    if (invocationInputs.find(replay.workload) == invocationInputs.end() ||
+        invocationInputs.find(replay.runtimeInput) == invocationInputs.end())
       return reject(
           ApplicationActivationDecisionErrorReason::InvocationMismatch,
           "DSE invocation omits a source-backed replay input");
@@ -1810,15 +1492,7 @@ llvm::Error validateDecision(ApplicationActivationDecisionDraft &draft,
               llvm::toString(imported.takeError()));
   }
 
-  auto spatialMappings =
-      mapping->view().executionBindings().spatialMappingImports();
-  auto evidenceJoin = detail::resolveApplicationRuntimeEvidenceJoin(
-      draft.runtimeEvidence, draft.oracleEvidence,
-      draft.planning.canonicalDataflow, spatialMappings,
-      draft.sourceBackedReplayCases, artifacts, blobs);
-  if (!evidenceJoin)
-    return evidenceJoin.takeError();
-  return llvm::Error::success();
+  return evidenceJoin;
 }
 
 } // namespace
@@ -1837,6 +1511,8 @@ llvm::Expected<ApplicationActivationDecision>
 ApplicationActivationDecision::get(ApplicationActivationDecisionDraft draft,
                                    const ArtifactStore &artifacts,
                                    const BlobStore &blobs) {
+  evaluation::ArtifactImportCacheScope importCache(artifacts, &blobs);
+  fabric::FabricArtifactImportSession fabricImports;
   if (llvm::Error error =
           canonicalizeReplayCases(draft.sourceBackedReplayCases))
     return std::move(error);
@@ -1858,18 +1534,20 @@ ApplicationActivationDecision::get(ApplicationActivationDecisionDraft draft,
   if (llvm::Error error = canonicalizeRoots(draft.hardwareMutationRepairRecords,
                                             "hardware mutation repair records"))
     return std::move(error);
-  if (llvm::Error error = validateDecision(draft, artifacts, blobs))
-    return std::move(error);
+  auto runtimeEvidenceJoin = validateDecision(draft, artifacts, blobs);
+  if (!runtimeEvidenceJoin)
+    return runtimeEvidenceJoin.takeError();
   std::vector<std::uint8_t> encoded = encodeDecision(draft);
   return ApplicationActivationDecision(
-      std::move(draft), CanonicalSemanticBytes(std::move(encoded)));
+      std::move(draft), CanonicalSemanticBytes(std::move(encoded)),
+      std::move(*runtimeEvidenceJoin));
 }
 
 llvm::Expected<ApplicationActivationDecisionDependencyProjection>
 projectApplicationActivationDecisionDependencies(
     const ApplicationActivationDecision &decision,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  ApplicationActivationDecisionDependencyProjection projection;
+  ActivationDependencySet projection;
   for (const ArtifactRootReference *root :
        {&decision.sourceProgram(), &decision.fabric(), &decision.workload(),
         &decision.runtimeInput(), &decision.dseInvocation().resolvedConfig(),
@@ -1919,10 +1597,6 @@ projectApplicationActivationDecisionDependencies(
       return std::move(error);
     projection.blobs.push_back(supporting.blob());
   }
-  llvm::sort(projection.artifacts, artifactRootReferenceLess);
-  projection.artifacts.erase(
-      std::unique(projection.artifacts.begin(), projection.artifacts.end()),
-      projection.artifacts.end());
   llvm::sort(projection.blobs,
              [](const BlobDigest &lhs, const BlobDigest &rhs) {
                return lhs.bytes() < rhs.bytes();
@@ -1930,7 +1604,9 @@ projectApplicationActivationDecisionDependencies(
   projection.blobs.erase(
       std::unique(projection.blobs.begin(), projection.blobs.end()),
       projection.blobs.end());
-  return projection;
+  return ApplicationActivationDecisionDependencyProjection{
+      {projection.artifacts.begin(), projection.artifacts.end()},
+      std::move(projection.blobs)};
 }
 
 llvm::Expected<FinalizedApplicationActivationDecision>

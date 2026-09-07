@@ -25,6 +25,28 @@ SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
       regionalLogicalNetCount_(regionalLogicalNetCount),
       regionalLogicalNetLimit_(regionalLogicalNetLimit) {}
 
+SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
+    std::vector<PnrIndex> frozenHandshakeCycle,
+    std::vector<PnrIndex> handshakeCycleLogicalNets,
+    std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts,
+    std::vector<SpatialHandshakeCycleTagSelection>
+        handshakeCycleTagSelections)
+    : SpatialPathFinderClosureFailure(
+          Kind::SelectedCombinationalHandshakeCycle,
+          "Spatial PathFinder selected a combinational handshake cycle",
+          std::move(frozenHandshakeCycle)) {
+  handshakeCycleLogicalNets_ = std::move(handshakeCycleLogicalNets);
+  handshakeCycleRouteCuts_ = std::move(handshakeCycleRouteCuts);
+  handshakeCycleTagSelections_ = std::move(handshakeCycleTagSelections);
+}
+
+SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
+    Kind kind, std::string message,
+    std::vector<PnrIndex> frozenHandshakeCycle)
+    : SpatialPathFinderClosureFailure(kind, std::move(message)) {
+  frozenHandshakeCycle_ = std::move(frozenHandshakeCycle);
+}
+
 void SpatialPathFinderClosureFailure::log(llvm::raw_ostream &stream) const {
   stream << message_;
 }

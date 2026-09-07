@@ -1,5 +1,7 @@
 #include "CgraTransportRuntime.h"
 
+#include "CgraFabricActivityRuntime.h"
+
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -26,11 +28,11 @@ llvm::Error invalid(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
-void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
+void selectEarlier(const std::optional<SpatialEventCoordinate> &candidate,
                    std::optional<SpatialEventCoordinate> &selected) {
   if (candidate &&
       (!selected || compareSpatialEventCoordinates(*candidate, *selected) < 0))
-    selected = std::move(candidate);
+    selected = candidate;
 }
 
 bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
@@ -54,7 +56,7 @@ Value &lookupOrAppend(llvm::SmallVectorImpl<std::pair<Key, Value>> &entries,
 
 llvm::Expected<std::vector<CgraTransportCompletion>>
 CgraTransportRuntime::acceptPhysicalEvents(
-    const CgraPhysicalLifecycleFrame &physicalFrame) {
+    const CgraPhysicalLifecycleFrameView &physicalFrame) {
   struct CountDelta final {
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
@@ -88,7 +90,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       return invalid("CGRA storage permit count exceeds u32");
     ++delta.traversalPermitted;
     newlyPermittedTraversals.emplace_back(slot, node);
-    if (traversalNodes_[node].terminal) {
+    if (graph_.traversalNodes[node].terminal) {
       if (delta.traversalTerminalsPermitted ==
           std::numeric_limits<std::uint32_t>::max())
         return invalid("CGRA storage terminal count exceeds u32");
@@ -137,12 +139,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
     } else if (owner.stage == ActionStage::Storage) {
       if (owner.storageOrdinal >= storages_.size())
         return invalid("CGRA storage lifecycle names an unknown queue");
-      const StorageBinding &storage = storages_[owner.storageOrdinal];
+      const StorageState &storage = storages_[owner.storageOrdinal];
       const auto expectedStorageNodeState =
           [&](bool enqueue) -> TraversalNodeState {
         if (owner.state != ActionLifecycleState::Permitted)
           return TraversalNodeState::Requested;
-        if (enqueue && storage.kind == CgraTraversalStorageKind::BufferedFifo)
+        if (enqueue &&
+            storage.binding.kind == CgraTraversalStorageKind::BufferedFifo)
           return TraversalNodeState::Queued;
         return TraversalNodeState::Permitted;
       };
@@ -170,12 +173,12 @@ CgraTransportRuntime::acceptPhysicalEvents(
       }
       const std::uint64_t expectedAction =
           owner.storageOperation == StorageOperation::OfferAdvance
-              ? storage.offerAdvanceAction
+              ? storage.binding.offerAdvanceAction
           : owner.storageOperation == StorageOperation::Enqueue
-              ? storage.enqueueAction
+              ? storage.binding.enqueueAction
           : owner.storageOperation == StorageOperation::Dequeue
-              ? storage.dequeueAction
-              : storage.simultaneousAction;
+              ? storage.binding.dequeueAction
+              : storage.binding.simultaneousAction;
       if (owner.storageOperation == StorageOperation::None ||
           expectedAction != event.actionOrdinal)
         return invalid("CGRA storage lifecycle uses the wrong pattern");
@@ -235,7 +238,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
           return invalid("CGRA traversal permission preceded its request");
         newlyPermittedTraversals.emplace_back(owner.transferSlot,
                                               owner.traversalNodeOrdinal);
-        if (traversalNodes_[owner.traversalNodeOrdinal].terminal) {
+        if (graph_.traversalNodes[owner.traversalNodeOrdinal].terminal) {
           if (delta.traversalTerminalsPermitted ==
               std::numeric_limits<std::uint32_t>::max())
             return invalid("CGRA traversal terminal count exceeds u32");
@@ -244,7 +247,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       }
       break;
     case ActionStage::Storage: {
-      StorageBinding &storage = storages_[owner.storageOrdinal];
+      StorageState &storage = storages_[owner.storageOrdinal];
       StorageFrameCommit &commit = storageFrameCommits_[owner.storageOrdinal];
       if (!commit.touched) {
         commit.touched = true;
@@ -280,24 +283,25 @@ CgraTransportRuntime::acceptPhysicalEvents(
         if (!selected || selected->transferSlot != dequeueSlot)
           return invalid("CGRA storage dequeue changed before commit");
         const CgraTransportStorageEntry head = *selected;
-        if (head.traversalNodeOrdinal >= traversalNodes_.size() ||
+        if (head.traversalNodeOrdinal >= graph_.traversalNodes.size() ||
             head.physicalTagOrdinal !=
-                traversalNodes_[head.traversalNodeOrdinal].physicalTagOrdinal)
+                graph_.traversalNodes[head.traversalNodeOrdinal]
+                    .physicalTagOrdinal)
           return invalid("CGRA storage queue changed its Physical Tag");
-        if (storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+        if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo &&
             head.traversalNodeOrdinal != dequeueNode)
           return invalid("CGRA buffered storage dequeue changed before commit");
-        if (storage.kind != CgraTraversalStorageKind::BufferedFifo &&
-            (traversalNodes_[head.traversalNodeOrdinal].kind !=
+        if (storage.binding.kind != CgraTraversalStorageKind::BufferedFifo &&
+            (graph_.traversalNodes[head.traversalNodeOrdinal].kind !=
                  TraversalNodeKind::RegisterStorageWrite ||
-             traversalNodes_[dequeueNode].kind !=
+             graph_.traversalNodes[dequeueNode].kind !=
                  TraversalNodeKind::RegisterStorageRead ||
              head.physicalTagOrdinal !=
-                 traversalNodes_[dequeueNode].physicalTagOrdinal))
+                 graph_.traversalNodes[dequeueNode].physicalTagOrdinal))
           return invalid("CGRA register storage roles are inconsistent");
         if (commit.expectedDequeue)
           return invalid("CGRA storage frame contains two dequeues");
-        if (storage.kind != CgraTraversalStorageKind::BufferedFifo &&
+        if (storage.binding.kind != CgraTraversalStorageKind::BufferedFifo &&
             llvm::find(storage.pendingDequeueNodes,
                        TraversalOccurrence{dequeueSlot, dequeueNode}) ==
                 storage.pendingDequeueNodes.end())
@@ -316,14 +320,14 @@ CgraTransportRuntime::acceptPhysicalEvents(
         ++dequeueDelta.traversalRetired;
       }
       if (hasEnqueue && (enqueueSlot >= inFlight_.size() ||
-                         enqueueNode >= traversalNodes_.size()))
+                         enqueueNode >= graph_.traversalNodes.size()))
         return invalid("CGRA storage enqueue owner is out of range");
       if (permitted && hasEnqueue) {
         const TraversalNodeKind expectedKind =
-            storage.kind == CgraTraversalStorageKind::BufferedFifo
+            storage.binding.kind == CgraTraversalStorageKind::BufferedFifo
                 ? TraversalNodeKind::BufferedStorage
                 : TraversalNodeKind::RegisterStorageWrite;
-        if (traversalNodes_[enqueueNode].kind != expectedKind)
+        if (graph_.traversalNodes[enqueueNode].kind != expectedKind)
           return invalid("CGRA storage enqueue has the wrong traversal role");
         if (commit.enqueue)
           return invalid("CGRA storage frame contains two enqueues");
@@ -332,7 +336,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
             storage.pendingEnqueueNodes.end())
           return invalid("CGRA storage enqueue request is not pending");
         const std::uint64_t enqueueTag =
-            traversalNodes_[enqueueNode].physicalTagOrdinal;
+            graph_.traversalNodes[enqueueNode].physicalTagOrdinal;
         // A virtual channel schedules on the exact tag value, so an ordinal
         // outside the plan inventory is invalid state on a tag-selective
         // queue; it must never degrade silently to channel zero.
@@ -346,13 +350,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
             enqueueTag < tagVirtualChannelRanks().size()
                 ? tagVirtualChannelKey(enqueueTag)
                 : 0};
-        if (storage.kind != CgraTraversalStorageKind::BufferedFifo)
+        if (storage.binding.kind != CgraTraversalStorageKind::BufferedFifo)
           if (llvm::Error error =
                   addTraversalPermission(enqueueSlot, enqueueNode))
             return std::move(error);
       }
       if (retired && hasEnqueue &&
-          storage.kind != CgraTraversalStorageKind::BufferedFifo) {
+          storage.binding.kind != CgraTraversalStorageKind::BufferedFifo) {
         CountDelta &enqueueDelta = lookupOrAppend(countDeltas, enqueueSlot);
         if (enqueueDelta.traversalRetired ==
             std::numeric_limits<std::uint32_t>::max())
@@ -391,7 +395,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
 
   for (std::uint64_t storageOrdinal : touchedStorageFrameCommits_) {
     const StorageFrameCommit &commit = storageFrameCommits_[storageOrdinal];
-    const StorageBinding &storage = storages_[storageOrdinal];
+    const StorageState &storage = storages_[storageOrdinal];
     if (commit.retireCount > storage.activeActionCount)
       return invalid("CGRA storage frame retires too many actions");
     if ((commit.enqueue || commit.expectedDequeue) &&
@@ -403,13 +407,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
   llvm::SmallVector<std::pair<TraversalOccurrence, std::uint32_t>, 8>
       successorDeltas;
   for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
-    const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
-    if (node.successorOffset > traversalSuccessors_.size() ||
+    const TraversalNodeBinding &node = graph_.traversalNodes[nodeOrdinal];
+    if (node.successorOffset > graph_.traversalSuccessors.size() ||
         node.successorCount >
-            traversalSuccessors_.size() - node.successorOffset)
+            graph_.traversalSuccessors.size() - node.successorOffset)
       return invalid("CGRA traversal successor slice is malformed");
     for (std::uint64_t successor :
-         llvm::ArrayRef(traversalSuccessors_)
+         llvm::ArrayRef(graph_.traversalSuccessors)
              .slice(node.successorOffset, node.successorCount)) {
       if (!ownsTraversal(slot, successor) ||
           traversalState(slot, successor).state != TraversalNodeState::Idle)
@@ -428,7 +432,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
   std::vector<CgraTransportCompletion> completions;
   for (const auto &[slot, delta] : countDeltas) {
     InFlight &inFlight = inFlight_[slot];
-    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
     if (inFlight.producedPermitted > binding.physicalUseCount ||
         inFlight.producedRetired > binding.physicalUseCount ||
         inFlight.traversalPermitted > binding.traversalNodeCount ||
@@ -469,7 +473,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
     if (slot >= inFlight_.size() || !inFlight_[slot].active)
       return invalid("CGRA publication lifecycle names an inactive token");
     const InFlight &inFlight = inFlight_[slot];
-    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
     if (publicationBinding < binding.publicationOffset ||
         publicationBinding >=
             binding.publicationOffset + binding.publicationCount)
@@ -478,7 +482,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
         publicationBinding - binding.publicationOffset;
     const InFlight::PublicationState &state =
         inFlight.publications[localPublication];
-    const PublicationBinding &publication = publications_[publicationBinding];
+    const PublicationBinding &publication =
+        graph_.publications[publicationBinding];
     if (!state.consumedRequested ||
         delta.permitted >
             publication.consumedPhysicalUseCount - state.consumedPermitted ||
@@ -501,13 +506,18 @@ CgraTransportRuntime::acceptPhysicalEvents(
   llvm::SmallDenseSet<std::uint64_t, 4> releasedStorageCapacity;
   for (std::uint64_t storageOrdinal : touchedStorageFrameCommits_) {
     const StorageFrameCommit &commit = storageFrameCommits_[storageOrdinal];
-    StorageBinding &storage = storages_[storageOrdinal];
+    StorageState &storage = storages_[storageOrdinal];
     if (!commit.enqueue && !commit.expectedDequeue)
       continue;
     auto committed =
         storage.queue.commit(commit.enqueue, commit.expectedDequeue);
     if (!committed)
       return committed.takeError();
+    if (auto *activity = physical_->activity())
+      if (llvm::Error error = activity->observeTraversalStorage(
+              storageOrdinal, storage.queue.occupancy(),
+              physicalFrame.coordinate))
+        return std::move(error);
     // A committed enqueue or dequeue changed the resident set, so the
     // refused-offer probe epoch restarts.
     storage.offerRefusalsSinceCommit = 0;
@@ -538,14 +548,14 @@ CgraTransportRuntime::acceptPhysicalEvents(
                        commit.enqueue->traversalNodeOrdinal)
             .storageReserved = false;
       }
-      if (storage.kind == CgraTraversalStorageKind::BufferedFifo)
+      if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo)
         traversalState(commit.enqueue->transferSlot,
                        commit.enqueue->traversalNodeOrdinal)
             .state = TraversalNodeState::Queued;
       else
         ++inFlight_[commit.enqueue->transferSlot].traversalPermitted;
       const TraversalNodeBinding &enqueueTraversal =
-          traversalNodes_[commit.enqueue->traversalNodeOrdinal];
+          graph_.traversalNodes[commit.enqueue->traversalNodeOrdinal];
       if (enqueueTraversal.kind == TraversalNodeKind::BufferedStorage ||
           enqueueTraversal.kind == TraversalNodeKind::RegisterStorageWrite) {
         if (llvm::Error error = acceptDurableSinks(
@@ -560,7 +570,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
       }
     }
     if (commit.expectedDequeue) {
-      if (storage.kind != CgraTraversalStorageKind::BufferedFifo) {
+      if (storage.binding.kind != CgraTraversalStorageKind::BufferedFifo) {
         auto pending =
             llvm::find(storage.pendingDequeueNodes,
                        TraversalOccurrence{commit.expectedDequeue->transferSlot,
@@ -616,10 +626,10 @@ CgraTransportRuntime::acceptPhysicalEvents(
         const bool enqueue =
             owner.storageOperation == StorageOperation::Enqueue ||
             owner.storageOperation == StorageOperation::Simultaneous;
-        StorageBinding &storage = storages_[owner.storageOrdinal];
+        StorageState &storage = storages_[owner.storageOrdinal];
         if (dequeue ||
             (enqueue &&
-             storage.kind != CgraTraversalStorageKind::BufferedFifo)) {
+             storage.binding.kind != CgraTraversalStorageKind::BufferedFifo)) {
           if (inFlight.traversalRetired ==
               std::numeric_limits<std::uint32_t>::max())
             return invalid("CGRA storage traversal retire count exceeds u32");
@@ -663,15 +673,15 @@ CgraTransportRuntime::acceptPhysicalEvents(
       permittedCount = &inFlight.consumedPermitted;
       retiredCount = &inFlight.consumedRetired;
       if (owner.publicationBinding <
-              bindings_[inFlight.bindingOrdinal].publicationOffset ||
+              graph_.bindings[inFlight.bindingOrdinal].publicationOffset ||
           owner.publicationBinding >=
-              bindings_[inFlight.bindingOrdinal].publicationOffset +
-                  bindings_[inFlight.bindingOrdinal].publicationCount)
+              graph_.bindings[inFlight.bindingOrdinal].publicationOffset +
+                  graph_.bindings[inFlight.bindingOrdinal].publicationCount)
         return invalid("CGRA consumed action names another publication");
       {
         InFlight::PublicationState &publication =
             inFlight.publications[owner.publicationBinding -
-                                  bindings_[inFlight.bindingOrdinal]
+                                  graph_.bindings[inFlight.bindingOrdinal]
                                       .publicationOffset];
         publicationPermittedCount = &publication.consumedPermitted;
         publicationRetiredCount = &publication.consumedRetired;
@@ -709,7 +719,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
   for (const auto &[slot, nodeOrdinal] : newlyPermittedTraversals) {
     InFlight &inFlight = inFlight_[slot];
     traversalState(slot, nodeOrdinal).state = TraversalNodeState::Permitted;
-    if (traversalNodes_[nodeOrdinal].terminal)
+    if (graph_.traversalNodes[nodeOrdinal].terminal)
       ++inFlight.traversalTerminalsPermitted;
     auto ready = markTerminalSinksReady(slot, nodeOrdinal);
     if (!ready)
@@ -717,13 +727,18 @@ CgraTransportRuntime::acceptPhysicalEvents(
     if (*ready)
       newlyReadySlots.insert(slot);
   }
-  for (const auto &[successor, delta] : successorDeltas)
-    traversalState(successor.transferSlot, successor.nodeOrdinal)
-        .remainingPredecessors -= delta;
+  for (const auto &[successor, delta] : successorDeltas) {
+    TraversalState &state =
+        traversalState(successor.transferSlot, successor.nodeOrdinal);
+    state.remainingPredecessors -= delta;
+    if (state.remainingPredecessors == 0)
+      inFlight_[successor.transferSlot].readyTraversals.push_back(
+          successor.nodeOrdinal);
+  }
 
   for (const auto &[slot, delta] : countDeltas) {
     InFlight &inFlight = inFlight_[slot];
-    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
     if (delta.producedPermitted != 0 &&
         inFlight.producedPermitted == binding.physicalUseCount) {
       if (!next)
@@ -761,12 +776,12 @@ CgraTransportRuntime::acceptPhysicalEvents(
   for (const auto &[key, delta] : publicationDeltas) {
     const auto [slot, publicationBinding] = key;
     const InFlight &inFlight = inFlight_[slot];
-    const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+    const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
     const InFlight::PublicationState &state =
         inFlight.publications[publicationBinding - binding.publicationOffset];
     if (delta.permitted != 0 &&
         state.consumedPermitted ==
-            publications_[publicationBinding].consumedPhysicalUseCount)
+            graph_.publications[publicationBinding].consumedPhysicalUseCount)
       publicationReadySlots.insert(slot);
   }
   for (std::uint64_t slot : publicationReadySlots) {
@@ -778,7 +793,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
   }
   for (std::uint64_t storageOrdinal : releasedStorageCapacity)
     for (std::uint64_t upstream :
-         storages_[storageOrdinal].upstreamStorageOrdinals) {
+         storages_[storageOrdinal].binding.upstreamStorageOrdinals) {
       // Released downstream capacity is an external readiness change for the
       // upstream queue: restart any exhausted virtual-channel probe epoch.
       storages_[upstream].offerRefusalsSinceCommit = 0;
@@ -813,13 +828,14 @@ bool CgraTransportRuntime::canPublishSink(const SinkBinding &sink,
     return state_->channelSlots[sink.channel].ready.empty();
   if (sink.operandQueueBinding >= operandQueues_.size())
     return false;
-  const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
-  if (queue.unitBinding >= operandQueueUnits_.size())
+  const OperandQueueState &queue = operandQueues_[sink.operandQueueBinding];
+  if (queue.binding.unitBinding >= operandQueueUnits_.size())
     return false;
-  const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
+  const OperandQueueUnitState &unit =
+      operandQueueUnits_[queue.binding.unitBinding];
   return operandCapacityReserved ||
-         (unit.occupancy <= unit.capacity &&
-          unit.reservations < unit.capacity - unit.occupancy);
+         (unit.occupancy <= unit.binding.capacity &&
+          unit.reservations < unit.binding.capacity - unit.occupancy);
 }
 
 bool CgraTransportRuntime::canPublish(std::uint64_t slot,
@@ -827,21 +843,22 @@ bool CgraTransportRuntime::canPublish(std::uint64_t slot,
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return false;
   const InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   if (publicationBinding < binding.publicationOffset ||
       publicationBinding >=
           binding.publicationOffset + binding.publicationCount)
     return false;
-  const PublicationBinding &publication = publications_[publicationBinding];
+  const PublicationBinding &publication =
+      graph_.publications[publicationBinding];
   const InFlight::PublicationState &publicationState =
       inFlight.publications[publicationBinding - binding.publicationOffset];
   for (std::uint32_t localSink :
-       llvm::ArrayRef(publicationSinks_)
+       llvm::ArrayRef(graph_.publicationSinks)
            .slice(publication.sinkOffset, publication.sinkCount)) {
     if (localSink >= binding.sinkCount || !inFlight.readySinks[localSink] ||
         inFlight.publishedSinks[localSink])
       return false;
-    const SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
+    const SinkBinding &sink = graph_.sinks[binding.sinkOffset + localSink];
     if (!canPublishSink(sink, publicationState.capacityReserved ||
                                   publicationState.enqueueCommitted))
       return false;
@@ -855,7 +872,7 @@ bool CgraTransportRuntime::canPublishSinks(
   for (std::uint32_t ordinal : localSinkOrdinals) {
     if (ordinal >= binding.sinkCount)
       return false;
-    const SinkBinding &sink = sinks_[binding.sinkOffset + ordinal];
+    const SinkBinding &sink = graph_.sinks[binding.sinkOffset + ordinal];
     if (!canPublishSink(sink, operandCapacityReserved))
       return false;
   }
@@ -865,11 +882,11 @@ bool CgraTransportRuntime::canPublishSinks(
 bool CgraTransportRuntime::canAdvanceBufferedStorage(
     std::uint64_t slot, std::uint64_t nodeOrdinal) const {
   if (slot >= inFlight_.size() || !inFlight_[slot].active ||
-      nodeOrdinal >= traversalNodes_.size())
+      nodeOrdinal >= graph_.traversalNodes.size())
     return false;
   const InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
-  const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
+  const TraversalNodeBinding &node = graph_.traversalNodes[nodeOrdinal];
   if (node.kind != TraversalNodeKind::BufferedStorage ||
       !canPublishSinks(binding, /*operandCapacityReserved=*/false,
                        node.unbufferedDescendantSinks))
@@ -878,11 +895,11 @@ bool CgraTransportRuntime::canAdvanceBufferedStorage(
     if (!ownsTraversal(slot, downstream) ||
         traversalState(slot, downstream).storageReserved)
       return false;
-    const TraversalNodeBinding &boundary = traversalNodes_[downstream];
+    const TraversalNodeBinding &boundary = graph_.traversalNodes[downstream];
     if (boundary.kind == TraversalNodeKind::PhysicalAction ||
         boundary.storageOrdinal >= storages_.size())
       return false;
-    const StorageBinding &storage = storages_[boundary.storageOrdinal];
+    const StorageState &storage = storages_[boundary.storageOrdinal];
     if (storage.queue.occupancy() > storage.queue.capacity() ||
         storage.reservations >=
             storage.queue.capacity() - storage.queue.occupancy())
@@ -897,9 +914,9 @@ CgraTransportRuntime::reserveDownstreamStorage(std::uint64_t slot,
   if (!canAdvanceBufferedStorage(slot, nodeOrdinal))
     return invalid("CGRA buffered dequeue lost downstream capacity");
   for (std::uint64_t downstream :
-       traversalNodes_[nodeOrdinal].downstreamStorageNodes) {
-    TraversalNodeBinding &boundary = traversalNodes_[downstream];
-    StorageBinding &storage = storages_[boundary.storageOrdinal];
+       graph_.traversalNodes[nodeOrdinal].downstreamStorageNodes) {
+    const TraversalNodeBinding &boundary = graph_.traversalNodes[downstream];
+    StorageState &storage = storages_[boundary.storageOrdinal];
     if (storage.reservations == std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA downstream storage reservation exceeds u32");
     ++storage.reservations;
@@ -913,7 +930,7 @@ llvm::Error CgraTransportRuntime::acceptDurableSinks(
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA durable acceptance names an inactive token");
   InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   if (inFlight.acceptedSinks.size() != binding.sinkCount)
     return invalid("CGRA durable acceptance has the wrong sink domain");
   for (std::uint32_t sink : localSinks) {
@@ -932,7 +949,7 @@ CgraTransportRuntime::maybeCompleteProducer(std::uint64_t slot) {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA producer completion names an inactive token");
   InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   if (inFlight.acceptedSinkCount > binding.sinkCount)
     return invalid("CGRA producer acceptance exceeds its sink domain");
   if (inFlight.producerCompletionReported ||
@@ -951,7 +968,7 @@ llvm::Error CgraTransportRuntime::publish(std::uint64_t slot,
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA publication names an inactive token");
   InFlight &inFlight = inFlight_[slot];
-  TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   if (publicationBinding < binding.publicationOffset ||
       publicationBinding >=
           binding.publicationOffset + binding.publicationCount)
@@ -962,17 +979,17 @@ llvm::Error CgraTransportRuntime::publish(std::uint64_t slot,
       inFlight.publications[localPublication];
   if (publicationState.published || !publicationState.consumedRequested ||
       publicationState.consumedPermitted !=
-          publications_[publicationBinding].consumedPhysicalUseCount ||
+          graph_.publications[publicationBinding].consumedPhysicalUseCount ||
       !canPublish(slot, publicationBinding))
     return invalid("CGRA publication instance is not ready");
   if (!publicationState.enqueueCommitted)
     return invalid("CGRA publication omitted its operand enqueue commit");
   const auto publicationSinkRange =
-      llvm::ArrayRef(publicationSinks_)
-          .slice(publications_[publicationBinding].sinkOffset,
-                 publications_[publicationBinding].sinkCount);
+      llvm::ArrayRef(graph_.publicationSinks)
+          .slice(graph_.publications[publicationBinding].sinkOffset,
+                 graph_.publications[publicationBinding].sinkCount);
   for (std::uint32_t localSink : publicationSinkRange) {
-    SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
+    const SinkBinding &sink = graph_.sinks[binding.sinkOffset + localSink];
     if (sink.kind == SinkKind::Channel) {
       ChannelSlot &channel = state_->channelSlots[sink.channel];
       channel.ready.push_back(inFlight.token);
@@ -990,7 +1007,17 @@ llvm::Error CgraTransportRuntime::publish(std::uint64_t slot,
     inFlight.publishedSinks[localSink] = true;
     ++inFlight.publishedSinkCount;
   }
-  if (llvm::Error error = acceptDurableSinks(slot, publicationSinkRange))
+  // A semantic channel without a declared operand queue is only a view of
+  // the producer's held result. Presenting that view cannot release its
+  // physical result slot; the consumer's schema-owned transition does that.
+  llvm::SmallVector<std::uint32_t, 4> durableSinks;
+  for (std::uint32_t localSink : publicationSinkRange) {
+    const SinkBinding &sink = graph_.sinks[binding.sinkOffset + localSink];
+    if (sink.kind != SinkKind::Channel ||
+        sink.operandQueueBinding != invalidCgraTransportOrdinal)
+      durableSinks.push_back(localSink);
+  }
+  if (llvm::Error error = acceptDurableSinks(slot, durableSinks))
     return error;
   auto producerCompletion = maybeCompleteProducer(slot);
   if (!producerCompletion)
@@ -1017,8 +1044,9 @@ llvm::Error CgraTransportRuntime::publish(std::uint64_t slot,
 std::optional<CgraTransportCompletion>
 CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   if (inFlight.published &&
+      inFlight.acceptedSinkCount == binding.sinkCount &&
       inFlight.producedRetired == binding.physicalUseCount &&
       inFlight.traversalRetired == binding.traversalNodeCount &&
       inFlight.consumedRetired == binding.consumedPhysicalUseCount)
@@ -1029,7 +1057,7 @@ CgraTransportRuntime::maybeRelease(std::uint64_t slot) {
 std::optional<CgraTransportCompletion>
 CgraTransportRuntime::release(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
-  TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
   std::optional<CgraTransportCompletion> completion;
   if (!inFlight.producerCompletionReported) {
     completeSource(inFlight);
@@ -1037,9 +1065,13 @@ CgraTransportRuntime::release(std::uint64_t slot) {
       completion = CgraTransportCompletion{*binding.semanticActorOrdinal,
                                            inFlight.occurrenceOrdinal};
   }
-  for (const TraversalState &traversal : inFlight.traversals)
-    assert(!traversal.storageReserved &&
-           "retired CGRA transfer retained storage capacity");
+  assert(llvm::all_of(inFlight.traversals,
+                      [](const TraversalState &traversal) {
+                        return !traversal.storageReserved;
+                      }) &&
+         "retired CGRA transfer retained storage capacity");
+  assert(inFlight.readyTraversals.empty() &&
+         "retired CGRA transfer retained unscheduled traversals");
   inFlight.traversals.clear();
   blocked_.reset(slot);
   inFlight.active = false;
@@ -1082,7 +1114,7 @@ CgraTransportRuntime::advance() {
               TraversalNodeState::Scheduled)
         return invalid("CGRA traversal event names an unscheduled action");
       InFlight &inFlight = inFlight_[slot];
-      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       if (nodeOrdinal < binding.traversalNodeOffset ||
           nodeOrdinal >=
               binding.traversalNodeOffset + binding.traversalNodeCount ||
@@ -1112,7 +1144,7 @@ CgraTransportRuntime::advance() {
       if (storageOrdinal >= storages_.size() ||
           event.order.structuralActionOrdinal != storageOrdinal)
         return invalid("CGRA storage event key is inconsistent");
-      StorageBinding &storage = storages_[storageOrdinal];
+      StorageState &storage = storages_[storageOrdinal];
       if (!storage.eventScheduled || storage.activeActionCount != 0)
         return invalid("CGRA storage event has inconsistent queue state");
       storage.eventScheduled = false;
@@ -1144,13 +1176,13 @@ CgraTransportRuntime::advance() {
                 ? storage.pendingEnqueueNodes.front()
                 : *reserved;
         const TraversalNodeKind expectedKind =
-            storage.kind == CgraTraversalStorageKind::BufferedFifo
+            storage.binding.kind == CgraTraversalStorageKind::BufferedFifo
                 ? TraversalNodeKind::BufferedStorage
                 : TraversalNodeKind::RegisterStorageWrite;
         if (!ownsTraversal(candidate.transferSlot, candidate.nodeOrdinal) ||
-            traversalNodes_[candidate.nodeOrdinal].storageOrdinal !=
+            graph_.traversalNodes[candidate.nodeOrdinal].storageOrdinal !=
                 storageOrdinal ||
-            traversalNodes_[candidate.nodeOrdinal].kind != expectedKind ||
+            graph_.traversalNodes[candidate.nodeOrdinal].kind != expectedKind ||
             traversalState(candidate.transferSlot, candidate.nodeOrdinal)
                     .state != TraversalNodeState::WaitingStorage)
           return invalid("CGRA storage enqueue candidate is inconsistent");
@@ -1158,9 +1190,9 @@ CgraTransportRuntime::advance() {
       }
       for (const TraversalOccurrence &candidate : storage.pendingDequeueNodes)
         if (!ownsTraversal(candidate.transferSlot, candidate.nodeOrdinal) ||
-            traversalNodes_[candidate.nodeOrdinal].storageOrdinal !=
+            graph_.traversalNodes[candidate.nodeOrdinal].storageOrdinal !=
                 storageOrdinal ||
-            traversalNodes_[candidate.nodeOrdinal].kind !=
+            graph_.traversalNodes[candidate.nodeOrdinal].kind !=
                 TraversalNodeKind::RegisterStorageRead ||
             traversalState(candidate.transferSlot, candidate.nodeOrdinal)
                     .state != TraversalNodeState::WaitingStorage)
@@ -1180,33 +1212,35 @@ CgraTransportRuntime::advance() {
         offeredEntries.push_back(*offered);
       for (const CgraTransportStorageEntry &head : offeredEntries) {
         const TraversalNodeKind expectedHeadKind =
-            storage.kind == CgraTraversalStorageKind::BufferedFifo
+            storage.binding.kind == CgraTraversalStorageKind::BufferedFifo
                 ? TraversalNodeKind::BufferedStorage
                 : TraversalNodeKind::RegisterStorageWrite;
         const TraversalNodeState expectedHeadState =
-            storage.kind == CgraTraversalStorageKind::BufferedFifo
+            storage.binding.kind == CgraTraversalStorageKind::BufferedFifo
                 ? TraversalNodeState::Queued
                 : TraversalNodeState::Permitted;
         if (!ownsTraversal(head.transferSlot, head.traversalNodeOrdinal) ||
-            traversalNodes_[head.traversalNodeOrdinal].kind !=
+            graph_.traversalNodes[head.traversalNodeOrdinal].kind !=
                 expectedHeadKind ||
             head.physicalTagOrdinal !=
-                traversalNodes_[head.traversalNodeOrdinal].physicalTagOrdinal ||
+                graph_.traversalNodes[head.traversalNodeOrdinal]
+                    .physicalTagOrdinal ||
             traversalState(head.transferSlot, head.traversalNodeOrdinal)
                     .state != expectedHeadState)
           return invalid("CGRA storage queue head is inconsistent");
         const TransferBinding &binding =
-            bindings_[inFlight_[head.transferSlot].bindingOrdinal];
+            graph_.bindings[inFlight_[head.transferSlot].bindingOrdinal];
         const TraversalNodeBinding &headNode =
-            traversalNodes_[head.traversalNodeOrdinal];
+            graph_.traversalNodes[head.traversalNodeOrdinal];
         if (headNode.descendantSinks.empty())
           return invalid("CGRA storage traversal reaches no logical sink");
-        if (storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+        if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo &&
             canAdvanceBufferedStorage(head.transferSlot,
                                       head.traversalNodeOrdinal)) {
           dequeueEntry = head;
           dequeueNode = head.traversalNodeOrdinal;
-        } else if (storage.kind != CgraTraversalStorageKind::BufferedFifo &&
+        } else if (storage.binding.kind !=
+                       CgraTraversalStorageKind::BufferedFifo &&
                    canPublishSinks(binding,
                                    /*operandCapacityReserved=*/false,
                                    headNode.descendantSinks)) {
@@ -1236,8 +1270,8 @@ CgraTransportRuntime::advance() {
       bool enqueue =
           enqueueNode.has_value() && (enqueueReserved || unreservedCapacity);
       if (enqueueNode && dequeue &&
-          storage.kind != CgraTraversalStorageKind::BufferedFifo)
-        enqueue = storage.independentReadWriteServices;
+          storage.binding.kind != CgraTraversalStorageKind::BufferedFifo)
+        enqueue = storage.binding.independentReadWriteServices;
       // A refused offer on a virtual-channel queue owns one OfferAdvance
       // arbitration transition that commits at the cycle boundary, exactly as
       // the RTL cursor moves past every refused channel. The successor
@@ -1250,11 +1284,11 @@ CgraTransportRuntime::advance() {
       // simulation.
       bool rotateOffer = false;
       if (!dequeue && !offeredEntries.empty() &&
-          storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+          storage.binding.kind == CgraTraversalStorageKind::BufferedFifo &&
           storage.queue.discipline() ==
               ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
           !storage.queue.empty() &&
-          storage.offerAdvanceAction != invalidCgraTransportOrdinal) {
+          storage.binding.offerAdvanceAction != invalidCgraTransportOrdinal) {
         ++storage.offerRefusalsSinceCommit;
         rotateOffer = true;
       }
@@ -1287,23 +1321,7 @@ CgraTransportRuntime::advance() {
         owners.push_back(std::move(owner));
         return llvm::Error::success();
       };
-      const auto assignStorageLocalAction =
-          [&](ActionOwner &owner) -> llvm::Error {
-        if (owner.transferSlot >= inFlight_.size() ||
-            !inFlight_[owner.transferSlot].active)
-          return invalid("CGRA storage trace owner is not an active token");
-        const TransferBinding &binding =
-            bindings_[inFlight_[owner.transferSlot].bindingOrdinal];
-        if (owner.traversalNodeOrdinal < binding.traversalNodeOffset ||
-            owner.traversalNodeOrdinal >=
-                binding.traversalNodeOffset + binding.traversalNodeCount)
-          return invalid("CGRA storage trace action names another transfer");
-        owner.localActionOrdinal = binding.physicalUseCount +
-                                   owner.traversalNodeOrdinal -
-                                   binding.traversalNodeOffset;
-        return llvm::Error::success();
-      };
-      if (storage.kind == CgraTraversalStorageKind::BufferedFifo) {
+      if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo) {
         if (rotateOffer) {
           // The arbitration transition carries no token movement: the refused
           // head stays queued and the cursor rotates at the commit boundary.
@@ -1315,43 +1333,41 @@ CgraTransportRuntime::advance() {
           rotateOwner.transferSlot = offeredEntries.front().transferSlot;
           rotateOwner.traversalNodeOrdinal =
               offeredEntries.front().traversalNodeOrdinal;
-          if (llvm::Error error = appendRequest(storage.offerAdvanceAction,
-                                                std::move(rotateOwner)))
+          if (llvm::Error error = appendRequest(
+                  storage.binding.offerAdvanceAction, std::move(rotateOwner)))
             return std::move(error);
         }
         if (!rotateOffer || enqueue) {
-        ActionOwner owner;
-        owner.stage = ActionStage::Storage;
-        owner.storageOrdinal = storageOrdinal;
-        owner.state = ActionLifecycleState::Requested;
-        owner.storageOperation = dequeue && enqueue
-                                     ? StorageOperation::Simultaneous
-                                 : dequeue ? StorageOperation::Dequeue
-                                           : StorageOperation::Enqueue;
-        if (dequeueEntry) {
-          owner.transferSlot = dequeueEntry->transferSlot;
-          owner.traversalNodeOrdinal = *dequeueNode;
-        }
-        if (enqueue) {
-          const std::uint64_t enqueueSlot = enqueueNode->transferSlot;
+          ActionOwner owner;
+          owner.stage = ActionStage::Storage;
+          owner.storageOrdinal = storageOrdinal;
+          owner.state = ActionLifecycleState::Requested;
+          owner.storageOperation = dequeue && enqueue
+                                       ? StorageOperation::Simultaneous
+                                   : dequeue ? StorageOperation::Dequeue
+                                             : StorageOperation::Enqueue;
           if (dequeueEntry) {
-            owner.secondaryTransferSlot = enqueueSlot;
-            owner.secondaryTraversalNodeOrdinal = enqueueNode->nodeOrdinal;
-          } else {
-            owner.transferSlot = enqueueSlot;
-            owner.traversalNodeOrdinal = enqueueNode->nodeOrdinal;
+            owner.transferSlot = dequeueEntry->transferSlot;
+            owner.traversalNodeOrdinal = *dequeueNode;
           }
-        }
-        const std::uint64_t action =
-            owner.storageOperation == StorageOperation::Simultaneous
-                ? storage.simultaneousAction
-            : owner.storageOperation == StorageOperation::Dequeue
-                ? storage.dequeueAction
-                : storage.enqueueAction;
-        if (llvm::Error error = assignStorageLocalAction(owner))
-          return std::move(error);
-        if (llvm::Error error = appendRequest(action, std::move(owner)))
-          return std::move(error);
+          if (enqueue) {
+            const std::uint64_t enqueueSlot = enqueueNode->transferSlot;
+            if (dequeueEntry) {
+              owner.secondaryTransferSlot = enqueueSlot;
+              owner.secondaryTraversalNodeOrdinal = enqueueNode->nodeOrdinal;
+            } else {
+              owner.transferSlot = enqueueSlot;
+              owner.traversalNodeOrdinal = enqueueNode->nodeOrdinal;
+            }
+          }
+          const std::uint64_t action =
+              owner.storageOperation == StorageOperation::Simultaneous
+                  ? storage.binding.simultaneousAction
+              : owner.storageOperation == StorageOperation::Dequeue
+                  ? storage.binding.dequeueAction
+                  : storage.binding.enqueueAction;
+          if (llvm::Error error = appendRequest(action, std::move(owner)))
+            return std::move(error);
         }
       } else {
         if (dequeueEntry) {
@@ -1361,10 +1377,8 @@ CgraTransportRuntime::advance() {
           owner.storageOrdinal = storageOrdinal;
           owner.stage = ActionStage::Storage;
           owner.storageOperation = StorageOperation::Dequeue;
-          if (llvm::Error error = assignStorageLocalAction(owner))
-            return std::move(error);
-          if (llvm::Error error =
-                  appendRequest(storage.dequeueAction, std::move(owner)))
+          if (llvm::Error error = appendRequest(storage.binding.dequeueAction,
+                                                std::move(owner)))
             return std::move(error);
         }
         if (enqueue) {
@@ -1374,10 +1388,8 @@ CgraTransportRuntime::advance() {
           owner.storageOrdinal = storageOrdinal;
           owner.stage = ActionStage::Storage;
           owner.storageOperation = StorageOperation::Enqueue;
-          if (llvm::Error error = assignStorageLocalAction(owner))
-            return std::move(error);
-          if (llvm::Error error =
-                  appendRequest(storage.enqueueAction, std::move(owner)))
+          if (llvm::Error error = appendRequest(storage.binding.enqueueAction,
+                                                std::move(owner)))
             return std::move(error);
         }
       }
@@ -1397,8 +1409,8 @@ CgraTransportRuntime::advance() {
         return requested.takeError();
       const bool independentReplacement =
           enqueue && dequeue &&
-          storage.kind != CgraTraversalStorageKind::BufferedFifo &&
-          storage.independentReadWriteServices;
+          storage.binding.kind != CgraTraversalStorageKind::BufferedFifo &&
+          storage.binding.independentReadWriteServices;
       if (enqueue && !independentReplacement &&
           !traversalState(enqueueNode->transferSlot, enqueueNode->nodeOrdinal)
                .storageReserved) {
@@ -1415,7 +1427,7 @@ CgraTransportRuntime::advance() {
         traversalState(enqueueNode->transferSlot, enqueueNode->nodeOrdinal)
             .storageReserved = true;
       }
-      if (storage.kind == CgraTraversalStorageKind::BufferedFifo &&
+      if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo &&
           dequeueEntry)
         if (llvm::Error error = reserveDownstreamStorage(
                 dequeueEntry->transferSlot, dequeueEntry->traversalNodeOrdinal))
@@ -1470,7 +1482,7 @@ CgraTransportRuntime::advance() {
           inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
         return invalid("CGRA transport arrival key is inconsistent");
       inFlight.arrivalScheduled = false;
-      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       if (inFlight.readySinks.size() != binding.sinkCount ||
           inFlight.publishedSinks.size() != binding.sinkCount ||
           inFlight.publications.size() != binding.publicationCount)
@@ -1484,10 +1496,10 @@ CgraTransportRuntime::advance() {
         const std::uint64_t publicationBinding =
             binding.publicationOffset + localPublication;
         const PublicationBinding &publication =
-            publications_[publicationBinding];
+            graph_.publications[publicationBinding];
         bool ready = true;
         for (std::uint32_t localSink :
-             llvm::ArrayRef(publicationSinks_)
+             llvm::ArrayRef(graph_.publicationSinks)
                  .slice(publication.sinkOffset, publication.sinkCount)) {
           if (localSink >= binding.sinkCount)
             return invalid("CGRA publication arrival names an unknown sink");
@@ -1511,7 +1523,7 @@ CgraTransportRuntime::advance() {
     for (const ReadyPublication &candidate : readyPublications) {
       InFlight &inFlight = inFlight_[candidate.slot];
       const PublicationBinding &publication =
-          publications_[candidate.publication];
+          graph_.publications[candidate.publication];
       const bool suppressed =
           llvm::any_of(observedPriority, [&](const ReadyPublication *selected) {
             if (static_cast<std::uint8_t>(selected->admission.priority) <=
@@ -1525,7 +1537,8 @@ CgraTransportRuntime::advance() {
           });
       observedPriority.push_back(&candidate);
       if (suppressed) {
-        const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+        const TransferBinding &binding =
+            graph_.bindings[inFlight.bindingOrdinal];
         InFlight::PublicationState &state =
             inFlight.publications[candidate.publication -
                                   binding.publicationOffset];
@@ -1555,7 +1568,7 @@ CgraTransportRuntime::advance() {
                                 requested->end());
     for (const auto &[slot, publicationBinding] : requestedPublications) {
       InFlight &inFlight = inFlight_[slot];
-      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       inFlight.publications[publicationBinding - binding.publicationOffset]
           .consumedRequested = true;
       inFlight.consumedRequested = true;
@@ -1580,14 +1593,14 @@ CgraTransportRuntime::advance() {
         return invalid("CGRA transport event key disagrees with its token");
       inFlight.publicationScheduled = false;
       inFlight.publicationReady = true;
-      const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+      const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       bool readyPublicationBlocked = false;
       for (std::uint32_t localPublication = 0;
            localPublication != binding.publicationCount; ++localPublication) {
         const std::uint64_t publicationBinding =
             binding.publicationOffset + localPublication;
         const PublicationBinding &publication =
-            publications_[publicationBinding];
+            graph_.publications[publicationBinding];
         InFlight::PublicationState &state =
             inFlight.publications[localPublication];
         if (state.published || !state.consumedRequested ||
@@ -1598,8 +1611,8 @@ CgraTransportRuntime::advance() {
           continue;
         }
         if (!state.enqueueCommitted) {
-          if (llvm::Error error =
-                  commitOperandQueueEnqueue(event.payload, publicationBinding))
+          if (llvm::Error error = commitOperandQueueEnqueue(
+                  event.payload, publicationBinding, *coordinate))
             return std::move(error);
           state.enqueueCommitted = true;
         }

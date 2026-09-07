@@ -1054,8 +1054,9 @@ llvm::Expected<std::vector<ConfigurationProgram>> projectConfigurationPrograms(
     const bool exactSystem =
         image.sourceMapping().kind ==
             deployment::ConfigurationImageSourceKind::SystemMapping &&
+        deployment.deployment().systemMapping() &&
         image.sourceMapping().mapping ==
-            deployment.deployment().systemMapping();
+            *deployment.deployment().systemMapping();
     if (!exactSpatial && !exactSystem)
       return invalid("configuration image names a foreign Mapping source");
     auto interface = findInterface(
@@ -1253,7 +1254,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != (*implementation)->reference() ||
-      selection->dataflow.artifact != (*inputs)->dataflow.identity())
+      selection->dataflow.artifact != (*inputs)->dataflow->identity())
     return invalid("Deployment selection disagrees with the exact Request");
   auto mapping = importCachedOne<mapping::FinalizedSpatialMapping>(
       selection->spatialMapping, artifacts, nullptr, [&]() {
@@ -1263,7 +1264,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   if (!mapping)
     return mapping.takeError();
   if ((*mapping)->view().identity() != selection->context.spatialMapping ||
-      (*mapping)->view().dataflowIdentity() != (*inputs)->dataflow.identity())
+      (*mapping)->view().dataflowIdentity() != (*inputs)->dataflow->identity())
     return invalid("Deployment selection names a foreign SpatialMapping");
   auto fabricSystem = importCachedOne<fabric::FinalizedFabricRoot>(
       hardware.fabric(), artifacts, nullptr, [&]() {
@@ -1302,14 +1303,12 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   if (!**rtlModuleGraph)
     return unsupported();
 
-  auto dataflow = (*inputs)->dataflow.view();
-  if (!dataflow)
-    return dataflow.takeError();
-  auto selectedGraph = dataflow->resolve(workload->launchRef);
+  const auto &dataflow = (*inputs)->dataflow->view();
+  auto selectedGraph = dataflow.resolve(workload->launchRef);
   if (!selectedGraph)
     return selectedGraph.takeError();
   auto shapes = sim::projectSpatialSimulationBoundaryShapes(
-      *dataflow, workload->launchRef);
+      dataflow, workload->launchRef);
   if (!shapes)
     return shapes.takeError();
 
@@ -1327,7 +1326,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   std::vector<bool> requiredValues(values.size(), false);
   for (std::uint64_t ordinal = 0; ordinal != values.size(); ++ordinal) {
     auto consumers =
-        dataflow->graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
+        dataflow.graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
             dataflow::GraphIngressTokenRef{
                 dataflow::GraphValueInputTokenRef{*selectedGraph, ordinal}}});
     if (!consumers)
@@ -1337,7 +1336,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   std::vector<bool> requiredStreams(streams.size(), false);
   for (std::uint64_t ordinal = 0; ordinal != streams.size(); ++ordinal) {
     auto consumers =
-        dataflow->graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
+        dataflow.graphConsumers(dataflow::CanonicalGraphProducerEndpointRef{
             dataflow::GraphIngressTokenRef{
                 dataflow::GraphStreamInputTokenRef{*selectedGraph, ordinal}}});
     if (!consumers)
@@ -1510,7 +1509,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
     return configurationPrograms.takeError();
   auto memoryProjection = projectRuntimeMemory(
       hardware, **representationIndex, *system, *moduleTarget, module,
-      spatialCore, (*mapping)->view(), *dataflow, *workload, *runtime);
+      spatialCore, (*mapping)->view(), dataflow, *workload, *runtime);
   if (!memoryProjection)
     return memoryProjection.takeError();
   if (!*memoryProjection)
@@ -1607,7 +1606,7 @@ importMappedRtlLaunchClosure(const MappedRtlExecutionClosure &closure,
       blobs);
   if (!selection)
     return selection.takeError();
-  if (selection->dataflow.artifact != (*inputs)->dataflow.identity())
+  if (selection->dataflow.artifact != (*inputs)->dataflow->identity())
     return invalid("Deployment selection disagrees with the exact Request");
   auto mapping = importCachedOne<mapping::FinalizedSpatialMapping>(
       selection->spatialMapping, artifacts, nullptr, [&]() {
@@ -1617,7 +1616,7 @@ importMappedRtlLaunchClosure(const MappedRtlExecutionClosure &closure,
   if (!mapping)
     return mapping.takeError();
   if ((*mapping)->view().identity() != selection->context.spatialMapping ||
-      (*mapping)->view().dataflowIdentity() != (*inputs)->dataflow.identity())
+      (*mapping)->view().dataflowIdentity() != (*inputs)->dataflow->identity())
     return invalid("Deployment selection names a foreign SpatialMapping");
   return MappedRtlLaunchClosure{std::move(*deployment), std::move(*inputs),
                                 std::move(*selection), std::move(*mapping)};
@@ -1683,9 +1682,7 @@ deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &requestClosure,
   const auto *runtime = closure->inputs->runtimeInput.spatial();
   if (!workload || !runtime)
     return invalid("mapped RTL provider requires Spatial inputs");
-  auto dataflow = closure->inputs->dataflow.view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = closure->inputs->dataflow->view();
   auto images = projectRuntimeMemoryImages(*runtime);
   if (!images)
     return images.takeError();
@@ -1696,7 +1693,7 @@ deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &requestClosure,
   if (!*images || !*bindingIds)
     return invalid("prepared invocation is no longer supported");
   auto observations = projectRuntimeMemoryObservationPlans(
-      closure->mapping->view(), *dataflow, *workload, *runtime, **bindingIds);
+      closure->mapping->view(), dataflow, *workload, *runtime, **bindingIds);
   if (!observations)
     return observations.takeError();
   if (!*observations)

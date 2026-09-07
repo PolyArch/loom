@@ -116,7 +116,7 @@ buildBoundedJointFrontier(JointDesignInputs inputs,
         owner = ArtifactRootReference{
             dataflow::canonicalDataflowSchema.identity.str(),
             dataflow::canonicalDataflowSchema.version,
-            imported->dataflow.identity()};
+            imported->dataflow->identity()};
         workloadDataflowOwners.emplace(workloadKey, *owner);
       }
       if (dataflowReference && *dataflowReference != *owner)
@@ -129,13 +129,11 @@ buildBoundedJointFrontier(JointDesignInputs inputs,
           dataflow::importCanonicalDataflow(*dataflowReference, artifactStore);
       if (!dataflowArtifact)
         return dataflowArtifact.takeError();
-      auto dataflow = dataflowArtifact->view();
-      if (!dataflow)
-        return dataflow.takeError();
+      const auto &dataflow = dataflowArtifact->view();
       JointPairAnalyticProjection features;
-      features.softwareActorCount = dataflow->actors().size();
-      features.softwareGraphCount = dataflow->graphs().size();
-      features.softwareMemoryRootCount = dataflow->logicalMemoryRoots().size();
+      features.softwareActorCount = dataflow.actors().size();
+      features.softwareGraphCount = dataflow.graphs().size();
+      features.softwareMemoryRootCount = dataflow.logicalMemoryRoots().size();
       features.confidence = JointPairEstimateConfidence::LowConfidence;
       dataflowFeatures.emplace(dataflowReference->artifact.bytes(), features);
     }

@@ -39,7 +39,7 @@ struct CgraPendingGraphPhysicalActionDiagnostic final {
   CgraPendingPhysicalActionDiagnostic action;
   CgraPhysicalUseClientKind client =
       CgraPhysicalUseClientKind::ComputeTransition;
-  std::optional<std::uint64_t> semanticActorOrdinal;
+  std::optional<std::pair<std::uint64_t, std::uint64_t>> semanticFiring;
 };
 
 /// One execution-local coordinator for a mapped graph activation. It alone
@@ -51,14 +51,35 @@ public:
   create(const CgraFrozenExecutionPlan &plan,
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
-         const PreparedGraphExecution &execution, SimulatorState &state,
+         const PreparedGraphExecution &execution,
+         const CgraTransportGraph &transportGraph, SimulatorState &state,
          bool captureMicroarchitecture,
-         CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
+         CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
+         CgraFabricActivityRuntime *activity = nullptr);
 
   llvm::Error start(SpatialEventCoordinate coordinate,
                     llvm::MutableArrayRef<GraphIngressEmission> ingress);
 
+  /// Appends later live input events through the same physical ingress path
+  /// as the initial graph inputs. Existing queues and the calendar persist.
+  llvm::Error appendGraphIngress(
+      const SpatialEventCoordinate &coordinate,
+      llvm::MutableArrayRef<GraphIngressEmission> ingress);
+
+  llvm::Expected<bool> canAcceptGraphIngress(unsigned argumentOrdinal) const {
+    return transport_->canAcceptGraphIngress(argumentOrdinal);
+  }
+
   llvm::Expected<std::optional<CgraGraphActivationFrame>> advance();
+
+  bool waitingForExternalMemory() const {
+    return memory_->waitingForExternalMemory();
+  }
+  llvm::Error completeExternalMemory(CgraExternalMemoryRequestId request,
+                                     CgraExternalMemoryResponse response) {
+    return memory_->completeExternalMemory(std::move(request),
+                                           std::move(response));
+  }
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const;
   bool hasPendingEvents() const;
@@ -92,6 +113,14 @@ public:
   traversalStorageQueueDiscipline(std::uint64_t storageOrdinal) const;
 
 private:
+  struct SuspendedFrame final {
+    CgraGraphActivationFrame graph;
+    CgraMemoryLifecycleFrame memory;
+    /// The physical calendar retains this view until its next advance. A
+    /// suspended graph never advances that calendar before finishing it.
+    CgraPhysicalLifecycleFrameView physical;
+  };
+
   struct ActorFiring final {
     bool active = false;
     std::uint64_t semanticActorOrdinal = 0;
@@ -119,6 +148,10 @@ private:
                                   CgraGraphActivationFrame &result);
   llvm::Error consumeMemoryFrame(CgraMemoryLifecycleFrame &&frame,
                                  CgraGraphActivationFrame &result);
+  llvm::Error
+  finishPhysicalFrame(const CgraPhysicalLifecycleFrameView &physicalFrame,
+                      CgraMemoryLifecycleFrame &&memoryFrame,
+                      CgraGraphActivationFrame &result);
   llvm::Error consumeTransportFrame(CgraTransportFrame &&frame,
                                     CgraGraphActivationFrame &result);
   llvm::Error consumeTransportCompletions(
@@ -159,7 +192,9 @@ private:
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>,
                  CgraPhysicalTraceBinding>
       physicalTraceBindings_;
+  llvm::DenseMap<unsigned, std::uint64_t> nextIngressOccurrence_;
   std::vector<GraphIngressEmission> pendingGraphIngress_;
+  std::optional<SuspendedFrame> suspendedFrame_;
   bool captureMicroarchitecture_ = false;
   bool started_ = false;
 };

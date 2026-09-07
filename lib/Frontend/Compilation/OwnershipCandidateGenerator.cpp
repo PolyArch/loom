@@ -1,3 +1,4 @@
+#include "Frontend/Analysis/PointerLoopProjection.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
 #include "StructuredAddressIndexNarrowing.h"
@@ -1078,7 +1079,7 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   resultSlots.takeError());
   auto boundary = createSpatialThreadBoundary(
-      module, *callable, closure.liveIns, *resultSlots, valueResultTypes,
+      module, *callable, prepared.liveIns, *resultSlots, valueResultTypes,
       mlir::TypeRange{}, location);
   if (!boundary)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
@@ -1087,7 +1088,7 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
 
   mlir::IRMapping mapping;
   const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
-  for (auto [index, liveIn] : llvm::enumerate(closure.liveIns))
+  for (auto [index, liveIn] : llvm::enumerate(prepared.liveIns))
     mapping.map(liveIn, boundary->captureArguments[index]);
   builder.setInsertionPointToEnd(boundary->spatialEntry);
   for (mlir::arith::ConstantOp constant : closure.constants)
@@ -1143,8 +1144,8 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
   builder.setInsertionPoint(operation);
   mlir::FlatSymbolRefAttr callee =
       mlir::FlatSymbolRefAttr::get(context, boundary->thread.getSymName());
-  llvm::SmallVector<mlir::Value, 8> launchOperands(closure.liveIns.begin(),
-                                                   closure.liveIns.end());
+  llvm::SmallVector<mlir::Value, 8> launchOperands(prepared.liveIns.begin(),
+                                                   prepared.liveIns.end());
   llvm::append_range(launchOperands, *resultSlots);
   auto launch = dataflow::ThreadLaunchOp::create(
       builder, location, callee, launchOperands, mlir::ValueRange{},
@@ -1615,6 +1616,19 @@ enumerateSpatialOwnershipDecisionDomain(
   return result;
 }
 
+llvm::Expected<std::optional<std::string>>
+explainSpatialOwnershipSourceIndexNarrowingRejection(
+    const StructuredProgramCandidateView &sourceView,
+    const SpatialOwnershipScope &scope, unsigned canonicalIndexWidth) {
+  auto entity = sourceView.resolve(scope.selection);
+  if (!entity)
+    return entity.takeError();
+  if (!entity->operation)
+    return invalid("selected StructuredEntityRef is not an operation");
+  return detail::explainAddressIndexNarrowingRejection(entity->operation,
+                                                       canonicalIndexWidth);
+}
+
 llvm::Expected<MaterializedStructuredOwnershipCandidate>
 materializeStructuredSpatialOwnershipDecision(
     const StructuredProgramCandidate &parent,
@@ -1685,12 +1699,11 @@ prepareSpatialOwnershipSelection(
           (first.addressProjection
                ? std::to_string(first.rootRelativeIndexWidth().value_or(0))
                : std::string("none")) +
-          ", forall=" +
-          (first.forallOwnershipShape ? "present" : "none") +
+          ", forall=" + (first.forallOwnershipShape ? "present" : "none") +
           ", call_specialization=" +
           (first.directCallSpecializationShape ? "present" : "none") +
-          ", call_inline=" +
-          (first.directCallInlining ? "present" : "none") + ")";
+          ", call_inline=" + (first.directCallInlining ? "present" : "none") +
+          ")";
     }
     return invalid(diagnostic);
   }
@@ -1818,7 +1831,20 @@ prepareSpatialOwnershipSelection(
       decision.addressProjection &&
       std::holds_alternative<PointerAddressedAddressProjection>(
           *decision.addressProjection);
-  if (!pointerAddressed) {
+  if (pointerAddressed) {
+    bool requiresPointerStateNormalization = false;
+    operation->walk([&](mlir::scf::WhileOp loop) {
+      if (analysis::projectPointerLoopTermination(loop)) {
+        requiresPointerStateNormalization = true;
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (requiresPointerStateNormalization)
+      return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                    "pointer-terminated recurrence requires root-relative "
+                    "address normalization");
+  } else {
     std::optional<unsigned> canonicalIndexWidth;
     if (decision.addressProjection)
       canonicalIndexWidth =
@@ -1906,7 +1932,7 @@ prepareSpatialOwnershipSelection(
     memoryServiceBody = selectedOperation;
   }
   if (std::optional<std::string> rejection =
-          detail::explainUnboundMemoryService(memoryServiceBody, liveIns))
+          detail::completeMemoryServiceBoundary(memoryServiceBody, liveIns))
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   *rejection);
   if (mlir::failed(mlir::verify(selection->clone.get())))

@@ -722,7 +722,7 @@ void scalarLiveOutExecutesWithoutMemoryObjects() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, domain.front(),
                      design.roots().front()));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -801,7 +801,7 @@ void operationCandidateCapturesCallerOwnedMemory() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, decisions.front(),
                      design.roots().front()));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -857,7 +857,7 @@ void nestedOperationCandidateUsesExactCallPath() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, decisions.front(),
                      design.roots().front()));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -913,7 +913,7 @@ void operationCandidateCapturesInvocationLocalMemoryViews() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, decisions.front(),
                      design.roots().front()));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -970,7 +970,7 @@ void operationCandidateCapturesDescriptorLoadedMemory() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, scope, decisions.front(),
                      design.roots().front()));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto prepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -1007,8 +1007,7 @@ void operationCandidateCapturesDescriptorLoadedMemory() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, transitiveScope,
                      transitiveDecisions.front(), design.roots().front()));
-  auto transitiveView =
-      take(test, transitiveCandidate.canonicalDataflow.view());
+  const auto &transitiveView = transitiveCandidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef transitiveLaunch =
       onlyLaunch(test, transitiveView);
   auto transitivePrepared =
@@ -1063,7 +1062,7 @@ void operationCandidateCapturesDescriptorLoadedMemory() {
       take(test, loom::frontend::materializeSpatialOwnershipDecision(
                      compiled.structuredProgram, nestedScope,
                      nestedDecisions.front(), design.roots().front()));
-  auto nestedView = take(test, nestedCandidate.canonicalDataflow.view());
+  const auto &nestedView = nestedCandidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef nestedLaunch = onlyLaunch(test, nestedView);
   auto nestedPrepared =
       take(test, loom::frontend::prepareSpatialOwnershipSelection(
@@ -1150,7 +1149,7 @@ void wholeCallableScalarResultUsesCallerStorage() {
       !returnOp.getOperand(0).getDefiningOp<mlir::LLVM::LoadOp>())
     fail(test, "whole-callable result did not cross caller-owned storage");
 
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef rooted = onlyLaunch(test, view);
   auto graphLaunch = take(test, view.resolve(rooted.staticGraphLaunch));
   auto graphView = take(test, view.resolve(graphLaunch.callee));
@@ -1243,7 +1242,7 @@ void sourceCandidateExecutesThroughTypedDfgInput() {
                      compiled.structuredProgram,
                      findVecaddLoop(test, compiled.structuredProgram),
                      design.roots().front(), ownership));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().size() < 20)
     fail(test, "source candidate did not produce a substantive Dataflow graph");
 
@@ -1469,7 +1468,7 @@ void staticTableExecutesThroughTypedDfgInput() {
                 compiled.structuredProgram,
                 findCallable(test, compiled.structuredProgram, "table_lookup"),
                 design.roots().front(), ownership));
-  auto view = take(test, candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef launch = onlyLaunch(test, view);
   auto sources = take(test, loom::frontend::deriveRootedLogicalMemorySources(
                                 compiled.staticGlobalMemory, view, launch));
@@ -1531,7 +1530,7 @@ void staticTableExecutesThroughTypedDfgInput() {
           compiled.structuredProgram,
           findCallable(test, compiled.structuredProgram, "table_lookup_arg"),
           design.roots().front(), ownership));
-  auto captureView = take(test, captureCandidate.canonicalDataflow.view());
+  const auto &captureView = captureCandidate.canonicalDataflow.view();
   dataflow::RootedGraphLaunchRef captureLaunch = onlyLaunch(test, captureView);
   mlir::LLVM::CallOp hostCall;
   captureCandidate.canonicalDataflow.module().walk(

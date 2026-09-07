@@ -26,6 +26,18 @@ unsigned __int128 gcdU128(unsigned __int128 lhs, unsigned __int128 rhs) {
   return lhs;
 }
 
+llvm::Expected<ExactRatio> reducedRatio(unsigned __int128 numerator,
+                                        unsigned __int128 denominator) {
+  const auto divisor = gcdU128(numerator, denominator);
+  numerator /= divisor;
+  denominator /= divisor;
+  constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+  if (numerator > max || denominator > max)
+    return detail::evaluationError("exact ratio overflow during normalization");
+  return ExactRatio::get(static_cast<std::uint64_t>(numerator),
+                         static_cast<std::uint64_t>(denominator));
+}
+
 } // namespace
 
 llvm::Expected<DecimalValue> DecimalValue::get(std::int64_t coefficient,
@@ -95,6 +107,46 @@ llvm::Expected<ExactRatio> ExactRatio::addInteger(std::uint64_t value) const {
   return ExactRatio(static_cast<std::uint64_t>(numerator), denominator_);
 }
 
+llvm::Expected<ExactRatio> ExactRatio::add(ExactRatio value) const {
+  if (value.denominator_ == 1)
+    return addInteger(value.numerator_);
+  using u128 = unsigned __int128;
+  const std::uint64_t common = std::gcd(denominator_, value.denominator_);
+  const u128 left =
+      static_cast<u128>(numerator_) * (value.denominator_ / common);
+  const u128 right =
+      static_cast<u128>(value.numerator_) * (denominator_ / common);
+  // Overflow here requires coprime denominators, for which no subsequent
+  // reduction could make the numerator fit the canonical u64 domain.
+  if (right > ~u128(0) - left)
+    return detail::evaluationError("exact ratio overflow during addition");
+  return reducedRatio(left + right, static_cast<u128>(denominator_) *
+                                        (value.denominator_ / common));
+}
+
+llvm::Expected<ExactRatio> ExactRatio::subtract(ExactRatio value) const {
+  using u128 = unsigned __int128;
+  const u128 left = static_cast<u128>(numerator_) * value.denominator_;
+  const u128 right = static_cast<u128>(value.numerator_) * denominator_;
+  if (left < right)
+    return detail::evaluationError("exact ratio subtraction is negative");
+  return reducedRatio(left - right,
+                      static_cast<u128>(denominator_) * value.denominator_);
+}
+
+llvm::Expected<ExactRatio>
+ExactRatio::multiplyInteger(std::uint64_t value) const {
+  return reducedRatio(static_cast<unsigned __int128>(numerator_) * value,
+                      denominator_);
+}
+
+int compareExactRatio(ExactRatio lhs, ExactRatio rhs) {
+  using u128 = unsigned __int128;
+  const u128 left = static_cast<u128>(lhs.numerator()) * rhs.denominator();
+  const u128 right = static_cast<u128>(rhs.numerator()) * lhs.denominator();
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 llvm::Expected<ExactRatio> ExactRatio::reducedModulo(ExactRatio modulus) const {
   if (modulus.numerator_ == 0)
     return detail::evaluationError("exact ratio modulus must be positive");
@@ -110,15 +162,7 @@ llvm::Expected<ExactRatio> ExactRatio::reducedModulo(ExactRatio modulus) const {
   const u128 commonDenominator =
       static_cast<u128>(denominator_) * modulus.denominator_;
   const u128 remainder = scaledValue % scaledModulus;
-  const u128 divisor = gcdU128(remainder, commonDenominator);
-  const u128 reducedNumerator = remainder / divisor;
-  const u128 reducedDenominator = commonDenominator / divisor;
-
-  constexpr u128 uint64Max = std::numeric_limits<std::uint64_t>::max();
-  if (reducedNumerator > uint64Max || reducedDenominator > uint64Max)
-    return detail::evaluationError("exact ratio overflow during normalization");
-  return ExactRatio(static_cast<std::uint64_t>(reducedNumerator),
-                    static_cast<std::uint64_t>(reducedDenominator));
+  return reducedRatio(remainder, commonDenominator);
 }
 
 } // namespace loom::evaluation

@@ -29,8 +29,10 @@ resolveDeploymentSpatialLaunchSelection(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   const Deployment &deployment = finalized.deployment();
 
+  if (!deployment.systemMapping())
+    return invalid("host-only Deployment has no Spatial launch");
   auto systemMapping =
-      mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+      mapping::importSystemMapping(*deployment.systemMapping(), artifacts);
   if (!systemMapping)
     return systemMapping.takeError();
   const mapping::SystemMappingView &mappingView = systemMapping->view();
@@ -43,12 +45,10 @@ resolveDeploymentSpatialLaunchSelection(
       dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflowView = dataflowArtifact->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflowArtifact->view();
 
   auto contexts = mapping::projectSystemExecutionContexts(
-      *dataflowView, mappingView.executionBindings());
+      dataflowView, mappingView.executionBindings());
   if (!contexts)
     return contexts.takeError();
   auto selected = mapping::selectSystemSpatialExecutionContext(

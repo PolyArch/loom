@@ -924,7 +924,7 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
       tech.view().dataflowIdentity()};
   auto dataflowArtifact = take(
       test, dataflow::importCanonicalDataflow(dataflowReference, artifacts));
-  auto dataflowView = take(test, dataflowArtifact.view());
+  const auto &dataflowView = dataflowArtifact.view();
 
   const auto byteList = [](llvm::ArrayRef<std::uint8_t> bytes) {
     std::string text = "[";
@@ -1090,7 +1090,7 @@ std::pair<ArtifactRootReference, ArtifactRootReference>
 publishSpatialInputs(llvm::StringRef test,
                      const dataflow::CanonicalDataflowArtifact &dataflow,
                      ArtifactStore &artifacts) {
-  const auto view = take(test, dataflow.view());
+  const auto &view = dataflow.view();
   const dataflow::RootedGraphLaunchRef launch{
       view.rootThreadLaunches().front().ref,
       view.staticGraphLaunches().front().ref};
@@ -1284,17 +1284,15 @@ MappedSpatialMappingFixture buildMappedBuiltinSpatialMappingFixture(
                           routeCoverage);
 }
 
-llvm::Expected<MappedBuiltinSpatialPnrInvocation>
-invokeMappedBuiltinSpatialPnrFixture(
+llvm::Expected<MappedSpatialPnrInvocation> invokeMappedSpatialPnrFixture(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
-    const adg::BuiltinTargetScale &scale,
+    fabric::FinalizedFabricRoot module,
     const mapping::ResolvedTechMappingConfigView &techMappingConfig,
     const pnr::ResolvedPnrConfigView &spatialPnrConfig,
     const ExecutionControlView &executionControl, ArtifactStore &artifacts,
     BlobStore &blobs) {
   const ArtifactRootReference dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
-  auto module = buildBuiltinSpatialCore(test, artifacts, scale);
   auto techInputs = dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
       {dataflowReference}, module.reference());
   if (!techInputs)
@@ -1308,7 +1306,8 @@ invokeMappedBuiltinSpatialPnrFixture(
       *techInputs, *techBinding, artifacts, blobs, executionControl);
   if (!techResult)
     return techResult.takeError();
-  const std::vector<dse::CandidateGeneratorOutputBinding> *techOutputs = nullptr;
+  const std::vector<dse::CandidateGeneratorOutputBinding> *techOutputs =
+      nullptr;
   if (const auto *completed =
           std::get_if<dse::CompletedCandidateGeneratorResult>(
               &techResult->outcome))
@@ -1322,16 +1321,15 @@ invokeMappedBuiltinSpatialPnrFixture(
         llvm::inconvertibleErrorCode(),
         "mapped builtin TechMapping provider changed its output shape");
   if (techOutputs->front().artifacts.empty())
-    return MappedBuiltinSpatialPnrInvocation{
-        std::move(module), std::move(*techResult), std::nullopt};
+    return MappedSpatialPnrInvocation{std::move(module), std::move(*techResult),
+                                      std::nullopt};
   auto spatialResult = invokeRootCompleteSpatialPnr(
-      techOutputs->front().artifacts, module.reference(),
-      spatialPnrConfig, executionControl, artifacts, blobs);
+      techOutputs->front().artifacts, module.reference(), spatialPnrConfig,
+      executionControl, artifacts, blobs);
   if (!spatialResult)
     return spatialResult.takeError();
-  return MappedBuiltinSpatialPnrInvocation{std::move(module),
-                                           std::move(*techResult),
-                                           std::move(*spatialResult)};
+  return MappedSpatialPnrInvocation{std::move(module), std::move(*techResult),
+                                    std::move(*spatialResult)};
 }
 
 llvm::Expected<MappedSpatialMappingRepairFixture>
@@ -1342,7 +1340,7 @@ rerouteMappedSpatialMappingFixture(
     const pnr::ResolvedPnrConfigView &spatialPnrConfig,
     const ExecutionControlView &executionControl, ArtifactStore &artifacts,
     BlobStore &blobs) {
-  auto dataflowView = take(test, dataflow.view());
+  const auto &dataflowView = dataflow.view();
   auto tech =
       take(test, mapping::importTechMapping(parent.techMapping, artifacts));
   std::vector<fabric::FabricPhysicalTraversalRef> domain;

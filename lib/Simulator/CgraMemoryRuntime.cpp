@@ -556,15 +556,15 @@ CgraMemoryRuntime::physicalTraceBinding(
   if (!target)
     return target.takeError();
   return CgraPhysicalTraceBinding{
-      PhysicalActionOccurrenceRef{
-          TransitionPhysicalActionParent{ActorTransitionOccurrenceRef{
-              GraphInvocationOccurrenceRef{0}, binding.physical->actor,
-              firing.actorOccurrenceOrdinal}},
+      TransitionPhysicalActionOccurrenceRef{
+          ActorTransitionOccurrenceRef{GraphInvocationOccurrenceRef{0},
+                                       binding.physical->actor,
+                                       firing.actorOccurrenceOrdinal},
           index.localActionOrdinal},
       std::move(*target)};
 }
 
-std::optional<std::uint64_t> CgraMemoryRuntime::physicalActionSemanticActor(
+std::optional<std::pair<std::uint64_t, std::uint64_t>> CgraMemoryRuntime::physicalActionSemanticFiring(
     std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal) const {
   const auto indexed = actionToFiring_.find({actionOrdinal, occurrenceOrdinal});
   if (indexed == actionToFiring_.end() ||
@@ -573,24 +573,52 @@ std::optional<std::uint64_t> CgraMemoryRuntime::physicalActionSemanticActor(
   const Firing &firing = firings_[indexed->second.firingSlot];
   if (!firing.active || firing.bindingOrdinal >= bindings_.size())
     return std::nullopt;
-  return bindings_[firing.bindingOrdinal].semanticActorOrdinal;
+  return std::make_pair(bindings_[firing.bindingOrdinal].semanticActorOrdinal,
+                        firing.actorOccurrenceOrdinal);
 }
 
 llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
                                          CgraMemoryLifecycleFrame &frame) {
   Firing &firing = firings_[firingSlot];
-  if (!firing.active || !firing.issueCommitted || firing.linearized ||
-      !firing.ready)
+  if (!firing.active || !firing.issueCommitted || !firing.ready ||
+      firing.linearization != LinearizationState::Unissued)
     return invalid("CGRA memory linearization names an invalid firing");
-  ActorBinding &binding = bindings_[firing.bindingOrdinal];
-  state_->currentActorPlan = binding.semantic;
-  llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
+  firing.linearization = LinearizationState::Pending;
+  pendingLinearizations_.push_back(firingSlot);
+  return advanceLinearizations(frame);
+}
 
-  std::optional<DataflowMemoryRead> read;
+llvm::Error
+CgraMemoryRuntime::advanceLinearizations(CgraMemoryLifecycleFrame &frame) {
+  while (!pendingLinearizations_.empty()) {
+    const std::uint64_t slot = pendingLinearizations_.front();
+    Firing &firing = firings_[slot];
+    if (!firing.external)
+      if (llvm::Error error = beginLinearization(slot, frame))
+        return error;
+    if (firing.external) {
+      if (!firing.external->response)
+        return llvm::Error::success();
+      if (llvm::Error error = finishExternalMemory(slot, frame))
+        return error;
+    }
+    maybeComplete(slot, frame);
+    pendingLinearizations_.pop_front();
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+CgraMemoryRuntime::beginLinearization(std::uint64_t firingSlot,
+                                      CgraMemoryLifecycleFrame &frame) {
+  Firing &firing = firings_[firingSlot];
+  ActorBinding &binding = bindings_[firing.bindingOrdinal];
   std::optional<DataflowMemoryWrite> write;
   if (binding.semantic->memory->dataOperandOrdinal) {
     if (!firing.storeData)
       return invalid("CGRA store firing lost its data token");
+    state_->currentActorPlan = binding.semantic;
+    llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
     write = prepareMemoryWrite(*firing.storeData, *firing.ready,
                                *binding.semantic->memory, *state_);
     if (!write)
@@ -599,83 +627,171 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
 
   const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
       &binding.rootedUse->target);
-  if (manager && !firing.ready->activeLanes.isZero()) {
-    if (!externalMemoryProvider_)
-      return unsupported("CGRA manager memory provider disappeared");
-    CgraExternalMemoryRequest request{*manager,
-                                      firing.ready->view.memory->logicalRootId,
-                                      write ? CgraExternalMemoryOperation::Write
-                                            : CgraExternalMemoryOperation::Read,
-                                      {},
-                                      frame.coordinate};
-    request.elements.reserve(firing.ready->slots.size());
-    if (write && write->elements.size() != firing.ready->slots.size())
-      return invalid("CGRA external write element projection is incomplete");
-    for (std::size_t ordinal = 0; ordinal != firing.ready->slots.size();
-         ++ordinal) {
-      CgraExternalMemoryElement element{
-          firing.ready->slots[ordinal],
-          binding.semantic->memory->elementLayout.byteCount,
-          {}};
-      if (write) {
-        const DataflowMemoryWrite::Element &prepared = write->elements[ordinal];
-        if (prepared.byteOffset != element.byteOffset ||
-            prepared.bytes.size() != element.byteCount)
-          return invalid(
-              "CGRA external write geometry disagrees with Dataflow");
-        element.writeData.reserve(prepared.bytes.size());
-        for (const SemanticMemoryByte &byte : prepared.bytes) {
-          if (byte.state != SemanticState::Defined)
-            return unsupported(
-                "CGRA external provider cannot publish exceptional bytes");
-          element.writeData.push_back(byte.value);
-        }
-      }
-      request.elements.push_back(std::move(element));
-    }
-    auto response = externalMemoryProvider_->transact(request);
-    if (!response)
-      return response.takeError();
+  if (!manager || firing.ready->activeLanes.isZero())
+    return finishLinearization(firingSlot, std::move(write), frame);
+  if (!externalMemoryProvider_)
+    return unsupported("CGRA manager memory provider disappeared");
+  if (!externalMemoryDomain_)
+    externalMemoryDomain_ =
+        std::make_shared<const CgraExternalMemoryRequestId::Domain>();
+  CgraExternalMemoryRequest request{
+      CgraExternalMemoryRequestId(externalMemoryDomain_,
+                                  binding.semanticActorOrdinal,
+                                  firing.actorOccurrenceOrdinal),
+      *manager,
+      firing.ready->view.memory->logicalRootId,
+      write ? CgraExternalMemoryOperation::Write
+            : CgraExternalMemoryOperation::Read,
+      {},
+      frame.coordinate};
+  request.elements.reserve(firing.ready->slots.size());
+  if (write && write->elements.size() != firing.ready->slots.size())
+    return invalid("CGRA external write element projection is incomplete");
+  for (std::size_t ordinal = 0; ordinal != firing.ready->slots.size();
+       ++ordinal) {
+    CgraExternalMemoryElement element{
+        firing.ready->slots[ordinal],
+        binding.semantic->memory->elementLayout.byteCount,
+        {}};
     if (write) {
-      if (!response->readData.empty())
-        return invalid("CGRA external write returned read data");
-    } else {
-      if (response->readData.size() != request.elements.size())
-        return invalid("CGRA external read response is incomplete");
-      for (std::size_t ordinal = 0; ordinal != request.elements.size();
-           ++ordinal) {
-        const CgraExternalMemoryElement &element = request.elements[ordinal];
-        const std::vector<std::uint8_t> &bytes = response->readData[ordinal];
-        if (bytes.size() != element.byteCount)
-          return invalid("CGRA external read returned the wrong byte count");
-        bool changed = false;
-        for (std::size_t byte = 0; byte != bytes.size(); ++byte) {
-          const std::size_t offset =
-              static_cast<std::size_t>(element.byteOffset) + byte;
-          if (!firing.ready->view.memory->initialized[offset] ||
-              firing.ready->view.memory->bytes[offset].state !=
-                  SemanticState::Defined ||
-              firing.ready->view.memory->bytes[offset].value != bytes[byte]) {
-            changed = true;
-            break;
-          }
-        }
-        if (!changed)
-          continue;
-        if (binding.semantic->memory->access.dataPointerLayout)
+      const DataflowMemoryWrite::Element &prepared = write->elements[ordinal];
+      if (prepared.byteOffset != element.byteOffset ||
+          prepared.bytes.size() != element.byteCount)
+        return invalid("CGRA external write geometry disagrees with Dataflow");
+      element.writeData.reserve(prepared.bytes.size());
+      for (const SemanticMemoryByte &byte : prepared.bytes) {
+        if (byte.state != SemanticState::Defined)
           return unsupported(
-              "CGRA external pointer read changed without provenance");
-        llvm::SmallVector<SemanticMemoryByte, 8> projected;
-        projected.reserve(bytes.size());
-        for (std::uint8_t byte : bytes)
-          projected.push_back({SemanticState::Defined, byte});
-        writeMemoryElement(firing.ready->view,
-                           static_cast<std::size_t>(element.byteOffset),
-                           projected);
+              "CGRA external provider cannot publish exceptional bytes");
+        element.writeData.push_back(byte.value);
       }
     }
+    request.elements.push_back(std::move(element));
   }
+  firing.external.emplace(PendingExternalMemory{
+      std::move(request), std::move(write), std::nullopt});
+  auto submitted = externalMemoryProvider_->submit(firing.external->request);
+  if (!submitted)
+    return submitted.takeError();
+  if (auto *response = std::get_if<CgraExternalMemoryResponse>(&*submitted))
+    return completeExternalMemory(firing.external->request.id,
+                                  std::move(*response));
+  return llvm::Error::success();
+}
 
+llvm::Error CgraMemoryRuntime::validateExternalMemoryResponse(
+    const CgraExternalMemoryRequest &request,
+    const CgraExternalMemoryResponse &response) {
+  if (request.operation == CgraExternalMemoryOperation::Write) {
+    if (!response.readData.empty())
+      return invalid("CGRA external write returned read data");
+  } else {
+    if (response.readData.size() != request.elements.size())
+      return invalid("CGRA external read response is incomplete");
+    for (std::size_t ordinal = 0; ordinal != request.elements.size(); ++ordinal)
+      if (response.readData[ordinal].size() !=
+          request.elements[ordinal].byteCount)
+        return invalid("CGRA external read returned the wrong byte count");
+  }
+  return llvm::Error::success();
+}
+
+bool CgraMemoryRuntime::waitingForExternalMemory() const {
+  if (pendingLinearizations_.empty())
+    return false;
+  const Firing &firing = firings_[pendingLinearizations_.front()];
+  return firing.external && !firing.external->response;
+}
+
+llvm::Error
+CgraMemoryRuntime::completeExternalMemory(CgraExternalMemoryRequestId request,
+                                          CgraExternalMemoryResponse response) {
+  if (pendingLinearizations_.empty())
+    return invalid("CGRA external memory response names no pending request");
+  Firing &firing = firings_[pendingLinearizations_.front()];
+  if (!firing.external || !(firing.external->request.id == request))
+    return invalid("CGRA external memory response names no pending request");
+  PendingExternalMemory &pending = *firing.external;
+  if (pending.response)
+    return invalid("CGRA external memory response was already supplied");
+  if (llvm::Error error =
+          validateExternalMemoryResponse(pending.request, response))
+    return error;
+  pending.response.emplace(std::move(response));
+  return llvm::Error::success();
+}
+
+llvm::Error CgraMemoryRuntime::applyExternalMemoryResponse(
+    Firing &firing, const CgraExternalMemoryRequest &request,
+    const CgraExternalMemoryResponse &response) {
+  if (request.operation == CgraExternalMemoryOperation::Write)
+    return llvm::Error::success();
+  const ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  for (std::size_t ordinal = 0; ordinal != request.elements.size(); ++ordinal) {
+    const CgraExternalMemoryElement &element = request.elements[ordinal];
+    const std::vector<std::uint8_t> &bytes = response.readData[ordinal];
+    bool changed = false;
+    for (std::size_t byte = 0; byte != bytes.size(); ++byte) {
+      const std::size_t offset =
+          static_cast<std::size_t>(element.byteOffset) + byte;
+      if (!firing.ready->view.memory->initialized[offset] ||
+          firing.ready->view.memory->bytes[offset].state !=
+              SemanticState::Defined ||
+          firing.ready->view.memory->bytes[offset].value != bytes[byte]) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed)
+      continue;
+    if (binding.semantic->memory->access.dataPointerLayout)
+      return unsupported(
+          "CGRA external pointer read changed without provenance");
+    llvm::SmallVector<SemanticMemoryByte, 8> projected;
+    projected.reserve(bytes.size());
+    for (std::uint8_t byte : bytes)
+      projected.push_back({SemanticState::Defined, byte});
+    writeMemoryElement(firing.ready->view,
+                       static_cast<std::size_t>(element.byteOffset), projected);
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+CgraMemoryRuntime::finishExternalMemory(std::uint64_t firingSlot,
+                                        CgraMemoryLifecycleFrame &frame) {
+  Firing &firing = firings_[firingSlot];
+  PendingExternalMemory pending = std::move(*firing.external);
+  firing.external.reset();
+  if (llvm::Error error = applyExternalMemoryResponse(firing, pending.request,
+                                                      *pending.response))
+    return error;
+  return finishLinearization(firingSlot, std::move(pending.write), frame);
+}
+
+llvm::Error
+CgraMemoryRuntime::resumeExternalMemory(CgraMemoryLifecycleFrame &frame) {
+  if (waitingForExternalMemory())
+    return invalid("CGRA external memory still awaits a response");
+  if (pendingLinearizations_.empty())
+    return invalid("CGRA external memory has no suspended linearization");
+  const Firing &firing = firings_[pendingLinearizations_.front()];
+  if (!firing.external ||
+      compareSpatialEventCoordinates(firing.external->request.readyCoordinate,
+                                     frame.coordinate) != 0)
+    return invalid("CGRA external memory lost its suspended coordinate");
+  return advanceLinearizations(frame);
+}
+
+llvm::Error
+CgraMemoryRuntime::finishLinearization(std::uint64_t firingSlot,
+                                       std::optional<DataflowMemoryWrite> write,
+                                       CgraMemoryLifecycleFrame &frame) {
+  Firing &firing = firings_[firingSlot];
+  ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  state_->currentActorPlan = binding.semantic;
+  llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
+  std::optional<DataflowMemoryRead> read;
   if (!write) {
     read = prepareMemoryRead(*firing.ready, *binding.semantic->memory, *state_);
     if (!read)
@@ -731,14 +847,15 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
             ActorWideMemoryActionRef{}},
         std::nullopt, std::nullopt, std::nullopt});
   }
-  firing.linearized = true;
+  firing.linearization = LinearizationState::Complete;
   return llvm::Error::success();
 }
 
 void CgraMemoryRuntime::maybeComplete(std::uint64_t firingSlot,
                                       CgraMemoryLifecycleFrame &frame) {
   Firing &firing = firings_[firingSlot];
-  if (!firing.active || !firing.linearized || !firing.operationRetired ||
+  if (!firing.active || firing.linearization != LinearizationState::Complete ||
+      !firing.operationRetired ||
       firing.retiredChildCount != firing.activeChildCount)
     return;
   const ActorBinding &binding = bindings_[firing.bindingOrdinal];
@@ -808,7 +925,7 @@ CgraMemoryRuntime::processPhysicalEvent(const CgraPhysicalLifecycleEvent &event,
 
 llvm::Expected<CgraMemoryLifecycleFrame>
 CgraMemoryRuntime::acceptPhysicalEvents(
-    const CgraPhysicalLifecycleFrame &physicalFrame) {
+    const CgraPhysicalLifecycleFrameView &physicalFrame) {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
   CgraMemoryLifecycleFrame result{physicalFrame.coordinate, {}, {}, {}, {}, {}};

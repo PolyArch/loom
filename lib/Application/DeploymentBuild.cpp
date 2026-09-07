@@ -76,6 +76,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
     std::uint64_t selectedPlan, const ArtifactRootReference &selectedMapping,
     const deployment::FinalizedDeployment &deployment,
     const ApplicationActivationInputs &activationInputs,
+    const ApplicationHostOnlyBaseline &hostOnlyBaseline,
     const std::optional<pnr::ResourceTimeTransitionGraph> &transitionGraph,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (!mappingExecution.execution.summary.selectedPlanOrdinal ||
@@ -303,6 +304,7 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
        deployment.reference(),
        activationInputs.workload,
        activationInputs.runtimeInput,
+       hostOnlyBaseline,
        {},
        selectedOutcome->runtimeEvidence,
        selectedOutcome->oracleEvidence,
@@ -327,11 +329,11 @@ struct DerivedHostProgramEntry final {
 };
 
 llvm::Expected<DerivedHostProgramEntry>
-deriveHostProgramEntry(const PreparedApplicationSoftware &software,
+deriveHostProgramEntry(const ArtifactRootReference &structuredProgram,
                        const ApplicationSourceInvocation &sourceInvocation,
                        const ArtifactStore &artifacts) {
   auto structured = frontend::importStructuredProgram(
-      software.compilation.structuredProgram, artifacts);
+      structuredProgram, artifacts);
   if (!structured)
     return structured.takeError();
   auto references =
@@ -507,6 +509,46 @@ mlir::DialectRegistry applicationDialectRegistry() {
 
 } // namespace
 
+llvm::Expected<deployment::FinalizedDeployment> buildApplicationHostOnlyDeployment(
+    const PreparedApplicationBuild &prepared,
+    const llvm::Module &finalLinkedModule, const ArtifactRootReference &fabricReference,
+    ApplicationDeploymentRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  auto fabric = fabric::importEntireFabricRoot(fabricReference, artifacts);
+  if (!fabric)
+    return fabric.takeError();
+  auto targets = resolveSystemCompilerTargetBindings(
+      *fabric, request.compilerTargetPolicy, artifacts);
+  if (!targets)
+    return targets.takeError();
+  auto entry = deriveHostProgramEntry(prepared.preMappingSourceProgram,
+                                      prepared.sourceInvocation, artifacts);
+  if (!entry)
+    return entry.takeError();
+  entry->entry.abiSymbol = detail::applicationHostEntrySymbol.str();
+  auto module = detail::materializeHostOnlyModule(finalLinkedModule,
+                                                 prepared.sourceInvocation);
+  if (!module)
+    return module.takeError();
+  auto object = emitCompilerTargetObject(std::move(*module), targets->host().binding());
+  if (!object)
+    return object.takeError();
+  auto executable = linkCompilerTargetExecutable(
+      *object, targets->host().binding(), detail::applicationHostEntrySymbol,
+      kPortableRiscVHostImageBase, request.linkerWorkspace);
+  if (!executable)
+    return executable.takeError();
+  auto program = deployment::finalizeHostProgramLeaf(
+      {targets->host().reference(), std::move(*executable),
+       {std::move(entry->entry)}, std::move(entry->externalInterfaces), {}},
+      artifacts, blobs);
+  if (!program)
+    return program.takeError();
+  return deployment::buildDeploymentFromLinkedProgram(
+      {deployment::HostOnlyDeploymentRoot{fabricReference}, std::move(*program), {}, {}},
+      finalLinkedModule, artifacts, blobs);
+}
+
 llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     const PreparedApplicationBuild &prepared,
     const ApplicationMappingExecution &mappingExecution,
@@ -550,7 +592,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       [&](const mapping::FinalizedSystemMapping &systemMapping)
       -> llvm::Expected<std::vector<deployment::DeploymentHardwareBinding>> {
     auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
-        imported->dataflowView, systemMapping.view().executionBindings());
+        imported->dataflow->view(), systemMapping.view().executionBindings());
     if (!subjects)
       return subjects.takeError();
     std::vector<deployment::DeploymentHardwareBinding> bindings;
@@ -590,7 +632,9 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       dataflow::canonicalDataflowSchema.version,
       imported->mapping.view().dataflowIdentity()};
   auto invocationPlan = detail::deriveApplicationSpatialInvocationPlan(
-      imported->dataflowView, prepared.sourceInvocation.entrySymbol);
+      imported->dataflow->view(), prepared.sourceInvocation.entrySymbol,
+      (*software)->compilation.structuredProgram, prepared.preMappingWorkload,
+      prepared.preMappingRuntimeInput, artifacts, (*software)->invocationCaptureByteLimit);
   if (!invocationPlan)
     return invocationPlan.takeError();
   std::vector<dataflow::RootThreadLaunchRef> invocationRoots;
@@ -607,12 +651,13 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
 
   operationBegin = MonotonicClock::now();
   auto hostEntry =
-      deriveHostProgramEntry(**software, prepared.sourceInvocation, artifacts);
+      deriveHostProgramEntry((*software)->compilation.structuredProgram,
+                             prepared.sourceInvocation, artifacts);
   if (!hostEntry)
     return hostEntry.takeError();
   hostEntry->entry.abiSymbol = detail::applicationHostEntrySymbol.str();
   auto hostModule = detail::materializeHostDispatchModule(
-      finalLinkedModule, imported->dataflow, prepared.sourceInvocation,
+      finalLinkedModule, *imported->dataflow, prepared.sourceInvocation,
       *invocationPlan);
   if (!hostModule)
     return hostModule.takeError();
@@ -654,7 +699,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       [&](const mapping::FinalizedSystemMapping &systemMapping)
       -> llvm::Expected<std::vector<ArtifactRootReference>> {
     auto contexts = mapping::projectSystemExecutionContexts(
-        imported->dataflowView, systemMapping.view().executionBindings());
+        imported->dataflow->view(), systemMapping.view().executionBindings());
     if (!contexts)
       return contexts.takeError();
     auto roots = projectTargetGroupRoots(*contexts, *targets,
@@ -730,6 +775,23 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
           : std::nullopt);
   if (!activationInputs)
     return activationInputs.takeError();
+
+  auto selectedFabric = deployment::deploymentFabric(deployment->deployment(), artifacts);
+  if (!selectedFabric)
+    return selectedFabric.takeError();
+  auto hostBaseline = buildApplicationHostOnlyDeployment(
+      prepared, finalLinkedModule, *selectedFabric, request, artifacts, blobs);
+  if (!hostBaseline)
+    return hostBaseline.takeError();
+  auto baselineInputs = materializeApplicationActivationInputs(
+      prepared.preMappingSourceProgram, prepared.preMappingWorkload,
+      prepared.preMappingRuntimeInput, *hostBaseline, artifacts,
+      prepared.portfolioInput
+          ? prepared.portfolioInput->input.profile.maximumSimulatedTicks
+          : std::nullopt);
+  if (!baselineInputs)
+    return baselineInputs.takeError();
+  const ApplicationHostOnlyBaseline baseline{hostBaseline->reference(), *baselineInputs};
 
   const std::optional<std::uint64_t> selectedPlan =
       mappingExecution.execution.summary.selectedPlanOrdinal;
@@ -1045,7 +1107,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return invalid("Deployment selection has no selected plan ordinal");
   auto runtimeManifest = finalizeRuntimeManifest(
       prepared, **software, mappingExecution, *selectedPlan,
-      imported->mapping.reference(), *deployment, *activationInputs,
+      imported->mapping.reference(), *deployment, *activationInputs, baseline,
       resourceTimeTransitionGraph, artifacts, blobs);
   if (!runtimeManifest)
     return runtimeManifest.takeError();

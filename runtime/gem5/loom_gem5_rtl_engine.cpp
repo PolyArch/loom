@@ -1,4 +1,4 @@
-#include "Gem5BridgeWire.h"
+#include "Gem5BridgeSocket.h"
 #include "Gem5SpatialChannelPlan.h"
 #include "SpatialInvocationWire.h"
 #include "Vloom_mapped_rtl_testbench.h"
@@ -122,36 +122,6 @@ bool parseArguments(int argc, char **argv, Options &options,
          !options.systemResultPath.empty();
 }
 
-bool readAll(int descriptor, std::uint8_t *bytes, std::size_t size) {
-  while (size != 0) {
-    const ssize_t count = ::read(descriptor, bytes, size);
-    if (count == 0)
-      return false;
-    if (count < 0) {
-      if (errno == EINTR)
-        continue;
-      return false;
-    }
-    bytes += count;
-    size -= static_cast<std::size_t>(count);
-  }
-  return true;
-}
-
-bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
-  while (size != 0) {
-    const ssize_t count = ::write(descriptor, bytes, size);
-    if (count < 0) {
-      if (errno == EINTR)
-        continue;
-      return false;
-    }
-    bytes += count;
-    size -= static_cast<std::size_t>(count);
-  }
-  return true;
-}
-
 bool readFile(const std::string &path, std::vector<std::uint8_t> &bytes) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
@@ -202,71 +172,110 @@ pid_t launchGem5(const Options &options) {
   _exit(127);
 }
 
-bool receiveLaunch(int connection, loom::runtime::Gem5BridgeMessage &message) {
-  std::vector<std::uint8_t> bytes(loom::runtime::gem5BridgeWireHeaderBytes);
-  if (!readAll(connection, bytes.data(), bytes.size()))
-    return false;
-  const std::uint64_t payloadSize =
-      loom::runtime::detail::readGem5BridgeU64(bytes.data() + 16);
-  if (payloadSize > 64ULL * 1024ULL * 1024ULL ||
-      payloadSize > std::numeric_limits<std::size_t>::max())
-    return false;
-  const std::size_t headerSize = bytes.size();
-  bytes.resize(headerSize + static_cast<std::size_t>(payloadSize));
-  if (payloadSize != 0 && !readAll(connection, bytes.data() + headerSize,
-                                   static_cast<std::size_t>(payloadSize)))
-    return false;
-  std::string diagnostic;
-  return loom::runtime::decodeGem5BridgeWireMessage(bytes, message, diagnostic);
-}
+// An RTL process owns exactly one bridge. Its harness may keep a local stack
+// across DMA requests because each request answers the current finite advance;
+// the gem5 driver resumes every engine group after receiving that boundary.
+class RtlEngineBridge final {
+public:
+  explicit RtlEngineBridge(int connection) : connection_(connection) {}
 
-bool sendMessage(int connection,
-                 const loom::runtime::Gem5BridgeMessage &message) {
-  const std::vector<std::uint8_t> bytes =
-      loom::runtime::encodeGem5BridgeWireMessage(message);
-  return writeAll(connection, bytes.data(), bytes.size());
-}
+  bool receiveLaunch(loom::runtime::Gem5BridgeMessage &message) {
+    if (!receiveInput())
+      return false;
+    message = input_.messages.front();
+    return true;
+  }
 
-bool transactMemory(int connection, std::uint64_t sequence,
-                    loom::runtime::Gem5BridgeMessageKind kind,
-                    loom::runtime::Gem5BridgeMemoryRequest request,
-                    loom::runtime::Gem5BridgeMemoryResponse &response) {
-  if (!sendMessage(connection,
-                   {kind, sequence,
-                    loom::runtime::encodeGem5BridgeMemoryRequest(request)}))
-    return false;
-  loom::runtime::Gem5BridgeMessage message;
-  if (!receiveLaunch(connection, message) ||
-      message.kind != loom::runtime::Gem5BridgeMessageKind::MemoryResponse ||
-      message.sequence != sequence)
-    return false;
-  std::string diagnostic;
-  if (!loom::runtime::decodeGem5BridgeMemoryResponse(message.payload, response,
-                                                     diagnostic) ||
-      response.requestId != request.requestId || !response.success)
-    return false;
-  if (request.operation == loom::runtime::Gem5BridgeMemoryOperation::Read)
-    return response.data.size() == request.size;
-  return response.data.empty();
-}
+  bool transactMemory(loom::runtime::Gem5BridgeMessageKind kind,
+                      loom::runtime::Gem5BridgeMemoryRequest request,
+                      loom::runtime::Gem5BridgeMemoryResponse &response) {
+    if (!sendBoundary(kind,
+                      loom::runtime::encodeGem5BridgeMemoryRequest(request)) ||
+        !receiveInput())
+      return false;
+    const auto &message = input_.messages.front();
+    if (message.kind != loom::runtime::Gem5BridgeMessageKind::MemoryResponse)
+      return false;
+    std::string diagnostic;
+    if (!loom::runtime::decodeGem5BridgeMemoryResponse(message.payload,
+                                                       response, diagnostic) ||
+        response.requestId != request.requestId || !response.success)
+      return false;
+    return request.operation == loom::runtime::Gem5BridgeMemoryOperation::Read
+               ? response.data.size() == request.size
+               : response.data.empty();
+  }
+
+  bool sendCompletion(std::uint64_t delay, std::uint32_t status,
+                      std::vector<std::uint8_t> result) {
+    return sendBoundary(loom::runtime::Gem5BridgeMessageKind::Completion,
+                        loom::runtime::encodeGem5BridgeCompletion(
+                            {delay, status, std::move(result)}));
+  }
+
+private:
+  int connection_;
+  loom::runtime::Gem5BridgeAdvance input_;
+
+  bool receiveInput() {
+    loom::runtime::Gem5BridgeAdvance next;
+    std::string diagnostic;
+    if (!loom::runtime::readGem5BridgeAdvance(
+            connection_, 1, loom::runtime::gem5BridgeDefaultMaximumMessageBytes,
+            next, diagnostic)) {
+      std::cerr << diagnostic << '\n';
+      return false;
+    }
+    if (input_.generation == std::numeric_limits<std::uint64_t>::max() ||
+        next.generation != input_.generation + 1 ||
+        next.causalTick < input_.causalTick || next.messages.size() != 1 ||
+        (input_.generation != 0 &&
+         (next.messages.front().bridgeSessionOrdinal !=
+              input_.messages.front().bridgeSessionOrdinal ||
+          next.messages.front().sequence !=
+              input_.messages.front().sequence))) {
+      std::cerr << "RTL engine received a stale or foreign causal input\n";
+      return false;
+    }
+    input_ = std::move(next);
+    return true;
+  }
+
+  bool sendBoundary(loom::runtime::Gem5BridgeMessageKind kind,
+                    std::vector<std::uint8_t> payload) {
+    const auto &message = input_.messages.front();
+    const loom::runtime::Gem5BridgeAdvance response{
+        input_.generation,
+        input_.causalTick,
+        {{kind, message.bridgeSessionOrdinal, message.sequence,
+          std::move(payload)}}};
+    std::string diagnostic;
+    if (!loom::runtime::writeGem5BridgeAdvance(connection_, response,
+                                               diagnostic)) {
+      std::cerr << diagnostic << '\n';
+      return false;
+    }
+    return true;
+  }
+};
 
 bool readChannelPayload(
-    int connection, std::uint64_t sequence,
+    RtlEngineBridge &bridge,
     const loom::runtime::Gem5SpatialChannelEngineInput &input,
     std::uint64_t ticksPerCycle, std::uint64_t &requestId,
     std::vector<std::uint8_t> &payload) {
   constexpr std::uint64_t maximumPolls = 1'000'000;
   for (std::uint64_t attempt = 0; attempt != maximumPolls; ++attempt) {
     loom::runtime::Gem5BridgeMemoryResponse header;
-    if (!transactMemory(connection, sequence,
-                        loom::runtime::Gem5BridgeMessageKind::MemoryRequest,
-                        {loom::runtime::Gem5BridgeMemoryOperation::Read,
-                         attempt == 0 ? 0 : ticksPerCycle,
-                         requestId++,
-                         input.address,
-                         loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-                         {}},
-                        header))
+    if (!bridge.transactMemory(
+            loom::runtime::Gem5BridgeMessageKind::MemoryRequest,
+            {loom::runtime::Gem5BridgeMemoryOperation::Read,
+             attempt == 0 ? 0 : ticksPerCycle,
+             requestId++,
+             input.address,
+             loom::runtime::gem5SpatialChannelBufferHeaderBytes,
+             {}},
+            header))
       return false;
     if (std::all_of(header.data.begin(), header.data.end(),
                     [](std::uint8_t byte) { return byte == 0; }))
@@ -279,8 +288,7 @@ bool readChannelPayload(
                            loom::runtime::gem5SpatialChannelBufferHeaderBytes)
       return false;
     loom::runtime::Gem5BridgeMemoryResponse response;
-    if (!transactMemory(
-            connection, sequence,
+    if (!bridge.transactMemory(
             loom::runtime::Gem5BridgeMessageKind::MemoryRequest,
             {loom::runtime::Gem5BridgeMemoryOperation::Read,
              0,
@@ -361,9 +369,10 @@ bool materializeRuntimeStream(const std::string &mappedResultPath,
 }
 
 bool publishChannelOutputs(
-    int connection, std::uint64_t sequence,
+    RtlEngineBridge &bridge,
     const loom::runtime::Gem5SpatialChannelEnginePlan &plan,
-    const std::vector<std::uint8_t> &result, std::uint64_t &requestId) {
+    const std::vector<std::uint8_t> &result, std::uint64_t &requestId,
+    std::uint64_t &remainingDelay) {
   for (const loom::runtime::Gem5SpatialChannelEngineOutput &output :
        plan.outputs) {
     if (result.empty() ||
@@ -371,20 +380,19 @@ bool publishChannelOutputs(
                             loom::runtime::gem5SpatialChannelBufferHeaderBytes)
       return false;
     loom::runtime::Gem5BridgeMemoryResponse response;
-    if (!transactMemory(connection, sequence,
-                        loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
-                        {loom::runtime::Gem5BridgeMemoryOperation::Write, 0,
-                         requestId++,
-                         output.address +
-                             loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-                         result.size(), result},
-                        response))
+    if (!bridge.transactMemory(
+            loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
+            {loom::runtime::Gem5BridgeMemoryOperation::Write,
+             std::exchange(remainingDelay, 0), requestId++,
+             output.address +
+                 loom::runtime::gem5SpatialChannelBufferHeaderBytes,
+             result.size(), result},
+            response))
       return false;
     const auto header =
         loom::runtime::encodeGem5SpatialChannelBufferHeaderPortable(
             result.size());
-    if (!transactMemory(
-            connection, sequence,
+    if (!bridge.transactMemory(
             loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
             {loom::runtime::Gem5BridgeMemoryOperation::Write, 0, requestId++,
              output.address, header.size(),
@@ -393,18 +401,6 @@ bool publishChannelOutputs(
       return false;
   }
   return true;
-}
-
-bool sendCompletion(int connection, std::uint64_t sequence, std::uint64_t delay,
-                    std::uint32_t status, std::vector<std::uint8_t> result) {
-  const loom::runtime::Gem5BridgeCompletion completion{delay, status,
-                                                       std::move(result)};
-  const loom::runtime::Gem5BridgeMessage message{
-      loom::runtime::Gem5BridgeMessageKind::Completion, sequence,
-      loom::runtime::encodeGem5BridgeCompletion(completion)};
-  const std::vector<std::uint8_t> bytes =
-      loom::runtime::encodeGem5BridgeWireMessage(message);
-  return writeAll(connection, bytes.data(), bytes.size());
 }
 
 bool waitForChild(pid_t child) {
@@ -648,10 +644,11 @@ int main(int argc, char **argv) {
       std::cerr << "cannot accept the bridge connection\n";
     return 6;
   }
+  RtlEngineBridge bridge(connection);
   loom::runtime::Gem5BridgeMessage launch;
   loom::runtime::Gem5SpatialLaunchEnvelope launchEnvelope;
   std::string launchDiagnostic;
-  if (!receiveLaunch(connection, launch) ||
+  if (!bridge.receiveLaunch(launch) ||
       launch.kind != loom::runtime::Gem5BridgeMessageKind::SpatialLaunch ||
       launch.sequence != 0 ||
       !loom::runtime::decodeGem5SpatialLaunchEnvelope(
@@ -670,8 +667,8 @@ int main(int argc, char **argv) {
   for (const loom::runtime::Gem5SpatialChannelEngineInput &input :
        channelPlan.inputs) {
     std::vector<std::uint8_t> payload;
-    if (!readChannelPayload(connection, launch.sequence, input,
-                            options.ticksPerCycle, requestId, payload)) {
+    if (!readChannelPayload(bridge, input, options.ticksPerCycle, requestId,
+                            payload)) {
       ::close(connection);
       if (!options.peer)
         stopChild(gem5);
@@ -757,8 +754,9 @@ int main(int argc, char **argv) {
     std::cerr << "RTL completion delay overflows gem5 ticks\n";
     return 11;
   }
-  if (!publishChannelOutputs(connection, launch.sequence, channelPlan, result,
-                             requestId)) {
+  std::uint64_t remainingDelay = cycles * options.ticksPerCycle;
+  if (!publishChannelOutputs(bridge, channelPlan, result, requestId,
+                             remainingDelay)) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);
@@ -766,11 +764,10 @@ int main(int argc, char **argv) {
     std::cerr << "could not publish a Spatial channel output\n";
     return 12;
   }
-  if (!sendCompletion(connection, launch.sequence,
-                      cycles * options.ticksPerCycle, retired ? 0U : 1U,
-                      loom::runtime::encodeSpatialInvocationResultWire(
-                          {0, launchEnvelope.invocation, std::nullopt,
-                           std::move(result)}))) {
+  if (!bridge.sendCompletion(remainingDelay, retired ? 0U : 1U,
+                             loom::runtime::encodeSpatialInvocationResultWire(
+                                 {0, launchEnvelope.invocation, std::nullopt,
+                                  std::move(result)}))) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);

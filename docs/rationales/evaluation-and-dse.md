@@ -40,6 +40,30 @@ Structured or Dataflow candidate. It never mutates the evaluated candidate or
 rebinds the existing Mapping; immutable lineage keeps each observation tied to
 the exact program and hardware that produced it.
 
+## Why Whole-Program Benefit Uses One Runtime Model
+
+Block activations, executable leaf counts, bytes, launch counts, and Spatial
+cycles describe different quantities. Converting or combining them in a pair
+report would create another timing model and let a small initialization graph
+appear to accelerate an application while its main loop stays on the host.
+The Structured analytic owner already combines modeled host work, Spatial
+pressure, and boundary costs in one picosecond estimate. Reusing that owner
+for the exact source and complete candidate gives a coherent prediction and
+keeps its low confidence explicit.
+
+Protocol roots bound the compiler search domain; they do not partition every
+host instruction in the program. Complete residual activity therefore comes
+from the same exact candidate block projection as the runtime estimate. One
+cache result preserves their common identity and avoids a competing activity
+cache or repeated native execution.
+
+Prediction and verified feasibility answer different questions. Replacing a
+CGRA/DFG cycle comparison with an analytic prediction still cannot establish
+measured target speedup. The pair boundary therefore reports verified
+feasibility and an explicit prediction or unknown benefit, while the complete
+application QoR gate remains open until matched target execution and resource
+evidence exist. This avoids manufacturing success by renaming a partial result.
+
 ## Why Request And Evidence Are Separate Artifacts
 
 An Evaluation case asks a ground-truth question about exact immutable subjects,
@@ -789,3 +813,22 @@ belong to the shell, container, scheduler, or site that executes the script.
 An externally stopped run may leave an incomplete attempt. It cannot select a
 different model, fabricate partial Evidence, or justify a Loom-owned cgroup
 abstraction.
+
+## Ownership Decision Admission
+
+Dynamic scope activity includes descendant work, so an enclosing scope normally
+ranks ahead of its hot inner kernel. Sorting that activity again cannot prevent
+the enclosing scopes' address and transformation variants from consuming every
+materialization attempt. The scope frontier still expands ancestors first, but
+the subsequent bounded decision admission shares opportunities across the
+already expanded scopes. Deterministic rounds preserve this distinction without
+another search budget, workload-specific preference, or alternate frontier.
+
+Source index-width proof is a cheap admission hint owned by the same Frontend
+normalizer that later checks the private clone. It must not become an early
+rejection: inlining and specialization can refine source values. Closed address
+representatives retain semantic alternatives; rounds then prevent one scope's
+variants from starving others. The same selector handles publication so a
+candidate admitted through that policy is not lost to an unrelated canonical
+prefix after successful materialization. These finite bounds still report
+incompleteness and cannot promise a globally optimal candidate.

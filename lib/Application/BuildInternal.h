@@ -117,7 +117,8 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     const std::optional<ArtifactRootReference> &runtimeInput,
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
     ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
-    std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt,
+    std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds =
+        std::nullopt,
     std::optional<std::array<std::uint8_t, 32>> invocationRunKey = std::nullopt,
     bool ownerVerifiedPreAdmission = false,
     std::optional<SelectedApplicationInput> portfolioInput = std::nullopt);

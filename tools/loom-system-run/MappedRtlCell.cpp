@@ -124,7 +124,7 @@ loom::system_run::deriveMappedRtlDeployment(
       "mapped_rtl_deployment_build",
       loom::formatArtifactIdentityHex(source.reference().artifact));
   auto deployment = loom::deployment::buildDeployment(
-      {source.deployment().systemMapping(), source.deployment().hostProgram(),
+      {source.deployment().executionRoot(), source.deployment().hostProgram(),
        source.deployment().instructionCoreBinaries().vec(),
        std::move(hardwareBindings),
        source.deployment().staticMemoryImages().vec()},

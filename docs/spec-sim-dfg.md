@@ -47,7 +47,7 @@ fixture-oriented developer CLI. A typed workload returns memory state only
 through the byte-addressed Spatial functional-observation contract; simulator
 execution must not derive or validate a second element-level terminal state.
 
-The Evaluation registry 3.1 descriptor is `dfg_simulator` under the exact
+The Evaluation registry 3.2 descriptor is `dfg_simulator` under the exact
 `canonical_dataflow_simulation` case signature. Its sole ordered subject is the
 Canonical Dataflow Program; both Spatial workload and runtime input are
 required. Its zero-field resolved config view contains no attempt limit. The
@@ -124,6 +124,34 @@ source-backed validation still requires at least one observed selected-region
 invocation, one externally observable result, and nonempty DFG execution; an
 all-empty aggregate cannot report success.
 
+Structured exploration plans omitted work caps once before replay from the
+exact selected Structured candidate under the common source workload/input.
+The existing native block-activity owner supplies the complete selected-region
+activation count, including dense points and repeated calls; candidate identity
+and total block correspondence are validated by that owner. Each observed
+activation contributes the default planning allowances of 100,000 DFG
+wavefronts and 1,000,000 actor firings. These are resource grants, not predicted
+execution counts or correctness proofs. Checked multiplication produces one
+finite aggregate grant; the validator never resets it between activations.
+An explicit aggregate cap for either dimension overrides its derived default.
+Capture-memory and complete-invocation wall-time limits are not multiplied.
+All activation, value, stream, memory and whole-program comparisons remain
+required. The shared native profile cache may supply exact observations but
+never replace DFG replay. A zero observed domain still reaches the ordinary
+Inapplicable result. Diagnostics retain the exact identities, observed count,
+resolved aggregate grants and which dimensions were explicitly capped.
+
+Detail invocation diagnostics retain the exact Structured and Canonical
+Dataflow identities with the selected region and graph IR, each activation's
+remaining aggregate wavefront allowance and elapsed simulation time, and the
+DFG terminal retirement, wavefront, event, and operation-firing counters. The
+region summary distinguishes all captured activations from completed replays
+when a deferred failure stops replay before native capture finishes.
+Terminal counters are projected before a non-retired report becomes a typed
+failure, so a work-limit refusal preserves the evidence needed to distinguish
+unfinished finite work from incorrect progress. These diagnostics are derived
+observations and do not change the execution budgets or Artifact identities.
+
 Graph value inputs are classified totally as `Fixed` or `Runtime`. Fixed
 inputs preserve defined, poison, or undef state; runtime inputs are captured in
 graph ABI order. Memory roots are projected onto finite byte-addressed backing
@@ -156,6 +184,39 @@ resolved to one registry object plus byte offset before constructing the
 canonical runtime input. Shared resolutions use one object ordinal and thereby
 preserve aliasing. No descriptor-specific pointer table, call-local alias map,
 or raw host address enters a graph or persistent Simulation Artifact.
+Stack objects enter the registry at each explicit `llvm.lifetime.start` and
+leave it at `llvm.lifetime.end` or return from their dynamic allocation frame.
+An allocation without lifetime markers enters at the allocation itself. A
+capture-local allocation ordinal distinguishes different objects whose host
+stack slots are reused; an end marker for an already-dead object cannot end a
+different live object at the same address. Ending a lifetime invalidates its
+stored pointer payloads and pointer targets. An imported object's lifetime
+must contain the complete selected activation, including its final memory
+observation, or capture is typed `Unsupported`. These execution-local markers
+and frame records never enter a persistent Artifact.
+An `allocsize` call provides an object extent rather than a lifetime marker.
+Repeated registration of the same returned object updates that extent while
+preserving its existing allocation and pointer-payload records.
+
+Deployment capture may supplement an unavailable static backing-object proof
+with a relation derived over every activation of one exact selected program,
+source program, workload, and runtime input. The native registry owns each
+address-free source locator. Every activation must agree on each root's source,
+finite extent, and object-sharing relation. This deployment path admits exact
+input ABI objects and fixed-size entry-block stack allocations in the current
+capture frame. Entry blocks must have no predecessors. Different frames,
+repeated allocation instances, ambiguous invocation contexts, or inconsistent
+object relations remain typed `Unsupported`.
+
+Canonical lowering and finalization own the live SSA correspondence for these
+host allocations through their existing clone and normalization transactions.
+Construction-local correspondence markers are reserved and removed before
+canonical identity. Exact ABI forwarding and dominance bind the live guest
+base; offsets remain invocation-dependent and the invocation decoder checks
+them against the finite object. This evidence applies only to its exact source
+input domain and does not establish provenance for arbitrary inputs or replace
+the independent source-backed functional replay.
+
 When a boundary pointer is a visible direct-call result, capture derives its
 origin by projecting every exact callee return operand back through that call's
 operands. All reachable return paths must resolve to the same finite runtime
@@ -168,7 +229,14 @@ Otherwise a candidate may retain the pointer as first-class graph data under
 the closed pointer contract. If neither a finite rooted view nor an exact
 pointer-capable provider exists at one concrete activation, that activation is
 typed `Unsupported`. The oracle never infers a static pointer identity from one
-reaching store.
+observed reaching store. Static descriptor projection uses Part 2's shared
+reaching-memory proof. A fixed capture view requires an SSA pointer equal to
+the load at the exact invocation, with every intervening effect proved to
+preserve the complete representation. This stronger equality is distinct from
+proving only the target object. A later opaque synchronous call cannot change
+an earlier proven value, while an unretired asynchronous effect cannot be
+assumed absent. The resulting object and invocation-local offset continue to
+use the existing capture registry and runtime input schema.
 The canonical memory-actor relation also determines whether independent
 native replays must agree on an imported object's pre-activation bytes. If any
 aliasing root loads, performs RMW, or otherwise may read initial state, those
@@ -379,7 +447,7 @@ reinterpreted as plain load/store.
 
 ## Trace And Termination
 
-`loom.simulation_execution 2.0` has no general diagnostic-trace field. Its
+`loom.simulation_execution 3.0` has no general diagnostic-trace field. Its
 narrow root-lifecycle progress field applies only to System executions and is
 not a carrier for DFG diagnostic events. DFG-sim may produce the current
 invocation-local `SpatialDiagnosticTrace` owned by Simulation Artifacts and
@@ -502,7 +570,7 @@ Stable anchor tests cover:
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
 * rejection of every persistent Spatial diagnostic-trace field in
-  `loom.simulation_execution 2.0` and diagnostic capture noninterference;
+  `loom.simulation_execution 3.0` and diagnostic capture noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
 * deterministic or oracle-governed comparison with one legal CGRA-sim

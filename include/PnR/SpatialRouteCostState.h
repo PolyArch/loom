@@ -59,14 +59,14 @@ public:
       const RouteTreeState &route,
       const SpatialTagContinuityProjection &continuity);
   llvm::Error acceptSelectedLogicalNet();
-  llvm::Error
-  synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
-                           llvm::ArrayRef<PnrIndex> changedLogicalNets = {});
   /// `routeChangedLogicalNets` names the nets whose RouteTrees changed in
   /// the enclosing move. Switch demands depend only on route structure, so
-  /// only those nets rebuild their demand inventory; nets recolored without
-  /// a route change keep their demands, which the delta validation still
-  /// cross-checks against the new segment universe.
+  /// only those nets rebuild their demand inventory; an empty list rebuilds
+  /// none. Nets recolored without a route change keep their demands, which
+  /// both projections cross-check against the new segment universe.
+  llvm::Error
+  synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
+                           llvm::ArrayRef<PnrIndex> routeChangedLogicalNets);
   llvm::Error
   synchronizeTagProjection(const SpatialTagAssignmentDelta &delta,
                            llvm::ArrayRef<PnrIndex> routeChangedLogicalNets);
@@ -158,8 +158,8 @@ private:
                            bool restore);
   llvm::Error rebuildTagProjectionFromCandidate(bool resetHistory);
   llvm::Error rebuildSwitchRowProjectionFromCandidate();
-  llvm::Error
-  synchronizeCandidateSwitchRows(llvm::ArrayRef<PnrIndex> changedLogicalNets);
+  llvm::Error synchronizeCandidateSwitchRows(
+      llvm::ArrayRef<PnrIndex> routeChangedLogicalNets);
   llvm::Error recomputeAllArcCosts(bool resetTagHistory);
   /// Checks the arc cost invariant the endpoint router would otherwise scan
   /// per query (finite lower bound and current cost, current not below its
@@ -167,7 +167,6 @@ private:
   /// revisions. An empty range checks every arc.
   llvm::Error certifyArcCosts(llvm::ArrayRef<PnrIndex> writtenArcs);
   std::uint64_t tagUsageForCost(PnrIndex domain, bool stagedTags) const;
-  std::uint64_t encodingPressureRaw(PnrIndex domain, bool stagedTags) const;
   llvm::ArrayRef<std::uint64_t> logicalNetClaimBits(PnrIndex logicalNet) const;
 
   const SpatialCandidateState *candidate_ = nullptr;

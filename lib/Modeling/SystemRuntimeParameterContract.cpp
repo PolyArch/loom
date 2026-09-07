@@ -377,8 +377,8 @@ modeledPlatformKey(const deployment::Deployment &deployment,
 struct ImportedSystemProjection final {
   sim::ImportedSystemSimulationInputs inputs;
   runtime::FinalizedGem5SimulationBinding gem5;
-  mapping::FinalizedSystemMapping mapping;
-  dataflow::CanonicalDataflowArtifact dataflow;
+  std::optional<mapping::FinalizedSystemMapping> mapping;
+  std::optional<dataflow::CanonicalDataflowArtifact> dataflow;
   fabric::FinalizedFabricRoot fabric;
   mapping::SystemMappingClosureProjection closure;
 };
@@ -412,44 +412,45 @@ importSystemProjection(const EvaluationCase &evaluationCase,
   auto gem5 = runtime::importGem5SimulationBinding(bindings.front(), artifacts);
   if (!gem5)
     return gem5.takeError();
-  const ArtifactRootReference &mappingReference =
-      inputs->deployment.deployment().systemMapping();
-  if (!resolution.find(mappingReference))
+  auto fabricReference = deployment::deploymentFabric(inputs->deployment.deployment(),
+                                                       artifacts);
+  if (!fabricReference)
+    return fabricReference.takeError();
+  if (!resolution.find(*fabricReference))
+    return invalid("Deployment Fabric owner is unresolved");
+  auto fabric = fabric::importEntireFabricRoot(*fabricReference, artifacts);
+  if (!fabric)
+    return fabric.takeError();
+  auto system = fabric::requireSystemRoot(fabric->view());
+  if (!system)
+    return system.takeError();
+  if (gem5->binding().fabric() != *fabricReference)
+    return invalid("Gem5SimulationBinding names a foreign Fabric System");
+  const auto *mappingReference = inputs->deployment.deployment().systemMapping();
+  if (!mappingReference)
+    return ImportedSystemProjection{std::move(*inputs), std::move(*gem5), {}, {},
+                                    std::move(*fabric), {}};
+  if (!resolution.find(*mappingReference))
     return invalid("SystemMapping is absent from CaseArtifactResolution");
-  auto mapping = mapping::importSystemMapping(mappingReference, artifacts);
+  auto mapping = mapping::importSystemMapping(*mappingReference, artifacts);
   if (!mapping)
     return mapping.takeError();
   ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
       mapping->view().dataflowIdentity()};
-  ArtifactRootReference fabricReference{
-      fabric::fabricArtifactSchema.identity.str(),
-      fabric::fabricArtifactSchema.version, mapping->view().fabricIdentity()};
-  if (!resolution.find(dataflowReference) || !resolution.find(fabricReference))
-    return invalid("SystemMapping owner closure is unresolved");
-  auto dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+  if (!resolution.find(dataflowReference))
+    return invalid("SystemMapping Dataflow owner is unresolved");
+  auto dataflow = dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  auto fabric = fabric::importEntireFabricRoot(fabricReference, artifacts);
-  if (!fabric)
-    return fabric.takeError();
-  auto system = fabric::requireSystemRoot(fabric->view());
-  if (!system)
-    return system.takeError();
-  if (gem5->binding().fabric() != fabricReference)
-    return invalid("Gem5SimulationBinding names a foreign Fabric System");
   auto closure = mapping::projectSystemMappingClosure(
-      *dataflowView, *system, mapping->view(), artifacts);
+      dataflow->view(), *system, mapping->view(), artifacts);
   if (!closure)
     return closure.takeError();
-  return ImportedSystemProjection{std::move(*inputs),  std::move(*gem5),
+  return ImportedSystemProjection{std::move(*inputs), std::move(*gem5),
                                   std::move(*mapping), std::move(*dataflow),
-                                  std::move(*fabric),  std::move(*closure)};
+                                  std::move(*fabric), std::move(*closure)};
 }
 
 llvm::Expected<SystemRuntimeFeatureView>

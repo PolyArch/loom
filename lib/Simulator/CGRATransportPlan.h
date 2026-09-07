@@ -186,10 +186,7 @@ struct CgraPeOperandQueueActivationPlan final {
 
 struct CgraPeOperandBufferPlan final {
   ::loom::fabric::FabricPeOccurrenceRef pe;
-  ::fabric::OperandBufferMode mode{};
-  std::uint32_t contextCount = 0;
-  std::uint32_t entriesPerAllocationUnit = 0;
-  std::vector<std::uint32_t> fuInputCounts;
+  ::fabric::TemporalOperandBufferContract contract;
 };
 
 /// Removable dense projection of the exact selected Spatial RouteTrees and

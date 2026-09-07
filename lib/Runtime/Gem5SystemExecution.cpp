@@ -81,6 +81,9 @@
 #ifndef LOOM_GEM5_RTL_ENGINE_SOURCE_PATH
 #error "LOOM_GEM5_RTL_ENGINE_SOURCE_PATH is required"
 #endif
+#ifndef LOOM_GEM5_BRIDGE_SOCKET_HEADER_PATH
+#error "LOOM_GEM5_BRIDGE_SOCKET_HEADER_PATH is required"
+#endif
 #ifndef LOOM_GEM5_BRIDGE_HEADER_PATH
 #error "LOOM_GEM5_BRIDGE_HEADER_PATH is required"
 #endif
@@ -274,10 +277,11 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.13");
+    json.attribute("schema", "loom.gem5_system_projection.14");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
+      json.attribute("service_ticks_per_byte", gem5SimpleMemoryServiceTicksPerByte);
       json.attribute("base", facts.memory.baseAddress);
       json.attribute("size", facts.memory.sizeBytes);
       json.attribute("latency",
@@ -347,7 +351,7 @@ renderProjection(const Gem5SystemFacts &facts,
             rootEventControl ? rootEventControl->endpoints.deployments.size()
                              : 1;
         for (std::uint64_t endpoint = 0; endpoint != endpointCount; ++endpoint)
-          json.value(endpoint == 0 ? 1 : 0);
+          json.value(endpoint == 0 && !facts.spatialLaunches.empty() ? 1 : 0);
       });
       json.attributeArray("targets", [&] {
         for (const Gem5SpatialLaunchProjection &launch :
@@ -424,8 +428,10 @@ renderProjection(const Gem5SystemFacts &facts,
       for (const auto indexed : llvm::enumerate(facts.spatialBridgeSessions)) {
         const Gem5SpatialBridgeSession &session = indexed.value();
         const bool sharedEngine = facts.engine != Gem5SystemEngine::Rtl;
-        const std::string socket =
-            spatialBridgeSocketPath(sharedEngine ? 0 : indexed.index());
+        const bool hasEngine = !facts.spatialLaunches.empty() &&
+                               (sharedEngine || !session.launchOrdinals.empty());
+        const std::string socket = hasEngine
+            ? spatialBridgeSocketPath(sharedEngine ? 0 : indexed.index()) : "";
         json.object([&] {
           json.attributeArray("dispatch_target_ordinals", [&] {
             for (std::size_t launchOrdinal : session.launchOrdinals)
@@ -449,7 +455,7 @@ renderProjection(const Gem5SystemFacts &facts,
                          std::to_string(session.bridge.pioLatencyTicks) + "ps");
           json.attribute("engine_socket", socket);
           json.attributeArray("engine_command", [&] {
-            if (facts.engine == Gem5SystemEngine::Rtl)
+            if (!hasEngine || facts.engine == Gem5SystemEngine::Rtl)
               return;
             if (indexed.index() != 0)
               return;
@@ -486,7 +492,7 @@ renderProjection(const Gem5SystemFacts &facts,
               }
             }
             json.value("--dataflow");
-            json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
+            json.value(formatArtifactIdentityHex(facts.dataflow->artifact));
             json.value("--maximum-work");
             json.value(std::to_string(gem5MaximumSpatialWork));
             json.value("--ticks-per-cycle");
@@ -534,7 +540,7 @@ std::vector<std::string> gem5AttemptOutputPaths(const Gem5SystemFacts &facts,
     }
   if (diagnostics) {
     outputs.push_back(kGem5PerformanceProfilePath.str());
-    if (facts.engine == Gem5SystemEngine::Cgra)
+    if (facts.engine == Gem5SystemEngine::Cgra && !facts.spatialLaunches.empty())
       outputs.push_back(kCgraEnginePerformanceProfilePath.str());
   }
   llvm::sort(outputs);
@@ -626,6 +632,7 @@ struct Gem5AttemptResult final {
   std::uint64_t entryTick = 0;
   std::uint64_t exitTick = 0;
   std::string cause;
+  sim::SystemMemoryActivity memoryActivity;
 };
 
 std::uint32_t readBigEndianU32(llvm::StringRef bytes, std::size_t offset) {
@@ -718,8 +725,10 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
               : controlDecision != Gem5RootEventControlDecision::Stay)))
       return invalid("uncontrolled gem5 root lifecycle changed endpoint");
     lastAcknowledgementGeneration = acknowledgementGeneration;
+    if (!facts.dataflow)
+      return invalid("host-only gem5 execution contains root lifecycle events");
     const dataflow::RootThreadLaunchRef root{
-        facts.dataflow.artifact, dataflow::RootThreadLaunchId(entity)};
+        facts.dataflow->artifact, dataflow::RootThreadLaunchId(entity)};
     const dataflow::EventFamilyKey event =
         action == static_cast<std::uint32_t>(Gem5RootLifecycleAction::Start)
             ? dataflow::rootThreadStartEventFamily(root)
@@ -734,17 +743,24 @@ llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
   if (!value)
     return invalid("gem5 result is not valid JSON");
   const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 4)
+  if (!object || object->size() != 5)
     return invalid("gem5 result does not have the exact result shape");
   const auto schema = object->getString("schema");
   const auto entry = object->getInteger("entry_tick");
   const auto exit = object->getInteger("exit_tick");
   const auto cause = object->getString("cause");
-  if (!schema || *schema != "loom.gem5_system_attempt.1" || !entry || !exit ||
+  if (!schema || *schema != "loom.gem5_system_attempt.2" || !entry || !exit ||
       !cause || *entry < 0 || *exit < 0 || *entry > *exit)
     return invalid("gem5 result fields are invalid");
+  const auto *activity = object->getObject("memory_activity");
+  if (!activity || activity->size() != 1)
+    return invalid("gem5 result has no exact native memory counter shape");
+  const auto occupied = activity->getInteger("occupied_ticks");
+  if (!occupied || *occupied < 0)
+    return invalid("gem5 native memory service counter is invalid");
   return Gem5AttemptResult{static_cast<std::uint64_t>(*entry),
-                           static_cast<std::uint64_t>(*exit), cause->str()};
+                           static_cast<std::uint64_t>(*exit), cause->str(),
+                           {static_cast<std::uint64_t>(*occupied)}};
 }
 
 llvm::Expected<std::uint64_t>
@@ -798,7 +814,7 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
   if (!object || object->size() != 15)
     return invalid("gem5 performance profile has the wrong shape");
   const auto schema = object->getString("schema");
-  if (!schema || *schema != "loom.gem5_system_performance_profile.5")
+  if (!schema || *schema != "loom.gem5_system_performance_profile.6")
     return invalid("gem5 performance profile has the wrong schema");
   Gem5SystemAttemptProfile profile;
   const auto assign = [&](llvm::StringRef field,
@@ -860,14 +876,11 @@ parseGem5SystemAttemptProfile(llvm::StringRef text) {
     return std::move(error);
   if (llvm::Error error = assign("bridge_count", profile.bridgeCount))
     return std::move(error);
-  if (profile.managedEngineStartup.has_value() ==
-      profile.externalEngineSocketReadiness.has_value())
-    return invalid("gem5 performance profile must contain exactly one engine "
-                   "readiness interval");
-  const Gem5HostIntervalProfile &readiness =
-      profile.managedEngineStartup ? *profile.managedEngineStartup
-                                   : *profile.externalEngineSocketReadiness;
-  if (readiness.wallNanoseconds > profile.configurationWallNanoseconds)
+  if (profile.managedEngineStartup && profile.externalEngineSocketReadiness)
+    return invalid("gem5 performance profile repeats its engine readiness owner");
+  const auto &readiness = profile.managedEngineStartup
+      ? profile.managedEngineStartup : profile.externalEngineSocketReadiness;
+  if (readiness && readiness->wallNanoseconds > profile.configurationWallNanoseconds)
     return invalid("gem5 engine readiness interval exceeds its configuration "
                    "interval");
   return profile;
@@ -1117,13 +1130,14 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       std::get<Gem5SystemFacts>(**factsOrUnsupported);
   if (facts.engine == Gem5SystemEngine::Rtl &&
       llvm::any_of(facts.spatialBridgeSessions, [](const auto &session) {
-        return session.launchOrdinals.size() != 1;
+        return session.launchOrdinals.size() > 1;
       }))
     return EvaluationModelProviderPreparation{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   if (rootEventControl &&
       (rootEventControl->endpoints.deployments.front() != facts.deployment ||
-       rootEventControl->endpoints.dataflow != facts.dataflow.artifact))
+       !facts.dataflow ||
+       rootEventControl->endpoints.dataflow != facts.dataflow->artifact))
     return invalid("gem5 root event control endpoint table does not start at "
                    "the projected entry Deployment");
 
@@ -1170,7 +1184,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
   files.push_back(
       {kProjectionPath.str(), std::move(*projection), std::nullopt, false});
 
-  if (facts.engine == Gem5SystemEngine::Rtl) {
+  if (facts.engine == Gem5SystemEngine::Rtl && !facts.spatialLaunches.empty()) {
     // The gem5 bridge engine is linked into the Verilated model, so this
     // engine binds the Verilator member of the mapped-RTL simulator set.
     auto options = eda::open_source::resolveMappedRtlExecutionAttemptOptions(
@@ -1212,12 +1226,15 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       return runtime.takeError();
     auto engineSource = readFile(LOOM_GEM5_RTL_ENGINE_SOURCE_PATH);
     auto bridgeHeader = readFile(LOOM_GEM5_BRIDGE_HEADER_PATH);
+    auto bridgeSocketHeader = readFile(LOOM_GEM5_BRIDGE_SOCKET_HEADER_PATH);
     auto channelPlanHeader = readFile(LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH);
     auto invocationWireHeader = readFile(LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH);
     if (!engineSource)
       return engineSource.takeError();
     if (!bridgeHeader)
       return bridgeHeader.takeError();
+    if (!bridgeSocketHeader)
+      return bridgeSocketHeader.takeError();
     if (!channelPlanHeader)
       return channelPlanHeader.takeError();
     if (!invocationWireHeader)
@@ -1293,6 +1310,11 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
             std::filesystem::path(kBridgeHeaderPath.str()).filename())
                .generic_string(),
            *bridgeHeader, std::nullopt, false});
+      files.push_back(
+          {(engineDirectory /
+            std::filesystem::path(kBridgeSocketHeaderPath.str()).filename())
+               .generic_string(),
+           *bridgeSocketHeader, std::nullopt, false});
       files.push_back(
           {(engineDirectory /
             std::filesystem::path(kChannelPlanHeaderPath.str()).filename())
@@ -1419,6 +1441,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       });
   if (!runtime)
     return runtime.takeError();
+  if (!facts.spatialLaunches.empty()) {
   const llvm::StringRef engineSource = facts.engine == Gem5SystemEngine::Dfg
                                            ? LOOM_GEM5_DFG_ENGINE_PATH
                                            : LOOM_GEM5_CGRA_ENGINE_PATH;
@@ -1429,6 +1452,7 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
                        ? kDfgEnginePath.str()
                        : kCgraEnginePath.str(),
                    std::move(*engine), std::nullopt, true});
+  }
 
   ExternalToolInvocationBundleSpec specification{
       std::move(*contract),
@@ -1571,7 +1595,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     if (!parsed)
       return parsed.takeError();
     attemptProfile = std::move(*parsed);
-    if (facts.engine == Gem5SystemEngine::Cgra) {
+    if (facts.engine == Gem5SystemEngine::Cgra && !facts.spatialLaunches.empty()) {
       auto engineText = readExternalToolInvocationDeclaredOutput(
           imported, kCgraEnginePerformanceProfilePath);
       if (!engineText)
@@ -1587,22 +1611,25 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
   if (attemptProfile) {
-    const bool ownsEngineProcess = facts.engine != Gem5SystemEngine::Rtl;
+    const bool hasSpatialWork = !facts.spatialLaunches.empty();
+    const bool ownsEngineProcess = hasSpatialWork && facts.engine != Gem5SystemEngine::Rtl;
+    const bool hasExternalEngine = hasSpatialWork && !ownsEngineProcess;
     if (attemptProfile->engineProcessCpuNanoseconds.has_value() !=
             ownsEngineProcess ||
         attemptProfile->managedEngineStartup.has_value() != ownsEngineProcess ||
-        attemptProfile->externalEngineSocketReadiness.has_value() ==
-            ownsEngineProcess)
+        attemptProfile->externalEngineSocketReadiness.has_value() !=
+            hasExternalEngine)
       return invalid("gem5 performance profile has inconsistent engine "
                      "readiness or CPU ownership");
     if (attemptProfile->bridgeCount != facts.spatialBridgeSessions.size())
       return invalid("gem5 performance profile bridge count differs from "
                      "the exact System projection");
-    if (attemptProfile->bridgeCount == 0 ||
-        attemptProfile->acceleratorInvocationCount == 0 ||
-        attemptProfile->bridgeMessageCount == 0)
-      return invalid("completed gem5 performance profile has no bridge "
-                     "activity");
+    if (hasSpatialWork && (attemptProfile->acceleratorInvocationCount == 0 ||
+                           attemptProfile->bridgeMessageCount == 0))
+      return invalid("completed mapped gem5 performance profile has no bridge activity");
+    if (!hasSpatialWork && (attemptProfile->acceleratorInvocationCount != 0 ||
+                            attemptProfile->bridgeMessageCount != 0))
+      return invalid("host-only gem5 performance profile contains bridge activity");
     if (attemptProfile->simulationWallNanoseconds == 0 ||
         attemptProfile->bridgeClockFailureCount != 0)
       return invalid("completed gem5 performance profile has inconsistent "
@@ -1621,7 +1648,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     if (!decodeGem5BridgeResultCollection(bridgeBytes, bridgeResults,
                                           bridgeDiagnostic))
       return invalid("bridge result is invalid: " + bridgeDiagnostic);
-    if (session.launchOrdinals.empty() || bridgeResults.results.empty() ||
+    if (session.launchOrdinals.empty() != bridgeResults.results.empty() ||
         bridgeResults.results.size() > gem5MaximumDynamicSpatialInvocations)
       return invalid("bridge result count is outside its session limits");
     std::vector<bool> observedSessionEntries(session.launchOrdinals.size());
@@ -1748,12 +1775,10 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
               invocationResult.runtimeInput->identity);
           if (!runtimeIdentity)
             return runtimeIdentity.takeError();
-          auto view = spatialWorkload->dataflow.view();
-          if (!view)
-            return view.takeError();
+          const auto &view = spatialWorkload->dataflow->view();
           auto runtime = sim::importSimulationRuntimeInput(
               invocationResult.runtimeInput->canonicalBytes,
-              spatialWorkload->workload, *view, *runtimeIdentity);
+              spatialWorkload->workload, view, *runtimeIdentity);
           if (!runtime)
             return runtime.takeError();
           if (llvm::Error error =
@@ -1853,7 +1878,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
        sim::SystemEventCoordinate{systemResult->exitTick, 0},
        {systemResult->exitTick, 0},
        std::move(*rootLifecycle)},
-      {}};
+      systemResult->memoryActivity};
   auto finalized =
       sim::finalizeSimulationExecution(execution, resolution, artifacts, blobs);
   if (!finalized)
@@ -1874,7 +1899,7 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
   for (const MetricRequest &metric : request.metricRequests()) {
     if (metric.query().metric != MetricKind::Runtime)
       return invalid("gem5 System Request contains an unsupported metric");
-    auto runtime = DecimalValue::get(static_cast<std::int64_t>(duration), -12);
+    auto runtime = DecimalValue::get(static_cast<std::int64_t>(duration), gem5TickSecondsExponent);
     if (!runtime)
       return runtime.takeError();
     metrics.push_back({UncertaintyKind::ExactWithinModel,

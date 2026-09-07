@@ -2,6 +2,7 @@
 #define LOOM_LIB_PNR_CPSATEXACTPROTOCOL_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include "PnR/SpatialPnrWorkLedger.h"
@@ -17,6 +18,7 @@ namespace loom::pnr::detail {
 enum class CpSatProofStatus : std::uint8_t {
   Optimal,
   Infeasible,
+  Feasible,
   Unknown,
   InternalError,
 };
@@ -36,8 +38,12 @@ struct CpSatCanonicalVariable final {
 enum class CpSatCanonicalResultKind : std::uint8_t {
   Assignment,
   Infeasible,
-  UnknownBudgetExhausted,
+  SolverCallLimitReached,
+  SolverUnknown,
+  FeasibleWithoutOptimalityProof,
 };
+
+llvm::StringRef cpSatCanonicalResultKindSpelling(CpSatCanonicalResultKind kind);
 
 struct CpSatCanonicalResult final {
   CpSatCanonicalResultKind kind;
@@ -61,7 +67,8 @@ solveCanonicalCpSat(const operations_research::sat::CpModelProto &model,
                     llvm::ArrayRef<CpSatCanonicalVariable> variables,
                     std::optional<int> objectiveVariable,
                     std::uint64_t maxSolverCalls, std::int32_t randomSeed,
-                    SpatialPnrWorkLedgerView workLedger = {});
+                    SpatialPnrWorkLedgerView workLedger = {},
+                    llvm::ArrayRef<int> proofPriorityVariables = {});
 
 /// Proves one complete supplied assignment with a single solver call. The
 /// assignment uses the same typed variable/value order as canonical
@@ -72,7 +79,8 @@ solveFixedCpSatAssignment(const operations_research::sat::CpModelProto &model,
                           llvm::ArrayRef<std::int64_t> assignment,
                           std::optional<int> objectiveVariable,
                           std::uint64_t maxSolverCalls, std::int32_t randomSeed,
-                          SpatialPnrWorkLedgerView workLedger = {});
+                          SpatialPnrWorkLedgerView workLedger = {},
+                          llvm::ArrayRef<int> proofPriorityVariables = {});
 
 } // namespace loom::pnr::detail
 

@@ -127,12 +127,14 @@ private:
   friend llvm::Expected<DfgExecutionSession>
   startDfgExecutionSession(const PreparedDfgExecution &,
                            const CanonicalSimulationWorkload &,
-                           const CanonicalSimulationRuntimeInput &);
+                           const CanonicalSimulationRuntimeInput &,
+                           llvm::ArrayRef<std::uint64_t>);
 };
 
 /// Transient lifecycle of one exact DFG activation. Runnable means the
 /// activation can be advanced without reconstructing prior dynamic state.
-/// Every non-Runnable state is terminal and idempotent under further advances.
+/// WaitingForExternalStreamInput retains the exact pending receive event.
+/// Other non-Runnable states are terminal and idempotent under advances.
 using DfgExecutionSessionState = SpatialExecutionSessionState;
 
 /// One pausable activation of a prepared rooted graph. This is an ephemeral
@@ -160,6 +162,17 @@ public:
       std::optional<std::chrono::steady_clock::time_point> executionDeadline =
           std::nullopt);
 
+  const std::optional<SpatialStreamInputRequest> &pendingStreamInput() const;
+
+  /// Supplies exactly one demanded input event. Its identity must match the
+  /// pending request. Existing graph state and work counters are retained.
+  llvm::Error completeStreamInput(const SpatialStreamInputRequest &request,
+                                  const CanonicalValueSequence &value);
+
+  /// Derives the complete supplied input at this consumer's retirement
+  /// horizon from the tokens actually admitted by the retained model.
+  const CanonicalSimulationRuntimeInput *retiredRuntimeInput() const;
+
   /// Projects the canonical report and functional observations exactly once.
   /// The session must have reached Retired.
   llvm::Expected<RetiredDFGSimulation> takeRetiredSimulation();
@@ -173,7 +186,8 @@ private:
   friend llvm::Expected<DfgExecutionSession>
   startDfgExecutionSession(const PreparedDfgExecution &,
                            const CanonicalSimulationWorkload &,
-                           const CanonicalSimulationRuntimeInput &);
+                           const CanonicalSimulationRuntimeInput &,
+                           llvm::ArrayRef<std::uint64_t>);
   friend llvm::Expected<RetiredDFGSimulation> simulateRetiredDfgWorkload(
       const PreparedDfgExecution &, const CanonicalSimulationWorkload &,
       const CanonicalSimulationRuntimeInput &, std::uint64_t,
@@ -181,9 +195,11 @@ private:
 };
 
 llvm::Expected<DfgExecutionSession>
-startDfgExecutionSession(const PreparedDfgExecution &prepared,
-                         const CanonicalSimulationWorkload &workload,
-                         const CanonicalSimulationRuntimeInput &runtimeInput);
+startDfgExecutionSession(
+    const PreparedDfgExecution &prepared,
+    const CanonicalSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput,
+    llvm::ArrayRef<std::uint64_t> liveStreamInputs = {});
 
 llvm::Expected<PreparedDfgExecution>
 prepareDfgExecution(const dataflow::CanonicalDataflowArtifact &program,

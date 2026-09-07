@@ -1,5 +1,6 @@
 #include "Arbitration.h"
 #include "Components.h"
+#include "TemporalPeDiagnostics.h"
 
 #include "Common/InvocationDiagnosticLog.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
@@ -7,6 +8,8 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
+#include "circt/Dialect/Seq/SeqOps.h"
+#include "circt/Dialect/SV/SVOps.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
@@ -228,6 +231,11 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
             accessor.getInput("reset"), llvm::APInt(occupancyWidth, 0),
             "occupancy_reg", clockReset.asynchronousReset);
 
+        circt::Backedge bankWriteEnable =
+            backedges.get(bodyBuilder.getI1Type());
+        mlir::Value hardwareClock = circt::seq::FromClockOp::create(
+            bodyBuilder, location, accessor.getInput("clock"));
+
         struct Bank final {
           unsigned width = 0;
           std::vector<circt::Backedge> next;
@@ -241,15 +249,40 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
             return bank;
           bank.next.resize(depth);
           bank.current.resize(depth);
+          mlir::Value bankStorage = circt::sv::RegOp::create(
+              bodyBuilder, location,
+              circt::hw::UnpackedArrayType::get(
+                  bodyBuilder.getIntegerType(width), depth),
+              bodyBuilder.getStringAttr(prefix.str() + "_bank"));
+          std::vector<mlir::Value> storage(depth);
           for (std::uint32_t slot = 0; slot != depth; ++slot) {
             bank.next[slot] = backedges.get(bodyBuilder.getIntegerType(width));
-            bank.current[slot] = createRegister(
-                bodyBuilder, location, bank.next[slot],
-                accessor.getInput("clock"), accessor.getInput("reset"),
-                llvm::APInt(width, 0),
-                prefix.str() + "_" + std::to_string(slot) + "_reg",
-                clockReset.asynchronousReset);
+            storage[slot] = circt::sv::ArrayIndexInOutOp::create(
+                bodyBuilder, location, bankStorage,
+                constant(bodyBuilder, location, indexWidth(depth), slot));
+            bank.current[slot] = circt::sv::ReadInOutOp::create(
+                bodyBuilder, location, storage[slot]);
           }
+          mlir::Value resetValue = zero(bodyBuilder, location, width);
+          circt::sv::AlwaysFFOp::create(
+              bodyBuilder, location, circt::sv::EventControl::AtPosEdge,
+              hardwareClock,
+              clockReset.asynchronousReset ? circt::sv::ResetType::AsyncReset
+                                           : circt::sv::ResetType::SyncReset,
+              circt::sv::EventControl::AtPosEdge, accessor.getInput("reset"),
+              [&] {
+                circt::sv::IfOp::create(
+                    bodyBuilder, location, bankWriteEnable, [&] {
+                      for (std::uint32_t slot = 0; slot != depth; ++slot)
+                        circt::sv::PAssignOp::create(
+                            bodyBuilder, location, storage[slot], bank.next[slot]);
+                    });
+              },
+              [&] {
+                for (mlir::Value slot : storage)
+                  circt::sv::PAssignOp::create(bodyBuilder, location, slot,
+                                             resetValue);
+              });
           return bank;
         };
         Bank payload = makeBank(payloadWidth, "payload");
@@ -364,6 +397,9 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
               accessor.getInput(queuePort("enqueue", queue, "_commit"));
         }
         mlir::Value enqueue = orValues(bodyBuilder, location, enqueueFired);
+        // With neither action, compaction and append both select current state.
+        // Preserve every stored bit while avoiding an identity bank update.
+        bankWriteEnable.setValue(orValues(bodyBuilder, location, {enqueue, dequeue}));
 
         mlir::Value one = constant(bodyBuilder, location, occupancyWidth, 1);
         mlir::Value occupancyAfterDequeue = circt::comb::MuxOp::create(
@@ -1331,6 +1367,7 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             presentationEvaluated, accessor.getInput("clock"),
             accessor.getInput("reset"), "result_presentation_cursor_reg",
             clockReset);
+        std::vector<TemporalPeFuInputDiagnostics> diagnosticInputs;
         std::vector<std::vector<mlir::Value>> fuInputReady(layout.fus.size());
         std::vector<FuOutputRuntime> fuOutputs;
         metrics.dispatchOperations =
@@ -1464,6 +1501,16 @@ llvm::Expected<PeModule> buildTemporalPeModule(
             if (endpoint.direction == fabric::FabricPortDirection::Input) {
               fuInputReady[fu][endpoint.localOrdinal] =
                   instance->at(endpoint.ready.getName().str());
+              diagnosticInputs.push_back(
+                  {child.reference.id(), endpoint.localOrdinal,
+                   selectedContext[fu],
+                   instanceInputs.at(dispatchEnablePortName.str()),
+                   instanceInputs.at(endpoint.valid.getName().str()),
+                   fuInputReady[fu][endpoint.localOrdinal],
+                   endpoint.data
+                       ? std::optional<mlir::Value>{instanceInputs.at(
+                             endpoint.data->getName().str())}
+                       : std::nullopt});
               continue;
             }
             FuOutputRuntime output;
@@ -1769,6 +1816,39 @@ llvm::Expected<PeModule> buildTemporalPeModule(
         for (const EndpointPlan *input : inputEndpoints)
           accessor.setOutput(input->ready.getName(),
                              inputReady[input->localOrdinal]);
+
+        std::vector<TemporalPeOperandDiagnostics> diagnosticOperands;
+        for (auto [queue, plan] : llvm::enumerate(queues)) {
+          const auto &selector = rows[plan.context].operands[plan.input];
+          const auto &runtime = queueRuntime[queue];
+          diagnosticOperands.push_back(
+              {plan.context, children[plan.fu]->reference.id(), plan.input,
+               contextEligible[plan.fu][plan.context], selector.route,
+               selector.target, selector.tag, runtime.valid,
+               runtime.enqueueReady, queueGrant[queue], runtime.enqueueCommit,
+               queueSelected[queue], fuInputReady[plan.fu][plan.input],
+               runtime.data});
+        }
+        std::vector<TemporalPeResultDiagnostics> diagnosticResults;
+        for (auto [candidate, output] : llvm::enumerate(fuOutputs)) {
+          const auto &route = resultRoutes[candidate];
+          diagnosticResults.push_back(
+              {children[output.fu]->reference.id(), output.output,
+               output.context, output.requester, output.offer, output.valid,
+               output.ready, candidatePresented[candidate], route.active,
+               route.route, route.discard, route.target, route.tag, output.data});
+        }
+        std::vector<TemporalPeFifoDiagnostics> diagnosticFifos;
+        for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo)
+          diagnosticFifos.push_back(
+              {fifoHeadValid[fifo], fifoReadReady[fifo], fifoHeadTag[fifo],
+               payloadWidth != 0
+                   ? std::optional<mlir::Value>{fifoHeadData[fifo]}
+                   : std::nullopt});
+        emitTemporalPeDiagnostics(bodyBuilder, location, accessor, pe.id(),
+                                  *endpoints, diagnosticOperands,
+                                  diagnosticInputs, diagnosticResults,
+                                  diagnosticFifos);
       });
   if (materializationError)
     return invalid(*materializationError);

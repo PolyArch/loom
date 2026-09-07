@@ -203,18 +203,18 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       deployment::test::buildRetargetedMinimalDeployment(test, artifacts, blobs,
                                                          tree);
   deployment::test::require(test,
-                            parent.deployment().systemMapping() !=
-                                child.deployment().systemMapping(),
+                            *parent.deployment().systemMapping() !=
+                                *child.deployment().systemMapping(),
                             "resource-time fixture has one SystemMapping");
   deployment::test::require(test, parent.reference() != child.reference(),
                             "resource-time fixture has one Deployment state");
 
   const auto parentMapping =
       take(test, loom::mapping::importSystemMapping(
-                     parent.deployment().systemMapping(), artifacts));
+                     *parent.deployment().systemMapping(), artifacts));
   const auto childMapping =
       take(test, loom::mapping::importSystemMapping(
-                     child.deployment().systemMapping(), artifacts));
+                     *child.deployment().systemMapping(), artifacts));
   deployment::test::require(
       test,
       parentMapping.view().dataflowIdentity() ==
@@ -228,7 +228,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       parentMapping.view().dataflowIdentity()};
   auto dataflowArtifact = take(
       test, dataflow::importCanonicalDataflow(dataflowReference, artifacts));
-  auto dataflow = take(test, dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   deployment::test::require(test, !dataflow.rootThreadLaunches().empty(),
                             "resource-time fixture has no execution root");
   deployment::test::require(test, dataflow.rootThreadLaunches().size() == 2,
@@ -1023,7 +1023,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
                                                          tree);
   const auto multiRootParentMapping =
       take(test, loom::mapping::importSystemMapping(
-                     multiRootParent.deployment().systemMapping(), artifacts));
+                     *multiRootParent.deployment().systemMapping(), artifacts));
   const ArtifactRootReference multiRootDataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
@@ -1031,7 +1031,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
   auto multiRootDataflowArtifact =
       take(test, dataflow::importCanonicalDataflow(multiRootDataflowReference,
                                                    artifacts));
-  auto multiRootDataflow = take(test, multiRootDataflowArtifact.view());
+  const auto &multiRootDataflow = multiRootDataflowArtifact.view();
   const dataflow::RootThreadLaunchRef omittedRoot =
       multiRootDataflow.rootThreadLaunches().front().ref;
   const auto multiRootContexts =
@@ -1059,7 +1059,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
       multiRootDataflowReference, pnr::ResourceTimeSafePointKind::Completion};
   nonterminalCompletion.parent = {multiRootParentMapping.reference(),
                                   multiRootParent.reference()};
-  nonterminalCompletion.child = {multiRootChild.deployment().systemMapping(),
+  nonterminalCompletion.child = {*multiRootChild.deployment().systemMapping(),
                                  multiRootChild.reference()};
   nonterminalCompletion.beforeActive = {{omittedRoot, omittedRootResources}};
   nonterminalCompletion.completedBefore.clear();
@@ -1083,7 +1083,7 @@ void resourceTimeTransitionRequiresExactDeploymentClosure() {
           test, artifacts, blobs, tree);
   deployment::test::require(
       test,
-      changedProgramming.deployment().systemMapping() ==
+      *changedProgramming.deployment().systemMapping() ==
           childMapping.reference(),
       "changed-programming fixture selected another child Mapping");
   auto changedProgrammingDraft = draft;

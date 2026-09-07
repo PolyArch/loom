@@ -70,6 +70,12 @@ inline llvm::ArrayRef<PnrIndex> tagSegmentDomains(const SpatialTagNetState &net,
   return net.continuity.segmentDomains().slice(
       offsets[segment], offsets[segment + 1] - offsets[segment]);
 }
+inline std::uint64_t
+tagDomainResidentOveruse(PnrIndex count,
+                         std::optional<std::uint64_t> capacity) {
+  return capacity && count > *capacity ? count - *capacity : 0;
+}
+
 std::uint64_t
 tagDomainConflictCount(llvm::ArrayRef<SpatialTagDomainOccupancy> occupancy,
                        const SpatialTagInterferenceProjection &interference,

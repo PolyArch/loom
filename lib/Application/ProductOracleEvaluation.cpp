@@ -75,12 +75,16 @@ llvm::Error verifyExecutionCompatibility(
       execution->request(), resolution, artifacts, blobs);
   if (!request)
     return request.takeError();
-  if (!request->workload() ||
-      *request->workload() != manifest->manifest().activationWorkload() ||
-      !request->runtimeInput() ||
-      *request->runtimeInput() !=
-          manifest->manifest().activationRuntimeInput())
-    return invalid("execution does not use the manifest activation inputs");
+  if (!request->workload() || !request->runtimeInput())
+    return invalid("execution has no complete System inputs");
+  const auto &runtime = manifest->manifest();
+  const auto &baseline = runtime.hostOnlyBaseline().inputs;
+  const bool selected = *request->workload() == runtime.activationWorkload() &&
+                        *request->runtimeInput() == runtime.activationRuntimeInput();
+  const bool hostOnly = *request->workload() == baseline.workload &&
+                        *request->runtimeInput() == baseline.runtimeInput;
+  if (!selected && !hostOnly)
+    return invalid("execution does not use an exact manifest System invocation");
   return llvm::Error::success();
 }
 
@@ -154,7 +158,7 @@ const evaluation::ResolvedModelConfigViewContract kConfigView{
 const evaluation::EvaluationModelDescriptor kModelDescriptor{
     evaluation::builtinEvaluationModelKind(kModel),
     "application_product_oracle",
-    "loom.application.product_oracle.exact_output.v1",
+    "loom.application.product_oracle.exact_output.v2",
     caseSignatureRef(),
     {},
     {},

@@ -7,7 +7,7 @@
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -455,7 +455,7 @@ void requireControlOnlyScopeProducesWork(
       auto candidate = loom::frontend::materializeSpatialOwnershipDecision(
           structured.structuredProgram, *scope, decision, fabric);
       if (candidate) {
-        auto candidateView = take(candidate->canonicalDataflow.view());
+        const auto &candidateView = candidate->canonicalDataflow.view();
         if (candidateView.graphs().empty() || candidateView.actors().empty())
           fail("control-only scope published an empty Spatial workload");
         sawControlWork = true;
@@ -534,7 +534,8 @@ void requireFirstClassPointerStateDoesNotHideInnerScope(
     const loom::frontend::StructuredEntityRef &reference =
         scope ? scope->selection : rejected->scope.selection;
     auto entity = take(view.resolve(reference));
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
+    auto loop =
+        llvm::dyn_cast_or_null<mlir::LoopLikeOpInterface>(entity.operation);
     if (!loop)
       continue;
     const bool carriesPointer =

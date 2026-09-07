@@ -107,17 +107,26 @@ void atomicClaimsAndRoundRobinAreExecutedExactly() {
       runtime.occupancy(0) != 1 || runtime.occupancy(1) != 1)
     fail("round-robin reset or atomic claim envelope changed");
 
+  const auto blockers = runtime.capacityBlockers(0);
+  if (blockers.size() != 2)
+    fail("blocked dimensions lost their exact envelope holder");
+  for (const auto &blocker : blockers)
+    if (blocker.holder.slot != first.front().claimEnvelope.slot ||
+        blocker.holder.generation != first.front().claimEnvelope.generation ||
+        blocker.capacity != 1 || blocker.occupancy != 1 ||
+        blocker.requestedAmount != 1 || blocker.heldAmount != 1)
+      fail("capacity blocker does not quote the actual live claim");
+
   const loom::sim::detail::CgraResourceRequest blockedRequest{0, 0};
-  const std::size_t reusableCapacity = grants.capacity();
   if (llvm::Error error = runtime.grant({blockedRequest}, grants))
     fail(llvm::toString(std::move(error)));
   if (!grants.empty())
     fail("an unavailable claim envelope was partially granted");
-  if (grants.capacity() != reusableCapacity)
-    fail("grant discarded caller-owned result storage");
 
   if (llvm::Error error = runtime.release(first.front().claimEnvelope))
     fail(llvm::toString(std::move(error)));
+  if (!runtime.capacityBlockers(0).empty())
+    fail("released envelope remained a capacity blocker");
   if (runtime.occupancy(0) != 0 || runtime.occupancy(1) != 0)
     fail("release did not return the complete claim envelope");
 
@@ -126,6 +135,15 @@ void atomicClaimsAndRoundRobinAreExecutedExactly() {
   const auto second = grants;
   if (second.size() != 1 || second.front().selectedUseOrdinal != 0)
     fail("round-robin did not advance after the successful grant");
+  if (llvm::Error error = runtime.release(second.front().claimEnvelope))
+    fail(llvm::toString(std::move(error)));
+
+  const loom::sim::detail::CgraResourceRequest nextRequests[] = {{0, 1},
+                                                                 {1, 1}};
+  if (llvm::Error error = runtime.grant(nextRequests, grants))
+    fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 1)
+    fail("a singleton grant did not advance the round-robin cursor");
 }
 
 void derivedActivationAcquiresSharedClaimsOnce() {

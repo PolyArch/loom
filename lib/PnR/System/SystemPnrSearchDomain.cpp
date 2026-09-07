@@ -1207,9 +1207,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       ::dataflow::importCanonicalDataflow(*dataflowReference, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto fabricRoot =
       ::loom::fabric::importEntireFabricRoot(*fabricReference, store);
   if (!fabricRoot)
@@ -1228,7 +1226,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       decoded->constraintReference, store);
   if (!constraints)
     return constraints.takeError();
-  if (constraints->view().dataflowIdentity() != dataflow->identity() ||
+  if (constraints->view().dataflowIdentity() != dataflow.identity() ||
       constraints->view().fabricIdentity() != system->artifact().identity())
     return invalid("adopted search domain has foreign K owners");
   auto constraintIndex =
@@ -1236,7 +1234,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
   if (!constraintIndex)
     return constraintIndex.takeError();
   auto roots = detail::canonicalRootThreadLaunchSet(
-      *dataflow, constraints->view().rootThreadLaunches());
+      dataflow, constraints->view().rootThreadLaunches());
   if (!roots)
     return roots.takeError();
   if (llvm::ArrayRef(*roots) !=
@@ -1253,7 +1251,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
     plan.bindings.push_back(std::move(partition));
   }
   auto canonicalPartitions = detail::canonicalizeAndValidateSystemPartition(
-      *dataflow, decoded->roots, plan);
+      dataflow, decoded->roots, plan);
   if (!canonicalPartitions)
     return canonicalPartitions.takeError();
   if (canonicalPartitions->size() != decoded->bindings.size())
@@ -1261,11 +1259,11 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
   for (auto &&[canonical, decodedBinding] :
        llvm::zip_equal(*canonicalPartitions, decoded->bindings)) {
     auto canonicalKey =
-        detail::canonicalBindingKeyBytes(canonical.key, dataflow->identity());
+        detail::canonicalBindingKeyBytes(canonical.key, dataflow.identity());
     if (!canonicalKey)
       return canonicalKey.takeError();
     auto decodedKey = detail::canonicalBindingKeyBytes(decodedBinding.key,
-                                                       dataflow->identity());
+                                                       dataflow.identity());
     if (!decodedKey)
       return decodedKey.takeError();
     if (*canonicalKey != *decodedKey ||
@@ -1289,15 +1287,15 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
               hierarchical->compatibleSpatialMappings.begin(),
               hierarchical->compatibleSpatialMappings.end());
   auto spatialCatalog =
-      detail::importSpatialCatalog(spatialMappings, *dataflow, *system, store);
+      detail::importSpatialCatalog(spatialMappings, dataflow, *system, store);
   if (!spatialCatalog)
     return spatialCatalog.takeError();
   if (llvm::Error error = detail::validateSystemBindingDomains(
-          *dataflow, *system, decoded->bindings, *constraintIndex,
+          dataflow, *system, decoded->bindings, *constraintIndex,
           *spatialCatalog))
     return std::move(error);
   if (llvm::Error error = detail::validateSystemServiceDomains(
-          *dataflow, *system, decoded->roots, decoded->bindings,
+          dataflow, *system, decoded->roots, decoded->bindings,
           decoded->services, *constraintIndex, *spatialCatalog))
     return std::move(error);
   auto encoded =

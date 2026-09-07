@@ -12,6 +12,7 @@
 #include "mlir/Pass/PassManager.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Error.h"
 
 #include <map>
@@ -63,7 +64,8 @@ lowerStructuredModuleToCanonicalDataflow(
 llvm::Expected<ProjectedCanonicalDataflow>
 lowerStructuredProgramToCanonicalDataflowWithProjection(
     const frontend::StructuredProgramCandidate &candidate,
-    CanonicalDataflowLoweringOptions options) {
+    CanonicalDataflowLoweringOptions options,
+    llvm::ArrayRef<mlir::OpResult> values) {
   auto candidateView = candidate.view();
   if (!candidateView)
     return candidateView.takeError();
@@ -87,6 +89,31 @@ lowerStructuredProgramToCanonicalDataflowWithProjection(
   mlir::IRMapping cloneMapping;
   mlir::OwningOpRef<mlir::ModuleOp> clone(
       mlir::cast<mlir::ModuleOp>(candidate.module()->clone(cloneMapping)));
+  // Lowering passes commit private module clones. A construction-local
+  // marker carries operation-result correspondence across those transactions;
+  // it is removed before canonical identity is computed.
+  constexpr llvm::StringLiteral valueProjectionAttr{
+      "loom.lowering_value_projection"};
+  bool hasReservedProjection = false;
+  candidate.module().walk([&](mlir::Operation *operation) {
+    hasReservedProjection |= operation->hasAttr(valueProjectionAttr);
+  });
+  if (hasReservedProjection)
+    return invalid("source module uses a reserved value projection marker");
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<std::int64_t>> valueTags;
+  for (auto indexed : llvm::enumerate(values)) {
+    mlir::Value mapped = cloneMapping.lookupOrNull(indexed.value());
+    auto result = llvm::dyn_cast_if_present<mlir::OpResult>(mapped);
+    if (!result)
+      return invalid("tracked result is outside the Structured Program");
+    mlir::Operation *operation = result.getOwner();
+    auto &tags = valueTags[operation];
+    tags.push_back(indexed.index());
+    tags.push_back(result.getResultNumber());
+  }
+  for (auto &entry : valueTags)
+    entry.first->setAttr(valueProjectionAttr,
+        mlir::DenseI64ArrayAttr::get(clone->getContext(), entry.second));
   std::vector<std::string> projectionNames;
   projectionNames.reserve(spatialOperations.size());
   std::set<std::string> reservedNames;
@@ -112,6 +139,41 @@ lowerStructuredProgramToCanonicalDataflowWithProjection(
   if (llvm::Error error = lowerStructuredModuleInPlace(clone.get(), options))
     return std::move(error);
 
+  std::vector<mlir::Value> clonedValues(values.size());
+  bool invalidValueProjection = false;
+  clone->walk([&](mlir::Operation *operation) {
+    mlir::Attribute attribute = operation->getAttr(valueProjectionAttr);
+    if (!attribute)
+      return;
+    auto marker = llvm::dyn_cast<mlir::DenseI64ArrayAttr>(attribute);
+    if (!marker) {
+      invalidValueProjection = true;
+      operation->removeAttr(valueProjectionAttr);
+      return;
+    }
+    const auto tags = marker.asArrayRef();
+    if (tags.size() % 2 != 0)
+      invalidValueProjection = true;
+    else
+      for (std::size_t index = 0; index < tags.size(); index += 2) {
+        const std::int64_t ordinal = tags[index];
+        const std::int64_t result = tags[index + 1];
+        if (ordinal < 0 || std::uint64_t(ordinal) >= clonedValues.size() ||
+            result < 0 || std::uint64_t(result) >= operation->getNumResults() ||
+            clonedValues[ordinal] ||
+            operation->getResult(result).getType() != values[ordinal].getType()) {
+          invalidValueProjection = true;
+          continue;
+        }
+        clonedValues[ordinal] = operation->getResult(result);
+      }
+    operation->removeAttr(valueProjectionAttr);
+  });
+  if (invalidValueProjection ||
+      llvm::any_of(clonedValues, [](mlir::Value value) { return !value; }))
+    return llvm::createStringError(std::errc::not_supported,
+        "canonical_dataflow_lowering: tracked source result was rewritten or duplicated");
+
   std::map<std::string, mlir::Operation *> graphLaunchesByCallee;
   clone->walk([&](dataflow::GraphLaunchOp launch) {
     const std::string callee = launch.getCallee().str();
@@ -130,26 +192,25 @@ lowerStructuredProgramToCanonicalDataflowWithProjection(
   }
 
   auto finalized =
-      dataflow::finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
-          clone.get(), graphLaunches);
+      dataflow::finalizeCanonicalDataflowWithTrackedEntities(
+          clone.get(), graphLaunches, {}, clonedValues);
   if (!finalized)
     return finalized.takeError();
   if (finalized->trackedStaticGraphLaunches.size() != spatialRegions.size())
     return invalid("canonical graph launch projection changed cardinality");
-  auto view = finalized->artifact.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = finalized->artifact.view();
 
   std::vector<StructuredSpatialGraphProjection> projections;
   projections.reserve(spatialRegions.size());
   for (auto [region, staticLaunch] :
        llvm::zip_equal(spatialRegions, finalized->trackedStaticGraphLaunches)) {
-    if (auto resolved = view->resolve(staticLaunch); !resolved)
+    if (auto resolved = view.resolve(staticLaunch); !resolved)
       return resolved.takeError();
     projections.push_back({region, staticLaunch});
   }
-  return ProjectedCanonicalDataflow{std::move(finalized->artifact),
-                                    std::move(projections)};
+  return ProjectedCanonicalDataflow{
+      std::move(finalized->artifact), std::move(projections),
+      std::move(finalized->trackedValues)};
 }
 
 llvm::Expected<dataflow::CanonicalDataflowArtifact>

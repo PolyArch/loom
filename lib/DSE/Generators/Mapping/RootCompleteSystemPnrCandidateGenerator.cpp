@@ -503,9 +503,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       inputBindings[DataflowInput].artifacts.front(), store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto fabricArtifact = ::loom::fabric::importEntireFabricRoot(
       inputBindings[FabricInput].artifacts.front(), store);
   if (!fabricArtifact)
@@ -547,12 +545,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     return finalizedMigrationSeed.takeError();
 
   std::vector<::dataflow::RootThreadLaunchRef> roots;
-  roots.reserve(dataflow->rootThreadLaunches().size());
-  for (const auto &root : dataflow->rootThreadLaunches())
+  roots.reserve(dataflow.rootThreadLaunches().size());
+  for (const auto &root : dataflow.rootThreadLaunches())
     roots.push_back(root.ref);
   if (roots.empty()) {
     if (llvm::Error error = ::loom::pnr::validateSystemSpatialMappingSet(
-            *dataflow, *system,
+            dataflow, *system,
             inputBindings[SpatialMappingCandidatesInput].artifacts, store))
       return std::move(error);
     return CandidateGeneratorProviderResult{
@@ -560,7 +558,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   }
 
   auto constraints = ::loom::mapping::finalizeEmptySystemMappingConstraintSet(
-      *dataflow, *system, roots, store);
+      dataflow, *system, roots, store);
   if (!constraints)
     return constraints.takeError();
   if (*migrationSeed && *finalizedMigrationSeed)
@@ -582,7 +580,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       return std::move(error);
   ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
-      *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
+      *staticContext, dataflow, *system, *physicalTimingProfiles, *constraints,
       inputBindings[SpatialMappingCandidatesInput].artifacts, store,
       &activeAccess);
   if (!activeContext) {
@@ -603,7 +601,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
       activeAccess.hits, activeAccess.misses);
   auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
-      *dataflow, constraints->view().rootThreadLaunches(),
+      dataflow, constraints->view().rootThreadLaunches(),
       config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
   if (!partition) {
     auto unsupported = classifyUnsupportedSearchDomain(partition.takeError());
@@ -620,7 +618,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[SpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
-      *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
+      dataflow, *system, *config, *constraints, *partition, graphSearch, store,
       &*activeContext);
   if (!searchDomain) {
     auto unsupported =
@@ -638,7 +636,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
-          {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
+          {dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,
@@ -721,9 +719,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       inputBindings[ApplicationDataflowInput].artifacts.front(), store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto fabricArtifact = ::loom::fabric::importEntireFabricRoot(
       inputBindings[ApplicationFabricInput].artifacts.front(), store);
   if (!fabricArtifact)
@@ -769,7 +765,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       store);
   if (!constraints)
     return constraints.takeError();
-  if (constraints->view().dataflowIdentity() != dataflow->identity() ||
+  if (constraints->view().dataflowIdentity() != dataflow.identity() ||
       constraints->view().fabricIdentity() != system->artifact().identity())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -794,7 +790,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       return std::move(error);
   ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
-      *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
+      *staticContext, dataflow, *system, *physicalTimingProfiles, *constraints,
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts, store,
       &activeAccess);
   if (!activeContext) {
@@ -816,7 +812,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       activeAccess.hits, activeAccess.misses);
 
   auto partition = ::loom::pnr::projectScheduledPresburgerPartitionPlan(
-      *dataflow, constraints->view().rootThreadLaunches(),
+      dataflow, constraints->view().rootThreadLaunches(),
       config->systemBindingPartitions(), defaultSystemPartitionCount(*system));
   if (!partition) {
     auto unsupported = classifyUnsupportedSearchDomain(partition.takeError());
@@ -833,7 +829,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
-      *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
+      dataflow, *system, *config, *constraints, *partition, graphSearch, store,
       &*activeContext);
   if (!searchDomain) {
     auto unsupported =
@@ -852,7 +848,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
-          {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
+          {dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
            &*activeContext,
            *finalizedMigrationSeed ? &**finalizedMigrationSeed : nullptr,

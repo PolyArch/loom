@@ -12,7 +12,7 @@ The fixed schema descriptors are:
 ```text
 loom.simulation_workload      1.1
 loom.simulation_runtime_input 2.0
-loom.simulation_execution     2.0
+loom.simulation_execution     3.0
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
@@ -20,8 +20,8 @@ Schema versions use `X.Y`: `X` denotes an incompatible change and `Y` denotes
 a compatible extension. Simulator-specific request, result, trace, activity,
 or report Artifact families are forbidden.
 
-`loom.simulation_execution 2.0` incompatibly adds the mandatory narrow System
-root-lifecycle sequence defined below. It does not add a general diagnostic
+`loom.simulation_execution 3.0` incompatibly adds optional native System memory
+activity over the existing mandatory narrow System root-lifecycle progress form. It does not add a general diagnostic
 trace, provider payload, or replay field.
 
 ## SimulationWorkload
@@ -507,7 +507,7 @@ SimulationExecution {
   terminal: ExecutionTerminal
   functional_observations
   progress_observations
-  activity_summaries
+  activity_summaries (Spatial) | memory_activity? (System)
 }
 ```
 
@@ -534,7 +534,7 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 2.0` wire. The invocation-local
+define the complete `loom.simulation_execution 3.0` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
 root; the narrow System root-lifecycle progress sequence is a distinct
 mandatory observation.
@@ -881,7 +881,7 @@ or gem5 event priority. Evaluation derives metrics through the exact model.
 The root lifecycle is not a general gem5 event trace and does not admit raw
 provider records or diagnostic events. Raw gem5 traces remain attempt or
 scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
-event algebra below only outside `loom.simulation_execution 2.0` identity.
+event algebra below only outside `loom.simulation_execution 3.0` identity.
 
 ## Activity Summaries
 
@@ -903,7 +903,7 @@ ActivitySummary {
           canonical table<FabricUsePatternRef, uint64>
         resource_occupancy:
           canonical table<FabricResourceStateRef,
-                          FabricResourceOccupancy>
+          canonical table<CapacityDimensionKey, FabricResourceOccupancy>>
       }
     | ImplementationSignals {
         signals:
@@ -968,14 +968,24 @@ also have retired. A model may retain distinct counts for a stopped or halted
 execution.
 
 For `FabricResources`, the complete inventories are all applicable,
-activity-capable `FabricUsePatternRef` and `FabricResourceStateRef` values in
+activity-capable `FabricUsePatternRef` values and every capacity dimension of
+`FabricResourceStateRef` values in
 the exact mapped SpatialCore closure. Complete tables include explicit zero
 entries. Partial tables contain exactly the continuously observed targets.
 `use_counts` records selected use-pattern activations.
 `occupied_capacity_reference_cycles` is the nonnegative exact integral of
 occupied capacity over the selected window. `peak_occupied_capacity` cannot
-exceed the capacity owned by the referenced Fabric resource state, and the
-integral cannot exceed window duration multiplied by that capacity. The
+exceed the capacity owned by the referenced state and capacity dimension, and
+the integral cannot exceed window duration multiplied by the observed peak
+(and therefore cannot exceed duration multiplied by capacity). A
+state may own unlike dimensions, such as FIFO slots and enqueue/dequeue
+service; their integrals are never added or given an implicit dimension-zero
+denominator. Complete occupancy tables contain every dimension of every
+applicable state. Partial tables omit dimensions that were not continuously
+observed; absent dimensions are unknown. Temporary service claims are observed
+at grant and release. Durable queue, operand-pool, and register-FIFO residency
+is observed at the concrete provider state transition; an enqueue reservation
+is not a substitute for a resident token. The
 execution does not store utilization, stall cost, energy, or any other derived
 quantity.
 
@@ -1004,16 +1014,43 @@ sorts by those zero-based enum discriminants. This order mechanically defines
 the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
 by their owner-defined canonical reference bytes.
 
-The activity payloads and windows above remain Spatial-only in schema 2.0
-because their duration-bearing fields use the selected Spatial reference
-cycle.
-`SystemSimulationExecution.activity_summaries` is therefore required to be
-empty. A later System activity payload must name its gem5-tick or hardware
-clock-domain time basis explicitly; it cannot reinterpret these exact-ratio
-cycle integrals or copy raw gem5 statistics into this root.
+The activity payloads and windows above remain Spatial-only because their
+duration-bearing fields use the selected Spatial reference cycle. System
+execution instead has optional `memory_activity { occupied_ticks }`. The schema
+3.0 System wire encodes a u32 absence/presence tag and, when present, a u64
+occupied-service integral after progress observations. Spatial activity encoding
+is unchanged.
+
+System memory activity is the native single-memory acceptance-service busy time
+from `ProgramEntryAccepted` through `ProgramExitVisible`. It covers requests from
+every HostCore, InstructionCore, and bridge DMA producer. The fixed timing-mode
+platform places a zero-delay CommMonitor immediately before SimpleMemory. Its
+native `PktRequest` probe fires only after downstream acceptance, preserving
+packet command and size before the response mutates them. The maintained
+LoomMemoryServiceProbe integrates the exact bound service duration and clips any
+unfinished tail at program exit. Failed retries consume no service; swaps,
+atomic read-modify-write requests, and failed store-conditionals do consume it.
+Payload byte counters are not a service-occupancy surrogate.
+
+The probe begins before the first simulation event. The supported timing CPUs
+and timing DMA use timing transport; functional initialization is outside the
+window. Atomic instructions still travel as timing packets. The probe requires
+timing System mode; this contract does not admit arbitrary atomic-mode transport.
+Missing observations remain unavailable and never become zero. Admission
+requires a retired positive gem5-tick window, occupied ticks no greater than that
+window, and the exact same-System binding's single physical memory domain.
+
+`projectSystemMemoryUtilization` divides occupied ticks by the complete program
+window. The bound SimpleMemory contract retains its existing finite capacity:
+one accepted byte consumes 73 ticks after native conversion of the default
+12.8 GiB/s rate at a fixed 1ps global tick. Configuration verifies the effective
+native rate. Neither idle devices nor unused time disappear from the denominator.
+The execution stores only native occupancy; the reduced exact utilization ratio
+is derived. It establishes no compute occupancy and does not itself qualify
+application QoR. Other System models may omit memory activity.
 
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 2.0` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 3.0` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -1026,9 +1063,18 @@ coverage, and payload discriminants as unsigned 32-bit big-endian values,
 followed by the selected payload. Tables encode an unsigned 64-bit big-endian
 count followed by sorted key/value entries. Counts and capacities are unsigned
 64-bit big-endian values. Exact ratios and nested references use their sole
-owner-defined canonical encodings. Fixed-size state and transition arrays
+owner-defined canonical encodings. Fabric keys are length-framed with an
+unsigned 64-bit byte count and the exact Fabric-local reference bytes. The
+capacity-dimension key is its existing unsigned 32-bit owner-local key. Each
+state value is a canonical dimension table, ordered by that key. Fixed-size
+state and transition arrays
 carry no redundant length. Unknown fields, duplicate keys, alternate table
 orders, native layout, and noncanonical ratios are invalid identity bytes.
+
+A Spatial engine boundary has no Request or Fabric selection of its own. A
+boundary codec that admits Fabric activity therefore borrows the exact mapped
+Fabric view from its caller and fails closed when that context is absent. The
+Request-backed root derives the same view from its bound hardware subject.
 
 The exact Request and typed payload determine source attachment:
 
@@ -1047,7 +1093,7 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 2.0` contains no general diagnostic-trace field.
+`loom.simulation_execution 3.0` contains no general diagnostic-trace field.
 Its mandatory narrow System root-lifecycle progress sequence is not a
 `SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
 Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
@@ -1111,9 +1157,10 @@ MemoryActionOccurrenceRef =
     | Lane(row_major_ordinal))
 
 PhysicalActionOccurrenceRef =
-  (Transition(ActorTransitionOccurrenceRef)
-   | Token(TokenOccurrenceRef),
-   local_action_ordinal)
+    Transition(ActorTransitionOccurrenceRef, local_action_ordinal)
+  | Token(TokenOccurrenceRef, local_action_ordinal)
+  | FabricUse(GraphInvocationOccurrenceRef,
+              FabricUsePatternRef, occurrence_ordinal)
 ```
 
 All ordinals are unsigned 64-bit semantic values. A graph-invocation ordinal
@@ -1136,12 +1183,32 @@ memory transition creates no `MemoryActionOccurrenceRef` or
 `MemoryLinearized` event, although its actor commit, publication, and
 retirement lifecycle remains visible at the selected levels.
 
-`local_action_ordinal` is dense from zero in the canonical physical-action
-order mechanically derived for one transition or token by the exact Fabric
-and complete SpatialMapping. It is not a resource ID, route index, Physical
-Tag, instruction slot, or simulator container position. These occurrence
-references are local to one `SimulationExecution`; none is a Dataflow entity,
-Mapping entity, or independently referenceable Artifact object.
+`local_action_ordinal` names a fixed position in the canonical static
+physical-action skeleton mechanically derived for one transition or token by
+the exact Fabric and complete SpatialMapping. A transport skeleton orders
+produced actions, selected traversal steps including durable-storage positions,
+then consumed endpoint actions. Storage positions remain in that static
+skeleton, while their dynamic actions use `FabricUse`. Emitted token-owned
+action ordinals therefore need not be dense; removing a storage action from
+token ownership never renumbers other actions. The ordinal is not a resource
+ID, raw route index, Physical Tag, instruction slot, or simulator container
+position.
+
+`FabricUse.occurrence_ordinal` is dense from zero per exact
+`(GraphInvocationOccurrenceRef, FabricUsePatternRef)` in accepted physical
+request order. A request keeps the same occurrence through grant and
+retirement. The existing resource-use lifecycle supplies this ordinal; trace
+capture allocates no separate counter. FIFO enqueue, dequeue, simultaneous
+dequeue/enqueue, and internal offer-advance actions use this owner-relative
+identity. A simultaneous action is one atomic Fabric use with one lifecycle,
+even when it consumes and produces different token occurrences. An internal
+offer advance moves no token, and repeated advances remain distinct physical
+occurrences. The occurrence's exact use pattern is also the sole source of its
+`PhysicalRequested` target; a disagreeing target is invalid.
+
+These occurrence references are local to one `SimulationExecution`; none is a
+Dataflow entity, Mapping entity, or independently referenceable Artifact
+object.
 
 ### Event Algebra
 
@@ -1215,7 +1282,8 @@ set of Fabric-owned use patterns acquired by that one atomic action. A direct
 contention-free point transfer has an empty pattern set. A traversal with one
 resource pattern has a singleton set. A broadcast carries all branch
 traversals and every per-traversal pattern joined by its derived atomic
-activation. A compute or memory resource action uses `Use`. The pattern set is
+activation. Compute, memory, and Fabric-owned storage actions use `Use`. The
+pattern set is
 the execution-local projection of the exact Fabric, traversals, and complete
 SpatialMapping; it is not a second grouping authority. A producer cannot omit
 a selected pattern, merge unrelated actions, or invent another resource
@@ -1316,6 +1384,14 @@ discriminants for capture-level membership and canonical diagnostic keys.
 There is no persistent event-record encoding. References and values remain
 typed invocation-local values, and their owner-defined canonical bytes are
 used only where required to construct the deterministic key.
+
+Physical occurrence arms use declaration-order discriminants: `Transition`
+is zero, `Token` is one, and `FabricUse` is two. The first two retain their
+existing canonical key bytes: discriminant, canonical transition or token
+reference, then the unsigned 64-bit local action ordinal. `FabricUse` encodes
+its discriminant, invocation ordinal, Fabric-owner canonical use-pattern bytes,
+and unsigned 64-bit occurrence ordinal. Resource plan slots never enter this
+key.
 
 The canonical event key is:
 
@@ -1454,7 +1530,7 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 2.0` import admits only
+noninterference. Persistent `loom.simulation_execution 3.0` import admits only
 the narrow System root-lifecycle progress field and rejects any general trace,
 manifest, chunk, coverage, path, or opaque diagnostic field.
 

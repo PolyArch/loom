@@ -1,9 +1,9 @@
 #include "Common/ComponentViewDigest.h"
+#include "Common/BlobDigest.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/SHA256.h"
 
 #include <algorithm>
 #include <array>
@@ -86,7 +86,7 @@ computeComponentViewDigest(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
             " is not representable in the framed u32 length");
   const std::vector<std::uint8_t> preimage = buildComponentViewDigestPreimage(
       schemaDescriptorBytes, canonicalViewBytes);
-  return ComponentViewDigest(llvm::SHA256::hash(preimage));
+  return ComponentViewDigest(computeBlobDigest(preimage).bytes());
 }
 
 llvm::Error

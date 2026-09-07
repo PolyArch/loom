@@ -455,7 +455,7 @@ void regularMeshProducesTypedOutcome() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSyncChain(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto fabric = buildBoundedMeshFabric(store, 16, 16, 2, 4);
   auto tech = generateTechMapping(dataflow, fabric.view(), store);
   if (tech.view().computeRealizations().size() != actorCount)
@@ -507,7 +507,7 @@ void techMappingCompletesWithinBudget() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSyncChain(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto fabric = buildBoundedMeshFabric(store, 16, 16, 2, 4);
   auto tech = generateTechMapping(dataflow, fabric.view(), store);
   if (tech.view().computeRealizations().size() != dataflow.actors().size())
@@ -522,7 +522,7 @@ void irregularMeshProvesResidentContextPigeonhole() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSyncChain(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto fabric = buildBoundedMeshFabric(store, 9, 14, 2, 4);
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.matchRowAttemptLimit = UINT64_C(2000000);
@@ -583,7 +583,7 @@ void irregularMeshProducesTypedOutcome() {
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildSyncChain(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto fabric = buildBoundedMeshFabric(store, 9, 14, 2, 4);
   auto tech = generateTechMapping(dataflow, fabric.view(), store);
   if (tech.view().computeRealizations().size() != actorCount)

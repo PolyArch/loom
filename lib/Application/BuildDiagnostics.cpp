@@ -644,8 +644,9 @@ void emitApplicationPlanningDiagnostics(
             prepared.preMappingEvaluationTiming);
         addCandidateInventorySummary(payload, prepared.candidateInventory);
         payload["selected_software_count"] = prepared.software.size();
-        addOptionalUnsigned(payload, "source_host_only_work",
-                            prepared.preMappingSourceHostOnlyWork);
+        addOptionalUnsigned(
+            payload, "source_host_only_runtime_picoseconds",
+            prepared.preMappingSourceHostOnlyRuntimePicoseconds);
         payload["mapping_alternative_count"] =
             prepared.mappingAlternatives.size();
         payload["resource_time_funnel"] =
@@ -852,6 +853,8 @@ void emitApplicationPlanningDiagnostics(
             payload["projection"] = nullptr;
           addOptionalUnsigned(payload, "estimated_runtime_ps",
                               record.estimatedRuntimePicoseconds);
+          addOptionalUnsigned(payload, "host_dynamic_leaf_executions",
+                              record.hostDynamicLeafExecutions);
           addOptionalUnsigned(payload, "preference_rank",
                               record.preferenceRank);
           if (record.incompleteReason)
@@ -908,8 +911,8 @@ void emitApplicationPreMappingIncompleteDiagnostics(
         payload["evidence_complete"] = incomplete.completeness.evidenceComplete;
         payload["selection_complete"] =
             incomplete.completeness.selectionComplete;
-        addOptionalUnsigned(payload, "source_host_only_work",
-                            incomplete.sourceHostOnlyWork);
+        addOptionalUnsigned(payload, "source_host_only_runtime_picoseconds",
+                            incomplete.sourceHostOnlyRuntimePicoseconds);
         payload["evaluation_timing"] = dse::serializePreMappingEvaluationTiming(
             incomplete.evaluationTiming);
         if (incomplete.checkpoint) {
@@ -1685,6 +1688,9 @@ void emitApplicationMappingDiagnostics(
               payload["candidate_projection"] = nullptr;
             addOptionalUnsigned(payload, "candidate_estimated_runtime_ps",
                                 record.estimatedRuntimePicoseconds);
+            addOptionalUnsigned(payload,
+                                "candidate_host_dynamic_leaf_executions",
+                                record.hostDynamicLeafExecutions);
             if (record.materializedProjection)
               payload["candidate_materialized_projection"] =
                   dse::serializePreMappingMaterializedProjection(

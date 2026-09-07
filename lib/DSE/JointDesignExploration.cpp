@@ -112,7 +112,7 @@ scopeRoots(const JointSoftwareScope &scope, const ArtifactStore &store) {
     auto imported = sim::importSpatialSimulationWorkload(reference, store);
     if (!imported)
       return imported.takeError();
-    if (imported->dataflow.identity() != scope.dataflow.artifact)
+    if (imported->dataflow->identity() != scope.dataflow.artifact)
       return invalid("application workload has a foreign Dataflow owner");
     const sim::SpatialSimulationWorkload *workload =
         imported->workload.spatial();
@@ -137,9 +137,7 @@ publishScopeConstraints(const JointSoftwareScope &scope,
       dataflow::importCanonicalDataflow(scope.dataflow, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto systemArtifact = fabric::importEntireFabricRoot(systemReference, store);
   if (!systemArtifact)
     return systemArtifact.takeError();
@@ -150,7 +148,7 @@ publishScopeConstraints(const JointSoftwareScope &scope,
   if (!roots)
     return roots.takeError();
   auto constraints = mapping::finalizeEmptySystemMappingConstraintSet(
-      *dataflow, *system, *roots, store);
+      dataflow, *system, *roots, store);
   if (!constraints)
     return constraints.takeError();
   return constraints->reference();
@@ -436,9 +434,7 @@ projectJointSpatialMappingConstraintSet(
       dataflow::importCanonicalDataflow(dataflowReference, artifactStore);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto tech = mapping::importTechMapping(techReference, artifactStore);
   if (!tech)
     return tech.takeError();
@@ -496,7 +492,7 @@ projectJointSpatialMappingConstraintSet(
     if (descriptor ==
         rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference()) {
       auto empty = mapping::finalizeEmptySpatialMappingConstraintSet(
-          *dataflowView, tech->view(), fabric->view(), artifactStore);
+          dataflowView, tech->view(), fabric->view(), artifactStore);
       if (!empty)
         return empty.takeError();
       if (llvm::Error error = remember(empty->reference()))
@@ -532,7 +528,7 @@ projectJointSpatialMappingConstraintSet(
     if (!constraints)
       return constraints.takeError();
     if (llvm::Error error = mapping::admitSpatialMappingConstraints(
-            *dataflowView, tech->view(), fabric->view(), constraints->view(),
+            dataflowView, tech->view(), fabric->view(), constraints->view(),
             importedSpatial->view()))
       return invalid("SpatialMapping was not admitted by its current "
                      "constraint lineage: " +
@@ -1009,9 +1005,7 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
         dataflow::importCanonicalDataflow(member.software, artifactStore);
     if (!dataflowArtifact)
       return dataflowArtifact.takeError();
-    auto dataflow = dataflowArtifact->view();
-    if (!dataflow)
-      return dataflow.takeError();
+    const auto &dataflow = dataflowArtifact->view();
     if (member.promotion.selected.empty() ||
         !rootsAreCanonical(member.promotion.selected))
       return invalid("member Promotion selected set is not nonempty and "
@@ -1036,7 +1030,7 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
         return systemIndex.takeError();
       systems[*systemIndex].memberMappings[memberIndex].push_back(reference);
       auto contexts = mapping::projectSystemExecutionContexts(
-          *dataflow, systemMapping->view().executionBindings());
+          dataflow, systemMapping->view().executionBindings());
       if (!contexts)
         return contexts.takeError();
       for (const mapping::SystemInstructionContextDomain &domain :

@@ -28,12 +28,16 @@ target_link_libraries(LoomApplicationHostRunner PUBLIC
 )
 
 add_library(LoomApplicationRuntimeManifest
+  ActivationInputs.cpp
   ActivationDecision.cpp
+  ApplicationRuntimeEvidenceJoin.cpp
   ActivationRepairLineage.cpp
   Package.cpp
   ProductOracleEvaluation.cpp
   RuntimeManifest.cpp
+  RuntimeManifestValidation.cpp
   RuntimeProductContract.cpp
+  SystemQor.cpp
 )
 
 target_include_directories(LoomApplicationRuntimeManifest PUBLIC
@@ -56,17 +60,12 @@ target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
   LLVMSupport
 )
 
-file(GLOB_RECURSE LOOM_LLVM_LIBC_MATH_HEADERS CONFIGURE_DEPENDS
+file(GLOB_RECURSE LOOM_LLVM_LIBC_RUNTIME_HEADERS CONFIGURE_DEPENDS
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/hdr/*.h"
   "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/__support/*.h"
+  "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/string/*.h"
 )
-set(LOOM_FREESTANDING_MATH_BITCODE
-  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMath.bc")
-set(LOOM_FREESTANDING_MATH_HEADER
-  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMathBitcode.h")
-add_custom_command(
-  OUTPUT "${LOOM_FREESTANDING_MATH_BITCODE}"
-  COMMAND "${LLVM_TOOLS_BINARY_DIR}/clang++"
+set(LOOM_FREESTANDING_RUNTIME_COMPILE_OPTIONS
     --target=riscv64-unknown-elf
     -march=rv64imafdc_zicsr_zifencei
     -mabi=lp64d
@@ -77,20 +76,29 @@ add_custom_command(
     -ffreestanding
     -fno-exceptions
     -fno-rtti
-    -fno-math-errno
     -DLIBC_NAMESPACE=loom_libc
     -DLIBC_FULL_BUILD
     -DLIBC_COPT_PUBLIC_PACKAGING
+    -I${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc
+    -emit-llvm
+)
+set(LOOM_FREESTANDING_MATH_BITCODE
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMath.bc")
+set(LOOM_FREESTANDING_MATH_HEADER
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMathBitcode.h")
+add_custom_command(
+  OUTPUT "${LOOM_FREESTANDING_MATH_BITCODE}"
+  COMMAND "${LLVM_TOOLS_BINARY_DIR}/clang++"
+    ${LOOM_FREESTANDING_RUNTIME_COMPILE_OPTIONS}
+    -fno-math-errno
     -DLIBC_MATH_HAS_ASSUME_ROUND_NEAREST_ONLY
     -DLIBC_MATH_HAS_NO_ERRNO
     -DLIBC_MATH_HAS_NO_EXCEPT
-    -I${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc
-    -emit-llvm
     -c "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/math/generic/expf.cpp"
     -o "${LOOM_FREESTANDING_MATH_BITCODE}"
   DEPENDS
     "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/math/generic/expf.cpp"
-    ${LOOM_LLVM_LIBC_MATH_HEADERS}
+    ${LOOM_LLVM_LIBC_RUNTIME_HEADERS}
   VERBATIM
 )
 add_custom_command(
@@ -102,6 +110,47 @@ add_custom_command(
     --symbol freestandingMathBitcode
   DEPENDS
     "${LOOM_FREESTANDING_MATH_BITCODE}"
+    "${LOOM_SOURCE_DIR}/scripts/embed_binary.py"
+  VERBATIM
+)
+
+set(LOOM_FREESTANDING_MEMORY_PARTS)
+foreach(operation IN ITEMS memcpy memmove memset)
+  set(part "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestanding_${operation}.bc")
+  add_custom_command(
+    OUTPUT "${part}"
+    COMMAND "${LLVM_TOOLS_BINARY_DIR}/clang++"
+      ${LOOM_FREESTANDING_RUNTIME_COMPILE_OPTIONS}
+      -c "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/string/${operation}.cpp"
+      -o "${part}"
+    DEPENDS
+      "${LOOM_EXTERNAL_SOURCE_DIR}/llvm/libc/src/string/${operation}.cpp"
+      ${LOOM_LLVM_LIBC_RUNTIME_HEADERS}
+    VERBATIM
+  )
+  list(APPEND LOOM_FREESTANDING_MEMORY_PARTS "${part}")
+endforeach()
+set(LOOM_FREESTANDING_MEMORY_BITCODE
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMemory.bc")
+set(LOOM_FREESTANDING_MEMORY_HEADER
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMemoryBitcode.h")
+add_custom_command(
+  OUTPUT "${LOOM_FREESTANDING_MEMORY_BITCODE}"
+  COMMAND "${LLVM_TOOLS_BINARY_DIR}/llvm-link"
+    ${LOOM_FREESTANDING_MEMORY_PARTS}
+    -o "${LOOM_FREESTANDING_MEMORY_BITCODE}"
+  DEPENDS ${LOOM_FREESTANDING_MEMORY_PARTS}
+  VERBATIM
+)
+add_custom_command(
+  OUTPUT "${LOOM_FREESTANDING_MEMORY_HEADER}"
+  COMMAND "${Python3_EXECUTABLE}"
+    "${LOOM_SOURCE_DIR}/scripts/embed_binary.py"
+    --input "${LOOM_FREESTANDING_MEMORY_BITCODE}"
+    --output "${LOOM_FREESTANDING_MEMORY_HEADER}"
+    --symbol freestandingMemoryBitcode
+  DEPENDS
+    "${LOOM_FREESTANDING_MEMORY_BITCODE}"
     "${LOOM_SOURCE_DIR}/scripts/embed_binary.py"
   VERBATIM
 )
@@ -120,6 +169,7 @@ add_library(LoomApplicationBuild
   ProductVisualization.cpp
   Quality.cpp
   "${LOOM_FREESTANDING_MATH_HEADER}"
+  "${LOOM_FREESTANDING_MEMORY_HEADER}"
 )
 
 add_library(LoomApplicationDeploymentRuntime

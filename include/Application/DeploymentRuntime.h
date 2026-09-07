@@ -1,6 +1,7 @@
 #ifndef LOOM_APPLICATION_DEPLOYMENTRUNTIME_H
 #define LOOM_APPLICATION_DEPLOYMENTRUNTIME_H
 
+#include "Application/ActivationInputs.h"
 #include "Application/ResourceTimeExecution.h"
 #include "Runtime/Gem5RootEventControl.h"
 
@@ -21,14 +22,6 @@ namespace loom::application {
 struct ApplicationDeploymentArtifacts;
 class ApplicationRuntimeManifest;
 class FinalizedApplicationRuntimeManifest;
-
-/// One exact Deployment-owned System invocation pair derived from the
-/// Application's canonical source invocation. The source invocation remains
-/// authoritative; these roots are removable execution materializations.
-struct ApplicationActivationInputs final {
-  ArtifactRootReference workload;
-  ArtifactRootReference runtimeInput;
-};
 
 /// The exact invocation pair for one preverified resource-time endpoint.
 struct ApplicationEndpointActivationInputs final {
@@ -124,17 +117,6 @@ loadApplicationDeployment(const FinalizedApplicationRuntimeManifest &manifest,
                           runtime::RuntimeProviderSelection selection,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs);
-
-/// Mechanically projects one canonical Structured Program invocation onto an
-/// exact Deployment and publishes the resulting System invocation roots.
-llvm::Expected<ApplicationActivationInputs>
-materializeApplicationActivationInputs(
-    const ArtifactRootReference &sourceProgram,
-    const ArtifactRootReference &sourceWorkload,
-    const ArtifactRootReference &sourceRuntimeInput,
-    const deployment::FinalizedDeployment &deployment,
-    const ArtifactStore &artifacts,
-    std::optional<std::uint64_t> maximumSimulatedTicks = std::nullopt);
 
 /// Materializes an independently importable System invocation pair for every
 /// endpoint in the manifest's preverified graph. The entry pair must reproduce

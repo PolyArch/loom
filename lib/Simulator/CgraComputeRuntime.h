@@ -89,13 +89,13 @@ public:
                         const llvm::SmallBitVector &semanticCandidates);
 
   llvm::Expected<CgraComputeLifecycleFrame>
-  acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+  acceptPhysicalEvents(const CgraPhysicalLifecycleFrameView &physicalFrame);
 
   llvm::Expected<CgraPhysicalTraceBinding>
   physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
 
-  std::optional<std::uint64_t>
-  physicalActionSemanticActor(std::uint64_t actionOrdinal,
+  std::optional<std::pair<std::uint64_t, std::uint64_t>>
+  physicalActionSemanticFiring(std::uint64_t actionOrdinal,
                               std::uint64_t occurrenceOrdinal) const;
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,

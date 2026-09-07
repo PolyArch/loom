@@ -71,12 +71,15 @@ public:
   internalRouteCutHolds(const SpatialCandidateState &candidate,
                         const SpatialTraversalRouteCut &cut) const;
 
+  /// Temporary traversal omissions constrain only this route search and
+  /// compose with the caller's cut. They do not become frozen constraints.
   llvm::Expected<RouteCost>
   routeWholeNet(SpatialMoveTransaction &move,
                 const SpatialCandidateState &candidate,
                 SpatialRouteCostState &costs, PnrIndex logicalNet,
                 std::uint64_t endpointExpansionLimit,
-                std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
+                std::optional<SpatialTraversalRouteCut> cut = std::nullopt,
+                llvm::ArrayRef<PnrIndex> omittedTraversals = {});
   llvm::Expected<RouteCost>
   routeSingleSink(SpatialMoveTransaction &move,
                   const SpatialCandidateState &candidate,
@@ -94,8 +97,10 @@ public:
                SpatialRouteCostState &costs, PnrIndex logicalNet,
                llvm::ArrayRef<PnrIndex> sinkObligations,
                std::uint64_t endpointExpansionLimit,
-               std::optional<SpatialTraversalRouteCut> cut = std::nullopt);
+               std::optional<SpatialTraversalRouteCut> cut = std::nullopt,
+               llvm::ArrayRef<PnrIndex> omittedTraversals = {});
 
+  std::uint64_t endpointQueryCount() const;
   std::uint64_t endpointExpansionCount() const {
     return endpointSearch_.endpointExpansionCount();
   }
@@ -160,12 +165,12 @@ private:
                                      SpatialRouteCostState &costs,
                                      PnrIndex attachment,
                                      llvm::ArrayRef<PnrIndex> branchArcs);
-  llvm::Expected<RouteCost>
-  routeSelectedSinks(SpatialMoveTransaction &move,
-                     const SpatialCandidateState &candidate,
-                     SpatialRouteCostState &costs, PnrIndex logicalNet,
-                     std::uint64_t endpointExpansionLimit,
-                     std::optional<SpatialTraversalRouteCut> cut);
+  llvm::Expected<RouteCost> routeSelectedSinks(
+      SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, PnrIndex logicalNet,
+      std::uint64_t endpointExpansionLimit,
+      std::optional<SpatialTraversalRouteCut> cut,
+      llvm::ArrayRef<PnrIndex> omittedTraversals = {});
   void beginEndpointMarks();
 
   EndpointRouteSearchScratch endpointSearch_;

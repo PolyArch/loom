@@ -1005,17 +1005,23 @@ module {
           parallelChild.structuredProgram))
     fail("the raised-pointer parallel edge did not replay: " +
          llvm::toString(std::move(error)));
+  // Inside a materialized rank-zero ownership carrier, Parallelize promotes
+  // the selected loop into the carrier's dense logical thread domain. A
+  // surviving graph-owned forall means the promotion did not happen, so the
+  // thread count alone cannot witness this edge.
   std::size_t threadDomainCount = 0;
+  std::size_t residualForallCount = 0;
   std::size_t i64GepCount = 0;
   parallelChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
         threadDomainCount += llvm::isa<dataflow::ThreadOp>(operation);
+        residualForallCount += llvm::isa<mlir::scf::ForallOp>(operation);
         if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation))
           i64GepCount +=
               llvm::hasSingleElement(gep.getDynamicIndices()) &&
               gep.getDynamicIndices().front().getType().isInteger(64);
       });
-  if (threadDomainCount != 1 || i64GepCount != 2)
+  if (threadDomainCount != 1 || residualForallCount != 0 || i64GepCount != 2)
     fail("tiled parallel materialization lost its i64 pointer coordinates");
 
   auto sameRoot = materializeRootRelativeOwnership(parseProgram(R"mlir(
@@ -1100,6 +1106,18 @@ module {
                         : "admitted")).str());
         return candidate;
       };
+  const auto requireIndependence =
+      [&](const loom::frontend::StructuredProgramCandidate &candidate,
+          loom::lowering::ParallelDependenceResult expected) {
+        const auto reference = singleScfRootReference(candidate);
+        auto view = take(candidate.view());
+        auto entity = take(view.resolve(reference));
+        auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
+        if (!loop ||
+            loom::lowering::proveIndependentIterations(loop) != expected)
+          fail("raised-pointer independence disagrees with its byte/effect "
+               "contract");
+      };
   requireRefusal(
       R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -1173,7 +1191,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 )mlir",
       loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished);
-  requireRefusal(R"mlir(
+  auto overlappingBytes =
+      requireRefusal(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   llvm.func @overlapping_bytes(%output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
@@ -1189,8 +1208,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   }
 }
 )mlir",
-                 loom::frontend::StructuredScopRefusalKind::
-                     AccessRelationProofNotEstablished);
+                     loom::frontend::StructuredScopRefusalKind::
+                         AccessRelationProofNotEstablished);
+  requireIndependence(
+      overlappingBytes,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
 
   auto mixedWidth = requireRefusal(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -1213,16 +1235,135 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 )mlir",
                                    loom::frontend::StructuredScopRefusalKind::
                                        AccessRelationProofNotEstablished);
-  const loom::frontend::StructuredEntityRef mixedWidthRoot =
-      singleScfRootReference(mixedWidth);
-  auto mixedWidthView = take(mixedWidth.view());
-  auto mixedWidthEntity = take(mixedWidthView.resolve(mixedWidthRoot));
-  auto mixedWidthLoop =
-      llvm::dyn_cast_or_null<mlir::scf::ForOp>(mixedWidthEntity.operation);
-  if (!mixedWidthLoop ||
-      loom::lowering::proveIndependentIterations(mixedWidthLoop) ==
-          loom::lowering::ParallelDependenceResult::ProvenIndependent)
-    fail("mixed-width byte partitions acquired a parallel proof");
+  requireIndependence(
+      mixedWidth,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
+
+  auto inexactRead = requireRefusal(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  llvm.func @overlapping_read_stride(%state: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %read_address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %value = llvm.load %read_address : !llvm.ptr -> i32
+      %write_address = llvm.getelementptr inbounds %state[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      llvm.store %value, %write_address : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+                                    loom::frontend::StructuredScopRefusalKind::
+                                        AccessRelationProofNotEstablished);
+  requireIndependence(
+      inexactRead,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
+
+  auto atomicStore = requireRefusal(
+      R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  llvm.func @atomic_store(%output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %output[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      llvm.store %value, %element atomic monotonic {alignment = 4 : i64}
+          : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::UnsupportedEffect);
+  requireIndependence(
+      atomicStore,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
+
+  auto atomicLoad = requireRefusal(
+      R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  llvm.func @atomic_load(%input: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %element = llvm.getelementptr inbounds %input[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %value = llvm.load %element atomic monotonic {alignment = 4 : i64}
+          : !llvm.ptr -> i32
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::UnsupportedEffect);
+  requireIndependence(
+      atomicLoad,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
+
+  // The inner domain has an invariant row base and a read coordinate from
+  // the enclosing scope. Byte-exact writes and distinct input provenance are
+  // sufficient; rejecting every non-point read would lose this parallelism.
+  requireIndependence(
+      parseProgram(R"mlir(
+module {
+  llvm.func @invariant_row(%input: !llvm.ptr {llvm.noalias},
+                           %output: !llvm.ptr {llvm.noalias}, %row: i64) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %row_base = llvm.getelementptr inbounds %output[%row]
+        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i32>
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %input_element = llvm.getelementptr inbounds %input[%row]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %value = llvm.load %input_element : !llvm.ptr -> i32
+      %output_element = llvm.getelementptr inbounds %row_base[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      llvm.store %value, %output_element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir"),
+      loom::lowering::ParallelDependenceResult::ProvenIndependent);
+
+  // Different invariant row-base values can alias. In particular, a shifted
+  // base makes one iteration's store feed the next iteration's load.
+  auto shiftedRows = requireRefusal(
+      R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  llvm.func @shifted_rows(%state: !llvm.ptr, %row: i64) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c8 = arith.constant 8 : i64
+    %row_base = llvm.getelementptr inbounds %state[%row]
+        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i32>
+    %shifted_base = llvm.getelementptr inbounds %row_base[%c1]
+        : (!llvm.ptr, i64) -> !llvm.ptr, i32
+    scf.for %i = %c0 to %c8 step %c1 : i64 {
+      %input_element = llvm.getelementptr inbounds %row_base[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      %value = llvm.load %input_element : !llvm.ptr -> i32
+      %output_element = llvm.getelementptr inbounds %shifted_base[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, i32
+      llvm.store %value, %output_element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::AliasProofNotEstablished);
+  requireIndependence(
+      shiftedRows,
+      loom::lowering::ParallelDependenceResult::ProofNotEstablished);
 }
 
 void reductionCoordinateComposesWithTiledParallelLineage(
@@ -1339,11 +1480,13 @@ module {
          llvm::toString(std::move(error)));
 
   std::size_t threadDomainCount = 0;
+  std::size_t residualForallCount = 0;
   reductionChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
         threadDomainCount += llvm::isa<dataflow::ThreadOp>(operation);
+        residualForallCount += llvm::isa<mlir::scf::ForallOp>(operation);
       });
-  if (threadDomainCount != 1)
+  if (threadDomainCount != 1 || residualForallCount != 0)
     fail("composed schedule lineage lost its independent parallel sibling");
 }
 

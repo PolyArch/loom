@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -114,12 +115,6 @@ private:
   prepareCgraWorkloadExecution(const PreparedCgraExecution &,
                                const CanonicalSimulationWorkload &,
                                const CanonicalSimulationRuntimeInput &);
-  friend llvm::Expected<CgraExecutionSession>
-  startCgraExecutionSession(const PreparedCgraExecution &,
-                            const CanonicalSimulationWorkload &,
-                            const CanonicalSimulationRuntimeInput &,
-                            std::optional<TraceCaptureLevel>,
-                            CgraExternalMemoryProvider *);
 };
 
 /// Strictly imports and couples one Canonical Dataflow, Fabric, TechMapping,

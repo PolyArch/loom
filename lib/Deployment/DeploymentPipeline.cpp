@@ -69,10 +69,7 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
   if (!dataflow)
     return invalid("cannot import Canonical Dataflow: " +
                    llvm::toString(dataflow.takeError()));
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return invalid("cannot reconstruct Canonical Dataflow view: " +
-                   llvm::toString(dataflowView.takeError()));
+  const auto &dataflowView = dataflow->view();
 
   auto layoutBinding = importCompilerTargetBinding(
       hostProgram.compilerTargetBinding(), artifacts);
@@ -94,7 +91,7 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
   for (const mapping::SystemGraphExecutionBindingView &binding :
        systemMappingArtifact->view().executionBindings().graphBindings()) {
     auto sources = frontend::deriveRootedLogicalMemorySources(
-        *catalog, *dataflowView, binding.key);
+        *catalog, dataflowView, binding.key);
     if (!sources)
       return invalid("cannot derive selected logical-memory sources: " +
                      llvm::toString(sources.takeError()));
@@ -106,7 +103,7 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
         imageOrdinal.reset();
 
       auto key =
-          selectionKey(dataflowView->identity(), binding.key, source.root);
+          selectionKey(dataflowView.identity(), binding.key, source.root);
       if (!key)
         return invalid("cannot encode selected logical-memory source: " +
                        llvm::toString(key.takeError()));
@@ -146,9 +143,13 @@ llvm::Expected<FinalizedDeployment> buildDeploymentFromLinkedProgram(
     DeploymentPipelineInputs inputs, const llvm::Module &finalLinkedModule,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   const auto staticMemoryBegin = std::chrono::steady_clock::now();
-  auto staticMemory =
-      deriveStaticMemoryImages(inputs.systemMapping, inputs.hostProgram,
-                               finalLinkedModule, artifacts, blobs);
+  auto staticMemory = [&]() -> llvm::Expected<std::vector<StaticMemoryImageLeaf>> {
+    const auto *mapping = std::get_if<ArtifactRootReference>(&inputs.executionRoot);
+    if (!mapping)
+      return std::vector<StaticMemoryImageLeaf>{};
+    return deriveStaticMemoryImages(*mapping, inputs.hostProgram,
+                                    finalLinkedModule, artifacts, blobs);
+  }();
   emitDeploymentConstructionOperationStatistics(
       {DeploymentConstructionMode::Build,
        DeploymentConstructionOperation::StaticMemoryDerivation,
@@ -162,7 +163,7 @@ llvm::Expected<FinalizedDeployment> buildDeploymentFromLinkedProgram(
 
   return buildDeployment(
       ExactDeploymentInputs{
-          std::move(inputs.systemMapping), std::move(inputs.hostProgram),
+          std::move(inputs.executionRoot), std::move(inputs.hostProgram),
           std::move(inputs.instructionCoreBinaries),
           std::move(inputs.hardwareBindings), std::move(*staticMemory)},
       artifacts, blobs);

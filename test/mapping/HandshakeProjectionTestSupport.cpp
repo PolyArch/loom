@@ -34,9 +34,10 @@ void requireSuccess(llvm::Error error) {
     fail(llvm::toString(std::move(error)));
 }
 
-std::pair<std::size_t, std::size_t> expectedProjectionExtent(
+std::vector<std::uint8_t> expectedProjectionArcs(
     const loom::pnr::FrozenSpatialHandshakeIndex &handshake,
-    llvm::ArrayRef<loom::pnr::PnrIndex> selectedFragments) {
+    llvm::ArrayRef<loom::pnr::PnrIndex> selectedFragments,
+    llvm::ArrayRef<loom::pnr::PnrIndex> traversalUses = {}) {
   std::vector<std::uint8_t> activeArcs(handshake.projectionArcs().size(), 0);
   const auto activateFragment = [&](loom::pnr::PnrIndex fragment) {
     const auto offsets = handshake.projectionFragmentArcOffsets();
@@ -52,7 +53,30 @@ std::pair<std::size_t, std::size_t> expectedProjectionExtent(
     activateFragment(fragment);
   for (loom::pnr::PnrIndex fragment : selectedFragments)
     activateFragment(fragment);
+  const auto traversalOffsets = handshake.traversalFragmentOffsets();
+  for (auto [traversal, count] : llvm::enumerate(traversalUses)) {
+    if (count == 0)
+      continue;
+    for (loom::pnr::PnrIndex fragment : handshake.traversalFragments().slice(
+             traversalOffsets[traversal],
+             traversalOffsets[traversal + 1] - traversalOffsets[traversal]))
+      activateFragment(fragment);
+  }
+  for (const auto &group : handshake.allTraversalGroups())
+    if (llvm::all_of(handshake.allTraversalGroupWitnesses().slice(
+                         group.witnessOffset, group.witnessCount),
+                     [&](loom::pnr::PnrIndex traversal) {
+                       return traversal < traversalUses.size() &&
+                              traversalUses[traversal] != 0;
+                     }))
+      activateFragment(group.fragment);
+  return activeArcs;
+}
 
+std::pair<std::size_t, std::size_t> expectedProjectionExtent(
+    const loom::pnr::FrozenSpatialHandshakeIndex &handshake,
+    llvm::ArrayRef<loom::pnr::PnrIndex> selectedFragments) {
+  const auto activeArcs = expectedProjectionArcs(handshake, selectedFragments);
   std::vector<std::uint8_t> activeNodes(handshake.projectionNodeCount(), 0);
   std::size_t arcCount = 0;
   for (auto [ordinal, arc] : llvm::enumerate(handshake.projectionArcs())) {
@@ -254,8 +278,28 @@ void loom::test::exerciseDenseHandshakeCycleProjection(
   requireSuccess(scratch.prepare(handshake));
   const bool cold = take(pnr::independentlyVerifyHandshakeProjectionAcyclic(
       handshake, selectedFragments, traversalUses));
-  const bool hot =
-      take(scratch.projectAcyclic(handshake, selectedFragments, traversalUses));
+  std::vector<pnr::PnrIndex> frozenWitness;
+  const bool hot = take(scratch.projectAcyclic(
+      handshake, selectedFragments, traversalUses, &frozenWitness));
   if (hot != cold || hot)
     fail("dense handshake projection did not preserve a cold cycle result");
+  if (frozenWitness.empty())
+    fail("negative route projection omitted its exact cycle witness");
+  const auto expectedArcs =
+      expectedProjectionArcs(handshake, selectedFragments, traversalUses);
+  const auto arcs = handshake.projectionArcs();
+  for (std::size_t index = 0; index != frozenWitness.size(); ++index) {
+    const pnr::PnrIndex arc = frozenWitness[index];
+    const pnr::PnrIndex next =
+        frozenWitness[(index + 1) % frozenWitness.size()];
+    if (arc >= arcs.size() || next >= arcs.size() || !expectedArcs[arc] ||
+        arcs[arc].destination != arcs[next].source)
+      fail("projected cycle witness is not a closed walk over selected frozen "
+           "arcs");
+  }
+  std::fill(traversalUses.begin(), traversalUses.end(), 0);
+  if (!take(scratch.projectAcyclic(handshake, {}, traversalUses,
+                                  &frozenWitness)) ||
+      !frozenWitness.empty())
+    fail("acyclic reprojection retained a previous selection's cycle witness");
 }

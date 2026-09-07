@@ -241,7 +241,8 @@ private:
   llvm::Error routeAffectedNets(SpatialMoveTransaction &move,
                                 SpatialCandidateState &candidate);
   llvm::Error realizeExplicitLocalDispositions(
-      SpatialMoveTransaction &move, SpatialCandidateState &candidate);
+      SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+      SpatialActionExecutionContext context);
   llvm::Error reconcileBindingRelations(SpatialMoveTransaction &move,
                                         SpatialCandidateState &candidate);
   void markChangedBindingRoot(PnrIndex decision);

@@ -80,9 +80,7 @@ deriveSpatialOperandQueueRuntimeFeedback(
   auto dataflow = dataflow::importCanonicalDataflow(owners.dataflow, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto fabric = fabric::importEntireFabricRoot(owners.fabric, artifacts);
   if (!fabric)
     return fabric.takeError();
@@ -113,7 +111,7 @@ deriveSpatialOperandQueueRuntimeFeedback(
   if (!groups)
     return groups.takeError();
   auto projection = mapping::deriveSpatialPeOperandProgressFeedback(
-      *dataflowView, tech->view(), *groups);
+      dataflowView, tech->view(), *groups);
   if (!projection)
     return projection.takeError();
   if (projection->groupCount != closedWait.operandQueueGroupCount ||

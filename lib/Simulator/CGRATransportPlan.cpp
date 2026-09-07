@@ -287,17 +287,12 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       const RefBytes key = ::loom::fabric::canonicalFabricBytes(pe);
       if (operandBuffers.find(key) != operandBuffers.end())
         continue;
-      const auto mode = fabric.peOperandBufferMode(pe);
-      const std::uint32_t entries = fabric.peOperandBufferSize(pe);
-      auto schema = fabric.temporalPeConfigurationSchema(pe);
-      if (!mode || entries == 0 || !schema)
-        return invalid("CGRA PE operand buffer has no exact Fabric contract");
-      CgraPeOperandBufferPlan plan{
-          pe, *mode, schema->layout().contextCount, entries, {}};
-      plan.fuInputCounts.reserve(schema->layout().fus.size());
-      for (const auto &fu : schema->layout().fus)
-        plan.fuInputCounts.push_back(fu.inputCount);
-      operandBuffers.emplace(key, std::move(plan));
+      auto contract =
+          ::fabric::deriveTemporalPeOperandBufferContract(fabric, pe);
+      if (!contract)
+        return contract.takeError();
+      operandBuffers.emplace(key,
+                             CgraPeOperandBufferPlan{pe, std::move(*contract)});
     }
   for (auto &[key, plan] : operandBuffers) {
     (void)key;
@@ -380,8 +375,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const std::uint64_t tagOrdinal = result.physicalTags.size();
     result.physicalTags.push_back(
         {transfer.tag,
-         CgraRegisterFifoPhysicalTagOwner{transfer.logicalNet,
-                                          transfer.sink}});
+         CgraRegisterFifoPhysicalTagOwner{transfer.logicalNet, transfer.sink}});
     if (!selectedLocalTransfers
              .try_emplace(EdgeKey{std::move(*producerKey), std::move(*sinkKey)},
                           SelectedLocalTransfer{&transfer, tagOrdinal})

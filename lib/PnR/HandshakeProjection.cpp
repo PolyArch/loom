@@ -2,6 +2,7 @@
 
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "HandshakeCycleDiagnostics.h"
 #include "HandshakeProjectionInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -26,14 +27,23 @@ using namespace loom::pnr;
 namespace loom::pnr::detail {
 
 struct HandshakeProjectionScratchStorage final {
+  struct CycleFrame final {
+    PnrIndex node;
+    PnrIndex nextArc;
+  };
+
   RebuiltHandshakeSelection selection;
   std::vector<std::uint64_t> arcEpochs;
-  std::vector<std::uint64_t> arcRefcounts;
-  std::vector<PnrIndex> activeArcs;
   std::vector<std::uint64_t> nodeEpochs;
   std::vector<PnrIndex> indegree;
+  std::vector<PnrIndex> firstActiveOutgoing;
+  std::vector<PnrIndex> lastActiveOutgoing;
+  std::vector<PnrIndex> nextActiveArc;
   std::vector<PnrIndex> activeNodes;
   std::vector<PnrIndex> ready;
+  std::vector<std::uint8_t> cycleColors;
+  std::vector<PnrIndex> cycleParentArcs;
+  std::vector<CycleFrame> cycleStack;
   std::uint64_t projectionEpoch = 0;
 };
 
@@ -109,7 +119,7 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
     storage.projectionEpoch = 1;
   }
   const std::uint64_t epoch = storage.projectionEpoch;
-  storage.activeArcs.clear();
+  std::uint64_t activeArcCount = 0;
   storage.activeNodes.clear();
   storage.ready.clear();
 
@@ -121,6 +131,8 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
       return llvm::Error::success();
     storage.nodeEpochs[node] = epoch;
     storage.indegree[node] = 0;
+    storage.firstActiveOutgoing[node] = getInvalidPnrIndex();
+    storage.lastActiveOutgoing[node] = getInvalidPnrIndex();
     storage.activeNodes.push_back(node);
     return llvm::Error::success();
   };
@@ -130,8 +142,7 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
     addWork(deterministicWork);
     if (storage.arcEpochs[arc] != epoch) {
       storage.arcEpochs[arc] = epoch;
-      storage.arcRefcounts[arc] = 0;
-      storage.activeArcs.push_back(arc);
+      ++activeArcCount;
       if (llvm::Error error = activateNode(arcs[arc].source))
         return error;
       if (llvm::Error error = activateNode(arcs[arc].destination))
@@ -139,11 +150,18 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
       if (llvm::Error error = increment(storage.indegree[arcs[arc].destination],
                                         "projection node indegree"))
         return error;
+      // Preserve fixed-then-fragment first encounter order, matching the
+      // independent cold materialization without copying graph identities.
+      const PnrIndex source = arcs[arc].source;
+      const PnrIndex previous = storage.lastActiveOutgoing[source];
+      if (previous == getInvalidPnrIndex())
+        storage.firstActiveOutgoing[source] = arc;
+      else
+        storage.nextActiveArc[previous] = arc;
+      storage.lastActiveOutgoing[source] = arc;
+      storage.nextActiveArc[arc] = getInvalidPnrIndex();
       addWork(deterministicWork);
     }
-    if (storage.arcRefcounts[arc] == std::numeric_limits<std::uint64_t>::max())
-      return projectionError("active projection arc refcount exceeds u64");
-    ++storage.arcRefcounts[arc];
     return llvm::Error::success();
   };
 
@@ -172,22 +190,19 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
   peakActiveNodeCount =
       std::max<std::uint64_t>(peakActiveNodeCount, storage.activeNodes.size());
   peakActiveArcCount =
-      std::max<std::uint64_t>(peakActiveArcCount, storage.activeArcs.size());
+      std::max(peakActiveArcCount, activeArcCount);
   for (PnrIndex node : storage.activeNodes) {
     if (storage.indegree[node] == 0)
       storage.ready.push_back(node);
     addWork(deterministicWork);
   }
 
-  const auto outgoingOffsets = index.projectionOutgoingArcOffsets();
   std::size_t cursor = 0;
   while (cursor < storage.ready.size()) {
     const PnrIndex node = storage.ready[cursor++];
-    for (PnrIndex arc = outgoingOffsets[node]; arc < outgoingOffsets[node + 1];
-         ++arc) {
+    for (PnrIndex arc = storage.firstActiveOutgoing[node];
+         arc != getInvalidPnrIndex(); arc = storage.nextActiveArc[arc]) {
       addWork(deterministicWork);
-      if (storage.arcEpochs[arc] != epoch)
-        continue;
       PnrIndex &destinationIndegree = storage.indegree[arcs[arc].destination];
       if (destinationIndegree == 0)
         return projectionError("projection node indegree underflows");
@@ -196,6 +211,57 @@ projectActiveFragmentSet(const FrozenSpatialHandshakeIndex &index,
     }
   }
   return storage.ready.size() == storage.activeNodes.size();
+}
+
+llvm::Error extractActiveCycleWitness(
+    const FrozenSpatialHandshakeIndex &index,
+    detail::HandshakeProjectionScratchStorage &storage,
+    std::vector<PnrIndex> &witness, std::uint64_t &deterministicWork) {
+  const auto arcs = index.projectionArcs();
+  storage.cycleStack.clear();
+  for (PnrIndex node : storage.activeNodes) {
+    storage.cycleColors[node] = 0;
+    storage.cycleParentArcs[node] = getInvalidPnrIndex();
+  }
+  for (PnrIndex root : storage.activeNodes) {
+    if (storage.cycleColors[root] != 0)
+      continue;
+    storage.cycleColors[root] = 1;
+    storage.cycleStack.push_back({root, storage.firstActiveOutgoing[root]});
+    while (!storage.cycleStack.empty()) {
+      auto &frame = storage.cycleStack.back();
+      if (frame.nextArc == getInvalidPnrIndex()) {
+        storage.cycleColors[frame.node] = 2;
+        storage.cycleStack.pop_back();
+        continue;
+      }
+      const PnrIndex arc = frame.nextArc;
+      frame.nextArc = storage.nextActiveArc[arc];
+      addWork(deterministicWork);
+      const PnrIndex destination = arcs[arc].destination;
+      if (storage.cycleColors[destination] == 0) {
+        storage.cycleColors[destination] = 1;
+        storage.cycleParentArcs[destination] = arc;
+        storage.cycleStack.push_back({destination,
+                                     storage.firstActiveOutgoing[destination]});
+        continue;
+      }
+      if (storage.cycleColors[destination] != 1)
+        continue;
+      witness.push_back(arc);
+      for (PnrIndex node = frame.node; node != destination;) {
+        const PnrIndex parent = storage.cycleParentArcs[node];
+        if (parent == getInvalidPnrIndex())
+          return projectionError("dense cycle witness lost its DFS parent");
+        witness.push_back(parent);
+        node = arcs[parent].source;
+        addWork(deterministicWork);
+      }
+      std::reverse(witness.begin(), witness.end());
+      return llvm::Error::success();
+    }
+  }
+  return projectionError("cyclic dense projection has no active cycle witness");
 }
 
 } // namespace
@@ -394,15 +460,23 @@ HandshakeProjectionScratch::prepare(const FrozenSpatialHandshakeIndex &index) {
   storage.selection.allGroupSelectedWitnessCounts.assign(
       index.allTraversalGroups().size(), 0);
   storage.arcEpochs.assign(index.projectionArcs().size(), 0);
-  storage.arcRefcounts.assign(index.projectionArcs().size(), 0);
-  storage.activeArcs.clear();
-  storage.activeArcs.reserve(index.projectionArcs().size());
   storage.nodeEpochs.assign(index.projectionNodeCount(), 0);
   storage.indegree.assign(index.projectionNodeCount(), 0);
+  storage.firstActiveOutgoing.assign(index.projectionNodeCount(),
+                                     getInvalidPnrIndex());
+  storage.lastActiveOutgoing.assign(index.projectionNodeCount(),
+                                    getInvalidPnrIndex());
+  storage.nextActiveArc.assign(index.projectionArcs().size(),
+                              getInvalidPnrIndex());
   storage.activeNodes.clear();
   storage.activeNodes.reserve(index.projectionNodeCount());
   storage.ready.clear();
   storage.ready.reserve(index.projectionNodeCount());
+  storage.cycleColors.assign(index.projectionNodeCount(), 0);
+  storage.cycleParentArcs.assign(index.projectionNodeCount(),
+                                 getInvalidPnrIndex());
+  storage.cycleStack.clear();
+  storage.cycleStack.reserve(index.projectionNodeCount());
   storage.projectionEpoch = 0;
   preparedIndex_ = &index;
   return llvm::Error::success();
@@ -411,7 +485,10 @@ HandshakeProjectionScratch::prepare(const FrozenSpatialHandshakeIndex &index) {
 llvm::Expected<bool> HandshakeProjectionScratch::projectAcyclic(
     const FrozenSpatialHandshakeIndex &index,
     llvm::ArrayRef<PnrIndex> selectedFragments,
-    llvm::ArrayRef<PnrIndex> traversalUses) {
+    llvm::ArrayRef<PnrIndex> traversalUses,
+    std::vector<PnrIndex> *frozenCycleWitness) {
+  if (frozenCycleWitness)
+    frozenCycleWitness->clear();
   if (preparedIndex_ != &index)
     return projectionError(
         "handshake projection scratch belongs to another frozen index");
@@ -434,6 +511,16 @@ llvm::Expected<bool> HandshakeProjectionScratch::projectAcyclic(
   if (!projected)
     return projected.takeError();
   const bool acyclic = *projected;
+
+  if (frozenCycleWitness && !acyclic) {
+    if (llvm::Error error = extractActiveCycleWitness(
+            index, storage, *frozenCycleWitness, deterministicWork))
+      return std::move(error);
+    detail::emitHandshakeCycleDiagnostic(
+        index, detail::HandshakeCycleOrigin::Projection, *frozenCycleWitness,
+        storage.selection.activeFragments, storage.selection.fragmentRefcounts,
+        loom::mapping_debug::Level::Summary);
+  }
 
   if (loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
     const auto coldBegin = std::chrono::steady_clock::now();
@@ -476,10 +563,14 @@ std::size_t HandshakeProjectionScratch::retainedStorageBytes() const {
          retainedBytes(storage.selection.traversalRefcounts) +
          retainedBytes(storage.selection.allGroupSelectedWitnessCounts) +
          retainedBytes(storage.arcEpochs) +
-         retainedBytes(storage.arcRefcounts) +
-         retainedBytes(storage.activeArcs) + retainedBytes(storage.nodeEpochs) +
+         retainedBytes(storage.nodeEpochs) +
+         retainedBytes(storage.firstActiveOutgoing) +
+         retainedBytes(storage.lastActiveOutgoing) +
+         retainedBytes(storage.nextActiveArc) +
          retainedBytes(storage.indegree) + retainedBytes(storage.activeNodes) +
-         retainedBytes(storage.ready);
+         retainedBytes(storage.ready) + retainedBytes(storage.cycleColors) +
+         retainedBytes(storage.cycleParentArcs) +
+         retainedBytes(storage.cycleStack);
 }
 
 HandshakeProjectionStatistics HandshakeProjectionScratch::statistics() const {

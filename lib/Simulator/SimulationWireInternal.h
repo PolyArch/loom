@@ -19,6 +19,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -38,11 +39,15 @@ llvm::Error invalid(const llvm::Twine &message);
 
 class WireWriter {
 public:
+  static constexpr std::array<std::uint8_t, 4> u32Bytes(std::uint32_t value) {
+    return {static_cast<std::uint8_t>(value >> 24),
+            static_cast<std::uint8_t>(value >> 16),
+            static_cast<std::uint8_t>(value >> 8),
+            static_cast<std::uint8_t>(value)};
+  }
   void u32(std::uint32_t value) {
-    bytes_.push_back(static_cast<std::uint8_t>(value >> 24));
-    bytes_.push_back(static_cast<std::uint8_t>(value >> 16));
-    bytes_.push_back(static_cast<std::uint8_t>(value >> 8));
-    bytes_.push_back(static_cast<std::uint8_t>(value));
+    for (std::uint8_t byte : u32Bytes(value))
+      bytes_.push_back(byte);
   }
   void u64(std::uint64_t value) {
     for (unsigned shift = 56; shift != 0; shift -= 8)
@@ -63,14 +68,17 @@ class WireReader {
 public:
   explicit WireReader(llvm::ArrayRef<std::uint8_t> bytes) : bytes_(bytes) {}
 
+  // The caller owns availability of four canonical big-endian bytes.
+  static std::uint32_t u32Value(const std::uint8_t *bytes) {
+    return (static_cast<std::uint32_t>(bytes[0]) << 24) |
+           (static_cast<std::uint32_t>(bytes[1]) << 16) |
+           (static_cast<std::uint32_t>(bytes[2]) << 8) |
+           static_cast<std::uint32_t>(bytes[3]);
+  }
   llvm::Expected<std::uint32_t> u32() {
     if (bytes_.size() - offset_ < 4)
       return invalid("truncated u32");
-    const std::uint32_t value =
-        (static_cast<std::uint32_t>(bytes_[offset_]) << 24) |
-        (static_cast<std::uint32_t>(bytes_[offset_ + 1]) << 16) |
-        (static_cast<std::uint32_t>(bytes_[offset_ + 2]) << 8) |
-        static_cast<std::uint32_t>(bytes_[offset_ + 3]);
+    const std::uint32_t value = u32Value(bytes_.data() + offset_);
     offset_ += 4;
     return value;
   }
@@ -104,6 +112,9 @@ public:
     if (count > (bytes_.size() - offset_) / minElementBytes)
       return invalid("element count exceeds the remaining bytes");
     return llvm::Error::success();
+  }
+  llvm::ArrayRef<std::uint8_t> remainingBytes() const {
+    return bytes_.drop_front(offset_);
   }
   bool atEnd() const { return offset_ == bytes_.size(); }
   std::size_t offset() const { return offset_; }

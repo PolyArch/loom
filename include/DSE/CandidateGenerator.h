@@ -34,7 +34,7 @@ std::uint32_t
 defaultCandidateWorkerCount(ExecutionResourceBudget executionBudget = {});
 
 inline constexpr ArtifactSchemaDescriptor candidateGeneratorDescriptorSchema{
-    "loom.candidate_generator_descriptor", SchemaVersion{3, 0}};
+    "loom.candidate_generator_descriptor", SchemaVersion{3, 4}};
 
 class CandidateGeneratorKind final {
 public:
@@ -313,7 +313,7 @@ struct CandidateGeneratorDescriptor final {
   const CandidateGeneratorOwnerLineagePayloadContract *ownerLineagePayload =
       nullptr;
   /// The closed provider form of this descriptor, recovered from the exact
-  /// registry-3.0 descriptor reference before any implementation lookup.
+  /// registry descriptor reference before any implementation lookup.
   ProviderForm providerForm;
   const CandidateGeneratorOwnerFeedbackPayloadContract *ownerFeedbackPayload =
       nullptr;

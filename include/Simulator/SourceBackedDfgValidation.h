@@ -5,6 +5,7 @@
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredExecutionShape.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/NativeSimulationOracle.h"
 
 #include "llvm/Support/Error.h"
 
@@ -18,6 +19,37 @@
 namespace loom::sim {
 
 struct NativeStructuredProgramObservations;
+
+/// Finite-object provenance observed over every activation of one exact source
+/// workload. Offsets remain dynamic and are checked against live bases by the
+/// deployment dispatcher; this result contains no native addresses.
+struct WorkloadBoundMemoryRoot final {
+  dataflow::LogicalMemoryRootRef root;
+  NativeMemoryObjectSource source;
+  /// Program allocations carry their exact value in the supplied Dataflow.
+  /// ABI objects are bound through the exact entry invocation path.
+  mlir::Value programBase;
+  std::uint64_t byteCount = 0;
+};
+struct WorkloadBoundGraphMemory final {
+  dataflow::RootedGraphLaunchRef launch;
+  std::vector<WorkloadBoundMemoryRoot> roots;
+  std::uint64_t dynamicActivations = 0;
+};
+struct WorkloadBoundMemoryCapture final {
+  ArtifactIdentity selectedProgram;
+  ArtifactIdentity sourceProgram;
+  ArtifactIdentity dataflow;
+  ArtifactIdentity workload;
+  ArtifactIdentity runtimeInput;
+  std::vector<WorkloadBoundGraphMemory> graphs;
+};
+
+llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
+    const frontend::StructuredProgramCandidate &selectedProgram,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const ImportedStructuredProgramSimulationInputs &sourceInputs,
+    std::uint64_t maxRetainedCaptureBytes);
 
 enum class SourceBackedDfgValidationStatus : std::uint8_t {
   Equivalent,

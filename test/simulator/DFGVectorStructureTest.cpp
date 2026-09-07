@@ -493,7 +493,7 @@ module {
 
 void mixedLaneTypedInputRoundTrips() {
   auto artifact = mixedLaneProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   require(view.rootThreadLaunches().size() == 1 &&
               view.staticGraphLaunches().size() == 1,
           "mixed-lane fixture has the wrong rooted launch count");

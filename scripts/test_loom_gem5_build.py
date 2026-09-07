@@ -64,6 +64,7 @@ class Gem5BuildHelperTest(unittest.TestCase):
         (bridge / "SConscript").write_text("first\n", encoding="utf-8")
         owned_headers = [
             "Gem5BridgeWire.h",
+            "Gem5BridgeSocket.h",
             "Gem5DispatchABI.h",
             "Gem5SpatialBridgeABI.h",
             "SpatialInvocationWire.h",

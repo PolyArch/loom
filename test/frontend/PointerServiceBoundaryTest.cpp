@@ -213,7 +213,7 @@ void pointerServiceBoundary() {
   if (services != 2)
     fail("descriptor and pointee did not acquire distinct memory services");
 
-  auto view = take(candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   if (view.graphs().size() != 1)
     fail("pointer cursor did not publish one canonical graph");
   auto graph = llvm::dyn_cast_or_null<dataflow::GraphOp>(view.graphs()[0].op);
@@ -308,7 +308,7 @@ void exactPointerAddressingFallback() {
   auto candidate =
       lowerPointerAddressedCandidate(compiled.structuredProgram, scope,
                                      *pointerAddressed, design.roots().front());
-  auto view = take(candidate.canonicalDataflow.view());
+  const auto &view = candidate.canonicalDataflow.view();
   if (view.graphs().size() != 1 || view.actors().empty())
     fail("pointer-addressed decision did not publish a nonempty graph");
 

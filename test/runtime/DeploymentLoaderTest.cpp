@@ -1246,11 +1246,11 @@ void exercisesFabricModelOperationalProvider() {
   const RuntimeExecutableRegistrationView registration{
       deployment.deployment().hostProgram(), hostProgramBytes,
       instructionBinaries, instructionBytes,
-      deployment.deployment().threadDispatchImage()};
+      *deployment.deployment().threadDispatchImage()};
   const RuntimeActivationView entryActivation{
-      deployment.reference(), {}, deployment.deployment().threadDispatchImage(),
+      deployment.reference(), {}, *deployment.deployment().threadDispatchImage(),
       deployment.deployment().spatialLaunchImage(),
-      deployment.deployment().admissionImage()};
+      *deployment.deployment().admissionImage()};
   requireError(test, provider->activate(lease, entryActivation),
                "FabricModel provider activated before executable registration");
   deployment::test::require(
@@ -1263,9 +1263,9 @@ void exercisesFabricModelOperationalProvider() {
       deployment::deploymentSchema.version,
       identity(test, 111)};
   const RuntimeActivationView childActivation{
-      childDeployment, {}, deployment.deployment().threadDispatchImage(),
+      childDeployment, {}, *deployment.deployment().threadDispatchImage(),
       deployment.deployment().spatialLaunchImage(),
-      deployment.deployment().admissionImage()};
+      *deployment.deployment().admissionImage()};
   const RuntimePreparedActivationHandle prepared =
       take(test, provider->prepareActivation(lease, registration,
                                              childActivation));

@@ -282,7 +282,7 @@ void temporalDispatchFollowsFabricRoundRobinSlots() {
 
 void computeCommitWaitsForExactPhysicalLifecycle() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *add = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors()) {
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -399,7 +399,7 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
 
 void statefulActorCannotBypassUnmodeledTransport() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *stream = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -458,7 +458,7 @@ void statefulActorCannotBypassUnmodeledTransport() {
 
 void structuralVectorUsesSharedPhysicalLifecycle() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *shuffle = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==
@@ -547,7 +547,7 @@ void structuralVectorUsesSharedPhysicalLifecycle() {
 
 void exceptionalSerializeRejectsBeforePhysicalRequest() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::CanonicalActorView *serialize = nullptr;
   for (const dataflow::CanonicalActorView &actor : view.actors())
     if (dataflow::operationSchemaOf(actor.op) ==

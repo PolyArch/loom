@@ -64,6 +64,7 @@ target_include_directories(loom-dse-fpa-ground-truth-collection-test PRIVATE
 add_executable(loom-dse-joint-design-exploration-test
   JointDesignExplorationFixture.cpp
   JointDesignExplorationTest.cpp
+  JointDesignFifoFeedbackTest.cpp
   JointDesignMutationTest.cpp
 )
 
@@ -124,6 +125,7 @@ target_link_libraries(LoomRootCompleteSpatialPnrTestSupport PUBLIC
 add_executable(loom-root-complete-spatial-pnr-generator-test
   RootCompleteSpatialFeedbackTestSupport.cpp
   RootCompleteSpatialPnrGeneratorTest.cpp
+  RootCompleteSpatialPnrExecutionTest.cpp
 )
 
 target_link_libraries(loom-dse-objective-test PRIVATE

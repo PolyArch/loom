@@ -71,6 +71,7 @@ struct FabricArtifactImportSessionStatistics final {
   std::uint64_t retainedPayloadBytesReused = 0;
   std::uint64_t entryCount = 0;
   std::uint64_t entryLimit = 0;
+  std::uint64_t releasedEntries = 0;
 };
 
 /// Installs one bounded cache of strictly imported immutable Fabric roots for
@@ -107,9 +108,15 @@ public:
   Attachment attachment() const { return Attachment(active_); }
   FabricArtifactImportSessionStatistics statistics() const;
 
+  /// Releases a finished import only when this scope created the cache.
+  /// Enclosing and attached caches retain their own lifetime authority, and
+  /// already returned immutable views remain valid.
+  void releaseLocalImport(const ArtifactRootReference &reference);
+
 private:
   std::shared_ptr<detail::FabricArtifactImportSessionState> active_;
   std::shared_ptr<detail::FabricArtifactImportSessionState> previous_;
+  bool ownsCache_ = false;
 };
 
 void emitFabricArtifactImportSessionStatistics(

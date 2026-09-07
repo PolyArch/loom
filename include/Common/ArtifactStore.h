@@ -18,9 +18,14 @@ namespace loom {
 
 class ArtifactStore {
 public:
-  /// Root must name an existing, durably provisioned non-symlink directory.
-  explicit ArtifactStore(llvm::StringRef root)
-      : root_(root.str()),
+  enum class Durability { Durable, Transient };
+
+  /// Root must name an existing non-symlink directory. Durable publication
+  /// requires a durably provisioned root. Transient publication is restricted
+  /// to invocation-owned workspaces with no crash-recovery contract.
+  explicit ArtifactStore(llvm::StringRef root,
+                         Durability durability = Durability::Durable)
+      : root_(root.str()), durability_(durability),
         verifiedReads_(std::make_shared<VerifiedReadCache>()) {}
 
   llvm::Expected<ArtifactIdentity>
@@ -70,6 +75,7 @@ private:
   };
 
   std::string root_;
+  Durability durability_;
   /// Copies of a store share one cache: the root names one content-addressed
   /// domain, so a validated read is valid for every copy.
   std::shared_ptr<VerifiedReadCache> verifiedReads_;

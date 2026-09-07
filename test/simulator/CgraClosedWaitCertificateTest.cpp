@@ -117,6 +117,19 @@ void openChainsAndProofFailuresAreRejected() {
   require(!loom::sim::verifyClosedWaitCertificateClosure(dangling),
           "a certificate with a node lacking an internal in-edge passed");
 
+  // Every owner has an in-edge and an out-edge, and the first owner can
+  // reach every other owner. The one-way bridge still makes two SCCs.
+  Diagnostic connectedCycles;
+  connectedCycles.waitCertificate = {
+      edge(actor(0, 0), actor(1, 0), Diagnostic::WaitEdgeKind::ActorMissingInput),
+      edge(actor(1, 0), actor(0, 0), Diagnostic::WaitEdgeKind::ActorMissingInput),
+      edge(actor(1, 0), actor(2, 0), Diagnostic::WaitEdgeKind::ActorMissingInput),
+      edge(actor(2, 0), actor(3, 0), Diagnostic::WaitEdgeKind::ActorMissingInput),
+      edge(actor(3, 0), actor(2, 0), Diagnostic::WaitEdgeKind::ActorMissingInput),
+  };
+  require(!loom::sim::verifyClosedWaitCertificateClosure(connectedCycles),
+          "one-way-connected cycles were admitted as one closed SCC");
+
   Diagnostic absent;
   require(!loom::sim::verifyClosedWaitCertificateClosure(absent),
           "an absent certificate passed");
@@ -214,6 +227,37 @@ void durableCertificateRoundTripsAsOneMinimalOwner() {
   llvm::consumeError(std::move(extra));
 }
 
+void physicalCapacityRequiresEveryOccupiedHolder() {
+  Diagnostic diagnostic;
+  diagnostic.ownerReferences = loom::sim::CgraExecutionOwnerReferences{
+      root("dataflow.canonical", {1, 0}, 1),
+      root("loom.fabric", {7, 1}, 2),
+      root("loom.mapping", {4, 0}, 3),
+      root("loom.mapping", {4, 0}, 4)};
+  for (std::uint64_t holder = 1; holder != 3; ++holder) {
+    auto capacity = edge(actor(0, 7), actor(holder, 9),
+                         Diagnostic::WaitEdgeKind::PhysicalCapacity);
+    capacity.physicalCapacity = Diagnostic::PhysicalCapacityWait{
+        11, 13, 20 + holder, 15, 4, 2, 2, 1, 1};
+    diagnostic.waitCertificate.push_back(std::move(capacity));
+    diagnostic.waitCertificate.push_back(
+        edge(actor(holder, 9), actor(0, 7),
+             Diagnostic::WaitEdgeKind::ActorMissingInput));
+  }
+  auto complete = take(loom::sim::buildCgraClosedWaitCertificate(diagnostic));
+  const auto wire = take(loom::sim::encodeCgraClosedWaitCertificate(complete));
+  auto adopted = take(loom::sim::decodeCgraClosedWaitCertificate(wire));
+  require(take(loom::sim::digestCgraClosedWaitCertificate(complete)) ==
+              take(loom::sim::digestCgraClosedWaitCertificate(adopted)),
+          "capacity evidence changed across strict adoption");
+  // The remaining two edges still form a closed SCC, but omit half of the
+  // physical capacity. Topological closure alone must never certify it.
+  diagnostic.waitCertificate.resize(2);
+  auto incomplete = loom::sim::buildCgraClosedWaitCertificate(diagnostic);
+  require(!incomplete, "capacity certificate omitted an occupied holder");
+  llvm::consumeError(incomplete.takeError());
+}
+
 } // namespace
 
 int main() {
@@ -221,5 +265,6 @@ int main() {
   queueClassesDistinguishTagValues();
   openChainsAndProofFailuresAreRejected();
   durableCertificateRoundTripsAsOneMinimalOwner();
+  physicalCapacityRequiresEveryOccupiedHolder();
   return EXIT_SUCCESS;
 }

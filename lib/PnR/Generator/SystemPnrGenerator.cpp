@@ -179,16 +179,72 @@ canonicalWorkLedger(SystemPnrGenerationAccounting &accounting) {
   return PnrWorkLedgerView(counters);
 }
 
-void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
-                              mapping_debug::ClosureStatus closureStatus,
-                              std::uint64_t candidatePublications) {
+void emitInvocationAccounting(const SystemPnrGenerationOutcome &outcome) {
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
         fields["statistics_kind"] = "system_pnr_invocation";
-        fields["closure_status"] =
-            mapping_debug::closureStatusSpelling(closureStatus);
-        fields["candidate_publications"] = candidatePublications;
+        const SystemPnrGenerationAccounting &accounting = std::visit(
+            [&](const auto &value) -> const SystemPnrGenerationAccounting & {
+              using Outcome = std::decay_t<decltype(value)>;
+              using ClosureStatus = mapping_debug::ClosureStatus;
+              ClosureStatus closure = ClosureStatus::Internal;
+              std::uint64_t publications = 0;
+              if constexpr (std::is_same_v<Outcome, GeneratedSystemMappings>) {
+                publications = value.candidates.size();
+                switch (value.termination) {
+                case PnrGenerationTermination::FixedAttemptsCompleted:
+                  closure = ClosureStatus::Closed;
+                  break;
+                case PnrGenerationTermination::SemanticLimitReached:
+                  closure = ClosureStatus::SemanticLimitReached;
+                  break;
+                case PnrGenerationTermination::ProofNotEstablished:
+                  closure = ClosureStatus::ProofNotEstablished;
+                  break;
+                }
+              } else if constexpr (std::is_same_v<
+                                       Outcome, ProvenInfeasibleSystemMapping>) {
+                closure = ClosureStatus::ProvenInfeasible;
+                switch (value.proofKind) {
+                case SystemPnrInfeasibilityProofKind::FrozenStaticContext:
+                  fields["infeasibility_proof_kind"] = "frozen_static_context";
+                  break;
+                case SystemPnrInfeasibilityProofKind::FrozenActiveProblem:
+                  fields["infeasibility_proof_kind"] = "frozen_active_problem";
+                  break;
+                case SystemPnrInfeasibilityProofKind::ImportedCapacityRelation:
+                  fields["infeasibility_proof_kind"] =
+                      "imported_capacity_relation";
+                  break;
+                case SystemPnrInfeasibilityProofKind::InitializerRelation:
+                  fields["infeasibility_proof_kind"] = "initializer_relation";
+                  break;
+                }
+              } else if constexpr (std::is_same_v<
+                                       Outcome, IncompleteSystemPnrGeneration>) {
+                closure = value.reason ==
+                                  IncompleteSystemPnrGenerationReason::
+                                      SemanticLimitReached
+                              ? ClosureStatus::SemanticLimitReached
+                              : ClosureStatus::ProofNotEstablished;
+              } else if constexpr (std::is_same_v<
+                                       Outcome, InterruptedSystemPnrGeneration>) {
+                closure = ClosureStatus::CancelledOrTimeout;
+                publications = value.candidates.size();
+              } else if constexpr (std::is_same_v<
+                                       Outcome, InvalidSystemPnrGeneration>) {
+                closure = ClosureStatus::Invalid;
+              } else {
+                static_assert(
+                    std::is_same_v<Outcome, InternalSystemPnrGeneration>);
+              }
+              fields["closure_status"] =
+                  mapping_debug::closureStatusSpelling(closure);
+              fields["candidate_publications"] = publications;
+              return value.accounting;
+            },
+            outcome);
         fields["migration_seed_attempt_slots"] =
             accounting.migrationSeedAttemptSlots;
         fields["migration_seed_prepared"] = accounting.migrationSeedPrepared;
@@ -554,9 +610,6 @@ interruptedOutcome(SystemPnrInterruptionStage stage,
         fields["closure_status"] = "cancelled_or_timeout";
         fields["interruption"] = interruptionPayload(snapshot);
       });
-  emitInvocationAccounting(accounting,
-                           mapping_debug::ClosureStatus::CancelledOrTimeout,
-                           candidates.size());
   return InterruptedSystemPnrGeneration{std::move(candidates), accounting,
                                         std::move(snapshot)};
 }
@@ -949,8 +1002,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
     ::loom::mapping::emitMappingDataflowProgressBasisDiagnostic(
         (*problem)->progressBasis(), inputs.dataflow,
         mapping_debug::Stage::SystemPnr);
-    emitInvocationAccounting(
-        accounting, mapping_debug::ClosureStatus::ProofNotEstablished, 0);
     return IncompleteSystemPnrGeneration{
         IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
         "proof_not_established: cyclic System Dataflow progress basis requires "
@@ -991,8 +1042,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
             fields["capacity_witness_usage"] = pressure->witness.usage;
             fields["capacity_witness_capacity"] = pressure->witness.capacity;
           });
-      emitInvocationAccounting(
-          accounting, mapping_debug::ClosureStatus::ProofNotEstablished, 0);
       return IncompleteSystemPnrGeneration{
           IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
           "proof_not_established: every bounded execution binding retains "
@@ -1017,8 +1066,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
                 &*capacityFit)) {
       emitProvenInfeasibleFreeze("imported_capacity_relation",
                                  infeasible->diagnostic);
-      emitInvocationAccounting(
-          accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
       return ProvenInfeasibleSystemMapping{
           accounting, infeasible->diagnostic,
           SystemPnrInfeasibilityProofKind::ImportedCapacityRelation};
@@ -1030,9 +1077,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
     candidates.push_back(*rebasedMapping);
   if (rebasedMapping && inputs.config.policy().search.completionGoal ==
                             ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
-    emitInvocationAccounting(accounting,
-                             mapping_debug::ClosureStatus::SemanticLimitReached,
-                             candidates.size());
     return GeneratedSystemMappings{
         std::move(candidates), PnrGenerationTermination::SemanticLimitReached,
         accounting};
@@ -1269,8 +1313,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
                                 resources);
     case SystemRestartResult::Kind::ProvenInfeasible:
       if (candidates.empty()) {
-        emitInvocationAccounting(
-            accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
         return SystemPnrGenerationOutcome{ProvenInfeasibleSystemMapping{
             accounting, std::move(restart.diagnostic), restart.proofKind}};
       }
@@ -1519,12 +1561,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
     llvm::sort(candidates, artifactRootReferenceLess);
     candidates.erase(std::unique(candidates.begin(), candidates.end()),
                      candidates.end());
-    const mapping_debug::ClosureStatus closureStatus =
-        proofNotEstablished ? mapping_debug::ClosureStatus::ProofNotEstablished
-        : semanticLimitReached
-            ? mapping_debug::ClosureStatus::SemanticLimitReached
-            : mapping_debug::ClosureStatus::Closed;
-    emitInvocationAccounting(accounting, closureStatus, candidates.size());
     return GeneratedSystemMappings{
         std::move(candidates),
         proofNotEstablished ? PnrGenerationTermination::ProofNotEstablished
@@ -1533,11 +1569,6 @@ generateSystemMappingsImpl(const SystemPnrGenerationInputs &inputs) {
             : PnrGenerationTermination::FixedAttemptsCompleted,
         accounting};
   }
-  emitInvocationAccounting(
-      accounting,
-      semanticLimitReached ? mapping_debug::ClosureStatus::SemanticLimitReached
-                           : mapping_debug::ClosureStatus::ProofNotEstablished,
-      0);
   return IncompleteSystemPnrGeneration{
       semanticLimitReached
           ? IncompleteSystemPnrGenerationReason::SemanticLimitReached
@@ -1562,8 +1593,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       !std::holds_alternative<InternalSystemPnrGeneration>(outcome);
   if (llvm::Error error =
           verifySystemPnrWorkAccounting(accounting, requireClosedWork))
-    return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
-                    accounting, std::move(error));
+    outcome = internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                       accounting, std::move(error));
+  // The checked terminal outcome owns exactly one invocation row, including
+  // failures before any semantic search slot has been admitted.
+  emitInvocationAccounting(outcome);
   return outcome;
 }
 

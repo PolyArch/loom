@@ -103,7 +103,7 @@ struct MappedSpatialMappingFixture final {
   mapping::FinalizedSpatialMapping spatialMapping;
 };
 
-struct MappedBuiltinSpatialPnrInvocation final {
+struct MappedSpatialPnrInvocation final {
   fabric::FinalizedFabricRoot module;
   dse::CandidateGeneratorProviderResult techMappingResult;
   std::optional<dse::CandidateGeneratorProviderResult> spatialPnrResult;
@@ -131,10 +131,9 @@ MappedSpatialMappingFixture buildMappedBuiltinSpatialMappingFixture(
     BlobStore &blobs,
     MappedRtlRouteCoverage routeCoverage = MappedRtlRouteCoverage::AnyLegal);
 
-llvm::Expected<MappedBuiltinSpatialPnrInvocation>
-invokeMappedBuiltinSpatialPnrFixture(
+llvm::Expected<MappedSpatialPnrInvocation> invokeMappedSpatialPnrFixture(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
-    const adg::BuiltinTargetScale &scale,
+    fabric::FinalizedFabricRoot module,
     const mapping::ResolvedTechMappingConfigView &techMappingConfig,
     const pnr::ResolvedPnrConfigView &spatialPnrConfig,
     const ExecutionControlView &executionControl, ArtifactStore &artifacts,

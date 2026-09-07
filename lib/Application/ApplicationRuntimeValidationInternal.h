@@ -1,6 +1,7 @@
 #ifndef LOOM_APPLICATION_APPLICATIONRUNTIMEVALIDATIONINTERNAL_H
 #define LOOM_APPLICATION_APPLICATIONRUNTIMEVALIDATIONINTERNAL_H
 
+#include "Application/ActivationDecision.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -21,8 +23,7 @@ namespace loom::application::detail {
 
 struct ImportedApplicationMapping final {
   mapping::FinalizedSystemMapping mapping;
-  dataflow::CanonicalDataflowArtifact dataflow;
-  dataflow::CanonicalDataflowProgramView dataflowView;
+  std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
   fabric::FinalizedFabricRoot system;
 };
 
@@ -58,11 +59,6 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
     const dse::JointDesignExecution &execution,
     const dse::PlanExecutionPolicy &executionPolicy,
     const ArtifactStore &artifacts, const BlobStore &blobs);
-
-struct ApplicationRuntimeEvidenceJoin final {
-  std::uint64_t dfgCycles = 0;
-  std::uint64_t cgraCycles = 0;
-};
 
 /// Strictly resolves the runtime Evidence of one exact application Mapping.
 /// The supporting set must cover the source-backed DFG and CGRA executions,

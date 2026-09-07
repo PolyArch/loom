@@ -1,5 +1,7 @@
 #include "CpSatExactProtocol.h"
 
+#include "Common/MappingDebugLog.h"
+
 #include "ortools/sat/cp_model_checker.h"
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/sat_parameters.pb.h"
@@ -11,11 +13,13 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <system_error>
 #include <utility>
 
@@ -97,6 +101,19 @@ void fixVariable(CpModelProto &model, int variable, std::int64_t value) {
   constraint->add_domain(value);
 }
 
+llvm::Error retainFeasibleSolutionHint(CpModelProto &model,
+                                      const CpSolverResponse &response) {
+  if (response.solution_size() != model.variables_size())
+    return protocolError("feasible response omitted model variables");
+  auto *hint = model.mutable_solution_hint();
+  hint->Clear();
+  for (int variable = 0; variable < model.variables_size(); ++variable) {
+    hint->add_vars(variable);
+    hint->add_values(response.solution(variable));
+  }
+  return llvm::Error::success();
+}
+
 std::optional<std::vector<std::int64_t>>
 canonicalBlockCoefficients(const CpModelProto &model,
                            llvm::ArrayRef<CpSatCanonicalVariable> variables) {
@@ -152,6 +169,39 @@ void installCanonicalDecisionStrategy(
       DecisionStrategyProto::SELECT_MIN_VALUE);
 }
 
+void installProofDecisionStrategy(
+    CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables,
+    std::optional<int> objectiveVariable,
+    llvm::ArrayRef<int> proofPriorityVariables) {
+  model.clear_search_strategy();
+  if (variables.empty())
+    return;
+  DecisionStrategyProto *strategy = model.add_search_strategy();
+  if (objectiveVariable) {
+    auto *expression = strategy->add_exprs();
+    expression->add_vars(*objectiveVariable);
+    expression->add_coeffs(1);
+  }
+  for (int variable : proofPriorityVariables) {
+    if (objectiveVariable && variable == *objectiveVariable)
+      continue;
+    auto *expression = strategy->add_exprs();
+    expression->add_vars(variable);
+    expression->add_coeffs(1);
+  }
+  for (const CpSatCanonicalVariable &variable : variables) {
+    if (objectiveVariable && variable.protoIndex == *objectiveVariable)
+      continue;
+    auto *expression = strategy->add_exprs();
+    expression->add_vars(variable.protoIndex);
+    expression->add_coeffs(1);
+  }
+  strategy->set_variable_selection_strategy(
+      DecisionStrategyProto::CHOOSE_FIRST);
+  strategy->set_domain_reduction_strategy(
+      DecisionStrategyProto::SELECT_MIN_VALUE);
+}
+
 SatParameters parameters(std::int32_t randomSeed) {
   SatParameters result;
   result.set_num_workers(1);
@@ -166,8 +216,8 @@ SatParameters parameters(std::int32_t randomSeed) {
   result.set_cp_model_probing_level(0);
   // A convergence budget per solve. Deterministic time is an instruction-count
   // clock, so the same model and seed exhaust it identically on every host; an
-  // exhausted solve returns Unknown and flows into the existing typed
-  // incomplete outcome instead of consuming the whole invocation deadline.
+  // exhausted solve returns UNKNOWN or FEASIBLE without the required proof.
+  // Both remain incomplete; neither means the solver-call limit was reached.
   result.set_max_deterministic_time(2.0);
   result.set_enumerate_all_solutions(false);
   result.set_use_lns(false);
@@ -180,9 +230,9 @@ SatParameters parameters(std::int32_t randomSeed) {
 /// Invocation-lifetime memo of completed canonical solves. The result is a
 /// pure function of the serialized model, the canonical variable layout and
 /// the random seed under one protocol version, so replaying a hit is exact
-/// memoization, not an approximation. Budget-exhausted outcomes depend on the
-/// caller's call budget and are never cached. Worker threads keep independent
-/// memos; identical keys produce identical results on every thread.
+/// memoization, not an approximation. Incomplete outcomes are never cached.
+/// Worker threads keep independent memos; identical keys produce identical
+/// results on every thread.
 struct CanonicalSolveMemo final {
   static constexpr std::size_t entryLimit = 128;
   struct Entry final {
@@ -211,7 +261,8 @@ std::array<std::uint8_t, 32>
 canonicalSolveKey(const CpModelProto &model,
                   llvm::ArrayRef<CpSatCanonicalVariable> variables,
                   std::optional<int> objectiveVariable,
-                  std::int32_t randomSeed) {
+                  std::int32_t randomSeed,
+                  llvm::ArrayRef<int> proofPriorityVariables) {
   llvm::SHA256 hash;
   const std::string modelBytes = model.SerializeAsString();
   hash.update(llvm::ArrayRef<std::uint8_t>(
@@ -235,6 +286,9 @@ canonicalSolveKey(const CpModelProto &model,
     for (std::int64_t value : variable.legalValues)
       updateWord(static_cast<std::uint64_t>(value));
   }
+  updateWord(proofPriorityVariables.size());
+  for (int variable : proofPriorityVariables)
+    updateWord(static_cast<std::uint64_t>(variable));
   return hash.final();
 }
 
@@ -242,6 +296,18 @@ struct SolveState final {
   std::uint64_t maxCalls;
   std::uint64_t calls = 0;
   SatParameters parameters;
+  CpSolverStatus lastStatus = CpSolverStatus::UNKNOWN;
+  double lastDeterministicTime = 0;
+  double lastWallSeconds = 0;
+  double lastUserSeconds = 0;
+  std::int64_t lastConflicts = 0;
+  std::int64_t lastBranches = 0;
+  std::int64_t lastBinaryPropagations = 0;
+  std::int64_t lastIntegerPropagations = 0;
+  std::string lastSolutionInfo{};
+  double deterministicTime = 0;
+  double wallSeconds = 0;
+  double userSeconds = 0;
 };
 
 std::optional<CpSolverResponse> solve(const CpModelProto &model,
@@ -249,15 +315,73 @@ std::optional<CpSolverResponse> solve(const CpModelProto &model,
   if (state.calls == state.maxCalls)
     return std::nullopt;
   ++state.calls;
-  return SolveWithParameters(model, state.parameters);
+  CpSolverResponse response = SolveWithParameters(model, state.parameters);
+  state.lastStatus = response.status();
+  state.lastDeterministicTime = response.deterministic_time();
+  state.lastWallSeconds = response.wall_time();
+  state.lastUserSeconds = response.user_time();
+  state.lastConflicts = response.num_conflicts();
+  state.lastBranches = response.num_branches();
+  state.lastBinaryPropagations = response.num_binary_propagations();
+  state.lastIntegerPropagations = response.num_integer_propagations();
+  state.lastSolutionInfo = response.solution_info();
+  state.deterministicTime += state.lastDeterministicTime;
+  state.wallSeconds += state.lastWallSeconds;
+  state.userSeconds += state.lastUserSeconds;
+  return response;
 }
 
-CpSatCanonicalResult unknown(std::uint64_t calls) {
-  return {CpSatCanonicalResultKind::UnknownBudgetExhausted,
-          {},
-          std::nullopt,
-          calls,
-          calls};
+enum class ProofPhase : std::uint8_t { Initial, CanonicalBlock };
+
+llvm::StringRef spelling(ProofPhase phase) {
+  switch (phase) {
+  case ProofPhase::Initial:
+    return "initial_proof";
+  case ProofPhase::CanonicalBlock:
+    return "canonical_block";
+  }
+  llvm_unreachable("unknown CP-SAT proof phase");
+}
+
+CpSatCanonicalResult incomplete(CpSatCanonicalResultKind kind,
+                                const SolveState &state, ProofPhase phase,
+                                std::size_t blockBegin = 0,
+                                std::size_t blockEnd = 0) {
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Summary,
+      loom::mapping_debug::Stage::SpatialPnr,
+      loom::mapping_debug::Event::MappingFailure,
+      [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "cp_sat_canonical";
+        fields["termination"] = cpSatCanonicalResultKindSpelling(kind);
+        fields["proof_phase"] = spelling(phase);
+        fields["solver_seed"] = state.parameters.random_seed();
+        fields["solver_calls"] = state.calls;
+        // Incomplete protocol calls never hit the completed-solve memo.
+        fields["logical_solver_calls"] = state.calls;
+        fields["max_solver_calls"] = state.maxCalls;
+        fields["max_deterministic_time_per_call"] =
+            state.parameters.max_deterministic_time();
+        fields["total_deterministic_time"] = state.deterministicTime;
+        fields["total_solver_wall_seconds"] = state.wallSeconds;
+        fields["total_solver_user_seconds"] = state.userSeconds;
+        if (state.calls != 0) {
+          fields["last_cp_sat_status"] = CpSolverStatus_Name(state.lastStatus);
+          fields["last_deterministic_time"] = state.lastDeterministicTime;
+          fields["last_solver_wall_seconds"] = state.lastWallSeconds;
+          fields["last_solver_user_seconds"] = state.lastUserSeconds;
+          fields["last_conflicts"] = state.lastConflicts;
+          fields["last_branches"] = state.lastBranches;
+          fields["last_binary_propagations"] = state.lastBinaryPropagations;
+          fields["last_integer_propagations"] = state.lastIntegerPropagations;
+          fields["last_solution_info"] = state.lastSolutionInfo;
+        }
+        if (phase == ProofPhase::CanonicalBlock) {
+          fields["canonical_block_begin"] = blockBegin;
+          fields["canonical_block_end"] = blockEnd;
+        }
+      });
+  return {kind, {}, std::nullopt, state.calls, state.calls};
 }
 
 } // namespace
@@ -270,6 +394,7 @@ loom::pnr::detail::classifyCpSatProofStatus(CpSolverStatus status) {
   case CpSolverStatus::INFEASIBLE:
     return CpSatProofStatus::Infeasible;
   case CpSolverStatus::FEASIBLE:
+    return CpSatProofStatus::Feasible;
   case CpSolverStatus::UNKNOWN:
     return CpSatProofStatus::Unknown;
   case CpSolverStatus::MODEL_INVALID:
@@ -280,6 +405,23 @@ loom::pnr::detail::classifyCpSatProofStatus(CpSolverStatus status) {
   return CpSatProofStatus::InternalError;
 }
 
+llvm::StringRef loom::pnr::detail::cpSatCanonicalResultKindSpelling(
+    CpSatCanonicalResultKind kind) {
+  switch (kind) {
+  case CpSatCanonicalResultKind::Assignment:
+    return "assignment";
+  case CpSatCanonicalResultKind::Infeasible:
+    return "infeasible";
+  case CpSatCanonicalResultKind::SolverCallLimitReached:
+    return "solver_call_limit_reached";
+  case CpSatCanonicalResultKind::SolverUnknown:
+    return "solver_unknown";
+  case CpSatCanonicalResultKind::FeasibleWithoutOptimalityProof:
+    return "feasible_without_optimality_proof";
+  }
+  llvm_unreachable("unknown CP-SAT canonical result kind");
+}
+
 std::int32_t
 loom::pnr::detail::projectCpSatRandomSeed(std::uint64_t streamWord) {
   return static_cast<std::int32_t>(streamWord & UINT64_C(0x7fffffff));
@@ -288,7 +430,8 @@ loom::pnr::detail::projectCpSatRandomSeed(std::uint64_t streamWord) {
 llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     const CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables,
     std::optional<int> objectiveVariable, std::uint64_t maxSolverCalls,
-    std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger) {
+    std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger,
+    llvm::ArrayRef<int> proofPriorityVariables) {
   if (maxSolverCalls == 0)
     return protocolError("solver-call budget must be positive");
   if (const std::string validation = ValidateCpModel(model);
@@ -307,9 +450,18 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
       return protocolError(
           "objective must minimize one exact integer objective variable");
   }
+  llvm::BitVector observedPriorityVariables(model.variables_size());
+  for (int variable : proofPriorityVariables) {
+    if (variable < 0 || variable >= model.variables_size())
+      return protocolError("proof-priority variable is out of range");
+    if (observedPriorityVariables.test(variable))
+      return protocolError("proof-priority variable is duplicated");
+    observedPriorityVariables.set(variable);
+  }
 
   const std::array<std::uint8_t, 32> memoKey =
-      canonicalSolveKey(model, variables, objectiveVariable, randomSeed);
+      canonicalSolveKey(model, variables, objectiveVariable, randomSeed,
+                        proofPriorityVariables);
   if (const CpSatCanonicalResult *memo = canonicalSolveMemo.find(memoKey);
       memo && memo->logicalSolverCalls <= maxSolverCalls) {
     // The recorded completion fits the caller's call budget, so this budget
@@ -320,10 +472,12 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     return replay;
   }
   CpModelProto working = model;
-  installCanonicalDecisionStrategy(working, variables);
+  installProofDecisionStrategy(working, variables, objectiveVariable,
+                               proofPriorityVariables);
   SolveState state{maxSolverCalls, 0, parameters(randomSeed)};
   if (state.calls == state.maxCalls)
-    return unknown(state.calls);
+    return incomplete(CpSatCanonicalResultKind::SolverCallLimitReached, state,
+                      ProofPhase::Initial);
   if (llvm::Error error =
           workLedger.plan(SpatialPnrWorkKind::ExactRepairSolverCall))
     return std::move(error);
@@ -333,7 +487,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
             workLedger.consume(SpatialPnrWorkKind::ExactRepairSolverCall))
       return std::move(error);
   if (!initial)
-    return unknown(state.calls);
+    return incomplete(CpSatCanonicalResultKind::SolverCallLimitReached, state,
+                      ProofPhase::Initial);
   switch (classifyCpSatProofStatus(initial->status())) {
   case CpSatProofStatus::Infeasible: {
     const CpSatCanonicalResult result{
@@ -342,8 +497,12 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     canonicalSolveMemo.retain(memoKey, result);
     return result;
   }
+  case CpSatProofStatus::Feasible:
+    return incomplete(CpSatCanonicalResultKind::FeasibleWithoutOptimalityProof,
+                      state, ProofPhase::Initial);
   case CpSatProofStatus::Unknown:
-    return unknown(state.calls);
+    return incomplete(CpSatCanonicalResultKind::SolverUnknown, state,
+                      ProofPhase::Initial);
   case CpSatProofStatus::InternalError:
     return protocolError("OR-Tools rejected the exact repair model: " +
                          initial->solution_info());
@@ -358,6 +517,14 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     objectiveValue = initial->solution(*objectiveVariable);
     fixVariable(working, *objectiveVariable, *objectiveValue);
   }
+
+  // The proven objective leaves a feasible complete assignment for every
+  // canonical subproblem. Preserve it across solver restarts so extraction
+  // starts with an incumbent; each block still needs its own optimum proof.
+  if (llvm::Error error = retainFeasibleSolutionHint(working, *initial))
+    return std::move(error);
+
+  installCanonicalDecisionStrategy(working, variables);
 
   std::vector<std::int64_t> assignment;
   assignment.reserve(variables.size());
@@ -375,33 +542,77 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
       ++end;
     }
 
-    CpModelProto trial = working;
-    minimizeCanonicalBlock(trial, variables.slice(begin, end - begin),
-                           *coefficients);
-    if (state.calls == state.maxCalls)
-      return unknown(state.calls);
-    if (llvm::Error error =
-            workLedger.plan(SpatialPnrWorkKind::ExactRepairSolverCall))
-      return std::move(error);
-    std::optional<CpSolverResponse> response = solve(trial, state);
-    if (response)
+    CpModelProto trial;
+    std::optional<CpSolverResponse> response;
+    for (;;) {
+      trial = working;
+      minimizeCanonicalBlock(trial, variables.slice(begin, end - begin),
+                             *coefficients);
+      if (state.calls == state.maxCalls)
+        return incomplete(
+            CpSatCanonicalResultKind::SolverCallLimitReached, state,
+            ProofPhase::CanonicalBlock, begin, end);
       if (llvm::Error error =
-              workLedger.consume(SpatialPnrWorkKind::ExactRepairSolverCall))
+              workLedger.plan(SpatialPnrWorkKind::ExactRepairSolverCall))
         return std::move(error);
-    if (!response)
-      return unknown(state.calls);
-    switch (classifyCpSatProofStatus(response->status())) {
-    case CpSatProofStatus::Optimal:
-      break;
-    case CpSatProofStatus::Infeasible:
-      return protocolError(
-          "proven model became infeasible during canonical extraction");
-    case CpSatProofStatus::Unknown:
-      return unknown(state.calls);
-    case CpSatProofStatus::InternalError:
-      return protocolError(
-          "OR-Tools rejected a canonical minimization model: " +
-          response->solution_info());
+      response = solve(trial, state);
+      if (response)
+        if (llvm::Error error = workLedger.consume(
+                SpatialPnrWorkKind::ExactRepairSolverCall))
+          return std::move(error);
+      if (!response)
+        return incomplete(
+            CpSatCanonicalResultKind::SolverCallLimitReached, state,
+            ProofPhase::CanonicalBlock, begin, end);
+      const CpSatProofStatus status =
+          classifyCpSatProofStatus(response->status());
+      if (status == CpSatProofStatus::Optimal)
+        break;
+      if ((status == CpSatProofStatus::Feasible ||
+           status == CpSatProofStatus::Unknown) &&
+          end - begin > 1) {
+        if (status == CpSatProofStatus::Feasible)
+          if (llvm::Error error = retainFeasibleSolutionHint(working, *response))
+            return std::move(error);
+        const std::size_t splitEnd = begin + (end - begin) / 2;
+        loom::mapping_debug::emit(
+            loom::mapping_debug::Level::Summary,
+            loom::mapping_debug::Stage::SpatialPnr,
+            loom::mapping_debug::Event::Statistics,
+            [&](llvm::json::Object &fields) {
+              fields["operation"] = "cp_sat_canonical_block_split";
+              fields["canonical_block_begin"] = begin;
+              fields["canonical_block_end"] = end;
+              fields["replacement_block_end"] = splitEnd;
+              fields["cp_sat_status"] =
+                  CpSolverStatus_Name(response->status());
+              fields["solver_calls"] = state.calls;
+            });
+        end = splitEnd;
+        coefficients = canonicalBlockCoefficients(
+            working, variables.slice(begin, end - begin));
+        assert(coefficients &&
+               "a subset of an encodable canonical block must be encodable");
+        continue;
+      }
+      switch (status) {
+      case CpSatProofStatus::Infeasible:
+        return protocolError(
+            "proven model became infeasible during canonical extraction");
+      case CpSatProofStatus::Feasible:
+        return incomplete(
+            CpSatCanonicalResultKind::FeasibleWithoutOptimalityProof, state,
+            ProofPhase::CanonicalBlock, begin, end);
+      case CpSatProofStatus::Unknown:
+        return incomplete(CpSatCanonicalResultKind::SolverUnknown, state,
+                          ProofPhase::CanonicalBlock, begin, end);
+      case CpSatProofStatus::InternalError:
+        return protocolError(
+            "OR-Tools rejected a canonical minimization model: " +
+            response->solution_info());
+      case CpSatProofStatus::Optimal:
+        llvm_unreachable("optimal canonical proof did not exit the retry loop");
+      }
     }
     working = std::move(trial);
     for (const CpSatCanonicalVariable &variable :
@@ -415,6 +626,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
       fixVariable(working, variable.protoIndex, value);
       assignment.push_back(value);
     }
+    if (llvm::Error error = retainFeasibleSolutionHint(working, *response))
+      return std::move(error);
     begin = end;
   }
   {
@@ -431,7 +644,8 @@ loom::pnr::detail::solveFixedCpSatAssignment(
     const CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables,
     llvm::ArrayRef<std::int64_t> assignment,
     std::optional<int> objectiveVariable, std::uint64_t maxSolverCalls,
-    std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger) {
+    std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger,
+    llvm::ArrayRef<int> proofPriorityVariables) {
   if (variables.size() != assignment.size())
     return protocolError("fixed assignment variable and value counts disagree");
   if (llvm::Error error = validateVariables(model, variables))
@@ -447,7 +661,8 @@ loom::pnr::detail::solveFixedCpSatAssignment(
     fixVariable(fixed, variable.protoIndex, value);
   }
   auto solved = solveCanonicalCpSat(fixed, {}, objectiveVariable,
-                                    maxSolverCalls, randomSeed, workLedger);
+                                    maxSolverCalls, randomSeed, workLedger,
+                                    proofPriorityVariables);
   if (!solved)
     return solved.takeError();
   if (solved->kind == CpSatCanonicalResultKind::Assignment)

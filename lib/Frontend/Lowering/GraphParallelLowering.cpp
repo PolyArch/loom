@@ -1,8 +1,8 @@
-#include "Frontend/Lowering/LoopIndependence.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Analysis/DenseParallelMemoryProjection.h"
 #include "Frontend/Analysis/MemoryProvenance.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
+#include "Frontend/Lowering/LoopIndependence.h"
 #include "GraphRegionLowering.h"
 
 #include "Common/IndexWidth.h"
@@ -23,8 +23,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -774,7 +774,7 @@ bool sameByteAddressSymbols(const ByteSymbolProjection &lhs,
 }
 
 bool hasExactCanonicalElementProjection(
-    const ResolvedLinearMemoryAddress &address) {
+    const frontend::analysis::ResolvedLinearMemoryAddress &address) {
   if (address.elementTerms.empty()) {
     auto indexType = ::llvm::dyn_cast<::mlir::IntegerType>(address.indexType);
     return indexType &&
@@ -786,10 +786,9 @@ bool hasExactCanonicalElementProjection(
 }
 
 bool hasDefinedDomainCanonicalElementArithmetic(
-    const ResolvedLinearMemoryAddress &address) {
+    const frontend::analysis::ResolvedLinearMemoryAddress &address) {
   auto indexType = ::llvm::dyn_cast<::mlir::IntegerType>(address.indexType);
-  if (!indexType ||
-      !::llvm::isIntN(indexType.getWidth(), address.elementBias))
+  if (!indexType || !::llvm::isIntN(indexType.getWidth(), address.elementBias))
     return false;
   // A symbolic outer-loop component cannot be enumerated with the selected
   // parallel lane domain. LLVM nusw makes the resolver's exact scaled sum a
@@ -798,9 +797,9 @@ bool hasDefinedDomainCanonicalElementArithmetic(
   return !address.gepsLeafToRoot.empty() &&
          ::llvm::all_of(address.gepsLeafToRoot, [](::mlir::Operation *op) {
            auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(op);
-           return gep && ::mlir::LLVM::bitEnumContainsAny(
-                             gep.getNoWrapFlags(),
-                             ::mlir::LLVM::GEPNoWrapFlags::nusw);
+           return gep &&
+                  ::mlir::LLVM::bitEnumContainsAny(
+                      gep.getNoWrapFlags(), ::mlir::LLVM::GEPNoWrapFlags::nusw);
          });
 }
 
@@ -864,15 +863,15 @@ bool hasDynamicByteLaneSeparation(const ByteAccessExpression &address,
 
 bool hasDynamicDenseByteLaneSeparation(
     const ParallelMemoryAccess &access,
-    const ResolvedLinearMemoryAddress &address, ::mlir::scf::ForallOp forall,
-    unsigned indexWidth) {
+    const frontend::analysis::ResolvedLinearMemoryAddress &address,
+    ::mlir::scf::ForallOp forall, unsigned indexWidth) {
   const bool initialShape =
       forall && forall.getRank() >= 2 &&
       address.terms.size() == static_cast<std::size_t>(forall.getRank());
   if (!initialShape)
     return false;
-  for (auto [lower, step] : ::llvm::zip_equal(
-           forall.getMixedLowerBound(), forall.getMixedStep()))
+  for (auto [lower, step] :
+       ::llvm::zip_equal(forall.getMixedLowerBound(), forall.getMixedStep()))
     if (getConstantIndex(lower) != 0 || getConstantIndex(step) != 1)
       return false;
 
@@ -880,9 +879,10 @@ bool hasDynamicDenseByteLaneSeparation(
   const bool uniformByteStride =
       byteStride > 0 &&
       static_cast<std::uint64_t>(byteStride) >= address.accessByteCount &&
-      !::llvm::any_of(address.terms, [&](const LinearByteTerm &term) {
-        return term.byteStride != byteStride;
-      });
+      !::llvm::any_of(address.terms,
+                      [&](const frontend::analysis::LinearByteTerm &term) {
+                        return term.byteStride != byteStride;
+                      });
   if (!uniformByteStride)
     return false;
 
@@ -1016,7 +1016,8 @@ struct ParallelCheckInfo {
         return info.op->emitError(
             "loom-lower-graph-memory: parallel memory root mixes LLVM byte "
             "addresses with non-LLVM indices");
-      ::llvm::SmallVector<ResolvedLinearMemoryAddress, 8> resolvedAddresses;
+      ::llvm::SmallVector<frontend::analysis::ResolvedLinearMemoryAddress, 8>
+          resolvedAddresses;
       resolvedAddresses.reserve(rootAccesses.size());
       ::llvm::SmallVector<bool, 8> rootRelativeAddresses;
       rootRelativeAddresses.reserve(rootAccesses.size());
@@ -1031,10 +1032,10 @@ struct ParallelCheckInfo {
         const bool rootRelative = static_cast<bool>(marker);
         auto resolved =
             rootRelative
-                ? resolveLinearMemoryAddress(access->memory,
-                                             access->llvmAccessType, *indexBits)
-                : resolveLinearPointerAddress(access->memory,
-                                              access->llvmAccessType);
+                ? frontend::analysis::resolveLinearMemoryAddress(
+                      access->memory, access->llvmAccessType, *indexBits)
+                : frontend::analysis::resolveLinearPointerAddress(
+                      access->memory, access->llvmAccessType);
         if (!resolved)
           return access->op->emitError(
               "loom-lower-graph-memory: LLVM memory access has no exact "
@@ -1080,7 +1081,7 @@ struct ParallelCheckInfo {
             hasDefinedDomainCanonicalElementArithmetic(resolved);
         address.terms.reserve(resolved.terms.size());
         for (auto item : ::llvm::enumerate(resolved.terms)) {
-          const LinearByteTerm &byteTerm = item.value();
+          const frontend::analysis::LinearByteTerm &byteTerm = item.value();
           auto expression = expressions.build(byteTerm.index);
           if (!expression)
             return access->op->emitError(
@@ -1514,8 +1515,8 @@ explainSpatialCarrierParallelRejection(::mlir::Operation *spatialCarrier) {
         seen.insert(parent).second)
       parallelOps.push_back(parent);
   spatialCarrier->walk([&](::mlir::Operation *operation) {
-    if (::llvm::isa<::mlir::scf::ParallelOp,
-                    ::mlir::scf::ForallOp>(operation) &&
+    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(
+            operation) &&
         seen.insert(operation).second)
       parallelOps.push_back(operation);
   });
@@ -1523,12 +1524,12 @@ explainSpatialCarrierParallelRejection(::mlir::Operation *spatialCarrier) {
     return std::nullopt;
 
   std::optional<std::string> diagnostic;
-  ::mlir::ScopedDiagnosticHandler capture(
-      spatialCarrier->getContext(), [&](::mlir::Diagnostic &value) {
-        if (!diagnostic)
-          diagnostic = value.str();
-        return ::mlir::success();
-      });
+  ::mlir::ScopedDiagnosticHandler capture(spatialCarrier->getContext(),
+                                          [&](::mlir::Diagnostic &value) {
+                                            if (!diagnostic)
+                                              diagnostic = value.str();
+                                            return ::mlir::success();
+                                          });
   if (::mlir::succeeded(checkGraphOwnedParallelPreconditions(parallelOps)))
     return std::nullopt;
   if (diagnostic)

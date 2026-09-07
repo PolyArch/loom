@@ -479,6 +479,8 @@ collectRouteCrosspoints(const FrozenSpatialPnrProblem &problem,
 
 void loom::pnr::detail::SpatialTemporalSwitchDemandScratch::recycle(
     std::vector<SpatialTemporalSwitchSegmentDemand> &&demands) {
+  if (demands.capacity() == 0)
+    return;
   for (SpatialTemporalSwitchSegmentDemand &demand : demands) {
     for (SpatialTemporalSwitchInputSignature &signature : demand.signatures) {
       signature.outputs.clear();

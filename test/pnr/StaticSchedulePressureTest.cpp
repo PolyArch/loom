@@ -59,7 +59,7 @@ module {
   if (!module)
     fail("cannot parse recurrence fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
-  const auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const std::array<dataflow::GraphRef, 1> covers = {view.graphs().front().ref};
   const auto analysis =
       take(loom::pnr::detail::deriveStaticScheduleAnalysis(view, covers));

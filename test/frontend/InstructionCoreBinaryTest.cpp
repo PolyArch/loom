@@ -180,7 +180,7 @@ module {
       mlir::parseSourceString<mlir::ModuleOp>(source, &context());
   require(test, static_cast<bool>(module), "failed to parse Dataflow fixture");
   auto artifact = take(test, dataflow::finalizeCanonicalDataflow(module.get()));
-  auto view = take(test, artifact.view());
+  const auto &view = artifact.view();
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const auto &launch : view.rootThreadLaunches())
     roots.push_back(launch.ref);

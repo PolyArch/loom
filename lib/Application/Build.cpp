@@ -180,18 +180,15 @@ publishApplicationWorkloads(
     const frontend::PublishedPreMappingCompilation &published,
     const dataflow::CanonicalDataflowArtifact &canonical,
     llvm::StringRef entrySymbol, const ArtifactStore &artifacts) {
-  auto view = canonical.view();
-  if (!view)
-    return view.takeError();
-  auto roots =
-      view->projectRootThreadLaunchesReachableFromAbiEntry(entrySymbol);
+  const auto &view = canonical.view();
+  auto roots = view.projectRootThreadLaunchesReachableFromAbiEntry(entrySymbol);
   if (!roots)
     return roots.takeError();
 
   std::vector<ArtifactRootReference> workloads;
   for (dataflow::RootThreadLaunchRef root : *roots) {
     auto invocationPaths =
-        view->projectRootThreadInvocationPathsFromAbiEntry(entrySymbol, root);
+        view.projectRootThreadInvocationPathsFromAbiEntry(entrySymbol, root);
     if (!invocationPaths)
       return invocationPaths.takeError();
     if (llvm::any_of(*invocationPaths,
@@ -203,11 +200,11 @@ publishApplicationWorkloads(
               published.canonicalDataflow, root}};
     llvm::Error workloadError = llvm::Error::success();
     bool unsupportedCoordinates = false;
-    view->forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
       if (workloadError || unsupportedCoordinates ||
           launch.rootThreadLaunch != root)
         return;
-      auto coordinates = view->enumerateStaticDenseCoordinates(
+      auto coordinates = view.enumerateStaticDenseCoordinates(
           launch, runtime::gem5MaximumDynamicSpatialInvocations, entrySymbol);
       if (!coordinates) {
         workloadError = coordinates.takeError();
@@ -217,13 +214,13 @@ publishApplicationWorkloads(
         unsupportedCoordinates = true;
         return;
       }
-      auto shapes = sim::projectSpatialSimulationBoundaryShapes(*view, launch);
+      auto shapes = sim::projectSpatialSimulationBoundaryShapes(view, launch);
       if (!shapes) {
         workloadError = shapes.takeError();
         return;
       }
       auto writableRoots =
-          sim::projectSpatialInvocationWritableMemoryRoots(*view, launch);
+          sim::projectSpatialInvocationWritableMemoryRoots(view, launch);
       if (!writableRoots) {
         workloadError = writableRoots.takeError();
         return;
@@ -241,7 +238,7 @@ publishApplicationWorkloads(
           workloadDraft.observableContract.memories.push_back(
               {dataflow::LogicalMemoryRootOrViewRef{memory},
                sim::MemoryObservationForm::DiffFromRuntimeInput});
-        auto workload = sim::finalizeSimulationWorkload(workloadDraft, *view);
+        auto workload = sim::finalizeSimulationWorkload(workloadDraft, view);
         if (!workload) {
           workloadError = workload.takeError();
           return;
@@ -374,15 +371,17 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
           checkpoint.runtimeInput, checkpoint.candidateInventory,
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
-          *invocationRunKey, false, request.portfolioInput);
+          dse::toString(incomplete->reason),
+          incomplete->sourceHostOnlyRuntimePicoseconds, *invocationRunKey,
+          false, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
     } else {
       auto decision = makePreparationPairDecision(
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork,
-          std::nullopt, true, request.portfolioInput);
+          dse::toString(incomplete->reason),
+          incomplete->sourceHostOnlyRuntimePicoseconds, std::nullopt, true,
+          request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
     }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
@@ -408,7 +407,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
                 ApplicationPairDecisionDisposition::NoPromisingCandidate
             ? llvm::StringRef("bounded front-end retained no candidate")
             : toString(disposition),
-        noFeasible->sourceHostOnlyWork, *invocationRunKey, false,
+        noFeasible->sourceHostOnlyRuntimePicoseconds, *invocationRunKey, false,
         request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{std::move(*noFeasible)};
@@ -502,9 +501,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         planningRecord.canonicalDataflow->artifact !=
             selected.compilation.canonicalDataflow.identity())
       return invalid("selected software and planning Dataflow disagree");
-    auto dataflowView = selected.compilation.canonicalDataflow.view();
-    if (!dataflowView)
-      return dataflowView.takeError();
+    const auto &dataflowView = selected.compilation.canonicalDataflow.view();
     const ArtifactRootReference dataflow{
         dataflow::canonicalDataflowSchema.identity.str(),
         dataflow::canonicalDataflowSchema.version,
@@ -582,7 +579,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       ++resourceTimeProjectionCacheMisses;
       const MonotonicClock::time_point projectionBegin = MonotonicClock::now();
       auto computedProjection = dse::projectResourceTimeDataflow(
-          *dataflowView, *systemView, request.sourceInvocation.entrySymbol,
+          dataflowView, *systemView, request.sourceInvocation.entrySymbol,
           planningRecord.estimatedRuntimePicoseconds, physicalModelSupport);
       const std::uint64_t projectionElapsed =
           elapsedNanoseconds(projectionBegin);
@@ -676,8 +673,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completed.sourceProgram, completed.fabric, completed.workload,
         completed.runtimeInput, completed.candidateInventory,
         mapResourceTimeFrontierReasonToPairDisposition(reason), detail,
-        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-        request.portfolioInput);
+        completed.sourceHostOnlyRuntimePicoseconds, *completedInvocationRunKey,
+        false, request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return IncompleteApplicationResourceTimePlanning{
         reason,
@@ -688,7 +685,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completed.workload,
         completed.runtimeInput,
         completed.frontierPolicyDigest,
-        completed.sourceHostOnlyWork};
+        completed.sourceHostOnlyRuntimePicoseconds};
   };
   if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
@@ -727,17 +724,22 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completed.runtimeInput, completed.candidateInventory,
         ApplicationPairDecisionDisposition::NoPromisingCandidate,
         "resource-time funnel retained no Mapping finalist",
-        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-        request.portfolioInput);
+        completed.sourceHostOnlyRuntimePicoseconds, *completedInvocationRunKey,
+        false, request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
             std::move(completed.satisfiedEvidence),
             std::move(completed.planGenerateInvocations),
-            completed.sourceProgram, completed.fabric, completed.workload,
-            completed.runtimeInput, std::move(completed.candidateInventory),
-            completed.completeness, completed.frontierPolicyDigest,
-            completed.sourceHostOnlyWork, {}}};
+            completed.sourceProgram,
+            completed.fabric,
+            completed.workload,
+            completed.runtimeInput,
+            std::move(completed.candidateInventory),
+            completed.completeness,
+            completed.frontierPolicyDigest,
+            completed.sourceHostOnlyRuntimePicoseconds,
+            {}}};
   }
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
@@ -830,12 +832,13 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       // before any Tech/Spatial/System provider is dispatched so a candidate
       // with an inexact dynamic capture becomes a typed unsupported finalist,
       // rather than a late deployment failure after expensive Mapping work.
-      auto invocationDataflow =
+      const auto &invocationDataflow =
           pending->compilation.compilation.canonicalDataflow.view();
-      if (!invocationDataflow)
-        return invocationDataflow.takeError();
       auto invocationPreflight = detail::deriveApplicationSpatialInvocationPlan(
-          *invocationDataflow, request.sourceInvocation.entrySymbol);
+          invocationDataflow, request.sourceInvocation.entrySymbol,
+          published->structuredProgram, completed.workload, completed.runtimeInput,
+          artifacts,
+          request.preMappingOptions.ownership.functionalReplayLimits.maxRetainedCaptureBytes);
       if (!invocationPreflight) {
         const std::string diagnostic =
             llvm::toString(invocationPreflight.takeError());
@@ -872,7 +875,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       const std::uint64_t firstRank = mappingAlternatives.size();
       preparedSoftware.push_back({firstRank, pending->planningRecordOrdinal,
                                   identity, std::move(*published),
-                                  std::move(roots), std::move(replayCases)});
+                                  std::move(roots), std::move(replayCases),
+                                  request.preMappingOptions.ownership.functionalReplayLimits.maxRetainedCaptureBytes});
       softwareOrdinal = preparedSoftware.size() - 1;
       softwareByCandidate.emplace(identitySpelling, softwareOrdinal);
       promotedIdentities.push_back(identity);
@@ -953,8 +957,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::UnsupportedSemantic,
           "all retained finalists were rejected at the application boundary",
-          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-          request.portfolioInput);
+          completed.sourceHostOnlyRuntimePicoseconds,
+          *completedInvocationRunKey, false, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
     }
@@ -965,8 +969,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::UnsupportedSemantic,
           "resource-time finalists were unsupported before Mapping",
-          completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-          request.portfolioInput);
+          completed.sourceHostOnlyRuntimePicoseconds,
+          *completedInvocationRunKey, false, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -974,7 +978,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
               std::move(*resourceTimeFunnel),
               std::move(completed.candidateInventory), completed.sourceProgram,
               completed.fabric, completed.workload, completed.runtimeInput,
-              completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
+              completed.frontierPolicyDigest,
+              completed.sourceHostOnlyRuntimePicoseconds}};
     }
     if (resourceTimeFunnel->incompleteReason)
       return incompleteResourceTimePlanning(
@@ -993,17 +998,22 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         completed.runtimeInput, completed.candidateInventory,
         ApplicationPairDecisionDisposition::NoPromisingCandidate,
         "bounded resource-time funnel retained no Mapping finalist",
-        completed.sourceHostOnlyWork, *completedInvocationRunKey, false,
-        request.portfolioInput);
+        completed.sourceHostOnlyRuntimePicoseconds, *completedInvocationRunKey,
+        false, request.portfolioInput);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
             std::move(completed.satisfiedEvidence),
             std::move(completed.planGenerateInvocations),
-            completed.sourceProgram, completed.fabric, completed.workload,
-            completed.runtimeInput, std::move(completed.candidateInventory),
-            completed.completeness, completed.frontierPolicyDigest,
-            completed.sourceHostOnlyWork, {}}};
+            completed.sourceProgram,
+            completed.fabric,
+            completed.workload,
+            completed.runtimeInput,
+            std::move(completed.candidateInventory),
+            completed.completeness,
+            completed.frontierPolicyDigest,
+            completed.sourceHostOnlyRuntimePicoseconds,
+            {}}};
   }
   for (dse::PreMappingCandidatePlanningRecord &record :
        completed.candidateInventory) {
@@ -1040,7 +1050,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       completed.resolvedPlannerMode,
       completed.completeness,
       std::move(completed.shadowRecall),
-      completed.sourceHostOnlyWork,
+      completed.sourceHostOnlyRuntimePicoseconds,
       completed.sourceProgram,
       completed.fabric,
       completed.workload,

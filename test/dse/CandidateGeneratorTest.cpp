@@ -445,12 +445,12 @@ void externalProviderFormAdmission() {
                     5,
                 "CancelledOrTimeout must keep stable tag 5");
 
-  // A registry-1.0 descriptor reference is not reinterpreted.
+  // A preceding registry descriptor reference is not reinterpreted.
   auto legacy = CandidateGeneratorDescriptorRef::get(
-      {"loom.candidate_generator_descriptor", SchemaVersion{1, 0}},
+      {"loom.candidate_generator_descriptor", SchemaVersion{3, 3}},
       descriptor.kind);
   if (legacy)
-    fail("a registry-1.0 descriptor reference was reinterpreted");
+    fail("a preceding registry descriptor reference was reinterpreted");
   llvm::consumeError(legacy.takeError());
 
   CandidateGeneratorDescriptor external = descriptor;
@@ -576,7 +576,7 @@ void externalProviderFormAdmission() {
               .bytes())
     fail("external semantic contract changed resolved binding ownership");
   if (semanticContract.resultImporterIdentity !=
-      "dc4fb4b088e761ffe13197599910723ed687927885bb1973b084e0d5edbad4ac")
+      "1bb3d35578a824a59e8b751f5a3c0530f5dccba06182e73ea571f000d9ba496c")
     fail("external semantic contract changed the generator importer identity");
   auto inProcessContract =
       deriveExternalToolSemanticContract(inputs, inProcessBinding);
@@ -877,7 +877,7 @@ void bindingIdentityDerivationUsesExactFraming() {
       0x6d, 0x2e, 0x63, 0x61, 0x6e, 0x64, 0x69, 0x64, 0x61, 0x74, 0x65,
       0x5f, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x5f,
       0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x6f, 0x72, 0x00,
-      0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09};
+      0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x09};
   const std::vector<std::uint8_t> referenceBytes =
       canonicalCandidateGeneratorDescriptorReferenceBytes(reference);
   if (referenceBytes != expectedReference)
@@ -887,7 +887,7 @@ void bindingIdentityDerivationUsesExactFraming() {
   const loom::BlobDigest identity =
       deriveCandidateGeneratorBindingIdentity(reference, config);
   if (loom::formatBlobDigestHex(identity) !=
-      "2c41f65b6070e47fa7a55c915c5bc98fe66f438cb3d7c60edf641113abe49652")
+      "4f8a664d4e47618c413437868b34431e740674e2131f123a9c6e6e69582f91e2")
     fail("binding identity derivation framing changed");
 
   auto zeroReference = take(CandidateGeneratorDescriptorRef::get(
@@ -895,7 +895,7 @@ void bindingIdentityDerivationUsesExactFraming() {
   const loom::BlobDigest emptyIdentity =
       deriveCandidateGeneratorBindingIdentity(zeroReference, {});
   if (loom::formatBlobDigestHex(emptyIdentity) !=
-      "0fcee1e00f4bf2c64e0cf114cfe954136fe65a45dd52952c7cfbac8c7e508634")
+      "1e97c819b59b9eff5118043132788f20d22f0000bf14862ee11e3201d9b9d8e8")
     fail("empty-config binding identity derivation framing changed");
 }
 

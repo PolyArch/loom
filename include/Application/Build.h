@@ -44,7 +44,7 @@ class BlobStore;
 namespace loom::application {
 
 inline constexpr llvm::StringLiteral applicationBuildProducerIdentity{
-    "loom.application.build.v2"};
+    "loom.application.build.v4"};
 
 struct ApplicationPointerMemoryObservable final {
   std::uint64_t argumentOrdinal = 0;
@@ -90,6 +90,10 @@ struct PreparedApplicationSoftware final {
   frontend::PublishedPreMappingCompilation compilation;
   std::vector<ArtifactRootReference> workloads;
   std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
+  /// The configured native capture grant follows this prepared software into
+  /// deployment and runtime validation; it does not affect Artifact identity.
+  std::uint64_t invocationCaptureByteLimit =
+      dse::StructuredFunctionalReplayBudget{}.maxRetainedCaptureBytes;
 };
 
 struct PreparedApplicationMappingAlternative final {
@@ -140,7 +144,7 @@ struct PreparedApplicationBuild final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   dse::PreMappingSearchCompleteness preMappingCompleteness;
   std::optional<dse::PreMappingShadowRecall> preMappingShadowRecall;
-  std::optional<std::uint64_t> preMappingSourceHostOnlyWork;
+  std::optional<std::uint64_t> preMappingSourceHostOnlyRuntimePicoseconds;
   ArtifactRootReference preMappingSourceProgram;
   ArtifactRootReference preMappingFabric;
   ArtifactRootReference preMappingWorkload;
@@ -273,8 +277,9 @@ enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
 /// existing planning, Mapping, and runtime records; it is not a second
 /// Mapping legality or candidate identity authority.
 enum class ApplicationPairDecisionDisposition : std::uint8_t {
-  VerifiedAcceleration,
-  VerifiedFeasibleButNotBeneficial,
+  /// Mapping, execution, and comparison establish feasibility only.
+  /// Complete-program target speedup is a separate, currently unmeasured fact.
+  VerifiedFeasible,
   NoPromisingCandidate,
   ExactHardwareIncompatible,
   MappingProofNotEstablished,
@@ -313,9 +318,8 @@ llvm::StringRef toString(ApplicationPortfolioExecutionBinding value);
 /// Every value is a non-negative integer in the unit named here; the owning
 /// Evidence root retains the exact decimal observation.
 enum class ApplicationObjectiveDimension : std::uint8_t {
-  /// Host-only baseline work: measured host cycles or the analytic picosecond
-  /// estimate of the source program.
-  HostOnlyWork,
+  /// Low-confidence Runtime of the exact source program, in picoseconds.
+  HostOnlyRuntimePicoseconds,
   /// Measured DFG simulation cycles of the selected Mapping.
   DfgCycles,
   /// Measured CGRA simulation cycles of the selected Mapping.
@@ -336,7 +340,25 @@ enum class ApplicationObjectiveDimension : std::uint8_t {
   Power,
   /// Calibrated energy of one CGRA execution in picojoules.
   Energy,
+  /// Low-confidence Runtime of the complete selected Structured candidate,
+  /// including residual host execution, in picoseconds on the same model.
+  CandidateRuntimePicoseconds,
 };
+
+inline constexpr std::size_t applicationObjectiveDimensionCount =
+    static_cast<std::size_t>(
+        ApplicationObjectiveDimension::CandidateRuntimePicoseconds) +
+    1;
+
+/// Prediction is derived from the exact pair's matched model observations.
+/// None of these states proves a measured complete-program speedup.
+enum class ApplicationBenefitStatus : std::uint8_t {
+  Unknown,
+  PredictedBeneficial,
+  PredictedNotBeneficial,
+};
+
+llvm::StringRef toString(ApplicationBenefitStatus value);
 
 enum class ApplicationObjectiveEvidence : std::uint8_t {
   Exact,
@@ -349,7 +371,7 @@ enum class ApplicationObjectiveEvidence : std::uint8_t {
 
 struct ApplicationObjectiveObservation final {
   ApplicationObjectiveDimension dimension =
-      ApplicationObjectiveDimension::HostOnlyWork;
+      ApplicationObjectiveDimension::HostOnlyRuntimePicoseconds;
   std::optional<std::uint64_t> value;
   ApplicationObjectiveEvidence evidence =
       ApplicationObjectiveEvidence::Unsupported;
@@ -538,9 +560,13 @@ struct ApplicationPairDecisionRecord final {
   std::optional<dse::DsePlanIncompleteReason>
       resourceTimeMappingRepairIncompleteReason;
   bool hostOnlyBaselineComplete = false;
-  bool finalApplicationQorComplete = false;
   std::optional<std::string> detail;
 };
+
+/// Derives presentation from the exact source/candidate model observations.
+/// It owns no ranking, promotion, or candidate-selection policy.
+ApplicationBenefitStatus
+deriveApplicationBenefitStatus(const ApplicationPairDecisionRecord &decision);
 
 /// Publishes the typed pair boundary when an exact portfolio profile cannot
 /// enter the product source-binding runner. No source/workload/runtime roots
@@ -727,7 +753,7 @@ struct IncompleteApplicationResourceTimePlanning final {
   ArtifactRootReference workload;
   ArtifactRootReference runtimeInput;
   ComponentViewDigest frontierPolicyDigest;
-  std::optional<std::uint64_t> sourceHostOnlyWork;
+  std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds;
 };
 
 using ApplicationBuildPreparationOutcome = std::variant<
@@ -767,6 +793,12 @@ makeApplicationBoundedQualityPolicy(
 /// derives the complete declarative Deployment closure. The host executable
 /// and InstructionCore executables are generated from the exact final-linked
 /// module and target bindings; no RTL generation or compilation occurs here.
+llvm::Expected<deployment::FinalizedDeployment> buildApplicationHostOnlyDeployment(
+    const PreparedApplicationBuild &prepared,
+    const llvm::Module &finalLinkedModule, const ArtifactRootReference &fabric,
+    ApplicationDeploymentRequest request, const ArtifactStore &artifacts,
+    const BlobStore &blobs);
+
 llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     const PreparedApplicationBuild &prepared,
     const ApplicationMappingExecution &mappingExecution,

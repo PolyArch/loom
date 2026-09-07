@@ -134,6 +134,28 @@ void detail::FabricArtifactImportSessionState::abandon(
   condition_.notify_all();
 }
 
+void detail::FabricArtifactImportSessionState::release(
+    const ArtifactRootReference &reference) {
+  std::shared_ptr<const FabricArtifactImportSessionEntry> released;
+  std::shared_ptr<const FabricHandshakeContext> handshake;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = entries_.find(FabricArtifactImportSessionKey{reference});
+    if (found != entries_.end()) {
+      statistics_.retainedPayloadBytes -= found->second->retainedPayloadBytes;
+      released = std::move(found->second);
+      entries_.erase(found);
+      statistics_.entryCount = entries_.size();
+      add(statistics_.releasedEntries, 1);
+    }
+    const auto context = handshakeContexts_.find(reference.artifact);
+    if (context != handshakeContexts_.end()) {
+      handshake = std::move(context->second);
+      handshakeContexts_.erase(context);
+    }
+  }
+}
+
 FabricArtifactImportSessionStatistics
 detail::FabricArtifactImportSessionState::statistics() const {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -154,6 +176,7 @@ FabricArtifactImportSession::FabricArtifactImportSession(
   } else {
     active_ =
         std::make_shared<detail::FabricArtifactImportSessionState>(entryLimit);
+    ownsCache_ = true;
   }
   currentImportSession = active_;
 }
@@ -177,6 +200,12 @@ FabricArtifactImportSessionStatistics
 FabricArtifactImportSession::statistics() const {
   return active_ ? active_->statistics()
                  : FabricArtifactImportSessionStatistics{};
+}
+
+void FabricArtifactImportSession::releaseLocalImport(
+    const ArtifactRootReference &reference) {
+  if (ownsCache_)
+    active_->release(reference);
 }
 
 void emitFabricArtifactImportSessionStatistics(
@@ -215,6 +244,7 @@ void emitFabricArtifactImportSessionStatistics(
             statistics.retainedPayloadBytesReused;
         payload["entry_count"] = statistics.entryCount;
         payload["entry_limit"] = statistics.entryLimit;
+        payload["released_entries"] = statistics.releasedEntries;
         return llvm::json::Value(std::move(payload));
       });
 }

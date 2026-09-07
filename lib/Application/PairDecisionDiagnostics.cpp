@@ -39,8 +39,8 @@ using diagnostics_detail::spelling;
 
 llvm::StringRef spelling(ApplicationObjectiveDimension value) {
   switch (value) {
-  case ApplicationObjectiveDimension::HostOnlyWork:
-    return "host_only_work";
+  case ApplicationObjectiveDimension::HostOnlyRuntimePicoseconds:
+    return "host_only_runtime_picoseconds";
   case ApplicationObjectiveDimension::DfgCycles:
     return "dfg_cycles";
   case ApplicationObjectiveDimension::CgraCycles:
@@ -61,6 +61,8 @@ llvm::StringRef spelling(ApplicationObjectiveDimension value) {
     return "power";
   case ApplicationObjectiveDimension::Energy:
     return "energy";
+  case ApplicationObjectiveDimension::CandidateRuntimePicoseconds:
+    return "candidate_runtime_picoseconds";
   }
   llvm_unreachable("unknown application objective dimension");
 }
@@ -278,9 +280,8 @@ encodePairDecision(const ApplicationPairDecisionRecord &decision) {
     qualityInvocations.push_back(std::move(encoded));
   }
   result["quality_invocations"] = std::move(qualityInvocations);
+  result["benefit_status"] = toString(deriveApplicationBenefitStatus(decision));
   result["host_only_baseline_complete"] = decision.hostOnlyBaselineComplete;
-  result["final_application_qor_complete"] =
-      decision.finalApplicationQorComplete;
   if (decision.detail)
     result["detail"] = *decision.detail;
   else

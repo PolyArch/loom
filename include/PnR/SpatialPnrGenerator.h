@@ -24,6 +24,10 @@
 #include <variant>
 #include <vector>
 
+namespace llvm {
+class ThreadPoolInterface;
+}
+
 namespace loom::fabric {
 struct FabricTopologyQualityReport;
 }
@@ -301,6 +305,15 @@ struct SpatialPnrGenerationInputs final {
 /// returned canonical candidate set; mutable search state is never exposed.
 SpatialPnrGenerationOutcome
 generateSpatialMappings(const SpatialPnrGenerationInputs &inputs);
+
+/// Borrows an already admitted invocation pool for the same restart algorithm.
+/// Restart task groups share its worker bound with other independent frontiers;
+/// this call creates no child pool. The caller retains the pool until return.
+/// A positive memory grant remains one per-problem calibrated admission and
+/// must not be reused by concurrent frontiers.
+SpatialPnrGenerationOutcome
+generateSpatialMappings(const SpatialPnrGenerationInputs &inputs,
+                        llvm::ThreadPoolInterface &workers);
 
 } // namespace loom::pnr
 

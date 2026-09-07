@@ -409,11 +409,9 @@ llvm::Expected<bool> preservesSystemMappingMigrationCone(
       ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   auto allObligations = ::loom::mapping::projectSystemServiceObligations(
-      *dataflow, parentExecution.rootThreadLaunches());
+      dataflow, parentExecution.rootThreadLaunches());
   if (!allObligations)
     return allObligations.takeError();
   std::vector<::loom::mapping::SystemServiceObligationProjection>

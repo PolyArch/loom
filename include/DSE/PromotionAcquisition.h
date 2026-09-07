@@ -92,6 +92,9 @@ public:
   static llvm::Expected<PromotionAcquisitionDescriptorRef>
   get(ArtifactSchemaDescriptor descriptorSchema, PromotionAcquisitionKind kind);
 
+  const ArtifactSchemaDescriptor &descriptorSchema() const {
+    return descriptorSchema_;
+  }
   PromotionAcquisitionKind kind() const { return kind_; }
   const PromotionAcquisitionDescriptor *descriptor() const;
 

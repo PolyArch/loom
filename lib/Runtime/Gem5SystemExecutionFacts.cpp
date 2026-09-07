@@ -613,55 +613,48 @@ deriveFactsUncached(const EvaluationRequest &request,
   auto system = fabric::requireSystemRoot(fabricRoot->view());
   if (!system)
     return system.takeError();
-  if (binding->binding().fabric().artifact !=
-      inputs.deployment.deployment().systemMapping().artifact) {
-    auto mapping = [&] {
-      Gem5SystemFactsOperationTimer timer(
-          statistics ? &statistics->systemMappingImport : nullptr);
-      return mapping::importSystemMapping(
-          inputs.deployment.deployment().systemMapping(), artifacts);
-    }();
-    if (!mapping)
-      return mapping.takeError();
-    if (mapping->view().fabricIdentity() !=
-        binding->binding().fabric().artifact)
-      return invalid("gem5 binding and Deployment name different Fabric roots");
-  }
+  auto deploymentFabric = deployment::deploymentFabric(inputs.deployment.deployment(),
+                                                        artifacts);
+  if (!deploymentFabric)
+    return deploymentFabric.takeError();
+  if (*deploymentFabric != binding->binding().fabric())
+    return invalid("gem5 binding and Deployment name different Fabric roots");
   if (!supportsSystemInvocationSurface(inputs))
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   const deployment::Deployment &deployment = inputs.deployment.deployment();
+  std::optional<ArtifactRootReference> dataflowReference;
+  std::vector<PendingSpatialLaunch> pendingLaunches;
+  std::vector<PendingChannelBuffer> channelBuffers;
+  if (const auto *mappingReference = deployment.systemMapping()) {
   if (!deployment.spatialLaunchImage())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   auto systemMapping = [&] {
     Gem5SystemFactsOperationTimer timer(
         statistics ? &statistics->systemMappingImport : nullptr);
-    return mapping::importSystemMapping(deployment.systemMapping(), artifacts);
+    return mapping::importSystemMapping(*mappingReference, artifacts);
   }();
   if (!systemMapping)
     return systemMapping.takeError();
-  ArtifactRootReference dataflowReference{
+  dataflowReference = ArtifactRootReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
       systemMapping->view().dataflowIdentity()};
   auto dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+      dataflow::importCanonicalDataflow(*dataflowReference, artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto contexts = mapping::projectSystemExecutionContexts(
-      *dataflowView, systemMapping->view().executionBindings());
+      dataflowView, systemMapping->view().executionBindings());
   if (!contexts)
     return contexts.takeError();
   if (contexts->spatialDomains.empty())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  std::vector<PendingSpatialLaunch> pendingLaunches;
   std::vector<dataflow::RootedGraphLaunchRef> graphs;
   for (const mapping::SystemSpatialContextDomain &domain :
        contexts->spatialDomains)
@@ -674,14 +667,14 @@ deriveFactsUncached(const EvaluationRequest &request,
                       rhs.staticGraphLaunch.entity.value());
   });
   for (const dataflow::RootedGraphLaunchRef &graph : graphs) {
-    auto coordinates = dataflowView->enumerateStaticDenseCoordinates(
+    auto coordinates = dataflowView.enumerateStaticDenseCoordinates(
         graph, gem5MaximumDynamicSpatialInvocations);
     if (!coordinates)
       return coordinates.takeError();
     if (!*coordinates || (*coordinates)->empty())
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto launch = dataflowView->resolve(graph.staticGraphLaunch);
+    auto launch = dataflowView.resolve(graph.staticGraphLaunch);
     if (!launch)
       return launch.takeError();
     auto launchOp = llvm::dyn_cast<dataflow::GraphLaunchOp>(launch->op);
@@ -728,11 +721,10 @@ deriveFactsUncached(const EvaluationRequest &request,
   }
 
   auto obligations = mapping::projectSystemServiceObligations(
-      *dataflowView,
+      dataflowView,
       systemMapping->view().executionBindings().rootThreadLaunches());
   if (!obligations)
     return obligations.takeError();
-  std::vector<PendingChannelBuffer> channelBuffers;
   for (const mapping::SystemServiceObligationProjection &obligation :
        *obligations) {
     const auto *transfer =
@@ -755,7 +747,7 @@ deriveFactsUncached(const EvaluationRequest &request,
       return invalid("channel obligation has no unique service realization");
     const mapping::ServicePlanSelectionAnchor anchor =
         mapping::ServiceMemberPlanSelectionAnchor{obligation.members.front()};
-    auto consumerBindings = dataflowView->channelConsumers(channel->producer);
+    auto consumerBindings = dataflowView.channelConsumers(channel->producer);
     if (!consumerBindings)
       return consumerBindings.takeError();
 
@@ -862,7 +854,7 @@ deriveFactsUncached(const EvaluationRequest &request,
   }
 
   for (PendingSpatialLaunch &pending : pendingLaunches) {
-    auto launch = dataflowView->resolve(pending.graph.staticGraphLaunch);
+    auto launch = dataflowView.resolve(pending.graph.staticGraphLaunch);
     if (!launch)
       return launch.takeError();
     auto launchOp = llvm::cast<dataflow::GraphLaunchOp>(launch->op);
@@ -896,7 +888,7 @@ deriveFactsUncached(const EvaluationRequest &request,
       std::iota(workloadDraft.observableContract.valueResults.begin(),
                 workloadDraft.observableContract.valueResults.end(), 0);
       auto writableRoots = sim::projectSpatialInvocationWritableMemoryRoots(
-          *dataflowView, pending.graph);
+          dataflowView, pending.graph);
       if (!writableRoots)
         return writableRoots.takeError();
       for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
@@ -909,7 +901,7 @@ deriveFactsUncached(const EvaluationRequest &request,
           output.producerStreamOutputOrdinal);
     llvm::sort(workloadDraft.observableContract.streamOutputs);
     auto workload =
-        sim::finalizeSimulationWorkload(workloadDraft, *dataflowView);
+        sim::finalizeSimulationWorkload(workloadDraft, dataflowView);
     if (!workload)
       return workload.takeError();
     auto workloadReference =
@@ -922,7 +914,7 @@ deriveFactsUncached(const EvaluationRequest &request,
           workload->identity()};
       runtimeDraft.runtimeStreams.resize(launchOp.getStreamInputs().size());
       auto runtime = sim::finalizeSimulationRuntimeInput(
-          runtimeDraft, *workload, *dataflowView);
+          runtimeDraft, *workload, dataflowView);
       if (!runtime)
         return runtime.takeError();
       auto runtimeReference =
@@ -931,7 +923,7 @@ deriveFactsUncached(const EvaluationRequest &request,
         return runtimeReference.takeError();
       pending.spatialRuntimeInput = std::move(*runtimeReference);
     }
-    auto shapes = sim::projectSpatialSimulationBoundaryShapes(*dataflowView,
+    auto shapes = sim::projectSpatialSimulationBoundaryShapes(dataflowView,
                                                               pending.graph);
     if (!shapes)
       return shapes.takeError();
@@ -971,13 +963,16 @@ deriveFactsUncached(const EvaluationRequest &request,
       return invalid(
           "InstructionCore invocation graph has no Spatial launch target");
   }
+  }
   std::vector<Gem5ProcessorProjection> processors;
   std::vector<
       std::pair<fabric::AccCoreOccurrenceRef, Gem5SpatialBridgeParameters>>
       bridges;
-  std::optional<Gem5SimpleMemoryParameters> memory;
+  auto sharedMemory = projectGem5SharedMemory(binding->binding());
+  if (!sharedMemory)
+    return sharedMemory.takeError();
+  std::optional<Gem5SimpleMemoryParameters> memory = *sharedMemory;
   std::set<std::vector<std::uint8_t>> seenProcessors;
-  std::set<std::vector<std::uint8_t>> seenMemories;
   for (const Gem5Correspondence &row : binding->binding().correspondences()) {
     if (const auto *processor =
             std::get_if<Gem5ProcessorCorrespondence>(&row)) {
@@ -1037,24 +1032,6 @@ deriveFactsUncached(const EvaluationRequest &request,
       else if (!(existing->second == *parameters))
         return Gem5SystemFactsOrUnsupported{
             UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      continue;
-    }
-    if (const auto *service =
-            std::get_if<Gem5MemoryOrServiceCorrespondence>(&row)) {
-      if (service->simObject.contract !=
-          gem5ModelContractDescriptorRef(gem5SimpleMemoryModel()))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      if (seenMemories.insert(service->simObject.payload).second) {
-        auto parameters =
-            decodeGem5SimpleMemoryParameters(service->simObject.payload);
-        if (!parameters)
-          return parameters.takeError();
-        if (memory && !(*memory == *parameters))
-          return Gem5SystemFactsOrUnsupported{
-              UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-        memory = *parameters;
-      }
       continue;
     }
     if (const auto *transport = std::get_if<Gem5TransportCorrespondence>(&row))
@@ -1222,21 +1199,23 @@ deriveFactsUncached(const EvaluationRequest &request,
   if (llvm::Error error =
           validateGuestExecutableIntervals(std::move(executableIntervals)))
     return std::move(error);
-  const auto &launchBytes =
-      deployment.spatialLaunchImage()->canonicalBytes().bytes();
-  const auto &threadBytes =
-      deployment.threadDispatchImage().canonicalBytes().bytes();
-  const auto &admissionBytes =
-      deployment.admissionImage().canonicalBytes().bytes();
+  const llvm::ArrayRef<std::uint8_t> launchBytes = deployment.spatialLaunchImage()
+      ? deployment.spatialLaunchImage()->canonicalBytes().bytes()
+      : llvm::ArrayRef<std::uint8_t>{};
   for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal)
     semanticInputs.push_back({spatialLaunchPath(ordinal),
                               bytesToString(launchBytes),
                               inputs.deployment.reference(), false});
-  semanticInputs.push_back({kThreadDispatchPath.str(),
-                            bytesToString(threadBytes),
-                            inputs.deployment.reference(), false});
-  semanticInputs.push_back({kAdmissionPath.str(), bytesToString(admissionBytes),
-                            inputs.deployment.reference(), false});
+  if (deployment.threadDispatchImage())
+    semanticInputs.push_back(
+        {kThreadDispatchPath.str(),
+         bytesToString(deployment.threadDispatchImage()->canonicalBytes().bytes()),
+         inputs.deployment.reference(), false});
+  if (deployment.admissionImage())
+    semanticInputs.push_back(
+        {kAdmissionPath.str(),
+         bytesToString(deployment.admissionImage()->canonicalBytes().bytes()),
+         inputs.deployment.reference(), false});
 
   std::optional<Gem5SystemFactsOperationTimer> runtimeImageTimer;
   runtimeImageTimer.emplace(
@@ -1363,15 +1342,18 @@ deriveFactsUncached(const EvaluationRequest &request,
                                                 systemShapes->littleEndian};
   }
 
-  auto threadAddress =
-      placeRuntimeImage(kThreadDispatchPath, threadBytes.size());
-  auto admissionAddress =
-      placeRuntimeImage(kAdmissionPath, admissionBytes.size());
-  if (!threadAddress || !admissionAddress)
-    return llvm::joinErrors(threadAddress ? llvm::Error::success()
-                                          : threadAddress.takeError(),
-                            admissionAddress ? llvm::Error::success()
-                                             : admissionAddress.takeError());
+  if (deployment.threadDispatchImage()) {
+    auto address = placeRuntimeImage(
+        kThreadDispatchPath, deployment.threadDispatchImage()->canonicalBytes().bytes().size());
+    if (!address)
+      return address.takeError();
+  }
+  if (deployment.admissionImage()) {
+    auto address = placeRuntimeImage(
+        kAdmissionPath, deployment.admissionImage()->canonicalBytes().bytes().size());
+    if (!address)
+      return address.takeError();
+  }
   std::vector<std::uint64_t> launchAddresses;
   launchAddresses.reserve(pendingLaunches.size());
   for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal) {
@@ -1414,6 +1396,9 @@ deriveFactsUncached(const EvaluationRequest &request,
   spatialLaunches.reserve(pendingLaunches.size());
   std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
   spatialBridgeSessions.reserve(bridges.size());
+  // Preserve every physical bridge, including idle accelerator capacity.
+  for (const auto &[core, bridge] : bridges)
+    spatialBridgeSessions.push_back({core, bridge, {}});
   for (const auto indexed : llvm::enumerate(pendingLaunches)) {
     const PendingSpatialLaunch &pending = indexed.value();
     const Gem5ProcessorProjection *instructionProcessor = nullptr;
@@ -1443,10 +1428,9 @@ deriveFactsUncached(const EvaluationRequest &request,
         spatialBridgeSessions, [&](const Gem5SpatialBridgeSession &candidate) {
           return candidate.accCore == pending.accCore;
         });
-    if (session == spatialBridgeSessions.end()) {
-      spatialBridgeSessions.push_back({pending.accCore, *selectedBridge, {}});
-      session = std::prev(spatialBridgeSessions.end());
-    } else if (!(session->bridge == *selectedBridge)) {
+    if (session == spatialBridgeSessions.end())
+      return invalid("Spatial launch has no physical bridge");
+    if (!(session->bridge == *selectedBridge)) {
       return invalid("one AccCore selects inconsistent Spatial Bridges");
     }
     const std::size_t bridgeSessionOrdinal =

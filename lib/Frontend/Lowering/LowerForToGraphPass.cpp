@@ -1008,8 +1008,10 @@ struct LowerForToGraphPass
     ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
         ::mlir::cast<::mlir::ModuleOp>(module->clone()));
     ::mlir::OpBuilder scratchBuilder(ctx);
-    if (::mlir::failed(publishSpatialRegions(*scratch, scratchBuilder)) ||
-        ::mlir::failed(finalizePublishedModule(*scratch))) {
+    ::loom::lowering::PointerServiceBindings pointerServices;
+    if (::mlir::failed(
+            publishSpatialRegions(*scratch, scratchBuilder, pointerServices)) ||
+        ::mlir::failed(finalizePublishedModule(*scratch, pointerServices))) {
       signalPassFailure();
       return;
     }
@@ -1129,7 +1131,9 @@ struct LowerForToGraphPass
     return ::mlir::success();
   }
 
-  ::mlir::LogicalResult finalizePublishedModule(::mlir::ModuleOp module) {
+  ::mlir::LogicalResult finalizePublishedModule(
+      ::mlir::ModuleOp module,
+      const ::loom::lowering::PointerServiceBindings &pointerServices) {
     ::llvm::SmallVector<::dataflow::GraphOp, 4> pending;
     for (auto graph : module.getOps<::dataflow::GraphOp>()) {
       if (graph.isExternal())
@@ -1166,13 +1170,19 @@ struct LowerForToGraphPass
       }
       ::llvm::SmallVector<::dataflow::GraphOp, 4> staged;
       staged.reserve(pending.size());
+      ::mlir::IRMapping mapping;
       for (::dataflow::GraphOp graph : pending)
         staged.push_back(::mlir::cast<::dataflow::GraphOp>(
-            builder.clone(*graph.getOperation())));
+            builder.clone(*graph.getOperation(), mapping)));
+      ::loom::lowering::PointerServiceBindings stagedServices;
+      for (const auto &[descriptor, target] : pointerServices)
+        stagedServices.try_emplace(mapping.lookup(descriptor),
+                                   mapping.lookup(target));
 
       ::llvm::SmallVector<::loom::lowering::GraphMemoryInputProjection, 4>
           projections;
-      if (::mlir::failed(lowerPendingGraphs(*staging, projections)))
+      if (::mlir::failed(
+              lowerPendingGraphs(*staging, projections, stagedServices)))
         return ::mlir::failure();
 
       for (auto [graph, finalized] : ::llvm::zip_equal(pending, staged)) {
@@ -1203,7 +1213,8 @@ struct LowerForToGraphPass
   ::mlir::LogicalResult lowerPendingGraphs(
       ::mlir::ModuleOp module,
       ::llvm::SmallVectorImpl<::loom::lowering::GraphMemoryInputProjection>
-          &projections) {
+          &projections,
+      const ::loom::lowering::PointerServiceBindings &pointerServices) {
     // Stream endpoints temporarily retain channel block arguments in the
     // scratch module until graph-region lowering replaces them with ports.
     // The first canonicalizer owns the upstream memref.copy folds, so the
@@ -1219,8 +1230,8 @@ struct LowerForToGraphPass
     if (::mlir::failed(expander.run(module)))
       return ::mlir::failure();
     canonicalize(module);
-    if (::mlir::failed(
-            ::loom::lowering::lowerGraphMemory(module, &projections)) ||
+    if (::mlir::failed(::loom::lowering::lowerGraphMemory(module, &projections,
+                                                          pointerServices)) ||
         ::mlir::failed(verify(module)))
       return ::mlir::failure();
 
@@ -1241,11 +1252,77 @@ struct LowerForToGraphPass
   std::uint64_t canonicalizationApplications = 0;
   std::uint64_t canonicalizationConstructionNanoseconds = 0;
 
-  ::mlir::LogicalResult publishSpatialRegions(::mlir::ModuleOp module,
-                                              ::mlir::OpBuilder &builder) {
+  ::mlir::LogicalResult publishSpatialRegions(
+      ::mlir::ModuleOp module, ::mlir::OpBuilder &builder,
+      ::loom::lowering::PointerServiceBindings &pointerServices) {
     ::llvm::SmallVector<::loom::SpatialRegionOp, 8> regions;
     module.walk(
         [&](::loom::SpatialRegionOp spatial) { regions.push_back(spatial); });
+
+    // Derive every source-memory fact before publishing the first region.
+    // These analyses own immutable SSA caches and end before any rewrite;
+    // only explicit boundary-to-boundary pairs survive mechanical cloning.
+    ::loom::lowering::PointerServiceBindings spatialServices;
+    ::mlir::SymbolTableCollection symbols;
+    ::mlir::SymbolUserMap users(symbols, module);
+    for (::loom::SpatialRegionOp spatial : regions) {
+      ::llvm::SmallVector<::mlir::Value> boundary(
+          spatial.getBody().front().getArguments());
+      bool requiresStoredOrigin = false;
+      spatial.walk([&](::mlir::Operation *operation) {
+        ::mlir::Value address;
+        if (auto read = ::llvm::dyn_cast<::mlir::LLVM::LoadOp>(operation))
+          address = read.getAddr();
+        else if (auto write =
+                     ::llvm::dyn_cast<::mlir::LLVM::StoreOp>(operation))
+          address = write.getAddr();
+        if (address && !::loom::lowering::resolveMemoryServiceBoundaryRoot(
+                           address, [&](::mlir::Value value) {
+                             return ::llvm::is_contained(boundary, value);
+                           }) &&
+            ::loom::lowering::usesLoadedPointerService(address))
+          requiresStoredOrigin = true;
+      });
+      if (!requiresStoredOrigin)
+        continue;
+      auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
+      if (!thread || users.getUsers(thread).empty())
+        return spatial.emitOpError(
+            "stored pointer service has no complete invocation domain");
+      ::llvm::SmallVector<::mlir::Operation *> selected;
+      for (::mlir::Operation &operation :
+           spatial.getBody().front().without_terminator())
+        selected.push_back(&operation);
+      ::llvm::DenseSet<::mlir::Operation *> roots;
+      for (::mlir::Operation *user : users.getUsers(thread)) {
+        auto launch = ::llvm::dyn_cast<::dataflow::ThreadLaunchOp>(user);
+        auto host = user->getParentOfType<::mlir::LLVM::LLVMFuncOp>();
+        if (!launch || !host ||
+            symbols.lookupNearestSymbolFrom<::dataflow::ThreadOp>(
+                launch, launch.getCalleeAttr()) != thread)
+          return spatial.emitOpError(
+              "stored pointer service has an open host invocation");
+        if (!roots.insert(host).second)
+          continue;
+        ::loom::frontend::analysis::StoredMemoryProvenance provenance(host);
+        auto projected = ::loom::lowering::projectPointerServiceBindings(
+            selected, boundary, provenance);
+        if (auto refusal =
+                std::get_if<::loom::frontend::analysis::StoredPointerRefusal>(
+                    &projected))
+          return spatial.emitOpError("stored pointer service: ")
+                 << ::loom::frontend::analysis::storedPointerRefusalSpelling(
+                        *refusal);
+        for (const auto &[descriptor, target] :
+             std::get<::loom::lowering::PointerServiceBindings>(projected)) {
+          auto [entry, inserted] =
+              spatialServices.try_emplace(descriptor, target);
+          if (!inserted && entry->second != target)
+            return spatial.emitOpError(
+                "stored pointer has distinct invocation origins");
+        }
+      }
+    }
 
     ::llvm::DenseSet<::mlir::Operation *> parallelSet;
     ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
@@ -1439,6 +1516,13 @@ struct LowerForToGraphPass
         graphEntry->addArgument(channel.getType(), loc);
         mapping.map(spatialEntry.getArgument(spatialArgument++),
                     graphEntry->getArgument(outputChannelArgument++));
+      }
+
+      for (mlir::BlockArgument argument : spatialEntry.getArguments()) {
+        auto found = spatialServices.find(argument);
+        if (found != spatialServices.end())
+          pointerServices.try_emplace(mapping.lookup(argument),
+                                      mapping.lookup(found->second));
       }
 
       builder.setInsertionPointToEnd(graphEntry);

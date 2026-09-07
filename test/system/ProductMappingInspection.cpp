@@ -8,6 +8,9 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Inspection/SpatialMappingInspection.h"
+#include "Simulator/SimulationArtifacts.h"
+
+#include "llvm/ADT/STLExtras.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/JSON.h"
@@ -17,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <variant>
@@ -45,9 +49,9 @@ reference(const loom::ArtifactSchemaDescriptor &schema,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
+  if (argc != 3 && argc != 4) {
     llvm::errs() << "usage: " << argv[0]
-                 << " ARTIFACT_STORE SPATIAL_MAPPING_IDENTITY\n";
+                 << " ARTIFACT_STORE SPATIAL_MAPPING_IDENTITY [WORKLOAD_IDENTITY]\n";
     return 2;
   }
 
@@ -61,11 +65,28 @@ int main(int argc, char **argv) {
       reference(dataflow::canonicalDataflowSchema,
                 spatial.view().dataflowIdentity()),
       artifacts));
-  const auto dataflowView = take(dataflow.view());
+  const auto &dataflowView = dataflow.view();
   const auto tech = take(loom::mapping::importTechMapping(
       reference(loom::mapping::mappingArtifactSchema,
                 spatial.view().techMappingIdentity()),
       artifacts));
+  std::optional<loom::sim::SpatialSimulationBoundaryShapes> invocationShapes;
+  if (argc == 4) {
+    const auto workloadIdentity = take(loom::parseArtifactIdentityHex(argv[3]));
+    const auto imported = take(loom::sim::importSpatialSimulationWorkload(
+        reference(loom::sim::simulationWorkloadSchema, workloadIdentity),
+        artifacts));
+    const auto *workload = imported.workload.spatial();
+    if (!workload || imported.dataflow->identity() != dataflow.identity() ||
+        !llvm::is_contained(tech.view().covers(),
+                           take(dataflowView.resolve(workload->launchRef)))) {
+      llvm::errs() << "product mapping inspection: workload does not name a "
+                      "graph covered by this exact Mapping\n";
+      return 1;
+    }
+    invocationShapes = take(loom::sim::projectSpatialSimulationBoundaryShapes(
+        dataflowView, workload->launchRef));
+  }
   const auto fabric = take(loom::fabric::importEntireFabricRoot(
       reference(loom::fabric::fabricArtifactSchema,
                 spatial.view().fabricIdentity()),
@@ -451,6 +472,13 @@ int main(int argc, char **argv) {
       {"actor_multicast_route_count", actorMulticastRouteCount},
       {"maximum_actor_multicast_sinks", maximumActorMulticastSinks},
   };
+  if (invocationShapes) {
+    report["workload_identity"] = argv[3];
+    report["invocation_stream_input_count"] =
+        invocationShapes->streamInputs.size();
+    report["invocation_stream_output_count"] =
+        invocationShapes->streamOutputs.size();
+  }
   llvm::outs() << llvm::formatv("{0:2}\n",
                                 llvm::json::Value(std::move(report)));
   return 0;

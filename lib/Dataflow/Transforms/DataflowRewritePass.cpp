@@ -473,11 +473,9 @@ enumerateImplementedOneWayDecisions(
         ::llvm::inconvertibleErrorCode(),
         "dataflow_rewrite_invalid: kind is not a one-way fixed rule");
 
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = parent.view();
   std::vector<::dataflow::DataflowRewriteDecision> decisions;
-  for (const ::dataflow::CanonicalActorView &actor : view->actors()) {
+  for (const ::dataflow::CanonicalActorView &actor : view.actors()) {
     ::dataflow::DataflowRewriteDecision decision =
         [&]() -> ::dataflow::DataflowRewriteDecision {
       if (kind == DataflowRewriteKind::PackUnpackRoundTripEliminate)
@@ -488,7 +486,7 @@ enumerateImplementedOneWayDecisions(
       return ::dataflow::ActivationPreservingConstantFoldRewrite{
           actor.ref.entity};
     }();
-    auto matches = matchesImplementedFixedDecision(*view, decision);
+    auto matches = matchesImplementedFixedDecision(view, decision);
     if (!matches)
       return matches.takeError();
     if (*matches)
@@ -690,9 +688,7 @@ dataflow::detail::finalizeDataflowRewriteCandidate(
     const CanonicalDataflowArtifact &parent, mlir::ModuleOp candidate,
     const mlir::IRMapping &mapping,
     llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
-  auto parentView = parent.view();
-  if (!parentView)
-    return parentView.takeError();
+  const auto &parentView = parent.view();
   llvm::SmallVector<mlir::Operation *> trackedOperations;
   trackedOperations.reserve(trackedStaticGraphLaunches.size());
   for (StaticGraphLaunchRef reference : trackedStaticGraphLaunches) {
@@ -700,7 +696,7 @@ dataflow::detail::finalizeDataflowRewriteCandidate(
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "dataflow_rewrite_invalid: tracked launch has a foreign parent");
-    auto launch = parentView->resolve(reference);
+    auto launch = parentView.resolve(reference);
     if (!launch)
       return launch.takeError();
     mlir::Operation *mapped = mapping.lookupOrNull(launch->op);
@@ -745,10 +741,8 @@ dataflow::detail::materializeFixedDataflowRewriteProjection(
       std::holds_alternative<GraphDefinitionMergeRewrite>(decision))
     return materializeGraphDefinitionRefactorProjection(
         parent, decision, trackedStaticGraphLaunches);
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto matches = matchesImplementedFixedDecision(*view, decision);
+  const auto &view = parent.view();
+  auto matches = matchesImplementedFixedDecision(view, decision);
   if (!matches)
     return matches.takeError();
   if (!*matches)
@@ -757,7 +751,7 @@ dataflow::detail::materializeFixedDataflowRewriteProjection(
         "dataflow_rewrite_invalid: decision is not a legal parent match");
 
   const ActorId actor = *fixedDecisionActor(decision);
-  auto resolved = view->resolve(ActorRef{parent.identity(), actor});
+  auto resolved = view.resolve(ActorRef{parent.identity(), actor});
   if (!resolved)
     return resolved.takeError();
   ::mlir::IRMapping mapping;

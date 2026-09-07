@@ -16,6 +16,8 @@
 
 namespace loom::sim::detail {
 
+class CgraFabricActivityRuntime;
+
 /// Exact owner-relative timing of one selected Mapping ResourceUse. Ranks are
 /// measured in the selected owner's local reference cycles. Event ordinals
 /// provide canonical within-coordinate order only; they do not arbitrate.
@@ -45,14 +47,24 @@ struct CgraPhysicalLifecycleEvent final {
   SpatialEventCoordinate coordinate;
 };
 
-struct CgraPhysicalLifecycleFrame final {
+struct CgraPhysicalLifecycleFrameView final {
   SpatialEventCoordinate coordinate;
-  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> events;
+  llvm::ArrayRef<CgraPhysicalLifecycleEvent> events;
 };
 
 struct CgraPhysicalActionRequest final {
   std::uint64_t actionOrdinal = 0;
   std::uint64_t occurrenceOrdinal = 0;
+};
+
+struct CgraPhysicalCapacityWait final {
+  std::uint64_t holdingActionOrdinal = 0;
+  std::uint64_t holdingOccurrenceOrdinal = 0;
+  std::uint64_t dimensionOrdinal = 0;
+  std::uint32_t capacity = 0;
+  std::uint32_t occupancy = 0;
+  std::uint32_t requestedAmount = 0;
+  std::uint32_t heldAmount = 0;
 };
 
 struct CgraPendingPhysicalActionDiagnostic final {
@@ -63,6 +75,7 @@ struct CgraPendingPhysicalActionDiagnostic final {
   bool requiresCausalRelease = false;
   bool intrinsicReleaseReached = false;
   bool causalReleaseReached = false;
+  std::vector<CgraPhysicalCapacityWait> capacityWaits;
 };
 
 /// Execution-local lifecycle of selected physical ResourceUses. Resource
@@ -80,7 +93,8 @@ public:
 
   static llvm::Expected<CgraPhysicalActionRuntime>
   create(const CgraResourceRuntimePlan &resources,
-         llvm::ArrayRef<CgraPhysicalUseTiming> uses);
+         llvm::ArrayRef<CgraPhysicalUseTiming> uses,
+         CgraFabricActivityRuntime *activity = nullptr);
 
   llvm::Expected<CgraPhysicalLifecycleEvent>
   request(std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal,
@@ -96,11 +110,14 @@ public:
 
   /// Advances through one exact coordinate. A frame can contain no visible
   /// event when every acquisition attempt at that coordinate remains blocked.
-  llvm::Expected<std::optional<CgraPhysicalLifecycleFrame>> advance();
+  /// The view remains valid until the next advance on this runtime.
+  llvm::Expected<std::optional<CgraPhysicalLifecycleFrameView>> advance();
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const {
     return events_.nextCoordinate();
   }
+
+  CgraFabricActivityRuntime *activity() const { return activity_; }
 
   bool hasPendingActions() const { return activeActionCount_ != 0; }
   std::uint64_t pendingActionCount() const { return activeActionCount_; }
@@ -108,7 +125,7 @@ public:
   pendingActionDiagnostics() const;
 
 private:
-  enum class ActionState : std::uint8_t { Requested, Granted, Retired };
+  enum class ActionState : std::uint8_t { Requested, Parked, Granted, Retired };
 
   struct Action final {
     std::uint64_t actionOrdinal = 0;
@@ -117,12 +134,13 @@ private:
     std::optional<CgraClaimEnvelope> envelope;
     bool intrinsicReleaseReached = false;
     bool causalReleaseReached = false;
-    bool acquisitionParked = false;
   };
 
   CgraPhysicalActionRuntime(std::vector<CgraPhysicalUseTiming> uses,
-                            CgraResourceRuntime resources)
-      : uses_(std::move(uses)), resources_(std::move(resources)) {}
+                            CgraResourceRuntime resources,
+                            CgraFabricActivityRuntime *activity)
+      : uses_(std::move(uses)), resources_(std::move(resources)),
+        activity_(activity) {}
 
   llvm::Error schedule(std::uint64_t actionSlot, InternalKind kind,
                        SpatialEventCoordinate coordinate,
@@ -130,9 +148,13 @@ private:
 
   std::vector<CgraPhysicalUseTiming> uses_;
   CgraResourceRuntime resources_;
+  CgraFabricActivityRuntime *activity_ = nullptr;
+  llvm::SmallVector<CgraPhysicalLifecycleEvent, 8> frameEvents_;
   CgraEventQueue events_{"CGRA physical action"};
   std::vector<Action> actions_;
   std::vector<std::uint64_t> freeActionSlots_;
+  /// Slots in Parked state, retried together after capacity is released.
+  std::vector<std::uint64_t> parkedAcquisitions_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t>
       activeActions_;
   std::uint64_t activeActionCount_ = 0;

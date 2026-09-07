@@ -489,22 +489,19 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   auto dataflow = ::dataflow::importCanonicalDataflow(dataflowReference, store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto tech = ::loom::mapping::importTechMapping(techReference, store);
   if (!tech)
     return tech.takeError();
   auto fabric = ::loom::fabric::importEntireFabricRoot(fabricReference, store);
   if (!fabric)
     return fabric.takeError();
-  if (tech->view().dataflowIdentity() != dataflowView->identity() ||
+  if (tech->view().dataflowIdentity() != dataflowView.identity() ||
       tech->view().fabricIdentity() != fabric->view().identity())
     return invalid("constraint owner tuple is not a closed D/T/F relation");
 
   auto frozen = ::loom::pnr::freezeSpatialPnrProblem(
-      *dataflowView, tech->view(), fabric->view(), *config,
-      constraints->view());
+      dataflowView, tech->view(), fabric->view(), *config, constraints->view());
   if (!frozen)
     return frozen.takeError();
 
@@ -518,12 +515,12 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         ::loom::mapping::importSpatialMapping(mappingReference, store);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflowView->identity() ||
+    if (mapping->view().dataflowIdentity() != dataflowView.identity() ||
         mapping->view().techMappingIdentity() != tech->view().identity() ||
         mapping->view().fabricIdentity() != fabric->view().identity())
       return invalid("SpatialMapping differs from the exact constraint owners");
     if (llvm::Error error = ::loom::mapping::admitSpatialMappingConstraints(
-            *dataflowView, tech->view(), fabric->view(), constraints->view(),
+            dataflowView, tech->view(), fabric->view(), constraints->view(),
             mapping->view()))
       return std::move(error);
     auto cgraCase = ::loom::evaluation::models::resolveCgraSimulationCase(
@@ -572,8 +569,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     if (!projection)
       return projection.takeError();
     auto candidate = materializeFeedback(
-        dataflowReference, *dataflow, *dataflowView, *projection,
-        fabric->view(), store, decisionAttempts);
+        dataflowReference, *dataflow, dataflowView, *projection, fabric->view(),
+        store, decisionAttempts);
     if (!candidate)
       return candidate.takeError();
     if (!*candidate)

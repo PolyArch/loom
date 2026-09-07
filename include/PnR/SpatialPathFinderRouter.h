@@ -4,11 +4,13 @@
 #include "Common/ExecutionControl.h"
 #include "PnR/SpatialNetRouter.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -19,6 +21,8 @@ class ObjectiveVector;
 }
 
 namespace loom::pnr {
+
+struct SpatialTagAssignmentSummary;
 
 struct SpatialPathFinderRoutingLimits final {
   std::uint64_t endpointExpansionLimit = 0;
@@ -48,6 +52,16 @@ struct SpatialFixedTerminalCutCertificate final {
   std::vector<SpatialFixedTerminalCutNet> forcedNetCuts;
 };
 
+/// One route-local Physical Tag segment selected by an exact switch fragment
+/// in a rejected combinational handshake cycle.
+struct SpatialHandshakeCycleTagSelection final {
+  PnrIndex logicalNet = 0;
+  PnrIndex segmentOrdinal = 0;
+  PnrIndex matchDomain = 0;
+  std::uint32_t tagWidthBits = 0;
+  std::optional<llvm::APInt> value;
+};
+
 class SpatialPathFinderClosureFailure final
     : public llvm::ErrorInfo<SpatialPathFinderClosureFailure> {
 public:
@@ -68,6 +82,19 @@ public:
       std::uint64_t mandatoryUsage = 0, std::uint64_t physicalCapacity = 0,
       std::uint64_t regionalLogicalNetCount = 0,
       std::uint64_t regionalLogicalNetLimit = 0);
+  /// Carries the cycle of the rejected provisional route selection. These
+  /// ordinals belong to FrozenSpatialHandshakeIndex::projectionArcs(). An
+  /// empty witness preserves a closure that supplied only a boolean result.
+  explicit SpatialPathFinderClosureFailure(
+      std::vector<PnrIndex> frozenHandshakeCycle,
+      std::vector<PnrIndex> handshakeCycleLogicalNets = {},
+      std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts = {},
+      std::vector<SpatialHandshakeCycleTagSelection>
+          handshakeCycleTagSelections = {});
+  /// Cycle evidence may accompany a budget failure without changing its kind.
+  SpatialPathFinderClosureFailure(
+      Kind kind, std::string message,
+      std::vector<PnrIndex> frozenHandshakeCycle);
 
   Kind kind() const { return kind_; }
   const SpatialFixedTerminalCutCertificate &certificate() const {
@@ -85,6 +112,21 @@ public:
   std::uint64_t regionalLogicalNetLimit() const {
     return regionalLogicalNetLimit_;
   }
+  llvm::ArrayRef<PnrIndex> frozenHandshakeCycle() const {
+    return frozenHandshakeCycle_;
+  }
+  llvm::ArrayRef<PnrIndex> handshakeCycleLogicalNets() const {
+    return handshakeCycleLogicalNets_;
+  }
+  /// Exact RouteTree selections that contributed to the cycle witness. These
+  /// are invocation-local candidate omissions, never persistent constraints.
+  llvm::ArrayRef<SpatialTraversalRouteCut> handshakeCycleRouteCuts() const {
+    return handshakeCycleRouteCuts_;
+  }
+  llvm::ArrayRef<SpatialHandshakeCycleTagSelection>
+  handshakeCycleTagSelections() const {
+    return handshakeCycleTagSelections_;
+  }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
@@ -92,6 +134,11 @@ private:
   Kind kind_;
   std::string message_;
   SpatialFixedTerminalCutCertificate certificate_;
+  std::vector<PnrIndex> frozenHandshakeCycle_;
+  std::vector<PnrIndex> handshakeCycleLogicalNets_;
+  std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts_;
+  std::vector<SpatialHandshakeCycleTagSelection>
+      handshakeCycleTagSelections_;
   std::uint64_t mandatoryUsage_;
   std::uint64_t physicalCapacity_;
   std::uint64_t regionalLogicalNetCount_;
@@ -144,7 +191,8 @@ public:
       SpatialRoutingClosureRequirement closureRequirement =
           SpatialRoutingClosureRequirement::Final,
       std::uint64_t exactRegionalLogicalNetLimit = 0,
-      std::optional<SpatialTraversalRouteCut> routeCut = std::nullopt);
+      std::optional<SpatialTraversalRouteCut> routeCut = std::nullopt,
+      bool deferHandshakeCycleUntilClose = false);
 
   llvm::Expected<bool>
   internalRouteCutHolds(const SpatialCandidateState &candidate,
@@ -263,7 +311,9 @@ private:
       SpatialMoveTransaction &move, SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, llvm::ArrayRef<PnrIndex> logicalNets,
       const dse::ObjectiveVector &expectedObjective,
-      const SpatialCandidateRouteProjection &expectedProjection);
+      const SpatialCandidateRouteProjection &expectedProjection,
+      SpatialTagAssignmentSummary &restoredTagSummary,
+      std::vector<PnrIndex> *frozenCycleWitness = nullptr);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,
@@ -276,7 +326,8 @@ private:
   llvm::Expected<bool>
   expandExactRegionalConflictClosure(const SpatialCandidateState &candidate,
                                      const SpatialRouteCostState &costs,
-                                     std::uint64_t logicalNetLimit);
+                                     std::uint64_t logicalNetLimit,
+                                     llvm::ArrayRef<PnrIndex> cycleLogicalNets);
   llvm::Expected<bool>
   expandRoutingRelationClosure(std::uint64_t logicalNetLimit);
   void beginProjection();

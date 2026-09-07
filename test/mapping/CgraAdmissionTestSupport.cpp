@@ -7,6 +7,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/CgraClosedWait.h"
 #include "Evaluation/Models/DfgSimulation.h"
@@ -94,11 +95,11 @@ bool sameTransition(const loom::sim::ActorTransitionOccurrenceRef &lhs,
 bool sameAction(const loom::sim::PhysicalActionOccurrenceRef &lhs,
                 const loom::sim::PhysicalActionOccurrenceRef &rhs) {
   const auto *left =
-      std::get_if<loom::sim::TransitionPhysicalActionParent>(&lhs.parent);
+      std::get_if<loom::sim::TransitionPhysicalActionOccurrenceRef>(&lhs);
   const auto *right =
-      std::get_if<loom::sim::TransitionPhysicalActionParent>(&rhs.parent);
+      std::get_if<loom::sim::TransitionPhysicalActionOccurrenceRef>(&rhs);
   return left && right && sameTransition(left->transition, right->transition) &&
-         lhs.localActionOrdinal == rhs.localActionOrdinal;
+         left->localActionOrdinal == right->localActionOrdinal;
 }
 
 void verifySameInputDistinctTemporalSwitchRows(
@@ -225,9 +226,10 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactStore &store, const BlobStore &blobs, bool expectPhysicalTags,
     bool expectCausalComputeRelease, bool expectSameInputDistinctSwitchRows,
     bool verifyApplicationEvidenceCoverage) {
+  evaluation::ArtifactImportCacheScope importCache(store, &blobs);
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
-  auto view = take(dataflow.view());
+  const auto &view = dataflow.view();
   if (view.rootThreadLaunches().size() != 1 ||
       view.staticGraphLaunches().size() != 1)
     fail("fixture does not have one rooted graph launch");
@@ -398,8 +400,9 @@ void loom::test::exerciseCgraAdmission(
               return sameAction(action, retired->action);
             }))
           continue;
-        const auto *parent = std::get_if<sim::TransitionPhysicalActionParent>(
-            &retired->action.parent);
+        const auto *parent =
+            std::get_if<sim::TransitionPhysicalActionOccurrenceRef>(
+                &retired->action);
         if (!parent ||
             llvm::none_of(publishedTransitions, [&](const auto &published) {
               return sameTransition(published, parent->transition);
@@ -505,6 +508,23 @@ void loom::test::exerciseCgraAdmission(
         foreignPreparedDfg, {128, std::nullopt}, store, blobs));
     auto foreignCgraEvidence = take(evaluation::models::evaluateCgraSimulation(
         foreignPreparedCgra, {128, std::nullopt}, store, blobs));
+    for (const auto &[evidence, resolution] : std::array{
+             std::pair{&foreignDfgEvidence, &foreignPreparedDfg.resolution},
+             std::pair{&foreignCgraEvidence, &foreignPreparedCgra.resolution}}) {
+      auto execution = take(sim::importSimulationExecution(
+          evidence->outputBindings().front().artifacts.front(), *resolution,
+          store, blobs));
+      const auto &values =
+          execution.spatialFunctionalObservations().valueResults;
+      if (values.size() != 1)
+        fail("changed replay input lost its functional observation");
+      const auto *published =
+          std::get_if<sim::PublishedValueResult>(&values.front());
+      if (!published || published->value.lanes.size() != 1 ||
+          published->value.lanes.front().state != sim::SemanticState::Defined ||
+          published->value.lanes.front().bits != llvm::APInt(32, 8))
+        fail("shared execution preparation retained prior replay input state");
+    }
     auto foreignComparison =
         take(evaluation::models::prepareSimulationComparisonEvaluation(
             foreignDfgEvidence.outputBindings().front().artifacts.front(),

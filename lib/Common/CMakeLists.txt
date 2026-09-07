@@ -1,7 +1,7 @@
 find_package(Threads REQUIRED)
 # Build requirement: the host OpenSSL libcrypto with development headers. Blob
-# digests are SHA-256 over the complete logical byte sequence, computed
-# incrementally while a generated blob streams to the store; the LLVM SHA256
+# digests and framed artifact identities share its SHA-256 implementation over
+# the complete byte sequence, including streamed blobs. The LLVM SHA256
 # helper narrows its byte count at the 512 MiB length-encoding boundary and is
 # therefore not an admissible digest owner.
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)

@@ -16,11 +16,11 @@ llvm::Error invalid(llvm::Twine message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
-void selectEarlier(std::optional<SpatialEventCoordinate> candidate,
+void selectEarlier(const std::optional<SpatialEventCoordinate> &candidate,
                    std::optional<SpatialEventCoordinate> &selected) {
   if (candidate &&
       (!selected || compareSpatialEventCoordinates(*candidate, *selected) < 0))
-    selected = std::move(candidate);
+    selected = candidate;
 }
 
 bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
@@ -322,16 +322,16 @@ CgraComputeRuntime::physicalTraceBinding(
   if (!target)
     return target.takeError();
   return CgraPhysicalTraceBinding{
-      PhysicalActionOccurrenceRef{
-          TransitionPhysicalActionParent{ActorTransitionOccurrenceRef{
-              GraphInvocationOccurrenceRef{0}, binding.actor,
-              firing.actorOccurrenceOrdinal}},
+      TransitionPhysicalActionOccurrenceRef{
+          ActorTransitionOccurrenceRef{GraphInvocationOccurrenceRef{0},
+                                       binding.actor,
+                                       firing.actorOccurrenceOrdinal},
           index.localActionOrdinal},
       std::move(*target)};
 }
 
-std::optional<std::uint64_t>
-CgraComputeRuntime::physicalActionSemanticActor(
+std::optional<std::pair<std::uint64_t, std::uint64_t>>
+CgraComputeRuntime::physicalActionSemanticFiring(
     std::uint64_t actionOrdinal, std::uint64_t occurrenceOrdinal) const {
   const auto indexed = actionToFiring_.find({actionOrdinal, occurrenceOrdinal});
   if (indexed == actionToFiring_.end() ||
@@ -340,7 +340,8 @@ CgraComputeRuntime::physicalActionSemanticActor(
   const Firing &firing = firings_[indexed->second.firingSlot];
   if (!firing.active || firing.bindingOrdinal >= bindings_.size())
     return std::nullopt;
-  return bindings_[firing.bindingOrdinal].semanticActorOrdinal;
+  return std::make_pair(bindings_[firing.bindingOrdinal].semanticActorOrdinal,
+                        firing.actorOccurrenceOrdinal);
 }
 
 llvm::Error CgraComputeRuntime::acceptReadyCandidates(
@@ -652,7 +653,7 @@ CgraComputeRuntime::advance() {
 
 llvm::Expected<CgraComputeLifecycleFrame>
 CgraComputeRuntime::acceptPhysicalEvents(
-    const CgraPhysicalLifecycleFrame &physicalFrame) {
+    const CgraPhysicalLifecycleFrameView &physicalFrame) {
   if (!started_)
     return invalid("CGRA compute runtime has not started");
   CgraComputeLifecycleFrame frame{physicalFrame.coordinate, {}, {}, {}, {}};

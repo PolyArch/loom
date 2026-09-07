@@ -1063,7 +1063,7 @@ void externalModelProviderFormAdmission() {
   require(
       __func__,
       semanticContract.resultImporterIdentity ==
-          "15ba2108d4d32972135f1d545302ebc9fb0df1a931ef412dc94d5ad2d5d37200",
+          "bc1343620162461bbb85f3d85498e9c235dbf2f72cee91ecbdf4b3c06ac0707f",
       "external semantic contract changed the evaluator importer identity");
   auto inProcessContract = deriveExternalToolSemanticContract(inProcessRequest);
   if (inProcessContract)

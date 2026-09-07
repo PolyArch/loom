@@ -14,6 +14,7 @@ add_library(LoomDSE
   ResourceTimeSpectrum.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
+  StructuredFunctionalReplayBudget.cpp
   StructuredOwnership.cpp
   StructuredOwnershipInvocation.cpp
 )

@@ -12,6 +12,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -53,13 +54,13 @@ public:
                         const llvm::SmallBitVector &semanticCandidates);
 
   llvm::Expected<CgraMemoryLifecycleFrame>
-  acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
+  acceptPhysicalEvents(const CgraPhysicalLifecycleFrameView &physicalFrame);
 
   llvm::Expected<CgraPhysicalTraceBinding>
   physicalTraceBinding(const CgraPhysicalLifecycleEvent &event) const;
 
-  std::optional<std::uint64_t>
-  physicalActionSemanticActor(std::uint64_t actionOrdinal,
+  std::optional<std::pair<std::uint64_t, std::uint64_t>>
+  physicalActionSemanticFiring(std::uint64_t actionOrdinal,
                               std::uint64_t occurrenceOrdinal) const;
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
@@ -67,6 +68,11 @@ public:
                           SpatialEventCoordinate coordinate, bool reschedule);
 
   llvm::Expected<std::optional<CgraMemoryLifecycleFrame>> advance();
+
+  bool waitingForExternalMemory() const;
+  llvm::Error completeExternalMemory(CgraExternalMemoryRequestId request,
+                                     CgraExternalMemoryResponse response);
+  llvm::Error resumeExternalMemory(CgraMemoryLifecycleFrame &frame);
 
   std::optional<SpatialEventCoordinate> nextCoordinate() const {
     return requestedEvents_.nextCoordinate();
@@ -107,6 +113,14 @@ private:
     std::uint64_t activeOccurrenceOrdinal = 0;
   };
 
+  struct PendingExternalMemory final {
+    CgraExternalMemoryRequest request;
+    std::optional<DataflowMemoryWrite> write;
+    std::optional<CgraExternalMemoryResponse> response;
+  };
+
+  enum class LinearizationState { Unissued, Pending, Complete };
+
   struct Firing final {
     bool active = false;
     std::uint64_t bindingOrdinal = 0;
@@ -119,7 +133,8 @@ private:
     bool operationPermitted = false;
     bool operationRetired = false;
     bool issueCommitted = false;
-    bool linearized = false;
+    LinearizationState linearization = LinearizationState::Unissued;
+    std::optional<PendingExternalMemory> external;
   };
 
   struct ActionIndex final {
@@ -153,6 +168,21 @@ private:
                           CgraMemoryLifecycleFrame &frame);
   llvm::Error linearize(std::uint64_t firingSlot,
                         CgraMemoryLifecycleFrame &frame);
+  llvm::Error beginLinearization(std::uint64_t firingSlot,
+                                 CgraMemoryLifecycleFrame &frame);
+  llvm::Error advanceLinearizations(CgraMemoryLifecycleFrame &frame);
+  llvm::Error
+  applyExternalMemoryResponse(Firing &firing,
+                              const CgraExternalMemoryRequest &request,
+                              const CgraExternalMemoryResponse &response);
+  static llvm::Error
+  validateExternalMemoryResponse(const CgraExternalMemoryRequest &request,
+                                 const CgraExternalMemoryResponse &response);
+  llvm::Error finishExternalMemory(std::uint64_t firingSlot,
+                                   CgraMemoryLifecycleFrame &frame);
+  llvm::Error finishLinearization(std::uint64_t firingSlot,
+                                  std::optional<DataflowMemoryWrite> write,
+                                  CgraMemoryLifecycleFrame &frame);
   void maybeComplete(std::uint64_t firingSlot, CgraMemoryLifecycleFrame &frame);
   void releaseFiring(std::uint64_t firingSlot);
 
@@ -163,6 +193,9 @@ private:
   CgraPhysicalActionRuntime *physical_ = nullptr;
   CgraTransportRuntime *transport_ = nullptr;
   CgraExternalMemoryProvider *externalMemoryProvider_ = nullptr;
+  std::shared_ptr<const CgraExternalMemoryRequestId::Domain>
+      externalMemoryDomain_;
+  std::deque<std::uint64_t> pendingLinearizations_;
   CgraEventQueue requestedEvents_{"CGRA memory request"};
   std::vector<std::uint64_t> nextActionOccurrence_;
   std::vector<Firing> firings_;

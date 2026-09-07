@@ -72,47 +72,16 @@ llvm::Expected<ImportedSpatialSimulationInputs> importSpatialSimulationInputs(
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
     const ArtifactStore &store) {
-  if (!hasSchema(workloadReference, simulationWorkloadSchema))
-    return invalid("foreign SimulationWorkload reference schema");
-  if (!hasSchema(runtimeInputReference, simulationRuntimeInputSchema))
-    return invalid("foreign SimulationRuntimeInput reference schema");
-
-  llvm::Expected<CanonicalSemanticBytes> workloadBytes =
-      store.get(workloadReference);
-  if (!workloadBytes)
-    return workloadBytes.takeError();
-  llvm::Expected<ArtifactIdentity> dataflowIdentity =
-      spatialWorkloadOwnerIdentity(workloadBytes->bytes());
-  if (!dataflowIdentity)
-    return dataflowIdentity.takeError();
-  ArtifactRootReference dataflowReference{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version, *dataflowIdentity};
-  llvm::Expected<dataflow::CanonicalDataflowArtifact> dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, store);
-  if (!dataflow)
-    return dataflow.takeError();
-  llvm::Expected<dataflow::CanonicalDataflowProgramView> view =
-      dataflow->view();
-  if (!view)
-    return view.takeError();
-  llvm::Expected<CanonicalSimulationWorkload> workload =
-      importSimulationWorkload(workloadBytes->bytes(), *view,
-                               workloadReference.artifact);
+  auto workload = importSpatialSimulationWorkload(workloadReference, store);
   if (!workload)
     return workload.takeError();
-
-  llvm::Expected<CanonicalSemanticBytes> runtimeBytes =
-      store.get(runtimeInputReference);
-  if (!runtimeBytes)
-    return runtimeBytes.takeError();
-  llvm::Expected<CanonicalSimulationRuntimeInput> runtimeInput =
-      importSimulationRuntimeInput(runtimeBytes->bytes(), *workload, *view,
-                                   runtimeInputReference.artifact);
+  auto runtimeInput = importSpatialSimulationRuntimeInput(
+      runtimeInputReference, *workload, store);
   if (!runtimeInput)
     return runtimeInput.takeError();
   return ImportedSpatialSimulationInputs{
-      std::move(*dataflow), std::move(*workload), std::move(*runtimeInput)};
+      std::move(workload->dataflow), std::move(workload->workload),
+      std::move(*runtimeInput)};
 }
 
 llvm::Expected<ImportedSpatialSimulationWorkload>
@@ -129,13 +98,17 @@ importSpatialSimulationWorkload(const ArtifactRootReference &workloadReference,
   ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, *dataflowIdentity};
-  auto dataflow = dataflow::importCanonicalDataflow(dataflowReference, store);
+  const std::array<ArtifactRootReference, 1> dataflowReferences{
+      dataflowReference};
+  auto dataflow =
+      evaluation::importCachedArtifact<dataflow::CanonicalDataflowArtifact>(
+          store, nullptr, dataflowReferences, [&] {
+            return dataflow::importCanonicalDataflow(dataflowReference, store);
+          });
   if (!dataflow)
     return dataflow.takeError();
-  auto view = dataflow->view();
-  if (!view)
-    return view.takeError();
-  auto workload = importSimulationWorkload(workloadBytes->bytes(), *view,
+  const auto &view = (*dataflow)->view();
+  auto workload = importSimulationWorkload(workloadBytes->bytes(), view,
                                            workloadReference.artifact);
   if (!workload)
     return workload.takeError();
@@ -152,14 +125,12 @@ importSpatialSimulationRuntimeInput(
     return invalid("foreign SimulationRuntimeInput reference schema");
   if (!workload.workload.spatial())
     return invalid("workload is not a Spatial root");
-  auto view = workload.dataflow.view();
-  if (!view)
-    return view.takeError();
+  const auto &view = workload.dataflow->view();
   auto runtimeBytes = store.get(runtimeInputReference);
   if (!runtimeBytes)
     return runtimeBytes.takeError();
   return importSimulationRuntimeInput(runtimeBytes->bytes(), workload.workload,
-                                      *view, runtimeInputReference.artifact);
+                                      view, runtimeInputReference.artifact);
 }
 
 llvm::Expected<ImportedStructuredProgramSimulationInputs>

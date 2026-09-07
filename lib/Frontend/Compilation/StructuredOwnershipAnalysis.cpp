@@ -6,6 +6,7 @@
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -174,39 +175,76 @@ deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
 }
 
 std::optional<std::string>
-explainUnboundMemoryService(llvm::ArrayRef<mlir::Operation *> selectedBody,
-                            llvm::ArrayRef<mlir::Value> liveIns) {
+completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
+                              std::vector<mlir::Value> &liveIns) {
   llvm::SmallPtrSet<mlir::Value, 8> boundaryPointers;
   for (mlir::Value value : liveIns)
     if (llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType()))
       boundaryPointers.insert(value);
 
-  std::optional<std::string> rejection;
-  for (mlir::Operation *topLevel : selectedBody) {
+  llvm::SmallVector<mlir::Operation *> unbound;
+  for (mlir::Operation *topLevel : selectedBody)
     topLevel->walk([&](mlir::Operation *operation) {
       mlir::Value address;
       if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation))
         address = load.getAddr();
       else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation))
         address = store.getAddr();
-      else
-        return mlir::WalkResult::advance();
-
-      mlir::Value root = lowering::resolveMemoryServiceBoundaryRoot(
-          address,
-          [&](mlir::Value value) { return boundaryPointers.contains(value); });
-      if (root)
-        return mlir::WalkResult::advance();
-      rejection = (llvm::Twine("memory access '") +
-                   operation->getName().getStringRef() +
-                   "' has no pointer service at the selected Spatial boundary")
-                      .str();
-      return mlir::WalkResult::interrupt();
+      if (address && !lowering::resolveMemoryServiceBoundaryRoot(
+                         address, [&](mlir::Value value) {
+                           return boundaryPointers.contains(value);
+                         }) &&
+          lowering::usesLoadedPointerService(address))
+        unbound.push_back(operation);
     });
-    if (rejection)
-      break;
+  if (unbound.empty())
+    return std::nullopt;
+
+  auto callable = unbound.front()->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+  if (!callable)
+    return "unbound pointer service has no exact LLVM invocation owner";
+  // The analysis is created after preparation's IR changes and ends here,
+  // before materialization clones operations or changes the input boundary.
+  analysis::StoredMemoryProvenance provenance(callable);
+  mlir::DominanceInfo dominance(callable);
+  for (mlir::Operation *operation : unbound) {
+    mlir::Value address =
+        llvm::isa<mlir::LLVM::LoadOp>(operation)
+            ? llvm::cast<mlir::LLVM::LoadOp>(operation).getAddr()
+            : llvm::cast<mlir::LLVM::StoreOp>(operation).getAddr();
+    auto projected = provenance.projectPointerTarget(address);
+    if (auto refusal = std::get_if<analysis::StoredPointerRefusal>(&projected))
+      return (llvm::Twine("unbound pointer service: ") +
+              analysis::storedPointerRefusalSpelling(*refusal))
+          .str();
+    mlir::Value root = std::get<analysis::StoredPointerTarget>(projected).root;
+    for (mlir::Operation *selected : selectedBody)
+      if (!dominance.dominates(root, selected))
+        return "pointer service origin is unavailable before the selected "
+               "scope";
+    if (boundaryPointers.insert(root).second)
+      liveIns.push_back(root);
   }
-  return rejection;
+  auto projected = lowering::projectPointerServiceBindings(selectedBody,
+                                                           liveIns, provenance);
+  if (auto refusal = std::get_if<analysis::StoredPointerRefusal>(&projected))
+    return (llvm::Twine("unbound pointer service: ") +
+            analysis::storedPointerRefusalSpelling(*refusal))
+        .str();
+  const auto &bindings = std::get<lowering::PointerServiceBindings>(projected);
+  for (mlir::Operation *operation : unbound) {
+    mlir::Value address =
+        llvm::isa<mlir::LLVM::LoadOp>(operation)
+            ? llvm::cast<mlir::LLVM::LoadOp>(operation).getAddr()
+            : llvm::cast<mlir::LLVM::StoreOp>(operation).getAddr();
+    if (!lowering::resolveMemoryServiceBoundaryRoot(
+            address,
+            [&](mlir::Value value) { return boundaryPointers.contains(value); },
+            bindings))
+      return "memory access has no proven pointer service at the selected "
+             "Spatial boundary";
+  }
+  return std::nullopt;
 }
 
 } // namespace loom::frontend::detail

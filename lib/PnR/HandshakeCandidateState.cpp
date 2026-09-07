@@ -7,6 +7,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -34,7 +36,6 @@ namespace loom::pnr::detail {
 /// node and arc also names its ordinal in the frozen dense projection, which
 /// is the single identity owner; no byte key is derived after freeze.
 struct MaterializedHandshakeGraph final {
-  std::vector<std::optional<::loom::fabric::HandshakeSignalRef>> nodeSignals;
   /// Compact node ordinal to frozen dense projection node ordinal.
   std::vector<PnrIndex> nodeFrozenIds;
   std::vector<FrozenSpatialHandshakeArc> arcs;
@@ -46,8 +47,10 @@ struct MaterializedHandshakeGraph final {
   /// frozen fragment-to-arc index whenever a witness or diagnostic needs it,
   /// so the count is the only mutable truth and cannot diverge from one.
   std::vector<PnrIndex> arcContributorCounts;
-  std::vector<std::vector<PnrIndex>> outgoingArcs;
-  std::vector<std::vector<PnrIndex>> reverseArcs;
+  // Inline the first two arcs without changing append order or imposing a
+  // degree limit; larger adjacency lists retain ordinary growable storage.
+  std::vector<llvm::SmallVector<PnrIndex, 2>> outgoingArcs;
+  std::vector<llvm::SmallVector<PnrIndex, 2>> reverseArcs;
   /// Frozen projection ordinal to compact ordinal. Unmaterialized entries use
   /// the invalid ordinal; compact ordinals retain first-encounter order.
   std::vector<PnrIndex> nodeOrdinals;
@@ -89,9 +92,7 @@ struct HandshakeCandidateScratchStorage final {
   std::vector<PnrIndex> reachabilityWorklist;
   std::vector<std::uint64_t> backwardMarks;
   std::vector<PnrIndex> backwardWorklist;
-  std::vector<PnrIndex> reorderedNodes;
-  std::vector<PnrIndex> unaffectedReorderedNodes;
-  std::vector<PnrIndex> forwardReorderedNodes;
+  std::vector<PnrIndex> reorderedRanks;
   std::shared_ptr<MaterializedHandshakeGraph> reusableGraph;
   std::uint64_t reachabilityEpoch = 0;
   std::uint64_t backwardEpoch = 0;
@@ -111,11 +112,14 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
-template <typename T>
-std::size_t retainedNestedBytes(const std::vector<std::vector<T>> &values) {
+template <typename T, unsigned InlineCapacity>
+std::size_t retainedNestedBytes(
+    const std::vector<llvm::SmallVector<T, InlineCapacity>> &values) {
   std::size_t bytes = retainedBytes(values);
   for (const auto &value : values)
-    bytes += retainedBytes(value);
+    // Inline storage is already included in the outer vector allocation.
+    if (value.capacity() > InlineCapacity)
+      bytes += value.capacity_in_bytes();
   return bytes;
 }
 
@@ -126,7 +130,7 @@ std::size_t retainedDenseMapBytes(const llvm::DenseMap<Key, Value> &values) {
 
 std::size_t retainedMaterializedHandshakeGraphBytes(
     const detail::MaterializedHandshakeGraph &graph) {
-  return retainedBytes(graph.nodeSignals) + retainedBytes(graph.nodeFrozenIds) +
+  return retainedBytes(graph.nodeFrozenIds) +
          retainedBytes(graph.arcs) + retainedBytes(graph.arcFrozenIds) +
          retainedBytes(graph.fixedArcs) +
          retainedBytes(graph.arcContributorCounts) +
@@ -171,11 +175,11 @@ void buildCycleWitness(detail::MaterializedHandshakeGraph &graph) {
     PnrIndex node = 0;
     std::size_t next = 0;
   };
-  std::vector<std::uint8_t> colors(graph.nodeSignals.size(), 0);
-  std::vector<PnrIndex> parentArcs(graph.nodeSignals.size(),
+  std::vector<std::uint8_t> colors(graph.nodeFrozenIds.size(), 0);
+  std::vector<PnrIndex> parentArcs(graph.nodeFrozenIds.size(),
                                    getInvalidPnrIndex());
   std::vector<Frame> stack;
-  for (PnrIndex root = 0; root < graph.nodeSignals.size(); ++root) {
+  for (PnrIndex root = 0; root < graph.nodeFrozenIds.size(); ++root) {
     if (colors[root] != 0)
       continue;
     colors[root] = 1;
@@ -229,15 +233,14 @@ void resetMaterializedHandshakeGraph(detail::MaterializedHandshakeGraph &graph,
   } else {
     graph.arcOrdinals.assign(frozenArcCount, getInvalidPnrIndex());
   }
-  graph.nodeSignals.clear();
   graph.nodeFrozenIds.clear();
   graph.arcs.clear();
   graph.arcFrozenIds.clear();
   graph.fixedArcs.clear();
   graph.arcContributorCounts.clear();
-  for (std::vector<PnrIndex> &arcs : graph.outgoingArcs)
+  for (auto &arcs : graph.outgoingArcs)
     arcs.clear();
-  for (std::vector<PnrIndex> &arcs : graph.reverseArcs)
+  for (auto &arcs : graph.reverseArcs)
     arcs.clear();
   graph.order.clear();
   graph.ranks.clear();
@@ -272,7 +275,6 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
       return ordinal.takeError();
     graph.nodeOrdinals[frozenNode] = *ordinal;
     graph.nodeFrozenIds.push_back(frozenNode);
-    graph.nodeSignals.push_back(nodeSignals[frozenNode]);
     if (*ordinal == graph.outgoingArcs.size()) {
       graph.outgoingArcs.emplace_back();
       graph.reverseArcs.emplace_back();
@@ -343,9 +345,9 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
     }
   }
 
-  graph.outgoingArcs.resize(graph.nodeSignals.size());
-  graph.reverseArcs.resize(graph.nodeSignals.size());
-  graph.constructionIndegree.assign(graph.nodeSignals.size(), 0);
+  graph.outgoingArcs.resize(graph.nodeFrozenIds.size());
+  graph.reverseArcs.resize(graph.nodeFrozenIds.size());
+  graph.constructionIndegree.assign(graph.nodeFrozenIds.size(), 0);
   for (const FrozenSpatialHandshakeArc arc : graph.arcs) {
     if (llvm::Error error =
             increment(graph.constructionIndegree[arc.destination],
@@ -354,11 +356,11 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
     addWork(graph.deterministicWork);
   }
   graph.constructionReady.clear();
-  graph.constructionReady.reserve(graph.nodeSignals.size());
-  for (PnrIndex node = 0; node < graph.nodeSignals.size(); ++node)
+  graph.constructionReady.reserve(graph.nodeFrozenIds.size());
+  for (PnrIndex node = 0; node < graph.nodeFrozenIds.size(); ++node)
     if (graph.constructionIndegree[node] == 0)
       graph.constructionReady.push_back(node);
-  graph.order.reserve(graph.nodeSignals.size());
+  graph.order.reserve(graph.nodeFrozenIds.size());
   std::size_t cursor = 0;
   while (cursor < graph.constructionReady.size()) {
     const PnrIndex node = graph.constructionReady[cursor++];
@@ -373,14 +375,14 @@ materializeHandshakeGraphInto(const FrozenSpatialHandshakeIndex &index,
       addWork(graph.deterministicWork);
     }
   }
-  if (graph.order.size() != graph.nodeSignals.size()) {
+  if (graph.order.size() != graph.nodeFrozenIds.size()) {
     buildCycleWitness(graph);
     if (graph.cycleWitness.empty())
       return candidateError("cyclic handshake graph has no cycle witness");
     graph.constructionNanoseconds = elapsedNanoseconds(begin);
     return llvm::Error::success();
   }
-  graph.ranks.resize(graph.nodeSignals.size());
+  graph.ranks.resize(graph.nodeFrozenIds.size());
   for (auto [rank, node] : llvm::enumerate(graph.order))
     graph.ranks[node] = static_cast<PnrIndex>(rank);
   graph.constructionNanoseconds = elapsedNanoseconds(begin);
@@ -631,9 +633,6 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
     storage.backwardMarks.resize(prospectiveNodeCount, 0);
   storage.reachabilityWorklist.reserve(prospectiveNodeCount);
   storage.backwardWorklist.reserve(prospectiveNodeCount);
-  storage.reorderedNodes.reserve(prospectiveNodeCount);
-  storage.unaffectedReorderedNodes.reserve(prospectiveNodeCount);
-  storage.forwardReorderedNodes.reserve(prospectiveNodeCount);
   const auto removed = [&](PnrIndex arc) {
     return llvm::binary_search(storage.removedArcOrdinals, arc);
   };
@@ -643,8 +642,13 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
     return node;
   };
 
+  // Every cycle has a maximum-rank node whose outgoing cycle edge is an
+  // insertion: committed arcs increase rank. The search for that insertion
+  // retains the entire cycle inside its source-rank prefix, including cycles
+  // that use several inserted edges.
   for (const FrozenSpatialHandshakeArc inserted : storage.insertedArcOrdinals) {
-    if (rank(inserted.source) < rank(inserted.destination))
+    const PnrIndex sourceRank = rank(inserted.source);
+    if (sourceRank < rank(inserted.destination))
       continue;
     if (++storage.reachabilityEpoch == 0) {
       std::fill(storage.reachabilityMarks.begin(),
@@ -673,7 +677,8 @@ closeHandshakeArcDelta(const FrozenSpatialHandshakeIndex &graphIndex,
       }
       const auto visit = [&](PnrIndex destination) {
         addWork(result.deterministicWork);
-        if (storage.reachabilityMarks[destination] == epoch)
+        if (rank(destination) > sourceRank ||
+            storage.reachabilityMarks[destination] == epoch)
           return;
         storage.reachabilityMarks[destination] = epoch;
         storage.reachabilityWorklist.push_back(destination);
@@ -722,7 +727,6 @@ ensureHandshakeNode(detail::MaterializedHandshakeGraph &graph,
     return ordinal.takeError();
   graph.nodeOrdinals[frozenNode] = *ordinal;
   graph.nodeFrozenIds.push_back(frozenNode);
-  graph.nodeSignals.push_back(nodeSignals[frozenNode]);
   graph.outgoingArcs.emplace_back();
   graph.reverseArcs.emplace_back();
   graph.order.push_back(*ordinal);
@@ -828,37 +832,26 @@ llvm::Error reorderForInsertedHandshakeArc(
     }
   }
 
-  storage.reorderedNodes.clear();
-  storage.unaffectedReorderedNodes.clear();
-  storage.forwardReorderedNodes.clear();
-  const std::size_t rankSpan = static_cast<std::size_t>(upper) - lower + 1;
-  storage.reorderedNodes.reserve(rankSpan);
-  storage.unaffectedReorderedNodes.reserve(rankSpan);
-  storage.forwardReorderedNodes.reserve(rankSpan);
-  for (PnrIndex rank = lower; rank <= upper; ++rank) {
-    const PnrIndex node = graph.order[rank];
-    const bool forward = storage.reachabilityMarks[node] == forwardEpoch;
-    const bool backward = storage.backwardMarks[node] == backwardEpoch;
-    if (forward && backward)
-      continue;
-    if (backward)
-      storage.reorderedNodes.push_back(node);
-    else if (forward)
-      storage.forwardReorderedNodes.push_back(node);
-    else
-      storage.unaffectedReorderedNodes.push_back(node);
-  }
-  storage.reorderedNodes.insert(storage.reorderedNodes.end(),
-                                storage.unaffectedReorderedNodes.begin(),
-                                storage.unaffectedReorderedNodes.end());
-  storage.reorderedNodes.insert(storage.reorderedNodes.end(),
-                                storage.forwardReorderedNodes.begin(),
-                                storage.forwardReorderedNodes.end());
-  if (storage.reorderedNodes.size() !=
-      static_cast<std::size_t>(upper) - lower + 1)
-    return candidateError("handshake topology reorder found a cycle");
-  for (auto [offset, node] : llvm::enumerate(storage.reorderedNodes)) {
-    const PnrIndex rank = lower + static_cast<PnrIndex>(offset);
+  // Backward nodes move earlier and forward nodes move later, preserving
+  // their internal orders. Only their occupied ranks change: an unaffected
+  // node inside this interval cannot reach a backward node or be reached
+  // from a forward node, or the corresponding search would have reached it.
+  const auto nodeRank = [&](PnrIndex node) { return graph.ranks[node]; };
+  const auto rankLess = [&](PnrIndex lhs, PnrIndex rhs) {
+    return nodeRank(lhs) < nodeRank(rhs);
+  };
+  llvm::sort(storage.backwardWorklist, rankLess);
+  llvm::sort(storage.reachabilityWorklist, rankLess);
+  storage.reorderedRanks.clear();
+  storage.reorderedRanks.reserve(storage.backwardWorklist.size() +
+                                  storage.reachabilityWorklist.size());
+  auto backwardRanks = llvm::map_range(storage.backwardWorklist, nodeRank);
+  auto forwardRanks = llvm::map_range(storage.reachabilityWorklist, nodeRank);
+  std::merge(backwardRanks.begin(), backwardRanks.end(), forwardRanks.begin(),
+             forwardRanks.end(), std::back_inserter(storage.reorderedRanks));
+  for (auto [offset, node] : llvm::enumerate(llvm::concat<const PnrIndex>(
+           storage.backwardWorklist, storage.reachabilityWorklist))) {
+    const PnrIndex rank = storage.reorderedRanks[offset];
     graph.order[rank] = node;
     graph.ranks[node] = rank;
     addWork(work);
@@ -881,7 +874,8 @@ applyHandshakeArcDelta(const FrozenSpatialHandshakeIndex &index,
     if (!node)
       return node.takeError();
   }
-  for (const detail::HandshakeArcChange &change : storage.arcChanges) {
+  auto inserted = storage.insertedArcChanges.begin();
+  for (auto [ordinal, change] : llvm::enumerate(storage.arcChanges)) {
     auto arc = ensureHandshakeArc(graph, index, change.arc);
     if (!arc)
       return arc.takeError();
@@ -893,7 +887,12 @@ applyHandshakeArcDelta(const FrozenSpatialHandshakeIndex &index,
         change.additionCount;
     if (proposed >= static_cast<std::uint64_t>(getInvalidPnrIndex()))
       return candidateError("arc contributor count exceeds PnrIndex");
-    count = static_cast<PnrIndex>(proposed);
+    // Remove obsolete arcs before activating any new one. Each incremental
+    // reorder starts with a valid order for the previously active graph.
+    if (inserted != storage.insertedArcChanges.end() && *inserted == ordinal)
+      ++inserted;
+    else
+      count = static_cast<PnrIndex>(proposed);
     addWork(work, static_cast<std::uint64_t>(change.additionCount) +
                       change.removalCount);
   }
@@ -903,6 +902,7 @@ applyHandshakeArcDelta(const FrozenSpatialHandshakeIndex &index,
     const std::optional<PnrIndex> arc = findArc(graph, change.arc);
     if (!arc)
       return candidateError("inserted handshake arc was not materialized");
+    graph.arcContributorCounts[*arc] = change.additionCount;
     if (llvm::Error error =
             reorderForInsertedHandshakeArc(graph, *arc, storage, work))
       return std::move(error);
@@ -940,7 +940,10 @@ void restoreFragmentActive(std::vector<PnrIndex> &activeFragments,
 llvm::Expected<bool> loom::pnr::independentlyVerifyHandshakeProjectionAcyclic(
     const FrozenSpatialHandshakeIndex &index,
     llvm::ArrayRef<PnrIndex> selectedFragments,
-    llvm::ArrayRef<PnrIndex> traversalUses) {
+    llvm::ArrayRef<PnrIndex> traversalUses,
+    std::vector<PnrIndex> *frozenCycleWitness) {
+  if (frozenCycleWitness)
+    frozenCycleWitness->clear();
   auto selection =
       rebuildHandshakeSelection(index, selectedFragments, traversalUses);
   if (!selection)
@@ -949,13 +952,18 @@ llvm::Expected<bool> loom::pnr::independentlyVerifyHandshakeProjectionAcyclic(
   if (!graph)
     return graph.takeError();
   if (!graph->cycleWitness.empty() &&
-      ::loom::mapping_debug::enabled(::loom::mapping_debug::Level::Detail)) {
+      (frozenCycleWitness ||
+       ::loom::mapping_debug::enabled(::loom::mapping_debug::Level::Detail))) {
     std::vector<PnrIndex> frozenWitness;
     for (PnrIndex arc : graph->cycleWitness)
       frozenWitness.push_back(graph->arcFrozenIds[arc]);
     detail::emitHandshakeCycleDiagnostic(
         index, detail::HandshakeCycleOrigin::Projection, frozenWitness,
-        selection->activeFragments, selection->fragmentRefcounts);
+        selection->activeFragments, selection->fragmentRefcounts,
+        frozenCycleWitness ? mapping_debug::Level::Summary
+                           : mapping_debug::Level::Detail);
+    if (frozenCycleWitness)
+      *frozenCycleWitness = std::move(frozenWitness);
   }
   return graph->cycleWitness.empty();
 }
@@ -996,9 +1004,7 @@ std::size_t HandshakeCandidateScratch::retainedStorageBytes() const {
          retainedBytes(storage_->reachabilityWorklist) +
          retainedBytes(storage_->backwardMarks) +
          retainedBytes(storage_->backwardWorklist) +
-         retainedBytes(storage_->reorderedNodes) +
-         retainedBytes(storage_->unaffectedReorderedNodes) +
-         retainedBytes(storage_->forwardReorderedNodes) +
+         retainedBytes(storage_->reorderedRanks) +
          (storage_->reusableGraph ? retainedMaterializedHandshakeGraphBytes(
                                         *storage_->reusableGraph)
                                   : 0) +
@@ -1028,9 +1034,7 @@ void HandshakeCandidateScratch::resetTransaction() {
   storage_->insertedArcOrdinals.clear();
   storage_->reachabilityWorklist.clear();
   storage_->backwardWorklist.clear();
-  storage_->reorderedNodes.clear();
-  storage_->unaffectedReorderedNodes.clear();
-  storage_->forwardReorderedNodes.clear();
+  storage_->reorderedRanks.clear();
   fragmentDeltas_.clear();
   traversalDeltas_.clear();
   groupDeltas_.clear();
@@ -1104,7 +1108,7 @@ void HandshakeCandidateState::emitCycleDiagnostic() const {
     frozenWitness.push_back(visible.arcFrozenIds[arc]);
   detail::emitHandshakeCycleDiagnostic(
       *index_, detail::HandshakeCycleOrigin::Candidate, frozenWitness,
-      activeFragments_, fragmentRefcounts_);
+      activeFragments_, fragmentRefcounts_, mapping_debug::Level::Decision);
 }
 
 PnrIndex HandshakeCandidateState::traversalRefcount(PnrIndex traversal) const {
@@ -1114,13 +1118,6 @@ PnrIndex HandshakeCandidateState::traversalRefcount(PnrIndex traversal) const {
 
 bool HandshakeCandidateState::isTraversalSelected(PnrIndex traversal) const {
   return traversalRefcount(traversal) != 0;
-}
-
-llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
-HandshakeCandidateState::activeNodeSignals() const {
-  if (activeTransaction_ && activeTransaction_->pendingGraph_)
-    return activeTransaction_->pendingGraph_->nodeSignals;
-  return graph_->nodeSignals;
 }
 
 llvm::ArrayRef<FrozenSpatialHandshakeArc>
@@ -1197,7 +1194,7 @@ HandshakeCandidateState::materializationStatistics() const {
   result.constructionNanoseconds = materializationConstructionNanoseconds_;
   result.deterministicWork = materializationDeterministicWork_;
   result.activeFragmentCount = activeFragments_.size();
-  result.materializedNodeCount = graph_->nodeSignals.size();
+  result.materializedNodeCount = graph_->nodeFrozenIds.size();
   for (PnrIndex arc = 0; arc < graph_->arcs.size(); ++arc) {
     result.materializedArcCount += arcIsActive(*graph_, arc);
     result.fabricUnconditionalArcCount += graph_->fixedArcs[arc];
@@ -1261,27 +1258,25 @@ llvm::Error HandshakeCandidateState::verifyCachedState() const {
   const auto frozenNodeSignals = index_->projectionNodeSignals();
   const auto frozenArcs = index_->projectionArcs();
   const bool cyclic = !graph_->cycleWitness.empty();
-  if (graph_->nodeSignals.size() != graph_->nodeFrozenIds.size() ||
-      graph_->nodeSignals.size() != graph_->outgoingArcs.size() ||
-      graph_->nodeSignals.size() != graph_->reverseArcs.size() ||
+  if (graph_->nodeFrozenIds.size() != graph_->outgoingArcs.size() ||
+      graph_->nodeFrozenIds.size() != graph_->reverseArcs.size() ||
       graph_->nodeOrdinals.size() != frozenNodeSignals.size() ||
       graph_->arcs.size() != graph_->arcFrozenIds.size() ||
       graph_->arcs.size() != graph_->fixedArcs.size() ||
       graph_->arcs.size() != graph_->arcContributorCounts.size() ||
       graph_->arcOrdinals.size() != frozenArcs.size() ||
-      (!cyclic && (graph_->nodeSignals.size() != graph_->order.size() ||
-                   graph_->nodeSignals.size() != graph_->ranks.size())) ||
-      (cyclic && (graph_->order.size() >= graph_->nodeSignals.size() ||
+      (!cyclic && (graph_->nodeFrozenIds.size() != graph_->order.size() ||
+                   graph_->nodeFrozenIds.size() != graph_->ranks.size())) ||
+      (cyclic && (graph_->order.size() >= graph_->nodeFrozenIds.size() ||
                   !graph_->ranks.empty())))
     return candidateError("materialized handshake graph shape is stale");
   for (PnrIndex node = 0; node < graph_->nodeFrozenIds.size(); ++node) {
     const PnrIndex frozenNode = graph_->nodeFrozenIds[node];
     if (frozenNode >= frozenNodeSignals.size() ||
-        graph_->nodeOrdinals[frozenNode] != node ||
-        graph_->nodeSignals[node] != frozenNodeSignals[frozenNode])
-      return candidateError("materialized handshake node signal is stale");
+        graph_->nodeOrdinals[frozenNode] != node)
+      return candidateError("materialized handshake node identity is stale");
   }
-  std::vector<std::uint8_t> orderedNodes(graph_->nodeSignals.size(), 0);
+  std::vector<std::uint8_t> orderedNodes(graph_->nodeFrozenIds.size(), 0);
   for (auto [rank, node] : llvm::enumerate(graph_->order)) {
     if (node >= orderedNodes.size() || orderedNodes[node])
       return candidateError("materialized handshake order is invalid");

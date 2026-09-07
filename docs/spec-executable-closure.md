@@ -364,6 +364,17 @@ but they use independently exact CompilerTargetBindings. Ordinary host
 `-target`, `-mcpu`, and feature options do not select an accelerator
 InstructionCore target.
 
+The executable provider runs LLVM's target-aware default O2 IR pipeline on the
+complete materialized module before target instruction selection. This occurs
+after dispatch generation and freestanding runtime linkage, so generated
+helpers and their exact call sites receive ordinary interprocedural and local
+optimization. The host-only baseline, mapped host, and InstructionCore use the
+same provider path with their respective exact target bindings. Source-owned
+optimization restrictions and volatile or synchronization effects remain LLVM
+semantics; this step introduces no input-specific rewriting or target fallback.
+The code-generation diagnostic reports total, IR optimization, and object
+emission durations from this one invocation.
+
 Generated runtime glue is derived only after the exact SystemMapping has
 selected executable contexts. A host callable may be replaced by Thread
 Dispatch glue only when Canonical Dataflow proves a total value-only boundary:

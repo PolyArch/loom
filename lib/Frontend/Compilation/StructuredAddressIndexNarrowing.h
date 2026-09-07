@@ -64,6 +64,14 @@ bool requiresCanonicalAddressIndexDecision(mlir::Operation *selectedOperation);
 std::optional<std::string>
 explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation);
 
+/// Read-only result of the production signed-width proof for pointer induction
+/// offsets and GEP indices. Absence means only that this proof boundary has no
+/// rejection in the supplied IR; later transformations and address lowering
+/// remain authoritative.
+std::optional<std::string>
+explainAddressIndexNarrowingRejection(mlir::Operation *selectedOperation,
+                                      unsigned canonicalIndexWidth);
+
 /// Enforces an explicit canonical index contract for LLVM GEPs. A selected
 /// width is materialized in the Structured Program and wider operands are
 /// narrowed only when their complete signed value domain is proven to fit.

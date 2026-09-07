@@ -686,9 +686,7 @@ int main(int argc, char **argv) {
 
   // The canonical view is imported, not cached: entity counts come from the
   // same validated projection every consumer sees.
-  auto view = canonical.view();
-  if (!view)
-    return reportError(view.takeError());
+  const auto &view = canonical.view();
 
   // Emit the finalized Canonical Dataflow module.
   std::string errMsg;
@@ -712,8 +710,8 @@ int main(int argc, char **argv) {
   ::llvm::json::Object counts;
   counts["schema"] = "loom.pre_mapping.cli_evidence.1";
   counts["status"] = "completed_selection";
-  counts["actors"] = static_cast<std::uint64_t>(view->actors().size());
-  counts["graphs"] = static_cast<std::uint64_t>(view->graphs().size());
+  counts["actors"] = static_cast<std::uint64_t>(view.actors().size());
+  counts["graphs"] = static_cast<std::uint64_t>(view.graphs().size());
   counts["search_complete"] = planSearchComplete;
   addGenerateSummary(counts, planGenerateSummary);
   if (centralPlanningEvidence)
@@ -741,12 +739,12 @@ int main(int argc, char **argv) {
 
   if (!applicationWorkloadSetFilename.empty()) {
     auto roots =
-        view->projectRootThreadLaunchesReachableFromAbiEntry(applicationEntry);
+        view.projectRootThreadLaunchesReachableFromAbiEntry(applicationEntry);
     if (!roots)
       return reportError(roots.takeError());
     std::vector<loom::ArtifactRootReference> workloads;
     for (const dataflow::RootThreadLaunchRef &root : *roots) {
-      auto domain = view->projectRootThreadLogicalDomain(root);
+      auto domain = view.projectRootThreadLogicalDomain(root);
       if (!domain)
         return reportError(domain.takeError());
       if (domain->coordinateRank != 0)
@@ -755,32 +753,30 @@ int main(int argc, char **argv) {
             "application workload authoring requires explicit coordinates "
             "for non-rank-zero root thread launches"));
       llvm::Error workloadError = llvm::Error::success();
-      view->forEachRootedGraphLaunch(
-          [&](dataflow::RootedGraphLaunchRef launch) {
-            if (workloadError || launch.rootThreadLaunch != root)
-              return;
-            loom::sim::SpatialSimulationWorkload draft{launch};
-            auto shapes = loom::sim::projectSpatialSimulationBoundaryShapes(
-                *view, launch);
-            if (!shapes) {
-              workloadError = shapes.takeError();
-              return;
-            }
-            draft.valueInputPlan.assign(shapes->valueInputs.size(),
-                                        loom::sim::RuntimeValueInput{});
-            auto workload = loom::sim::finalizeSimulationWorkload(draft, *view);
-            if (!workload) {
-              workloadError = workload.takeError();
-              return;
-            }
-            auto reference =
-                loom::sim::publishSimulationWorkload(*workload, store);
-            if (!reference) {
-              workloadError = reference.takeError();
-              return;
-            }
-            workloads.push_back(std::move(*reference));
-          });
+      view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+        if (workloadError || launch.rootThreadLaunch != root)
+          return;
+        loom::sim::SpatialSimulationWorkload draft{launch};
+        auto shapes =
+            loom::sim::projectSpatialSimulationBoundaryShapes(view, launch);
+        if (!shapes) {
+          workloadError = shapes.takeError();
+          return;
+        }
+        draft.valueInputPlan.assign(shapes->valueInputs.size(),
+                                    loom::sim::RuntimeValueInput{});
+        auto workload = loom::sim::finalizeSimulationWorkload(draft, view);
+        if (!workload) {
+          workloadError = workload.takeError();
+          return;
+        }
+        auto reference = loom::sim::publishSimulationWorkload(*workload, store);
+        if (!reference) {
+          workloadError = reference.takeError();
+          return;
+        }
+        workloads.push_back(std::move(*reference));
+      });
       if (workloadError)
         return reportError(std::move(workloadError));
     }

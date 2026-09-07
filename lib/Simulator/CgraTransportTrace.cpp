@@ -22,16 +22,21 @@ CgraTransportRuntime::physicalTraceBinding(
   if (indexed == actionOwners_.end())
     return invalid("CGRA trace transport action has no active owner");
   const ActionOwner &owner = indexed->second;
+  if (owner.stage == ActionStage::Storage) {
+    auto target = projectPhysicalUseTarget(*plan_, event.actionOrdinal);
+    if (!target)
+      return target.takeError();
+    const auto &use = std::get<PhysicalUseTarget>(*target).usePattern;
+    return CgraPhysicalTraceBinding{
+        FabricUsePhysicalActionOccurrenceRef{GraphInvocationOccurrenceRef{0},
+                                             use, event.occurrenceOrdinal},
+        std::move(*target)};
+  }
   if (owner.transferSlot >= inFlight_.size() ||
       !inFlight_[owner.transferSlot].active)
     return invalid("CGRA trace transport action names an inactive token");
-  if (owner.secondaryTransferSlot != invalidCgraTransportOrdinal)
-    return llvm::createStringError(
-        std::errc::not_supported,
-        "CGRA trace cannot assign one simultaneous storage action to two "
-        "token occurrences");
   const InFlight &inFlight = inFlight_[owner.transferSlot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
 
   TokenOccurrenceRef token = std::visit(
       [&](const auto &producer) -> TokenOccurrenceRef {
@@ -52,29 +57,28 @@ CgraTransportRuntime::physicalTraceBinding(
       binding.producer);
 
   auto projectTarget = [&]() -> llvm::Expected<PhysicalActionTarget> {
-    if (owner.stage != ActionStage::Traversal &&
-        owner.stage != ActionStage::Storage)
+    if (owner.stage != ActionStage::Traversal)
       return projectPhysicalUseTarget(*plan_, event.actionOrdinal);
-    if (owner.traversalNodeOrdinal >= traversalNodes_.size())
+    if (owner.traversalNodeOrdinal >= graph_.traversalNodes.size())
       return invalid("CGRA trace traversal action has no selected node");
     const TraversalNodeBinding &node =
-        traversalNodes_[owner.traversalNodeOrdinal];
+        graph_.traversalNodes[owner.traversalNodeOrdinal];
     if (node.targetTraversalCount == 0 ||
-        node.targetTraversalOffset > traversalTargets_.size() ||
+        node.targetTraversalOffset > graph_.traversalTargets.size() ||
         node.targetTraversalCount >
-            traversalTargets_.size() - node.targetTraversalOffset)
+            graph_.traversalTargets.size() - node.targetTraversalOffset)
       return invalid("CGRA trace traversal target slice is malformed");
     return projectPhysicalTransferTarget(
         *plan_, event.actionOrdinal,
-        llvm::ArrayRef(traversalTargets_)
+        llvm::ArrayRef(graph_.traversalTargets)
             .slice(node.targetTraversalOffset, node.targetTraversalCount));
   };
   auto target = projectTarget();
   if (!target)
     return target.takeError();
   return CgraPhysicalTraceBinding{
-      PhysicalActionOccurrenceRef{TokenPhysicalActionParent{std::move(token)},
-                                  owner.localActionOrdinal},
+      TokenPhysicalActionOccurrenceRef{std::move(token),
+                                       owner.localActionOrdinal},
       std::move(*target)};
 }
 

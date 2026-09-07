@@ -1,5 +1,5 @@
-#ifndef LOOM_FRONTEND_RAISING_COUNTEDLOOPPROJECTION_H
-#define LOOM_FRONTEND_RAISING_COUNTEDLOOPPROJECTION_H
+#ifndef LOOM_FRONTEND_ANALYSIS_COUNTEDLOOPPROJECTION_H
+#define LOOM_FRONTEND_ANALYSIS_COUNTEDLOOPPROJECTION_H
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Value.h"
@@ -8,7 +8,7 @@
 
 #include <optional>
 
-namespace loom::raising {
+namespace loom::frontend::analysis {
 
 /// Exact finite domain of a post-tested counted loop. The loop executes
 /// lowerBound, lowerBound + step, ..., upperBound - step and its failed
@@ -33,6 +33,6 @@ struct ExactPostTestedCountedLoopProjection final {
 std::optional<ExactPostTestedCountedLoopProjection>
 projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop);
 
-} // namespace loom::raising
+} // namespace loom::frontend::analysis
 
-#endif // LOOM_FRONTEND_RAISING_COUNTEDLOOPPROJECTION_H
+#endif // LOOM_FRONTEND_ANALYSIS_COUNTEDLOOPPROJECTION_H

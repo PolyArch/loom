@@ -1456,9 +1456,7 @@ strictImport(const ArtifactIdentity &mappingIdentity,
       store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = dataflow->view();
   auto fabric = ::loom::fabric::importEntireFabricRoot(
       {::loom::fabric::fabricArtifactSchema.identity.str(),
        ::loom::fabric::fabricArtifactSchema.version, *fabricIdentity},
@@ -1471,7 +1469,7 @@ strictImport(const ArtifactIdentity &mappingIdentity,
   if (!tech)
     return tech.takeError();
   auto view =
-      SpatialMappingView::import(mappingIdentity, parsed->root, *dataflowView,
+      SpatialMappingView::import(mappingIdentity, parsed->root, dataflowView,
                                  tech->view(), fabric->view());
   if (!view)
     return view.takeError();
@@ -1930,10 +1928,8 @@ llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
       store);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  return finalizeSpatialMapping(parsed->root, *dataflowView,
+  const auto &dataflowView = dataflow->view();
+  return finalizeSpatialMapping(parsed->root, dataflowView,
                                 childTechMapping.view(), childFabric,
                                 childConstraints, store, handshakeContext);
 }

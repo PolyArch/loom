@@ -8,21 +8,21 @@
 namespace loom::deployment::detail {
 
 struct DerivedRuntimeImages final {
-  CanonicalSemanticBytes threadDispatch;
+  std::optional<CanonicalSemanticBytes> threadDispatch;
   std::optional<CanonicalSemanticBytes> spatialLaunch;
-  CanonicalSemanticBytes admission;
+  std::optional<CanonicalSemanticBytes> admission;
 };
 
 struct ParsedDeployment final {
-  ArtifactRootReference systemMapping;
+  DeploymentExecutionRoot executionRoot;
   HostProgramLeaf hostProgram;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
   std::vector<DeploymentHardwareBinding> hardwareBindings;
   std::vector<ArtifactRootReference> configurationImages;
   std::vector<StaticMemoryImageLeaf> staticMemoryImages;
-  llvm::json::Value threadDispatchImage;
+  std::optional<llvm::json::Value> threadDispatchImage;
   std::optional<llvm::json::Value> spatialLaunchImage;
-  llvm::json::Value admissionImage;
+  std::optional<llvm::json::Value> admissionImage;
 };
 
 class DeploymentCodecAccess final {
@@ -49,14 +49,14 @@ public:
                                          CanonicalSemanticBytes bytes);
 
   static Deployment
-  deployment(ArtifactRootReference systemMapping, HostProgramLeaf hostProgram,
+  deployment(DeploymentExecutionRoot executionRoot, HostProgramLeaf hostProgram,
              std::vector<ArtifactRootReference> instructionCoreBinaries,
              std::vector<DeploymentHardwareBinding> hardwareBindings,
              std::vector<ArtifactRootReference> configurationImages,
              std::vector<StaticMemoryImageLeaf> staticMemoryImages,
-             InlineRuntimeImage threadDispatchImage,
+             std::optional<InlineRuntimeImage> threadDispatchImage,
              std::optional<InlineRuntimeImage> spatialLaunchImage,
-             InlineRuntimeImage admissionImage);
+             std::optional<InlineRuntimeImage> admissionImage);
 
   static FinalizedDeployment finalized(ArtifactRootReference reference,
                                        CanonicalSemanticBytes canonicalBytes,

@@ -70,6 +70,10 @@ bool everyCoreIsUsed(const ArtifactRootReference &systemReference,
                      llvm::ArrayRef<ArtifactRootReference> mappings,
                      const ArtifactStore &store);
 
+void exerciseFifoDisciplineHardwareFeedback(
+    const ArtifactRootReference &workload, llvm::StringRef temporaryPath,
+    const ArtifactStore &store, const BlobStore &blobs);
+
 llvm::Expected<ResourceTimeSpectrumFunnelResult>
 verifyAdjacentResourceTimeSchedule(
     const ArtifactRootReference &dataflow,

@@ -275,7 +275,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                     if key != "__loom_record_kind"
                 }
             )
-        if payload.get("schema") == "loom.execution_matrix_workspace.2.0":
+        if payload.get("schema") == "loom.execution_matrix_workspace.3.0":
             execution_matrix_workspaces.append(payload)
             runs = payload.get("runs")
             if isinstance(runs, list):

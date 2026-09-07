@@ -38,10 +38,8 @@ struct ElementwiseVectorActor final {
 llvm::Expected<std::optional<ElementwiseVectorActor>>
 analyzeElementwiseVectorActor(const CanonicalDataflowArtifact &parent,
                               ActorRef actor) {
-  auto view = parent.view();
-  if (!view)
-    return view.takeError();
-  auto resolved = view->resolve(actor);
+  const auto &view = parent.view();
+  auto resolved = view.resolve(actor);
   if (!resolved)
     return resolved.takeError();
   mlir::Operation *operation = resolved->op;

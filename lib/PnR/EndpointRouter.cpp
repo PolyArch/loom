@@ -765,14 +765,22 @@ llvm::Expected<bool> EndpointRouteSearchScratch::composeHeuristicFromSingletons(
 
   activeCachedHeuristic_ = nullptr;
   beginHeuristicGeneration();
-  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint) {
-    RouteCost best = routeCostInfinity;
-    for (const HeuristicCacheEntry *entry : singletonEntries)
-      best = std::min(best, cachedHeuristic(*entry, endpoint));
-    if (best == routeCostInfinity)
-      continue;
-    heuristics_[endpoint] = best;
-    heuristicEpochs_[endpoint] = heuristicGeneration_;
+  std::fill(heuristics_.begin(), heuristics_.end(), routeCostInfinity);
+  std::fill(heuristicEpochs_.begin(), heuristicEpochs_.end(),
+            heuristicGeneration_);
+  // Stream each compact row once. Wide exceptions are already indexed by
+  // endpoint, so composing them needs no per-endpoint binary search.
+  for (const HeuristicCacheEntry *entry : singletonEntries) {
+    for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint) {
+      const std::uint32_t scaled = entry->scaledDistances[endpoint];
+      if (scaled != compactHeuristicInfinity)
+        heuristics_[endpoint] =
+            std::min(heuristics_[endpoint],
+                     static_cast<RouteCost>(scaled) << entry->scaleShift);
+    }
+    for (const HeuristicCacheWideDistance &wide : entry->wideDistances)
+      heuristics_[wide.endpoint] =
+          std::min(heuristics_[wide.endpoint], wide.distance);
   }
   saturatingIncrement(heuristicComposeCount_);
   storeCachedHeuristic(request);
@@ -1036,7 +1044,9 @@ EndpointRouteSearchScratch::searchTimingAware(
 
   const auto key = [&](PnrIndex label) {
     const TimingSearchLabel &value = timingLabels_[label];
-    return std::make_tuple(value.priority, heuristic(value.endpoint),
+    // Labels retain the checked sum of distance and this query's fixed
+    // heuristic. Derive the tie-breaker without another cached-row lookup.
+    return std::make_tuple(value.priority, value.priority - value.distance,
                            value.endpoint, value.requirementMet,
                            value.arrivalQuanta, value.distance, label);
   };

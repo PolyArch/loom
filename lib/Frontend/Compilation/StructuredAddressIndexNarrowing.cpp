@@ -2,9 +2,10 @@
 
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Frontend/Analysis/CountedLoopProjection.h"
+#include "Frontend/Analysis/PointerLoopProjection.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
-#include "Frontend/Raising/CountedLoopProjection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -67,8 +68,9 @@ bool provesPostTestedInductionDomain(mlir::Value value, unsigned targetWidth) {
   if (!loop || induction.getOwner() != loop.getBeforeBody())
     return false;
 
-  std::optional<loom::raising::ExactPostTestedCountedLoopProjection>
-      projection = loom::raising::projectExactPostTestedCountedLoop(loop);
+  std::optional<loom::frontend::analysis::ExactPostTestedCountedLoopProjection>
+      projection =
+          loom::frontend::analysis::projectExactPostTestedCountedLoop(loop);
   if (!projection || projection->inductionLane != induction.getArgNumber() ||
       !projection->lowerBoundValue || !projection->upperBoundValue ||
       !projection->stepValue)
@@ -101,7 +103,8 @@ bool provesBoundedWhileInductionDomain(mlir::Value value,
   auto integer = llvm::dyn_cast<mlir::IntegerType>(induction.getType());
   if (!integer || induction.getArgNumber() >= loop.getInits().size())
     return false;
-  mlir::IntegerAttr lower = integerConstant(loop.getInits()[induction.getArgNumber()]);
+  mlir::IntegerAttr lower =
+      integerConstant(loop.getInits()[induction.getArgNumber()]);
   if (!lower || lower.getType() != integer || lower.getValue().isNegative())
     return false;
 
@@ -151,10 +154,8 @@ bool provesBoundedWhileInductionDomain(mlir::Value value,
   if (predicate == mlir::arith::CmpIPredicate::slt) {
     if (!lowerValue.slt(boundValueBits) || stepBits.isNegative())
       return false;
-    const llvm::APInt signedMaximum =
-        llvm::APInt::getSignedMaxValue(width);
-    if (boundValueBits.ugt(signedMaximum) ||
-        stepBits.ugt(signedMaximum) ||
+    const llvm::APInt signedMaximum = llvm::APInt::getSignedMaxValue(width);
+    if (boundValueBits.ugt(signedMaximum) || stepBits.ugt(signedMaximum) ||
         boundValueBits.ugt(signedMaximum - stepBits))
       return false;
   } else {
@@ -168,8 +169,7 @@ bool provesBoundedWhileInductionDomain(mlir::Value value,
       return false;
   }
 
-  llvm::APInt last = boundValueBits.zext(width + 1) -
-                     stepBits.zext(width + 1);
+  llvm::APInt last = boundValueBits.zext(width + 1) - stepBits.zext(width + 1);
   return lower.getValue().isSignedIntN(targetWidth) &&
          last.isSignedIntN(targetWidth);
 }
@@ -203,8 +203,7 @@ bool provesForInductionDomain(mlir::Value value, unsigned targetWidth) {
     return false;
   llvm::APInt last =
       lowerValue + ((upperValue - lowerValue - 1).sdiv(stepValue) * stepValue);
-  return lowerValue.isSignedIntN(targetWidth) &&
-         last.isSignedIntN(targetWidth);
+  return lowerValue.isSignedIntN(targetWidth) && last.isSignedIntN(targetWidth);
 }
 
 bool provesSignedFit(mlir::Value value, unsigned targetWidth) {
@@ -538,6 +537,7 @@ struct PointerInductionLane final {
   mlir::LLVM::GEPOp update;
   mlir::Type accessElementType;
   PointerInductionStride stride;
+  mlir::LLVM::GEPNoWrapFlags derivedNoWrapFlags;
 };
 
 struct PointerInductionLoop final {
@@ -545,6 +545,7 @@ struct PointerInductionLoop final {
   unsigned iterationStateWidth;
   std::optional<llvm::APInt> maximumIterations;
   llvm::SmallVector<PointerInductionLane, 4> lanes;
+  std::optional<analysis::PointerLoopTerminationProjection> pointerTermination;
 };
 
 bool isDefinedOutsideLoop(mlir::Value value, mlir::scf::WhileOp loop) {
@@ -702,9 +703,10 @@ bool collectPointerAccessElementType(mlir::Value pointer,
                                      mlir::Operation *ignored,
                                      mlir::Region *region,
                                      mlir::Type &accessType,
-                                     bool &foundAccess) {
+                                     bool &foundAccess,
+                                     mlir::Operation *comparison = nullptr) {
   for (mlir::OpOperand &use : pointer.getUses()) {
-    if (use.getOwner() == ignored)
+    if (use.getOwner() == ignored || use.getOwner() == comparison)
       continue;
     if (!region->isAncestor(use.getOwner()->getParentRegion()))
       return false;
@@ -721,7 +723,7 @@ bool collectPointerAccessElementType(mlir::Value pointer,
     } else if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(use.getOwner())) {
       if (gep.getBase() != pointer ||
           !collectPointerAccessElementType(gep.getResult(), ignored, region,
-                                           accessType, foundAccess))
+                                           accessType, foundAccess, comparison))
         return false;
       continue;
     } else {
@@ -739,15 +741,16 @@ bool collectPointerAccessElementType(mlir::Value pointer,
 std::optional<mlir::Type>
 pointerLaneAccessElementType(mlir::BlockArgument pointer,
                              mlir::LLVM::GEPOp update,
-                             mlir::scf::ConditionOp condition) {
+                             mlir::scf::ConditionOp condition,
+                             mlir::Operation *comparison = nullptr) {
   mlir::Type accessType;
   bool foundAccess = false;
   mlir::Region *region = pointer.getOwner()->getParent();
   if (!collectPointerAccessElementType(pointer, update.getOperation(), region,
-                                       accessType, foundAccess) ||
+                                       accessType, foundAccess, comparison) ||
       !collectPointerAccessElementType(update.getResult(),
                                        condition.getOperation(), region,
-                                       accessType, foundAccess) ||
+                                       accessType, foundAccess, comparison) ||
       !foundAccess)
     return std::nullopt;
   return accessType;
@@ -771,7 +774,7 @@ std::optional<llvm::APInt> constantElementStride(mlir::LLVM::GEPOp update,
   return byteStride.sdiv(divisor);
 }
 
-std::optional<loom::lowering::ExactElementStrideScale>
+std::optional<loom::frontend::analysis::ExactElementStrideScale>
 dynamicElementScale(mlir::LLVM::GEPOp update, mlir::Value invariantIndex,
                     mlir::Type accessElementType) {
   std::optional<uint64_t> gepBytes =
@@ -780,7 +783,7 @@ dynamicElementScale(mlir::LLVM::GEPOp update, mlir::Value invariantIndex,
       fixedByteSize(update, accessElementType);
   if (!gepBytes || !accessBytes || !invariantIndex)
     return std::nullopt;
-  return loom::lowering::resolveExactElementStrideScale(
+  return loom::frontend::analysis::resolveExactElementStrideScale(
       invariantIndex, *gepBytes, *accessBytes);
 }
 
@@ -788,7 +791,8 @@ std::optional<PointerInductionLoop>
 analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
   std::optional<UnitStepTermination> termination =
       proveUnitStepTermination(loop);
-  if (!termination)
+  auto pointerTermination = analysis::projectPointerLoopTermination(loop);
+  if (!termination && !pointerTermination)
     return std::nullopt;
 
   mlir::Block *before = loop.getBeforeBody();
@@ -797,9 +801,11 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
   mlir::scf::YieldOp yield = loop.getYieldOp();
   PointerInductionLoop result{
       loop,
-      termination->stateWidth,
-      proveMaximumUnitStepIterations(loop, termination->lane),
-      {}};
+      termination ? termination->stateWidth
+                  : pointerTermination->begin.addressBitWidth,
+      termination ? proveMaximumUnitStepIterations(loop, termination->lane)
+                  : std::nullopt,
+      {}, pointerTermination};
   unsigned pointerLanes = 0;
   for (unsigned lane = 0; lane < before->getNumArguments(); ++lane) {
     if (!llvm::isa<mlir::LLVM::LLVMPointerType>(
@@ -828,7 +834,9 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
     if (feedbackUses != 1)
       return std::nullopt;
     std::optional<mlir::Type> accessElementType = pointerLaneAccessElementType(
-        before->getArgument(lane), update, condition);
+        before->getArgument(lane), update, condition,
+        pointerTermination ? pointerTermination->comparison.getOperation()
+                           : nullptr);
     if (!accessElementType)
       return std::nullopt;
 
@@ -840,7 +848,7 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
         return std::nullopt;
     } else {
       stride.invariantIndex = invariantGepIndex(update, loop);
-      std::optional<loom::lowering::ExactElementStrideScale> scale =
+      std::optional<loom::frontend::analysis::ExactElementStrideScale> scale =
           dynamicElementScale(update, stride.invariantIndex,
                               *accessElementType);
       if (!stride.invariantIndex || !scale)
@@ -850,7 +858,10 @@ analyzePointerInductionLoop(mlir::scf::WhileOp loop) {
     }
     result.lanes.push_back(PointerInductionLane{lane, loop.getInits()[lane],
                                                 update, *accessElementType,
-                                                std::move(stride)});
+                                                std::move(stride),
+                                                pointerTermination
+                                                    ? mlir::LLVM::GEPNoWrapFlags::none
+                                                    : update.getNoWrapFlags()});
   }
   if (pointerLanes == 0 || result.lanes.size() != pointerLanes)
     return std::nullopt;
@@ -1099,6 +1110,10 @@ bool scaledAccumulationFits(const SignedRange &range, uint64_t scale,
 }
 
 bool pointerOffsetsFit(const PointerInductionLoop &loop, unsigned width) {
+  // A pointer-terminated recurrence preserves modular address arithmetic at
+  // its native width. Narrowing it requires a separate finite-domain proof.
+  if (loop.pointerTermination)
+    return width == loop.pointerTermination->begin.addressBitWidth;
   for (const PointerInductionLane &lane : loop.lanes) {
     SignedRange range{llvm::APInt(1, 0), llvm::APInt(1, 0)};
     uint64_t scale = lane.stride.elementScale;
@@ -1138,7 +1153,7 @@ mlir::Value buildDerivedPointer(mlir::OpBuilder &builder,
   mlir::LLVM::GEPOp update = lane.update;
   auto derived = mlir::LLVM::GEPOp::create(
       builder, location, update.getResult().getType(), lane.accessElementType,
-      lane.base, mlir::ValueRange{offset}, update.getNoWrapFlags());
+      lane.base, mlir::ValueRange{offset}, lane.derivedNoWrapFlags);
   derived->setDiscardableAttrs(update->getDiscardableAttrDictionary());
   return derived.getResult();
 }
@@ -1183,6 +1198,28 @@ mlir::Value materializeElementStride(mlir::OpBuilder &builder,
   return mlir::arith::MulIOp::create(builder, location, stride, scale);
 }
 
+mlir::Value materializeByteOffset(
+    mlir::OpBuilder &builder, mlir::Location location,
+    const analysis::ResolvedLinearMemoryAddress &address,
+    mlir::IntegerType type) {
+  auto constant = [&](std::int64_t value) -> mlir::Value {
+    return mlir::arith::ConstantOp::create(
+        builder, location, type, builder.getIntegerAttr(type, value));
+  };
+  mlir::Value offset = constant(address.byteBias);
+  for (const auto &term : address.terms) {
+    mlir::Value index = term.index;
+    auto sourceType = llvm::cast<mlir::IntegerType>(index.getType());
+    if (sourceType.getWidth() < type.getWidth())
+      index = mlir::arith::ExtSIOp::create(builder, location, type, index);
+    if (term.byteStride != 1)
+      index = mlir::arith::MulIOp::create(
+          builder, location, index, constant(term.byteStride));
+    offset = mlir::arith::AddIOp::create(builder, location, offset, index);
+  }
+  return offset;
+}
+
 llvm::Expected<mlir::scf::WhileOp>
 rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
                             BlockReplacementObserver observeReplacement) {
@@ -1192,6 +1229,17 @@ rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
   auto zero =
       mlir::arith::ConstantOp::create(builder, loop.getLoc(), offsetType,
                                       builder.getIntegerAttr(offsetType, 0));
+
+  mlir::Value terminationByteOffset;
+  if (plan.pointerTermination) {
+    auto termination = *plan.pointerTermination;
+    auto begin = materializeByteOffset(builder, loop.getLoc(),
+                                        termination.begin, offsetType);
+    auto end = materializeByteOffset(builder, loop.getLoc(),
+                                      termination.end, offsetType);
+    terminationByteOffset =
+        mlir::arith::SubIOp::create(builder, loop.getLoc(), end, begin);
+  }
 
   llvm::SmallVector<mlir::Value, 4> inits(loop.getInits());
   llvm::SmallVector<mlir::Type, 4> resultTypes(loop.getResultTypes());
@@ -1247,9 +1295,32 @@ rewritePointerInductionLoop(const PointerInductionLoop &plan, unsigned width,
                                       update.getLoc()));
     }
     for (mlir::Operation &operation :
-         loop.getBeforeBody()->without_terminator())
-      if (!skippedUpdates.contains(&operation))
+         loop.getBeforeBody()->without_terminator()) {
+      if (plan.pointerTermination &&
+          plan.pointerTermination->comparison == &operation) {
+        auto termination = *plan.pointerTermination;
+        const auto *lane = findPointerLane(plan, termination.pointerLane);
+        const auto bytes = fixedByteSize(lane->update, lane->accessElementType);
+        mlir::Value offset = nextOffsets[termination.pointerLane];
+        if (*bytes != 1) {
+          auto scale = mlir::arith::ConstantOp::create(
+              bodyBuilder, operation.getLoc(), offsetType,
+              bodyBuilder.getIntegerAttr(offsetType, *bytes));
+          offset = mlir::arith::MulIOp::create(
+              bodyBuilder, operation.getLoc(), offset, scale);
+        }
+        auto predicate = termination.comparison.getPredicate() ==
+                                 mlir::LLVM::ICmpPredicate::eq
+                             ? mlir::arith::CmpIPredicate::eq
+                             : mlir::arith::CmpIPredicate::ne;
+        auto compare = mlir::arith::CmpIOp::create(
+            bodyBuilder, operation.getLoc(), predicate, offset,
+            terminationByteOffset);
+        mapping.map(operation.getResult(0), compare.getResult());
+      } else if (!skippedUpdates.contains(&operation)) {
         bodyBuilder.clone(operation, mapping);
+      }
+    }
     observe(loop.getBeforeBody(), bodyBuilder.getInsertionBlock());
     observeNestedBlocks(loop.getBeforeBody(), mapping);
 
@@ -1553,6 +1624,25 @@ llvm::Error rewritePointerSelections(mlir::Operation *operation,
   return llvm::Error::success();
 }
 
+std::optional<std::string> explainPointerIndexNarrowingRejection(
+    llvm::ArrayRef<PointerInductionLoop> loops, unsigned width) {
+  for (const PointerInductionLoop &loop : loops)
+    if (!pointerOffsetsFit(loop, width))
+      return "cannot prove a pointer induction offset fits the selected signed "
+             "width";
+  return std::nullopt;
+}
+
+std::optional<std::string> explainGepIndexNarrowingRejection(mlir::Value index,
+                                                             unsigned width) {
+  auto integer = llvm::dyn_cast<mlir::IntegerType>(index.getType());
+  if (!integer)
+    return "cannot prove a non-scalar GEP index narrowing";
+  if (integer.getWidth() > width && !provesSignedFit(index, width))
+    return "cannot prove a wide GEP index fits the selected signed width";
+  return std::nullopt;
+}
+
 } // namespace
 
 llvm::Error materializeDataLayoutEndiannessProjection(mlir::ModuleOp module) {
@@ -1610,7 +1700,8 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation) {
   };
   selectedOperation->walk([&](mlir::Operation *operation) {
     if (auto loop = llvm::dyn_cast<mlir::scf::WhileOp>(operation)) {
-      if (containsMemoryCapability(loop.getInits().getTypes()) &&
+      if ((containsMemoryCapability(loop.getInits().getTypes()) ||
+           analysis::projectPointerLoopTermination(loop)) &&
           !analyzePointerInductionLoop(loop)) {
         rejection = "loop-carried memory capability has no canonical "
                     "capability-plus-offset normalization";
@@ -1643,6 +1734,24 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation) {
   return rejection;
 }
 
+std::optional<std::string>
+explainAddressIndexNarrowingRejection(mlir::Operation *selectedOperation,
+                                      unsigned canonicalIndexWidth) {
+  auto pointerLoops = collectPointerInductionLoops(selectedOperation);
+  if (auto rejection = explainPointerIndexNarrowingRejection(
+          pointerLoops, canonicalIndexWidth))
+    return rejection;
+  std::optional<std::string> rejection;
+  selectedOperation->walk([&](mlir::LLVM::GEPOp gep) {
+    for (mlir::Value index : gep.getDynamicIndices())
+      if ((rejection =
+               explainGepIndexNarrowingRejection(index, canonicalIndexWidth)))
+        return mlir::WalkResult::interrupt();
+    return mlir::WalkResult::advance();
+  });
+  return rejection;
+}
+
 llvm::Expected<mlir::Operation *>
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,
@@ -1650,6 +1759,9 @@ materializeAddressIndexContract(mlir::ModuleOp module,
                                 BlockReplacementObserver observeReplacement) {
   if (!selectedOperation)
     return invalid("requires a selected structured operation");
+  if (auto rejection =
+          explainAddressStateNormalizationRejection(selectedOperation))
+    return reject(*rejection);
   std::optional<unsigned> effectiveWidth = canonicalIndexWidth;
   if (!canonicalIndexWidth) {
     if (requiresCanonicalAddressIndexDecision(selectedOperation))
@@ -1670,10 +1782,9 @@ materializeAddressIndexContract(mlir::ModuleOp module,
 
   llvm::SmallVector<PointerInductionLoop, 4> pointerLoops =
       collectPointerInductionLoops(selectedOperation);
-  for (const PointerInductionLoop &loop : pointerLoops)
-    if (!pointerOffsetsFit(loop, *effectiveWidth))
-      return reject("cannot prove a pointer induction offset fits the "
-                    "selected signed width");
+  if (auto rejection =
+          explainPointerIndexNarrowingRejection(pointerLoops, *effectiveWidth))
+    return reject(*rejection);
 
   llvm::SmallVector<GepIndexUse> uses;
   llvm::SmallVector<mlir::Value> sources;
@@ -1681,18 +1792,14 @@ materializeAddressIndexContract(mlir::ModuleOp module,
   std::string proofFailure;
   selectedOperation->walk([&](mlir::LLVM::GEPOp gep) {
     for (auto [ordinal, index] : llvm::enumerate(gep.getDynamicIndices())) {
-      auto integer = llvm::dyn_cast<mlir::IntegerType>(index.getType());
-      if (!integer) {
-        proofFailure = "cannot prove a non-scalar GEP index narrowing";
+      if (auto rejection =
+              explainGepIndexNarrowingRejection(index, *effectiveWidth)) {
+        proofFailure = *rejection;
         return mlir::WalkResult::interrupt();
       }
+      auto integer = llvm::cast<mlir::IntegerType>(index.getType());
       if (integer.getWidth() <= *effectiveWidth)
         continue;
-      if (!provesSignedFit(index, *effectiveWidth)) {
-        proofFailure =
-            "cannot prove a wide GEP index fits the selected signed width";
-        return mlir::WalkResult::interrupt();
-      }
       uses.push_back(GepIndexUse{gep, static_cast<unsigned>(ordinal), index});
       if (seenSources.insert(index).second)
         sources.push_back(index);
@@ -1744,10 +1851,9 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     if (replacesSelection)
       selectedOperation = replacement->getOperation();
     pointerLoops = collectPointerInductionLoops(selectedOperation);
-    for (const PointerInductionLoop &loop : pointerLoops)
-      if (!pointerOffsetsFit(loop, *effectiveWidth))
-        return reject("cannot prove a pointer induction offset fits the "
-                      "selected signed width");
+    if (auto rejection = explainPointerIndexNarrowingRejection(pointerLoops,
+                                                               *effectiveWidth))
+      return reject(*rejection);
   }
   if (llvm::Error error =
           rewritePointerSelections(selectedOperation, *effectiveWidth))
@@ -1779,7 +1885,7 @@ materializeAddressIndexContract(mlir::ModuleOp module,
     } else {
       return mlir::WalkResult::advance();
     }
-    auto resolved = ::loom::lowering::resolveLinearMemoryAddress(
+    auto resolved = ::loom::frontend::analysis::resolveLinearMemoryAddress(
         address, accessType, *effectiveWidth, isSelectionBoundaryRoot);
     if (!resolved || resolved->terms.size() != resolved->elementTerms.size()) {
       if (canonicalIndexWidth) {

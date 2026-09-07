@@ -18,15 +18,7 @@ namespace {
 
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema31{3, 1};
-
-bool isSupportedEvaluationSchema(SchemaVersion version) {
-  return version == evaluationSchema31;
-}
-
-bool schemaContainsCaseKind(SchemaVersion version, EvaluationCaseKind) {
-  return version == evaluationSchema31;
-}
+constexpr SchemaVersion currentEvaluationRegistryVersion{3, 2};
 
 struct CaseSignatureRegistryEntry {
   SchemaVersion version;
@@ -114,7 +106,9 @@ validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor) {
 
 } // namespace
 
-SchemaVersion evaluationSchemaVersion() { return evaluationSchema31; }
+SchemaVersion evaluationSchemaVersion() {
+  return currentEvaluationRegistryVersion;
+}
 
 const CaseSubjectRoleDescriptor *
 EvaluationCaseSignatureDescriptor::findSubjectRole(
@@ -128,19 +122,15 @@ EvaluationCaseSignatureDescriptor::findSubjectRole(
 llvm::Expected<EvaluationCaseSignatureRef>
 EvaluationCaseSignatureRef::get(SchemaVersion schemaVersion,
                                 EvaluationCaseKind caseKind) {
-  if (!isSupportedEvaluationSchema(schemaVersion))
+  if (schemaVersion != evaluationSchemaVersion())
     return evaluationError("unsupported evaluation schema version '" +
                            formatSchemaVersion(schemaVersion) + "'");
-  if (!schemaContainsCaseKind(schemaVersion, caseKind))
-    return evaluationError(
-        "evaluation schema version '" + formatSchemaVersion(schemaVersion) +
-        "' does not contain case kind " + std::to_string(caseKind.ordinal()));
   return EvaluationCaseSignatureRef(schemaVersion, caseKind);
 }
 
 const EvaluationCaseSignatureDescriptor *
 EvaluationCaseSignatureRef::descriptor() const {
-  if (!schemaContainsCaseKind(schemaVersion_, caseKind_))
+  if (schemaVersion_ != evaluationSchemaVersion())
     return nullptr;
   return findEvaluationCaseSignature(schemaVersion_, caseKind_);
 }

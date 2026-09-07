@@ -576,16 +576,14 @@ projectSystemMappingMigrationConePartition(
       store);
   if (!dataflowArtifact)
     return dataflowArtifact.takeError();
-  auto dataflow = dataflowArtifact->view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = dataflowArtifact->view();
   std::vector<::dataflow::GraphRef> reopenedGraphCandidates;
   llvm::Error graphError = llvm::Error::success();
-  dataflow->forEachRootedGraphLaunch(
+  dataflow.forEachRootedGraphLaunch(
       [&](::dataflow::RootedGraphLaunchRef launch) {
         if (graphError)
           return;
-        auto graph = dataflow->resolve(launch);
+        auto graph = dataflow.resolve(launch);
         if (!graph) {
           graphError = graph.takeError();
           return;
@@ -755,11 +753,14 @@ static llvm::Error validateFinalizedMigrationSeedRelations(
     if (mapping->view().dataflowIdentity() !=
         parentMapping.view().dataflowIdentity())
       return invalid("migration SpatialMapping binds a foreign Dataflow");
-    // The context is the complete candidate frontier, including alternatives
-    // never selected by the parent. Presence in this frontier is not a lower
-    // Mapping replacement. Seed projection preserves each selected binding;
-    // scoped repair validates the resulting child's preserved cone.
-
+    // The context is the complete candidate frontier that the provider will
+    // receive, including alternatives the parent never selected. Membership
+    // here is therefore not a lower Mapping replacement, and rejecting it
+    // would refuse every legal AccCore growth. Seed projection separately
+    // fixes each preserved graph decision to its parent target, and the
+    // adjacent repair path validates the resulting child against the
+    // preserved cone. The hardware-mutation path has no equivalent child
+    // cone verifier because parent and child bind different Systems.
   }
   return llvm::Error::success();
 }

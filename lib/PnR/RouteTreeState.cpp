@@ -38,6 +38,19 @@ llvm::Error routeTreeError(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument));
 }
 
+// Mutation preflight keeps allocation before journaled changes. Reserve growth
+// geometrically so successive route edits do not copy the complete journal at
+// every exact-capacity boundary. Saturate spare capacity at vector::max_size().
+template <typename T>
+void reserveMutationCapacity(std::vector<T> &storage, std::size_t required) {
+  const std::size_t capacity = storage.capacity();
+  if (required <= capacity)
+    return;
+  const std::size_t spare =
+      std::min(capacity / 2, storage.max_size() - capacity);
+  storage.reserve(std::max(required, capacity + spare));
+}
+
 std::uint64_t sizeValue(std::size_t size) {
   static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
   return static_cast<std::uint64_t>(size);
@@ -50,8 +63,12 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
     activeTransaction_->rollback();
 }
 
-std::size_t RouteTreeTransactionScratch::retainedRollbackStorageBytes() const {
-  return lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry) +
+std::size_t RouteTreeTransactionScratch::retainedStorageBytes() const {
+  return deltas_.capacity() * sizeof(Delta) +
+         traversalDeltas_.capacity() * sizeof(RouteTreeTraversalDelta) +
+         worklist_.capacity() * sizeof(PnrIndex) +
+         pathMarks_.capacity() * sizeof(std::uint64_t) +
+         lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry) +
          initialSemanticEndpoints_.capacity() * sizeof(PnrIndex) +
          initialSemanticNodes_.capacity() * sizeof(RouteTreeSemanticNode);
 }
@@ -808,7 +825,7 @@ llvm::Error RouteTreeTransaction::bindSource(PnrIndex endpoint) {
   if (state_->activeNodeCount_ != 0 && state_->sourceEndpoint_ != endpoint)
     return routeTreeError("routed source requires whole-net rip-up");
   if (state_->sourceEndpoint_ != endpoint) {
-    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
+    reserveMutationCapacity(scratch_->deltas_, scratch_->deltas_.size() + 1);
     setSourceBinding(endpoint);
   }
   return llvm::Error::success();
@@ -829,7 +846,7 @@ llvm::Error RouteTreeTransaction::bindSink(PnrIndex obligation,
   if (binding.nodeSlot != getInvalidPnrIndex())
     return routeTreeError("attached sink obligation requires rip-up");
   if (binding.endpoint != endpoint) {
-    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
+    reserveMutationCapacity(scratch_->deltas_, scratch_->deltas_.size() + 1);
     setSinkBinding(obligation, endpoint, getInvalidPnrIndex(),
                    getInvalidPnrIndex(), getInvalidPnrIndex());
   }
@@ -913,12 +930,15 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
 
   const std::size_t reused =
       std::min<std::size_t>(state_->freeSlots_.size(), addedCount);
-  state_->nodes_.reserve(state_->nodes_.size() +
-                         static_cast<std::size_t>(addedCount) - reused);
-  scratch_->deltas_.reserve(scratch_->deltas_.size() +
-                            static_cast<std::size_t>(addedCount) * 3 + 5);
-  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
-                                     forwardArcs.size());
+  reserveMutationCapacity(
+      state_->nodes_,
+      state_->nodes_.size() + static_cast<std::size_t>(addedCount) - reused);
+  reserveMutationCapacity(
+      scratch_->deltas_,
+      scratch_->deltas_.size() + static_cast<std::size_t>(addedCount) * 3 + 5);
+  reserveMutationCapacity(
+      scratch_->traversalDeltas_,
+      scratch_->traversalDeltas_.size() + forwardArcs.size());
   if (llvm::Error error = ensureLookupCapacity(*finalNodeCount))
     return error;
 
@@ -954,7 +974,7 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
   if (binding.endpoint == getInvalidPnrIndex())
     return routeTreeError("sink obligation has no endpoint binding");
   if (binding.nodeSlot == getInvalidPnrIndex()) {
-    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
+    reserveMutationCapacity(scratch_->deltas_, scratch_->deltas_.size() + 1);
     setSinkBinding(sinkObligation, getInvalidPnrIndex(), getInvalidPnrIndex(),
                    getInvalidPnrIndex(), getInvalidPnrIndex());
     return llvm::Error::success();
@@ -988,10 +1008,15 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
   }
 
   const std::size_t pruneCount = scratch_->worklist_.size();
-  scratch_->deltas_.reserve(scratch_->deltas_.size() + 4 + pruneCount * 5);
-  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
-                                     pruneCount);
-  state_->freeSlots_.reserve(state_->freeSlots_.size() + pruneCount);
+  reserveMutationCapacity(
+      scratch_->deltas_,
+      scratch_->deltas_.size() + 4 + pruneCount * 5);
+  reserveMutationCapacity(
+      scratch_->traversalDeltas_,
+      scratch_->traversalDeltas_.size() + pruneCount);
+  reserveMutationCapacity(
+      state_->freeSlots_,
+      state_->freeSlots_.size() + pruneCount);
   unlinkSinkBinding(sinkObligation);
   for (PnrIndex slot : scratch_->worklist_) {
     const PnrIndex parent = parentSlot(slot);
@@ -1033,12 +1058,16 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
          obligation != getInvalidPnrIndex();
          obligation = state_->sinkBindings_[obligation].nextAtNode)
       ++bindingCount;
-  scratch_->deltas_.reserve(scratch_->deltas_.size() + bindingCount +
-                            scratch_->worklist_.size() * 2 + 3);
-  scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
-                                     scratch_->worklist_.size());
-  state_->freeSlots_.reserve(state_->freeSlots_.size() +
-                             scratch_->worklist_.size());
+  reserveMutationCapacity(
+      scratch_->deltas_,
+      scratch_->deltas_.size() + bindingCount + scratch_->worklist_.size() * 2 +
+      3);
+  reserveMutationCapacity(
+      scratch_->traversalDeltas_,
+      scratch_->traversalDeltas_.size() + scratch_->worklist_.size());
+  reserveMutationCapacity(
+      state_->freeSlots_,
+      state_->freeSlots_.size() + scratch_->worklist_.size());
 
   for (PnrIndex slot : scratch_->worklist_) {
     PnrIndex obligation = state_->nodes_[slot].firstSinkObligation;
@@ -1078,12 +1107,16 @@ llvm::Error RouteTreeTransaction::ripUpWholeNet() {
       static_cast<std::size_t>(state_->activeNodeCount_);
   const std::size_t boundSinkCount =
       static_cast<std::size_t>(state_->boundSinkObligationCount_);
-  scratch_->deltas_.reserve(scratch_->deltas_.size() + activeNodeCount * 2 +
-                            boundSinkCount + 1);
+  reserveMutationCapacity(
+      scratch_->deltas_,
+      scratch_->deltas_.size() + activeNodeCount * 2 + boundSinkCount + 1);
   if (activeNodeCount != 0)
-    scratch_->traversalDeltas_.reserve(scratch_->traversalDeltas_.size() +
-                                       activeNodeCount - 1);
-  state_->freeSlots_.reserve(state_->freeSlots_.size() + activeNodeCount);
+    reserveMutationCapacity(
+        scratch_->traversalDeltas_,
+        scratch_->traversalDeltas_.size() + activeNodeCount - 1);
+  reserveMutationCapacity(
+      state_->freeSlots_,
+      state_->freeSlots_.size() + activeNodeCount);
 
   for (PnrIndex obligation = 0; obligation < state_->sinkBindings_.size();
        ++obligation) {

@@ -15,8 +15,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <algorithm>
 #include <limits>
@@ -192,8 +194,8 @@ importedRootOfValue(
     Operation *definition = value.getDefiningOp();
     if (!definition)
       return invalid("simulation wire: unresolved launch memory binding");
-    if (auto cast = dyn_cast<memref::CastOp>(definition)) {
-      value = cast.getSource();
+    if (auto viewLike = dyn_cast<ViewLikeOpInterface>(definition)) {
+      value = viewLike.getViewSource();
       continue;
     }
     if (auto found = serviceRootByOp.find(definition);
@@ -573,11 +575,18 @@ validateSemanticMemoryBytes(llvm::ArrayRef<SemanticMemoryByte> bytes,
 void encodeSemanticMemoryByteArray(WireWriter &writer,
                                    llvm::ArrayRef<SemanticMemoryByte> bytes) {
   writer.u64(bytes.size());
+  std::vector<std::uint8_t> encoded(
+      bytes.size() * (WireWriter::u32Bytes(0).size() + 1));
+  std::size_t offset = 0;
   for (const SemanticMemoryByte &byte : bytes) {
-    writer.u32(static_cast<std::uint32_t>(byte.state));
+    const auto state = WireWriter::u32Bytes(static_cast<std::uint32_t>(byte.state));
+    std::copy(state.begin(), state.end(), encoded.begin() + offset);
+    offset += state.size();
     if (byte.state == SemanticState::Defined)
-      writer.bytes({byte.value});
+      encoded[offset++] = byte.value;
   }
+  encoded.resize(offset);
+  writer.bytes(encoded);
 }
 
 llvm::Expected<std::vector<SemanticMemoryByte>>
@@ -587,21 +596,24 @@ decodeSemanticMemoryByteArray(WireReader &reader) {
     return count.takeError();
   if (llvm::Error error = reader.guardCount(*count, 4))
     return std::move(error);
+  const llvm::ArrayRef<std::uint8_t> remaining = reader.remainingBytes();
+  std::size_t offset = 0;
+  llvm::scope_exit advance([&] { llvm::cantFail(reader.bytes(offset)); });
   std::vector<SemanticMemoryByte> bytes;
   bytes.reserve(*count);
   for (std::uint64_t index = 0; index < *count; ++index) {
-    llvm::Expected<std::uint32_t> tag = reader.u32();
-    if (!tag)
-      return tag.takeError();
-    if (*tag > static_cast<std::uint32_t>(SemanticState::Undef))
+    if (remaining.size() - offset < 4)
+      return invalid("simulation wire: truncated memory-byte state");
+    const std::uint32_t tag = WireReader::u32Value(remaining.data() + offset);
+    offset += 4;
+    if (tag > static_cast<std::uint32_t>(SemanticState::Undef))
       return invalid("simulation wire: unknown memory-byte state");
     SemanticMemoryByte byte;
-    byte.state = static_cast<SemanticState>(*tag);
+    byte.state = static_cast<SemanticState>(tag);
     if (byte.state == SemanticState::Defined) {
-      llvm::Expected<llvm::ArrayRef<std::uint8_t>> raw = reader.bytes(1);
-      if (!raw)
-        return raw.takeError();
-      byte.value = raw->front();
+      if (offset == remaining.size())
+        return invalid("simulation wire: truncated memory-byte value");
+      byte.value = remaining[offset++];
     }
     bytes.push_back(byte);
   }

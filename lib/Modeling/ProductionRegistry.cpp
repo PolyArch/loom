@@ -117,12 +117,10 @@ llvm::Error verifyGem5Binding(const ArtifactRootReference &subject,
   auto gem5 = runtime::importGem5SimulationBinding(subject, artifacts);
   if (!gem5)
     return gem5.takeError();
-  auto systemMapping = mapping::importSystemMapping(
-      (*deployment)->deployment().systemMapping(), artifacts);
-  if (!systemMapping)
-    return systemMapping.takeError();
-  if (systemMapping->view().fabricIdentity() !=
-      gem5->binding().fabric().artifact)
+  auto fabric = deployment::deploymentFabric((*deployment)->deployment(), artifacts);
+  if (!fabric)
+    return fabric.takeError();
+  if (*fabric != gem5->binding().fabric())
     return invalid("gem5 binding names a foreign System Fabric");
 
   return llvm::Error::success();
@@ -292,7 +290,7 @@ llvm::Error verifyMappedRtlWorkload(
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front())
     return invalid("Deployment selects a foreign HardwareImplementation");
-  if (selection->dataflow.artifact != (*inputs)->dataflow.identity())
+  if (selection->dataflow.artifact != (*inputs)->dataflow->identity())
     return invalid("Deployment and Spatial workload select different "
                    "Dataflow owners");
   (void)evaluationCase;
@@ -326,7 +324,7 @@ resolveMappedRtlCycle(const EvaluationCase &evaluationCase,
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front() ||
-      selection->dataflow.artifact != (*inputs)->dataflow.identity())
+      selection->dataflow.artifact != (*inputs)->dataflow->identity())
     return invalid("mapped RTL reference cycle has foreign selected owners");
   return SubjectTargetRef{kRole1, deployments.front(),
                           selection->spatialMapping};
@@ -825,7 +823,7 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        ProviderForm::ExternalPrepareImport},
       {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemCgra),
        "gem5_system_cgra",
-       "loom.gem5.system_cgra.v2",
+       "loom.gem5.system_cgra.v3",
        caseRef(kSystemCase),
        {},
        kRuntimeMetric,

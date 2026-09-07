@@ -92,12 +92,16 @@ cannot clear a newer producer reservation or alter another occurrence's route
 state. Queue capacity and Fabric arbitration govern these overlapping tokens;
 the simulator adds no end-to-end credit or one-resident-token-per-net limit.
 
-The CGRA and gem5 System-CGRA model implementation identities change with this
-execution rule. The System external-tool semantic contract and runtime model
+The CGRA and gem5 System-CGRA model implementation identities track the
+transport and grant-state execution rules. The System external-tool semantic
+contract and runtime model
 ground-truth target key derive the implementation identity from the registered
 model descriptor; they cannot reuse the prior implementation's tool result or
 mix its calibration target with the corrected model's target. Artifact and
 configuration schemas remain unchanged.
+Evaluation registry 3.2 binds these implementations in the persisted descriptor
+reference; prior registry references require newly authored Requests and fresh
+Evidence.
 
 At quiescence, each selected operand queue reports its exact FIFO head
 provenance as producer binding, occurrence, ordered producer-sequence position,
@@ -141,6 +145,15 @@ future route.
 The simulator derives disposable runtime queues, occupancy tables, calendars,
 and conflict caches from Fabric and Mapping. These are not persistent Mapping
 records. Mapping does not provide an absolute cycle-slot schedule.
+
+An invocation may reuse the immutable CGRA preparation for the same exact
+Canonical Dataflow, Fabric, and SpatialMapping roots through Evaluation's
+bounded Artifact import cache. A hit revalidates those roots, the Mapping's
+TechMapping root, and the Fabric's direct dependencies. Each workload and
+runtime-input pair still receives fresh admission and execution state,
+including its memory objects, queues, clocks, and progress counters. Request
+conditions, model bindings, and attempt limits remain owned by each Evaluation
+case and are not retained as dynamic state in the shared preparation.
 
 Single-clock SpatialCore sessions advance in nonnegative integer cycles, but
 persist every cycle `N` as the canonical `ExactRatio` value `N/1`. A
@@ -269,6 +282,10 @@ state and event ordering come from the selected Fabric use pattern, its timing
 contract, and the exact Mapping release condition, not a simulator-private
 scheduler.
 
+Every successful round-robin acquisition advances the cursor to the successor
+of its requester, including a batch containing only one request. A blocked
+request leaves the cursor unchanged.
+
 At one coordinate CGRA-sim commits due publication, retires effective releases,
 and frees their complete claim envelopes before testing replacement
 acquisitions. For the one-cycle elastic operation this yields acceptance at
@@ -336,7 +353,7 @@ of a `SubjectDidNotComplete` censored CycleCount; it never presents that bound
 as a retirement point.
 
 For `cgra_closed_wait`, the `Halted` witness is the canonical
-`loom.cgra_closed_wait_certificate 1.0` owner value. It contains the exact
+`loom.cgra_closed_wait_certificate 1.1` owner value. It contains the exact
 Dataflow/Fabric/TechMapping/SpatialMapping closure, the dynamic transfers named
 by its edges, and one closed SCC of typed wait owners. The corresponding
 Completed Evidence contains one `TerminalWitnessRef` to that exact execution
@@ -345,6 +362,18 @@ Evidence. Strict import follows the reference, adopts and validates the typed
 witness, and recomputes its domain-separated digest. Invocation-local JSON and
 the larger `CgraClosedWaitSetDiagnostic` remain derived diagnostics and cannot
 be substituted for the durable witness.
+
+A physical-capacity wait joins the exact requesting actor firing to every
+active actor firing whose claim envelope occupies an insufficient resource
+dimension. Its typed edge retains the requesting and holding physical-action
+occurrences, dimension ordinal in the exact frozen owner closure, capacity,
+occupancy, requested amount, and held amount. The attributed live holders must
+account for the full occupancy; initial occupancy or a holder without an exact
+dynamic actor owner cannot be silently omitted. Certificate adoption checks
+that the complete holder group is present, even when a smaller subset would
+still form a cycle. An unbuffered internal transfer retains its producer's
+physical claim until the actual consumer takes the token; the semantic channel
+is not additional operand storage.
 
 ## Trace And Observations
 
@@ -444,7 +473,7 @@ Stable anchor tests cover:
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
 * rejection of every persistent Spatial diagnostic-trace field in
-  `loom.simulation_execution 2.0` and diagnostic capture noninterference;
+  `loom.simulation_execution 3.0` and diagnostic capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

@@ -22,7 +22,7 @@ namespace loom::deployment {
 /// images are deliberately absent: the pipeline derives them from the selected
 /// SystemMapping and the final linked LLVM module.
 struct DeploymentPipelineInputs final {
-  ArtifactRootReference systemMapping;
+  DeploymentExecutionRoot executionRoot;
   HostProgramLeaf hostProgram;
   std::vector<ArtifactRootReference> instructionCoreBinaries;
   std::vector<DeploymentHardwareBinding> hardwareBindings;

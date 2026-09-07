@@ -513,9 +513,7 @@ llvm::Error writeFuReverseSynthesisRejectionEvidence(
   auto imported = ::dataflow::importCanonicalDataflow(dataflow, artifacts);
   if (!imported)
     return imported.takeError();
-  auto view = imported->view();
-  if (!view)
-    return view.takeError();
+  const auto &view = imported->view();
   auto resolvedConfig = publishResolvedConfigReference(config, artifacts);
   if (!resolvedConfig)
     return resolvedConfig.takeError();
@@ -525,7 +523,7 @@ llvm::Error writeFuReverseSynthesisRejectionEvidence(
   report["projection_format"] = 1;
   report["dataflow"] = rootReferenceJson(dataflow);
   report["resolved_config"] = rootReferenceJson(*resolvedConfig);
-  report["graph_count"] = view->graphs().size();
+  report["graph_count"] = view.graphs().size();
   llvm::json::Object typedFailure;
   typedFailure["stage"] = "preflight";
   typedFailure["kind"] = fuReverseSynthesisFailureSpelling(failure);
@@ -655,10 +653,8 @@ llvm::Error writeFuReverseSynthesisEvidence(
       ::dataflow::importCanonicalDataflow(workflow.dataflow(), artifacts);
   if (!dataflow)
     return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  report["graph_count"] = dataflowView->graphs().size();
+  const auto &dataflowView = dataflow->view();
+  report["graph_count"] = dataflowView.graphs().size();
 
   llvm::json::Object invocationProjection;
   invocationProjection["run_key"] =

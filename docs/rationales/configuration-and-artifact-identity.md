@@ -168,6 +168,15 @@ acknowledgement cannot promise that a complete final object is absent, so retry
 uses the same deterministic put/get operation. Readers observe absent or
 complete validated objects, never a partial semantic artifact.
 
+Durability belongs to the root's lifecycle owner. An invocation workspace that
+is discarded after its validated closure is copied to a separate package needs
+atomic visibility and identity validation while the invocation runs. Flushing
+every temporary object adds no recovery guarantee that the workspace consumes.
+An explicit transient publication mode therefore preserves the same object
+semantics while durable stores retain their flush and retry contract. Package
+publication owns its own persistence guarantees; flushing discarded source
+objects cannot establish them.
+
 An external PDK, library, macro, rule, or IP file does not become an Artifact
 merely because a provider consumes it. Its provider-owned semantic binding
 freezes the exact expected digest, and the local invocation bundle maps that

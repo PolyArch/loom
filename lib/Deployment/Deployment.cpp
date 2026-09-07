@@ -295,6 +295,17 @@ parseInlineBytes(const CanonicalSemanticBytes &bytes,
   return std::move(*value);
 }
 
+llvm::Expected<std::optional<llvm::json::Value>>
+parseInlineBytes(const std::optional<CanonicalSemanticBytes> &bytes,
+                 const ArtifactSchemaDescriptor &schema) {
+  if (!bytes)
+    return std::nullopt;
+  auto parsed = parseInlineBytes(*bytes, schema);
+  if (!parsed)
+    return parsed.takeError();
+  return std::optional<llvm::json::Value>(std::move(*parsed));
+}
+
 llvm::Expected<detail::ParsedDeployment>
 parsedFromDraft(DeploymentDraft draft) {
   auto thread =
@@ -312,7 +323,7 @@ parsedFromDraft(DeploymentDraft draft) {
       return parsed.takeError();
     spatial = std::move(*parsed);
   }
-  return detail::ParsedDeployment{std::move(draft.systemMapping),
+  return detail::ParsedDeployment{std::move(draft.executionRoot),
                                   std::move(draft.hostProgram),
                                   std::move(draft.instructionCoreBinaries),
                                   std::move(draft.hardwareBindings),
@@ -451,44 +462,70 @@ requiredProgrammingUnits(
   return result;
 }
 
+llvm::Error validateHostProgramForSystem(
+    const HostProgramLeaf &hostProgram, const fabric::FabricSystemRootView &system,
+    const ArtifactIdentity &fabricIdentity, const ArtifactStore &artifacts,
+    const BlobStore &blobs) {
+  if (llvm::Error error =
+          validateHostProgramLeaf(hostProgram, artifacts, blobs))
+    return error;
+  if (system.artifact().hostCoreOccurrences().size() != 1)
+    return invalid("Fabric System does not contain exactly one HostCore");
+  auto hostTarget = importCompilerTargetBinding(
+      hostProgram.compilerTargetBinding(), artifacts);
+  if (!hostTarget)
+    return hostTarget.takeError();
+  const CompilerProcessorArchitectureRef hostProcessor =
+      CompilerProcessorArchitectureRef::host(
+          {fabricIdentity,
+           system.artifact().hostCoreOccurrences().front()});
+  if (llvm::Error error = requireCompilerTargetCompatibility(
+          hostTarget->binding(), hostProcessor, artifacts))
+    return error;
+
+  return llvm::Error::success();
+ }
+
 llvm::Error
 validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
                                      const ArtifactStore &artifacts,
                                      const BlobStore &blobs) {
-  if (deployment.systemMapping.schemaIdentity !=
-          mapping::mappingArtifactSchema.identity ||
-      deployment.systemMapping.schemaVersion !=
-          mapping::mappingArtifactSchema.version)
-    return invalid("system_mapping_ref has the wrong schema descriptor");
-  auto systemMapping =
-      mapping::importSystemMapping(deployment.systemMapping, artifacts);
+  const auto *mappingReference =
+      std::get_if<ArtifactRootReference>(&deployment.executionRoot);
+  if (!mappingReference) {
+    const auto &host = std::get<HostOnlyDeploymentRoot>(deployment.executionRoot);
+    auto fabric = fabric::importEntireFabricRoot(host.fabric, artifacts);
+    if (!fabric)
+      return fabric.takeError();
+    auto system = fabric::requireSystemRoot(fabric->view());
+    if (!system)
+      return system.takeError();
+    if (!deployment.instructionCoreBinaries.empty() ||
+        !deployment.hardwareBindings.empty() ||
+        !deployment.configurationImages.empty() ||
+        !deployment.staticMemoryImages.empty() || deployment.threadDispatchImage ||
+        deployment.spatialLaunchImage || deployment.admissionImage)
+      return invalid("host-only Deployment contains mapped execution state");
+    return validateHostProgramForSystem(deployment.hostProgram, *system,
+                                        host.fabric.artifact, artifacts, blobs);
+  }
+  if (mappingReference->schemaIdentity != mapping::mappingArtifactSchema.identity ||
+      mappingReference->schemaVersion != mapping::mappingArtifactSchema.version)
+    return invalid("mapped execution root has the wrong schema descriptor");
+  auto systemMapping = mapping::importSystemMapping(*mappingReference, artifacts);
   if (!systemMapping)
     return systemMapping.takeError();
   auto owners = importMappingOwners(*systemMapping, artifacts);
   if (!owners)
     return owners.takeError();
-  auto dataflowView = owners->first.view();
-  if (!dataflowView)
-    return dataflowView.takeError();
+  const auto &dataflowView = owners->first.view();
   auto system = fabric::requireSystemRoot(owners->second.view());
   if (!system)
     return system.takeError();
 
-  if (llvm::Error error =
-          validateHostProgramLeaf(deployment.hostProgram, artifacts, blobs))
-    return error;
-  if (system->artifact().hostCoreOccurrences().size() != 1)
-    return invalid("Fabric System does not contain exactly one HostCore");
-  auto hostTarget = importCompilerTargetBinding(
-      deployment.hostProgram.compilerTargetBinding(), artifacts);
-  if (!hostTarget)
-    return hostTarget.takeError();
-  const CompilerProcessorArchitectureRef hostProcessor =
-      CompilerProcessorArchitectureRef::host(
-          {systemMapping->view().fabricIdentity(),
-           system->artifact().hostCoreOccurrences().front()});
-  if (llvm::Error error = requireCompilerTargetCompatibility(
-          hostTarget->binding(), hostProcessor, artifacts))
+  if (llvm::Error error = validateHostProgramForSystem(
+          deployment.hostProgram, *system, systemMapping->view().fabricIdentity(),
+          artifacts, blobs))
     return error;
 
   if (deployment.instructionCoreBinaries.empty() &&
@@ -502,7 +539,7 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
     if (binary->binary().canonicalDataflow() !=
         ArtifactRootReference{dataflow::canonicalDataflowSchema.identity.str(),
                               dataflow::canonicalDataflowSchema.version,
-                              dataflowView->identity()})
+                              dataflowView.identity()})
       return invalid("InstructionCoreBinary has a foreign Dataflow owner");
   }
 
@@ -510,7 +547,7 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
     if (memory.canonicalDataflow() !=
         ArtifactRootReference{dataflow::canonicalDataflowSchema.identity.str(),
                               dataflow::canonicalDataflowSchema.version,
-                              dataflowView->identity()})
+                              dataflowView.identity()})
       return invalid("static memory image has a foreign Dataflow owner");
     if (llvm::Error error =
             validateStaticMemoryImageLeaf(memory, artifacts, blobs))
@@ -530,7 +567,7 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
       fabric::fabricArtifactSchema.version,
       systemMapping->view().fabricIdentity()};
   auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
-      *dataflowView, systemMapping->view().executionBindings());
+      dataflowView, systemMapping->view().executionBindings());
   if (!subjects)
     return subjects.takeError();
   auto abi =
@@ -565,7 +602,7 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
       return invalid("configuration image has a foreign ConfigurationABI");
     if (image->image().sourceMapping().kind !=
             ConfigurationImageSourceKind::SystemMapping ||
-        image->image().sourceMapping().mapping != deployment.systemMapping)
+        image->image().sourceMapping().mapping != *mappingReference)
       return invalid("configuration image is not derived from the exact "
                      "SystemMapping");
     if (!coveredUnits.insert(image->image().programmingUnitId()).second)
@@ -607,6 +644,12 @@ llvm::Error canonicalizeDraft(DeploymentDraft &draft,
 bool sameBytes(const CanonicalSemanticBytes &lhs,
                const CanonicalSemanticBytes &rhs) {
   return lhs.bytes().equals(rhs.bytes());
+}
+
+bool sameBytes(const std::optional<CanonicalSemanticBytes> &lhs,
+               const std::optional<CanonicalSemanticBytes> &rhs) {
+  return lhs.has_value() == rhs.has_value() &&
+         (!lhs || sameBytes(*lhs, *rhs));
 }
 
 llvm::Expected<FinalizedDeployment>
@@ -661,9 +704,15 @@ llvm::Expected<detail::DerivedRuntimeImages> validateDeploymentClosureImpl(
                 operationBegin);
 
   operationBegin = captureOperationResources();
-  auto images = detail::deriveRuntimeImages(
-      deployment.systemMapping, deployment.instructionCoreBinaries,
-      deployment.configurationImages, artifacts, blobs);
+  auto images = [&]() -> llvm::Expected<detail::DerivedRuntimeImages> {
+    const auto *mapping =
+        std::get_if<ArtifactRootReference>(&deployment.executionRoot);
+    if (!mapping)
+      return detail::DerivedRuntimeImages{};
+    return detail::deriveRuntimeImages(*mapping, deployment.instructionCoreBinaries,
+                                       deployment.configurationImages, artifacts,
+                                       blobs);
+  }();
   if (statisticsMode)
     emitElapsed(*statisticsMode,
                 DeploymentConstructionOperation::RuntimeImageDerivation,
@@ -685,32 +734,50 @@ validateDeploymentClosure(const ParsedDeployment &deployment,
 
 Deployment materializeDeployment(ParsedDeployment deployment,
                                  DerivedRuntimeImages images) {
+  const auto image = [](const ArtifactSchemaDescriptor &schema,
+                         std::optional<CanonicalSemanticBytes> bytes)
+      -> std::optional<InlineRuntimeImage> {
+    if (!bytes)
+      return std::nullopt;
+    return DeploymentCodecAccess::runtimeImage(schema, std::move(*bytes));
+  };
   return DeploymentCodecAccess::deployment(
-      std::move(deployment.systemMapping), std::move(deployment.hostProgram),
+      std::move(deployment.executionRoot), std::move(deployment.hostProgram),
       std::move(deployment.instructionCoreBinaries),
       std::move(deployment.hardwareBindings),
       std::move(deployment.configurationImages),
       std::move(deployment.staticMemoryImages),
-      DeploymentCodecAccess::runtimeImage(threadDispatchImageSchema,
-                                          std::move(images.threadDispatch)),
+      image(threadDispatchImageSchema, std::move(images.threadDispatch)),
       images.spatialLaunch
           ? std::optional<InlineRuntimeImage>(
                 DeploymentCodecAccess::runtimeImage(
                     spatialLaunchImageSchema, std::move(*images.spatialLaunch)))
           : std::nullopt,
-      DeploymentCodecAccess::runtimeImage(admissionImageSchema,
-                                          std::move(images.admission)));
+      image(admissionImageSchema, std::move(images.admission)));
 }
 
 } // namespace detail
 
+llvm::Expected<ArtifactRootReference>
+deploymentFabric(const Deployment &deployment, const ArtifactStore &artifacts) {
+  if (const auto *host = deployment.hostOnly())
+    return host->fabric;
+  auto mapping = mapping::importSystemMapping(*deployment.systemMapping(), artifacts);
+  if (!mapping)
+    return mapping.takeError();
+  return ArtifactRootReference{fabric::fabricArtifactSchema.identity.str(),
+                                fabric::fabricArtifactSchema.version,
+                                mapping->view().fabricIdentity()};
+}
+
 llvm::Expected<FinalizedDeployment>
 finalizeDeployment(DeploymentDraft draft, const ArtifactStore &artifacts,
                    const BlobStore &blobs) {
-  const CanonicalSemanticBytes authoredThread = draft.threadDispatchImage;
+  fabric::FabricArtifactImportSession fabricImportSession;
+  const std::optional<CanonicalSemanticBytes> authoredThread = draft.threadDispatchImage;
   const std::optional<CanonicalSemanticBytes> authoredSpatial =
       draft.spatialLaunchImage;
-  const CanonicalSemanticBytes authoredAdmission = draft.admissionImage;
+  const std::optional<CanonicalSemanticBytes> authoredAdmission = draft.admissionImage;
   if (llvm::Error error = canonicalizeDraft(draft, artifacts))
     return error;
   auto parsed = parsedFromDraft(std::move(draft));
@@ -735,6 +802,7 @@ finalizeDeployment(DeploymentDraft draft, const ArtifactStore &artifacts,
 llvm::Expected<FinalizedDeployment>
 importDeployment(const ArtifactRootReference &reference,
                  const ArtifactStore &artifacts, const BlobStore &blobs) {
+  fabric::FabricArtifactImportSession fabricImportSession;
   if (reference.schemaIdentity != deploymentSchema.identity ||
       reference.schemaVersion != deploymentSchema.version)
     return invalid("root reference has the wrong schema descriptor");
@@ -771,6 +839,9 @@ importDeployment(const ArtifactRootReference &reference,
 llvm::Expected<FinalizedDeployment>
 buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
                 const BlobStore &blobs) {
+  // Mapping, hardware, configuration, and runtime-image validation all import
+  // the same Fabric closure during this one Deployment construction.
+  fabric::FabricArtifactImportSession fabricImportSession;
   auto operationBegin = captureOperationResources();
   if (llvm::Error error = canonicalizeRoots(inputs.instructionCoreBinaries,
                                             "instruction_core_binary_refs"))
@@ -783,21 +854,25 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
               DeploymentConstructionOperation::InputCanonicalization,
               operationBegin);
   operationBegin = captureOperationResources();
-  auto systemMapping =
-      mapping::importSystemMapping(inputs.systemMapping, artifacts);
+  const auto *mappingReference =
+      std::get_if<ArtifactRootReference>(&inputs.executionRoot);
+  if (!mappingReference)
+    return finalizeDeployment(
+        {std::move(inputs.executionRoot), std::move(inputs.hostProgram),
+         std::move(inputs.instructionCoreBinaries), std::move(inputs.hardwareBindings),
+         {}, std::move(inputs.staticMemoryImages), {}, {}, {}}, artifacts, blobs);
+  auto systemMapping = mapping::importSystemMapping(*mappingReference, artifacts);
   if (!systemMapping)
     return systemMapping.takeError();
   auto owners = importMappingOwners(*systemMapping, artifacts);
   if (!owners)
     return owners.takeError();
-  auto dataflow = owners->first.view();
-  if (!dataflow)
-    return dataflow.takeError();
+  const auto &dataflow = owners->first.view();
   auto system = fabric::requireSystemRoot(owners->second.view());
   if (!system)
     return system.takeError();
   auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
-      *dataflow, systemMapping->view().executionBindings());
+      dataflow, systemMapping->view().executionBindings());
   if (!subjects)
     return subjects.takeError();
   emitElapsed(DeploymentConstructionMode::Build,
@@ -830,7 +905,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       auto image = finalizeHardwareConfigurationImage(
           {(*abi)->reference(),
            unit,
-           {ConfigurationImageSourceKind::SystemMapping, inputs.systemMapping}},
+           {ConfigurationImageSourceKind::SystemMapping, *mappingReference}},
           artifacts);
       if (!image)
         return image.takeError();
@@ -844,7 +919,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
               operationBegin, images.size());
   operationBegin = captureOperationResources();
   auto runtimeImages = detail::deriveRuntimeImages(
-      inputs.systemMapping, inputs.instructionCoreBinaries, images, artifacts,
+      *mappingReference, inputs.instructionCoreBinaries, images, artifacts,
       blobs);
   if (!runtimeImages)
     return runtimeImages.takeError();
@@ -868,7 +943,7 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       return value.takeError();
     spatial = std::move(*value);
   }
-  detail::ParsedDeployment parsed{std::move(inputs.systemMapping),
+  detail::ParsedDeployment parsed{std::move(inputs.executionRoot),
                                   std::move(inputs.hostProgram),
                                   std::move(inputs.instructionCoreBinaries),
                                   std::move(inputs.hardwareBindings),

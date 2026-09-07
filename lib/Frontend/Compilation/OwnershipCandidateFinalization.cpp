@@ -29,10 +29,8 @@ std::string typeSpelling(mlir::FunctionType type) {
 llvm::Error requireExactFabricCapabilities(
     const dataflow::CanonicalDataflowArtifact &program,
     const fabric::FinalizedFabricRoot &fabric) {
-  auto view = program.view();
-  if (!view)
-    return view.takeError();
-  if (view->graphs().empty() || view->actors().empty())
+  const auto &view = program.view();
+  if (view.graphs().empty() || view.actors().empty())
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   "materialized candidate has no SpatialCore workload");
 

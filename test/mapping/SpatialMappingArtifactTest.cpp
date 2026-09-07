@@ -41,6 +41,7 @@
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialPnrWorkLedger.h"
 #include "PnR/SpatialRouteCostState.h"
 #include "PnR/SpatialTagAssignment.h"
 #include "PnR/SpatialTagContinuity.h"
@@ -497,7 +498,7 @@ void completeCandidateRoundTrip(
   auto dataflowArtifact = buildDataflow(context);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   const bool switchPackingFabric =
       switchFixture != TemporalSwitchRouteFixture::None;
   const bool requireSeparatedSwitchRows =
@@ -792,6 +793,42 @@ void completeCandidateRoundTrip(
           fail("shared row did not expand the exact regional conflict closure");
         regionalMove.rollback();
         requireSuccess(costs.resetFromCandidate());
+
+        std::uint64_t plannedIterations = 0;
+        std::uint64_t consumedIterations = 0;
+        std::array<loom::pnr::SpatialPnrWorkCounterRef,
+                   loom::pnr::spatialPnrWorkKindCount>
+            workCounters{};
+        workCounters[static_cast<std::size_t>(
+            loom::pnr::SpatialPnrWorkKind::NegotiationIteration)] = {
+            &plannedIterations, &consumedIterations};
+        requireSuccess(regionalRouter.prepare(
+            *problem, loom::pnr::SpatialPnrWorkLedgerView(workCounters)));
+        auto finalIterationMove = take(candidate->beginMove(candidateScratch));
+        auto finalIteration = regionalRouter.routeToClosureInMove(
+            finalIterationMove, *candidate, costs,
+            {pnrConfig.policy().search.routing.endpointExpansionLimit, 1, 1, 1},
+            {&*sharedConflictNet, 1}, {},
+            loom::pnr::SpatialRoutingClosureRequirement::ExactRegional,
+            logicalNets.size());
+        if (finalIteration)
+          fail("regional expansion escaped its negotiation iteration limit");
+        bool incompleteExpansion = false;
+        llvm::handleAllErrors(
+            finalIteration.takeError(),
+            [&](const loom::pnr::SpatialPathFinderClosureFailure &failure) {
+              incompleteExpansion = failure.kind() ==
+                  loom::pnr::SpatialPathFinderClosureFailure::Kind::NonClosure;
+            });
+        if (!incompleteExpansion ||
+            regionalRouter.regionalLogicalNetCount() <= 1)
+          fail("last-iteration regional expansion lost its incomplete result");
+        if (plannedIterations != 1 || consumedIterations != 1 ||
+            regionalRouter.negotiationIterationCount() != 1)
+          fail("last-iteration regional expansion did not consume one iteration");
+        finalIterationMove.rollback();
+        requireSuccess(costs.resetFromCandidate());
+        requireSuccess(candidate->verify());
       }
       const std::vector<loom::pnr::RouteCost> baselineTagCosts(
           costs.currentArcCosts().begin(), costs.currentArcCosts().end());

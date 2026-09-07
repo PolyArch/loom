@@ -20,15 +20,15 @@ namespace loom::application::diagnostics_detail {
 inline constexpr llvm::StringLiteral applicationPairDecisionSchemaIdentity =
     "loom.application_pair_decision";
 inline constexpr llvm::StringLiteral applicationPairDecisionSchemaVersion =
-    "1.2";
+    "3.0";
 inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaIdentity =
     "loom.application_pair_evidence";
 inline constexpr llvm::StringLiteral applicationPairEvidenceSchemaVersion =
-    "1.2";
+    "3.0";
 inline constexpr llvm::StringLiteral applicationPairDispositionSchemaIdentity =
     "loom.application_pair_disposition";
 inline constexpr llvm::StringLiteral applicationPairDispositionSchemaVersion =
-    "1.2";
+    "2.0";
 inline constexpr llvm::StringLiteral applicationRuntimeBindingSchemaIdentity =
     "loom.application_runtime_manifest_binding";
 inline constexpr llvm::StringLiteral applicationRuntimeBindingSchemaVersion =

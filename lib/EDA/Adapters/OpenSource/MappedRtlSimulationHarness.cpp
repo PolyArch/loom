@@ -265,11 +265,43 @@ void renderMemoryService(llvm::raw_ostream &output,
   for (const auto &[ordinal, port] :
        llvm::enumerate(facts.memoryBoundaryPorts)) {
     const std::uint64_t dataBytes = port.dataBitWidth / kBitsPerByte;
-    output << "      if (loom_memory_response_pending_" << ordinal << " && "
-           << port.prefix << "_response_ready) "
-           << "loom_memory_response_pending_" << ordinal << " <= 0;\n"
+    output << "      if (loom_verbose_level >= 3) $display("
+              "\"[loom][rtl][memory] event=handshake cycle=%0d port="
+           << ordinal << " interface=" << port.prefix
+           << " request_valid=%0d request_ready=%0d "
+              "response_valid=%0d response_ready=%0d\", loom_cycle, "
+           << port.prefix << "_request_valid, " << port.prefix
+           << "_request_ready, " << port.prefix << "_response_valid, "
+           << port.prefix << "_response_ready);\n"
+           << "      if (loom_memory_response_pending_" << ordinal << " && "
+           << port.prefix << "_response_ready) begin\n"
+           << "        loom_memory_response_pending_" << ordinal
+           << " <= 0;\n"
+           << "        if (loom_verbose_level >= 2) $display("
+              "\"[loom][rtl][memory] event=response_accept cycle=%0d port="
+           << ordinal << " interface=" << port.prefix
+           << " data=%0h\", loom_cycle, " << port.prefix
+           << "_response_data);\n"
+           << "      end\n"
            << "      if (" << port.prefix << "_request_valid && " << port.prefix
            << "_request_ready) begin\n"
+           << "        if (loom_verbose_level >= 2) $display("
+              "\"[loom][rtl][memory] event=request_accept cycle=%0d port="
+           << ordinal << " interface=" << port.prefix
+           << " context=%0h kind=%0d address_form=%0d access_form=%0d "
+              "lanes=%0d element_bits=%0d address_lane_bits=%0d "
+              "active_lanes_kind=%0d mask=%0h root_base=%0h "
+              "base_address=%0h address=%0h data=%0h\", loom_cycle, "
+           << port.prefix << "_request_context, " << port.prefix
+           << "_request_kind, " << port.prefix << "_request_address_form, "
+           << port.prefix << "_request_access_form, " << port.prefix
+           << "_request_lane_count, " << port.prefix
+           << "_request_element_width, " << port.prefix
+           << "_request_address_lane_width, " << port.prefix
+           << "_request_active_lanes_kind, " << port.prefix
+           << "_request_mask, loom_memory_root_base_" << ordinal << ", "
+           << port.prefix << "_request_base_address, " << port.prefix
+           << "_request_address, " << port.prefix << "_request_data);\n"
            << "        loom_memory_response_next_" << ordinal << " = '0;\n"
            << "        if (!loom_memory_context_matched_" << ordinal
            << ") $fatal(1, \"unknown external memory request context\");\n"
@@ -363,12 +395,6 @@ void renderMemoryService(llvm::raw_ostream &output,
            << " * 8 +: 8];\n"
            << "          end\n"
            << "        end\n"
-           << "        if (loom_verbose_level >= 2) $display("
-              "\"[loom][rtl][memory] port="
-           << ordinal << " kind=%0d lanes=%0d element_bits=%0d\", "
-           << port.prefix << "_request_kind, " << port.prefix
-           << "_request_lane_count, " << port.prefix
-           << "_request_element_width);\n"
            << "        loom_memory_response_data_" << ordinal
            << " <= loom_memory_response_next_" << ordinal << ";\n"
            << "        loom_memory_response_pending_" << ordinal << " <= 1;\n"
@@ -1194,11 +1220,9 @@ projectMappedRtlFunctionalObservations(
   const auto *workload = facts.inputs->workload.spatial();
   if (!workload)
     return invalid("invocation lost its Spatial workload");
-  auto program = facts.inputs->dataflow.view();
-  if (!program)
-    return program.takeError();
-  auto shapes = sim::projectSpatialSimulationBoundaryShapes(
-      *program, workload->launchRef);
+  const auto &program = facts.inputs->dataflow->view();
+  auto shapes =
+      sim::projectSpatialSimulationBoundaryShapes(program, workload->launchRef);
   if (!shapes)
     return shapes.takeError();
   if (result.valueResults.size() !=

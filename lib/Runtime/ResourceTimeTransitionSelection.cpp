@@ -96,8 +96,8 @@ ResourceTimeTransitionSelectionSession::create(
   if (!graph.entry.deployment ||
       *graph.entry.deployment != entryDeployment.reference() ||
       importedEntry->reference() != entryDeployment.reference() ||
-      importedEntry->deployment().systemMapping() != graph.entry.mapping ||
-      entryDeployment.deployment().systemMapping() != graph.entry.mapping)
+      !importedEntry->deployment().systemMapping() || *importedEntry->deployment().systemMapping() != graph.entry.mapping ||
+      !entryDeployment.deployment().systemMapping() || *entryDeployment.deployment().systemMapping() != graph.entry.mapping)
     return reject(ResourceTimeSelectionErrorReason::EntryDeploymentMismatch,
                   "resource-time selector entry Deployment does not match "
                   "the graph entry");

@@ -69,7 +69,7 @@ public:
   llvm::Expected<std::shared_ptr<const Value>>
   import(const ArtifactStore &artifacts, const BlobStore *blobs,
          llvm::ArrayRef<ArtifactRootReference> references, Loader &&loader) {
-    return import <Value>(
+    return import<Value>(
         artifacts, blobs, references, std::forward<Loader>(loader),
         [](const Value &) -> llvm::Expected<std::uint64_t> { return 0; });
   }
@@ -143,25 +143,39 @@ private:
   void recordFailedConstruction(std::uint64_t constructionNanoseconds);
 };
 
-/// Reuses an enclosing cache or installs a fresh cache for this synchronous
-/// call tree. Nested scopes never replace the enclosing invocation cache.
+/// Reuses an enclosing cache or installs a fresh cache for one invocation.
+/// Worker attachments retain the same bounded cache and store domain; they
+/// never create a separate cache or extend its capacity.
 class ArtifactImportCacheScope final {
 public:
+  class Attachment final {
+  public:
+    Attachment() = default;
+
+  private:
+    explicit Attachment(std::shared_ptr<ArtifactImportCache> cache)
+        : cache_(std::move(cache)) {}
+
+    std::shared_ptr<ArtifactImportCache> cache_;
+    friend class ArtifactImportCacheScope;
+  };
+
   ArtifactImportCacheScope(
       const ArtifactStore &artifacts, const BlobStore *blobs,
       std::size_t entryLimit = defaultArtifactImportCacheEntryLimit);
+  explicit ArtifactImportCacheScope(const Attachment &attachment);
   ~ArtifactImportCacheScope();
 
   ArtifactImportCacheScope(const ArtifactImportCacheScope &) = delete;
   ArtifactImportCacheScope &
   operator=(const ArtifactImportCacheScope &) = delete;
 
+  Attachment attachment() const { return Attachment(active_); }
   ArtifactImportCacheStatistics statistics() const;
 
 private:
-  std::unique_ptr<ArtifactImportCache> owned_;
-  ArtifactImportCache *active_ = nullptr;
-  ArtifactImportCache *previous_ = nullptr;
+  std::shared_ptr<ArtifactImportCache> active_;
+  std::shared_ptr<ArtifactImportCache> previous_;
 };
 
 ArtifactImportCache *currentArtifactImportCache();
@@ -173,8 +187,8 @@ importCachedArtifact(const ArtifactStore &artifacts, const BlobStore *blobs,
                      Loader &&loader) {
   if (ArtifactImportCache *cache = currentArtifactImportCache())
     if (cache->owns(artifacts, blobs))
-      return cache->import <Value>(artifacts, blobs, references,
-                                   std::forward<Loader>(loader));
+      return cache->import<Value>(artifacts, blobs, references,
+                                  std::forward<Loader>(loader));
   auto imported = loader();
   if (!imported)
     return imported.takeError();
@@ -188,9 +202,9 @@ importCachedArtifact(const ArtifactStore &artifacts, const BlobStore *blobs,
                      Loader &&loader, HitRevalidator &&hitRevalidator) {
   if (ArtifactImportCache *cache = currentArtifactImportCache())
     if (cache->owns(artifacts, blobs))
-      return cache->import <Value>(
-          artifacts, blobs, references, std::forward<Loader>(loader),
-          std::forward<HitRevalidator>(hitRevalidator));
+      return cache->import<Value>(artifacts, blobs, references,
+                                  std::forward<Loader>(loader),
+                                  std::forward<HitRevalidator>(hitRevalidator));
   auto imported = loader();
   if (!imported)
     return imported.takeError();

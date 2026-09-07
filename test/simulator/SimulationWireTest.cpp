@@ -91,13 +91,6 @@ CanonicalDataflowArtifact finalizeProgram(const char *test,
     fail(test, "finalize failed: " + llvm::toString(artifact.takeError()));
   return std::move(*artifact);
 }
-CanonicalDataflowProgramView viewOf(const char *test,
-                                    const CanonicalDataflowArtifact &artifact) {
-  llvm::Expected<CanonicalDataflowProgramView> view = artifact.view();
-  if (!view)
-    fail(test, "view import failed: " + llvm::toString(view.takeError()));
-  return std::move(*view);
-}
 
 // The vecadd anchor program: value input N, imported roots A, B, and C, and
 // the computation C[i] = A[i] + B[i] reduced to one representative scalar
@@ -226,7 +219,7 @@ makeVecaddWorkload(const CanonicalDataflowProgramView &view) {
 void rootedLaunchOwnership() {
   const char *test = "rootedLaunchOwnership";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   SpatialSimulationWorkload workload = makeVecaddWorkload(view);
   llvm::Expected<CanonicalSimulationWorkload> finalized =
@@ -539,7 +532,7 @@ RuntimeMemoryObject littleEndianF32(std::uint64_t count, std::uint32_t bits) {
 void typedDfgExecution() {
   const char *test = "typedDfgExecution";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   LogicalMemoryRootRef rootA = rootByFormal(test, view, 0);
   LogicalMemoryRootRef rootB = rootByFormal(test, view, 1);
   LogicalMemoryRootRef rootC = rootByFormal(test, view, 2);
@@ -667,7 +660,7 @@ void pointerValueRoundtrip() {
   const char *test = "pointerValueRoundtrip";
   CanonicalDataflowArtifact artifact =
       finalizeProgram(test, pointerValueProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   LogicalMemoryRootRef serviceRoot = rootByFormal(test, view, 1);
 
   SpatialSimulationWorkload workloadModel{onlyLaunch(test, view)};
@@ -739,7 +732,7 @@ void pointerValueRoundtrip() {
 void valueClassificationAndLanes() {
   const char *test = "valueClassificationAndLanes";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, valuesProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   auto base = [&]() {
     SpatialSimulationWorkload workload{onlyLaunch(test, view)};
@@ -887,7 +880,7 @@ void valueClassificationAndLanes() {
 void streamHorizonAndCardinality() {
   const char *test = "streamHorizonAndCardinality";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, streamProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   SpatialSimulationWorkload workload{consumerLaunch(test, view)};
   llvm::Expected<CanonicalSimulationWorkload> finalized =
@@ -974,7 +967,7 @@ void streamHorizonAndCardinality() {
 void memoryObjectOrdinals() {
   const char *test = "memoryObjectOrdinals";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   SpatialSimulationWorkload workload = makeVecaddWorkload(view);
   llvm::Expected<CanonicalSimulationWorkload> finalized =
       finalizeSimulationWorkload(workload, view);
@@ -1079,7 +1072,7 @@ void memoryObjectOrdinals() {
   {
     CanonicalDataflowArtifact rules =
         finalizeProgram(test, bindingRulesProgram());
-    CanonicalDataflowProgramView rulesView = viewOf(test, rules);
+    const CanonicalDataflowProgramView &rulesView = rules.view();
     SpatialSimulationWorkload rulesWorkload{onlyLaunch(test, rulesView)};
     llvm::Expected<CanonicalSimulationWorkload> rulesFinalized =
         finalizeSimulationWorkload(rulesWorkload, rulesView);
@@ -1125,7 +1118,7 @@ void memoryObjectOrdinals() {
 void observableContractRules() {
   const char *test = "observableContractRules";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, valuesProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   auto base = [&]() {
     SpatialSimulationWorkload workload{onlyLaunch(test, view)};
     workload.valueInputPlan = {SpatialValueInputSource{RuntimeValueInput{}},
@@ -1178,7 +1171,7 @@ void observableContractRules() {
 void wireRejections() {
   const char *test = "wireRejections";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, vecaddProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
 
   SpatialSimulationWorkload workload = makeVecaddWorkload(view);
   LogicalMemoryRootRef rootA = rootByFormal(test, view, 0);
@@ -1278,7 +1271,7 @@ void wireRejections() {
 void denseCoordinates() {
   const char *test = "denseCoordinates";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, gridProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   auto withCoords = [&](std::vector<std::uint64_t> coords) {
     SpatialSimulationWorkload workload{onlyLaunch(test, view)};
     workload.denseCoordinates = std::move(coords);
@@ -1301,7 +1294,7 @@ void denseCoordinates() {
 void exposureTargetsAndDiffBaseline() {
   const char *test = "exposureTargetsAndDiffBaseline";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   RootedGraphLaunchRef freshLaunch =
       launchOf(test, view, ExposureLaunchKind::FreshAllocation);
   RootedGraphLaunchRef passthroughLaunch =
@@ -1356,7 +1349,7 @@ void exposureTargetsAndDiffBaseline() {
 void admissionAdapters() {
   const char *test = "admissionAdapters";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, twoGraphProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   RootedGraphLaunchRef launchA = launchAtThreadOrder(test, view, 0);
   GraphRef graphA = llvm::cantFail(view.resolve(launchA));
 
@@ -1378,7 +1371,7 @@ void admissionAdapters() {
           "launch");
   {
     CanonicalDataflowArtifact other = finalizeProgram(test, foreignProgram());
-    CanonicalDataflowProgramView otherView = viewOf(test, other);
+    const CanonicalDataflowProgramView &otherView = other.view();
     require(test,
             isRejected(admitDfgSpatialSimulation(*finalizedWorkload,
                                                  *finalizedInput, otherView)),
@@ -1395,7 +1388,7 @@ void scaleObservation() {
 
   CanonicalDataflowArtifact streamArtifact =
       finalizeProgram(test, streamProgram());
-  CanonicalDataflowProgramView streamView = viewOf(test, streamArtifact);
+  const CanonicalDataflowProgramView &streamView = streamArtifact.view();
   SpatialSimulationWorkload streamWorkload{consumerLaunch(test, streamView)};
   llvm::Expected<CanonicalSimulationWorkload> finalizedStream =
       finalizeSimulationWorkload(streamWorkload, streamView);
@@ -1421,7 +1414,7 @@ void scaleObservation() {
 
   CanonicalDataflowArtifact vecaddArtifact =
       finalizeProgram(test, vecaddProgram());
-  CanonicalDataflowProgramView vecaddView = viewOf(test, vecaddArtifact);
+  const CanonicalDataflowProgramView &vecaddView = vecaddArtifact.view();
   SpatialSimulationWorkload vecaddWorkload = makeVecaddWorkload(vecaddView);
   llvm::Expected<CanonicalSimulationWorkload> finalizedVecadd =
       finalizeSimulationWorkload(vecaddWorkload, vecaddView);
@@ -1462,7 +1455,7 @@ void scaleObservation() {
 void enumStrictness() {
   const char *test = "enumStrictness";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, valuesProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   auto base = [&]() {
     SpatialSimulationWorkload workload{onlyLaunch(test, view)};
     workload.valueInputPlan = {
@@ -1497,7 +1490,7 @@ void enumStrictness() {
   {
     CanonicalDataflowArtifact streamArtifact =
         finalizeProgram(test, streamProgram());
-    CanonicalDataflowProgramView streamView = viewOf(test, streamArtifact);
+    const CanonicalDataflowProgramView &streamView = streamArtifact.view();
     SpatialSimulationWorkload streamWorkload{consumerLaunch(test, streamView)};
     llvm::Expected<CanonicalSimulationWorkload> finalizedStream =
         finalizeSimulationWorkload(streamWorkload, streamView);
@@ -1517,7 +1510,7 @@ void enumStrictness() {
   {
     CanonicalDataflowArtifact vecaddArtifact =
         finalizeProgram(test, vecaddProgram());
-    CanonicalDataflowProgramView vecaddView = viewOf(test, vecaddArtifact);
+    const CanonicalDataflowProgramView &vecaddView = vecaddArtifact.view();
     SpatialSimulationWorkload vecaddWorkload = makeVecaddWorkload(vecaddView);
     llvm::Expected<CanonicalSimulationWorkload> finalizedVecadd =
         finalizeSimulationWorkload(vecaddWorkload, vecaddView);
@@ -1554,7 +1547,7 @@ void enumStrictness() {
 void directMemoryObservables() {
   const char *test = "directMemoryObservables";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   RootedGraphLaunchRef freshLaunch =
       launchOf(test, view, ExposureLaunchKind::FreshAllocation);
   LogicalMemoryRootRef rootM = rootByFormal(test, view, 0);
@@ -1585,7 +1578,7 @@ void directMemoryObservables() {
   {
     CanonicalDataflowArtifact vecaddArtifact =
         finalizeProgram(test, vecaddProgram());
-    CanonicalDataflowProgramView vecaddView = viewOf(test, vecaddArtifact);
+    const CanonicalDataflowProgramView &vecaddView = vecaddArtifact.view();
     SpatialSimulationWorkload unrelated{freshLaunch};
     unrelated.observableContract.memories.push_back(SpatialMemoryObservable{
         LogicalMemoryRootOrViewRef{rootByFormal(test, vecaddView, 0)},
@@ -1617,7 +1610,7 @@ void noneTokenStreams() {
   const char *test = "noneTokenStreams";
   CanonicalDataflowArtifact artifact =
       finalizeProgram(test, noneStreamProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   SpatialSimulationWorkload workload{consumerLaunch(test, view)};
   llvm::Expected<CanonicalSimulationWorkload> finalized =
       finalizeSimulationWorkload(workload, view);
@@ -1669,7 +1662,7 @@ void noneTokenStreams() {
 void freshExposureChain() {
   const char *test = "freshExposureChain";
   CanonicalDataflowArtifact artifact = finalizeProgram(test, exposureProgram());
-  CanonicalDataflowProgramView view = viewOf(test, artifact);
+  const CanonicalDataflowProgramView &view = artifact.view();
   RootedGraphLaunchRef chainLaunch =
       launchOf(test, view, ExposureLaunchKind::DerivedMemory);
   LogicalMemoryRootRef rootM = rootByFormal(test, view, 0);

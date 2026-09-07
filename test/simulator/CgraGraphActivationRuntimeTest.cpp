@@ -22,6 +22,7 @@
 #include <initializer_list>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace {
@@ -47,8 +48,18 @@ void require(bool condition, llvm::StringRef message) {
 class FixedExternalMemoryProvider final
     : public loom::sim::CgraExternalMemoryProvider {
 public:
-  llvm::Expected<loom::sim::CgraExternalMemoryResponse>
-  transact(const loom::sim::CgraExternalMemoryRequest &request) override {
+  enum class Completion { Immediate, Deferred };
+
+  explicit FixedExternalMemoryProvider(
+      Completion completion = Completion::Immediate)
+      : completion_(completion) {}
+
+  static loom::sim::CgraExternalMemoryResponse response(unsigned ordinal) {
+    return {{{static_cast<std::uint8_t>(13 + 4 * ordinal), 0, 0, 0}}};
+  }
+
+  llvm::Expected<loom::sim::CgraExternalMemorySubmission>
+  submit(const loom::sim::CgraExternalMemoryRequest &request) override {
     if (request.objectOrdinal != 0 ||
         request.operation != loom::sim::CgraExternalMemoryOperation::Read ||
         request.elements.size() != 1 ||
@@ -58,11 +69,16 @@ public:
       return llvm::createStringError(
           std::errc::invalid_argument,
           "external memory provider received the wrong logical request");
-    ++requestCount;
-    return loom::sim::CgraExternalMemoryResponse{{{13, 0, 0, 0}}};
+    requests.push_back(request.id);
+    if (completion_ == Completion::Deferred)
+      return loom::sim::CgraExternalMemoryPending{};
+    return response(requests.size() - 1);
   }
 
-  std::uint64_t requestCount = 0;
+  std::vector<loom::sim::CgraExternalMemoryRequestId> requests;
+
+private:
+  Completion completion_;
 };
 
 mlir::MLIRContext &context() {
@@ -359,7 +375,7 @@ void selectExternalMemoryRoles(CgraMemoryActorPlan &plan,
 
 void graphActivationCoordinatesComputeAndTransport() {
   auto artifact = program();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
   const dataflow::CanonicalActorView *add = nullptr;
   const dataflow::CanonicalActorView *sync = nullptr;
@@ -468,8 +484,10 @@ void graphActivationCoordinatesComputeAndTransport() {
                                              entry.getArgument(2).getType())));
   state.graphIngressCapture = nullptr;
 
+  auto runtimeTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, add->graph, *prepared));
   auto runtime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, add->graph, *prepared, state,
+      plan, view, launch, add->graph, *prepared, runtimeTransportGraph, state,
       /*captureMicroarchitecture=*/false));
   if (llvm::Error error = runtime.start(coordinate(0), ingress))
     fail(llvm::toString(std::move(error)));
@@ -512,7 +530,7 @@ void graphActivationCoordinatesComputeAndTransport() {
 
 void graphActivationExecutesSelectedLocalMemory() {
   auto artifact = memoryProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
   const dataflow::CanonicalActorView *load = nullptr;
   const dataflow::CanonicalActorView *add = nullptr;
@@ -636,7 +654,8 @@ void graphActivationExecutesSelectedLocalMemory() {
   mlir::Block &entry = graph.getBody().front();
   const auto seedState =
       [&](SimulatorState &state,
-          llvm::SmallVectorImpl<GraphIngressEmission> &ingress) {
+          llvm::SmallVectorImpl<GraphIngressEmission> &ingress,
+          unsigned repetitions = 1) {
         state.graphScope = graph.getOperation();
         initializeRunState(state, *prepared);
         auto memory = std::make_shared<MemoryValue>();
@@ -650,9 +669,11 @@ void graphActivationExecutesSelectedLocalMemory() {
         }
         memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
         state.graphIngressCapture = &ingress;
-        seedBlockArgument(state, entry.getArgument(0), noneToken());
-        seedBlockArgument(state, entry.getArgument(1),
-                          indexToken(llvm::APInt(64, 1)));
+        for (unsigned repetition = 0; repetition != repetitions; ++repetition) {
+          seedBlockArgument(state, entry.getArgument(0), noneToken());
+          seedBlockArgument(state, entry.getArgument(1),
+                            indexToken(llvm::APInt(64, 1)));
+        }
         state.graphIngressCapture = nullptr;
         state.memories[entry.getArgument(2)] = memory;
         state.memoryViews[entry.getArgument(2)] =
@@ -666,9 +687,12 @@ void graphActivationExecutesSelectedLocalMemory() {
   plan.memory.rootedUses.front().localServicePhysicalUseOrdinal.reset();
   SimulatorState externalState;
   llvm::SmallVector<GraphIngressEmission, 2> externalIngress;
-  seedState(externalState, externalIngress);
+  seedState(externalState, externalIngress, 2);
+  auto externalTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, load->graph, *prepared));
   auto unsupportedRuntime = CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, externalState,
+      plan, view, launch, load->graph, *prepared,
+      externalTransportGraph, externalState,
       /*captureMicroarchitecture=*/false);
   require(!unsupportedRuntime,
           "manager memory target unexpectedly acquired a CGRA provider");
@@ -676,10 +700,20 @@ void graphActivationExecutesSelectedLocalMemory() {
               std::make_error_code(std::errc::not_supported),
           "manager memory target did not fail as typed unsupported");
 
+  const auto frameShape = [](const CgraGraphActivationFrame &frame) {
+    return std::make_tuple(frame.coordinate.referenceCycle.numerator(),
+                           frame.coordinate.referenceCycle.denominator(),
+                           frame.coordinate.delta, frame.physicalEvents.size(),
+                           frame.actorEvents.size(), frame.publications.size(),
+                           frame.memoryLinearizations.size(), frame.sourceMask);
+  };
+  using FrameShape =
+      decltype(frameShape(std::declval<const CgraGraphActivationFrame &>()));
+  std::vector<FrameShape> immediateFrames;
   FixedExternalMemoryProvider externalMemory;
   auto externalRuntime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, externalState,
-      /*captureMicroarchitecture=*/false, &externalMemory));
+      plan, view, launch, load->graph, *prepared, externalTransportGraph,
+      externalState, /*captureMicroarchitecture=*/false, &externalMemory));
   if (llvm::Error error = externalRuntime.start(coordinate(0), externalIngress))
     fail(llvm::toString(std::move(error)));
   for (unsigned iteration = 0;
@@ -687,18 +721,81 @@ void graphActivationExecutesSelectedLocalMemory() {
     auto frame = take(externalRuntime.advance());
     require(frame.has_value(),
             "external memory activation lost its pending frame");
+    immediateFrames.push_back(frameShape(*frame));
   }
   require(!externalRuntime.hasPendingEvents() &&
-              externalMemory.requestCount == 1,
-          "manager memory activation did not use its external provider once");
-  auto externalOutput = externalState.observedOutputs.find(
-      graph.getBody().front().back().getOperand(0));
-  require(externalOutput != externalState.observedOutputs.end() &&
-              externalOutput->second.size() == 1 &&
-              take(tokenBitPattern(externalOutput->second.front(),
-                                   mlir::IntegerType::get(&context(), 32))) ==
-                  llvm::APInt(32, 26),
-          "manager memory activation ignored its provider response");
+              externalMemory.requests.size() == 2 &&
+              !(externalMemory.requests[0] == externalMemory.requests[1]),
+          "manager memory requests did not retain occurrence identity");
+
+  const auto requireExternalOutput = [&](SimulatorState &state) {
+    auto output = state.observedOutputs.find(
+        graph.getBody().front().back().getOperand(0));
+    require(output != state.observedOutputs.end() &&
+                output->second.size() == 2 &&
+                take(tokenBitPattern(output->second.front(),
+                                     mlir::IntegerType::get(&context(), 32))) ==
+                    llvm::APInt(32, 26) &&
+                take(tokenBitPattern(output->second.back(),
+                                     mlir::IntegerType::get(&context(), 32))) ==
+                    llvm::APInt(32, 34),
+            "manager memory activation lost or reordered a provider response");
+  };
+  requireExternalOutput(externalState);
+
+  FixedExternalMemoryProvider deferredMemory(
+      FixedExternalMemoryProvider::Completion::Deferred);
+  SimulatorState deferredState;
+  llvm::SmallVector<GraphIngressEmission, 4> deferredIngress;
+  seedState(deferredState, deferredIngress, 2);
+  auto deferredRuntime = take(CgraGraphActivationRuntime::create(
+      plan, view, launch, load->graph, *prepared, externalTransportGraph,
+      deferredState,
+      /*captureMicroarchitecture=*/false, &deferredMemory));
+  if (llvm::Error error = deferredRuntime.start(coordinate(0), deferredIngress))
+    fail(llvm::toString(std::move(error)));
+  std::vector<FrameShape> deferredFrames;
+  for (unsigned iteration = 0;
+       iteration != 96 && deferredRuntime.hasPendingEvents(); ++iteration) {
+    auto frame = take(deferredRuntime.advance());
+    if (frame) {
+      deferredFrames.push_back(frameShape(*frame));
+      continue;
+    }
+    require(deferredRuntime.waitingForExternalMemory() &&
+                !deferredMemory.requests.empty(),
+            "deferred memory lost its pending request");
+    require(!take(deferredRuntime.advance()).has_value(),
+            "host waiting advanced an incomplete model frame");
+    const unsigned ordinal = deferredMemory.requests.size() - 1;
+    // The same actor and occurrence from a different execution is foreign.
+    llvm::Error foreign = deferredRuntime.completeExternalMemory(
+        externalMemory.requests[ordinal],
+        FixedExternalMemoryProvider::response(ordinal));
+    require(static_cast<bool>(foreign),
+            "deferred memory accepted another execution's request identity");
+    llvm::consumeError(std::move(foreign));
+    llvm::Error malformed = deferredRuntime.completeExternalMemory(
+        deferredMemory.requests.back(), {{{1, 2, 3}}});
+    require(static_cast<bool>(malformed),
+            "deferred memory accepted an incomplete logical response");
+    llvm::consumeError(std::move(malformed));
+    if (llvm::Error error = deferredRuntime.completeExternalMemory(
+            deferredMemory.requests.back(),
+            FixedExternalMemoryProvider::response(ordinal)))
+      fail(llvm::toString(std::move(error)));
+    llvm::Error duplicate = deferredRuntime.completeExternalMemory(
+        deferredMemory.requests.back(),
+        FixedExternalMemoryProvider::response(ordinal));
+    require(static_cast<bool>(duplicate),
+            "deferred memory accepted the same completion twice");
+    llvm::consumeError(std::move(duplicate));
+  }
+  require(!deferredRuntime.hasPendingEvents() &&
+              deferredMemory.requests.size() == 2 &&
+              deferredFrames == immediateFrames,
+          "host suspension changed CGRA model coordinates or frame evidence");
+  requireExternalOutput(deferredState);
 
   plan.memory.rootedUses.front().target = service;
   plan.memory.rootedUses.front().localServicePhysicalUseOrdinal = serviceAction;
@@ -706,8 +803,10 @@ void graphActivationExecutesSelectedLocalMemory() {
   llvm::SmallVector<GraphIngressEmission, 2> ingress;
   seedState(state, ingress);
 
+  auto runtimeTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, load->graph, *prepared));
   auto runtime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, state,
+      plan, view, launch, load->graph, *prepared, runtimeTransportGraph, state,
       /*captureMicroarchitecture=*/false));
   if (llvm::Error error = runtime.start(coordinate(0), ingress))
     fail(llvm::toString(std::move(error)));
@@ -739,7 +838,7 @@ void graphActivationExecutesSelectedLocalMemory() {
 
 void graphActivationExecutesExactMemoryInternalConnections() {
   auto artifact = memoryChainProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
   const dataflow::CanonicalActorView *load = nullptr;
   const dataflow::CanonicalActorView *store = nullptr;
@@ -962,15 +1061,19 @@ void graphActivationExecutesExactMemoryInternalConnections() {
     break;
   }
   require(changedConnection, "memory role tamper found no internal source");
+  auto rejectedTransportGraph =
+      take(freezeCgraTransportGraph(tampered, view, load->graph, *prepared));
   auto rejected = CgraGraphActivationRuntime::create(
-      tampered, view, launch, load->graph, *prepared, state,
-      /*captureMicroarchitecture=*/false);
+      tampered, view, launch, load->graph, *prepared, rejectedTransportGraph,
+      state, /*captureMicroarchitecture=*/false);
   require(!rejected,
           "tampered memory internal activation was accepted by runtime");
   llvm::consumeError(rejected.takeError());
 
+  auto runtimeTransportGraph =
+      take(freezeCgraTransportGraph(plan, view, load->graph, *prepared));
   auto runtime = take(CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, state,
+      plan, view, launch, load->graph, *prepared, runtimeTransportGraph, state,
       /*captureMicroarchitecture=*/false));
   if (llvm::Error error = runtime.start(coordinate(100), ingress))
     fail(llvm::toString(std::move(error)));
@@ -1006,7 +1109,7 @@ void graphActivationExecutesExactMemoryInternalConnections() {
 
 void graphActivationRejectsUnsupportedMemoryContracts() {
   auto artifact = unsupportedMemoryProgram();
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   using ContractClass = dataflow::MemoryContractClass;
   // One graph per non-plain contract class; index 0 (Plain) stays unused.
   std::array<bool, 6> seen{};
@@ -1055,9 +1158,11 @@ void graphActivationRejectsUnsupportedMemoryContracts() {
     const dataflow::RootedGraphLaunchRef unusedLaunch{
         {view.identity(), dataflow::RootThreadLaunchId(0)},
         {view.identity(), dataflow::StaticGraphLaunchId(0)}};
+    auto rejectedTransportGraph =
+        take(freezeCgraTransportGraph(plan, view, graphView.ref, *prepared));
     auto rejected = CgraGraphActivationRuntime::create(
-        plan, view, unusedLaunch, graphView.ref, *prepared, state,
-        /*captureMicroarchitecture=*/false);
+        plan, view, unusedLaunch, graphView.ref, *prepared,
+        rejectedTransportGraph, state, /*captureMicroarchitecture=*/false);
     require(!rejected,
             "CGRA activation accepted an unsupported memory contract");
     llvm::Error rejection = rejected.takeError();

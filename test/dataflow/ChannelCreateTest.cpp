@@ -152,7 +152,7 @@ sendingRoot(const dataflow::CanonicalDataflowProgramView &view) {
 
 void hostCreationAndCanonicalRoundTrip() {
   auto artifact = finalize(hostCreatedProgram());
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   dataflow::ChannelProducerRef producer{
       dataflow::ThreadChannelSendSiteRef{sendingRoot(view), 0}};
   auto consumers = take(view.channelConsumers(producer));
@@ -175,7 +175,7 @@ void hostCreationAndCanonicalRoundTrip() {
 
 void threadLocalCreationIsRootContextual() {
   auto artifact = finalize(threadLocalProgram());
-  auto view = take(artifact.view());
+  const auto &view = artifact.view();
   require(view.rootThreadLaunches().size() == 2,
           "thread-local fixture lost a root launch");
   for (const dataflow::CanonicalRootThreadLaunchView &root :

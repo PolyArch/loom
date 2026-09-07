@@ -66,11 +66,13 @@ void emitFinalClosureHandshakeProjectionStatistics(
 
 /// Rebuilds the selected handshake graph from immutable projection inputs and
 /// checks its closure with one deterministic whole-graph pass. This path does
-/// not read or mutate candidate state.
+/// not read or mutate candidate state. A requested witness receives ordered
+/// frozen projection arc ordinals, or an empty vector for an acyclic graph.
 llvm::Expected<bool> independentlyVerifyHandshakeProjectionAcyclic(
     const FrozenSpatialHandshakeIndex &index,
     llvm::ArrayRef<PnrIndex> selectedFragments,
-    llvm::ArrayRef<PnrIndex> traversalUses);
+    llvm::ArrayRef<PnrIndex> traversalUses,
+    std::vector<PnrIndex> *frozenCycleWitness = nullptr);
 
 /// Reusable worker-local projection of only the currently selected handshake
 /// fragments. It retains storage capacity but never retains a potential union
@@ -86,10 +88,14 @@ public:
   ~HandshakeProjectionScratch();
 
   llvm::Error prepare(const FrozenSpatialHandshakeIndex &index);
+  /// A requested cycle witness is extracted from the completed dense
+  /// projection and names this exact selection in frozen arc numbering.
+  /// Independent cold verification remains the final Mapping admission owner.
   llvm::Expected<bool>
   projectAcyclic(const FrozenSpatialHandshakeIndex &index,
                  llvm::ArrayRef<PnrIndex> selectedFragments,
-                 llvm::ArrayRef<PnrIndex> traversalUses);
+                 llvm::ArrayRef<PnrIndex> traversalUses,
+                 std::vector<PnrIndex> *frozenCycleWitness = nullptr);
   /// Projects an already-derived active fragment set. Candidate transactions
   /// use this path for graph-sized deltas so rejected probes do not construct
   /// an owned materialized graph.
@@ -171,8 +177,6 @@ public:
   PnrIndex fragmentRefcount(PnrIndex fragment) const;
   PnrIndex traversalRefcount(PnrIndex traversal) const;
   bool isTraversalSelected(PnrIndex traversal) const;
-  llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
-  activeNodeSignals() const;
   llvm::ArrayRef<FrozenSpatialHandshakeArc> activeArcs() const;
   std::vector<PnrIndex> activeArcContributors(PnrIndex arc) const;
   /// Whether one of `fragments` is active and contributes to the compact arc.

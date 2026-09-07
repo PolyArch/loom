@@ -112,7 +112,7 @@ void temporalIngressServiceAdmission() {
   mlir::MLIRContext context = makeComputeBoundaryContext();
   auto dataflowArtifact = buildComputeFanoutDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflow = take(dataflowArtifact.view());
+  const auto &dataflow = dataflowArtifact.view();
   auto design = loom::test::buildTemporalCapacityFabric(store);
   const auto &fabric = design.roots().front();
   auto mapping = parseTechMapping(
@@ -275,7 +275,7 @@ void computeBoundaryClosure() {
 
   auto dataflowArtifact = buildComputeBoundaryDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
-  auto dataflowView = take(dataflowArtifact.view());
+  const auto &dataflowView = dataflowArtifact.view();
 
   auto design = loom::test::buildTemporalCapacityFabric(store);
   const auto &fabricRoot = design.roots().front();

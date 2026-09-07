@@ -19,6 +19,7 @@ TEST_ROOT = ROOT / "test"
 sys.path.insert(0, str(TEST_ROOT))
 
 import simulation_conformance  # noqa: E402
+import cgra_qualification  # noqa: E402
 
 
 class PairedSimulationBudgetTest(unittest.TestCase):
@@ -93,24 +94,30 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         )
         within = simulation_conformance.evaluate_paired_execution(
             budget,
-            self._attempts([
-                simulation_conformance.ActiveExecutionTiming(
-                    active_wall_seconds=2.5,
-                    reference_cycles=500_000,
-                    event_count=17,
-                    activation_count=3,
-                    peak_resident_bytes=4096,
-                )
-            ] * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT),
+            self._attempts(
+                [
+                    simulation_conformance.ActiveExecutionTiming(
+                        active_wall_seconds=2.5,
+                        reference_cycles=500_000,
+                        event_count=17,
+                        activation_count=3,
+                        peak_resident_bytes=4096,
+                    )
+                ]
+                * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT
+            ),
         )
         slow = simulation_conformance.evaluate_paired_execution(
             budget,
-            self._attempts([
-                simulation_conformance.ActiveExecutionTiming(
-                    active_wall_seconds=10.0,
-                    reference_cycles=500_000,
-                )
-            ] * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT),
+            self._attempts(
+                [
+                    simulation_conformance.ActiveExecutionTiming(
+                        active_wall_seconds=10.0,
+                        reference_cycles=500_000,
+                    )
+                ]
+                * simulation_conformance.PAIRED_SYSTEM_ATTEMPT_COUNT
+            ),
         )
 
         self.assertEqual(within.system_sample_ordinal, 0)
@@ -258,19 +265,15 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             simulation_conformance.ActiveExecutionTiming(1.0, -1)
 
     def test_cgra_gate_budget_is_derived_from_the_complete_profile_suite(self) -> None:
-        def reference(
-            identity: int, schema: str = "loom.mapping"
-        ) -> dict[str, object]:
+        def reference(identity: int, schema: str = "loom.mapping") -> dict[str, object]:
             return {
                 "schema": schema,
-                "schema_version": (
-                    simulation_conformance.OWNED_SCHEMA_VERSIONS[schema]
-                ),
+                "schema_version": (cgra_qualification.OWNED_SCHEMA_VERSIONS[schema]),
                 "artifact": f"{identity:064x}",
             }
 
         operator_gate_sha256, operators = (
-            simulation_conformance.load_cgra_representative_operators()
+            cgra_qualification.load_cgra_representative_operators()
         )
         generator_units = (
             "seed_attempt",
@@ -321,13 +324,11 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 "physical_grant_wait_cycle_sum": 4,
                 "physical_grant_wait_cycle_max": 2,
                 "physical_grant_delayed_count": 2,
-                "evaluation_evidence": reference(
-                    600 + ordinal, "evaluation.evidence"
-                ),
+                "evaluation_evidence": reference(600 + ordinal, "evaluation.evidence"),
             }
             profiles.append(
                 {
-                    "schema": "loom.cgra_budget_profile.5",
+                    "schema": cgra_qualification.CGRA_PROFILE_SCHEMA,
                     "workload": operator.workload,
                     "operator_id": operator.operator_id,
                     "protocol_symbol": operator.protocol_symbol,
@@ -335,9 +336,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     "warmup_runs": 1,
                     "measurement_runs": 3,
                     "batch_peak_resident_bytes": 4096,
-                    "canonical_dataflow": reference(
-                        ordinal, "loom.canonical_dataflow"
-                    ),
+                    "canonical_dataflow": reference(ordinal, "loom.canonical_dataflow"),
                     "simulation_workload": reference(
                         100 + ordinal, "loom.simulation_workload"
                     ),
@@ -379,6 +378,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "closed_wait_certificate_edges": None,
                             "closed_wait_certificate_closed": None,
                             "closed_wait_proof_failure": None,
+                            "operand_queue_shared_ingress_pressure": None,
                         }
                     ],
                     "transport_repair": None,
@@ -389,9 +389,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "process_cpu_nanoseconds": 1,
                         }
                     ],
-                    "warmup_evidence": reference(
-                        700 + ordinal, "evaluation.evidence"
-                    ),
+                    "warmup_evidence": reference(700 + ordinal, "evaluation.evidence"),
                     "measurements": [dict(measurement) for _ in range(3)],
                 }
             )
@@ -400,13 +398,11 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         incomplete_pnr["outcome"] = "incomplete"
         incomplete_pnr["incomplete_reason"] = "candidate_proof_not_established"
         incomplete_pnr["candidates"] = []
-        incomplete_work = [
-            dict(entry) for entry in incomplete_pnr["work_units"]
-        ]
+        incomplete_work = [dict(entry) for entry in incomplete_pnr["work_units"]]
         incomplete_work[0]["consumed"] = 3
         incomplete_pnr["work_units"] = incomplete_work
         typed_outcome = {
-            "schema": "loom.cgra_budget_profile_outcome.2",
+            "schema": cgra_qualification.CGRA_PROFILE_OUTCOME_SCHEMA,
             "workload": first_profile["workload"],
             "operator_id": first_profile["operator_id"],
             "protocol_symbol": first_profile["protocol_symbol"],
@@ -417,12 +413,12 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             "spatial_pnr": incomplete_pnr,
         }
         self.assertEqual(
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome),
             ("incomplete", "candidate_proof_not_established"),
         )
         incomplete_pnr["incomplete_reason"] = "infeasible"
         with self.assertRaises(ValueError):
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome)
         incomplete_pnr["incomplete_reason"] = "candidate_proof_not_established"
 
         infeasible_tech = dict(first_profile["tech_mapping_search"])
@@ -437,7 +433,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         typed_outcome["tech_mapping_search"] = infeasible_tech
         typed_outcome["spatial_pnr"] = None
         self.assertEqual(
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome),
             ("proven_infeasible", None),
         )
         infeasible_tech["infeasibility_proof"] = {
@@ -445,7 +441,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             "witness": "01",
         }
         with self.assertRaises(ValueError):
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome)
         infeasible_tech["infeasibility_proof"] = {
             "kind": 0,
             "witness": "01",
@@ -456,19 +452,19 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         assert isinstance(first_infeasible_work, dict)
         first_infeasible_work["consumed"] = 0
         with self.assertRaises(ValueError):
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome)
         first_infeasible_work["consumed"] = 1
         infeasible_tech["infeasibility_proof"] = {"kind": 0, "witness": ""}
         self.assertEqual(
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome),
             ("proven_infeasible", None),
         )
         infeasible_tech["infeasibility_proof"] = None
         with self.assertRaises(ValueError):
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome)
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome)
         infeasible_tech["outcome"] = "completed"
         self.assertEqual(
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome),
             ("completed", None),
         )
 
@@ -483,15 +479,15 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         typed_outcome["tech_mapping_search"] = first_profile["tech_mapping_search"]
         typed_outcome["spatial_pnr"] = completed_empty_pnr
         self.assertEqual(
-            simulation_conformance.validate_cgra_profile_outcome(typed_outcome),
+            cgra_qualification.validate_cgra_profile_outcome(typed_outcome),
             ("completed", None),
         )
         self.assertEqual(
-            simulation_conformance.derive_cgra_spatial_budget_nanoseconds(profiles),
+            cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles),
             500_000_000,
         )
         configuration = {
-            "schema": "loom.cgra_simulation_gate.5",
+            "schema": cgra_qualification.CGRA_GATE_SCHEMA,
             "policy": {
                 "qualification_limit_nanoseconds": 45_000_000_000,
                 "warmup_runs": 1,
@@ -499,7 +495,7 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 "reference_rate_target_cycles_per_second": 100_000,
             },
             "operator_gate": {
-                "path": simulation_conformance.CGRA_OPERATOR_GATE_RELATIVE_PATH,
+                "path": cgra_qualification.CGRA_OPERATOR_GATE_RELATIVE_PATH,
                 "sha256": operator_gate_sha256,
             },
             "spatial_absolute_budget_nanoseconds": 500_000_000,
@@ -510,45 +506,104 @@ class PairedSimulationBudgetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=scratch_root) as directory:
             path = Path(directory) / "gate.json"
             path.write_text(json.dumps(configuration), encoding="ascii")
-            loaded = simulation_conformance.load_cgra_gate_configuration(path)
+            loaded = cgra_qualification.load_cgra_gate_configuration(path)
             self.assertEqual(loaded.spatial_absolute_budget_nanoseconds, 500_000_000)
             self.assertEqual(loaded.spatial_absolute_budget_seconds, 0.5)
             repaired_profile = profiles[0]
             repair_child = reference(900)
-            repair_pnr = json.loads(json.dumps(repaired_profile["spatial_pnr"]))
-            repair_pnr["candidates"] = [repair_child]
             repaired_profile["spatial_mapping"] = repair_child
             repaired_profile["transport_repair"] = {
                 "parent_system_mapping": reference(901),
-                "pre_repair_evidence": reference(
-                    902, "evaluation.evidence"
-                ),
+                "pre_repair_evidence": reference(902, "evaluation.evidence"),
+                "termination": "retired",
                 "attempts": [
                     {
                         "parent_spatial_mapping": repaired_profile[
                             "initial_spatial_mapping"
                         ],
-                        "constraint_set": reference(
-                            903, "loom.mapping_constraints"
-                        ),
-                        "spatial_pnr": repair_pnr,
+                        "runtime_evidence": reference(902, "evaluation.evidence"),
+                        "constraint_set": reference(903, "loom.mapping_constraints"),
                         "child_spatial_mapping": repair_child,
-                        "accepted_for_simulation": True,
+                        "child_evidence": reference(906, "evaluation.evidence"),
+                        "repair_kind": cgra_qualification.SpatialExactRepairKind.REPAIRED,
+                        "solver_calls": 1,
+                        "logical_solver_calls": 2,
+                        "action_count": 1,
+                        "retired": True,
                     }
                 ],
             }
             path.write_text(json.dumps(configuration), encoding="ascii")
-            simulation_conformance.load_cgra_gate_configuration(path)
+            cgra_qualification.load_cgra_gate_configuration(path)
             repaired_profile["spatial_mapping"] = reference(904)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             repaired_profile["spatial_mapping"] = repair_child
             repair_attempt = repaired_profile["transport_repair"]["attempts"][0]
+            transport_outcome = {
+                "schema": cgra_qualification.CGRA_PROFILE_OUTCOME_SCHEMA,
+                "workload": repaired_profile["workload"],
+                "operator_id": repaired_profile["operator_id"],
+                "protocol_symbol": repaired_profile["protocol_symbol"],
+                "stage": "transport_repair",
+                "resolved_config": repaired_profile["resolved_config"],
+                "fabric": repaired_profile["fabric"],
+                "tech_mapping_search": repaired_profile["tech_mapping_search"],
+                "spatial_pnr": repaired_profile["spatial_pnr"],
+                "initial_spatial_mapping": repaired_profile["initial_spatial_mapping"],
+                "spatial_candidate_screening": repaired_profile[
+                    "spatial_candidate_screening"
+                ],
+                "phase_ledger": repaired_profile["phase_ledger"],
+                "transport_repair": json.loads(
+                    json.dumps(repaired_profile["transport_repair"])
+                ),
+            }
+            stopped_repair = transport_outcome["transport_repair"]
+            stopped_repair["termination"] = "runtime_incomplete"
+            stopped_repair["attempts"][0]["retired"] = False
+            self.assertEqual(
+                cgra_qualification.validate_cgra_profile_outcome(transport_outcome),
+                ("incomplete", "runtime_incomplete"),
+            )
+            # Cumulative repair uses the preceding child and its exact runtime
+            # Evidence as the next parent; every step cannot name the initial
+            # Mapping independently.
+            repair_attempt["retired"] = False
+            next_attempt = dict(repair_attempt)
+            next_attempt.update(
+                {
+                    "parent_spatial_mapping": repair_child,
+                    "runtime_evidence": repair_attempt["child_evidence"],
+                    "child_spatial_mapping": reference(907),
+                    "child_evidence": reference(908, "evaluation.evidence"),
+                    "constraint_set": reference(909, "loom.mapping_constraints"),
+                    "retired": True,
+                }
+            )
+            repaired_profile["transport_repair"]["attempts"].append(next_attempt)
+            repaired_profile["spatial_mapping"] = next_attempt["child_spatial_mapping"]
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            cgra_qualification.load_cgra_gate_configuration(path)
+            next_attempt["runtime_evidence"] = reference(902, "evaluation.evidence")
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                cgra_qualification.load_cgra_gate_configuration(path)
+            next_attempt["runtime_evidence"] = repair_attempt["child_evidence"]
+            next_attempt["parent_spatial_mapping"] = repaired_profile[
+                "initial_spatial_mapping"
+            ]
+            path.write_text(json.dumps(configuration), encoding="ascii")
+            with self.assertRaises(ValueError):
+                cgra_qualification.load_cgra_gate_configuration(path)
+            repaired_profile["transport_repair"]["attempts"].pop()
+            repair_attempt["retired"] = True
+            repaired_profile["spatial_mapping"] = repair_child
             repair_attempt["constraint_set"] = reference(903)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             repaired_profile["transport_repair"] = None
             repaired_profile["spatial_mapping"] = repaired_profile[
                 "initial_spatial_mapping"
@@ -557,14 +612,14 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             repaired_profile["canonical_dataflow"] = reference(905)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             repaired_profile["canonical_dataflow"] = canonical_dataflow
             profile_pnr = profiles[0]["spatial_pnr"]
             assert isinstance(profile_pnr, dict)
             profile_pnr["completion_goal"] = "first_verified_candidate"
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             profile_pnr["completion_goal"] = "exhaust_configured_work"
             work_units = profile_pnr["work_units"]
             assert isinstance(work_units, list)
@@ -573,19 +628,19 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             seed_work["consumed"] = 3
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             seed_work["consumed"] = 4
             configuration["spatial_absolute_budget_nanoseconds"] = 500_000_001
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
             configuration["spatial_absolute_budget_nanoseconds"] = 500_000_000
             operator_gate = configuration["operator_gate"]
             assert isinstance(operator_gate, dict)
             operator_gate["sha256"] = "0" * 64
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
-                simulation_conformance.load_cgra_gate_configuration(path)
+                cgra_qualification.load_cgra_gate_configuration(path)
 
     def test_outer_worker_limit_reserves_cpus_and_obeys_memory_limit(self) -> None:
         self.assertEqual(
@@ -817,26 +872,24 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
         return runner, readiness
 
     @staticmethod
-    def _synthetic_gate() -> simulation_conformance.CgraGateConfiguration:
+    def _synthetic_gate() -> cgra_qualification.CgraGateConfiguration:
         operator_gate_sha256, _ = (
-            simulation_conformance.load_cgra_representative_operators()
+            cgra_qualification.load_cgra_representative_operators()
         )
-        return simulation_conformance.CgraGateConfiguration(
+        return cgra_qualification.CgraGateConfiguration(
             500_000_000, "0" * 64, operator_gate_sha256, ()
         )
 
     def test_resolved_gate_is_tracked_or_typed_provisional(self) -> None:
-        gate = simulation_conformance.resolve_cgra_gate_configuration()
+        gate = cgra_qualification.resolve_cgra_gate_configuration()
         self.assertGreater(gate.spatial_absolute_budget_nanoseconds, 0)
-        if gate.source is simulation_conformance.CgraGateSource.TRACKED:
+        if gate.source is cgra_qualification.CgraGateSource.TRACKED:
             self.assertEqual(
                 len(gate.profiles),
-                len(simulation_conformance.CGRA_REPRESENTATIVE_WORKLOADS),
+                len(cgra_qualification.CGRA_REPRESENTATIVE_WORKLOADS),
             )
         else:
-            self.assertFalse(
-                simulation_conformance.CGRA_GATE_CONFIGURATION.is_file()
-            )
+            self.assertFalse(cgra_qualification.CGRA_GATE_CONFIGURATION.is_file())
 
     def test_real_process_pair_produces_a_measurement(self) -> None:
         scratch_root = ROOT / "temp"
@@ -872,7 +925,7 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
         projected = simulation_conformance.report_json(report)
         self.assertEqual(
             projected["spatial_absolute_budget"]["path"],
-            simulation_conformance.CGRA_GATE_RELATIVE_PATH,
+            cgra_qualification.CGRA_GATE_RELATIVE_PATH,
         )
         self.assertEqual(projected["spatial_absolute_budget"]["seconds"], 0.5)
         self.assertEqual(
@@ -912,14 +965,14 @@ class PairedMeasurementRunnerTest(unittest.TestCase):
 
     def test_provisional_gate_is_typed_incomplete(self) -> None:
         operator_gate_sha256, _ = (
-            simulation_conformance.load_cgra_representative_operators()
+            cgra_qualification.load_cgra_representative_operators()
         )
-        gate = simulation_conformance.CgraGateConfiguration(
+        gate = cgra_qualification.CgraGateConfiguration(
             500_000_000,
             "",
             operator_gate_sha256,
             (),
-            simulation_conformance.CgraGateSource.PROVISIONAL_BOOTSTRAP,
+            cgra_qualification.CgraGateSource.PROVISIONAL_BOOTSTRAP,
         )
         report = simulation_conformance.run_paired_execution_matrix(
             Path("missing-runner"),
