@@ -12,7 +12,7 @@ namespace loom::runtime {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kProjectionMagic{'L', 'G', 'C', 'P',
-                                                       '0', '0', '0', '3'};
+                                                       '0', '0', '0', '4'};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -62,6 +62,8 @@ llvm::Error canonicalize(Gem5SpatialChannelProjection &projection) {
   for (const Gem5SpatialChannelOutput &output : projection.outputs)
     if (output.capacityMessages == 0)
       return invalid("channel output capacity must be positive");
+  if (projection.memoryOutstandingCapacity == 0)
+    return invalid("memory outstanding capacity must be positive");
   if (std::adjacent_find(projection.inputs.begin(), projection.inputs.end(),
                          [](const auto &lhs, const auto &rhs) {
                            return lhs.consumerStreamInputOrdinal ==
@@ -94,6 +96,7 @@ encodeCanonical(const Gem5SpatialChannelProjection &projection) {
     appendU64(bytes, output.channelOrdinal);
     appendU64(bytes, output.capacityMessages);
   }
+  appendU64(bytes, projection.memoryOutstandingCapacity);
   return bytes;
 }
 
@@ -151,6 +154,10 @@ decodeGem5SpatialChannelProjection(llvm::ArrayRef<std::uint8_t> bytes) {
       return capacity.takeError();
     projection.outputs.push_back({*producer, *address, *capacity});
   }
+  auto memoryOutstanding = reader.u64();
+  if (!memoryOutstanding)
+    return memoryOutstanding.takeError();
+  projection.memoryOutstandingCapacity = *memoryOutstanding;
   if (!reader.empty())
     return invalid("projection has trailing bytes");
   const std::vector<std::uint8_t> original(bytes.begin(), bytes.end());

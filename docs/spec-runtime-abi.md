@@ -1108,6 +1108,17 @@ operations. Their ordering, resource claims, and result assembly are derived
 from Fabric. An all-zero mask reaches no service and completes locally with
 the canonical masked-load or masked-store result.
 
+Implementation transactions follow the request geometry rather than its lanes.
+A `Contiguous` geometry reaches one byte range, so each run of adjacent active
+lanes is one transaction and a fully active request is one transfer; an
+inactive lane splits the range. `Element` and `Indexed` geometry retain one
+transaction for each active lane. An adapter must not split a contiguous range
+into per-lane transactions, and must not merge lanes of an `Indexed` request.
+Several transactions of one request, and transactions of different requests,
+may be outstanding together up to the exact service rate contract's
+`maxOutstanding` guarantee. Concurrency and coalescing change no address, byte,
+completion, or retirement fact.
+
 When a `fabric.mem` load response retires, read data and completion become one
 indivisible `data + done` publication across all selected internal and external
 obligations. A store response retires as one `done` event. Runtime and adapters
@@ -1460,11 +1471,13 @@ The external engine protocol is `loom.gem5_spatial_bridge_abi.v6`. One
 engine session owns one connection and every physical Bridge whose ordered
 channels that engine can wake. Each causal advance carries one gem5 input,
 a strictly increasing generation, and its gem5 tick. Its response echoes both
-coordinates and contains the complete finite batch of next boundary actions,
-with at most one action per registered physical Bridge. Every message names
-its physical Bridge and invocation sequence in the outer envelope; the launch
-payload does not repeat the Bridge identity. An empty response explicitly
-acknowledges quiescence until a later gem5 input.
+coordinates and contains the complete finite batch of next boundary actions.
+One physical Bridge receives at most one non-memory action per response, and
+otherwise the concurrent memory transactions its exact System memory service
+guarantees outstanding. Every message names its physical Bridge and invocation
+sequence in the outer envelope; the launch payload does not repeat the Bridge
+identity. An empty response explicitly acknowledges quiescence until a later
+gem5 input.
 
 After the required launch-descriptor DMAs, a memory acknowledgement, or a
 scheduled channel commit, the session exits the simulation loop immediately at
@@ -1480,8 +1493,14 @@ quiescence, and blocking on a host socket inside a gem5 device event is invalid.
 The Bridge schedules each action at the causal input tick plus its modeled
 local-coordinate difference. A memory request is issued from a gem5 event at
 that ready tick; a DMA callback delay cannot substitute for delaying the
-request's visibility. The following advance is anchored to the actual DMA
-acknowledgement tick, and the modeled difference is charged exactly once.
+request's visibility. Concurrent memory transactions of one response each own
+their ready tick, DMA, and acknowledgement, so the memory system observes the
+modeled concurrency of the selected service rather than a serialized queue.
+Every modeled difference in one response is measured from the serviced
+coordinate that response batch started with, and that coordinate then advances
+once to the latest coordinate the batch framed. The following advance is
+anchored to the actual DMA acknowledgement tick, and each modeled difference is
+charged exactly once.
 The same scheduled channel boundary also exposes a consumer's next receive
 readiness coordinate. The provider schedules that boundary before waiting for
 message availability, so an already executed consumer prefix is not charged
@@ -1517,6 +1536,17 @@ Spatial Bridge performs separate DMA reads and frames them only after the
 required reads complete. Mutable MMIO registers, target records, DMA scratch
 buffers, CPU state, socket state, and event budgets are never cached as
 candidate-invariant state.
+
+The immutable plane is loaded once per configuration residency. The Bridge
+retains the descriptor and bytes of the static launch image it last fetched
+and reuses them while a launch names that exact address and size; it re-reads
+guest memory only when the descriptor changes, and a Bridge reset drops the
+residency. A residency statistic reports how many static launch images the
+Bridge fetched. The image is immutable configuration state, so this is a
+residency of that state and not a cache of mutable guest memory; the engine's
+byte comparison of the immutable plane against the Deployment projection
+remains the safety check, and a dynamic invocation descriptor is never
+retained.
 
 Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows

@@ -113,14 +113,6 @@ public:
   traversalStorageQueueDiscipline(std::uint64_t storageOrdinal) const;
 
 private:
-  struct SuspendedFrame final {
-    CgraGraphActivationFrame graph;
-    CgraMemoryLifecycleFrame memory;
-    /// The physical calendar retains this view until its next advance. A
-    /// suspended graph never advances that calendar before finishing it.
-    CgraPhysicalLifecycleFrameView physical;
-  };
-
   struct ActorFiring final {
     bool active = false;
     std::uint64_t semanticActorOrdinal = 0;
@@ -194,7 +186,6 @@ private:
       physicalTraceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> nextIngressOccurrence_;
   std::vector<GraphIngressEmission> pendingGraphIngress_;
-  std::optional<SuspendedFrame> suspendedFrame_;
   bool captureMicroarchitecture_ = false;
   bool started_ = false;
 };

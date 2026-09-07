@@ -18,6 +18,14 @@ inline constexpr char gem5BridgeAbiIdentity[] =
 inline constexpr std::uint64_t gem5BridgeDefaultMaximumMessageBytes =
     64ULL * 1024ULL * 1024ULL;
 
+/// Boundary actions one causal response may frame for a single physical
+/// Bridge: its unique non-memory action, or the concurrent memory
+/// transactions its selected memory service holds outstanding. This is a
+/// receive-side allocation bound only. The engine derives the modeled memory
+/// concurrency from the exact System service contract, and the Bridge admits
+/// every transaction by its own identity.
+inline constexpr std::uint64_t gem5BridgeMaximumBridgeActionsPerAdvance = 256;
+
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
   MemoryRequest = 1,

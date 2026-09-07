@@ -484,6 +484,7 @@ llvm::Error CgraMemoryRuntime::start(SpatialEventCoordinate coordinate) {
   if (started_)
     return invalid("CGRA memory runtime was already started");
   started_ = true;
+  lastCoordinate_ = coordinate;
   return scheduleReady(std::move(coordinate));
 }
 
@@ -584,92 +585,167 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
       firing.linearization != LinearizationState::Unissued)
     return invalid("CGRA memory linearization names an invalid firing");
   firing.linearization = LinearizationState::Pending;
+  firing.linearizeCoordinate = frame.coordinate;
   pendingLinearizations_.push_back(firingSlot);
   return advanceLinearizations(frame);
 }
 
+bool CgraMemoryRuntime::usesExternalService(const Firing &firing) const {
+  const ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  return std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
+             binding.rootedUse->target) &&
+         !firing.ready->activeLanes.isZero();
+}
+
+std::uint64_t CgraMemoryRuntime::externalCapacity() const {
+  if (!externalMemoryProvider_)
+    return 1;
+  return std::max<std::uint64_t>(1,
+                                 externalMemoryProvider_->outstandingCapacity());
+}
+
+bool CgraMemoryRuntime::headLinearizationReady() const {
+  if (pendingLinearizations_.empty())
+    return false;
+  const Firing &firing = firings_[pendingLinearizations_.front()];
+  if (!usesExternalService(firing))
+    return true;
+  return firing.linearization == LinearizationState::Issued &&
+         firing.external->response.has_value();
+}
+
+llvm::Expected<std::optional<DataflowMemoryWrite>>
+CgraMemoryRuntime::prepareFiringWrite(std::uint64_t firingSlot) {
+  Firing &firing = firings_[firingSlot];
+  ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  if (!binding.semantic->memory->dataOperandOrdinal)
+    return std::optional<DataflowMemoryWrite>{};
+  if (!firing.storeData)
+    return invalid("CGRA store firing lost its data token");
+  state_->currentActorPlan = binding.semantic;
+  llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
+  std::optional<DataflowMemoryWrite> write = prepareMemoryWrite(
+      *firing.storeData, *firing.ready, *binding.semantic->memory, *state_);
+  if (!write)
+    return executionFailure(*state_, "CGRA memory write preparation failed");
+  return write;
+}
+
 llvm::Error
 CgraMemoryRuntime::advanceLinearizations(CgraMemoryLifecycleFrame &frame) {
-  while (!pendingLinearizations_.empty()) {
-    const std::uint64_t slot = pendingLinearizations_.front();
-    Firing &firing = firings_[slot];
-    if (!firing.external)
-      if (llvm::Error error = beginLinearization(slot, frame))
+  for (;;) {
+    // Pipelined issue: every accepted firing may reach the external service
+    // while earlier firings await responses, bounded by the exact service
+    // outstanding guarantee.
+    bool issued = false;
+    for (std::uint64_t slot : pendingLinearizations_) {
+      Firing &firing = firings_[slot];
+      if (firing.linearization != LinearizationState::Pending ||
+          !usesExternalService(firing))
+        continue;
+      if (outstandingExternalRequests_ >= externalCapacity())
+        break;
+      if (llvm::Error error = issueExternalMemory(slot))
         return error;
-    if (firing.external) {
-      if (!firing.external->response)
-        return llvm::Error::success();
-      if (llvm::Error error = finishExternalMemory(slot, frame))
-        return error;
+      issued = true;
     }
-    maybeComplete(slot, frame);
-    pendingLinearizations_.pop_front();
+    // In-order linearization: the consistency domain consumes responses in the
+    // order it accepted the firings, whatever order the service answers in.
+    bool linearized = false;
+    while (headLinearizationReady()) {
+      const std::uint64_t slot = pendingLinearizations_.front();
+      if (usesExternalService(firings_[slot])) {
+        if (llvm::Error error = finishExternalMemory(slot, frame))
+          return error;
+      } else if (llvm::Error error = commitLocalLinearization(slot, frame)) {
+        return error;
+      }
+      maybeComplete(slot, frame);
+      pendingLinearizations_.pop_front();
+      linearized = true;
+    }
+    if (!issued && !linearized)
+      break;
   }
+  if (!headLinearizationReady())
+    drainCoordinate_.reset();
   return llvm::Error::success();
 }
 
 llvm::Error
-CgraMemoryRuntime::beginLinearization(std::uint64_t firingSlot,
-                                      CgraMemoryLifecycleFrame &frame) {
+CgraMemoryRuntime::commitLocalLinearization(std::uint64_t firingSlot,
+                                            CgraMemoryLifecycleFrame &frame) {
+  auto write = prepareFiringWrite(firingSlot);
+  if (!write)
+    return write.takeError();
+  return finishLinearization(firingSlot, std::move(*write), frame);
+}
+
+llvm::Error CgraMemoryRuntime::issueExternalMemory(std::uint64_t firingSlot) {
   Firing &firing = firings_[firingSlot];
   ActorBinding &binding = bindings_[firing.bindingOrdinal];
-  std::optional<DataflowMemoryWrite> write;
-  if (binding.semantic->memory->dataOperandOrdinal) {
-    if (!firing.storeData)
-      return invalid("CGRA store firing lost its data token");
-    state_->currentActorPlan = binding.semantic;
-    llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
-    write = prepareMemoryWrite(*firing.storeData, *firing.ready,
-                               *binding.semantic->memory, *state_);
-    if (!write)
-      return executionFailure(*state_, "CGRA memory write preparation failed");
-  }
-
-  const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
-      &binding.rootedUse->target);
-  if (!manager || firing.ready->activeLanes.isZero())
-    return finishLinearization(firingSlot, std::move(write), frame);
+  auto write = prepareFiringWrite(firingSlot);
+  if (!write)
+    return write.takeError();
   if (!externalMemoryProvider_)
     return unsupported("CGRA manager memory provider disappeared");
   if (!externalMemoryDomain_)
     externalMemoryDomain_ =
         std::make_shared<const CgraExternalMemoryRequestId::Domain>();
+  const auto &manager =
+      std::get<::loom::fabric::ManagerEndpointRef>(binding.rootedUse->target);
   CgraExternalMemoryRequest request{
       CgraExternalMemoryRequestId(externalMemoryDomain_,
                                   binding.semanticActorOrdinal,
                                   firing.actorOccurrenceOrdinal),
-      *manager,
+      manager,
       firing.ready->view.memory->logicalRootId,
-      write ? CgraExternalMemoryOperation::Write
-            : CgraExternalMemoryOperation::Read,
+      *write ? CgraExternalMemoryOperation::Write
+             : CgraExternalMemoryOperation::Read,
       {},
-      frame.coordinate};
+      *firing.linearizeCoordinate};
+  const std::uint64_t elementBytes =
+      binding.semantic->memory->elementLayout.byteCount;
+  // A contiguous access reaches one byte range in row-major lane order, so
+  // adjacent active lanes are one external transfer. Element and indexed
+  // geometry keep one transfer for each active lane.
+  const bool coalesce = binding.semantic->memory->access.isVector() &&
+                        !binding.semantic->memory->access.isGather();
   request.elements.reserve(firing.ready->slots.size());
-  if (write && write->elements.size() != firing.ready->slots.size())
+  if (*write && (*write)->elements.size() != firing.ready->slots.size())
     return invalid("CGRA external write element projection is incomplete");
   for (std::size_t ordinal = 0; ordinal != firing.ready->slots.size();
        ++ordinal) {
-    CgraExternalMemoryElement element{
-        firing.ready->slots[ordinal],
-        binding.semantic->memory->elementLayout.byteCount,
-        {}};
-    if (write) {
-      const DataflowMemoryWrite::Element &prepared = write->elements[ordinal];
-      if (prepared.byteOffset != element.byteOffset ||
-          prepared.bytes.size() != element.byteCount)
+    const std::uint64_t byteOffset = firing.ready->slots[ordinal];
+    llvm::SmallVector<std::uint8_t, 8> bytes;
+    if (*write) {
+      const DataflowMemoryWrite::Element &prepared = (*write)->elements[ordinal];
+      if (prepared.byteOffset != byteOffset ||
+          prepared.bytes.size() != elementBytes)
         return invalid("CGRA external write geometry disagrees with Dataflow");
-      element.writeData.reserve(prepared.bytes.size());
       for (const SemanticMemoryByte &byte : prepared.bytes) {
         if (byte.state != SemanticState::Defined)
           return unsupported(
               "CGRA external provider cannot publish exceptional bytes");
-        element.writeData.push_back(byte.value);
+        bytes.push_back(byte.value);
       }
     }
-    request.elements.push_back(std::move(element));
+    CgraExternalMemoryElement *previous =
+        request.elements.empty() ? nullptr : &request.elements.back();
+    if (coalesce && previous &&
+        previous->byteOffset + previous->byteCount == byteOffset) {
+      previous->byteCount += elementBytes;
+      previous->writeData.insert(previous->writeData.end(), bytes.begin(),
+                                 bytes.end());
+      continue;
+    }
+    request.elements.push_back(
+        {byteOffset, elementBytes, {bytes.begin(), bytes.end()}});
   }
-  firing.external.emplace(PendingExternalMemory{
-      std::move(request), std::move(write), std::nullopt});
+  firing.external.emplace(
+      PendingExternalMemory{std::move(request), std::move(*write), std::nullopt});
+  firing.linearization = LinearizationState::Issued;
+  ++outstandingExternalRequests_;
   auto submitted = externalMemoryProvider_->submit(firing.external->request);
   if (!submitted)
     return submitted.takeError();
@@ -697,27 +773,39 @@ llvm::Error CgraMemoryRuntime::validateExternalMemoryResponse(
 }
 
 bool CgraMemoryRuntime::waitingForExternalMemory() const {
-  if (pendingLinearizations_.empty())
-    return false;
-  const Firing &firing = firings_[pendingLinearizations_.front()];
-  return firing.external && !firing.external->response;
+  return !pendingLinearizations_.empty() && !headLinearizationReady();
 }
+
 
 llvm::Error
 CgraMemoryRuntime::completeExternalMemory(CgraExternalMemoryRequestId request,
                                           CgraExternalMemoryResponse response) {
-  if (pendingLinearizations_.empty())
+  Firing *selected = nullptr;
+  for (std::uint64_t slot : pendingLinearizations_) {
+    Firing &firing = firings_[slot];
+    if (firing.linearization != LinearizationState::Issued ||
+        !(firing.external->request.id == request))
+      continue;
+    selected = &firing;
+    break;
+  }
+  if (!selected)
     return invalid("CGRA external memory response names no pending request");
-  Firing &firing = firings_[pendingLinearizations_.front()];
-  if (!firing.external || !(firing.external->request.id == request))
-    return invalid("CGRA external memory response names no pending request");
-  PendingExternalMemory &pending = *firing.external;
+  PendingExternalMemory &pending = *selected->external;
   if (pending.response)
     return invalid("CGRA external memory response was already supplied");
   if (llvm::Error error =
           validateExternalMemoryResponse(pending.request, response))
     return error;
   pending.response.emplace(std::move(response));
+  // The response resumes the head linearization at the coordinate the model
+  // last reached, so a deferred answer publishes at the same Spatial
+  // coordinate an immediate answer would have.
+  if (!drainCoordinate_ && headLinearizationReady()) {
+    if (!lastCoordinate_)
+      return invalid("CGRA external memory response precedes execution");
+    drainCoordinate_ = *lastCoordinate_;
+  }
   return llvm::Error::success();
 }
 
@@ -763,24 +851,13 @@ CgraMemoryRuntime::finishExternalMemory(std::uint64_t firingSlot,
   Firing &firing = firings_[firingSlot];
   PendingExternalMemory pending = std::move(*firing.external);
   firing.external.reset();
+  if (outstandingExternalRequests_ == 0)
+    return invalid("CGRA outstanding external memory count underflow");
+  --outstandingExternalRequests_;
   if (llvm::Error error = applyExternalMemoryResponse(firing, pending.request,
                                                       *pending.response))
     return error;
   return finishLinearization(firingSlot, std::move(pending.write), frame);
-}
-
-llvm::Error
-CgraMemoryRuntime::resumeExternalMemory(CgraMemoryLifecycleFrame &frame) {
-  if (waitingForExternalMemory())
-    return invalid("CGRA external memory still awaits a response");
-  if (pendingLinearizations_.empty())
-    return invalid("CGRA external memory has no suspended linearization");
-  const Firing &firing = firings_[pendingLinearizations_.front()];
-  if (!firing.external ||
-      compareSpatialEventCoordinates(firing.external->request.readyCoordinate,
-                                     frame.coordinate) != 0)
-    return invalid("CGRA external memory lost its suspended coordinate");
-  return advanceLinearizations(frame);
 }
 
 llvm::Error
@@ -928,6 +1005,7 @@ CgraMemoryRuntime::acceptPhysicalEvents(
     const CgraPhysicalLifecycleFrameView &physicalFrame) {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
+  lastCoordinate_ = physicalFrame.coordinate;
   CgraMemoryLifecycleFrame result{physicalFrame.coordinate, {}, {}, {}, {}, {}};
   for (const CgraPhysicalLifecycleEvent &event : physicalFrame.events) {
     if (compareSpatialEventCoordinates(event.coordinate,
@@ -967,21 +1045,45 @@ llvm::Error CgraMemoryRuntime::retireActor(std::uint64_t semanticActorOrdinal,
   return scheduleReady(std::move(*next));
 }
 
+std::optional<SpatialEventCoordinate>
+CgraMemoryRuntime::nextCoordinate() const {
+  std::optional<SpatialEventCoordinate> selected =
+      requestedEvents_.nextCoordinate();
+  if (drainCoordinate_ &&
+      (!selected ||
+       compareSpatialEventCoordinates(*drainCoordinate_, *selected) < 0))
+    selected = drainCoordinate_;
+  return selected;
+}
+
 llvm::Expected<std::optional<CgraMemoryLifecycleFrame>>
 CgraMemoryRuntime::advance() {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
-  auto requested = requestedEvents_.popNextFrameView();
-  if (!requested)
-    return requested.takeError();
-  if (!*requested)
+  const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
+  if (!coordinate)
     return std::optional<CgraMemoryLifecycleFrame>{};
-  CgraMemoryLifecycleFrame frame{(**requested).coordinate, {}, {}, {}, {}, {}};
-  for (const CgraScheduledEvent &event : (**requested).events)
-    frame.physicalEvents.push_back(
-        {CgraPhysicalLifecycleKind::Requested,
-         event.order.structuralActionOrdinal, event.order.occurrenceOrdinal,
-         event.order.ownerEventOrdinal, event.order.coordinate});
+  CgraMemoryLifecycleFrame frame{*coordinate, {}, {}, {}, {}, {}};
+  lastCoordinate_ = *coordinate;
+  if (drainCoordinate_ &&
+      compareSpatialEventCoordinates(*drainCoordinate_, *coordinate) == 0)
+    if (llvm::Error error = advanceLinearizations(frame))
+      return std::move(error);
+  const std::optional<SpatialEventCoordinate> requestedCoordinate =
+      requestedEvents_.nextCoordinate();
+  if (requestedCoordinate &&
+      compareSpatialEventCoordinates(*requestedCoordinate, *coordinate) == 0) {
+    auto requested = requestedEvents_.popNextFrameView();
+    if (!requested)
+      return requested.takeError();
+    if (!*requested)
+      return invalid("CGRA memory calendar lost its next frame");
+    for (const CgraScheduledEvent &event : (**requested).events)
+      frame.physicalEvents.push_back(
+          {CgraPhysicalLifecycleKind::Requested,
+           event.order.structuralActionOrdinal, event.order.occurrenceOrdinal,
+           event.order.ownerEventOrdinal, event.order.coordinate});
+  }
   return std::optional<CgraMemoryLifecycleFrame>(std::move(frame));
 }
 

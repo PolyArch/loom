@@ -445,6 +445,11 @@ public:
       objects_.push_back(object.initialBytes);
   }
 
+  /// The standalone model services every request at its exact ready
+  /// coordinate, so the SpatialCore subject never observes an overlapped
+  /// external service.
+  std::uint64_t outstandingCapacity() const override { return 1; }
+
   llvm::Expected<sim::CgraExternalMemorySubmission>
   submit(const sim::CgraExternalMemoryRequest &request) override {
     if (request.elements.empty())

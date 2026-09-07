@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -35,7 +37,6 @@ private:
   enum class State : std::uint32_t {
     Idle = 0,
     Running = 1,
-    WaitingForMemory = 2,
     WaitingForChannelCommit = 5,
     WaitingForCompletion = 6,
     Complete = 3,
@@ -57,11 +58,25 @@ private:
     statistics::Scalar messageCount;
     statistics::Scalar invocationCount;
     statistics::Scalar clockFailureCount;
+    statistics::Scalar staticLaunchFetchCount;
   } performanceStatistics;
 
   struct CallbackAccounting final {
     std::uint64_t started = 0;
     bool valid = false;
+  };
+
+  /// One Bridge memory transaction the engine has handed to this Bridge. Each
+  /// transaction owns its ready tick and its DMA completion, so the memory
+  /// system observes the modeled concurrency of the Spatial memory service.
+  struct MemoryTransaction final {
+    MemoryTransaction(LoomSpatialBridge &bridge,
+                      loom::runtime::Gem5BridgeMemoryRequest request);
+
+    loom::runtime::Gem5BridgeMemoryRequest request;
+    std::vector<std::uint8_t> buffer;
+    EventFunctionWrapper issueEvent;
+    EventFunctionWrapper completionEvent;
   };
 
 
@@ -88,9 +103,16 @@ private:
   std::uint32_t activeInvocationSize = 0;
   std::uint64_t lastCompletionTick = 0;
   std::vector<std::uint8_t> staticLaunchPayload;
+  /// The descriptor of the immutable plane currently resident in
+  /// staticLaunchPayload. A Start naming the same descriptor reuses it.
+  std::uint64_t residentStaticLaunchAddress = 0;
+  std::uint32_t residentStaticLaunchSize = 0;
   std::vector<std::uint8_t> invocationPayload;
-  std::vector<std::uint8_t> memoryBuffer;
-  loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
+  std::map<std::uint64_t, std::unique_ptr<MemoryTransaction>>
+      memoryTransactions;
+  /// Answered transactions whose DMA completion event the queue is still
+  /// servicing. They are reclaimed at the next boundary or completion.
+  std::vector<std::unique_ptr<MemoryTransaction>> retiredMemoryTransactions;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
   loom::runtime::Gem5BridgeResultCollection completedResults;
   std::uint64_t publishedResultBytes = 0;
@@ -99,14 +121,17 @@ private:
   EventFunctionWrapper launchEvent;
   EventFunctionWrapper staticLaunchCompletionEvent;
   EventFunctionWrapper invocationCompletionEvent;
-  EventFunctionWrapper memoryRequestEvent;
-  EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
   EventFunctionWrapper channelCommitEvent;
 
   CallbackAccounting beginCallbackAccounting();
   void finishCallbackAccounting(CallbackAccounting accounting);
-  void runAccounted(void (LoomSpatialBridge::*action)());
+  /// Runs one Bridge callback under host CPU accounting.
+  template <typename Action> void runAccounted(Action &&action) {
+    const CallbackAccounting accounting = beginCallbackAccounting();
+    action();
+    finishCallbackAccounting(accounting);
+  }
   void startEngineWait();
   void finishEngineWait();
   ResultPublication publishResults();
@@ -116,8 +141,11 @@ private:
   void acceptBoundary(const loom::runtime::Gem5BridgeMessage &message,
                       Tick causalTick);
   void completeChannelCommit();
-  void issueMemoryRequest();
-  void completeMemoryRequest();
+  void acceptMemoryRequest(const loom::runtime::Gem5BridgeMessage &message,
+                           Tick causalTick);
+  void issueMemoryRequest(MemoryTransaction &transaction);
+  void completeMemoryRequest(MemoryTransaction &transaction);
+  void reclaimRetiredMemory();
   void completeInvocation();
   void fail(std::uint32_t code, const std::string &message);
   void resetBridge();

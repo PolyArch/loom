@@ -416,6 +416,57 @@ projectSystemSpatialMemoryBinding(
   return result;
 }
 
+llvm::Expected<std::vector<::loom::fabric::SystemServiceEndpointRef>>
+projectSystemSpatialManagerMemoryEndpoints(
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SpatialMappingView &mapping, std::uint64_t moduleDependencyOrdinal,
+    ::loom::fabric::AccCoreOccurrenceRef accCore) {
+  if (moduleDependencyOrdinal >= fabric.artifact().importedModules().size() ||
+      fabric.artifact().importedModules()[moduleDependencyOrdinal].identity() !=
+          mapping.fabricIdentity())
+    return invalid("SpatialMapping does not match its System Module import");
+  std::vector<SystemBoundMemoryEndpointPairView> pairs;
+  const auto append =
+      [&](::loom::fabric::FabricMemoryEndpointRef endpoint) -> llvm::Error {
+    return appendManagerPairs(fabric, moduleDependencyOrdinal, endpoint,
+                              accCore, pairs);
+  };
+  for (const auto &engine : mapping.memoryEngineBindings())
+    for (const auto &operation : engine.operations) {
+      if (const auto *addressed =
+              std::get_if<SpatialAddressedMemoryOperationView>(&operation)) {
+        for (const auto &use : addressed->uses)
+          if (const auto *manager =
+                  std::get_if<::loom::fabric::ManagerEndpointRef>(&use.dispatch))
+            if (llvm::Error error = append(manager->underlying()))
+              return std::move(error);
+        continue;
+      }
+      if (const auto *fence =
+              std::get_if<SpatialFenceMemoryOperationView>(&operation))
+        for (const auto &use : fence->uses)
+          if (const auto *manager =
+                  std::get_if<::loom::fabric::ManagerEndpointRef>(
+                      &use.consistency))
+            if (llvm::Error error = append(manager->underlying()))
+              return std::move(error);
+    }
+  for (const auto &binding : mapping.memoryBindings())
+    for (const auto &exposure : binding.exposures)
+      if (const auto *manager =
+              std::get_if<::loom::fabric::ManagerEndpointRef>(
+                  &exposure.dispatch))
+        if (llvm::Error error = append(manager->underlying()))
+          return std::move(error);
+  canonicalizePairs(pairs);
+  std::vector<::loom::fabric::SystemServiceEndpointRef> endpoints;
+  endpoints.reserve(pairs.size());
+  for (const SystemBoundMemoryEndpointPairView &pair : pairs)
+    endpoints.push_back(pair.systemEndpoint);
+  canonicalizeFabricRefs(endpoints);
+  return endpoints;
+}
+
 llvm::Expected<ServiceKind> resolveSystemOperationServiceKind(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::dataflow::ServiceMemberRef &member) {
