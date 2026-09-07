@@ -482,10 +482,12 @@ bound. Generated host glue emits one completed Thread Dispatch per tuple and
 evaluates the verified SystemMapping relation to select the corresponding
 Deployment target. Dispatches may select the same InstructionCore more than
 once: those occurrences are ordered, mutually exclusive uses of one compiled
-context, not additional resident contexts. Each occurrence rebuilds its
-invocation wire and memory snapshot after the preceding occurrence completes;
-no mutable wire, queue, CPU, bridge, or engine state is reused as a derived
-fact. A dynamic-bound, nested, over-bound, or non-dense domain remains typed
+context, not additional resident contexts. Each occurrence owns a private
+invocation wire that host glue fills before that occurrence is submitted, and
+all points of a root are submitted at `dataflow.thread.launch` and joined at
+`dataflow.thread.wait` as the asynchronous boundary above requires; no mutable
+wire, queue, CPU, bridge, or engine state is reused as a derived fact. A
+dynamic-bound, nested, over-bound, or non-dense domain remains typed
 Unsupported rather than being truncated or assigned an inferred coordinate.
 The bounded DynamicWork adapter follows the separate stable-class contract
 above and never invents a coordinate.
@@ -531,7 +533,7 @@ required dynamic demand or introduce another runtime-input owner.
 
 The compiled contract is owned by the selected `ThreadEntryBinding` in
 `loom.instruction_core_binary`. Its optional `spatial_invocation` names one
-exact rooted graph and `loom.spatial_invocation_abi.v1`. Runtime projection,
+exact rooted graph and `loom.spatial_invocation_abi.v3`. Runtime projection,
 Thread Dispatch, and the Spatial engine use that field to distinguish the
 non-empty wire form from the static form. They must not infer the distinction
 from graph operand/result counts, result uses, workload observability, or an
@@ -552,12 +554,18 @@ that relation explicit.
 
 The launch request carries two distinct planes. The immutable plane is the
 exact Deployment `SpatialLaunchImage` payload. The dynamic plane is the
-`SpatialInvocationDemand` received through Thread Dispatch. The Bridge keeps
-both planes separate, validates their total size, and sends one framed request
-to the selected engine. The engine must byte-compare the immutable plane with
-the Deployment projection and independently decode the dynamic plane against
-the same rooted graph launch. Treating a static launch image as if it supplied
-runtime values is invalid.
+`SpatialInvocationDemand` received through Thread Dispatch, together with the
+Bridge-materialized runtime-input memory snapshot described under Memory And
+Data Movement. The Bridge keeps the planes separate, validates their total
+size, and sends one framed request to the selected engine. The engine must
+byte-compare the immutable plane with the Deployment projection and
+independently decode the dynamic plane against the same rooted graph launch.
+Treating a static launch image as if it supplied runtime values is invalid.
+
+One Deployment owns one `SpatialLaunchImage`. Every dispatch target of a
+rooted launch therefore resolves to one staged copy at one guest address;
+duplicating byte-identical images per target would create competing
+authorities for the same immutable plane.
 
 For value results, the dynamic demand owns exact destination capabilities. The
 engine derives result bytes only from the selected Spatial workload's typed
@@ -655,9 +663,10 @@ more than once by the target program. The Bridge therefore publishes one dense
 dynamic result sequence for the session, not one result per dispatch target.
 
 The current incompatible Spatial Bridge message ABI is
-`loom.gem5_spatial_bridge_abi.v5`. Its Spatial launch envelope has magic
-`LGL2` and carries the physical bridge-session ordinal, the immutable static
-launch bytes, and the optional dynamic invocation bytes. The ordinal selects
+`loom.gem5_spatial_bridge_abi.v7`. Its Spatial launch envelope has magic
+`LGL4` and carries the physical bridge-session ordinal, the immutable static
+launch bytes, the optional dynamic invocation bytes, and the Bridge-materialized
+runtime-input memory snapshot that accompanies them. The ordinal selects
 one entry partition in the exact System projection; it cannot select another
 Mapping, route, service, or configuration. A result continues to name its
 entry by the session-local ordinal described below, rather than by the
@@ -786,11 +795,12 @@ typed sequence to `SimulationExecution` finalization. The raw stream has no
 Artifact identity and cannot bypass the exact Request, Mapping, coordinate,
 lifecycle, or `Retired` closure checks.
 
-The current incompatible invocation-result envelope has magic `LGX3`. In
-addition to the exact invocation bytes, effective runtime-input snapshot, and
-Spatial boundary result, it carries the session-local entry ordinal selected
-by the engine. The ordinal is validated against the immutable ordered target
-table in the gem5 projection; it is not an Artifact identity, Mapping choice,
+The current incompatible invocation-result envelope has magic `LGX4`. In
+addition to the exact invocation bytes, the Bridge-materialized memory
+snapshot, the effective runtime-input snapshot, and the Spatial boundary
+result, it carries the session-local entry ordinal selected by the engine. The
+ordinal is validated against the immutable ordered target table in the gem5
+projection; it is not an Artifact identity, Mapping choice,
 Physical Tag, or mutable cache key. Importers use the selected table entry to
 recover the exact workload and execution context, then perform the ordinary
 runtime-input reconstruction and result verification. Every declared session
@@ -798,7 +808,7 @@ entry must occur in accepted execution evidence, and changing result count or
 entry ownership cannot bypass independent validation.
 
 The dynamic Spatial invocation wire has one current incompatible identity,
-`loom.spatial_invocation_abi.v2`. Its canonical payload is:
+`loom.spatial_invocation_abi.v3`. Its canonical payload is:
 
 ```text
 SpatialInvocationWire {
@@ -810,12 +820,23 @@ SpatialInvocationWire {
     pointer_target = absent | { object_ordinal, byte_offset }
     little_endian_bits
   }
-  memory_objects[ordinal] { guest_address, initial_bytes }
+  memory_objects[ordinal] { guest_address, byte_count }
   memory_root_bindings { logical_memory_root_entity,
                          object_ordinal, byte_offset }
   result_destinations[ordinal] { bit_count, guest_address }
 }
 ```
+
+Memory objects are passed by reference: the wire names each object's guest
+address and byte extent and never carries its bytes. Every multi-byte wire
+field is naturally aligned; value payloads are zero-padded to the wire
+alignment so each following record stays aligned. Host glue therefore bakes
+the dense coordinates, fixed value tokens, and every per-point constant offset
+into the per-occurrence wire template and stores only the fields that a
+concrete call decides: object base addresses, result destinations, value
+inputs that are runtime values, and the byte offsets of an object whose base
+is rebound at its call site. Copying object bytes on the host is invalid; that
+copy is neither accelerator traffic nor a semantic owner.
 
 Object ordinals preserve the exact invocation-local alias classes captured
 from the source execution. Pointer provenance, memory-root bindings, and
@@ -823,16 +844,17 @@ memory-service requests all refer to that one object table; guest addresses
 are transient transport coordinates rather than persistent storage identity.
 Each object address is the canonical backing-allocation base for that dynamic
 call, not the current graph view pointer. The host dispatch projection carries
-that exact base as an ephemeral helper argument, snapshots the complete object
-from it, and derives every memory-root and pointer-target byte offset from the
-actual boundary pointer minus that base for each invocation. A repeated loop
-call may therefore select a different subview without creating an overlapping
-object or retaining a stale static offset. The base argument and patched wire
-offsets are transient ABI state and never become Mapping or Artifact fields.
-Every writable logical root is observed as `DiffFromRuntimeInput`, and the
-engine returns the resulting nonconflicting byte writes through the exact guest
-addresses. Runtime admission rejects missing, overlapping, out-of-range, or
-type-inconsistent records. Version 1 is not retained as a compatibility path.
+that exact base as an ephemeral helper argument and derives every memory-root
+and pointer-target byte offset from the actual boundary pointer minus that base
+whenever the base is rebound per call. A repeated loop call may therefore
+select a different subview without creating an overlapping object or retaining
+a stale static offset. The base argument and patched wire offsets are transient
+ABI state and never become Mapping or Artifact fields. Every writable logical
+root is observed as `DiffFromRuntimeInput`, and the engine returns the
+resulting nonconflicting byte writes through the exact guest addresses.
+Runtime admission rejects missing, overlapping, out-of-range, or
+type-inconsistent records. Versions 1 and 2 are not retained as compatibility
+paths.
 
 The result-destination table is finite and ordered but not restricted to one
 entry. One selected callable may publish several scalar or fixed-width value
@@ -1112,6 +1134,20 @@ When a `fabric.mem` load response retires, read data and completion become one
 indivisible `data + done` publication across all selected internal and external
 obligations. A store response retires as one `done` event. Runtime and adapters
 must preserve those retirement events rather than splitting or reordering them.
+
+Data movement charged to simulated time is the accelerator's own traffic. The
+host passes an invocation's memory objects by reference and never copies their
+bytes; the Bridge obtains the bytes at launch. That capture is the engine's
+runtime-input snapshot: it seeds the runtime-input identity that the engine
+decodes and the `DiffFromRuntimeInput` baseline that its result writes are
+measured against. It is simulation bookkeeping rather than a modeled transfer,
+so the Bridge performs it with functional, untimed accesses and charges it no
+simulated time. The snapshot bytes are exactly the bytes the guest object holds
+at launch, so the resulting `initialBytes` identity is unchanged from a wire
+that carried them inline. Remaining gap: objects bound to a Local Memory
+Service must additionally be staged into that service by timed bulk reads
+before execution, and that staging is not yet modeled, so its transfer time is
+currently charged nowhere.
 
 ## Execution Disposition
 
@@ -1456,7 +1492,7 @@ request, completion, interrupt, mapped boundary transfer, or deterministic
 wakeup time. The Bridge translates that event and resumes execution when the
 corresponding gem5 event or response occurs.
 
-The external engine protocol is `loom.gem5_spatial_bridge_abi.v6`. One
+The external engine protocol is `loom.gem5_spatial_bridge_abi.v7`. One
 engine session owns one connection and every physical Bridge whose ordered
 channels that engine can wake. Each causal advance carries one gem5 input,
 a strictly increasing generation, and its gem5 tick. Its response echoes both
@@ -1514,9 +1550,11 @@ receives the exact static launch descriptor and dynamic invocation descriptor
 in separate ABI registers. The zero-address, zero-size pair selects the static
 runtime-input form defined above; all other dispatches require both fields. The
 Spatial Bridge performs separate DMA reads and frames them only after the
-required reads complete. Mutable MMIO registers, target records, DMA scratch
-buffers, CPU state, socket state, and event budgets are never cached as
-candidate-invariant state.
+required reads complete. It then decodes the invocation's memory-object table
+and materializes their guest bytes functionally, so the framed envelope carries
+the immutable plane, the invocation wire, and that untimed snapshot. Mutable
+MMIO registers, target records, DMA scratch buffers, CPU state, socket state,
+and event budgets are never cached as candidate-invariant state.
 
 Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows

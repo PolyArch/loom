@@ -30,31 +30,6 @@ transportBitCount(SpatialSimulationValueShape shape) {
   return static_cast<std::uint32_t>(shape.lanesPerToken) * shape.laneBitWidth;
 }
 
-llvm::APInt
-unpackLittleEndianBits(const runtime::SpatialInvocationValue &value) {
-  llvm::APInt bits(value.bitCount, 0);
-  for (std::size_t byte = 0; byte != value.littleEndianBits.size(); ++byte) {
-    const std::uint64_t base = byte * 8;
-    for (unsigned bit = 0; bit != 8 && base + bit < value.bitCount; ++bit)
-      if ((value.littleEndianBits[byte] & (1U << bit)) != 0)
-        bits.setBit(static_cast<unsigned>(base + bit));
-  }
-  return bits;
-}
-
-std::vector<std::uint8_t> packLittleEndianBits(const llvm::APInt &bits) {
-  const std::size_t byteCount = (bits.getBitWidth() + 7) / 8;
-  std::vector<std::uint8_t> bytes;
-  bytes.reserve(byteCount);
-  for (std::size_t byte = 0; byte != byteCount; ++byte) {
-    const unsigned offset = static_cast<unsigned>(byte * 8);
-    const unsigned width = std::min<unsigned>(8, bits.getBitWidth() - offset);
-    bytes.push_back(
-        static_cast<std::uint8_t>(bits.extractBitsAsZExtValue(width, offset)));
-  }
-  return bytes;
-}
-
 llvm::Error
 validateInvocationOwner(const runtime::SpatialInvocationWire &wire,
                         const ImportedSpatialSimulationWorkload &workload,
@@ -162,12 +137,17 @@ projectSpatialInvocationWritableMemoryRoots(
 llvm::Expected<CanonicalSimulationRuntimeInput>
 materializeSpatialInvocationRuntimeInput(
     const ImportedSpatialSimulationWorkload &workload,
-    const runtime::SpatialInvocationWire &wire) {
+    const runtime::SpatialInvocationWire &wire,
+    const std::vector<std::uint8_t> &memorySnapshot) {
   const SpatialSimulationWorkload *spatial = workload.workload.spatial();
   if (!spatial)
     return invalid("workload lost its Spatial payload");
   if (llvm::Error error = validateInvocationOwner(wire, workload, *spatial))
     return std::move(error);
+  std::string snapshotDiagnostic;
+  if (!runtime::validateSpatialInvocationMemorySnapshot(wire, memorySnapshot,
+                                                        snapshotDiagnostic))
+    return invalid(snapshotDiagnostic);
   const auto &view = workload.dataflow->view();
   auto shapes =
       projectSpatialSimulationBoundaryShapes(view, spatial->launchRef);
@@ -201,12 +181,16 @@ materializeSpatialInvocationRuntimeInput(
   SpatialSimulationRuntimeInputDraft draft{workload.workload.identity()};
   draft.runtimeStreams.resize(shapes->streamInputs.size());
   draft.memoryObjects.reserve(wire.memoryObjects.size());
+  std::size_t snapshotCursor = 0;
   for (const runtime::SpatialInvocationMemoryObject &object :
        wire.memoryObjects) {
     RuntimeMemoryObject runtimeObject;
-    runtimeObject.initialBytes.reserve(object.initialBytes.size());
-    for (std::uint8_t byte : object.initialBytes)
-      runtimeObject.initialBytes.push_back({SemanticState::Defined, byte});
+    const std::size_t byteCount = static_cast<std::size_t>(object.byteCount);
+    runtimeObject.initialBytes.reserve(byteCount);
+    for (std::size_t byte = 0; byte != byteCount; ++byte)
+      runtimeObject.initialBytes.push_back(
+          {SemanticState::Defined, memorySnapshot[snapshotCursor + byte]});
+    snapshotCursor += byteCount;
     draft.memoryObjects.push_back(std::move(runtimeObject));
   }
   draft.memoryRootBindings.reserve(wire.memoryRootBindings.size());
@@ -260,13 +244,14 @@ materializeSpatialInvocationRuntimeInput(
       if (target.byteOffset >
           std::numeric_limits<std::uint64_t>::max() - object.address)
         return invalid("invocation pointer guest address overflows");
-      const llvm::APInt raw = unpackLittleEndianBits(wire.values[ordinal]);
+      const llvm::APInt raw =
+          unpackSpatialInvocationValueBits(wire.values[ordinal]);
       if (raw.zextOrTrunc(64) !=
           llvm::APInt(64, object.address + target.byteOffset))
         return invalid("invocation pointer bits differ from its guest object");
     }
     auto lanes = unpackDefinedSpatialSimulationToken(
-        unpackLittleEndianBits(wire.values[ordinal]),
+        unpackSpatialInvocationValueBits(wire.values[ordinal]),
         shapes->valueInputs[ordinal]);
     if (!lanes)
       return lanes.takeError();
@@ -293,6 +278,7 @@ materializeSpatialInvocationRuntimeInput(
 llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
     const ImportedSpatialSimulationWorkload &workload,
     const runtime::SpatialInvocationWire &wire,
+    const std::vector<std::uint8_t> &memorySnapshot,
     const CanonicalSimulationRuntimeInput &runtimeInput) {
   const SpatialSimulationRuntimeInput *effective = runtimeInput.spatial();
   if (!effective)
@@ -313,7 +299,7 @@ llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
   if (!normalizedInput)
     return normalizedInput.takeError();
   auto invocationInput =
-      materializeSpatialInvocationRuntimeInput(workload, wire);
+      materializeSpatialInvocationRuntimeInput(workload, wire, memorySnapshot);
   if (!invocationInput)
     return invocationInput.takeError();
   if (normalizedInput->canonicalBytes().bytes() !=
@@ -324,9 +310,12 @@ llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
 }
 
 llvm::Expected<ImportedSpatialSimulationInputs>
-materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
-                                   const runtime::SpatialInvocationWire &wire) {
-  auto runtimeInput = materializeSpatialInvocationRuntimeInput(workload, wire);
+materializeSpatialInvocationInputs(
+    ImportedSpatialSimulationWorkload workload,
+    const runtime::SpatialInvocationWire &wire,
+    const std::vector<std::uint8_t> &memorySnapshot) {
+  auto runtimeInput =
+      materializeSpatialInvocationRuntimeInput(workload, wire, memorySnapshot);
   if (!runtimeInput)
     return runtimeInput.takeError();
   return ImportedSpatialSimulationInputs{std::move(workload.dataflow),
@@ -371,7 +360,7 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
     if (!packed)
       return packed.takeError();
     writes.push_back(
-        {wire.results[ordinal].address, packLittleEndianBits(*packed)});
+        {wire.results[ordinal].address, packSpatialInvocationValueBits(*packed)});
   }
 
   auto writableRoots =
@@ -402,8 +391,8 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
         wire.memoryObjects[binding->objectOrdinal];
     const auto *diff =
         std::get_if<DiffMemoryObservation>(&observations.memories[ordinal]);
-    if (!diff || binding->byteOffset > object.initialBytes.size() ||
-        diff->byteCount != object.initialBytes.size() - binding->byteOffset)
+    if (!diff || binding->byteOffset > object.byteCount ||
+        diff->byteCount != object.byteCount - binding->byteOffset)
       return invalid("invocation memory diff has the wrong object extent");
     for (const MemoryDiffRun &run : diff->runs) {
       if (run.byteOffset > diff->byteCount ||

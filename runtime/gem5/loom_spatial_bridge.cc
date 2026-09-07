@@ -7,6 +7,7 @@
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "mem/packet.hh"
+#include "sim/system.hh"
 
 #include <chrono>
 #include <ctime>
@@ -310,10 +311,44 @@ void LoomSpatialBridge::finishEngineWait() {
 }
 
 void LoomSpatialBridge::startLaunch() {
-  engineSession->submit({loom::runtime::Gem5BridgeMessageKind::SpatialLaunch,
-                        bridgeSessionOrdinal, nextSequence,
-                        loom::runtime::encodeGem5SpatialLaunchEnvelope(
-                            {staticLaunchPayload, invocationPayload})});
+  memorySnapshotPayload.clear();
+  if (!invocationPayload.empty()) {
+    loom::runtime::SpatialInvocationWire wire;
+    std::string diagnostic;
+    if (!loom::runtime::decodeSpatialInvocationWire(invocationPayload, wire,
+                                                    diagnostic)) {
+      fail(22, "dynamic invocation wire is invalid: " + diagnostic);
+      return;
+    }
+    std::size_t snapshotBytes = 0;
+    if (!loom::runtime::spatialInvocationMemorySnapshotByteCount(
+            wire, snapshotBytes) ||
+        snapshotBytes > maximumMessageBytes - invocationPayload.size() ||
+        !launchFitsMessageLimit(activeStaticLaunchSize,
+                                invocationPayload.size() + snapshotBytes,
+                                maximumMessageBytes)) {
+      fail(23, "invocation memory snapshot exceeds the bridge limit");
+      return;
+    }
+    // The runtime-input snapshot seeds the engine's input identity and its
+    // result diff; it is simulation bookkeeping rather than accelerator
+    // traffic. Read it functionally so no simulated time is charged here.
+    // Timed traffic remains the engine's own memory requests.
+    memorySnapshotPayload.assign(snapshotBytes, 0);
+    std::size_t cursor = 0;
+    for (const loom::runtime::SpatialInvocationMemoryObject &object :
+         wire.memoryObjects) {
+      const std::size_t byteCount = static_cast<std::size_t>(object.byteCount);
+      sys->physProxy.readBlob(object.address,
+                              memorySnapshotPayload.data() + cursor, byteCount);
+      cursor += byteCount;
+    }
+  }
+  engineSession->submit(
+      {loom::runtime::Gem5BridgeMessageKind::SpatialLaunch,
+       bridgeSessionOrdinal, nextSequence,
+       loom::runtime::encodeGem5SpatialLaunchEnvelope(
+           {staticLaunchPayload, invocationPayload, memorySnapshotPayload})});
 }
 
 void LoomSpatialBridge::acceptBoundary(
@@ -378,7 +413,8 @@ void LoomSpatialBridge::acceptBoundary(
   loom::runtime::SpatialInvocationResultWire invocationResult;
   if (!loom::runtime::decodeSpatialInvocationResultWire(
           pendingCompletion.result, invocationResult, diagnostic) ||
-      invocationResult.invocation != invocationPayload) {
+      invocationResult.invocation != invocationPayload ||
+      invocationResult.memorySnapshot != memorySnapshotPayload) {
     fail(19, "Spatial completion names a foreign invocation");
     return;
   }
@@ -539,6 +575,7 @@ void LoomSpatialBridge::resetBridge() {
   memoryBuffer.clear();
   staticLaunchPayload.clear();
   invocationPayload.clear();
+  memorySnapshotPayload.clear();
   pendingMemory = {};
   pendingCompletion = {};
   errorCode = 0;

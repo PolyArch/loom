@@ -89,6 +89,7 @@ private:
   std::uint64_t lastCompletionTick = 0;
   std::vector<std::uint8_t> staticLaunchPayload;
   std::vector<std::uint8_t> invocationPayload;
+  std::vector<std::uint8_t> memorySnapshotPayload;
   std::vector<std::uint8_t> memoryBuffer;
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;

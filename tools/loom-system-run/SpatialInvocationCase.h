@@ -20,6 +20,7 @@ struct ObservedSpatialInvocation final {
   std::string executionContextKey;
   loom::ArtifactRootReference workload;
   std::vector<std::uint8_t> invocation;
+  std::vector<std::uint8_t> memorySnapshot;
   loom::runtime::SpatialInvocationRuntimeInputSnapshot runtimeInput;
   std::vector<std::uint8_t> boundaryResult;
 };

@@ -36,14 +36,14 @@ WIRE_MAGIC = b"LGB2"
 ADVANCE_MAGIC = b"LGA1"
 RESULT_MAGIC = b"LGR1"
 RESULT_COLLECTION_MAGIC = b"LGC1"
-SPATIAL_LAUNCH_MAGIC = b"LGL3"
-INVOCATION_RESULT_MAGIC = b"LGX3"
+SPATIAL_LAUNCH_MAGIC = b"LGL4"
+INVOCATION_RESULT_MAGIC = b"LGX4"
 WIRE_HEADER = struct.Struct(">4sIQQQ")
 ADVANCE_HEADER = struct.Struct(">4sQQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
 RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
-SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
-INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQ32s")
+SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQQ")
+INVOCATION_RESULT_HEADER = struct.Struct("<4sQQQQQ32s")
 ROOT_LIFECYCLE_RECORD = struct.Struct(">QQIQQQIQ")
 ROOT_EVENT_CONTROL_REQUEST = struct.Struct(">4sQQQIQQ")
 ROOT_EVENT_CONTROL_ACK = struct.Struct(">4sQIQ")
@@ -355,12 +355,15 @@ def send_advance(
 def decode_spatial_launch_envelope(payload: bytes) -> tuple[bytes, bytes]:
     if len(payload) < SPATIAL_LAUNCH_HEADER.size:
         raise RuntimeError("Spatial launch envelope is truncated")
-    magic, static_size, invocation_size = (
+    magic, static_size, invocation_size, memory_snapshot_size = (
         SPATIAL_LAUNCH_HEADER.unpack_from(payload)
     )
     if magic != SPATIAL_LAUNCH_MAGIC:
         raise RuntimeError("Spatial launch envelope has the wrong magic")
-    if static_size + invocation_size != len(payload) - SPATIAL_LAUNCH_HEADER.size:
+    if (
+        static_size + invocation_size + memory_snapshot_size
+        != len(payload) - SPATIAL_LAUNCH_HEADER.size
+    ):
         raise RuntimeError("Spatial launch envelope lengths are not canonical")
     static_end = SPATIAL_LAUNCH_HEADER.size + static_size
     return (
@@ -375,6 +378,7 @@ def invocation_result(invocation: bytes, boundary_result: bytes) -> bytes:
             INVOCATION_RESULT_MAGIC,
             0,
             len(invocation),
+            0,
             0,
             len(boundary_result),
             bytes(32),
@@ -391,6 +395,7 @@ def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
         magic,
         session_entry_ordinal,
         invocation_size,
+        memory_snapshot_size,
         runtime_input_size,
         boundary_size,
         runtime_input_identity,
@@ -399,9 +404,11 @@ def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
         raise RuntimeError("Spatial invocation result has the wrong magic")
     if (
         session_entry_ordinal != 0
+        or memory_snapshot_size != 0
         or runtime_input_size != 0
         or runtime_input_identity != bytes(32)
-        or invocation_size + runtime_input_size + boundary_size
+        or invocation_size + memory_snapshot_size + runtime_input_size
+        + boundary_size
         != len(payload) - INVOCATION_RESULT_HEADER.size
     ):
         raise RuntimeError("Spatial invocation result lengths are not canonical")

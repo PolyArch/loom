@@ -168,7 +168,7 @@ code. Distinct roots may use distinct ordinals for launch-context
 specialization even when they resolve to the same thread definition.
 
 `spatial_invocation`, when present, is the compiled entry contract for a
-non-empty `loom.spatial_invocation_abi.v1` descriptor. Its rooted graph must
+non-empty `loom.spatial_invocation_abi.v3` descriptor. Its rooted graph must
 belong to the entry's exact root launch and Canonical Dataflow artifact. The
 graph identity is stored because it selects the invocation consumer; value and
 result geometry, wire layout, and canonical template bytes are always rebuilt

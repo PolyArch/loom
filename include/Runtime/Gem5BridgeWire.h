@@ -13,7 +13,7 @@
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v6";
+    "loom.gem5_spatial_bridge_abi.v7";
 
 inline constexpr std::uint64_t gem5BridgeDefaultMaximumMessageBytes =
     64ULL * 1024ULL * 1024ULL;
@@ -72,14 +72,18 @@ struct Gem5BridgeResultCollection final {
   std::vector<Gem5BridgeResult> results;
 };
 
+/// One framed launch request. The immutable plane is the Deployment static
+/// launch image; the dynamic plane is the guest invocation wire beside the
+/// Bridge-materialized snapshot of the bytes its memory objects name.
 struct Gem5SpatialLaunchEnvelope final {
   std::vector<std::uint8_t> staticLaunch;
   std::vector<std::uint8_t> invocation;
+  std::vector<std::uint8_t> memorySnapshot;
 };
 
 inline constexpr std::array<std::uint8_t, 4> gem5SpatialLaunchMagic{'L', 'G',
-                                                                    'L', '3'};
-inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 20;
+                                                                    'L', '4'};
+inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 28;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{'L', 'G',
                                                                    'R', '1'};
@@ -127,14 +131,17 @@ inline std::vector<std::uint8_t>
 encodeGem5SpatialLaunchEnvelope(const Gem5SpatialLaunchEnvelope &launch) {
   std::vector<std::uint8_t> bytes;
   bytes.reserve(gem5SpatialLaunchHeaderBytes + launch.staticLaunch.size() +
-                launch.invocation.size());
+                launch.invocation.size() + launch.memorySnapshot.size());
   bytes.insert(bytes.end(), gem5SpatialLaunchMagic.begin(),
                gem5SpatialLaunchMagic.end());
   detail::appendGem5BridgeU64(bytes, launch.staticLaunch.size());
   detail::appendGem5BridgeU64(bytes, launch.invocation.size());
+  detail::appendGem5BridgeU64(bytes, launch.memorySnapshot.size());
   bytes.insert(bytes.end(), launch.staticLaunch.begin(),
                launch.staticLaunch.end());
   bytes.insert(bytes.end(), launch.invocation.begin(), launch.invocation.end());
+  bytes.insert(bytes.end(), launch.memorySnapshot.begin(),
+               launch.memorySnapshot.end());
   return bytes;
 }
 
@@ -151,26 +158,39 @@ decodeGem5SpatialLaunchEnvelope(const std::vector<std::uint8_t> &bytes,
   const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 4);
   const std::uint64_t invocationSize =
       detail::readGem5BridgeU64(bytes.data() + 12);
+  const std::uint64_t snapshotSize =
+      detail::readGem5BridgeU64(bytes.data() + 20);
   if (staticSize > std::numeric_limits<std::size_t>::max() ||
-      invocationSize > std::numeric_limits<std::size_t>::max()) {
+      invocationSize > std::numeric_limits<std::size_t>::max() ||
+      snapshotSize > std::numeric_limits<std::size_t>::max()) {
     error = "Spatial launch envelope length exceeds the host size domain";
     return false;
   }
   const std::size_t admittedStaticSize = static_cast<std::size_t>(staticSize);
   const std::size_t admittedInvocationSize =
       static_cast<std::size_t>(invocationSize);
-  if (admittedStaticSize >
-          std::numeric_limits<std::size_t>::max() - admittedInvocationSize ||
-      admittedStaticSize + admittedInvocationSize !=
+  const std::size_t admittedSnapshotSize =
+      static_cast<std::size_t>(snapshotSize);
+  const std::size_t limit = std::numeric_limits<std::size_t>::max();
+  if (admittedStaticSize > limit - admittedInvocationSize ||
+      admittedStaticSize + admittedInvocationSize >
+          limit - admittedSnapshotSize ||
+      admittedStaticSize + admittedInvocationSize + admittedSnapshotSize !=
           bytes.size() - gem5SpatialLaunchHeaderBytes) {
     error = "Spatial launch envelope lengths do not match its payload";
     return false;
   }
+  if (admittedInvocationSize == 0 && admittedSnapshotSize != 0) {
+    error = "static Spatial launch envelope carries a memory snapshot";
+    return false;
+  }
   const auto staticEnd =
       bytes.begin() + gem5SpatialLaunchHeaderBytes + admittedStaticSize;
+  const auto invocationEnd = staticEnd + admittedInvocationSize;
   launch.staticLaunch.assign(bytes.begin() + gem5SpatialLaunchHeaderBytes,
                              staticEnd);
-  launch.invocation.assign(staticEnd, bytes.end());
+  launch.invocation.assign(staticEnd, invocationEnd);
+  launch.memorySnapshot.assign(invocationEnd, bytes.end());
   return true;
 }
 

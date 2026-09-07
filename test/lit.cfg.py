@@ -418,6 +418,18 @@ config.substitutions.insert(
 config.substitutions.insert(
     0,
     (
+        "%loom-runtime-spatial-invocation-wire-test\\b",
+        os.path.join(
+            config.loom_obj_root,
+            "test",
+            "runtime",
+            "loom-runtime-spatial-invocation-wire-test",
+        ),
+    ),
+)
+config.substitutions.insert(
+    0,
+    (
         "%loom-runtime-gem5-spatial-channel-test\\b",
         os.path.join(
             config.loom_obj_root,
