@@ -3,6 +3,7 @@
 #include "Application/ActivationDecision.h"
 #include "Application/Build.h"
 #include "Common/ArtifactStore.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "DSE/HardwareMutationRepairRecord.h"
@@ -249,8 +250,8 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   if (!activation)
     return activation.takeError();
   auto activationDependencies =
-      projectApplicationActivationDecisionDependencies(activation->decision(),
-                                                       artifacts, blobs);
+      projectApplicationActivationDecisionDependencies(
+          (*activation)->decision(), artifacts, blobs);
   if (!activationDependencies)
     return activationDependencies.takeError();
   for (const ArtifactRootReference &root : activationDependencies->artifacts)
@@ -445,6 +446,11 @@ importApplicationPackage(llvm::StringRef packagePath) {
     return std::move(error);
   const ArtifactStore artifacts(childPath(packagePath, "objects"));
   const BlobStore blobs(childPath(packagePath, "blobs"));
+  // The staged tree is its own store domain: nothing imported from the build
+  // workspace can satisfy this independent oracle, but the manifest and the
+  // closure derivation below share one strict import of every root.
+  evaluation::ArtifactImportCacheScope importCache(
+      artifacts, &blobs, productDeploymentImportCacheEntries);
   fabric::FabricArtifactImportSession fabricImportSession(
       fabric::FabricArtifactImportSessionMode::Isolated);
   hardware::ConfigurationABIImportSession configurationAbiImportSession(

@@ -418,6 +418,8 @@ llvm::StringRef loom::pnr::detail::cpSatCanonicalResultKindSpelling(
     return "solver_unknown";
   case CpSatCanonicalResultKind::FeasibleWithoutOptimalityProof:
     return "feasible_without_optimality_proof";
+  case CpSatCanonicalResultKind::Interrupted:
+    return "interrupted";
   }
   llvm_unreachable("unknown CP-SAT canonical result kind");
 }
@@ -431,7 +433,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     const CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables,
     std::optional<int> objectiveVariable, std::uint64_t maxSolverCalls,
     std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger,
-    llvm::ArrayRef<int> proofPriorityVariables) {
+    llvm::ArrayRef<int> proofPriorityVariables,
+    ExecutionControlView executionControl) {
   if (maxSolverCalls == 0)
     return protocolError("solver-call budget must be positive");
   if (const std::string validation = ValidateCpModel(model);
@@ -477,6 +480,9 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   SolveState state{maxSolverCalls, 0, parameters(randomSeed)};
   if (state.calls == state.maxCalls)
     return incomplete(CpSatCanonicalResultKind::SolverCallLimitReached, state,
+                      ProofPhase::Initial);
+  if (executionControl.stopRequested())
+    return incomplete(CpSatCanonicalResultKind::Interrupted, state,
                       ProofPhase::Initial);
   if (llvm::Error error =
           workLedger.plan(SpatialPnrWorkKind::ExactRepairSolverCall))
@@ -552,6 +558,9 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
         return incomplete(
             CpSatCanonicalResultKind::SolverCallLimitReached, state,
             ProofPhase::CanonicalBlock, begin, end);
+      if (executionControl.stopRequested())
+        return incomplete(CpSatCanonicalResultKind::Interrupted, state,
+                          ProofPhase::CanonicalBlock, begin, end);
       if (llvm::Error error =
               workLedger.plan(SpatialPnrWorkKind::ExactRepairSolverCall))
         return std::move(error);
@@ -645,7 +654,8 @@ loom::pnr::detail::solveFixedCpSatAssignment(
     llvm::ArrayRef<std::int64_t> assignment,
     std::optional<int> objectiveVariable, std::uint64_t maxSolverCalls,
     std::int32_t randomSeed, SpatialPnrWorkLedgerView workLedger,
-    llvm::ArrayRef<int> proofPriorityVariables) {
+    llvm::ArrayRef<int> proofPriorityVariables,
+    ExecutionControlView executionControl) {
   if (variables.size() != assignment.size())
     return protocolError("fixed assignment variable and value counts disagree");
   if (llvm::Error error = validateVariables(model, variables))
@@ -662,7 +672,7 @@ loom::pnr::detail::solveFixedCpSatAssignment(
   }
   auto solved = solveCanonicalCpSat(fixed, {}, objectiveVariable,
                                     maxSolverCalls, randomSeed, workLedger,
-                                    proofPriorityVariables);
+                                    proofPriorityVariables, executionControl);
   if (!solved)
     return solved.takeError();
   if (solved->kind == CpSatCanonicalResultKind::Assignment)

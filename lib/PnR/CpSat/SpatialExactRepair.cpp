@@ -367,11 +367,17 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   auto solved = detail::solveCanonicalCpSat(
       model.Build(), canonicalVariables, mutationCount->objective.index(),
       solverCallLimit, solverSeed, workLedger_,
-      mutationCount->proofPriorityVariables);
+      mutationCount->proofPriorityVariables, executionControl_);
   if (!solved)
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, 0, 0,
                         llvm::toString(solved.takeError()));
+  if (solved->kind == detail::CpSatCanonicalResultKind::Interrupted)
+    return repairResult(SpatialExactRepairResultKind::TimedOut,
+                        *regionDecisionCount, solved->solverCalls, 0,
+                        "atomic exact repair reached its deadline between "
+                        "solver calls",
+                        0, 0, solved->logicalSolverCalls);
   if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible)
     return repairResult(
         SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,

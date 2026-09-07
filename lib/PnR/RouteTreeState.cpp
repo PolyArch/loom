@@ -1270,53 +1270,108 @@ void RouteTreeTransaction::finish() {
   scratch_ = nullptr;
 }
 
+void RouteTreeTransaction::undoDelta(
+    const RouteTreeTransactionScratch::Delta &delta) noexcept {
+  switch (delta.kind) {
+  case RouteTreeTransactionScratch::DeltaKind::ModifiedNode:
+    state_->nodes_[delta.key] = delta.node;
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::RemovedNode:
+    assert(!state_->freeSlots_.empty() &&
+           state_->freeSlots_.back() == delta.key);
+    state_->freeSlots_.pop_back();
+    state_->nodes_[delta.key] = delta.node;
+    ++state_->activeNodeCount_;
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::AddedNode:
+    assert(state_->nodes_[delta.key].isActive());
+    --state_->activeNodeCount_;
+    if (delta.appended) {
+      assert(delta.key + 1 == state_->nodes_.size());
+      state_->nodes_.pop_back();
+    } else {
+      state_->nodes_[delta.key] = {};
+      state_->freeSlots_.push_back(delta.key);
+    }
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::SourceBinding:
+    state_->sourceEndpoint_ = delta.value0;
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::SinkBinding:
+    state_->sinkBindings_[delta.key] = {delta.value0, delta.value1,
+                                        delta.value2, delta.value3};
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::LookupBucket:
+    state_->endpointSlots_[delta.lookupIndex] = delta.lookupEntry;
+    state_->lookupTombstoneCount_ = delta.lookupTombstoneCount;
+    break;
+  case RouteTreeTransactionScratch::DeltaKind::LookupBaseline:
+    // Bucket writes after the rehash were never journaled; the baseline swap
+    // discards them wholesale and reopens bucket journaling for a partial
+    // rollback that continues mutating the transaction.
+    state_->endpointSlots_.swap(scratch_->lookupBaseline_);
+    state_->lookupTombstoneCount_ = delta.lookupTombstoneCount;
+    scratch_->lookupBaselineActive_ = false;
+    break;
+  }
+}
+
 void RouteTreeTransaction::rollback() noexcept {
   if (!state_)
     return;
   for (auto delta = scratch_->deltas_.rbegin();
-       delta != scratch_->deltas_.rend(); ++delta) {
-    switch (delta->kind) {
-    case RouteTreeTransactionScratch::DeltaKind::ModifiedNode:
-      state_->nodes_[delta->key] = delta->node;
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::RemovedNode:
-      assert(!state_->freeSlots_.empty() &&
-             state_->freeSlots_.back() == delta->key);
-      state_->freeSlots_.pop_back();
-      state_->nodes_[delta->key] = delta->node;
-      ++state_->activeNodeCount_;
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::AddedNode:
-      assert(state_->nodes_[delta->key].isActive());
-      --state_->activeNodeCount_;
-      if (delta->appended) {
-        assert(delta->key + 1 == state_->nodes_.size());
-        state_->nodes_.pop_back();
-      } else {
-        state_->nodes_[delta->key] = {};
-        state_->freeSlots_.push_back(delta->key);
-      }
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::SourceBinding:
-      state_->sourceEndpoint_ = delta->value0;
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::SinkBinding:
-      state_->sinkBindings_[delta->key] = {delta->value0, delta->value1,
-                                           delta->value2, delta->value3};
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::LookupBucket:
-      state_->endpointSlots_[delta->lookupIndex] = delta->lookupEntry;
-      state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
-      break;
-    case RouteTreeTransactionScratch::DeltaKind::LookupBaseline:
-      state_->endpointSlots_.swap(scratch_->lookupBaseline_);
-      state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
-      break;
-    }
-  }
+       delta != scratch_->deltas_.rend(); ++delta)
+    undoDelta(*delta);
   assert(state_->nodes_.size() == initialNodeStorageSize_);
   assert(state_->activeNodeCount_ == initialActiveNodeCount_);
   state_->boundSinkObligationCount_ = initialBoundSinkObligationCount_;
   state_->attachedSinkObligationCount_ = initialAttachedSinkObligationCount_;
   finish();
+}
+
+llvm::Expected<RouteTreeTransactionSavepoint>
+RouteTreeTransaction::savepoint() const {
+  if (!state_)
+    return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("cannot savepoint a prepared transaction");
+  RouteTreeTransactionSavepoint savepoint;
+  savepoint.deltaCount = scratch_->deltas_.size();
+  savepoint.traversalDeltaCount = scratch_->traversalDeltas_.size();
+  savepoint.boundSinkObligationCount = state_->boundSinkObligationCount_;
+  savepoint.attachedSinkObligationCount = state_->attachedSinkObligationCount_;
+  savepoint.lookupBaselineActive = scratch_->lookupBaselineActive_;
+  savepoint.lookupTombstoneCount = state_->lookupTombstoneCount_;
+  if (savepoint.lookupBaselineActive)
+    savepoint.lookupSnapshot = state_->endpointSlots_;
+  return savepoint;
+}
+
+llvm::Error RouteTreeTransaction::rollbackTo(
+    RouteTreeTransactionSavepoint &&savepoint) {
+  if (!state_)
+    return routeTreeError("transaction is no longer active");
+  if (prepared_)
+    return routeTreeError("cannot roll a prepared transaction back partially");
+  if (savepoint.deltaCount > scratch_->deltas_.size() ||
+      savepoint.traversalDeltaCount > scratch_->traversalDeltas_.size())
+    return routeTreeError("savepoint lies after the current journal");
+  for (std::size_t index = scratch_->deltas_.size();
+       index != savepoint.deltaCount; --index)
+    undoDelta(scratch_->deltas_[index - 1]);
+  scratch_->deltas_.resize(savepoint.deltaCount);
+  scratch_->traversalDeltas_.resize(savepoint.traversalDeltaCount);
+  if (savepoint.lookupBaselineActive) {
+    // No bucket journal existed after the savepoint: the retained lookup is
+    // the only owner of the pre-trial table.
+    if (!scratch_->lookupBaselineActive_)
+      return routeTreeError("savepoint lookup baseline was released");
+    state_->endpointSlots_.swap(savepoint.lookupSnapshot);
+    state_->lookupTombstoneCount_ = savepoint.lookupTombstoneCount;
+  } else if (scratch_->lookupBaselineActive_) {
+    return routeTreeError("savepoint rollback retained a later lookup baseline");
+  }
+  state_->boundSinkObligationCount_ = savepoint.boundSinkObligationCount;
+  state_->attachedSinkObligationCount_ = savepoint.attachedSinkObligationCount;
+  return llvm::Error::success();
 }

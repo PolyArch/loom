@@ -907,8 +907,9 @@ deriveIndependentColoring(
   return std::move(*coloring);
 }
 
-llvm::Error colorIndependentNets(TagStateStorage &storage,
-                                 std::vector<PnrIndex> *builtNets = nullptr) {
+llvm::Error colorIndependentNets(
+    TagStateStorage &storage, std::vector<PnrIndex> *builtNets = nullptr,
+    const ::loom::pnr::detail::SpatialTagColoringCache *previous = nullptr) {
   if (storage.unassignedCount != 0 || storage.conflictCount != 0 ||
       storage.residentCapacityOveruse != 0 ||
       llvm::any_of(storage.residentCounts,
@@ -916,7 +917,7 @@ llvm::Error colorIndependentNets(TagStateStorage &storage,
       llvm::any_of(storage.occupancy,
                    [](const auto &domain) { return !domain.empty(); }))
     return invalid("independent coloring requires empty assignment state");
-  auto coloring = deriveIndependentColoring(storage);
+  auto coloring = deriveIndependentColoring(storage, previous);
   if (!coloring)
     return coloring.takeError();
 
@@ -960,11 +961,13 @@ llvm::Error colorIndependentNets(TagStateStorage &storage,
   return llvm::Error::success();
 }
 
-llvm::Error buildAssignments(TagStateStorage &storage,
-                             const std::vector<TagNetState> *oldNets,
-                             std::vector<PnrIndex> *builtNets = nullptr) {
+llvm::Error buildAssignments(
+    TagStateStorage &storage, const std::vector<TagNetState> *oldNets,
+    std::vector<PnrIndex> *builtNets = nullptr,
+    const ::loom::pnr::detail::SpatialTagColoringCache *previousColoring =
+        nullptr) {
   if (!storage.constraints->hasRelations())
-    return colorIndependentNets(storage, builtNets);
+    return colorIndependentNets(storage, builtNets, previousColoring);
   for (PnrIndex equalityClass = 0;
        equalityClass < storage.constraints->classCount(); ++equalityClass)
     if (llvm::Error error = buildClass(
@@ -1123,7 +1126,9 @@ llvm::Expected<std::unique_ptr<TagStateStorage>>
 buildStorage(const FrozenSpatialPnrProblem &problem,
              llvm::ArrayRef<const RouteTreeState *> routes,
              const std::vector<TagNetState> *oldNets = nullptr,
-             RouteReadMode routeReadMode = RouteReadMode::Stable) {
+             RouteReadMode routeReadMode = RouteReadMode::Stable,
+             const ::loom::pnr::detail::SpatialTagColoringCache
+                 *previousColoring = nullptr) {
   if (routes.size() != problem.transfers().logicalNets().size())
     return invalid("route count does not match the frozen logical nets");
   if (oldNets && oldNets->size() != routes.size())
@@ -1162,7 +1167,8 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
   if (!interference)
     return interference.takeError();
   storage->interference = std::move(*interference);
-  if (llvm::Error error = buildAssignments(*storage, oldNets))
+  if (llvm::Error error =
+          buildAssignments(*storage, oldNets, nullptr, previousColoring))
     return std::move(error);
   if (llvm::Error error = verifyRelations(*storage))
     return std::move(error);
@@ -1369,8 +1375,11 @@ SpatialTagAssignmentState::create(const FrozenSpatialPnrProblem &problem,
 llvm::Expected<SpatialTagAssignmentState>
 SpatialTagAssignmentState::projectVerifiedRoutes(
     llvm::ArrayRef<const RouteTreeState *> routes) const {
-  auto projected = buildStorage(*storage_->problem, routes, &storage_->nets,
-                                RouteReadMode::AlreadyVerified);
+  // Components whose continuity, interference, and restrictions are
+  // unchanged replay the committed coloring instead of searching again.
+  auto projected =
+      buildStorage(*storage_->problem, routes, &storage_->nets,
+                   RouteReadMode::AlreadyVerified, &storage_->coloringCache);
   if (!projected)
     return projected.takeError();
   return SpatialTagAssignmentState(std::move(*projected));

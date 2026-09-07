@@ -65,8 +65,15 @@ struct SpatialTagColoringComponentCache final {
   std::vector<PnrIndex> conflictOffsets;
   std::vector<PnrIndex> conflicts;
   std::vector<std::optional<llvm::APInt>> values;
+  /// Exact-search work consumed by this component: `exactWorkAfter -
+  /// exactWorkBefore`. A replay with at least that much remaining budget
+  /// reproduces the same coloring, so reuse is gated on the remaining budget
+  /// rather than on the absolute prefix consumed by earlier components.
   std::uint64_t exactWorkBefore = 0;
   std::uint64_t exactWorkAfter = 0;
+  /// The exact search stopped on the shared work limit; a replay with more
+  /// budget may reach a different result, so the component is never reused.
+  bool exactWorkLimited = false;
   std::uint64_t unassignedCount = 0;
   std::uint64_t conflictCount = 0;
 };

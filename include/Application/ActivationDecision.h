@@ -13,6 +13,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -243,7 +244,8 @@ private:
   friend llvm::Expected<FinalizedApplicationActivationDecision>
   publishApplicationActivationDecision(ApplicationActivationDecision,
                                        const ArtifactStore &);
-  friend llvm::Expected<FinalizedApplicationActivationDecision>
+  friend llvm::Expected<
+      std::shared_ptr<const FinalizedApplicationActivationDecision>>
   importApplicationActivationDecision(const ArtifactRootReference &,
                                       const ArtifactStore &, const BlobStore &);
 };
@@ -252,7 +254,11 @@ llvm::Expected<FinalizedApplicationActivationDecision>
 publishApplicationActivationDecision(ApplicationActivationDecision decision,
                                      const ArtifactStore &artifacts);
 
-llvm::Expected<FinalizedApplicationActivationDecision>
+/// Strictly imports one published activation decision. Inside an enclosing
+/// ArtifactImportCacheScope of the same store domain the strict import and
+/// its runtime Evidence join run once per invocation; every hit revalidates
+/// the exact root bytes before the retained view is returned.
+llvm::Expected<std::shared_ptr<const FinalizedApplicationActivationDecision>>
 importApplicationActivationDecision(const ArtifactRootReference &reference,
                                     const ArtifactStore &artifacts,
                                     const BlobStore &blobs);

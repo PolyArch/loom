@@ -589,9 +589,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                 : 0);
       }
     }
+    // Under FirstVerified a difficult finalist may not consume the whole
+    // invocation while untried siblings remain: each remaining plan receives
+    // a fair share of the remaining wall time, and an early finisher returns
+    // its unused share to the next plan. The global deadline is unchanged.
     std::optional<PlanExecutionPolicy> planExecutionPolicy;
     if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality ||
-        actionableHardwareParents != 0) {
+        actionableHardwareParents != 0 || plans.size() - indexed.index() > 1) {
       std::uint64_t remainingPlans = plans.size() - indexed.index();
       saturatingAdd(remainingPlans, actionableHardwareParents);
       auto fair =

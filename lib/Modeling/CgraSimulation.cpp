@@ -1204,11 +1204,9 @@ CaseSubjectRoleRef cgraSimulationSpatialMappingRole() {
   return kSpatialMappingRole;
 }
 
-llvm::Expected<ResolvedCgraSimulationCase>
-resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
-                          const ArtifactRootReference &workload,
-                          const ArtifactRootReference &runtimeInput,
-                          const ArtifactStore &artifactStore) {
+llvm::Expected<sim::CgraExecutionOwnerReferences>
+resolveCgraSimulationCaseOwners(const ArtifactRootReference &spatialMapping,
+                                const ArtifactStore &artifactStore) {
   if (llvm::Error error = registerCgraSimulationModel())
     return std::move(error);
   struct CgraCaseOwnerClosure final {
@@ -1278,20 +1276,39 @@ resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
       revalidateOwners);
   if (!closure)
     return closure.takeError();
-  const auto &owners = (*closure)->owners;
+  return (*closure)->owners;
+}
+
+llvm::Expected<CaseArtifactResolution>
+resolveCgraSimulationCaseResolution(
+    const sim::CgraExecutionOwnerReferences &owners,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput) {
+  return buildResolution(owners, workload, runtimeInput);
+}
+
+llvm::Expected<ResolvedCgraSimulationCase>
+resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
+                          const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ArtifactStore &artifactStore) {
+  auto owners = resolveCgraSimulationCaseOwners(spatialMapping, artifactStore);
+  if (!owners)
+    return owners.takeError();
   auto inputs =
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow->identity() != owners.dataflow.artifact)
+  if (inputs->dataflow->identity() != owners->dataflow.artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: workload names a foreign Dataflow "
         "owner");
-  auto resolution = buildResolution(owners, workload, runtimeInput);
+  auto resolution =
+      resolveCgraSimulationCaseResolution(*owners, workload, runtimeInput);
   if (!resolution)
     return resolution.takeError();
-  return ResolvedCgraSimulationCase{owners.dataflow, owners.fabric,
+  return ResolvedCgraSimulationCase{owners->dataflow, owners->fabric,
                                     std::move(*resolution)};
 }
 

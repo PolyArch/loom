@@ -1664,14 +1664,16 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
         tagResidentOveruseCosts_[domain]);
     if (!nextResident)
       return nextResident.takeError();
-    const std::uint64_t widthOveruse =
-        workingTagDomainUsage_[domain] >
-                encodingCapacity(domains[domain].tagWidthBits)
-            ? workingTagDomainUsage_[domain] -
-                  encodingCapacity(domains[domain].tagWidthBits)
-            : 0;
+    // Every history channel accumulates Q-scaled overuse so one tag conflict
+    // prices a full normalized unit, exactly like one unit of route overuse.
+    const std::uint64_t capacity =
+        encodingCapacity(domains[domain].tagWidthBits);
+    auto conflictOveruse =
+        normalizedRouteClaimCost(tagDomainConflictCounts_[domain], capacity);
+    if (!conflictOveruse)
+      return conflictOveruse.takeError();
     const std::uint64_t encodingOveruse =
-        std::max(widthOveruse, tagDomainConflictCounts_[domain]);
+        std::max(tagEncodingPressureCosts_[domain], *conflictOveruse);
     auto nextEncoding = pathFinderHistoryUpdate(
         tagEncodingHistoryPressure_[domain], policy_.historyPressureIncrement,
         encodingOveruse);
@@ -1714,11 +1716,40 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
       arcUpdateEpochs_[arc] = updateEpoch_;
       affectedTagArcs_.push_back(arc);
     }
+  // The multiplicative schedule grows without bound. Once any staged price
+  // stops being representable, the prices are frozen at their current values:
+  // the negotiation then repeats its routes and terminates through the
+  // ordinary no-progress accounting instead of failing arithmetically.
+  const auto saturate = [&](llvm::Error error) -> llvm::Error {
+    bool overflowed = false;
+    error = llvm::handleErrors(
+        std::move(error),
+        [&](std::unique_ptr<RoutingNegotiationError> failure) -> llvm::Error {
+          if (failure->kind() != RoutingNegotiationError::Kind::ArithmeticOverflow)
+            return llvm::Error(std::move(failure));
+          overflowed = true;
+          return llvm::Error::success();
+        });
+    if (!overflowed)
+      return error;
+    llvm::consumeError(std::move(error));
+    ++pressureSaturations_;
+    return llvm::Error::success();
+  };
+  // Nothing is committed until every staged price is known representable and
+  // within the summation headroom, so a saturating advance leaves the current
+  // prices, pressures, and revisions exactly as they were.
+  const auto saturateNow = [&]() -> llvm::Error {
+    ++pressureSaturations_;
+    return llvm::Error::success();
+  };
   for (PnrIndex traversal : affectedTraversals_) {
     auto cost =
         computeTraversalCost(traversal, *nextPressure, stagedHistoryPressure_);
     if (!cost)
-      return cost.takeError();
+      return saturate(cost.takeError());
+    if (*cost > maxNegotiatedRouteCost)
+      return saturateNow();
     stagedTraversalCosts_[traversal] = *cost;
   }
   for (PnrIndex arc : affectedTagArcs_) {
@@ -1726,7 +1757,9 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
                                stagedTagResidentHistoryPressure_,
                                stagedTagEncodingHistoryPressure_);
     if (!cost)
-      return cost.takeError();
+      return saturate(cost.takeError());
+    if (*cost > maxNegotiatedRouteCost)
+      return saturateNow();
     stagedArcCosts_[arc] = *cost;
   }
 

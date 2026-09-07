@@ -237,13 +237,27 @@ void checkedCostAndAdmissibility() {
                                        targetRanks, 1, 64)),
                 EndpointRouteSearchFailureKind::Invalid);
 
+  // A path whose accumulated cost is not representable is dropped, so the
+  // search selects the finite alternative instead of failing.
   fixture.currentCosts = fixture.lowerCosts;
   fixture.lowerCosts[5] = maxFiniteRouteCost;
   fixture.currentCosts[5] = maxFiniteRouteCost;
+  const std::array<PnrIndex, 3> representable{{1, 4, 6}};
+  const auto rerouted =
+      take(__func__, scratch.search(request(fixture, sources, sourceGroups,
+                                            targets, targetRanks, 1, 64)));
+  requirePath(__func__, rerouted, 0, 4, 3, representable);
+
+  // Without any representable path the target is unreachable, which is the
+  // typed negotiation outcome rather than an arithmetic failure.
+  for (PnrIndex arc : {2, 5, 6}) {
+    fixture.lowerCosts[arc] = maxFiniteRouteCost;
+    fixture.currentCosts[arc] = maxFiniteRouteCost;
+  }
   expectFailure(__func__,
                 scratch.search(request(fixture, sources, sourceGroups, targets,
                                        targetRanks, 1, 64)),
-                EndpointRouteSearchFailureKind::ArithmeticOverflow);
+                EndpointRouteSearchFailureKind::Unreachable);
 }
 
 void timingAwareArrivalAndBoundary() {

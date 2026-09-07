@@ -789,8 +789,13 @@ int main(int argc, char **argv) {
       std::filesystem::absolute(argv[1]).lexically_normal();
   std::filesystem::create_directories(root);
   const std::filesystem::path tool = root / "tool bin" / "receipt fixture";
+  // The fixture resolves its helper programs once. Every later `sleep` and
+  // `setsid` exec would otherwise search the launcher-visible PATH again,
+  // and a PATH that leads with network-mounted vendor directories turns each
+  // search into cold lookups that starve the detach and settle budgets.
   writeExecutable(tool, "#!/usr/bin/env bash\n"
                         "set -u\n"
+                        "hash -r; hash sleep setsid bash\n"
                         "case \"${1-}\" in\n"
                         "  --version) printf '%s\\n' 'Receipt Fixture 1.0' ;;\n"
                         "  run) printf '%s' \"$2\" >\"$3\" ;;\n"

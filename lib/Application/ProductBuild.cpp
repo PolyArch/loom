@@ -10,6 +10,7 @@
 #include "Application/ProductVisualization.h"
 #include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
@@ -1242,6 +1243,13 @@ llvm::Error publishProductDeployment(
       deadline->notAfterUnixNanoseconds, executionControl);
   if (!mapping)
     return mapping.takeError();
+  // One invocation-local import cache spans deployment construction and
+  // package publication: the activation decision, its runtime Evidence join,
+  // and the shared simulation inputs are strictly imported once and every
+  // later consumer revalidates the exact roots it names.
+  evaluation::ArtifactImportCacheScope importCache(
+      target.workspace->artifacts(), &target.workspace->blobs(),
+      productDeploymentImportCacheEntries);
   auto deployment = [&]() -> llvm::Expected<ApplicationDeploymentArtifacts> {
     mapping::SystemMappingImportSession systemMappingImportSession(
         target.workspace->artifacts(), 64);
@@ -1277,6 +1285,9 @@ llvm::Error publishProductDeployment(
   emitApplicationBuildOperationStatistics(
       {ApplicationBuildOperation::PackagePublication,
        elapsedNanoseconds(packageBegin), 1});
+  evaluation::emitArtifactImportCacheStatistics(
+      evaluation::ArtifactImportCacheVerificationDomain::SourceInvocation,
+      importCache.statistics());
   return packageError;
 }
 

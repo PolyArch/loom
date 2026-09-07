@@ -3667,7 +3667,11 @@ corresponding recipe change.
 
 Hardware reopen is ordered after the bounded current-hardware software/System
 frontier. The controller first visits those exact pairs in their declared
-preference order. `FirstVerified` returns the first verified Mapping. Under
+preference order. `FirstVerified` returns the first verified Mapping. While
+untried plans remain, each plan executes under a fair share of the remaining
+wall time, so one difficult finalist cannot consume the invocation before a
+later plan is attempted; a plan that finishes early returns its unused share,
+and the invocation deadline itself is unchanged. Under
 `BoundedQuality`, the complete bounded parent frontier is visited first; exact
 failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates are ordered by exact

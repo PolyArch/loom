@@ -199,18 +199,41 @@ resolveApplicationRuntimeEvidenceJoin(
     std::optional<evaluation::CaseArtifactResolution> resolution;
     ExecutionKind kind = ExecutionKind::Dfg;
     if (!selectedMappings.empty()) {
-      auto resolved = evaluation::models::resolveCgraSimulationCase(
-          selectedMappings.front(), *workload, *runtimeInput, artifacts);
+      auto owners = evaluation::models::resolveCgraSimulationCaseOwners(
+          selectedMappings.front(), artifacts);
+      if (!owners)
+        return reject(
+            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+            "cannot resolve selected CGRA runtime case: " +
+                llvm::toString(owners.takeError()));
+      if (owners->dataflow != dataflow)
+        return reject(
+            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+            "CGRA runtime case names a foreign canonical Dataflow");
+      // A replay pair already resolved against this canonical Dataflow has
+      // proven its workload ownership; only a pair outside the replay set
+      // still needs the workload import behind the full case resolver.
+      const bool provenPair =
+          replayResolutions.find(InputPair{*workload, *runtimeInput}) !=
+          replayResolutions.end();
+      auto resolved =
+          provenPair
+              ? evaluation::models::resolveCgraSimulationCaseResolution(
+                    *owners, *workload, *runtimeInput)
+              : [&]() -> llvm::Expected<evaluation::CaseArtifactResolution> {
+                  auto full = evaluation::models::resolveCgraSimulationCase(
+                      selectedMappings.front(), *workload, *runtimeInput,
+                      artifacts);
+                  if (!full)
+                    return full.takeError();
+                  return std::move(full->resolution);
+                }();
       if (!resolved)
         return reject(
             ApplicationActivationDecisionErrorReason::EvidenceMismatch,
             "cannot resolve selected CGRA runtime case: " +
                 llvm::toString(resolved.takeError()));
-      if (resolved->canonicalDataflow != dataflow)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "CGRA runtime case names a foreign canonical Dataflow");
-      resolution.emplace(std::move(resolved->resolution));
+      resolution.emplace(std::move(*resolved));
       kind = ExecutionKind::Cgra;
     } else {
       const auto resolved =

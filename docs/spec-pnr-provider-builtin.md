@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.10
+  loom.spatial_pnr.config.15.11
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.4
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -152,7 +152,11 @@ Work is charged in canonical discovery order before execution. Cache hits,
 deduplication, failed publication, and parallel completion do not refund it.
 Wall-clock timeout, memory reservation, external cancellation, and worker count
 are execution controls rather than semantic work units. An interruption returns
-an incomplete result and cannot substitute a larger semantic budget.
+an incomplete result and cannot substitute a larger semantic budget. Exact
+repair observes the invocation stop between two bounded solver calls as well
+as between assignments, so one long canonical extraction cannot outlive the
+deadline; the interrupted call reports the solver work it consumed and decides
+nothing.
 
 For Spatial PnR, `planned` counts only logical slots that the semantic owner has
 actually admitted for immediate execution. It is never copied from a policy
@@ -328,6 +332,23 @@ Equal-cost ties use canonical endpoint and traversal keys. A route failure
 rolls back every route-derived cut and cache whose proof is not valid outside
 that transaction.
 
+Every present, resident, and tag-encoding history channel accumulates the same
+Q-scaled normalized overuse, so one tag conflict prices one full normalized
+unit exactly like one unit of route overuse. Route costs are finite Q-scaled
+values with one largest finite value. The multiplicative price schedule is
+unbounded in principle. A route sums one price per selected arc and a
+multicast net sums one such route per sink, so the schedule is capped with a
+declared summation headroom rather than at the largest finite value: a
+negotiation advance whose staged price would exceed that cap freezes every
+pressure at its current value instead of failing, and the frozen prices then
+terminate the session through the ordinary no-progress accounting. Nothing is
+committed until every staged price is admitted, so a frozen advance leaves the
+current prices, pressures, and cost revisions unchanged. Endpoint A* drops a label whose accumulated
+distance, priority, or timing penalty would exceed the largest finite value:
+such a path is strictly worse than every representable route, so dropping it
+changes no selected route and leaves unreachability as the typed outcome when
+no representable route exists.
+
 The route cost owner validates the arc cost arrays it publishes at every
 write, finite lower-bound and current costs with no current cost below its
 lower bound, and certifies that validation through the input revisions the
@@ -373,11 +394,14 @@ restore an earlier route configuration. The full provisional oracle supplies
 any remaining cycle for the next negotiation iteration; only ordinary
 capacity, handshake, and Mapping closure permit success.
 
-Each trial restores the group's routes through the existing projection owner
-and checks the original objective and Mapping facts. Installing the selected
-capture uses that same owner and checks its selected objective and Mapping
-facts. The caller and route costs consume the actual reconstructed tag summary
-and cycle witness, rather than saved trial projections of those details.
+Each trial restores the group's routes through the open move's route
+savepoint, which returns every RouteTree transaction and the progress journal
+to their exact pre-trial state, then reconciles the route cost owner with the
+restored trees and the loop-invariant baseline tag summary. Installing the
+selected capture uses the existing projection owner and checks its selected
+objective and Mapping facts. The caller and route costs consume the actual
+reconstructed tag summary and cycle witness, rather than saved trial
+projections of those details.
 Each witnessed traversal group is tried at most once per iteration;
 selection introduces no additional search budget or recursive trial domain. Retained cyclic
 trials still consume the ordinary iteration and no-progress budgets. All

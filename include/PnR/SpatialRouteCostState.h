@@ -85,6 +85,9 @@ public:
     return selectedLogicalNet_;
   }
   std::uint64_t presentPressure() const { return presentPressure_; }
+  /// Negotiation advances whose staged prices were not representable and
+  /// therefore left the pressure schedule frozen.
+  std::uint64_t pressureSaturations() const { return pressureSaturations_; }
   std::uint64_t historyPressure(PnrIndex capacityDimension) const;
   std::uint64_t workingCapacityUsageRaw(PnrIndex capacityDimension) const;
   RouteCost capacityOveruseCost(PnrIndex capacityDimension) const;
@@ -177,6 +180,7 @@ private:
   std::size_t routeClaimWordCount_ = 0;
   std::optional<PnrIndex> selectedLogicalNet_;
   std::uint64_t presentPressure_ = 0;
+  std::uint64_t pressureSaturations_ = 0;
   EndpointRouteInputRevisionOwner lowerBoundArcCostRevisionOwner_;
   EndpointRouteInputRevisionOwner currentArcCostRevisionOwner_;
 

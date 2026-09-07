@@ -145,7 +145,11 @@ struct Gem5BuiltinPlatformPolicy final {
   std::uint64_t spatialBridgeAddressStride = 0x10000;
   std::uint64_t spatialBridgeApertureBytes = 0x1000;
   std::uint64_t spatialBridgeLatencyTicks = 10000;
-  std::uint64_t spatialBridgeMaximumMessageBytes = 1ULL << 20;
+  /// One causal boundary message carries a complete invocation result,
+  /// including the effective runtime-input snapshot, so the platform ceiling
+  /// admits multi-megabyte runtime inputs; the RTL channel staging buffer
+  /// reserves this many bytes per producer launch in the runtime range.
+  std::uint64_t spatialBridgeMaximumMessageBytes = 1ULL << 24;
   std::uint64_t memoryBaseAddress = 0x80000000;
   std::uint64_t memorySizeBytes = 0x20000000;
   std::uint64_t memoryLatencyTicks = 20000;

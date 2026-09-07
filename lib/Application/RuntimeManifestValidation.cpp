@@ -56,7 +56,7 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
         ApplicationRuntimeManifestErrorReason::ActivationDecisionMismatch,
         "activation decision failed strict import: " +
             llvm::toString(activation.takeError()));
-  const ApplicationActivationDecision &decision = activation->decision();
+  const ApplicationActivationDecision &decision = (*activation)->decision();
   if (decision.sourceProgram() != draft.sourceProgram ||
       decision.fabric() != draft.fabric ||
       decision.workload() != draft.workload ||

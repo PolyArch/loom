@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <optional>
 #include <cassert>
 #include <limits>
 #include <tuple>
@@ -200,6 +201,33 @@ llvm::Expected<RouteCost> addFiniteCost(RouteCost lhs, RouteCost rhs,
       lhs > maxFiniteRouteCost - rhs)
     return overflow(operation, " exceeds the largest finite route cost");
   return lhs + rhs;
+}
+
+/// A label whose accumulated cost is not representable is strictly worse than
+/// every finite alternative, so the search drops it instead of failing: the
+/// negotiation prices, not the topology, made that path unreachable.
+std::optional<RouteCost> representableSum(RouteCost lhs, RouteCost rhs) {
+  if (lhs == routeCostInfinity || rhs == routeCostInfinity ||
+      lhs > maxFiniteRouteCost - rhs)
+    return std::nullopt;
+  return lhs + rhs;
+}
+
+/// Consumes a representability overflow and reports it; every other failure
+/// is handed back to the caller unchanged.
+bool consumeRepresentabilityOverflow(llvm::Error &error) {
+  bool overflowed = false;
+  error = llvm::handleErrors(
+      std::move(error),
+      [&](std::unique_ptr<EndpointRouteSearchFailure> failure) -> llvm::Error {
+        if (failure->kind() != EndpointRouteSearchFailureKind::ArithmeticOverflow)
+          return llvm::Error(std::move(failure));
+        overflowed = true;
+        return llvm::Error::success();
+      });
+  if (overflowed)
+    llvm::consumeError(std::move(error));
+  return overflowed;
 }
 
 llvm::Expected<RouteCost>
@@ -709,13 +737,14 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
         continue;
       const PnrIndex predecessor = graph_.arcSources[arc];
       auto arcCost = searchArcCost(request, arc, false);
-      if (!arcCost)
-        return arcCost.takeError();
-      auto candidate =
-          addFiniteCost(endpointCost, *arcCost, "reverse lower-bound distance");
-      if (!candidate)
-        return candidate.takeError();
-      if (*candidate >= heuristic(predecessor))
+      if (!arcCost) {
+        llvm::Error error = arcCost.takeError();
+        if (consumeRepresentabilityOverflow(error))
+          continue;
+        return error;
+      }
+      const auto candidate = representableSum(endpointCost, *arcCost);
+      if (!candidate || *candidate >= heuristic(predecessor))
         continue;
       heuristics_[predecessor] = *candidate;
       heuristicEpochs_[predecessor] = heuristicGeneration_;
@@ -1096,10 +1125,9 @@ EndpointRouteSearchScratch::searchTimingAware(
     const RouteCost lowerBound = queryForwardHeuristic(endpoint);
     if (lowerBound == routeCostInfinity)
       return std::optional<PnrIndex>();
-    auto priority =
-        addFiniteCost(distance, lowerBound, "timing-aware A-star priority");
+    const auto priority = representableSum(distance, lowerBound);
     if (!priority)
-      return priority.takeError();
+      return std::optional<PnrIndex>();
     const PnrIndex ordinal = static_cast<PnrIndex>(timingLabels_.size());
     const PnrIndex oldHead =
         timingStateLabelEpochs_[state] == timingLabelGeneration_
@@ -1200,19 +1228,14 @@ EndpointRouteSearchScratch::searchTimingAware(
       auto terminalPenalty = detail::physicalTimingDrivenNegativeSlackCost(
           terminalExcess - oldExcess, request.requiredTimingQuanta,
           request.timingCriticality);
-      if (!terminalPenalty) {
+      std::optional<RouteCost> targetCost;
+      if (terminalPenalty)
+        targetCost = representableSum(label.distance, *terminalPenalty);
+      else
         llvm::consumeError(terminalPenalty.takeError());
-        return completeEndpointExpansionFailure(
-            workLedger_,
-            overflow("physical timing target slack penalty exceeds the "
-                     "largest finite route cost"));
-      }
-      auto targetCost = addFiniteCost(label.distance, *terminalPenalty,
-                                      "physical timing target distance");
-      if (!targetCost)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                targetCost.takeError());
-      if (*targetCost < bestCost ||
+      if (!targetCost) {
+        // Unrepresentable terminal cost: this label cannot be the best target.
+      } else if (*targetCost < bestCost ||
           (*targetCost == bestCost &&
            (bestTargetLabel == invalidLabel ||
             std::make_tuple(targetPreferenceRank(label.endpoint),
@@ -1259,25 +1282,20 @@ EndpointRouteSearchScratch::searchTimingAware(
           request.timingCriticality);
       if (!penalty) {
         llvm::consumeError(penalty.takeError());
-        return completeEndpointExpansionFailure(
-            workLedger_,
-            overflow("physical timing slack penalty exceeds the largest "
-                     "finite route cost"));
+        continue;
       }
       auto arcCost = searchArcCost(request, arc, true);
-      if (!arcCost)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                arcCost.takeError());
-      auto distance = addFiniteCost(label.distance, *arcCost,
-                                    "timing-aware forward distance");
+      if (!arcCost) {
+        llvm::Error error = arcCost.takeError();
+        if (consumeRepresentabilityOverflow(error))
+          continue;
+        return completeEndpointExpansionFailure(workLedger_, std::move(error));
+      }
+      auto distance = representableSum(label.distance, *arcCost);
+      if (distance)
+        distance = representableSum(*distance, *penalty);
       if (!distance)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                distance.takeError());
-      distance =
-          addFiniteCost(*distance, *penalty, "timing-aware slack distance");
-      if (!distance)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                distance.takeError());
+        continue;
       const PnrIndex traversal = graph_.arcs[arc].traversal;
       const bool selectsRequired =
           !request.requiredTraversalBits.empty() &&
@@ -1543,14 +1561,16 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (successorHeuristic == routeCostInfinity)
         continue;
       auto arcCost = searchArcCost(request, arc, true);
-      if (!arcCost)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                arcCost.takeError());
-      auto candidateDistance =
-          addFiniteCost(endpointDistance, *arcCost, "forward distance");
+      if (!arcCost) {
+        llvm::Error error = arcCost.takeError();
+        if (consumeRepresentabilityOverflow(error))
+          continue;
+        return completeEndpointExpansionFailure(workLedger_, std::move(error));
+      }
+      const auto candidateDistance =
+          representableSum(endpointDistance, *arcCost);
       if (!candidateDistance)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                candidateDistance.takeError());
+        continue;
       const PnrIndex traversal = graph_.arcs[arc].traversal;
       const bool selectsRequired =
           !request.requiredTraversalBits.empty() &&
@@ -1561,11 +1581,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
           searchState(successor, requirementMet || selectsRequired);
       if (*candidateDistance >= distance(successorState))
         continue;
-      auto candidatePriority = addFiniteCost(
-          *candidateDistance, successorHeuristic, "A-star priority");
+      const auto candidatePriority =
+          representableSum(*candidateDistance, successorHeuristic);
       if (!candidatePriority)
-        return completeEndpointExpansionFailure(workLedger_,
-                                                candidatePriority.takeError());
+        continue;
       distances_[successorState] = *candidateDistance;
       priorities_[successorState] = *candidatePriority;
       predecessorArcs_[successorState] = arc;

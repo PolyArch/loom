@@ -59,7 +59,7 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.15.10",
+              "loom.spatial_pnr.config.15.11",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
@@ -343,7 +343,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
   require(loom::ResolvedConfig::artifactSchema.version.major == 11 &&
-              loom::ResolvedConfig::artifactSchema.version.minor == 4,
+              loom::ResolvedConfig::artifactSchema.version.minor == 5,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
       loom::canonicalResolvedConfigJson(loom::defaultResolvedConfig());

@@ -78,6 +78,22 @@ resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
                           const ArtifactRootReference &runtimeInput,
                           const ArtifactStore &artifactStore);
 
+/// Strictly resolves the owner lineage of one SpatialMapping-rooted CGRA case
+/// without importing any workload. An enclosing import cache retains the
+/// verified closure across the cases that share the SpatialMapping.
+llvm::Expected<sim::CgraExecutionOwnerReferences>
+resolveCgraSimulationCaseOwners(const ArtifactRootReference &spatialMapping,
+                                const ArtifactStore &artifactStore);
+
+/// Builds the case resolution of owners already resolved by
+/// resolveCgraSimulationCaseOwners for a workload whose canonical Dataflow
+/// ownership the caller has proven against `owners.dataflow`.
+llvm::Expected<CaseArtifactResolution>
+resolveCgraSimulationCaseResolution(
+    const sim::CgraExecutionOwnerReferences &owners,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput);
+
 llvm::Expected<PreparedCgraSimulationEvaluation>
 prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                                 const ArtifactRootReference &fabric,

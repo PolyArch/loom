@@ -262,6 +262,8 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-routing-negotiation-test
   loom-pnr-spatial-action-proposal-test
   loom-pnr-cp-sat-exact-protocol-test
+  loom-pnr-spatial-tag-coloring-test
+  loom-pnr-static-schedule-pressure-test
   loom-relocatable-payload-test
   loom-runtime-platform-binding-test
   loom-runtime-gem5-bridge-test
