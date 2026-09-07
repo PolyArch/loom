@@ -11,6 +11,7 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SystemActivity.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -428,10 +429,10 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
   const dataflow::EventFamilyKey completion =
       dataflow::rootThreadCompletionEventFamily(root);
   const std::vector<SystemRootLifecycleObservation> validLifecycle{
-      {start, 7, {5, 0}},
-      {start, 8, {6, 0}},
-      {completion, 8, {7, 0}},
-      {completion, 7, {8, 0}},
+      {start, 7, {5, 0}, 1},
+      {start, 8, {6, 0}, 2},
+      {completion, 8, {7, 0}, 2},
+      {completion, 7, {8, 0}, 3},
   };
 
   SystemSimulationExecution execution{
@@ -511,6 +512,12 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
                                                   artifacts, blobs),
                       "not strictly increasing");
   malformed = execution;
+  malformed.progressObservations.rootLifecycle[2].memoryOccupiedTicks = 1;
+  expectErrorContains(test,
+                      finalizeSimulationExecution(malformed, fixture.resolution,
+                                                  artifacts, blobs),
+                      "memory service samples decrease");
+  malformed = execution;
   const dataflow::RootThreadLaunchRef foreignRoot{
       fixture.deployment.reference().artifact, root.entity};
   malformed.progressObservations.rootLifecycle = {
@@ -520,9 +527,25 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
                                                   artifacts, blobs),
                       "not owned by a root thread launch");
 
+  const std::optional<SystemAcceleratedWindow> window = take(
+      test, projectSystemAcceleratedWindow(retired, fixture.resolution,
+                                           artifacts, blobs));
+  deployment::test::require(
+      test,
+      window && window->firstStartTick == 5 &&
+          window->lastCompletionTick == 8 && window->elapsedTicks() == 3 &&
+          window->occupiedTicks == 2,
+      "accelerated window does not span the first start to the last completion");
+
   execution.progressObservations.rootLifecycle.clear();
-  take(test, finalizeSimulationExecution(execution, fixture.resolution,
-                                         artifacts, blobs));
+  CanonicalSimulationExecution unlaunched =
+      take(test, finalizeSimulationExecution(execution, fixture.resolution,
+                                             artifacts, blobs));
+  deployment::test::require(
+      test,
+      !take(test, projectSystemAcceleratedWindow(unlaunched, fixture.resolution,
+                                                 artifacts, blobs)),
+      "an execution with no launch reported an accelerated window");
   execution.progressObservations.rootLifecycle = validLifecycle;
 
   execution.terminal = StoppedByLimitExecution{};

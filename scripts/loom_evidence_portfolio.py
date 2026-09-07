@@ -119,11 +119,15 @@ RUNTIME_MANIFEST_VERSION = (
 _SYSTEM_QOR_OWNER = (_ROOT / "include/Application/SystemQor.h").read_text(encoding="utf-8")
 SYSTEM_QOR_SCHEMA = _owned_projection_literal("applicationSystemQorProjectionSchema", _SYSTEM_QOR_OWNER)
 SYSTEM_QOR_VERSION = _owned_projection_literal("applicationSystemQorProjectionVersion", _SYSTEM_QOR_OWNER)
-_MEMORY_TARGET = Fraction(*[
-    int(re.search(rf"\b{name} = (\d+)", _SYSTEM_QOR_OWNER).group(1))
-    for name in ("applicationMinimumMemoryUtilizationNumerator",
-                 "applicationMinimumMemoryUtilizationDenominator")
-])
+def _system_qor_target(prefix: str) -> Fraction:
+    return Fraction(*[
+        int(re.search(rf"\b{prefix}{part} = (\d+)", _SYSTEM_QOR_OWNER).group(1))
+        for part in ("Numerator", "Denominator")
+    ])
+
+
+_UTILIZATION_TARGET = _system_qor_target("applicationMinimumResourceUtilization")
+_HOST_BOUND_TARGET = _system_qor_target("applicationHostBoundWindow")
 
 
 def _integer(value: Any) -> int | None:
@@ -1364,12 +1368,17 @@ PRODUCT_PROFILE_FIELDS = {
 }
 
 
+def _ratio(value: Any, expected: Fraction) -> bool:
+    return value == {"numerator": expected.numerator,
+                     "denominator": expected.denominator}
+
+
 def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list[str]:
     """Validate the Application owner's post-execution projection and root joins."""
     qor = workspace.get("paired_system_execution")
     if not isinstance(qor, dict) or set(qor) != {
         "schema", "version", "application_runtime_manifest", "gem5_binding",
-        "host_only", "candidate", "speedup", "status", "target",
+        "host_only", "candidate", "speedup", "status", "bottleneck", "target",
     }:
         return ["system_qor_projection_missing_or_malformed"]
     errors: list[str] = []
@@ -1380,12 +1389,14 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
             errors.append(f"system_qor_{field}_mismatch")
     product = workspace.get("product_profile") is not None
     elapsed: dict[str, int] = {}
-    occupied: dict[str, int] = {}
     for role in ("host_only", "candidate"):
         run = qor[role]
         fields = {"request", "evidence", "execution", "elapsed_ticks", "shared_memory"}
         if product:
             fields |= {"product_oracle_request", "product_oracle_evidence"}
+        # Only the candidate launches accelerator work, so only it has a window.
+        if role == "candidate":
+            fields |= {"accelerated_window"}
         if not isinstance(run, dict) or set(run) != fields:
             errors.append(f"system_qor_{role}_shape_invalid")
             continue
@@ -1408,11 +1419,9 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
         if busy is None or busy < 0 or busy > duration:
             errors.append(f"system_qor_{role}_occupancy_invalid")
             continue
-        utilization = Fraction(busy, duration)
-        if memory["utilization"] != {"numerator": utilization.numerator,
-                                      "denominator": utilization.denominator}:
+        if not _ratio(memory["utilization"], Fraction(busy, duration)):
             errors.append(f"system_qor_{role}_utilization_mismatch")
-        elapsed[role], occupied[role] = duration, busy
+        elapsed[role] = duration
     if len(elapsed) != 2:
         return errors
     if any(qor["host_only"][field] == qor["candidate"][field]
@@ -1425,18 +1434,91 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
                                  for field, _ in roots):
         errors.append("system_qor_candidate_run_join_invalid")
     speedup = Fraction(elapsed["host_only"], elapsed["candidate"])
-    if qor["speedup"] != {"numerator": speedup.numerator, "denominator": speedup.denominator}:
+    if not _ratio(qor["speedup"], speedup):
         errors.append("system_qor_speedup_mismatch")
-    if qor["target"] != {"strict_speedup": True, "minimum_memory_utilization_exclusive": {
-        "numerator": _MEMORY_TARGET.numerator, "denominator": _MEMORY_TARGET.denominator
-    }}:
+    if qor["target"] != {
+        "strict_speedup": True,
+        "window_branches": ["memory_service_utilization", "compute_occupancy"],
+        "minimum_window_utilization_exclusive": {
+            "numerator": _UTILIZATION_TARGET.numerator,
+            "denominator": _UTILIZATION_TARGET.denominator},
+        "host_bound_window_fraction_exclusive": {
+            "numerator": _HOST_BOUND_TARGET.numerator,
+            "denominator": _HOST_BOUND_TARGET.denominator},
+    }:
         errors.append("system_qor_target_mismatch")
-    qualifies = speedup > 1 and Fraction(occupied["candidate"], elapsed["candidate"]) > _MEMORY_TARGET
+    branches = _validate_system_qor_window(
+        qor["candidate"]["accelerated_window"], elapsed["candidate"], errors)
+    if branches is None:
+        return errors
+    memory_branch, compute_branch, window_ticks = branches
+    qualifies = speedup > 1 and (memory_branch > _UTILIZATION_TARGET or
+                                 compute_branch > _UTILIZATION_TARGET)
     if qor["status"] != ("qualified" if qualifies else "not_qualified"):
         errors.append("system_qor_status_mismatch")
+    if memory_branch > _UTILIZATION_TARGET:
+        bottleneck = "memory_bandwidth_bound"
+    elif compute_branch > _UTILIZATION_TARGET:
+        bottleneck = "compute_bound"
+    elif Fraction(window_ticks, elapsed["candidate"]) < _HOST_BOUND_TARGET:
+        bottleneck = "host_bound"
+    else:
+        bottleneck = "latency_bound"
+    if qor["bottleneck"] != bottleneck:
+        errors.append("system_qor_bottleneck_mismatch")
     if require_target and not qualifies:
         errors.append("system_qor_performance_target_not_met")
     return errors
+
+
+def _validate_system_qor_window(
+    window: Any, program_ticks: int, errors: list[str]
+) -> tuple[Fraction, Fraction, int] | None:
+    """Mirror the owner's accelerated-window derivation and both branch ratios."""
+    if not isinstance(window, dict) or set(window) != {
+        "first_start_tick", "last_completion_tick", "elapsed_ticks",
+        "shared_memory", "compute",
+    }:
+        errors.append("system_qor_candidate_window_shape_invalid")
+        return None
+    start = _integer(window["first_start_tick"])
+    completion = _integer(window["last_completion_tick"])
+    span = _integer(window["elapsed_ticks"])
+    if start is None or completion is None or span is None or start < 0 or \
+            completion - start != span or span <= 0 or span > program_ticks:
+        errors.append("system_qor_candidate_window_interval_invalid")
+        return None
+    memory = window["shared_memory"]
+    if not isinstance(memory, dict) or set(memory) != {"occupied_ticks", "utilization"}:
+        errors.append("system_qor_candidate_window_shape_invalid")
+        return None
+    busy = _integer(memory["occupied_ticks"])
+    if busy is None or busy < 0 or busy > span:
+        errors.append("system_qor_candidate_window_occupancy_invalid")
+        return None
+    memory_branch = Fraction(busy, span)
+    if not _ratio(memory["utilization"], memory_branch):
+        errors.append("system_qor_candidate_window_utilization_mismatch")
+    compute = window["compute"]
+    if not isinstance(compute, dict) or set(compute) != {
+        "retired_compute_firings", "mapped_compute_units", "launched_acc_cores",
+        "reference_cycle_ticks", "occupancy",
+    }:
+        errors.append("system_qor_candidate_window_shape_invalid")
+        return None
+    firings = _integer(compute["retired_compute_firings"])
+    units = _integer(compute["mapped_compute_units"])
+    cores = _integer(compute["launched_acc_cores"])
+    period = _integer(compute["reference_cycle_ticks"])
+    if firings is None or firings < 0 or units is None or units <= 0 or \
+            cores is None or cores <= 0 or period is None or period <= 0:
+        errors.append("system_qor_candidate_compute_invalid")
+        return None
+    # One retired compute firing occupies its bound unit for one reference cycle.
+    compute_branch = Fraction(firings * period, span * units * cores)
+    if not _ratio(compute["occupancy"], compute_branch):
+        errors.append("system_qor_candidate_compute_occupancy_mismatch")
+    return memory_branch, compute_branch, span
 
 
 def validate_portfolio_product_execution(

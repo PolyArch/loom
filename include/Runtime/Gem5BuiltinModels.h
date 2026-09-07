@@ -38,6 +38,19 @@ struct Gem5CacheParameters final {
 /// Projects one Fabric cache realization onto the gem5 parameter record.
 Gem5CacheParameters
 projectGem5Cache(const fabric::CacheRealizationRecord &cache);
+/// Fabric clock contracts state periods in femtoseconds. One gem5 tick spans
+/// this many of them, derived from the sole tick-duration owner above so the
+/// two time domains cannot drift apart.
+inline constexpr std::uint64_t gem5TickFemtoseconds = [] {
+  constexpr int femtosecondSecondsExponent = -15;
+  static_assert(gem5TickSecondsExponent >= femtosecondSecondsExponent,
+                "a gem5 tick cannot be shorter than a femtosecond");
+  std::uint64_t value = 1;
+  for (int power = femtosecondSecondsExponent; power != gem5TickSecondsExponent;
+       ++power)
+    value *= 10;
+  return value;
+}();
 
 struct Gem5RiscvCpuParameters final {
   std::uint64_t cpuId = 0;

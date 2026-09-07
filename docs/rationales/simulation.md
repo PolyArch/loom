@@ -317,7 +317,7 @@ validation or become evidence merely because a viewer can read them.
 
 The current boundary is therefore exact: `SpatialDiagnosticTrace` is a shared
 typed invocation-local value retained only by an attempt context or scratch
-storage, and `loom.simulation_execution 3.0` has no general diagnostic-trace
+storage, and `loom.simulation_execution 3.1` has no general diagnostic-trace
 field. Its persistent System root-lifecycle sequence is deliberately narrow:
 it records only canonical root start and completion families, dynamic
 occurrences, and global coordinates needed for execution progress. A broader

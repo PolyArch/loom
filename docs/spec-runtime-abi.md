@@ -766,7 +766,7 @@ big-endian root-lifecycle stream:
 
 ```text
 RootLifecycleStream {
-  magic: u32 = LRE2
+  magic: u32 = LRE3
   records: array<RootLifecycleRecord>
 }
 
@@ -779,8 +779,16 @@ RootLifecycleRecord {
   acknowledgement_generation: u64 (zero when control is disabled)
   decision: u32 = Continue(0) | Stay(1) | ActivateEndpoint(2) | Reject(3)
   endpoint: u64
+  memory_occupied_ticks: u64
 }
 ```
+
+The device holds the sole shared-memory service observer as a parameter and
+samples its cumulative acceptance-service integral when it appends each record.
+The sample is an observation of the same maintained counter that reports
+full-program occupancy, not a second counter, and reading it changes no
+simulator state. Differencing two samples yields the exact service occupancy of
+the interval they bound, which is how the accelerated window is measured.
 
 When control is enabled, each record is preceded by a fixed-size request and
 followed by an acknowledgement on the socket. The request carries the

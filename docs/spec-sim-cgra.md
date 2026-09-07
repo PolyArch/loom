@@ -441,8 +441,18 @@ events.
 Trace capture is observational. Enabling or changing it cannot affect grants,
 event scheduling, outputs, terminal form, cycle count, metrics, or findings.
 
-When requested and exactly observed, CGRA-sim may retain
-`ActorTransitions` and `FabricResources` activity summaries over either
+CGRA-sim always retains one complete `ActorTransitions` summary over its
+launch-to-terminal window. The engine already observes every actor commit and
+retirement to maintain its own counters; the summary keeps their actor
+attribution instead of discarding it, so a consumer can separate compute,
+control, and memory work through the exact Dataflow actor kinds. The table is
+total over the rooted graph's actor inventory: an actor that never fired is
+reported with zero counts rather than omitted, so absence is never confused with
+unobserved. Retaining it changes no grant, schedule, output, terminal form,
+cycle count, metric, or finding.
+
+When requested and exactly observed, CGRA-sim may additionally retain
+`FabricResources` activity summaries over either
 progress-defined window. Actor tables resolve through the exact Dataflow
 program. Fabric use and occupancy tables resolve through the exact Fabric and
 complete SpatialMapping and use only Fabric-owned use-pattern and
@@ -500,7 +510,7 @@ Stable anchor tests cover:
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
 * rejection of every persistent Spatial diagnostic-trace field in
-  `loom.simulation_execution 3.0` and diagnostic capture noninterference;
+  `loom.simulation_execution 3.1` and diagnostic capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

@@ -1,4 +1,5 @@
 #include "MappedRtlCell.h"
+#include "SpatialComputeAggregate.h"
 #include "SpatialInvocationCase.h"
 #include "SystemRunError.h"
 
@@ -1667,15 +1668,6 @@ llvm::Error run() {
               artifacts, blobs))
         return error;
 
-    auto systemQor = loom::application::qualifyApplicationSystemQor(
-        workspace->package.manifest(),
-        {hostOnly->execution, hostOnly->evidence, hostOnly->productOracleEvidence},
-        *baselineResolution,
-        {cgra->execution, cgra->evidence, cgra->productOracleEvidence}, *resolution,
-        loom::defaultResolvedConfig(), artifacts, blobs);
-    if (!systemQor)
-      return systemQor.takeError();
-
     std::optional<
         loom::application::FinalizedApplicationResourceTimeExecutionTrace>
         resourceTimeTrace;
@@ -1781,6 +1773,27 @@ llvm::Error run() {
       if (spatialRtl)
         spatialRuns.push_back(std::move(*spatialRtl));
     }
+
+    // The standalone CGRA replays, not the DFG cells, are the candidate's
+    // compute evidence, so qualification follows the Spatial matrix.
+    std::vector<const loom::sim::SpatialSimulationExecution *> cgraReplays(
+        spatialInvocations.size(), nullptr);
+    for (const CompletedSpatialRun &run : spatialRuns)
+      if (run.engine == Engine::Cgra)
+        cgraReplays[run.invocationOrdinal] = run.importedExecution.spatial();
+    auto computeInputs = loom::system_run::aggregateSpatialComputeInputs(
+        spatialInvocations, cgraReplays, artifacts, blobs);
+    if (!computeInputs)
+      return computeInputs.takeError();
+    auto systemQor = loom::application::qualifyApplicationSystemQor(
+        workspace->package.manifest(),
+        {hostOnly->execution, hostOnly->evidence, hostOnly->productOracleEvidence},
+        *baselineResolution,
+        {cgra->execution, cgra->evidence, cgra->productOracleEvidence}, *resolution,
+        *computeInputs, loom::defaultResolvedConfig(), artifacts, blobs);
+    if (!systemQor)
+      return systemQor.takeError();
+
     if (llvm::Error error = writeManifest(
             workspacePath, workspace->package.manifest(), deployment, *binding,
             *inputs, *dfg, *cgra, *systemQor,

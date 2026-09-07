@@ -934,7 +934,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
                              OwnerValue::get(std::move(*certificate))},
         std::move(outcome->halted->observations),
         std::move(outcome->halted->progress),
-        {}};
+        std::move(outcome->halted->activitySummaries)};
     return publishCompletedExecution(
         request, resolution, std::move(halted), cycleCount, true, artifactStore,
         blobStore, executionContext, projectionBegin, attemptProfile);
@@ -1151,7 +1151,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
       sim::RetiredExecution{},
       std::move(outcome->retired->observations),
       std::move(outcome->retired->progress),
-      {}};
+      std::move(outcome->retired->activitySummaries)};
   return publishCompletedExecution(
       request, resolution, std::move(model), cycleCount, false, artifactStore,
       blobStore, executionContext, projectionBegin, attemptProfile);

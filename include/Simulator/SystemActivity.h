@@ -11,5 +11,26 @@ llvm::Expected<std::optional<evaluation::ExactRatio>>
 projectSystemMemoryUtilization(const CanonicalSimulationExecution &execution,
                               const evaluation::CaseArtifactResolution &resolution,
                               const ArtifactStore &artifacts, const BlobStore &blobs);
+
+/// The accelerated window of one System execution: the closed gem5-tick
+/// interval from the first observed root Start lifecycle event through the last
+/// observed root Completion lifecycle event. Host gaps between launches remain
+/// inside the interval. `occupiedTicks` is the shared-memory acceptance service
+/// consumed inside it, taken as the difference of the two bounding samples.
+struct SystemAcceleratedWindow final {
+  std::uint64_t firstStartTick = 0;
+  std::uint64_t lastCompletionTick = 0;
+  std::uint64_t occupiedTicks = 0;
+
+  std::uint64_t elapsedTicks() const { return lastCompletionTick - firstStartTick; }
+};
+
+/// Absence means the execution completed no root launch, so it has no
+/// accelerated window: a host-only run and a run whose launches never retired
+/// are both unmeasured rather than fully utilized.
+llvm::Expected<std::optional<SystemAcceleratedWindow>>
+projectSystemAcceleratedWindow(const CanonicalSimulationExecution &execution,
+                              const evaluation::CaseArtifactResolution &resolution,
+                              const ArtifactStore &artifacts, const BlobStore &blobs);
 }
 #endif
