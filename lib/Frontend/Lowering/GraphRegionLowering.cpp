@@ -333,10 +333,12 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
 class GraphRegionLowerer {
 public:
   GraphRegionLowerer(::dataflow::GraphOp graph,
-                     const StreamBoundaryInfo &boundary, unsigned indexBits)
+                     const StreamBoundaryInfo &boundary, unsigned indexBits,
+                     ::llvm::ArrayRef<::mlir::Operation *> independentLoops)
       : graph(graph), builder(graph.getContext()),
         entry(graph.getBody().front()), anchor(entry.getTerminator()),
-        transientStreamBoundary(boundary.isTransient()), indexBits(indexBits) {
+        transientStreamBoundary(boundary.isTransient()), indexBits(indexBits),
+        independentLoops(independentLoops) {
     for (auto [channel, payload] :
          ::llvm::zip_equal(boundary.inputChannels, boundary.inputPayloads))
       streamInputByChannel.try_emplace(channel, payload);
@@ -394,6 +396,7 @@ private:
   bool loweringFailed = false;
   // Resolved once at the pass boundary and read-only from here on.
   unsigned indexBits;
+  ::llvm::ArrayRef<::mlir::Operation *> independentLoops;
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
   ::llvm::DenseMap<::mlir::Value, unsigned> streamOutputByChannel;
   ::llvm::SmallVector<::mlir::Value, 4> streamOutputs;
@@ -1576,6 +1579,8 @@ private:
   RegionResult lowerFor(::mlir::scf::ForOp forOp, ::mlir::Value execution,
                         MemoryState memory) {
     ::mlir::Location loc = forOp.getLoc();
+    const bool independent =
+        ::llvm::is_contained(independentLoops, forOp.getOperation());
     bool unorderedMemory = true;
     forOp.walk([&](::mlir::Operation *op) {
       if (auto contract = ::dataflow::semantics::getMemoryActorContract(op))
@@ -1667,6 +1672,8 @@ private:
         partitionCount);
     ::llvm::SmallVector<::mlir::Value, 4> writeExits(partitionCount);
     ::llvm::SmallVector<::mlir::Value, 4> readExits(partitionCount);
+    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> iterationStarts;
+    iterationStarts.try_emplace(execution, executionBody);
     for (int partition = touched.find_first(); partition >= 0;
          partition = touched.find_next(partition)) {
       setInsertionPoint(loc);
@@ -1683,6 +1690,17 @@ private:
       writeExits[partition] = writeExit;
       readExits[partition] = readExit;
       bodyMemory[partition] = {writeBody, readBody};
+      if (independent) {
+        auto initial = iterationStarts.try_emplace(memory[partition].read);
+        if (initial.second) {
+          auto ready = ::dataflow::InvariantOp::create(
+              builder, loc, builder.getNoneType(), phase, memory[partition].read);
+          initial.first->second = demux(phase, ready.getOutput(), loc).second;
+        }
+        // Iterations retain their incoming memory precondition and publish
+        // all completion summaries, but do not wait for each other's accesses.
+        bodyMemory[partition] = {initial.first->second, initial.first->second};
+      }
     }
 
     MemoryState iterationMemory = bodyMemory;
@@ -1690,7 +1708,7 @@ private:
                                          executionBody, std::move(bodyMemory));
     auto yield = ::llvm::cast<::mlir::scf::YieldOp>(
         forOp.getRegion().front().getTerminator());
-    if (unorderedMemory && bodyResult.execution == executionBody) {
+    if (!independent && unorderedMemory && bodyResult.execution == executionBody) {
       for (int partition = touched.find_first(); partition >= 0;
            partition = touched.find_next(partition)) {
         if (bodyResult.memory[partition].write !=
@@ -1905,12 +1923,13 @@ checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph,
-                                        unsigned indexBits) {
+::mlir::LogicalResult lowerGraphRegions(
+    ::dataflow::GraphOp graph, unsigned indexBits,
+    ::llvm::ArrayRef<::mlir::Operation *> independentLoops) {
   auto boundary = analyzeStreamBoundary(graph);
   if (::mlir::failed(boundary))
     return ::mlir::failure();
-  return GraphRegionLowerer(graph, *boundary, indexBits).run();
+  return GraphRegionLowerer(graph, *boundary, indexBits, independentLoops).run();
 }
 
 } // namespace lowering

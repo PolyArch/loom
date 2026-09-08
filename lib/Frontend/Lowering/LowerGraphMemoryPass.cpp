@@ -6,6 +6,7 @@
 // address root; the enclosing thread materializes that service before launch.
 
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
+#include "Frontend/Lowering/LoopIndependence.h"
 #include "Frontend/Lowering/Passes.h"
 
 #include "GraphMemoryLowering.h"
@@ -1193,6 +1194,16 @@ namespace lowering {
   ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
   module.walk([&](::dataflow::GraphOp graph) { graphs.push_back(graph); });
 
+  // Prove on the source access geometry before pointer accesses become
+  // Dataflow memory actors. Normalization preserves these loop operations.
+  ::llvm::SmallVector<::mlir::Operation *, 8> independentLoops;
+  for (::dataflow::GraphOp graph : graphs)
+    graph.walk([&](::mlir::scf::ForOp loop) {
+      if (proveIndependentIterations(loop) ==
+          ParallelDependenceResult::ProvenIndependent)
+        independentLoops.push_back(loop.getOperation());
+    });
+
   if (projections)
     projections->clear();
   for (::dataflow::GraphOp graph : graphs) {
@@ -1210,7 +1221,7 @@ namespace lowering {
     if (graph.isExternal())
       continue;
     std::optional<unsigned> indexBits = getGraphIndexBits(graph);
-    if (!indexBits || ::mlir::failed(lowerGraphRegions(graph, *indexBits)))
+    if (!indexBits || ::mlir::failed(lowerGraphRegions(graph, *indexBits, independentLoops)))
       return ::mlir::failure();
   }
   return ::mlir::success();

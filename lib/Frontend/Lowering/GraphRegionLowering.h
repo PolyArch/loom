@@ -46,9 +46,12 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op);
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module);
 
 // `indexBits` is the canonical index width the caller's pass boundary already
-// resolved; region lowering never resolves it again.
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph,
-                                        unsigned indexBits);
+// resolved; region lowering never resolves it again. `independentLoops` holds
+// the shared iteration-independence proof from before memory normalization;
+// normalization preserves the referenced loops and their access semantics.
+::mlir::LogicalResult lowerGraphRegions(
+    ::dataflow::GraphOp graph, unsigned indexBits,
+    ::llvm::ArrayRef<::mlir::Operation *> independentLoops);
 
 } // namespace lowering
 } // namespace loom
