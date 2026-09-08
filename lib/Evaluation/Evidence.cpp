@@ -33,10 +33,9 @@ findOutputBinding(llvm::ArrayRef<ModelOutputBinding> bindings,
 llvm::Error requireAvailable(const ArtifactRootReference &reference,
                              llvm::StringRef owner,
                              const ArtifactStore &artifactStore) {
-  auto bytes = artifactStore.get(reference);
-  if (!bytes)
+  if (llvm::Error error = artifactStore.verifyReference(reference))
     return llvm::joinErrors(evaluationError(owner + " is unresolved"),
-                            bytes.takeError());
+                            std::move(error));
   return llvm::Error::success();
 }
 

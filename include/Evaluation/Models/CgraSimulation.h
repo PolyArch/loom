@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 namespace loom {
@@ -28,8 +29,7 @@ struct PreparedCgraSimulationEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
   sim::PreparedCgraExecution execution;
-  sim::CanonicalSimulationWorkload workload;
-  sim::CanonicalSimulationRuntimeInput runtimeInput;
+  std::shared_ptr<const sim::ImportedSpatialSimulationInputs> inputs;
   sim::PreparedCgraWorkloadExecution workloadExecution;
   sim::PreparedSpatialExecutionContext executionContext;
 };

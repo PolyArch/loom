@@ -226,18 +226,6 @@ importCachedDeployment(const ArtifactRootReference &reference,
       });
 }
 
-llvm::Expected<std::shared_ptr<const sim::ImportedSpatialSimulationInputs>>
-importCachedSpatialInputs(const ArtifactRootReference &workload,
-                          const ArtifactRootReference &runtimeInput,
-                          const ArtifactStore &artifacts) {
-  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
-  return importCachedArtifact<sim::ImportedSpatialSimulationInputs>(
-      artifacts, nullptr, references, [&] {
-        return sim::importSpatialSimulationInputs(workload, runtimeInput,
-                                                  artifacts);
-      });
-}
-
 llvm::Error
 verifySystemWorkload(const EvaluationCase &,
                      const EvaluationSubjectBindings &bindings,
@@ -277,7 +265,7 @@ llvm::Error verifyMappedRtlWorkload(
       importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(*workload, *runtimeInput, artifacts);
+  auto inputs = sim::importSpatialSimulationInputs(*workload, *runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
   const sim::SpatialSimulationWorkload *spatial = (*inputs)->workload.spatial();
@@ -311,7 +299,7 @@ resolveMappedRtlCycle(const EvaluationCase &evaluationCase,
       importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(
+  auto inputs = sim::importSpatialSimulationInputs(
       *evaluationCase.workload(), *evaluationCase.runtimeInput(), artifacts);
   if (!inputs)
     return inputs.takeError();

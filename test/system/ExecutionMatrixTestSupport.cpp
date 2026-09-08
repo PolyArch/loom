@@ -619,7 +619,7 @@ buildSharedFixture(llvm::StringRef test, ExecutionMatrixCell cell,
       take(test, sim::importSpatialSimulationInputs(
                      spatialWorkload, spatialRuntimeInput, artifacts));
   const sim::SpatialSimulationWorkload *spatial =
-      spatialInputs.workload.spatial();
+      spatialInputs->workload.spatial();
   require(test, spatial != nullptr,
           "System fixture Spatial workload has no launch selection");
   auto launchSelection =
@@ -1738,8 +1738,8 @@ void runPairedSpatialCgraBatch(std::uint64_t warmupRuns,
          invocation != pairedMeasurementInvocationCount; ++invocation) {
       auto outcome =
           take(test, sim::simulateCgraWorkload(
-                         prepared.workloadExecution, prepared.workload,
-                         prepared.runtimeInput, runtime::gem5MaximumSpatialWork,
+                         prepared.workloadExecution, prepared.inputs->workload,
+                         prepared.inputs->runtimeInput, runtime::gem5MaximumSpatialWork,
                          std::nullopt));
       require(test,
               outcome.state == sim::SpatialExecutionSessionState::Retired &&

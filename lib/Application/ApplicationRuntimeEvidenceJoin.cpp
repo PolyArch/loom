@@ -46,9 +46,10 @@ resolveApplicationRuntimeEvidenceJoin(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   evaluation::ArtifactImportCacheScope importCache(artifacts, &blobs);
   fabric::FabricArtifactImportSession fabricImports;
-  if (runtimeEvidence.empty() || oracleEvidence.empty())
+  if (runtimeEvidence.empty() || oracleEvidence.empty() || replayCases.empty())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "application runtime requires runtime and oracle Evidence");
+                  "application runtime requires replay inputs, runtime and "
+                  "oracle Evidence");
   const std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
       runtimeRoots(runtimeEvidence.begin(), runtimeEvidence.end(),
                    artifactRootReferenceLess);
@@ -61,62 +62,65 @@ resolveApplicationRuntimeEvidenceJoin(
   if (oracleRoots.size() != oracleEvidence.size())
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                   "oracle Evidence repeats an Evidence root");
-  for (const ArtifactRootReference &oracle : oracleEvidence) {
+  for (const ArtifactRootReference &oracle : oracleEvidence)
     if (runtimeRoots.find(oracle) == runtimeRoots.end())
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "oracle Evidence is outside the runtime Evidence set");
-  }
 
   struct InputPair final {
     ArtifactRootReference workload;
     ArtifactRootReference runtimeInput;
-    bool operator==(const InputPair &other) const {
-      return workload == other.workload && runtimeInput == other.runtimeInput;
-    }
   };
   const auto pairLess = [](const InputPair &lhs, const InputPair &rhs) {
     if (lhs.workload != rhs.workload)
       return artifactRootReferenceLess(lhs.workload, rhs.workload);
     return artifactRootReferenceLess(lhs.runtimeInput, rhs.runtimeInput);
   };
-  std::map<InputPair, evaluation::CaseArtifactResolution, decltype(pairLess)>
-      replayResolutions(pairLess);
-  for (const sim::SourceBackedDfgReplayCaseReference &replay : replayCases) {
-    auto resolution = evaluation::models::resolveDfgSimulationCase(
-        dataflow, replay.workload, replay.runtimeInput, artifacts);
-    if (!resolution)
-      return reject(
-          ApplicationActivationDecisionErrorReason::DependencyMismatch,
-          "source-backed replay case failed strict import: " +
-              llvm::toString(resolution.takeError()));
-    if (!replayResolutions
-             .emplace(InputPair{replay.workload, replay.runtimeInput},
-                      std::move(*resolution))
-             .second)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "source-backed replay cases repeat an input pair");
-  }
-
-  enum class ExecutionKind : std::uint8_t { Dfg, Cgra };
-  struct ExecutionRecord final {
-    ArtifactRootReference evidence;
-    ArtifactRootReference execution;
-    ArtifactRootReference workload;
-    ArtifactRootReference runtimeInput;
-    evaluation::CaseArtifactResolution resolution;
-    ExecutionKind kind;
-  };
   struct EvidenceFacts final {
     ArtifactRootReference evidence;
     evaluation::EvaluationEvidenceDependencyProjection projection;
     std::vector<ArtifactRootReference> requestReferences;
   };
-  std::vector<EvidenceFacts> evidenceFacts;
-  std::vector<ExecutionRecord> executions;
+  struct ExecutionRecord final {
+    EvidenceFacts facts;
+    ArtifactRootReference execution;
+  };
+  struct CgraRecord final {
+    ExecutionRecord record;
+    ArtifactRootReference spatialMapping;
+  };
+  struct ReplayCase final {
+    std::optional<ExecutionRecord> dfg;
+    std::optional<CgraRecord> cgra;
+    std::optional<EvidenceFacts> comparison;
+  };
+  std::map<InputPair, ReplayCase, decltype(pairLess)> cases(pairLess);
+  for (const sim::SourceBackedDfgReplayCaseReference &replay : replayCases)
+    if (!cases
+             .emplace(InputPair{replay.workload, replay.runtimeInput},
+                      ReplayCase{})
+             .second)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "source-backed replay cases repeat an input pair");
+
+  enum class ExecutionKind : std::uint8_t { Dfg, Cgra };
+  struct ExecutionBinding final {
+    ReplayCase *replay;
+    ExecutionKind kind;
+  };
+  std::map<ArtifactRootReference, ExecutionBinding,
+           decltype(&artifactRootReferenceLess)>
+      executionByRoot(artifactRootReferenceLess);
+  std::vector<EvidenceFacts> comparisons;
   std::vector<ArtifactRootReference> allExecutionOutputs;
   ApplicationRuntimeEvidenceJoin result;
-  evidenceFacts.reserve(runtimeEvidence.size());
-  executions.reserve(runtimeEvidence.size());
+  comparisons.reserve(oracleEvidence.size());
+
+  // First index only exact dependency projections. Full imports are grouped
+  // below by replay input, so DFG, CGRA and comparison validation share one
+  // strictly imported input instead of cycling through the entire portfolio.
+  // Strict Evidence import validates every output; indexing does not acquire
+  // payloads that would be evicted before their owning case is visited.
   for (const ArtifactRootReference &evidence : runtimeEvidence) {
     auto projection = evaluation::importEvaluationEvidenceDependencyProjection(
         evidence, artifacts);
@@ -137,18 +141,15 @@ resolveApplicationRuntimeEvidenceJoin(
     result.requestDependencies.insert(result.requestDependencies.end(),
                                       requestReferences->begin(),
                                       requestReferences->end());
+    std::vector<ArtifactRootReference> outputExecutions;
     for (const evaluation::ModelOutputBinding &binding :
          projection->outputBindings)
       for (const ArtifactRootReference &root : binding.artifacts) {
-        auto stored = artifacts.get(root);
-        if (!stored)
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "runtime Evidence output is unavailable: " +
-                  llvm::toString(stored.takeError()));
         if (root.schemaIdentity == sim::simulationExecutionSchema.identity &&
-            root.schemaVersion == sim::simulationExecutionSchema.version)
+            root.schemaVersion == sim::simulationExecutionSchema.version) {
+          outputExecutions.push_back(root);
           allExecutionOutputs.push_back(root);
+        }
       }
     EvidenceFacts row{evidence, std::move(*projection),
                       std::move(*requestReferences)};
@@ -185,7 +186,7 @@ resolveApplicationRuntimeEvidenceJoin(
         return reject(
             ApplicationActivationDecisionErrorReason::EvidenceMismatch,
             "non-execution Evidence is not declared as oracle Evidence");
-      evidenceFacts.push_back(std::move(row));
+      comparisons.push_back(std::move(row));
       continue;
     }
     if (!workload || !runtimeInput)
@@ -196,77 +197,81 @@ resolveApplicationRuntimeEvidenceJoin(
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "runtime Evidence Request repeats a selected SpatialMapping");
-    std::optional<evaluation::CaseArtifactResolution> resolution;
-    ExecutionKind kind = ExecutionKind::Dfg;
-    if (!selectedMappings.empty()) {
-      auto owners = evaluation::models::resolveCgraSimulationCaseOwners(
-          selectedMappings.front(), artifacts);
-      if (!owners)
+    if (oracleRoots.count(evidence) || outputExecutions.size() != 1)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "runtime execution Evidence must have one execution output "
+                    "and cannot serve as comparison Evidence");
+    auto found = cases.find(InputPair{*workload, *runtimeInput});
+    if (found == cases.end())
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "runtime Evidence names a foreign replay input pair");
+    ReplayCase &replay = found->second;
+    const ExecutionKind kind =
+        selectedMappings.empty() ? ExecutionKind::Dfg : ExecutionKind::Cgra;
+    if (!executionByRoot
+             .emplace(outputExecutions.front(), ExecutionBinding{&replay, kind})
+             .second)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "runtime Evidence repeats a SimulationExecution output");
+    ExecutionRecord record{std::move(row), outputExecutions.front()};
+    if (kind == ExecutionKind::Dfg) {
+      if (replay.dfg)
         return reject(
             ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "cannot resolve selected CGRA runtime case: " +
-                llvm::toString(owners.takeError()));
-      if (owners->dataflow != dataflow)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "CGRA runtime case names a foreign canonical Dataflow");
-      // A replay pair already resolved against this canonical Dataflow has
-      // proven its workload ownership; only a pair outside the replay set
-      // still needs the workload import behind the full case resolver.
-      const bool provenPair =
-          replayResolutions.find(InputPair{*workload, *runtimeInput}) !=
-          replayResolutions.end();
-      auto resolved =
-          provenPair
-              ? evaluation::models::resolveCgraSimulationCaseResolution(
-                    *owners, *workload, *runtimeInput)
-              : [&]() -> llvm::Expected<evaluation::CaseArtifactResolution> {
-                  auto full = evaluation::models::resolveCgraSimulationCase(
-                      selectedMappings.front(), *workload, *runtimeInput,
-                      artifacts);
-                  if (!full)
-                    return full.takeError();
-                  return std::move(full->resolution);
-                }();
-      if (!resolved)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "cannot resolve selected CGRA runtime case: " +
-                llvm::toString(resolved.takeError()));
-      resolution.emplace(std::move(*resolved));
-      kind = ExecutionKind::Cgra;
+            "replay input has more than one DFG execution");
+      replay.dfg = std::move(record);
     } else {
-      const auto resolved =
-          replayResolutions.find(InputPair{*workload, *runtimeInput});
-      if (resolved == replayResolutions.end())
-        return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                      "DFG runtime Evidence names a foreign replay input pair");
-      resolution.emplace(resolved->second);
+      if (replay.cgra)
+        return reject(
+            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+            "replay input has more than one CGRA execution");
+      replay.cgra = CgraRecord{std::move(record), selectedMappings.front()};
     }
-    auto strict = evaluation::importEvaluationEvidence(evidence, *resolution,
-                                                       artifacts, blobs);
+  }
+
+  for (EvidenceFacts &row : comparisons) {
+    std::vector<ExecutionBinding> compared;
+    for (const ArtifactRootReference &reference : row.requestReferences)
+      if (reference.schemaIdentity == sim::simulationExecutionSchema.identity &&
+          reference.schemaVersion == sim::simulationExecutionSchema.version) {
+        auto found = executionByRoot.find(reference);
+        if (found == executionByRoot.end())
+          return reject(
+              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+              "oracle Evidence names a foreign SimulationExecution");
+        compared.push_back(found->second);
+      }
+    if (compared.size() != 2 || compared[0].kind == compared[1].kind)
+      return reject(
+          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+          "oracle Evidence does not compare one DFG and one CGRA execution");
+    if (compared[0].replay != compared[1].replay)
+      return reject(
+          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+          "oracle Evidence compares executions from different replay inputs");
+    ReplayCase &replay = *compared[0].replay;
+    if (replay.comparison)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "replay input has more than one oracle comparison");
+    replay.comparison = std::move(row);
+  }
+
+  auto importExecution =
+      [&](const ExecutionRecord &record,
+          const evaluation::CaseArtifactResolution &resolution,
+          std::uint64_t &cycleTotal)
+      -> llvm::Expected<evaluation::EvaluationEvidence> {
+    auto strict = evaluation::importEvaluationEvidence(
+        record.facts.evidence, resolution, artifacts, blobs);
     if (!strict)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "runtime Evidence failed strict import: " +
                         llvm::toString(strict.takeError()));
-    if (strict->requestRef() != row.projection.request ||
+    if (strict->requestRef() != record.facts.projection.request ||
         strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed)
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "strict runtime Evidence differs from its dependency projection");
-    if (kind == ExecutionKind::Cgra) {
-      auto terminal =
-          evaluation::models::classifyCompletedCgraSimulationEvidence(
-              *strict, *resolution, artifacts, blobs);
-      if (!terminal)
-        return reject(
-            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-            "cannot classify CGRA runtime terminal: " +
-                llvm::toString(terminal.takeError()));
-      result.allCgraExecutionsRetired &=
-          *terminal ==
-          evaluation::models::CgraSimulationEvidenceTerminal::Retired;
-    }
     const auto *completed =
         std::get_if<evaluation::CompletedEvidence>(&strict->outcome());
     const auto *point = completed && completed->metricResults.size() == 1
@@ -278,8 +283,6 @@ resolveApplicationRuntimeEvidenceJoin(
     if (!cycles || cycles->value() < 0)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "runtime Evidence has no nonnegative cycle metric");
-    std::uint64_t &cycleTotal =
-        kind == ExecutionKind::Dfg ? result.dfgCycles : result.cgraCycles;
     const std::uint64_t cycleValue =
         static_cast<std::uint64_t>(cycles->value());
     if (cycleValue > std::numeric_limits<std::uint64_t>::max() - cycleTotal)
@@ -298,118 +301,82 @@ resolveApplicationRuntimeEvidenceJoin(
                 "runtime Evidence repeats its SimulationExecution output");
           execution = output;
         }
-    if (!execution)
+    if (!execution || *execution != record.execution)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "runtime Evidence has no SimulationExecution output");
+                    "runtime Evidence execution differs from its projection");
     auto executionRequest =
         sim::simulationExecutionRequestReference(*execution, artifacts);
     if (!executionRequest)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "cannot import SimulationExecution Request: " +
                         llvm::toString(executionRequest.takeError()));
-    if (*executionRequest != row.projection.request)
+    if (*executionRequest != record.facts.projection.request)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "SimulationExecution and Evidence name different Requests");
     result.executionOutputs.push_back(*execution);
-    executions.push_back({evidence, *execution, *workload, *runtimeInput,
-                          std::move(*resolution), kind});
-    evidenceFacts.push_back(std::move(row));
-  }
-  if (executions.empty() ||
-      !llvm::any_of(executions,
-                    [](const ExecutionRecord &record) {
-                      return record.kind == ExecutionKind::Dfg;
-                    }) ||
-      !llvm::any_of(executions, [](const ExecutionRecord &record) {
-        return record.kind == ExecutionKind::Cgra;
-      }))
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence does not bind both DFG and CGRA execution");
-
-  auto canonicalizePairs = [&](std::vector<InputPair> &pairs) {
-    llvm::sort(pairs, pairLess);
-    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    return std::move(*strict);
   };
-  std::vector<InputPair> expectedPairs;
-  for (const auto &replay : replayResolutions)
-    expectedPairs.push_back(replay.first);
-  std::vector<InputPair> dfgPairs;
-  std::vector<InputPair> cgraPairs;
-  for (const ExecutionRecord &record : executions)
-    (record.kind == ExecutionKind::Dfg ? dfgPairs : cgraPairs)
-        .push_back({record.workload, record.runtimeInput});
-  const std::size_t dfgExecutionCount = dfgPairs.size();
-  const std::size_t cgraExecutionCount = cgraPairs.size();
-  canonicalizePairs(dfgPairs);
-  canonicalizePairs(cgraPairs);
-  if (expectedPairs.empty() ||
-      dfgPairs != expectedPairs || cgraPairs != expectedPairs ||
-      dfgExecutionCount != expectedPairs.size() ||
-      cgraExecutionCount != expectedPairs.size())
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence does not join through exact source-backed "
-                  "replay inputs");
 
-  llvm::sort(allExecutionOutputs, artifactRootReferenceLess);
-  allExecutionOutputs.erase(
-      std::unique(allExecutionOutputs.begin(), allExecutionOutputs.end()),
-      allExecutionOutputs.end());
-  llvm::sort(result.executionOutputs, artifactRootReferenceLess);
-  if (result.executionOutputs != allExecutionOutputs)
-    return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "runtime Evidence has an unclassified or repeated "
-                  "SimulationExecution output");
-
-  std::map<ArtifactRootReference, const ExecutionRecord *,
-           decltype(&artifactRootReferenceLess)>
-      executionByRoot(artifactRootReferenceLess);
-  for (const ExecutionRecord &record : executions)
-    executionByRoot.emplace(record.execution, &record);
-
-  std::vector<InputPair> comparisonPairs;
-  std::vector<ArtifactRootReference> comparisonEvidence;
-  for (const EvidenceFacts &row : evidenceFacts) {
-    if (oracleRoots.find(row.evidence) == oracleRoots.end())
-      continue;
-    std::vector<const ExecutionRecord *> compared;
-    for (const ArtifactRootReference &reference : row.requestReferences)
-      if (reference.schemaIdentity == sim::simulationExecutionSchema.identity &&
-          reference.schemaVersion == sim::simulationExecutionSchema.version) {
-        auto found = executionByRoot.find(reference);
-        if (found == executionByRoot.end())
-          return reject(
-              ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-              "oracle Evidence names a foreign SimulationExecution");
-        compared.push_back(found->second);
-      }
-    if (compared.size() != 2 || compared[0]->kind == compared[1]->kind)
+  for (const auto &[inputs, replay] : cases) {
+    if (!replay.dfg || !replay.cgra || !replay.comparison)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "replay input lacks exact DFG, CGRA and oracle coverage");
+    auto dfgResolution = evaluation::models::resolveDfgSimulationCase(
+        dataflow, inputs.workload, inputs.runtimeInput, artifacts);
+    if (!dfgResolution)
       return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence does not compare one DFG and one CGRA execution");
-    const ExecutionRecord *dfg =
-        compared[0]->kind == ExecutionKind::Dfg ? compared[0] : compared[1];
-    const ExecutionRecord *cgra =
-        compared[0]->kind == ExecutionKind::Cgra ? compared[0] : compared[1];
-    const InputPair dfgPair{dfg->workload, dfg->runtimeInput};
-    const InputPair cgraPair{cgra->workload, cgra->runtimeInput};
-    if (!(dfgPair == cgraPair))
-      return reject(
-          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-          "oracle Evidence compares executions from different replay inputs");
-    auto resolution = evaluation::models::resolveSimulationComparisonCase(
-        dfg->execution, dfg->resolution, cgra->execution, cgra->resolution,
-        artifacts, blobs);
-    if (!resolution)
+          ApplicationActivationDecisionErrorReason::DependencyMismatch,
+          "source-backed replay case failed strict import: " +
+              llvm::toString(dfgResolution.takeError()));
+    auto owners = evaluation::models::resolveCgraSimulationCaseOwners(
+        replay.cgra->spatialMapping, artifacts);
+    if (!owners)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "cannot resolve selected CGRA runtime case: " +
+                        llvm::toString(owners.takeError()));
+    if (owners->dataflow != dataflow)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "CGRA runtime case names a foreign canonical Dataflow");
+    auto cgraResolution =
+        evaluation::models::resolveCgraSimulationCaseResolution(
+            *owners, inputs.workload, inputs.runtimeInput);
+    if (!cgraResolution)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "cannot resolve selected CGRA runtime case: " +
+                        llvm::toString(cgraResolution.takeError()));
+    auto dfg = importExecution(*replay.dfg, *dfgResolution, result.dfgCycles);
+    if (!dfg)
+      return dfg.takeError();
+    auto cgra = importExecution(replay.cgra->record, *cgraResolution,
+                                result.cgraCycles);
+    if (!cgra)
+      return cgra.takeError();
+    auto terminal = evaluation::models::classifyCompletedCgraSimulationEvidence(
+        *cgra, *cgraResolution, artifacts, blobs);
+    if (!terminal)
+      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+                    "cannot classify CGRA runtime terminal: " +
+                        llvm::toString(terminal.takeError()));
+    result.allCgraExecutionsRetired &=
+        *terminal ==
+        evaluation::models::CgraSimulationEvidenceTerminal::Retired;
+    auto comparisonResolution =
+        evaluation::models::resolveSimulationComparisonCase(
+            replay.dfg->execution, *dfgResolution,
+            replay.cgra->record.execution, *cgraResolution, artifacts, blobs);
+    if (!comparisonResolution)
       return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
                     "cannot resolve SimulationComparison Evidence: " +
-                        llvm::toString(resolution.takeError()));
+                        llvm::toString(comparisonResolution.takeError()));
+    const EvidenceFacts &comparison = *replay.comparison;
     auto strict = evaluation::importEvaluationEvidence(
-        row.evidence, *resolution, artifacts, blobs);
+        comparison.evidence, *comparisonResolution, artifacts, blobs);
     if (!strict)
-      return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                    "oracle Evidence failed strict SimulationComparison import: " +
-                        llvm::toString(strict.takeError()));
-    if (strict->requestRef() != row.projection.request ||
+      return reject(
+          ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+          "oracle Evidence failed strict SimulationComparison import: " +
+              llvm::toString(strict.takeError()));
+    if (strict->requestRef() != comparison.projection.request ||
         strict->outcomeKind() != evaluation::EvidenceOutcomeKind::Completed)
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
@@ -422,21 +389,17 @@ resolveApplicationRuntimeEvidenceJoin(
       return reject(
           ApplicationActivationDecisionErrorReason::EvidenceMismatch,
           "oracle Evidence did not establish an absent comparison finding");
-    comparisonPairs.push_back(dfgPair);
-    comparisonEvidence.push_back(row.evidence);
   }
-  const std::size_t comparisonCount = comparisonPairs.size();
-  canonicalizePairs(comparisonPairs);
-  llvm::sort(comparisonEvidence, artifactRootReferenceLess);
-  const std::vector<ArtifactRootReference> expectedOracleEvidence(
-      oracleRoots.begin(), oracleRoots.end());
-  if (comparisonEvidence != expectedOracleEvidence ||
-      comparisonPairs != expectedPairs ||
-      comparisonCount != expectedPairs.size())
+
+  llvm::sort(allExecutionOutputs, artifactRootReferenceLess);
+  allExecutionOutputs.erase(
+      std::unique(allExecutionOutputs.begin(), allExecutionOutputs.end()),
+      allExecutionOutputs.end());
+  llvm::sort(result.executionOutputs, artifactRootReferenceLess);
+  if (result.executionOutputs != allExecutionOutputs)
     return reject(ApplicationActivationDecisionErrorReason::EvidenceMismatch,
-                  "oracle Evidence does not provide exact one-to-one "
-                  "SimulationComparison coverage for the source-backed "
-                  "replay inputs");
+                  "runtime Evidence has an unclassified or repeated "
+                  "SimulationExecution output");
   llvm::sort(result.requestDependencies, artifactRootReferenceLess);
   result.requestDependencies.erase(
       std::unique(result.requestDependencies.begin(),

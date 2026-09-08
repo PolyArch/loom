@@ -68,20 +68,27 @@ llvm::Expected<ArtifactRootReference> publishSimulationRuntimeInput(
                                simulationRuntimeInputSchema.version, *stored};
 }
 
-llvm::Expected<ImportedSpatialSimulationInputs> importSpatialSimulationInputs(
+llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
+importSpatialSimulationInputs(
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
     const ArtifactStore &store) {
-  auto workload = importSpatialSimulationWorkload(workloadReference, store);
-  if (!workload)
-    return workload.takeError();
-  auto runtimeInput = importSpatialSimulationRuntimeInput(
-      runtimeInputReference, *workload, store);
-  if (!runtimeInput)
-    return runtimeInput.takeError();
-  return ImportedSpatialSimulationInputs{
-      std::move(workload->dataflow), std::move(workload->workload),
-      std::move(*runtimeInput)};
+  const std::array<ArtifactRootReference, 2> references{workloadReference,
+                                                       runtimeInputReference};
+  return evaluation::importCachedArtifact<ImportedSpatialSimulationInputs>(
+      store, nullptr, references,
+      [&]() -> llvm::Expected<ImportedSpatialSimulationInputs> {
+        auto workload = importSpatialSimulationWorkload(workloadReference, store);
+        if (!workload)
+          return workload.takeError();
+        auto runtimeInput = importSpatialSimulationRuntimeInput(
+            runtimeInputReference, *workload, store);
+        if (!runtimeInput)
+          return runtimeInput.takeError();
+        return ImportedSpatialSimulationInputs{
+            std::move(workload->dataflow), std::move(workload->workload),
+            std::move(*runtimeInput)};
+      });
 }
 
 llvm::Expected<ImportedSpatialSimulationWorkload>

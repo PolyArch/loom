@@ -407,7 +407,7 @@ evaluate(const EvaluationRequest &request,
       *request.workload(), *request.runtimeInput(), artifactStore);
   if (!inputs)
     return inputs.takeError();
-  return evaluateWithInputs(request, resolution, *inputs, artifactStore,
+  return evaluateWithInputs(request, resolution, **inputs, artifactStore,
                             blobStore, DfgSimulationAttemptLimits{});
 }
 
@@ -449,7 +449,7 @@ resolveDfgSimulationCase(const ArtifactRootReference &canonicalDataflow,
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  return buildResolution(canonicalDataflow, workload, runtimeInput, *inputs);
+  return buildResolution(canonicalDataflow, workload, runtimeInput, **inputs);
 }
 
 llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
@@ -464,7 +464,7 @@ llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
   if (!inputs)
     return inputs.takeError();
   auto resolution =
-      buildResolution(canonicalDataflow, workload, runtimeInput, *inputs);
+      buildResolution(canonicalDataflow, workload, runtimeInput, **inputs);
   if (!resolution)
     return resolution.takeError();
   auto bindings = EvaluationSubjectBindings::get(
@@ -508,7 +508,7 @@ evaluateDfgSimulation(const PreparedDfgSimulationEvaluation &prepared,
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   auto result = evaluateWithInputs(prepared.request, prepared.resolution,
-                                   prepared.inputs, artifactStore, blobStore,
+                                   *prepared.inputs, artifactStore, blobStore,
                                    std::move(limits));
   if (!result)
     return result.takeError();

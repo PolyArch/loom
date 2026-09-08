@@ -134,11 +134,10 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
   for (const ArtifactRootReference *root :
        {&draft.sourceProgram, &draft.fabric, &draft.workload,
         &draft.runtimeInput, &draft.selectedSystem}) {
-    auto stored = artifacts.get(*root);
-    if (!stored)
+    if (llvm::Error error = artifacts.verifyReference(*root))
       return reject(ApplicationRuntimeManifestErrorReason::PairIdentityMismatch,
                     "runtime manifest pair root is unavailable: " +
-                        llvm::toString(stored.takeError()));
+                        llvm::toString(std::move(error)));
   }
   if (draft.sourceProgram.schemaIdentity !=
           frontend::structuredProgramArtifactSchema.identity ||
@@ -295,13 +294,12 @@ llvm::Error verifyManifestDraft(ApplicationRuntimeManifestDraft &draft,
                       artifactRootReferenceLess);
   for (const ArtifactRootReference &reference :
        draft.runtimeRequestDependencies) {
-    auto stored = artifacts.get(reference);
-    if (!stored)
+    if (llvm::Error error = artifacts.verifyReference(reference))
       return reject(
           ApplicationRuntimeManifestErrorReason::RuntimeEvidenceMismatch,
           "runtime Evidence Request dependency is unavailable: " +
               formatArtifactRootReferenceJson(reference) + ": " +
-              llvm::toString(stored.takeError()));
+              llvm::toString(std::move(error)));
   }
 
   if (draft.transitionGraph) {

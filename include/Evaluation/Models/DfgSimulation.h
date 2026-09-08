@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 namespace loom {
@@ -19,7 +20,7 @@ namespace loom::evaluation::models {
 struct PreparedDfgSimulationEvaluation final {
   EvaluationRequest request;
   CaseArtifactResolution resolution;
-  sim::ImportedSpatialSimulationInputs inputs;
+  std::shared_ptr<const sim::ImportedSpatialSimulationInputs> inputs;
 };
 
 /// Nonsemantic limits for one DFG provider attempt. They do not enter Request

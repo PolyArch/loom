@@ -175,9 +175,8 @@ llvm::Error validateEvaluationRequestDirectDependencies(
     const EvaluationRequest &request, const ArtifactStore &artifactStore) {
   for (const ArtifactRootReference &dependency :
        evaluationRequestDirectDependencies(request)) {
-    auto bytes = artifactStore.get(dependency);
-    if (!bytes)
-      return bytes.takeError();
+    if (llvm::Error error = artifactStore.verifyReference(dependency))
+      return error;
   }
   return llvm::Error::success();
 }

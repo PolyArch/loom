@@ -104,18 +104,6 @@ importCachedPortableRtlModuleGraph(
       [&](const Graph &) { return revalidateIndirectInputs(); });
 }
 
-llvm::Expected<std::shared_ptr<const sim::ImportedSpatialSimulationInputs>>
-importCachedSpatialInputs(const ArtifactRootReference &workload,
-                          const ArtifactRootReference &runtimeInput,
-                          const ArtifactStore &artifacts) {
-  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
-  return evaluation::importCachedArtifact<sim::ImportedSpatialSimulationInputs>(
-      artifacts, nullptr, references, [&]() {
-        return sim::importSpatialSimulationInputs(workload, runtimeInput,
-                                                  artifacts);
-      });
-}
-
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -1240,7 +1228,7 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
       });
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(closure.workload,
+  auto inputs = sim::importSpatialSimulationInputs(closure.workload,
                                           closure.runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
@@ -1594,7 +1582,7 @@ importMappedRtlLaunchClosure(const MappedRtlExecutionClosure &closure,
       });
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(closure.workload,
+  auto inputs = sim::importSpatialSimulationInputs(closure.workload,
                                           closure.runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
