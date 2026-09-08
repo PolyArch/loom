@@ -6,6 +6,7 @@ add_mlir_library(LoomExternalTool
   InvocationCommandObservation.cpp
   InvocationCommandSchedule.cpp
   InvocationBundle.cpp
+  InvocationManifest.cpp
   InvocationCompletion.cpp
   InvocationCache.cpp
   InvocationBundleScript.cpp
