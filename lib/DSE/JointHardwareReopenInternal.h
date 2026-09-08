@@ -86,6 +86,14 @@ struct MaterializedHardwareCandidate final {
   std::optional<JointDesignInvocationManifestReference> constructionInvocation;
 };
 
+struct IncompleteHardwareRecipeMaterialization final {
+  JointDesignInvocationManifestReference constructionInvocation;
+};
+
+using HardwareRecipeMaterializationOutcome =
+    std::variant<MaterializedHardwareCandidate,
+                 IncompleteHardwareRecipeMaterialization>;
+
 struct TechGateExecution final {
   JointDesignExecution execution;
   std::vector<ArtifactRootReference> techMappings;
@@ -191,10 +199,13 @@ llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
     const TechHardwareFeedbackObservation &observation,
     const ArtifactStore &artifacts);
 
-llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
-    HardwareRecipeGrowth growth, llvm::ArrayRef<ArtifactRootReference> evidence,
-    const JointHardwareReopenRequest &request, SiteScheduler &scheduler,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+llvm::Expected<HardwareRecipeMaterializationOutcome>
+materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
+                                llvm::ArrayRef<ArtifactRootReference> evidence,
+                                const JointHardwareReopenRequest &request,
+                                SiteScheduler &scheduler,
+                                const ArtifactStore &artifacts,
+                                const BlobStore &blobs);
 
 llvm::Expected<MaterializedHardwareCandidate>
 materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
