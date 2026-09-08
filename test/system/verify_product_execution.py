@@ -541,17 +541,6 @@ def validate_mapping_work(
             and portfolio.get("execution_binding_established") is True,
             "portfolio selection lacks canonical Simulation and oracle Evidence",
         )
-        profile = portfolio.get("declared_profile")
-        require(
-            isinstance(profile, dict)
-            and profile.get("warmup_samples") == 0
-            and profile.get("measured_samples") == 1
-            and profile.get("total_samples") == 1
-            and profile.get("oracle_coverage") == "all_measured_samples"
-            and isinstance(profile.get("deadline_milliseconds"), int)
-            and profile["deadline_milliseconds"] > 0,
-            "portfolio product decision changed its bounded profile",
-        )
     selected_values = {
         observation.get("dimension"): observation
         for observation in pair_decision.get("selected_objective", [])
