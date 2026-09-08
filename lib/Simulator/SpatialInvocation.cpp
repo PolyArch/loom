@@ -248,7 +248,12 @@ materializeSpatialInvocationRuntimeInput(
           unpackSpatialInvocationValueBits(wire.values[ordinal]);
       if (raw.zextOrTrunc(64) !=
           llvm::APInt(64, object.address + target.byteOffset))
-        return invalid("invocation pointer bits differ from its guest object");
+        return invalid(
+            llvm::Twine("invocation pointer input #") + llvm::Twine(ordinal) +
+            " bits " + llvm::Twine(raw.zextOrTrunc(64).getZExtValue()) +
+            " differ from guest object #" + llvm::Twine(target.objectOrdinal) +
+            " address " + llvm::Twine(object.address) + " plus offset " +
+            llvm::Twine(target.byteOffset));
     }
     auto lanes = unpackDefinedSpatialSimulationToken(
         unpackSpatialInvocationValueBits(wire.values[ordinal]),

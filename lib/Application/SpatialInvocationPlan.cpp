@@ -563,10 +563,12 @@ deriveApplicationSpatialInvocationPlanImpl(
         }
         std::vector<runtime::SpatialInvocationMemoryObjectLayout> objectLayouts;
         objectLayouts.reserve(capture->input.objects.size());
+        // Every dynamic invocation carries live view pointers. A local
+        // allocation can also be indexed differently on each activation;
+        // where its base was captured does not make its view offsets fixed.
         for (const sim::SimulationMemoryCaptureObject &object :
              capture->input.objects)
-          objectLayouts.push_back(
-              {object.byteCount, object.baseBindingCallOrdinal.has_value()});
+          objectLayouts.push_back({object.byteCount, true});
         std::vector<runtime::SpatialInvocationMemoryRootBinding> rootBindings;
         rootBindings.reserve(capture->input.memoryRootBindings.size());
         for (const sim::SimulationMemoryRootCapture &binding :

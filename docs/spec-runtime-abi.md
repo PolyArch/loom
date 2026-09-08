@@ -856,12 +856,13 @@ Memory objects are passed by reference: the wire names each object's guest
 address and byte extent and never carries its bytes. Every multi-byte wire
 field is naturally aligned; value payloads are zero-padded to the wire
 alignment so each following record stays aligned. Host glue therefore bakes
-the dense coordinates, fixed value tokens, and every per-point constant offset
-into the per-occurrence wire template and stores only the fields that a
-concrete call decides: object base addresses, result destinations, value
-inputs that are runtime values, and the byte offsets of an object whose base
-is rebound at its call site. Copying object bytes on the host is invalid; that
-copy is neither accelerator traffic nor a semantic owner.
+the dense coordinates and fixed value tokens into the per-occurrence wire
+template and stores the fields that a concrete call decides: object base
+addresses, result destinations, runtime value inputs, and memory-view offsets
+computed from the call's live pointers. A local allocation can have a different
+view on each activation, so its allocation origin does not make those offsets
+constant. Copying object bytes on the host is invalid; that copy is neither
+accelerator traffic nor a semantic owner.
 
 Object ordinals preserve the exact invocation-local alias classes captured
 from the source execution. Pointer provenance, memory-root bindings, and
