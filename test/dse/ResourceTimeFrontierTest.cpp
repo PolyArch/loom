@@ -218,6 +218,47 @@ void fiveRegionCostAndReadinessAreEventDriven() {
           "work at generation time");
 }
 
+void eventLowerBoundsRemainAdmissible() {
+  const std::array resourceClasses = {reference(20)};
+  auto limits = policy();
+  limits.availableResourceUnits = {2};
+  const auto check = [&](const auto &features, std::uint64_t optimum) {
+    auto outcome = take(loom::dse::exploreResourceTimeFrontier(
+        invocation(), resourceClasses, features, limits));
+    const auto *completed =
+        std::get_if<loom::dse::CompletedResourceTimeFrontier>(&outcome);
+    require(completed && !completed->finalists.empty(),
+            "event-bound frontier did not complete");
+    std::uint64_t best = std::numeric_limits<std::uint64_t>::max();
+    for (const auto &hint : completed->finalists) {
+      best = std::min(best, hint.estimatedMakespanPicoseconds);
+      require(hint.optimisticMakespanLowerBoundPicoseconds <=
+                  hint.estimatedMakespanPicoseconds,
+              "schedule lower bound exceeds its feasible makespan");
+      for (const auto &state : hint.states)
+        require(state.optimisticMakespanLowerBoundPicoseconds <=
+                    hint.estimatedMakespanPicoseconds,
+                "event lower bound excludes its own feasible continuation");
+    }
+    require(best == optimum, "frontier lost the optimal event schedule");
+  };
+  using Readiness = loom::pnr::ResourceTimeReadinessKind;
+  for (const auto readiness : {Readiness::FifoToken, Readiness::Completion})
+    for (const std::uint64_t transition : {0, 7}) {
+      std::vector<loom::dse::ResourceTimeRegionFeature> features{
+          {root(11), {}, {point(1, 100, transition, 1)}, 0, false, {}},
+          {root(12), {{root(11), readiness}}, {point(1, 100)}, 0, false, {}}};
+      check(features,
+            transition + (readiness == Readiness::FifoToken ? 101 : 200));
+    }
+  // One long task remains active while the other resource finishes two jobs.
+  std::vector<loom::dse::ResourceTimeRegionFeature> independent{
+      {root(11), {}, {point(1, 100)}, 0, false, {}},
+      {root(12), {}, {point(1, 50)}, 0, false, {}},
+      {root(13), {}, {point(1, 30)}, 0, false, {}}};
+  check(independent, 100);
+}
+
 void budgetsAndExactRejectionsRemainTyped() {
   const std::array resourceClasses = {reference(20)};
   auto singleFinalistPolicy = policy();
@@ -873,6 +914,7 @@ void uncalibratedRewriteGetsAMappingOpportunity() {
 
 int main() {
   fiveRegionCostAndReadinessAreEventDriven();
+  eventLowerBoundsRemainAdmissible();
   budgetsAndExactRejectionsRemainTyped();
   dependencyCyclesRemainTyped();
   replayIsDeterministic();
