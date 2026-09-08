@@ -700,6 +700,16 @@ authority. The two closed graph forms are therefore memref capability plus
 index, or the original typed LLVM pointer plus an exact memory-service
 capability.
 
+Stored pointer provenance treats a proven contiguous byte-fill or byte-copy
+loop as one complete write interval. Both `scf.for` and `scf.while` project
+into that same interval proof; changing loop representation must not turn a
+complete object initialization into unrelated partial pointer writes. The
+projection requires exact bounds, unit byte indexing, and a sole memory
+effect (plus the source read for a copy). Short, strided, or interfering writes
+remain subject to the ordinary partial-representation refusal. This also lets
+integer fields initialized by byte loops supply finite bounds to pointer
+service analysis without application-specific assumptions.
+
 Those two forms also require different arithmetic proofs. A root-relative
 element index is meaningful only in its selected canonical index width. An
 LLVM pointer GEP is already a byte-address computation whose arithmetic width
