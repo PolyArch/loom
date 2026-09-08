@@ -9,6 +9,7 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
@@ -710,6 +711,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         ::loom::mapping_debug::Event::Candidate,
         [&](llvm::json::Object &fields) {
           fields["operation"] = "fifo_channel_capacity_proposal";
+          fields["fifo_occurrence"] =
+              ::loom::fabric::printFabricRef(value->owner);
           fields["tech_mapping"] =
               formatArtifactIdentityHex(techReference.artifact);
           fields["selected_channels"] = value->selectedCapacity;
