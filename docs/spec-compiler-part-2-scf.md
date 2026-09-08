@@ -1579,6 +1579,12 @@ that write frontier as the initial read summary for each iteration. The read
 carry still consumes each iteration's completed summary and the pre-loop read
 event before publishing its exit witness. Atomic, volatile, and other ordered
 effects retain the preceding iteration's frontier.
+When the shared iteration-independence analysis proves a loop's accesses
+independent before memory normalization, each body iteration instead inherits
+its partition's pre-loop read frontier. No preceding body completion gates
+those accesses. The existing memory carries still consume every iteration's
+completion and preserve their initial frontiers before exposing the loop exit.
+Unproven or dependent loops keep their cross-iteration ordering.
 Tiling may add
 coordinates, while fusion, linearization, vectorization, and interchange may
 remove or reparameterize them; no equality with source loop depth is required.
