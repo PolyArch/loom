@@ -1,4 +1,5 @@
 #include "Frontend/Analysis/StoredMemoryProvenance.h"
+#include "Common/MappingDebugLog.h"
 #include "Common/PointerLayout.h"
 
 #include "Dataflow/IR/DataflowOps.h"
@@ -21,6 +22,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -29,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -961,7 +964,6 @@ private:
         if (seen.count(current))
           continue;
         if (seen.size() == maximumStaticValues) {
-
           return std::nullopt;
         }
         seen.insert(current);
@@ -978,7 +980,6 @@ private:
             continue;
           auto next = evaluate(condition.getArgs()[lane], alternative);
           if (!next || !next->isSignedIntN(64)) {
-
             return std::nullopt;
           }
           // Cyclic feedback can still have a finite value domain. This proves
@@ -1338,7 +1339,19 @@ private:
     uint64_t byteCount;
   };
 
-  std::optional<ExactByteLoop> exactByteLoop(mlir::scf::WhileOp loop) {
+  std::optional<ExactByteLoop> exactByteLoop(mlir::Operation *operation) {
+    if (auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(operation)) {
+      auto lower = evaluate(loop.getLowerBound(), Path()),
+           upper = evaluate(loop.getUpperBound(), Path()),
+           step = evaluate(loop.getStep(), Path());
+      if (!lower || !lower->isZero() || !step || !step->isOne() ||
+          !upper || !upper->isStrictlyPositive() ||
+          !upper->isSignedIntN(64))
+        return std::nullopt;
+      return ExactByteLoop{llvm::cast<mlir::BlockArgument>(loop.getInductionVar()),
+                           upper->getZExtValue()};
+    }
+    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(operation);
     auto projection = projectExactPostTestedCountedLoop(loop);
     if (!projection || loop.getInits().size() != 1 ||
         !projection->lowerBoundValue ||
@@ -1375,8 +1388,41 @@ private:
     for (const auto &term : address.terms) {
       auto domain = scalarDomain(term.index);
       if (!domain || domain->empty() ||
-          result.size() * domain->size() > maximumStaticValues)
+          result.size() * domain->size() > maximumStaticValues) {
+        mapping_debug::emit(
+            mapping_debug::Level::Detail,
+            mapping_debug::Stage::DataflowLowering,
+            mapping_debug::Event::DerivedContext,
+            [&](llvm::json::Object &fields) {
+              const auto valueText = [](mlir::Value value) {
+                std::string text;
+                llvm::raw_string_ostream output(text);
+                if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+                  value.printAsOperand(output, mlir::OpPrintingFlags());
+                  output << " in ";
+                  argument.getOwner()->getParentOp()->print(
+                      output, mlir::OpPrintingFlags().skipRegions());
+                } else {
+                  value.print(output, mlir::OpPrintingFlags().skipRegions());
+                }
+                return text;
+              };
+              fields["context_kind"] = "stored_pointer_address_domain";
+              fields["root"] = valueText(address.root);
+              fields["index"] = valueText(term.index);
+              fields["byte_bias"] = address.bias;
+              fields["byte_stride"] = term.byteStride;
+              fields["access_bytes"] = address.bytes;
+              fields["partial_offset_count"] = result.size();
+              fields["partial_offset_min"] = *result.begin();
+              fields["partial_offset_max"] = *result.rbegin();
+              fields["index_domain_known"] = domain.has_value();
+              if (domain)
+                fields["index_value_count"] = domain->size();
+              fields["static_value_limit"] = maximumStaticValues;
+            });
         return std::nullopt;
+      }
       std::set<int64_t> expanded;
       for (int64_t base : result)
         for (int64_t index : *domain) {
@@ -1414,8 +1460,7 @@ private:
     if (scalar && scalar->isZero())
       effect.kind = WriteKind::Zero;
     auto read = write.getValue().getDefiningOp<mlir::LLVM::LoadOp>();
-    auto loop =
-        llvm::dyn_cast_or_null<mlir::scf::WhileOp>(write->getParentOp());
+    mlir::Operation *loop = write->getParentOp();
     auto exact = exactByteLoop(loop);
     if (destination->bytes == 1 && exact &&
         (effect.kind == WriteKind::Zero ||
@@ -1423,7 +1468,7 @@ private:
           !read.getVolatile_() &&
           read.getOrdering() == mlir::LLVM::AtomicOrdering::not_atomic))) {
       bool sole = true;
-      loop.walk([&](mlir::Operation *operation) {
+      loop->walk([&](mlir::Operation *operation) {
         if (operation != write && operation != read && operation != loop &&
             !mlir::isMemoryEffectFree(operation) &&
             !operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())

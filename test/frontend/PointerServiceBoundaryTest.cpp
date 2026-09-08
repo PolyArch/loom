@@ -1,13 +1,17 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Analysis/StoredMemoryProvenance.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SourceBackedDfgValidation.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -353,12 +357,79 @@ void exactPointerAddressingFallback() {
     fail("cannot remove artifact store: " + error.message());
 }
 
+// A complete byte fill initializes a pointer representation. A short or
+// strided fill must keep the partial-representation refusal, even when a
+// conditional full pointer store supplies the only possible non-null root.
+void byteFillPointerRepresentation() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                      mlir::scf::SCFDialect>();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {llvm.data_layout = "e-p:64:64"} {
+  llvm.func @fill(%choose: i1) {
+    %zero = arith.constant 0 : i64
+    %one = arith.constant 1 : i64
+    %upper = arith.constant 8 : i64
+    %step = arith.constant 1 : i64
+    %byte = arith.constant 0 : i8
+    %slot = llvm.alloca %upper x i8 : (i64) -> !llvm.ptr
+    %target = llvm.alloca %one x i8 : (i64) -> !llvm.ptr
+    scf.for %index = %zero to %upper step %step : i64 {
+      %address = llvm.getelementptr %slot[%index] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %byte, %address : i8, !llvm.ptr
+    }
+    scf.if %choose {
+      llvm.store %target, %slot : !llvm.ptr, !llvm.ptr
+    }
+    %pointer = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    llvm.return
+  }
+}
+)mlir";
+  for (auto [upper, step] : {std::pair<int64_t, int64_t>{8, 1},
+                             {7, 1}, {8, 2}}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+    if (!module)
+      fail("cannot parse byte-fill pointer representation");
+    auto callable = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("fill");
+    mlir::scf::ForOp loop;
+    mlir::LLVM::LoadOp read;
+    mlir::Value target;
+    callable.walk([&](mlir::scf::ForOp operation) { loop = operation; });
+    callable.walk([&](mlir::LLVM::LoadOp operation) { read = operation; });
+    callable.walk([&](mlir::LLVM::AllocaOp operation) {
+      target = operation.getResult();
+    });
+    // Keep the allocation at eight bytes while varying only the write domain.
+    mlir::OpBuilder builder(loop);
+    loop.getUpperBoundMutable().assign(
+        mlir::arith::ConstantIntOp::create(builder, loop.getLoc(), upper, 64));
+    loop.getStepMutable().assign(
+        mlir::arith::ConstantIntOp::create(builder, loop.getLoc(), step, 64));
+    loom::frontend::analysis::StoredMemoryProvenance provenance(callable);
+    auto outcome = provenance.projectPointerTarget(read.getResult());
+    if (upper == 8 && step == 1) {
+      auto *root = std::get_if<
+          loom::frontend::analysis::StoredPointerTarget>(&outcome);
+      if (!root || root->root != target || !root->mayBeNull)
+        fail("complete byte fill lost the nullable pointer origin");
+    } else {
+      auto *refusal = std::get_if<
+          loom::frontend::analysis::StoredPointerRefusal>(&outcome);
+      if (!refusal || *refusal != loom::frontend::analysis::
+                                     StoredPointerRefusal::PartialPointerWrite)
+        fail("incomplete byte fill admitted a pointer representation");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
   if (llvm::InitializeNativeTarget() ||
       llvm::InitializeNativeTargetAsmPrinter())
     fail("cannot initialize the native target");
+  byteFillPointerRepresentation();
   pointerServiceBoundary();
   exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";
