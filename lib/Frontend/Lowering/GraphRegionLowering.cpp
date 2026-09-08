@@ -786,64 +786,106 @@ private:
     return touched;
   }
 
-  bool causallyDependsOn(::mlir::Value event, ::mlir::Value prerequisite,
-                         ::llvm::DenseSet<::mlir::Value> &visited) const {
-    if (event == prerequisite)
-      return true;
-    if (!event || !visited.insert(event).second)
-      return false;
+  /// Memo of one causal query. A result derived without meeting an event
+  /// still on the recursion stack is exact and cached; a false that only
+  /// followed a broken cycle is path-dependent and recomputed elsewhere.
+  struct CausalQuery final {
+    ::mlir::Value prerequisite;
+    ::llvm::DenseMap<::mlir::Value, bool> memo;
+    ::llvm::DenseSet<::mlir::Value> inProgress;
+  };
+
+  struct CausalAnswer final {
+    bool depends = false;
+    bool exact = true;
+  };
+
+  CausalAnswer causallyDependsOn(::mlir::Value event,
+                                 CausalQuery &query) const {
+    if (event == query.prerequisite)
+      return {true, true};
+    if (!event)
+      return {false, true};
+    if (auto found = query.memo.find(event); found != query.memo.end())
+      return {found->second, true};
+    if (!query.inProgress.insert(event).second)
+      return {false, false};
+    const CausalAnswer answer = causallyDependsOnUncached(event, query);
+    query.inProgress.erase(event);
+    if (answer.depends || answer.exact)
+      query.memo.try_emplace(event, answer.depends);
+    return answer;
+  }
+
+  /// An event depends on the prerequisite through any sync input, through
+  /// every mux lane or carry side, and through the control chain of memory
+  /// actors, invariants, gates, and constants.
+  CausalAnswer causallyDependsOnUncached(::mlir::Value event,
+                                         CausalQuery &query) const {
     ::mlir::Operation *def = event.getDefiningOp();
     if (!def)
-      return false;
-
-    if (auto sync = ::llvm::dyn_cast<::dataflow::SyncOp>(def)) {
-      return ::llvm::any_of(sync.getInputs(), [&](::mlir::Value input) {
-        ::llvm::DenseSet<::mlir::Value> inputVisited = visited;
-        return causallyDependsOn(input, prerequisite, inputVisited);
-      });
-    }
+      return {false, true};
+    const auto anyOf = [&](::mlir::ValueRange inputs) {
+      CausalAnswer combined{false, true};
+      for (::mlir::Value input : inputs) {
+        const CausalAnswer answer = causallyDependsOn(input, query);
+        if (answer.depends)
+          return CausalAnswer{true, true};
+        combined.exact &= answer.exact;
+      }
+      return combined;
+    };
+    const auto allOf = [&](::mlir::ValueRange inputs) {
+      for (::mlir::Value input : inputs) {
+        const CausalAnswer answer = causallyDependsOn(input, query);
+        if (!answer.depends)
+          return CausalAnswer{false, answer.exact};
+      }
+      return CausalAnswer{true, true};
+    };
+    const auto through = [&](::mlir::Value input) {
+      return causallyDependsOn(input, query);
+    };
+    if (auto sync = ::llvm::dyn_cast<::dataflow::SyncOp>(def))
+      return anyOf(sync.getInputs());
     if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(def))
-      return event == load.getDone() &&
-             causallyDependsOn(load.getCtrl(), prerequisite, visited);
+      return event == load.getDone() ? through(load.getCtrl())
+                                     : CausalAnswer{false, true};
     if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(def))
-      return event == store.getDone() &&
-             causallyDependsOn(store.getCtrl(), prerequisite, visited);
+      return event == store.getDone() ? through(store.getCtrl())
+                                      : CausalAnswer{false, true};
     if (auto rmw = ::llvm::dyn_cast<::dataflow::AtomicRmwOp>(def))
-      return event == rmw.getDone() &&
-             causallyDependsOn(rmw.getCtrl(), prerequisite, visited);
+      return event == rmw.getDone() ? through(rmw.getCtrl())
+                                    : CausalAnswer{false, true};
     if (auto cmp = ::llvm::dyn_cast<::dataflow::CmpXchgOp>(def))
-      return event == cmp.getDone() &&
-             causallyDependsOn(cmp.getCtrl(), prerequisite, visited);
+      return event == cmp.getDone() ? through(cmp.getCtrl())
+                                    : CausalAnswer{false, true};
     if (auto fence = ::llvm::dyn_cast<::dataflow::FenceOp>(def))
-      return event == fence.getDone() &&
-             causallyDependsOn(fence.getCtrl(), prerequisite, visited);
+      return event == fence.getDone() ? through(fence.getCtrl())
+                                      : CausalAnswer{false, true};
     if (auto demux = ::llvm::dyn_cast<::dataflow::DemuxOp>(def))
-      return causallyDependsOn(demux.getInput(), prerequisite, visited);
-    if (auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(def)) {
-      return ::llvm::all_of(mux.getInputs(), [&](::mlir::Value input) {
-        ::llvm::DenseSet<::mlir::Value> laneVisited = visited;
-        return causallyDependsOn(input, prerequisite, laneVisited);
-      });
-    }
+      return through(demux.getInput());
+    if (auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(def))
+      return allOf(mux.getInputs());
     if (auto carry = ::llvm::dyn_cast<::dataflow::CarryOp>(def)) {
-      ::llvm::DenseSet<::mlir::Value> initVisited = visited;
-      ::llvm::DenseSet<::mlir::Value> carryVisited = visited;
-      return causallyDependsOn(carry.getInit(), prerequisite, initVisited) &&
-             causallyDependsOn(carry.getCarry(), prerequisite, carryVisited);
+      const ::llvm::SmallVector<::mlir::Value, 2> sides{carry.getInit(),
+                                                         carry.getCarry()};
+      return allOf(sides);
     }
     if (auto invariant = ::llvm::dyn_cast<::dataflow::InvariantOp>(def))
-      return causallyDependsOn(invariant.getInit(), prerequisite, visited);
+      return through(invariant.getInit());
     if (auto gate = ::llvm::dyn_cast<::dataflow::GateOp>(def))
-      return causallyDependsOn(gate.getBeforeValue(), prerequisite, visited);
+      return through(gate.getBeforeValue());
     if (auto constant = ::llvm::dyn_cast<::dataflow::ConstantOp>(def))
-      return causallyDependsOn(constant.getCtrl(), prerequisite, visited);
-    return false;
+      return through(constant.getCtrl());
+    return {false, true};
   }
 
   bool causallyDependsOn(::mlir::Value event,
                          ::mlir::Value prerequisite) const {
-    ::llvm::DenseSet<::mlir::Value> visited;
-    return causallyDependsOn(event, prerequisite, visited);
+    CausalQuery query;
+    query.prerequisite = prerequisite;
+    return causallyDependsOn(event, query).depends;
   }
 
   ::llvm::SmallVector<::mlir::Value, 4>
