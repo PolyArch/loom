@@ -989,7 +989,7 @@ spatialRunReferenceCycles(const CompletedSpatialRun &run) {
 
 llvm::Expected<CompletedSpatialRun>
 executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
-               std::uint64_t cgraEventFrames,
+               std::uint64_t dfgCycles,
                const loom::ArtifactStore &artifacts,
                const loom::BlobStore &blobs) {
   if (engine == Engine::Dfg) {
@@ -1011,6 +1011,9 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
   auto prepared = prepareSpatialCgra(invocation, artifacts, blobs);
   if (!prepared)
     return prepared.takeError();
+  const std::uint64_t cgraEventFrames =
+      loom::evaluation::models::cgraReplayEventFrameGrant(dfgCycles,
+                                                          prepared->execution);
   auto evidence = loom::evaluation::models::evaluateCgraSimulation(
       *prepared, {cgraEventFrames, std::nullopt}, artifacts, blobs);
   if (!evidence)
@@ -1726,13 +1729,14 @@ llvm::Error run() {
       auto dfgCycles = spatialRunReferenceCycles(*spatialDfg);
       if (!dfgCycles)
         return dfgCycles.takeError();
-      const std::uint64_t cgraEventFrames =
-          loom::evaluation::models::cgraReplayEventFrameGrant(*dfgCycles);
       std::optional<CompletedSpatialRun> spatialCgra;
       if (profileRequested) {
         auto prepared = prepareSpatialCgra(invocation, artifacts, blobs);
         if (!prepared)
           return prepared.takeError();
+        const std::uint64_t cgraEventFrames =
+            loom::evaluation::models::cgraReplayEventFrameGrant(
+                *dfgCycles, prepared->execution);
         SpatialCgraProfileRecord profile;
         profile.invocationOrdinal = invocation.ordinal;
         profile.warmups.reserve(spatialCgraWarmupRuns);
@@ -1762,7 +1766,7 @@ llvm::Error run() {
         spatialProfiles.push_back(std::move(profile));
       } else {
         auto executed = executeSpatial(Engine::Cgra, invocation,
-                                       cgraEventFrames, artifacts, blobs);
+                                       *dfgCycles, artifacts, blobs);
         if (!executed)
           return executed.takeError();
         spatialCgra.emplace(std::move(*executed));
