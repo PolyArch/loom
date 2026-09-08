@@ -398,10 +398,7 @@ detail::projectApplicationQualityRuntime(
     const ArtifactRootReference &mapping,
     const dse::JointBoundedQualityPolicy &quality,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  if (!quality.objectiveProgram ||
-      quality.provenanceDomain !=
-          dse::JointDesignQualityProvenanceDomain::ApplicationRuntime ||
-      execution.summary.qualityObjectiveDimensionLabels !=
+  if (execution.summary.qualityObjectiveDimensionLabels !=
           quality.objectiveDimensionLabels)
     return invalid("application runtime projection has a foreign objective "
                    "domain");
@@ -419,10 +416,6 @@ detail::projectApplicationQualityRuntime(
                      }) != 1)
     return invalid("application runtime projection has duplicate Mapping "
                    "observations");
-  auto runtimeDisposition =
-      classifyApplicationQualityRuntime(quality, *matching);
-  if (!runtimeDisposition)
-    return runtimeDisposition.takeError();
   if (matching->incompleteReason) {
     if (execution.summary.selectedMapping ||
         execution.summary.qualityIncompleteCandidate != mapping)
@@ -462,33 +455,51 @@ detail::projectApplicationQualityRuntime(
       return invalid("application runtime complete observation disagrees with "
                      "its summary");
   }
-  if (matching->incompleteReason) {
-    if (!matching->objectiveCodes.empty())
+  return projectApplicationQualityRuntime(prepared, alternative, *matching,
+                                          quality, artifacts, blobs);
+}
+
+llvm::Expected<detail::ApplicationRuntimeValidation>
+detail::projectApplicationQualityRuntime(
+    const PreparedApplicationBuild &prepared,
+    const PreparedApplicationMappingAlternative &alternative,
+    const dse::JointDesignQualityObservation &observation,
+    const dse::JointBoundedQualityPolicy &quality,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (!quality.objectiveProgram)
+    return invalid("application runtime projection has no objective program");
+  auto runtimeDisposition =
+      classifyApplicationQualityRuntime(quality, observation);
+  if (!runtimeDisposition)
+    return runtimeDisposition.takeError();
+  const ArtifactRootReference &mapping = observation.candidate;
+  if (observation.incompleteReason) {
+    if (!observation.objectiveCodes.empty())
       return invalid("application runtime incomplete observation retained an "
                      "objective");
   } else {
-    if (matching->provenance.rawMeasures.size() !=
+    if (observation.provenance.rawMeasures.size() !=
         quality.objectiveDimensionLabels.size())
       return invalid("application runtime projection lost its raw measures");
     if (llvm::Error error = dse::validateJointDesignQualityObjective(
-            *quality.objectiveProgram, matching->provenance,
-            matching->objectiveCodes))
+            *quality.objectiveProgram, observation.provenance,
+            observation.objectiveCodes))
       return std::move(error);
   }
   std::optional<std::uint64_t> dfgCycles;
   std::optional<std::uint64_t> cgraCycles;
   std::optional<std::uint64_t> resourceCoreCost =
-      matching->provenance.resourceCoreCost;
-  if (!matching->provenance.rawMeasures.empty()) {
+      observation.provenance.resourceCoreCost;
+  if (!observation.provenance.rawMeasures.empty()) {
     dfgCycles =
-        std::get<ResolvedObjectiveInteger>(matching->provenance.rawMeasures[0])
+        std::get<ResolvedObjectiveInteger>(observation.provenance.rawMeasures[0])
             .magnitude;
     cgraCycles =
-        std::get<ResolvedObjectiveInteger>(matching->provenance.rawMeasures[1])
+        std::get<ResolvedObjectiveInteger>(observation.provenance.rawMeasures[1])
             .magnitude;
   }
   for (const ArtifactRootReference &reference :
-       matching->provenance.supportingEvidence) {
+       observation.provenance.supportingEvidence) {
     if (reference.schemaIdentity !=
             evaluation::EvaluationEvidence::artifactSchema.identity ||
         reference.schemaVersion !=
@@ -498,27 +509,27 @@ detail::projectApplicationQualityRuntime(
         reference, artifacts);
     if (!stored)
       return stored.takeError();
-    if (matching->provenance.runtimeCompletion ==
+    if (observation.provenance.runtimeCompletion ==
             dse::JointDesignQualityRuntimeCompletion::Completed &&
         stored->outcomeKind != evaluation::EvidenceOutcomeKind::Completed)
       return invalid("completed application runtime retained non-completed "
                      "supporting Evidence");
   }
-  if (matching->evidence) {
-    if (matching->evidence->schemaIdentity !=
+  if (observation.evidence) {
+    if (observation.evidence->schemaIdentity !=
             evaluation::EvaluationEvidence::artifactSchema.identity ||
-        matching->evidence->schemaVersion !=
+        observation.evidence->schemaVersion !=
             evaluation::EvaluationEvidence::artifactSchema.version)
       return invalid("application runtime projection has foreign primary "
                      "Evidence");
     auto stored = evaluation::importEvaluationEvidenceDependencyProjection(
-        *matching->evidence, artifacts);
+        *observation.evidence, artifacts);
     if (!stored)
       return stored.takeError();
   }
   for (const ArtifactRootReference &reference :
-       matching->provenance.verificationEvidence)
-    if (!llvm::is_contained(matching->provenance.supportingEvidence, reference))
+       observation.provenance.verificationEvidence)
+    if (!llvm::is_contained(observation.provenance.supportingEvidence, reference))
       return invalid("application runtime verification Evidence is outside "
                      "the acquired runtime Evidence");
   auto importedMapping = loom::mapping::importSystemMapping(mapping, artifacts);
@@ -530,13 +541,13 @@ detail::projectApplicationQualityRuntime(
   auto software = findPreparedSoftware(prepared, alternative.dataflow.artifact);
   if (!software)
     return software.takeError();
-  if (matching->provenance.runtimeCompletion ==
+  if (observation.provenance.runtimeCompletion ==
       dse::JointDesignQualityRuntimeCompletion::Completed) {
     auto spatialMappings =
         importedMapping->view().executionBindings().spatialMappingImports();
     auto evidenceJoin = resolveApplicationRuntimeEvidenceJoin(
-        matching->provenance.supportingEvidence,
-        matching->provenance.verificationEvidence, alternative.dataflow,
+        observation.provenance.supportingEvidence,
+        observation.provenance.verificationEvidence, alternative.dataflow,
         spatialMappings, (*software)->replayCases, artifacts, blobs);
     if (!evidenceJoin)
       return evidenceJoin.takeError();
@@ -552,29 +563,29 @@ detail::projectApplicationQualityRuntime(
   if (llvm::Error error = validateApplicationFpaEvidenceJoin(
           alternative.dataflow, system, prepared.edaPredictionModelWeight,
           prepared.fpaOperatingConditions, alternative.plan.resolvedConfig,
-          *matching, artifacts, blobs))
+          observation, artifacts, blobs))
     return std::move(error);
-  if (matching->provenance.spatialFifoFeedback &&
-      matching->provenance.spatialFifoFeedback->parentMapping != mapping)
+  if (observation.provenance.spatialFifoFeedback &&
+      observation.provenance.spatialFifoFeedback->parentMapping != mapping)
     return invalid("application FIFO feedback names a foreign Mapping");
-  if (matching->provenance.spatialOperandQueueFeedback &&
-      matching->provenance.spatialOperandQueueFeedback->parentMapping &&
-      *matching->provenance.spatialOperandQueueFeedback->parentMapping !=
+  if (observation.provenance.spatialOperandQueueFeedback &&
+      observation.provenance.spatialOperandQueueFeedback->parentMapping &&
+      *observation.provenance.spatialOperandQueueFeedback->parentMapping !=
           mapping)
     return invalid("application operand feedback names a foreign Mapping");
-  if (matching->provenance.spatialTransportFeedback &&
-      matching->provenance.spatialTransportFeedback->parentMapping &&
-      *matching->provenance.spatialTransportFeedback->parentMapping != mapping)
+  if (observation.provenance.spatialTransportFeedback &&
+      observation.provenance.spatialTransportFeedback->parentMapping &&
+      *observation.provenance.spatialTransportFeedback->parentMapping != mapping)
     return invalid("application transport feedback names a foreign Mapping");
   return ApplicationRuntimeValidation{
       *runtimeDisposition,
-      matching->provenance.supportingEvidence,
+      observation.provenance.supportingEvidence,
       dfgCycles,
       cgraCycles,
-      matching->provenance.spatialFifoFeedback,
-      matching->provenance.spatialOperandQueueFeedback,
-      matching->provenance.spatialTransportFeedback,
-      matching->provenance.verificationEvidence,
+      observation.provenance.spatialFifoFeedback,
+      observation.provenance.spatialOperandQueueFeedback,
+      observation.provenance.spatialTransportFeedback,
+      observation.provenance.verificationEvidence,
       resourceCoreCost,
       std::nullopt};
 }

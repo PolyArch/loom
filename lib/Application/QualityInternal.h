@@ -42,6 +42,15 @@ llvm::Expected<ApplicationRuntimeValidation> projectApplicationQualityRuntime(
     const dse::JointBoundedQualityPolicy &quality,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
+/// Project every measured candidate through the same strict Evidence join,
+/// independently of whether the bounded search selected it.
+llvm::Expected<ApplicationRuntimeValidation> projectApplicationQualityRuntime(
+    const PreparedApplicationBuild &prepared,
+    const PreparedApplicationMappingAlternative &alternative,
+    const dse::JointDesignQualityObservation &observation,
+    const dse::JointBoundedQualityPolicy &quality,
+    const ArtifactStore &artifacts, const BlobStore &blobs);
+
 /// A quality observation may be incomplete after application runtime has
 /// already completed, for example when the FPA model refuses an
 /// out-of-distribution query. Preserve that distinction when projecting the
