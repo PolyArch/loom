@@ -88,37 +88,24 @@ executeSpatialTransportRuntimeRepair(
   if (!parentMapping)
     return parentMapping.takeError();
   const JointDesignPair *parentPair = nullptr;
-  for (const JointDesignPlanPair &candidate : parentPlan.pairOutputs) {
+  // Hardware exploration may have promoted a child that was not an authored
+  // plan input. The executed outcome owns that candidate and its exact pair.
+  for (const JointMappedPair &candidate : parentExecution.mappedPairs) {
+    if (!llvm::is_contained(candidate.systemMappings,
+                            *feedback.parentMapping))
+      continue;
     if (candidate.pair.software.dataflow.artifact !=
             parentMapping->view().dataflowIdentity() ||
         candidate.pair.system.artifact !=
             parentMapping->view().fabricIdentity())
-      continue;
+      return invalid("parent pair outcome disagrees with its selected Mapping");
     if (parentPair)
       return invalid("selected Mapping matches more than one application pair");
     parentPair = &candidate.pair;
   }
   if (!parentPair)
-    return invalid(
-        "selected Mapping does not match an authored application pair");
-  const auto mappedPair = llvm::find_if(
-      parentExecution.mappedPairs, [&](const JointMappedPair &candidate) {
-        return candidate.pair == *parentPair &&
-               llvm::is_contained(candidate.systemMappings,
-                                  *feedback.parentMapping);
-      });
-  if (mappedPair == parentExecution.mappedPairs.end())
     return invalid("selected Mapping is absent from its parent pair outcome");
 
-  auto dataflow =
-      ::dataflow::importCanonicalDataflow(feedback.owners->dataflow, artifacts);
-  if (!dataflow)
-    return dataflow.takeError();
-  const auto &dataflowView = dataflow->view();
-  auto tech =
-      mapping::importTechMapping(feedback.owners->techMapping, artifacts);
-  if (!tech)
-    return tech.takeError();
   auto fabric = ::loom::fabric::importEntireFabricRoot(feedback.owners->fabric,
                                                        artifacts);
   if (!fabric)
