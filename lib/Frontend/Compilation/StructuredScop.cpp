@@ -1174,7 +1174,8 @@ classifyRaisedPointerAccess(mlir::Operation *operation, mlir::scf::ForOp loop,
                             RaisedPointerAccess &result) {
   auto outcome = lowering::projectExactPointerPointAccess(
       operation, loop.getOperation(), [&](mlir::Value coordinate) {
-        return coordinate == loop.getInductionVar();
+        return lowering::isSameSignedMemoryCoordinate(
+            coordinate, loop.getInductionVar(), loop);
       });
   if (auto *projection =
           std::get_if<lowering::ExactPointerPointAccess>(&outcome)) {
@@ -1222,11 +1223,8 @@ analyzeRaisedPointerScop(
         loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
   auto inductionType =
       llvm::dyn_cast<mlir::IntegerType>(loop.getInductionVar().getType());
-  auto indexWidth = getIndexBitWidth(loop);
-  if (!indexWidth)
-    return indexWidth.takeError();
   if (!inductionType || !inductionType.isSignless() ||
-      inductionType.getWidth() != 64 || *indexWidth != 64)
+      inductionType.getWidth() != 64)
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::ProviderDomainNotAdmitted);
   const std::optional<std::int64_t> lower =

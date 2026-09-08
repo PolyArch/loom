@@ -1821,10 +1821,23 @@ materializeStructuredScheduleImpl(
               admittingStructuredActorResources(operation, *fabric);
           if (!resourceCount)
             return resourceCount.takeError();
-          if (*resourceCount == 0)
+          if (*resourceCount == 0) {
+            mapping_debug::emit(
+                mapping_debug::Level::Detail,
+                mapping_debug::Stage::DataflowLowering,
+                mapping_debug::Event::MappingFailure,
+                [&](llvm::json::Object &fields) {
+                  fields["operation"] = "structured_schedule_resource";
+                  fields["loop_ordinal"] = decision.loop.ordinal;
+                  std::string text;
+                  llvm::raw_string_ostream stream(text);
+                  operation->print(stream);
+                  fields["actor"] = std::move(text);
+                });
             return llvm::make_error<StructuredScheduleProposalRefusal>(
                 decision.loop,
                 StructuredScopRefusalKind::FabricCapabilityUnavailable);
+          }
         }
       }
     }

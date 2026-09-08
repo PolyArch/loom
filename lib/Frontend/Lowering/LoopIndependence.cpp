@@ -214,27 +214,6 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
   return {};
 }
 
-// Returns the SSA values that determine the address a store-like op
-// writes to. For llvm.store this is the (already-computed) pointer
-// operand; for memref.store it is the indices (the memref base is
-// loop-invariant by construction). The caller uses these to verify the
-// address depends on the iv and is syntactic affine. Returns an empty
-// list when `op` is not recognised.
-::llvm::SmallVector<::mlir::Value, 4>
-getStoreAddressOperands(::mlir::Operation *op) {
-  ::llvm::SmallVector<::mlir::Value, 4> result;
-  if (auto store = ::mlir::dyn_cast<::mlir::LLVM::StoreOp>(op)) {
-    result.push_back(store.getAddr());
-    return result;
-  }
-  if (auto store = ::mlir::dyn_cast<::mlir::memref::StoreOp>(op)) {
-    for (::mlir::Value idx : store.getIndices())
-      result.push_back(idx);
-    return result;
-  }
-  return result;
-}
-
 struct LinearExpr {
   int64_t ivCoeff = 0;
   int64_t constant = 0;
@@ -553,8 +532,6 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   return walked.wasInterrupted();
 }
 
-bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
-                            ::mlir::Operation *anchor);
 
 // Walk the body of `loop` (recursively into nested regions) and verify:
 //   1) No bail-out op (call to non-pure callee, execute_region,
@@ -573,7 +550,6 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
   ::llvm::DenseMap<::mlir::Value,
                    ::llvm::SmallVector<::mlir::memref::LoadOp, 4>>
       memrefLoadsByBase;
-  ::llvm::SmallVector<::mlir::Operation *, 8> stores;
   ::llvm::DenseMap<::mlir::Value,
                    ::llvm::SmallVector<::mlir::memref::StoreOp, 4>>
       memrefStoresByBase;
@@ -625,7 +601,8 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
           if (::mlir::isa<::mlir::LLVM::LoadOp>(op)) {
             auto projected = ::loom::lowering::projectExactPointerPointAccess(
                 op, loop.getOperation(), [&](::mlir::Value coordinate) {
-                  return isSameSignedCoordinate(coordinate, iv, loop);
+                  return ::loom::lowering::isSameSignedMemoryCoordinate(
+                      coordinate, iv, loop);
                 });
             if (auto *access =
                     std::get_if<::loom::lowering::ExactPointerPointAccess>(
@@ -657,7 +634,8 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
           if (::mlir::isa<::mlir::LLVM::StoreOp>(op)) {
             auto projected = ::loom::lowering::projectExactPointerPointAccess(
                 op, loop.getOperation(), [&](::mlir::Value coordinate) {
-                  return isSameSignedCoordinate(coordinate, iv, loop);
+                  return ::loom::lowering::isSameSignedMemoryCoordinate(
+                      coordinate, iv, loop);
                 });
             auto *access =
                 std::get_if<::loom::lowering::ExactPointerPointAccess>(
@@ -670,7 +648,6 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
                 ::mlir::cast<::mlir::memref::StoreOp>(op));
           }
           writeBases.insert(base);
-          stores.push_back(op);
           return ::mlir::WalkResult::advance();
         }
 
@@ -727,23 +704,19 @@ bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
       return ::mlir::failure();
   }
 
-  // Each store's address expression must be syntactic affine in iv.
-  // For llvm.store the "address" is the precomputed ptr operand; for
-  // memref.store the "address" is the index list, all of which must be
-  // affine-style and at least one of which must depend on the iv.
-  for (::mlir::Operation *st : stores) {
-    auto addrOps = getStoreAddressOperands(st);
-    if (addrOps.empty())
-      return ::mlir::failure();
-    bool sawIvDep = false;
-    for (::mlir::Value v : addrOps) {
-      if (!isAffineStyle(v, iv, loop))
+  // LLVM stores already carry the exact point-coordinate proof. Memref
+  // stores still need affine-style indices with an induction dependency.
+  for (const auto &entry : memrefStoresByBase) {
+    for (::mlir::memref::StoreOp store : entry.second) {
+      bool sawIvDep = false;
+      for (::mlir::Value index : store.getIndices()) {
+        if (!isAffineStyle(index, iv, loop))
+          return ::mlir::failure();
+        sawIvDep |= dependsOnIV(index, iv);
+      }
+      if (!sawIvDep)
         return ::mlir::failure();
-      if (dependsOnIV(v, iv))
-        sawIvDep = true;
     }
-    if (!sawIvDep)
-      return ::mlir::failure();
   }
 
   return ::mlir::success();
@@ -953,24 +926,6 @@ void collectGuaranteedUpperBounds(::mlir::Value value, ::mlir::Value induction,
   }
 }
 
-bool isSameSignedCoordinate(::mlir::Value value, ::mlir::Value expected,
-                            ::mlir::Operation *anchor) {
-  ::llvm::DenseSet<::mlir::Value> visited;
-  while (value != expected) {
-    if (!visited.insert(value).second)
-      return false;
-    auto cast = value.getDefiningOp<::mlir::arith::IndexCastOp>();
-    if (!cast)
-      return false;
-    auto sourceWidth = fixedIntegerWidth(cast.getIn().getType(), anchor);
-    auto resultWidth = fixedIntegerWidth(cast.getType(), anchor);
-    if (!sourceWidth || !resultWidth || *sourceWidth != *resultWidth)
-      return false;
-    value = cast.getIn();
-  }
-  return true;
-}
-
 bool hasExactPartitionedPointMemoryGeometry(::mlir::Operation *outer,
                                             ::mlir::scf::ForOp pointLoop) {
   ::llvm::SmallVector<::loom::lowering::ExactPointerPointAccess, 8> accesses;
@@ -987,8 +942,8 @@ bool hasExactPartitionedPointMemoryGeometry(::mlir::Operation *outer,
           return ::mlir::WalkResult::advance();
         auto projected = ::loom::lowering::projectExactPointerPointAccess(
             operation, outer, [&](::mlir::Value coordinate) {
-              return isSameSignedCoordinate(coordinate,
-                                            pointLoop.getInductionVar(), outer);
+              return ::loom::lowering::isSameSignedMemoryCoordinate(
+                  coordinate, pointLoop.getInductionVar(), outer);
             });
         auto *access =
             std::get_if<::loom::lowering::ExactPointerPointAccess>(&projected);

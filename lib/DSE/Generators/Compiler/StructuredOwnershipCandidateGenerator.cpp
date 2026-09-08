@@ -242,7 +242,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredOwnershipCandidateGeneratorKind,
     "compiler.structured_ownership",
-    "loom.compiler.structured_ownership.generator.v3",
+    "loom.compiler.structured_ownership.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

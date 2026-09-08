@@ -43,6 +43,11 @@ enum class ExactPointerPointAccessRefusal {
 using ExactPointerPointAccessOutcome =
     std::variant<ExactPointerPointAccess, ExactPointerPointAccessRefusal>;
 
+/// Compares signed coordinates through lossless casts, including truncation
+/// whose source IR explicitly guarantees no signed overflow.
+bool isSameSignedMemoryCoordinate(mlir::Value value, mlir::Value expected,
+                                  mlir::Operation *anchor);
+
 ExactPointerPointAccessOutcome projectExactPointerPointAccess(
     mlir::Operation *operation, mlir::Operation *enclosingRoot,
     llvm::function_ref<bool(mlir::Value)> isPointCoordinate);

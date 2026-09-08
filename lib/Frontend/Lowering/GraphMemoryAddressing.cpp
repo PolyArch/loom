@@ -1,5 +1,6 @@
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/Analysis/MemoryProvenance.h"
 
@@ -265,6 +266,41 @@ ExactPointerPointAccessOutcome projectExactPointerPointAccess(
 
   return ExactPointerPointAccess{operation, root, address, writes,
                                  resolved->elementAllocByteCount};
+}
+
+bool isSameSignedMemoryCoordinate(mlir::Value value, mlir::Value expected,
+                                  mlir::Operation *anchor) {
+  while (value != expected) {
+    if (auto truncation = value.getDefiningOp<mlir::arith::TruncIOp>()) {
+      if (!mlir::arith::bitEnumContainsAny(
+              truncation.getOverflowFlags(),
+              mlir::arith::IntegerOverflowFlags::nsw))
+        return false;
+      value = truncation.getIn();
+      continue;
+    }
+    if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>()) {
+      value = extension.getIn();
+      continue;
+    }
+    auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>();
+    if (!cast)
+      return false;
+    auto indexWidth = getIndexBitWidth(anchor);
+    if (!indexWidth) {
+      llvm::consumeError(indexWidth.takeError());
+      return false;
+    }
+    const auto width = [&](mlir::Type type) {
+      if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
+        return integer.getWidth();
+      return *indexWidth;
+    };
+    if (width(cast.getIn().getType()) > width(cast.getType()))
+      return false;
+    value = cast.getIn();
+  }
+  return true;
 }
 
 ExactPointerPointAccessPairKind
