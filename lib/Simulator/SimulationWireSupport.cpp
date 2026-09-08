@@ -575,17 +575,13 @@ validateSemanticMemoryBytes(llvm::ArrayRef<SemanticMemoryByte> bytes,
 void encodeSemanticMemoryByteArray(WireWriter &writer,
                                    llvm::ArrayRef<SemanticMemoryByte> bytes) {
   writer.u64(bytes.size());
-  std::vector<std::uint8_t> encoded(
-      bytes.size() * (WireWriter::u32Bytes(0).size() + 1));
-  std::size_t offset = 0;
+  std::vector<std::uint8_t> encoded;
+  encoded.reserve(bytes.size() * 2);
   for (const SemanticMemoryByte &byte : bytes) {
-    const auto state = WireWriter::u32Bytes(static_cast<std::uint32_t>(byte.state));
-    std::copy(state.begin(), state.end(), encoded.begin() + offset);
-    offset += state.size();
+    encoded.push_back(static_cast<std::uint8_t>(byte.state));
     if (byte.state == SemanticState::Defined)
-      encoded[offset++] = byte.value;
+      encoded.push_back(byte.value);
   }
-  encoded.resize(offset);
   writer.bytes(encoded);
 }
 
@@ -594,7 +590,7 @@ decodeSemanticMemoryByteArray(WireReader &reader) {
   llvm::Expected<std::uint64_t> count = reader.u64();
   if (!count)
     return count.takeError();
-  if (llvm::Error error = reader.guardCount(*count, 4))
+  if (llvm::Error error = reader.guardCount(*count, 1))
     return std::move(error);
   const llvm::ArrayRef<std::uint8_t> remaining = reader.remainingBytes();
   std::size_t offset = 0;
@@ -602,11 +598,10 @@ decodeSemanticMemoryByteArray(WireReader &reader) {
   std::vector<SemanticMemoryByte> bytes;
   bytes.reserve(*count);
   for (std::uint64_t index = 0; index < *count; ++index) {
-    if (remaining.size() - offset < 4)
+    if (offset == remaining.size())
       return invalid("simulation wire: truncated memory-byte state");
-    const std::uint32_t tag = WireReader::u32Value(remaining.data() + offset);
-    offset += 4;
-    if (tag > static_cast<std::uint32_t>(SemanticState::Undef))
+    const std::uint8_t tag = remaining[offset++];
+    if (tag > static_cast<std::uint8_t>(SemanticState::Undef))
       return invalid("simulation wire: unknown memory-byte state");
     SemanticMemoryByte byte;
     byte.state = static_cast<SemanticState>(tag);
@@ -621,7 +616,6 @@ decodeSemanticMemoryByteArray(WireReader &reader) {
 }
 
 void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object) {
-  writer.u64(object.initialBytes.size());
   encodeSemanticMemoryByteArray(writer, object.initialBytes);
   writer.u64(object.pointerValues.size());
   for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
@@ -635,17 +629,10 @@ void encodeMemoryObject(WireWriter &writer, const RuntimeMemoryObject &object) {
 llvm::Expected<RuntimeMemoryObject> decodeMemoryObject(WireReader &reader,
                                                        Operation *scope) {
   RuntimeMemoryObject object;
-  llvm::Expected<std::uint64_t> byteCount = reader.u64();
-  if (!byteCount)
-    return byteCount.takeError();
   llvm::Expected<std::vector<SemanticMemoryByte>> initialBytes =
       decodeSemanticMemoryByteArray(reader);
   if (!initialBytes)
     return initialBytes.takeError();
-  if (initialBytes->size() != *byteCount)
-    return invalid(
-        "simulation wire: memory object byte count does not match its "
-        "initial-byte array");
   object.initialBytes = std::move(*initialBytes);
   llvm::Expected<std::uint64_t> pointerCount = reader.u64();
   if (!pointerCount)

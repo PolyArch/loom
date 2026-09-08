@@ -435,57 +435,6 @@ decodeValueObservation(detail::WireReader &reader,
       "simulation execution: unknown System value-result state");
 }
 
-void encodeMemoryObservation(detail::WireWriter &writer,
-                             const MemoryObservationPayload &payload) {
-  if (const auto *full = std::get_if<FullMemoryObservation>(&payload)) {
-    writer.u64(full->bytes.size());
-    detail::encodeSemanticMemoryByteArray(writer, full->bytes);
-    return;
-  }
-  const auto &diff = std::get<DiffMemoryObservation>(payload);
-  writer.u64(diff.byteCount);
-  writer.u64(diff.runs.size());
-  for (const MemoryDiffRun &run : diff.runs) {
-    writer.u64(run.byteOffset);
-    detail::encodeSemanticMemoryByteArray(writer, run.changedBytes);
-  }
-}
-
-llvm::Expected<MemoryObservationPayload>
-decodeMemoryObservation(detail::WireReader &reader,
-                        MemoryObservationForm form) {
-  auto byteCount = reader.u64();
-  if (!byteCount)
-    return byteCount.takeError();
-  if (form == MemoryObservationForm::FullState) {
-    auto bytes = detail::decodeSemanticMemoryByteArray(reader);
-    if (!bytes)
-      return bytes.takeError();
-    if (bytes->size() != *byteCount)
-      return detail::invalid("simulation execution: System FullState byte "
-                             "count does not match its byte array");
-    return MemoryObservationPayload{FullMemoryObservation{std::move(*bytes)}};
-  }
-  auto runCount = reader.u64();
-  if (!runCount)
-    return runCount.takeError();
-  if (llvm::Error error = reader.guardCount(*runCount, 16))
-    return std::move(error);
-  DiffMemoryObservation diff;
-  diff.byteCount = *byteCount;
-  diff.runs.reserve(*runCount);
-  for (std::uint64_t index = 0; index < *runCount; ++index) {
-    auto offset = reader.u64();
-    if (!offset)
-      return offset.takeError();
-    auto changed = detail::decodeSemanticMemoryByteArray(reader);
-    if (!changed)
-      return changed.takeError();
-    diff.runs.push_back({*offset, std::move(*changed)});
-  }
-  return MemoryObservationPayload{std::move(diff)};
-}
-
 void encodeFunctional(detail::WireWriter &writer,
                       const SystemFunctionalObservations &observations,
                       const detail::SystemExecutionContext &context) {
@@ -510,7 +459,7 @@ void encodeFunctional(detail::WireWriter &writer,
         interfaceShape(context.system, contract.externalStreamOutputs[index]));
   writer.u64(observations.memories.size());
   for (const MemoryObservationPayload &memory : observations.memories)
-    encodeMemoryObservation(writer, memory);
+    detail::encodeMemoryObservation(writer, memory);
 }
 
 llvm::Expected<SystemFunctionalObservations>
@@ -575,7 +524,7 @@ decodeFunctional(detail::WireReader &reader,
   observations.memories.reserve(*memoryCount);
   for (std::size_t index = 0; index < *memoryCount; ++index) {
     auto memory =
-        decodeMemoryObservation(reader, contract.memories[index].form);
+        detail::decodeMemoryObservation(reader, contract.memories[index].form);
     if (!memory)
       return memory.takeError();
     observations.memories.push_back(std::move(*memory));

@@ -107,7 +107,7 @@ observations:
 - typed actor and physical-resource activity summaries.
 
 The viewer obtains output, logical-memory, and activity from that exact
-`SimulationExecution`. `loom.simulation_execution 3.1` has no general
+`SimulationExecution`. `loom.simulation_execution 4.0` has no general
 diagnostic-trace or replay field. Its mandatory System root-lifecycle sequence
 is narrow typed progress, not a replay log. A viewer may additionally consume
 the invocation-local `SpatialDiagnosticTrace` only when the current simulator

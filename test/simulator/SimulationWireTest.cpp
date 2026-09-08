@@ -1,4 +1,4 @@
-// Anchor tests for the schema-1.1 Spatial SimulationWorkload and schema-2.0
+// Anchor tests for the Spatial SimulationWorkload and
 // SimulationRuntimeInput persistent artifacts: rooted-launch ownership,
 // total value classification, stream horizon state, canonical object
 // ordinals, observable contracts, strict wire parsing, and DFG/CGRA
@@ -985,15 +985,20 @@ void memoryObjectOrdinals() {
     return finalizeSimulationRuntimeInput(draft, *finalized, view);
   };
 
+  RuntimeMemoryObject mixed = byteObject(16, 0x0B);
+  mixed.initialBytes[0] = {SemanticState::Poison, 0};
+  mixed.initialBytes[1] = {SemanticState::Undef, 0};
+  mixed.initialBytes[2] = {SemanticState::Defined, 0x80};
+
   // Author ordering of the object array and binding list does not change the
   // canonical bytes or identity.
   llvm::Expected<CanonicalSimulationRuntimeInput> first = finalizeDraft(
-      {byteObject(16, 0x0A), byteObject(16, 0x0B), byteObject(16, 0x0C)},
+      {byteObject(16, 0x0A), mixed, byteObject(16, 0x0C)},
       {RuntimeMemoryBindingDraft{rootA, 0, 0},
        RuntimeMemoryBindingDraft{rootB, 1, 0},
        RuntimeMemoryBindingDraft{rootC, 2, 0}});
   llvm::Expected<CanonicalSimulationRuntimeInput> second = finalizeDraft(
-      {byteObject(16, 0x0C), byteObject(16, 0x0A), byteObject(16, 0x0B)},
+      {byteObject(16, 0x0C), byteObject(16, 0x0A), mixed},
       {RuntimeMemoryBindingDraft{rootC, 0, 0},
        RuntimeMemoryBindingDraft{rootA, 1, 0},
        RuntimeMemoryBindingDraft{rootB, 2, 0}});
@@ -1004,6 +1009,26 @@ void memoryObjectOrdinals() {
               bytesOf(first->canonicalBytes()) ==
                   bytesOf(second->canonicalBytes()),
           "canonical object ordinals are invariant under author ordering");
+
+  auto imported = importSimulationRuntimeInput(
+      first->canonicalBytes().bytes(), *finalized, view, first->identity());
+  if (!imported)
+    fail(test, "mixed-state memory input imports");
+  const auto &memoryInput = *imported->spatial();
+  const auto binding = llvm::find_if(
+      memoryInput.memoryRootBindings,
+      [&](const auto &entry) { return entry.root == rootB; });
+  if (binding == memoryInput.memoryRootBindings.end())
+    fail(test, "mixed-state memory root retains its binding");
+  const auto &decoded =
+      memoryInput.memoryObjects[binding->binding.objectOrdinal].initialBytes;
+  require(test,
+          decoded.size() == mixed.initialBytes.size() &&
+              decoded[0].state == SemanticState::Poison && decoded[0].value == 0 &&
+              decoded[1].state == SemanticState::Undef && decoded[1].value == 0 &&
+              decoded[2].state == SemanticState::Defined &&
+              decoded[2].value == 0x80 && decoded[3].value == 0x0B,
+          "memory state tags preserve adjacent payload and object ownership");
 
   // Two roots aliasing one object, with overlapping ranges, is legal.
   llvm::Expected<CanonicalSimulationRuntimeInput> aliased =

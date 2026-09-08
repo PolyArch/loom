@@ -162,10 +162,11 @@ validateOverlap(llvm::ArrayRef<ImportedMemoryProjection> projections) {
   return llvm::Error::success();
 }
 
+} // namespace
+
 void encodeMemoryObservation(WireWriter &writer,
                              const MemoryObservationPayload &payload) {
   if (const auto *full = std::get_if<FullMemoryObservation>(&payload)) {
-    writer.u64(full->bytes.size());
     encodeSemanticMemoryByteArray(writer, full->bytes);
     return;
   }
@@ -180,20 +181,17 @@ void encodeMemoryObservation(WireWriter &writer,
 
 llvm::Expected<MemoryObservationPayload>
 decodeMemoryObservation(WireReader &reader, MemoryObservationForm form) {
-  llvm::Expected<std::uint64_t> byteCount = reader.u64();
-  if (!byteCount)
-    return byteCount.takeError();
   if (form == MemoryObservationForm::FullState) {
     llvm::Expected<std::vector<SemanticMemoryByte>> bytes =
         decodeSemanticMemoryByteArray(reader);
     if (!bytes)
       return bytes.takeError();
-    if (bytes->size() != *byteCount)
-      return invalid("simulation execution: FullState byte count does not "
-                     "match its byte array");
     return MemoryObservationPayload{FullMemoryObservation{std::move(*bytes)}};
   }
 
+  llvm::Expected<std::uint64_t> byteCount = reader.u64();
+  if (!byteCount)
+    return byteCount.takeError();
   llvm::Expected<std::uint64_t> runCount = reader.u64();
   if (!runCount)
     return runCount.takeError();
@@ -214,8 +212,6 @@ decodeMemoryObservation(WireReader &reader, MemoryObservationForm form) {
   }
   return MemoryObservationPayload{std::move(diff)};
 }
-
-} // namespace
 
 llvm::Error validateSpatialFunctionalObservations(
     const SpatialFunctionalObservations &observations,

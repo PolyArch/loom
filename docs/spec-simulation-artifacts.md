@@ -11,8 +11,8 @@ The fixed schema descriptors are:
 
 ```text
 loom.simulation_workload      1.1
-loom.simulation_runtime_input 2.0
-loom.simulation_execution     3.1
+loom.simulation_runtime_input 3.0
+loom.simulation_execution     4.0
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
@@ -20,12 +20,11 @@ Schema versions use `X.Y`: `X` denotes an incompatible change and `Y` denotes
 a compatible extension. Simulator-specific request, result, trace, activity,
 or report Artifact families are forbidden.
 
-`loom.simulation_execution 3.1` extends the optional native System memory
-activity of `3.0` with a required per-event shared-memory service sample on
-every mandatory narrow System root-lifecycle progress entry. Identity bytes are
-compared by exact schema version, so `3.0` bytes are simply another identity and
-no compatibility path reads them. It does not add a general diagnostic trace,
-provider payload, or replay field.
+The runtime-input and execution families share the canonical semantic-memory
+byte-array encoding defined below. Their exact schema versions identify that
+layout; earlier versions are not reinterpreted. Every mandatory narrow System
+root-lifecycle progress entry retains its shared-memory service sample. No
+general diagnostic trace, provider payload, or replay field is added.
 
 ## SimulationWorkload
 
@@ -152,7 +151,7 @@ SimulationRuntimeInput. Fixed or runtime value selection follows the same
 single-token rule as the spatial root. This schema does not copy Deployment
 entry or interface fields.
 
-`loom.simulation_workload 1.1` and `loom.simulation_runtime_input 2.0` remain
+`loom.simulation_workload 1.1` and `loom.simulation_runtime_input 3.0` remain
 unchanged when Deployment moves from 5.1 to 6.0. Their System catalog
 references encode only the contextual Deployment `ArtifactIdentity`; neither
 wire admits or parses a Deployment schema descriptor. The caller supplies an
@@ -299,7 +298,6 @@ CanonicalStreamSequence {
 }
 
 RuntimeMemoryObject {
-  byte_count: uint64
   initial_bytes: array<SemanticMemoryByte>
   pointer_values: canonical array<RuntimeMemoryPointer>
 }
@@ -322,6 +320,14 @@ RuntimeMemoryRootBinding {
 }
 ```
 
+A semantic-memory byte array encodes its length as `u64be`, followed by one
+`u8` state tag per element in array order: `Defined = 0`, `Poison = 1`, and
+`Undef = 2`. A `Defined` tag is immediately followed by its one-byte value;
+non-defined states carry no value. Unknown tags and truncated values are
+rejected. Runtime memory objects and both full and sparse execution memory
+observations use this one encoding. Value-lane and other union discriminants
+retain their own explicitly specified wire widths.
+
 `runtime_values` is exactly total over value-input ordinals whose workload
 source is `Runtime`; every sequence has exactly one token. `runtime_streams`
 is exactly total over graph stream-input ordinals. `ClosedAfterLast` publishes
@@ -335,8 +341,8 @@ an open produced prefix without asserting a counterfactual future.
 
 Every imported logical-memory root reachable from the selected launch has
 exactly one root binding, and no unrelated root may appear. A runtime memory
-object is neutral byte-addressed software storage. Its initial-byte count must
-equal `byte_count`; the exact Canonical Dataflow type, DataLayout, and
+object is neutral byte-addressed software storage. Its extent is the length of
+`initial_bytes`; the exact Canonical Dataflow type, DataLayout, and
 root/view relations alone interpret typed accesses. This avoids choosing one
 aliased memref role as a privileged storage type or importing physical memory
 layout into the software input.
@@ -349,7 +355,7 @@ with an exact signed `A(address_space)`-bit byte offset. Re-encoding the target
 through the object registry must reproduce those stored representation bits.
 Poison or undef storage cannot carry pointer provenance. The bytes remain the
 content authority; this table supplies only the object provenance that a raw
-address representation cannot recover. `loom.simulation_runtime_input 2.0`
+address representation cannot recover. `loom.simulation_runtime_input 3.0`
 adds this table and is therefore incompatible with that family's 1.x schema.
 
 For a launch-derived imported linear view, the runtime input still binds only
@@ -537,7 +543,7 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 3.1` wire. The invocation-local
+define the complete `loom.simulation_execution 4.0` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
 root; the narrow System root-lifecycle progress sequence is a distinct
 mandatory observation.
@@ -667,7 +673,6 @@ without a second persistent discriminator:
 
 ```text
 FullState payload {
-  byte_count: uint64
   bytes: array<SemanticMemoryByte>
 }
 
@@ -682,8 +687,10 @@ MemoryDiffRun {
 }
 ```
 
-A full-state byte array has exactly `byte_count` elements. Diff runs are
-sorted by offset, in range, nonoverlapping, nonadjacent, and maximal. Every
+A full-state observation's extent is the length of `bytes`. A diff's
+`byte_count` records the complete target extent independently of its changed
+runs. Diff runs are sorted by offset, in range, nonoverlapping, nonadjacent,
+and maximal. Every
 encoded byte differs semantically from the exact runtime baseline; adjacent
 changed bytes belong to one run. An empty run array uniquely means no change.
 Equality distinguishes `Defined`, `Poison`, and `Undef` states as well as
@@ -895,7 +902,7 @@ or gem5 event priority. Evaluation derives metrics through the exact model.
 The root lifecycle is not a general gem5 event trace and does not admit raw
 provider records or diagnostic events. Raw gem5 traces remain attempt or
 scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
-event algebra below only outside `loom.simulation_execution 3.1` identity.
+event algebra below only outside `loom.simulation_execution 4.0` identity.
 
 ## Activity Summaries
 
@@ -1030,8 +1037,8 @@ by their owner-defined canonical reference bytes.
 
 The activity payloads and windows above remain Spatial-only because their
 duration-bearing fields use the selected Spatial reference cycle. System
-execution instead has optional `memory_activity { occupied_ticks }`. The schema
-3.0 System wire encodes a u32 absence/presence tag and, when present, a u64
+execution instead has optional `memory_activity { occupied_ticks }`. The
+System wire encodes a u32 absence/presence tag and, when present, a u64
 occupied-service integral after progress observations. Spatial activity encoding
 is unchanged.
 
@@ -1077,7 +1084,7 @@ application QoR; the Application owner joins it with an independent compute
 occupancy. Other System models may omit memory activity.
 
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 3.1` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 4.0` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -1120,7 +1127,7 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 3.1` contains no general diagnostic-trace field.
+`loom.simulation_execution 4.0` contains no general diagnostic-trace field.
 Its mandatory narrow System root-lifecycle progress sequence is not a
 `SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
 Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
@@ -1557,7 +1564,7 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 3.1` import admits only
+noninterference. Persistent `loom.simulation_execution 4.0` import admits only
 the narrow System root-lifecycle progress field and rejects any general trace,
 manifest, chunk, coverage, path, or opaque diagnostic field.
 

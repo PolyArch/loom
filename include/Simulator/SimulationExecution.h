@@ -36,7 +36,7 @@ namespace loom::sim {
 class PreparedSpatialExecutionContext;
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
-    "loom.simulation_execution", SchemaVersion{3, 1}};
+    "loom.simulation_execution", SchemaVersion{4, 0}};
 
 struct RetiredExecution {};
 

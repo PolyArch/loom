@@ -1,6 +1,6 @@
 //===- SimulationRuntimeInput.cpp - spatial runtime input artifact -------===//
 //
-// Schema-1.0 Spatial SimulationRuntimeInput: total runtime value/stream
+// Spatial SimulationRuntimeInput: total runtime value/stream
 // tables, neutral memory objects, total logical-root bindings with canonical
 // object ordinals derived from sorted binding keys, the one strict canonical
 // encoder/decoder, and failure-atomic finalization/import.

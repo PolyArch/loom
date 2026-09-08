@@ -36,7 +36,7 @@ namespace loom::sim {
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationWorkloadSchema{
     "loom.simulation_workload", ::loom::SchemaVersion{1, 1}};
 inline constexpr ::loom::ArtifactSchemaDescriptor simulationRuntimeInputSchema{
-    "loom.simulation_runtime_input", ::loom::SchemaVersion{2, 0}};
+    "loom.simulation_runtime_input", ::loom::SchemaVersion{3, 0}};
 
 enum class SimulationWorkloadKind : std::uint32_t {
   Spatial = 0,
@@ -353,7 +353,7 @@ struct MemoryRootBindingEntry {
   RuntimeMemoryRootBinding binding;
 };
 
-/// The canonical schema-2.0 spatial runtime-input root. `runtimeValues` is
+/// The canonical spatial runtime-input root. `runtimeValues` is
 /// sorted by value-input ordinal and exactly complements the workload's Runtime
 /// classifications; `runtimeStreams` is dense over graph stream-input
 /// ordinals; `memoryObjects` is in canonical object-ordinal order;
