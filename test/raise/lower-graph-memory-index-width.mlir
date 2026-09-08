@@ -13,7 +13,7 @@
 
 // DECLARED-LABEL: dataflow.graph private @declared_index_graph(
 // DECLARED-SAME: %[[BASE:[^, )]+]]: !llvm.ptr
-// DECLARED-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
+// DECLARED-SAME: [[MEM:%[^, )]+]]: memref<?xf32>
 // DECLARED: %[[ADDRESS:.*]] = llvm.getelementptr inbounds %[[BASE]]
 // DECLARED: %[[DATA:.*]], %[[READ:.*]] = dataflow.load [[MEM]][%[[ADDRESS]]]
 // DECLARED: dataflow.store [[MEM]][%[[ADDRESS]]] %[[DATA]] %[[READ]]

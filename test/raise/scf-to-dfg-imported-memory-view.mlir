@@ -17,7 +17,7 @@
 
 // CHECK-LABEL: dataflow.graph private @imported_view_graph(
 // CHECK-SAME: [[INDEX:%[^, )]+]]: i64, [[BASE:%[^, )]+]]: !llvm.ptr
-// CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xi32>)
+// CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xi32>
 // CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[ADDR:.*]] = llvm.getelementptr [[BASE]][[[INDEX]]]
 // CHECK: %[[DATA:.*]], %[[DONE:.*]] = dataflow.load [[MEM]][%[[ADDR]]]
