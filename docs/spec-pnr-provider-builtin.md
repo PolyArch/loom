@@ -11,13 +11,13 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.11
+  loom.spatial_pnr.config.15.12
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.4
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.8.5
+  loom.system_pnr.config.8.6
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.4
   exact selected SpatialMapping references
@@ -432,7 +432,8 @@ The Spatial provider uses the required in-process `CpSat_3_0` adapter from the
 pinned OR-Tools v9.15 source commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`.
 
-Every canonical solve runs with presolve probing disabled and under a fixed
+Every canonical solve disables presolve probing and optional at-most-one
+clique merging, retaining the original constraints, and runs under a fixed
 deterministic-time budget of 2.0. The initial mutation-count proof orders its
 objective and the Boolean terms that define it before canonical physical
 choices; canonical mixed-radix extraction restores typed decision-key order
