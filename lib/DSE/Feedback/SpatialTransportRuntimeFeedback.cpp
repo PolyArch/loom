@@ -643,18 +643,30 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     if (edge.kind == EdgeKind::ActorOutputBackpressure)
       ++result.outputBackpressureEdgeCount;
 
-    const auto reject = [&]() {
+    const auto reject = [&](llvm::StringRef diagnostic) {
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+          mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "runtime_certificate_route_join";
+            fields["diagnostic"] = diagnostic;
+            fields["edge_kind"] = static_cast<std::uint64_t>(edge.kind);
+            fields["binding"] = edge.bindingOrdinal;
+            fields["occurrence"] = edge.occurrenceOrdinal;
+            fields["storage"] = edge.storageOrdinal;
+            fields["head_binding"] = edge.headBindingOrdinal;
+            fields["head_occurrence"] = edge.headOccurrenceOrdinal;
+          });
       result.reason =
           SpatialTransportRuntimeFeedbackReason::UnjoinedCertificateEdge;
       return result;
     };
 
     if (edge.bindingOrdinal == kAbsent || edge.occurrenceOrdinal == kAbsent)
-      return reject();
+      return reject("edge has no exact transfer occurrence");
     const Diagnostic::Transfer *awaited =
         findTransfer(edge.bindingOrdinal, edge.occurrenceOrdinal);
     if (!awaited)
-      return reject();
+      return reject("edge transfer is absent from the certificate inventory");
 
     // Which certificate fields qualify the edge's own transfer depends
     // on which end of the storage relation that transfer sits at. A consumption
@@ -679,7 +691,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     if ((requiresHead && !headNamed) ||
         ((terminal || edge.kind == EdgeKind::StorageDownstream) &&
          !headIsEdgeTransfer))
-      return reject();
+      return reject("edge has no consistent resident head identity");
 
     std::optional<std::uint64_t> ownActor;
     std::uint32_t ownInput = kAbsent32;
@@ -699,7 +711,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
     if (!awaitedOutcome)
       return awaitedOutcome.takeError();
     if (!*awaitedOutcome)
-      return reject();
+      return reject("edge transfer does not join its selected route branch");
     ++result.exactBlockedTransferCount;
 
     // A head that is a genuinely different transfer is its own exact Mapping
@@ -710,7 +722,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
       const Diagnostic::Transfer *head =
           findTransfer(edge.headBindingOrdinal, edge.headOccurrenceOrdinal);
       if (!head)
-        return reject();
+        return reject("resident head is absent from the certificate inventory");
       const std::optional<std::uint64_t> headActor =
           edge.headDestinationActorOrdinal == kAbsent
               ? std::nullopt
@@ -721,7 +733,7 @@ deriveSpatialTransportRuntimeFeedbackImpl(
       if (!headOutcome)
         return headOutcome.takeError();
       if (!*headOutcome)
-        return reject();
+        return reject("resident head does not join its selected route branch");
     }
   }
 
