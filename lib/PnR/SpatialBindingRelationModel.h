@@ -30,13 +30,6 @@ enum class SpatialBindingRelationRole : std::uint8_t {
   Progress,
 };
 
-struct SpatialGraphBoundaryHallProjection final {
-  std::uint64_t inputDemandCount = 0;
-  std::uint64_t inputEndpointCount = 0;
-  std::uint64_t outputDemandCount = 0;
-  std::uint64_t outputEndpointCount = 0;
-};
-
 class SpatialBindingRelationModel final {
 public:
   static llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
@@ -102,8 +95,6 @@ public:
   llvm::Error verifyChoices(llvm::ArrayRef<PnrIndex> choices) const {
     return relations_.verifyChoices(choices);
   }
-  llvm::Expected<std::optional<SpatialGraphBoundaryHallProjection>>
-  projectGraphBoundaryHall(const InitializerRelationHallWitness &witness) const;
 
 private:
   SpatialBindingRelationModel(
@@ -118,9 +109,7 @@ private:
       std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets,
       std::vector<PnrIndex> attachmentChoices,
       std::vector<PnrIndex> attachmentOptionChoiceOrdinals,
-      std::vector<SpatialBindingRelationRole> relationRoles,
-      std::optional<PnrIndex> graphBoundaryEndpointRelation,
-      std::vector<::loom::fabric::FabricPortDirection> graphBoundaryDirections)
+      std::vector<SpatialBindingRelationRole> relationRoles)
       : relations_(std::move(relations)),
         computeChoiceOffsets_(std::move(computeChoiceOffsets)),
         computeChoices_(std::move(computeChoices)),
@@ -135,9 +124,7 @@ private:
         attachmentChoices_(std::move(attachmentChoices)),
         attachmentOptionChoiceOrdinals_(
             std::move(attachmentOptionChoiceOrdinals)),
-        relationRoles_(std::move(relationRoles)),
-        graphBoundaryEndpointRelation_(graphBoundaryEndpointRelation),
-        graphBoundaryDirections_(std::move(graphBoundaryDirections)) {}
+        relationRoles_(std::move(relationRoles)) {}
 
   InitializerRelationModel relations_;
   std::vector<PnrIndex> computeChoiceOffsets_;
@@ -151,8 +138,6 @@ private:
   std::vector<PnrIndex> attachmentChoices_;
   std::vector<PnrIndex> attachmentOptionChoiceOrdinals_;
   std::vector<SpatialBindingRelationRole> relationRoles_;
-  std::optional<PnrIndex> graphBoundaryEndpointRelation_;
-  std::vector<::loom::fabric::FabricPortDirection> graphBoundaryDirections_;
 };
 
 } // namespace loom::pnr::detail

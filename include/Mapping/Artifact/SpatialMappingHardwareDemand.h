@@ -4,6 +4,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Fabric/Identity/FabricRefs.h"
+#include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -19,12 +20,12 @@ class ArtifactStore;
 
 namespace loom::mapping {
 
-/// One exact graph-boundary Hall deficit observed for a TechMapping on a
-/// Module. The directional split is retained because a bidirectional gateway
-/// contributes one endpoint to each independent direction.
-class SpatialGraphBoundaryEndpointHallDeficit final {
+/// A directional boundary-capacity proposal after bounded Mapping failure.
+/// Distinct logical nets may share transport, so this is not an infeasibility
+/// proof. Each added gateway contributes one endpoint in each direction.
+class SpatialGraphBoundaryCapacitySuggestion final {
 public:
-  static llvm::Expected<SpatialGraphBoundaryEndpointHallDeficit>
+  static llvm::Expected<SpatialGraphBoundaryCapacitySuggestion>
   get(ArtifactRootReference module, ArtifactRootReference techMapping,
       std::uint64_t inputDemandCount, std::uint64_t inputEndpointCount,
       std::uint64_t outputDemandCount, std::uint64_t outputEndpointCount);
@@ -41,10 +42,10 @@ public:
   std::uint64_t inputEndpointCount() const { return inputEndpointCount_; }
   std::uint64_t outputDemandCount() const { return outputDemandCount_; }
   std::uint64_t outputEndpointCount() const { return outputEndpointCount_; }
-  std::uint64_t requiredBoundaryPairs() const;
+  std::uint64_t proposedAdditionalBoundaryPairs() const;
 
 private:
-  SpatialGraphBoundaryEndpointHallDeficit(ArtifactRootReference module,
+  SpatialGraphBoundaryCapacitySuggestion(ArtifactRootReference module,
                                           ArtifactRootReference techMapping,
                                           std::uint64_t inputDemandCount,
                                           std::uint64_t inputEndpointCount,
@@ -111,8 +112,16 @@ private:
   std::vector<fabric::FabricPhysicalTraversalRef> routeAnchors_;
 };
 
+class TechMappingView;
+
+llvm::Expected<std::optional<SpatialGraphBoundaryCapacitySuggestion>>
+deriveSpatialGraphBoundaryCapacitySuggestion(
+    const ArtifactRootReference &module,
+    const ArtifactRootReference &techMapping, const TechMappingView &tech,
+    const fabric::FabricArtifactView &fabric);
+
 using SpatialMappingHardwareFeedback =
-    std::variant<SpatialGraphBoundaryEndpointHallDeficit,
+    std::variant<SpatialGraphBoundaryCapacitySuggestion,
                  SpatialFifoChannelCapacitySuggestion>;
 
 llvm::ArrayRef<std::uint8_t> spatialMappingHardwareFeedbackSchemaBytes();
@@ -126,8 +135,8 @@ adoptSpatialMappingHardwareFeedback(
     llvm::ArrayRef<ArtifactRootReference> techMappings,
     const ArtifactStore &store);
 
-/// Prefer a reservation proposal from admitted routes to a pre-placement Hall
-/// deficit. Within a family retain the largest requested capacity, then the
+/// Prefer a reservation proposal from admitted routes to a boundary-capacity
+/// proposal. Within a family retain the largest requested capacity, then the
 /// larger witness and canonical bytes.
 void retainSpatialMappingHardwareFeedback(
     std::optional<SpatialMappingHardwareFeedback> &retained,

@@ -132,7 +132,6 @@ CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenDerivedContext:
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenActiveProblem:
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::InitializerRelation:
-  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall:
     return CandidateGeneratorIncompleteReason::ProofNotEstablished;
   }
   llvm_unreachable("unknown Spatial PnR infeasibility kind");
@@ -1409,18 +1408,6 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (const auto *infeasible =
             std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(
                 &outcome)) {
-      if (infeasible->graphBoundaryEndpointHall) {
-        const auto &observed = *infeasible->graphBoundaryEndpointHall;
-        auto feedback =
-            ::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit::get(
-                inputBindings[FabricInput].artifacts.front(), techReference,
-                observed.inputDemandCount, observed.inputEndpointCount,
-                observed.outputDemandCount, observed.outputEndpointCount);
-        if (!feedback)
-          return feedback.takeError();
-        ::loom::mapping::retainSpatialMappingHardwareFeedback(
-            hardwareFeedback, std::move(*feedback));
-      }
       ::loom::mapping_debug::emit(
           ::loom::mapping_debug::Level::Summary,
           ::loom::mapping_debug::Stage::SpatialPnr,
@@ -1440,6 +1427,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (const auto *partial =
             std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(
                 &outcome)) {
+      auto boundarySuggestion =
+          ::loom::mapping::deriveSpatialGraphBoundaryCapacitySuggestion(
+              inputBindings[FabricInput].artifacts.front(), techReference,
+              prepared.tech.view(), fabric->view());
+      if (!boundarySuggestion)
+        return boundarySuggestion.takeError();
+      if (*boundarySuggestion)
+        ::loom::mapping::retainSpatialMappingHardwareFeedback(
+            hardwareFeedback, std::move(**boundarySuggestion));
       if (auto error =
               retainFifoFeedback(partial->fifoCapacityShortfall, techReference))
         return std::move(error);

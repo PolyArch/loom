@@ -2070,15 +2070,15 @@ remain fatal owner outcomes.
 
 Neither Spatial adapter currently registers an owner infeasibility-proof
 contract. Internal `FrozenDerivedContext`, `FrozenActiveProblem`,
-`InitializerRelation`, and `GraphBoundaryEndpointHall` kinds identify where
+and `InitializerRelation` kinds identify where
 the PnR owner observed a contradiction, but none carries a reason-specific
 witness that the descriptor can independently reconstruct and verify from the
 exact invocation inputs. Both adapters therefore return
 `Incomplete(ProofNotEstablished)` for every internal Spatial
 `ProvenInfeasible` result.
 
-The graph-boundary Hall count projection remains transient hardware-reopen
-feedback rather than proof material. The current relation model admits legal
+Graph-boundary capacity proposals remain transient hardware-reopen feedback
+rather than proof material. The current relation model admits legal
 temporal and causally separated endpoint reuse and does not construct a global
 graph-boundary all-different relation. Counts and diagnostic text cannot imply
 that missing relation. One unverified contradiction, semantic limit, or
@@ -3411,14 +3411,20 @@ by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
 The root-complete Spatial provider may return
-`loom.mapping.spatial_hardware_feedback.1.0`. Its closed alternatives are a
-graph-boundary Hall deficit and a FIFO channel-reservation proposal. Both name
-the exact Module and TechMapping input. A Hall deficit retains independent
-input/output demand and Hall-neighbor endpoint counts; aggregate cardinalities
-are derived rather than serialized again. One additional builtin gateway
-contributes one input and one output endpoint, so the required gateway
-increment is the larger directional deficit. This does not imply that another
-TechMapping has the same boundary demand and cannot weaken endpoint exclusivity.
+`loom.mapping.spatial_hardware_feedback.2.0`. Its closed alternatives are a
+graph-boundary capacity proposal and a FIFO channel-reservation proposal. Both
+name the exact Module and TechMapping input. After bounded Spatial search
+fails, boundary feedback compares directional residual-net demand with the
+Module's distinct transport attachment endpoints. An ingress producer counts
+once; one residual producer with graph egress sinks counts once even when it
+multicasts to several egresses. Adoption reconstructs these counts from the
+exact inputs. A proposal exists when either direction has more demand than
+endpoints; surplus in one direction cannot cancel pressure in the other.
+One additional builtin gateway contributes one input and one output endpoint,
+so the proposed gateway increment is the larger directional difference.
+This is a search suggestion, not an endpoint-exclusivity constraint or an
+infeasibility proof: temporal sharing may satisfy the original hardware.
+Every proposed child must pass ordinary Mapping and runtime verification.
 A FIFO proposal retains its exact occurrence, selected and proposed guaranteed
 channel counts, residual logical producer references, and traversal anchors.
 Adoption checks the selected reservation against the Module and resolves the
@@ -3426,14 +3432,14 @@ logical nets and traversal anchors against the exact input closure. It is a
 search proposal, not an infeasibility proof.
 
 The wire contains the two canonical root references, a u64be alternative
-discriminant (Hall = 0, FIFO = 1), then the alternative's fields. Hall stores
+discriminant (boundary = 0, FIFO = 1), then the alternative's fields. Boundary stores
 the four directional counts as u64be. FIFO stores a length-framed canonical
 FIFO reference, selected and proposed counts, then count-prefixed logical-net
 and traversal-anchor tables whose canonical local references are length-framed.
 Counts and lengths use u64be. Both tables are sorted and unique. Unknown kinds,
 foreign references, stale selected reservations, noncanonical tables, and
 trailing bytes are rejected. Retention prefers a proposal from admitted routes
-to a pre-placement Hall deficit, then larger requested capacity and witness
+to a boundary-capacity proposal, then larger requested capacity and witness
 cardinality within that family, followed by canonical bytes.
 
 The root-complete System provider may return
@@ -3781,7 +3787,7 @@ and the invocation deadline itself is unchanged. Under
 failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates first prioritize the
 deepest admitted Mapping boundary, with a routed FIFO proposal ahead of a
-pre-placement Spatial Hall deficit, then exact accelerated root, graph, and
+Spatial boundary-capacity proposal, then exact accelerated root, graph, and
 actor coverage. Hardware parents also receive a fair share of the remaining
 invocation time. Only the declared prefix is promoted. Any remaining
 budget may expand verified parents in analytic order. A repairable failure of
