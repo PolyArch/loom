@@ -189,19 +189,13 @@ projectMemoryBytes(const MemoryView &view) {
         std::errc::invalid_argument,
         "retired DFG memory view is outside its backing object");
   const std::size_t begin = static_cast<std::size_t>(view.byteOffset);
-  std::vector<SemanticMemoryByte> bytes;
-  bytes.reserve(view.memory->bytes.size() - begin);
-  for (std::size_t offset = begin; offset < view.memory->bytes.size();
-       ++offset) {
-    if (!view.memory->initialized[offset]) {
-      bytes.push_back({SemanticState::Undef, 0});
-      continue;
-    }
-    SemanticMemoryByte byte = view.memory->bytes[offset];
-    if (byte.state != SemanticState::Defined)
-      byte.value = 0;
-    bytes.push_back(byte);
-  }
+  std::vector<SemanticMemoryByte> bytes(view.memory->bytes.begin() + begin,
+                                       view.memory->bytes.end());
+  if (!view.memory->initialized.all())
+    for (std::size_t offset = begin; offset < view.memory->bytes.size();
+         ++offset)
+      if (!view.memory->initialized[offset])
+        bytes[offset - begin] = {SemanticState::Undef, 0};
   return bytes;
 }
 

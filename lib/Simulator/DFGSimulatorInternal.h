@@ -760,6 +760,7 @@ struct ParallelizeState {
 
 struct MemoryValue {
   std::uint64_t logicalRootId = 0;
+  // Input admission and memory-element encoding keep exceptional values zero.
   llvm::SmallVector<SemanticMemoryByte> bytes;
   // Fresh allocation bytes are not initialized. Runtime-input bytes remain
   // initialized even when their semantic state is Poison or Undef.

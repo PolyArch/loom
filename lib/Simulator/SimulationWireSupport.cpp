@@ -561,27 +561,33 @@ decodeStreamSequence(WireReader &reader, const LaneShape &shape) {
 llvm::Error
 validateSemanticMemoryBytes(llvm::ArrayRef<SemanticMemoryByte> bytes,
                             const llvm::Twine &what) {
+  bool invalidState = false;
+  bool hiddenValue = false;
+  // Evaluate both predicates for every byte so the scan can vectorize.
   for (const SemanticMemoryByte &byte : bytes) {
-    if (static_cast<std::uint32_t>(byte.state) >
-        static_cast<std::uint32_t>(SemanticState::Undef))
-      return invalid(what + ": memory-byte state is out of domain");
-    if (byte.state != SemanticState::Defined && byte.value != 0)
-      return invalid(what +
-                     ": a non-defined memory byte carries a hidden value");
+    invalidState |= static_cast<std::uint8_t>(byte.state) >
+                    static_cast<std::uint8_t>(SemanticState::Undef);
+    hiddenValue |= static_cast<unsigned>(byte.state != SemanticState::Defined) &
+                   static_cast<unsigned>(byte.value != 0);
   }
+  if (invalidState)
+    return invalid(what + ": memory-byte state is out of domain");
+  if (hiddenValue)
+    return invalid(what + ": a non-defined memory byte carries a hidden value");
   return llvm::Error::success();
 }
 
 void encodeSemanticMemoryByteArray(WireWriter &writer,
                                    llvm::ArrayRef<SemanticMemoryByte> bytes) {
   writer.u64(bytes.size());
-  std::vector<std::uint8_t> encoded;
-  encoded.reserve(bytes.size() * 2);
+  std::vector<std::uint8_t> encoded(bytes.size() * 2);
+  std::size_t offset = 0;
   for (const SemanticMemoryByte &byte : bytes) {
-    encoded.push_back(static_cast<std::uint8_t>(byte.state));
+    encoded[offset++] = static_cast<std::uint8_t>(byte.state);
     if (byte.state == SemanticState::Defined)
-      encoded.push_back(byte.value);
+      encoded[offset++] = byte.value;
   }
+  encoded.resize(offset);
   writer.bytes(encoded);
 }
 
@@ -828,8 +834,6 @@ llvm::Error validateRuntimeMemoryObjectStructure(
 
 llvm::Error canonicalizeRuntimeMemoryPointers(
     llvm::MutableArrayRef<RuntimeMemoryObject> objects, Operation *scope) {
-  if (llvm::Error error = validateRuntimeMemoryObjectStructure(objects, scope))
-    return error;
   for (RuntimeMemoryObject &object : objects) {
     for (const RuntimeMemoryPointer &pointer : object.pointerValues) {
       llvm::Expected<PointerLayout> layout =
