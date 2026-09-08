@@ -1,4 +1,5 @@
 #include "DSE/ResourceTimeFrontier.h"
+#include "Dataflow/Transforms/DataflowRewrite.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -825,6 +826,49 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
           "concurrent exact reuse repeated formal frontier work");
 }
 
+void uncalibratedRewriteGetsAMappingOpportunity() {
+  auto bounded = policy();
+  bounded.maximumMappingFinalists = 3;
+  std::vector<loom::dse::ResourceTimeMappingCandidateInput> candidates;
+  for (std::uint8_t ordinal = 0; ordinal != 4; ++ordinal) {
+    auto key = invocation();
+    key.sourceLineage = reference(30 + ordinal);
+    auto regions = fiveRegionFeatures(2);
+    for (auto &region : regions)
+      for (auto &point : region.speedupCurve) {
+        point.executionTimePicoseconds *= ordinal == 2 ? 20 : ordinal + 1;
+        point.support = loom::dse::ResourceTimeEstimateSupport::Analytic;
+      }
+    candidates.push_back({digest(40 + ordinal),
+                          ordinal,
+                          5,
+                          5,
+                          50,
+                          2,
+                          key,
+                          {reference(20)},
+                          std::move(regions)});
+  }
+  candidates[1].softwareRewriteKinds = {
+      dataflow::DataflowRewriteKind::PureComputeFanoutRefactor,
+      dataflow::DataflowRewriteKind::StreamCompletionPhaseSplit};
+  candidates[2].softwareRewriteKinds = {
+      dataflow::DataflowRewriteKind::StreamCompletionPhaseSplit};
+  const auto result =
+      take(loom::dse::selectResourceTimeMappingFinalists(candidates, bounded));
+  require(result.finalists.size() == bounded.maximumMappingFinalists &&
+              result.accounting.detailedFrontierCandidates ==
+                  bounded.maximumMappingFinalists,
+          "rewrite exploration exceeded the existing Mapping work bound");
+  require(llvm::any_of(result.finalists,
+                       [&](const auto &finalist) {
+                         return finalist.candidateIdentity ==
+                                candidates[2].candidateIdentity;
+                       }),
+          "uncalibrated structural ranking suppressed an unmeasured rewrite "
+          "family");
+}
+
 } // namespace
 
 int main() {
@@ -833,6 +877,7 @@ int main() {
   dependencyCyclesRemainTyped();
   replayIsDeterministic();
   mappingFunnelAdmitsOnlyBoundedFinalists();
+  uncalibratedRewriteGetsAMappingOpportunity();
   outOfDomainScreeningRemainsMeasuredButInadmissible();
   screeningCombinesIndependentLowerBoundSupport();
   exactMemoSupportsWarmAndConcurrentReuse();

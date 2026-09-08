@@ -52,18 +52,18 @@ void requireWire(const Decision &decision,
   std::vector<std::uint8_t> encoded =
       take(dataflow::encodeDataflowRewriteDecision(erased));
   require(llvm::ArrayRef<std::uint8_t>(encoded) == expected,
-          "decision wire does not match schema 2.0");
+          "decision wire does not match schema 2.1");
   require(take(dataflow::adoptDataflowRewriteDecision(encoded)) == erased,
           "decision wire does not round trip");
 }
 
 void exactSchemaAndPayloads() {
-  constexpr llvm::StringLiteral schema = "loom.dataflow_rewrite.decision.2.0";
+  constexpr llvm::StringLiteral schema = "loom.dataflow_rewrite.decision.2.1";
   require(dataflow::dataflowRewriteDecisionSchemaBytes() ==
               llvm::ArrayRef<std::uint8_t>(
                   reinterpret_cast<const std::uint8_t *>(schema.data()),
                   schema.size()),
-          "decision schema descriptor is not version 2.0");
+          "decision schema descriptor is not version 2.1");
 
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, 0);
@@ -165,14 +165,21 @@ void exactSchemaAndPayloads() {
   requireWire(
       dataflow::ElementwiseVectorScalarizeRewrite{dataflow::ActorId(26)},
       bytes);
+
+  bytes.clear();
+  appendU32(bytes, 8);
+  appendU64(bytes, 27);
+  requireWire(
+      dataflow::StreamCompletionPhaseSplitRewrite{dataflow::ActorId(27)},
+      bytes);
 }
 
 void malformedPayloadsFailClosed() {
   require(rejected(dataflow::adoptDataflowRewriteDecision({0, 0})),
-          "decision 1.0 payload was reinterpreted as 2.0");
+          "decision 1.0 payload was reinterpreted as 2.1");
 
   std::vector<std::uint8_t> unknown;
-  appendU32(unknown, 8);
+  appendU32(unknown, 9);
   require(rejected(dataflow::adoptDataflowRewriteDecision(unknown)),
           "unknown rewrite kind was accepted");
 

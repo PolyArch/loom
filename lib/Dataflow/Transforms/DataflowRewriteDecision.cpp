@@ -15,7 +15,7 @@ namespace dataflow {
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.dataflow_rewrite.decision.2.0";
+    "loom.dataflow_rewrite.decision.2.1";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -169,6 +169,8 @@ dataflowRewriteKind(const DataflowRewriteDecision &decision) {
         if constexpr (std::is_same_v<T, GraphDefinitionSplitRewrite> ||
                       std::is_same_v<T, GraphDefinitionMergeRewrite>)
           return DataflowRewriteKind::GraphDefinitionRefactor;
+        if constexpr (std::is_same_v<T, StreamCompletionPhaseSplitRewrite>)
+          return DataflowRewriteKind::StreamCompletionPhaseSplit;
         return DataflowRewriteKind::ElementwiseVectorDecompose;
       },
       decision);
@@ -237,6 +239,9 @@ encodeDataflowRewriteDecision(const DataflowRewriteDecision &decision) {
           appendId(bytes, typed.compute);
           appendU32(bytes, 0);
           appendU64(bytes, typed.leadingBlocksPerChunk);
+        } else if constexpr (std::is_same_v<
+                                 T, StreamCompletionPhaseSplitRewrite>) {
+          appendId(bytes, typed.stream);
         } else {
           appendId(bytes, typed.compute);
           appendU32(bytes, 1);
@@ -256,7 +261,7 @@ adoptDataflowRewriteDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
   if (!rawKind)
     return rawKind.takeError();
   if (*rawKind > static_cast<std::uint32_t>(
-                     DataflowRewriteKind::ElementwiseVectorDecompose))
+                     DataflowRewriteKind::StreamCompletionPhaseSplit))
     return invalid("kind is unknown");
 
   std::optional<DataflowRewriteDecision> decision;
@@ -357,6 +362,13 @@ adoptDataflowRewriteDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
     } else {
       return invalid("graph refactor variant is unknown");
     }
+    break;
+  }
+  case DataflowRewriteKind::StreamCompletionPhaseSplit: {
+    auto stream = decoder.id<ActorId>("stream");
+    if (!stream)
+      return stream.takeError();
+    decision = StreamCompletionPhaseSplitRewrite{*stream};
     break;
   }
   case DataflowRewriteKind::ElementwiseVectorDecompose: {
@@ -466,6 +478,10 @@ bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
       return order < 0;
     return compareId(left.higherGraph, right.higherGraph) < 0;
   }
+  case DataflowRewriteKind::StreamCompletionPhaseSplit:
+    return compareId(std::get<StreamCompletionPhaseSplitRewrite>(lhs).stream,
+                     std::get<StreamCompletionPhaseSplitRewrite>(rhs).stream) <
+           0;
   case DataflowRewriteKind::ElementwiseVectorDecompose: {
     const bool leftChunk =
         std::holds_alternative<ElementwiseVectorChunkRewrite>(lhs);

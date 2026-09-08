@@ -5,6 +5,7 @@ add_mlir_library(MLIRDataflowTransforms
   DataflowSyncRewrite.cpp
   DataflowCardinalityRewrite.cpp
   DataflowFanoutRewrite.cpp
+  DataflowStreamRewrite.cpp
   DataflowGraphDefinitionRewrite.cpp
 
   PARTIAL_SOURCES_INTENDED

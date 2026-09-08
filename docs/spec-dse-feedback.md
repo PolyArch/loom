@@ -1709,7 +1709,7 @@ The Dataflow rewrite generator uses the positive
 it enumerates the normalized decisions from the
 [Canonical Dataflow Rewrite Catalog](spec-compiler-part-3-dfg.md#canonical-dataflow-rewrite-catalog)
 in that catalog's exact canonical decision order. Each decision applies
-exactly one match and produces at most one immutable child. Kinds 0 through 6
+exactly one match and produces at most one immutable child. Kinds 0 through 6 and kind 8
 charge one expansion per attempted decision. An attempted-decision key is the
 tuple of exact parent ArtifactIdentity, decision-schema identity and version,
 and canonical decision payload bytes. Including the parent is mandatory
@@ -1733,8 +1733,8 @@ are additionally enumerated only for the first missing actor in canonical
 Dataflow actor order, so Fabric affects candidate generation but never the
 rewrite's software legality.
 
-The provider for catalog and decision schema 2.0 has implementation semantic
-identity `loom.compiler.dataflow_rewrite.generator.v4`. Its lineage validator
+The provider for catalog and decision schema 2.1 has implementation semantic
+identity `loom.compiler.dataflow_rewrite.generator.v5`. Its lineage validator
 replays the typed decision and requires the declared output's exact child
 identity; a legal child from another decision cannot borrow the payload. The
 exact current candidate-generator registry reference binds this contract in

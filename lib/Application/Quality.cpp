@@ -658,6 +658,9 @@ makeApplicationBoundedQualityPolicy(
     catalogs.weightedLevels.push_back({{{ordinal, 1}}});
     finalOrdering.push_back(ordinal);
   }
+  // Rank actual mapped execution ahead of the abstract parallel oracle.
+  // DFG cycles remain a tie-breaker; they cannot veto a faster CGRA pipeline.
+  std::swap(finalOrdering[0], finalOrdering[1]);
   catalogs.totalOrderings = {{std::move(finalOrdering)}};
   auto program = dse::ObjectiveProgram::getCandidateMeasures(catalogs);
   if (!program)

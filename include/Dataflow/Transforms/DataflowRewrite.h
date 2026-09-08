@@ -24,6 +24,7 @@ enum class DataflowRewriteKind : std::uint32_t {
   ActivationPreservingConstantFold = 5,
   GraphDefinitionRefactor = 6,
   ElementwiseVectorDecompose = 7,
+  StreamCompletionPhaseSplit = 8,
 };
 
 enum class SyncRendezvousDirection : std::uint32_t {
@@ -144,13 +145,22 @@ struct ElementwiseVectorScalarizeRewrite final {
   }
 };
 
+struct StreamCompletionPhaseSplitRewrite final {
+  ActorId stream;
+
+  friend bool operator==(const StreamCompletionPhaseSplitRewrite &lhs,
+                         const StreamCompletionPhaseSplitRewrite &rhs) {
+    return lhs.stream == rhs.stream;
+  }
+};
+
 using DataflowRewriteDecision = std::variant<
     SyncRendezvousRewrite, PackUnpackRoundTripRewrite,
     ParallelizeSerializeRoundTripRewrite, ElementwiseCardinalityCommuteRewrite,
     PureComputeFanoutReplicateRewrite, PureComputeFanoutFactorRewrite,
     ActivationPreservingConstantFoldRewrite, GraphDefinitionSplitRewrite,
     GraphDefinitionMergeRewrite, ElementwiseVectorChunkRewrite,
-    ElementwiseVectorScalarizeRewrite>;
+    ElementwiseVectorScalarizeRewrite, StreamCompletionPhaseSplitRewrite>;
 
 /// Ephemeral correspondence produced by one exact rewrite transaction. The
 /// tracked launch references preserve the caller's input order and belong to
@@ -173,7 +183,7 @@ adoptDataflowRewriteDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes);
 bool dataflowRewriteDecisionLess(const DataflowRewriteDecision &lhs,
                                  const DataflowRewriteDecision &rhs);
 
-/// Enumerates every legal normalized decision in kinds 0 through 6 for one
+/// Enumerates every legal normalized non-decomposition decision for one
 /// exact parent artifact, in canonical catalog order.
 llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateFixedDataflowRewriteDecisions(const CanonicalDataflowArtifact &parent);
