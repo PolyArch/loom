@@ -171,6 +171,11 @@ runtime-input pair still receives fresh admission and execution state,
 including its memory objects, queues, clocks, and progress counters. Request
 conditions, model bindings, and attempt limits remain owned by each Evaluation
 case and are not retained as dynamic state in the shared preparation.
+The frozen transport graph derives each publication's operand ingress query
+from its sinks and qualified PairingKeys once, including the matched and
+required logical queues. Runtime arbitration combines that query with current
+queue observations through the Fabric operand-buffer contract; it does not
+reconstruct the static tuple domain on every token arrival.
 
 Single-clock SpatialCore sessions advance in nonnegative integer cycles, but
 persist every cycle `N` as the canonical `ExactRatio` value `N/1`. A
