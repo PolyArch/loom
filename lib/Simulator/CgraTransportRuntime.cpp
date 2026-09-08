@@ -797,6 +797,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
       if (llvm::Error error = schedulePublication(slot, *next))
         return error;
   }
+  if (!releasedStorageCapacity.empty())
+    wakeOutputGated();
   for (std::uint64_t storageOrdinal : releasedStorageCapacity)
     for (std::uint64_t upstream :
          storages_[storageOrdinal].binding.upstreamStorageOrdinals) {

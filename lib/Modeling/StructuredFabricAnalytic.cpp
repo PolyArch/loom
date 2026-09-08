@@ -517,7 +517,8 @@ resolveScopeActivity(const BlockActivityProjection &projection,
 
 llvm::Expected<ScopeDynamicWork>
 projectScopeDynamicWork(const BlockActivityProjection &projection,
-                        const frontend::StructuredEntityRef &sourceScope) {
+                        const frontend::StructuredEntityRef &sourceScope,
+                        bool boundedByHostWork = true) {
   auto activity = resolveScopeActivity(projection, sourceScope);
   if (!activity)
     return activity.takeError();
@@ -553,7 +554,8 @@ projectScopeDynamicWork(const BlockActivityProjection &projection,
   });
   if (failure)
     return std::move(failure);
-  if (coveredLeaves > projection.hostInstructionLeafExecutions)
+  if (boundedByHostWork &&
+      coveredLeaves > projection.hostInstructionLeafExecutions)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_fabric_model_invalid: selected work exceeds source work");
@@ -968,16 +970,19 @@ const EvaluationModelProvider kProvider{
 
 llvm::Expected<std::vector<StructuredScopeActivityProjection>>
 projectStructuredScopeActivity(
-    const frontend::StructuredProgramCandidate &sourceProgram,
+    const frontend::StructuredProgramCandidate &program,
     const sim::NativeStructuredProgramObservations &sourceObservations,
-    llvm::ArrayRef<frontend::StructuredEntityRef> scopes) {
-  auto projection = projectBlockActivity(sourceProgram, sourceObservations);
+    llvm::ArrayRef<frontend::StructuredEntityRef> scopes,
+    StructuredScopeActivityDomain domain) {
+  auto projection = projectBlockActivity(program, sourceObservations);
   if (!projection)
     return projection.takeError();
   std::vector<StructuredScopeActivityProjection> result;
   result.reserve(scopes.size());
   for (const frontend::StructuredEntityRef &scope : scopes) {
-    auto activity = projectScopeDynamicWork(*projection, scope);
+    auto activity = projectScopeDynamicWork(
+        *projection, scope,
+        domain == StructuredScopeActivityDomain::SourceScopes);
     if (!activity)
       return activity.takeError();
     result.push_back({scope, activity->dynamicActivations,

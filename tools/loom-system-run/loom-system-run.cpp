@@ -975,8 +975,21 @@ prepareSpatialCgra(const SpatialInvocationCase &invocation,
       loom::defaultResolvedConfig(), artifacts, blobs);
 }
 
+/// The integral reference cycle at which a completed Spatial run retired.
+llvm::Expected<std::uint64_t>
+spatialRunReferenceCycles(const CompletedSpatialRun &run) {
+  const auto *spatial = run.importedExecution.spatial();
+  if (!spatial || !spatial->progressObservations.graphRetirementVisible ||
+      spatial->progressObservations.graphRetirementVisible->referenceCycle
+              .denominator() != 1)
+    return invalid("Spatial execution has no integral retirement cycle");
+  return spatial->progressObservations.graphRetirementVisible->referenceCycle
+      .numerator();
+}
+
 llvm::Expected<CompletedSpatialRun>
 executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
+               std::uint64_t cgraEventFrames,
                const loom::ArtifactStore &artifacts,
                const loom::BlobStore &blobs) {
   if (engine == Engine::Dfg) {
@@ -999,7 +1012,7 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
   if (!prepared)
     return prepared.takeError();
   auto evidence = loom::evaluation::models::evaluateCgraSimulation(
-      *prepared, {1000000, std::nullopt}, artifacts, blobs);
+      *prepared, {cgraEventFrames, std::nullopt}, artifacts, blobs);
   if (!evidence)
     return evidence.takeError();
   return completeSpatialRun(engine, invocation.ordinal, prepared->request,
@@ -1010,10 +1023,11 @@ executeSpatial(Engine engine, const SpatialInvocationCase &invocation,
 llvm::Expected<ProfiledSpatialRun> executeProfiledSpatialCgra(
     const loom::evaluation::models::PreparedCgraSimulationEvaluation &prepared,
     const SpatialInvocationCase &invocation, std::uint64_t attemptOrdinal,
-    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+    std::uint64_t cgraEventFrames, const loom::ArtifactStore &artifacts,
+    const loom::BlobStore &blobs) {
   auto evaluated =
       loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-          prepared, {1000000, std::nullopt}, artifacts, blobs);
+          prepared, {cgraEventFrames, std::nullopt}, artifacts, blobs);
   if (!evaluated)
     return evaluated.takeError();
   auto completed = completeSpatialRun(
@@ -1706,9 +1720,14 @@ llvm::Error run() {
       spatialProfiles.reserve(spatialInvocations.size());
     for (const SpatialInvocationCase &invocation : spatialInvocations) {
       auto spatialDfg =
-          executeSpatial(Engine::Dfg, invocation, artifacts, blobs);
+          executeSpatial(Engine::Dfg, invocation, 0, artifacts, blobs);
       if (!spatialDfg)
         return spatialDfg.takeError();
+      auto dfgCycles = spatialRunReferenceCycles(*spatialDfg);
+      if (!dfgCycles)
+        return dfgCycles.takeError();
+      const std::uint64_t cgraEventFrames =
+          loom::evaluation::models::cgraReplayEventFrameGrant(*dfgCycles);
       std::optional<CompletedSpatialRun> spatialCgra;
       if (profileRequested) {
         auto prepared = prepareSpatialCgra(invocation, artifacts, blobs);
@@ -1718,8 +1737,8 @@ llvm::Error run() {
         profile.invocationOrdinal = invocation.ordinal;
         profile.warmups.reserve(spatialCgraWarmupRuns);
         for (std::uint64_t run = 0; run != spatialCgraWarmupRuns; ++run) {
-          auto profiled = executeProfiledSpatialCgra(*prepared, invocation, run,
-                                                     artifacts, blobs);
+          auto profiled = executeProfiledSpatialCgra(
+              *prepared, invocation, run, cgraEventFrames, artifacts, blobs);
           if (!profiled)
             return profiled.takeError();
           if (llvm::Error error = validateSpatialResults(
@@ -1730,8 +1749,8 @@ llvm::Error run() {
         profile.measurements.reserve(spatialCgraMeasurementRuns);
         for (std::uint64_t run = 0; run != spatialCgraMeasurementRuns; ++run) {
           auto profiled = executeProfiledSpatialCgra(
-              *prepared, invocation, spatialCgraWarmupRuns + run, artifacts,
-              blobs);
+              *prepared, invocation, spatialCgraWarmupRuns + run,
+              cgraEventFrames, artifacts, blobs);
           if (!profiled)
             return profiled.takeError();
           if (llvm::Error error = validateSpatialResults(
@@ -1742,8 +1761,8 @@ llvm::Error run() {
         }
         spatialProfiles.push_back(std::move(profile));
       } else {
-        auto executed =
-            executeSpatial(Engine::Cgra, invocation, artifacts, blobs);
+        auto executed = executeSpatial(Engine::Cgra, invocation,
+                                       cgraEventFrames, artifacts, blobs);
         if (!executed)
           return executed.takeError();
         spatialCgra.emplace(std::move(*executed));

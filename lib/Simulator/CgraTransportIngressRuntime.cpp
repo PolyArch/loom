@@ -423,8 +423,89 @@ bool CgraTransportRuntime::actorSourcesAvailable(
   return true;
 }
 
+bool CgraTransportRuntime::actorOutputsDeliverable(
+    std::uint64_t semanticActorOrdinal,
+    llvm::ArrayRef<std::uint32_t> activeResults) const {
+  if (semanticActorOrdinal >= graph_.actorSourceBindingOrdinals.size())
+    return false;
+  const auto storageClaimable = [&](std::uint64_t nodeOrdinal) {
+    const TraversalNodeBinding &node = graph_.traversalNodes[nodeOrdinal];
+    if (node.storageOrdinal >= storages_.size())
+      return false;
+    const StorageState &storage = storages_[node.storageOrdinal];
+    return storage.queue.claimableCapacity(
+               storageChannel(storage, nodeOrdinal)) != 0;
+  };
+  llvm::SmallVector<std::uint64_t, 8> work;
+  llvm::SmallDenseSet<std::uint64_t, 8> visited;
+  llvm::SmallVector<std::uint32_t, 4> unbufferedSinks;
+  for (std::uint32_t result : activeResults) {
+    const auto source = graph_.actorSourceBindings.find(
+        std::make_pair(semanticActorOrdinal, static_cast<unsigned>(result)));
+    // A result without a selected transfer binding is discarded.
+    if (source == graph_.actorSourceBindings.end())
+      continue;
+    const std::uint64_t bindingOrdinal = source->second;
+    if (bindingOrdinal >= graph_.bindings.size())
+      return false;
+    const TransferBinding &binding = graph_.bindings[bindingOrdinal];
+    // Walk from every initial hop through the unbuffered physical actions to
+    // the first storage of each path and the sinks reached without storage;
+    // those are the places the token must be able to land now.
+    work.clear();
+    visited.clear();
+    unbufferedSinks.clear();
+    for (std::uint64_t node = binding.traversalNodeOffset;
+         node != binding.traversalNodeOffset + binding.traversalNodeCount;
+         ++node)
+      if (graph_.traversalNodes[node].predecessorCount == 0)
+        work.push_back(node);
+    while (!work.empty()) {
+      const std::uint64_t current = work.pop_back_val();
+      if (!visited.insert(current).second)
+        continue;
+      const TraversalNodeBinding &node = graph_.traversalNodes[current];
+      switch (node.kind) {
+      case TraversalNodeKind::BufferedStorage:
+      case TraversalNodeKind::RegisterStorageWrite:
+        if (!storageClaimable(current))
+          return false;
+        break;
+      case TraversalNodeKind::RegisterStorageRead:
+        break;
+      case TraversalNodeKind::PhysicalAction:
+        unbufferedSinks.append(node.terminalSinks.begin(),
+                               node.terminalSinks.end());
+        work.append(graph_.traversalSuccessors.begin() + node.successorOffset,
+                    graph_.traversalSuccessors.begin() + node.successorOffset +
+                        node.successorCount);
+        break;
+      }
+    }
+    if (!unbufferedSinks.empty() &&
+        !canPublishSinks(binding, /*operandCapacityReserved=*/false,
+                         unbufferedSinks))
+      return false;
+  }
+  return true;
+}
+
+void CgraTransportRuntime::noteOutputGated(std::uint64_t semanticActorOrdinal) {
+  if (outputGatedActors_.size() <= semanticActorOrdinal)
+    outputGatedActors_.resize(semanticActorOrdinal + 1);
+  outputGatedActors_.set(semanticActorOrdinal);
+}
+
+void CgraTransportRuntime::wakeOutputGated() {
+  for (int actor = outputGatedActors_.find_first(); actor >= 0;
+       actor = outputGatedActors_.find_next(actor))
+    state_->nextActorCandidates.set(actor);
+  outputGatedActors_.reset();
+}
+
 llvm::Error
 CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
+  wakeOutputGated();
   auto publication = nextSpatialDelta(coordinate);
   if (!publication)
     return publication.takeError();

@@ -98,6 +98,17 @@ may claim after every absent guaranteed channel keeps its slot, exactly the
 admission `docs/spec-fabric-fifo.md` defines, with a pending reservation
 counting as residency of its channel.
 
+A Temporal PE context shares one operation slot with its sibling contexts and
+holds it until its results hand off, so `docs/spec-fabric-pe-temporal.md`
+lets a transition commit only when finite output-delivery capacity is
+available. CGRA-sim enforces that rule at dispatch: a context-bound actor is
+ready only when every result's first traversal hop can take the token now,
+that is, a claimable slot of the result's channel at its first buffered or
+register storage, or accepting unbuffered sinks. An actor refused for output
+capacity is offered again when storage capacity is released or sink readiness
+changes. A spatial operation owns its slot alone and keeps the ordinary
+elastic holding.
+
 The CGRA and gem5 System-CGRA model implementation identities track the
 transport and grant-state execution rules. The System external-tool semantic
 contract and runtime model
