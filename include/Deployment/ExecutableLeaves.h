@@ -11,13 +11,14 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace loom {
 class ArtifactStore;
 class BlobStore;
-}
+} // namespace loom
 
 namespace loom::deployment {
 
@@ -45,6 +46,10 @@ struct HostProgramEntry final {
   std::vector<CanonicalTypeBytes> valueArgumentTypes;
   std::vector<CanonicalTypeBytes> valueResultTypes;
   std::vector<std::uint64_t> externalInterfaceOrdinals;
+  /// Source callable in the mapped canonical Dataflow, when this ABI entry
+  /// wraps a source invocation. The Deployment execution root owns its
+  /// identity.
+  std::optional<std::string> dataflowEntrySymbol = std::nullopt;
 
   friend bool operator==(const HostProgramEntry &lhs,
                          const HostProgramEntry &rhs) {
@@ -52,7 +57,8 @@ struct HostProgramEntry final {
            lhs.abiSymbol == rhs.abiSymbol &&
            lhs.valueArgumentTypes == rhs.valueArgumentTypes &&
            lhs.valueResultTypes == rhs.valueResultTypes &&
-           lhs.externalInterfaceOrdinals == rhs.externalInterfaceOrdinals;
+           lhs.externalInterfaceOrdinals == rhs.externalInterfaceOrdinals &&
+           lhs.dataflowEntrySymbol == rhs.dataflowEntrySymbol;
   }
 };
 
@@ -128,8 +134,7 @@ struct StaticMemoryInitializedChunk final {
 
   friend bool operator==(const StaticMemoryInitializedChunk &lhs,
                          const StaticMemoryInitializedChunk &rhs) {
-    return lhs.byteOffset == rhs.byteOffset &&
-           lhs.byteCount == rhs.byteCount &&
+    return lhs.byteOffset == rhs.byteOffset && lhs.byteCount == rhs.byteCount &&
            lhs.blobDigest == rhs.blobDigest;
   }
 };
@@ -158,9 +163,7 @@ public:
   const ArtifactRootReference &layoutBinding() const { return layoutBinding_; }
   std::uint64_t sizeBytes() const { return sizeBytes_; }
   std::uint64_t alignmentBytes() const { return alignmentBytes_; }
-  frontend::StaticMemoryPermissions permissions() const {
-    return permissions_;
-  }
+  frontend::StaticMemoryPermissions permissions() const { return permissions_; }
   llvm::ArrayRef<StaticMemoryInitializedChunk> initializedChunks() const {
     return initializedChunks_;
   }
@@ -202,8 +205,7 @@ private:
 
 llvm::Expected<HostProgramLeaf>
 finalizeHostProgramLeaf(HostProgramLeafDraft draft,
-                        const ArtifactStore &artifacts,
-                        const BlobStore &blobs);
+                        const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Error validateHostProgramLeaf(const HostProgramLeaf &leaf,
                                     const ArtifactStore &artifacts,

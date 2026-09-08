@@ -506,6 +506,9 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
         !deployment.staticMemoryImages.empty() || deployment.threadDispatchImage ||
         deployment.spatialLaunchImage || deployment.admissionImage)
       return invalid("host-only Deployment contains mapped execution state");
+    for (const auto &entry : deployment.hostProgram.programEntries())
+      if (entry.dataflowEntrySymbol)
+        return invalid("host-only entry names a mapped Dataflow callable");
     return validateHostProgramForSystem(deployment.hostProgram, *system,
                                         host.fabric.artifact, artifacts, blobs);
   }
@@ -519,6 +522,13 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
   if (!owners)
     return owners.takeError();
   const auto &dataflowView = owners->first.view();
+  for (const auto &entry : deployment.hostProgram.programEntries())
+    if (entry.dataflowEntrySymbol) {
+      auto roots = dataflowView.projectRootThreadLaunchesReachableFromAbiEntry(
+          *entry.dataflowEntrySymbol);
+      if (!roots)
+        return roots.takeError();
+    }
   auto system = fabric::requireSystemRoot(owners->second.view());
   if (!system)
     return system.takeError();

@@ -656,6 +656,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   if (!hostEntry)
     return hostEntry.takeError();
   hostEntry->entry.abiSymbol = detail::applicationHostEntrySymbol.str();
+  hostEntry->entry.dataflowEntrySymbol = prepared.sourceInvocation.entrySymbol;
   auto hostModule = detail::materializeHostDispatchModule(
       finalLinkedModule, *imported->dataflow, prepared.sourceInvocation,
       *invocationPlan);

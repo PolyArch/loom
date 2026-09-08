@@ -66,19 +66,29 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             4.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    7.0
+loom.deployment                    8.0
 ```
 
 ConfigurationABI 4.0 and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
-`loom.hardware_implementation 4.1` occurrence closure. Deployment 7.0 has one
+`loom.hardware_implementation 4.1` occurrence closure. Deployment 8.0 has one
 closed execution-root choice: an exact mapped SystemMapping, or an exact
 HostCore-only Fabric System. Mapped deployments derive the complete required
 SpatialCore occurrence set from the Mapping and require one exact
 HardwareImplementation and RuntimePlatformBinding per subject. The host-only
 alternative carries the real HostCore executable on the same complete System,
 without mapping, accelerator binaries, programming images, or dispatch images.
-The 7.0 importer rejects prior Deployment schemas without fallback.
+The 8.0 importer rejects prior Deployment schemas without fallback.
+
+Each host program entry owns its executable `abi_symbol` and a nullable
+`dataflow_entry_symbol`. The latter binds a generated ABI wrapper to its source
+callable in the mapped canonical Dataflow. It is validated against that exact
+Dataflow, included in the canonical host registration table (version 2.0), and
+absent for host-only entries. Runtime derives invocation-dependent static
+coordinates through this source entry, using the same canonical call-path
+projection as compilation. Entries without a source-callable binding support
+only directly static coordinate domains; an executable wrapper symbol is never
+interpreted as a source callable or inferred from a naming convention.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -486,7 +496,7 @@ DeploymentExternalInterfaceRef =
   (exact Deployment ArtifactIdentity, external_interface_ordinal)
 ```
 
-A mapped Deployment 7.0 admits either the payload-free `FabricModel` implementation
+A mapped Deployment 8.0 admits either the payload-free `FabricModel` implementation
 used by semantic DFG/CGRA providers or an explicitly materialized concrete
 implementation. The RuntimePlatformBinding for each occurrence names that
 exact HardwareImplementation. Selecting `FabricModel` never triggers RTL
