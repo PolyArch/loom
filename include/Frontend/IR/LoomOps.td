@@ -6,6 +6,7 @@ include "Dataflow/IR/DataflowDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def Loom_SpatialRegionOp : Loom_Op<"spatial_region", [
+    AffineScope,
     IsolatedFromAbove,
     SingleBlock,
     AttrSizedOperandSegments,
@@ -18,6 +19,8 @@ def Loom_SpatialRegionOp : Loom_Op<"spatial_region", [
     normalized as value inputs, stream input channels, memory inputs, and
     stream output channels. Results are normalized as value outputs followed
     by memory outputs. Each stream input has one affine `source_map`.
+    The isolated body is its own affine scope: entry arguments and top-level
+    values are invocation-invariant symbols for nested loop transformations.
 
     This operation is temporary compiler IR. Successful publication replaces
     it with one native-valid `dataflow.graph` and its matching launch.

@@ -3,6 +3,7 @@
 #include "StructuredPolyhedralProvider.h"
 
 #include "Common/IndexWidth.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Frontend/Lowering/ExactMemRefLayout.h"
@@ -46,6 +47,26 @@ namespace {
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "structured_scop_invalid: " + message);
+}
+
+void reportProjectionRefusal(const StructuredEntityRef &loop,
+                             mlir::Operation *source, llvm::Error error) {
+  if (!mapping_debug::enabled(mapping_debug::Level::Detail)) {
+    llvm::consumeError(std::move(error));
+    return;
+  }
+  const std::string diagnostic = llvm::toString(std::move(error));
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["operation"] = "structured_scop_projection";
+        fields["loop_ordinal"] = loop.ordinal;
+        fields["diagnostic"] = diagnostic;
+        std::string text;
+        llvm::raw_string_ostream stream(text);
+        source->print(stream);
+        fields["source_loop"] = std::move(text);
+      });
 }
 
 constexpr std::uint64_t maximumDependenceQueries = 65'536;
@@ -1422,7 +1443,7 @@ analyzeExactStructuredScop(const StructuredProgramCandidate &parent,
     return invalid("selected loop was not mapped into the provider clone");
   auto projected = projectExactStructuredScopToAffine(clonedLoop);
   if (!projected) {
-    llvm::consumeError(projected.takeError());
+    reportProjectionRefusal(loopReference, sourceLoop, projected.takeError());
     return refuse(loopReference,
                   StructuredScopRefusalKind::ProviderMaterializationRejected);
   }
@@ -1518,7 +1539,7 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
     return invalid("selected loop was not mapped into the provider clone");
   auto projectedLoop = projectExactStructuredScopToAffine(clonedLoop);
   if (!projectedLoop) {
-    llvm::consumeError(projectedLoop.takeError());
+    reportProjectionRefusal(loopReference, sourceLoop, projectedLoop.takeError());
     return refusePolyhedral(
         loopReference,
         StructuredScopRefusalKind::ProviderMaterializationRejected);

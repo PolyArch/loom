@@ -195,7 +195,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v14",
+    "loom.compiler.structured_schedule.generator.v15",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

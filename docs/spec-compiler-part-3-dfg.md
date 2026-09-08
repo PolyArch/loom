@@ -472,7 +472,9 @@ silently change hierarchy shape as a verifier or parsing side effect.
   classification decides where calls are legal.
 * `loom.spatial_region` is temporary compiler IR inside a
   `dataflow.thread`. It owns one structured graph candidate with normalized
-  value, stream-channel, and memory boundary segments. It never appears in a
+  value, stream-channel, and memory boundary segments. Its isolated body is an
+  affine scope: entry arguments and top-level SSA values are invocation-invariant
+  symbols for nested loop analysis and scheduling. It never appears in a
   finalized Canonical Dataflow Program.
 * `dataflow.thread` is the logical accelerator execution-domain
   **definition** (Symbol-bearing, module-scope, function-like). It owns the
