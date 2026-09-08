@@ -1,5 +1,5 @@
-#include "Frontend/Lowering/LoopIndependence.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
+#include "Frontend/Lowering/LoopIndependence.h"
 
 #include "StructuredPolyhedralMaterializer.h"
 #include "StructuredScheduleInternal.h"
@@ -1833,6 +1833,14 @@ materializeStructuredScheduleImpl(
                   llvm::raw_string_ostream stream(text);
                   operation->print(stream);
                   fields["actor"] = std::move(text);
+                  llvm::json::Array users;
+                  for (mlir::Operation *user : operation->getUsers()) {
+                    std::string userText;
+                    llvm::raw_string_ostream userStream(userText);
+                    user->print(userStream);
+                    users.push_back(std::move(userText));
+                  }
+                  fields["users"] = std::move(users);
                 });
             return llvm::make_error<StructuredScheduleProposalRefusal>(
                 decision.loop,

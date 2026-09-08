@@ -1704,6 +1704,18 @@ they are not mislabeled as infeasible or workload-inapplicable. Cache state and
 parallel worker completion order cannot change the frontier or its stable work
 ordinals.
 
+The Structured schedule generator shares its materialization-attempt grant
+across exact input parents in rounds. Each round tries the next eligible
+proposal from each parent in canonical input order, preserving that parent's
+canonical decision order. Typed refusals and no-ops consume attempts normally.
+Direct decisions precede tiled-prefix terminal searches. Each prefix and its
+independently enumerated terminal proof form one search step, with every
+materialization charged separately. Exhausted grants retain finalized outputs
+and report semantic incompleteness; one parent's rejected alternatives must
+not consume later rounds before the other parents receive their current turn.
+The implementation semantic identity is
+`loom.compiler.structured_schedule.generator.v17`.
+
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact
 it enumerates the normalized decisions from the
