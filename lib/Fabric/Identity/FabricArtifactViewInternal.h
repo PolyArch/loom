@@ -101,6 +101,9 @@ struct FabricEntityViewData {
   /// Absent for owners that are not FIFO occurrences; a FIFO occurrence
   /// always records its declared discipline.
   std::optional<::fabric::FifoQueueDiscipline> fifoQueueDiscipline;
+  /// The guaranteed channel count of a FIFO occurrence's shared pool: zero
+  /// under strict order, otherwise the declared or default reservation.
+  std::optional<std::uint32_t> fifoReservedChannels;
   std::optional<std::uint32_t> peOperandBufferSize;
   std::optional<std::uint32_t> peRegisterFifoDepth;
   std::optional<std::uint32_t> peRegisterFifoPorts;

@@ -91,6 +91,12 @@ the selected route DAG is immutable and shared. Retirement of an older token
 cannot clear a newer producer reservation or alter another occurrence's route
 state. Queue capacity and Fabric arbitration govern these overlapping tokens;
 the simulator adds no end-to-end credit or one-resident-token-per-net limit.
+The only credit is the Fabric-owned `reserved_channels` guarantee of a
+per-tag virtual channel storage: the simulator admits an enqueue, and grants
+a downstream reservation, only from the capacity the arriving token's channel
+may claim after every absent guaranteed channel keeps its slot, exactly the
+admission `docs/spec-fabric-fifo.md` defines, with a pending reservation
+counting as residency of its channel.
 
 The CGRA and gem5 System-CGRA model implementation identities track the
 transport and grant-state execution rules. The System external-tool semantic

@@ -96,10 +96,13 @@ ResolvedConfig bytes. All builtin presets resolve to
 values differ. Omitting hardware selection resolves the `Coverage` scale; it
 does not produce a target-less configuration. The production `Coverage` and
 `Large` scales select `PerTagVirtualChannel` on tag-carrying interconnect
-FIFOs; the compact `Small` reference remains `StrictFifo`. All three current
+FIFOs, with `interconnect_fifo_reserved_channels` of 3 and 4; the compact
+`Small` reference remains `StrictFifo` and omits the reservation, which is
+only meaningful under the virtual-channel discipline. All three current
 presets select `PortableProviderClosed` as their typed
-`special_math_capability_profile`. Queue discipline, depth, and special-math
-capability profile are ordinary typed target parameters, so a custom profile
+`special_math_capability_profile`. Queue discipline, depth, reserved
+channels, and special-math capability profile are ordinary typed target
+parameters, so a custom profile
 must state every different selection explicitly and receives a distinct
 resolved identity. `FullCatalog` remains the explicit relation that preserves
 the version 8.0 elementary-math capabilities.

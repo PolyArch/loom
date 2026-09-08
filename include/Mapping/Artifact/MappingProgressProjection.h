@@ -231,15 +231,16 @@ enum class MappingRouteProgressObligationKind : std::uint8_t {
   FiniteBufferRecurrence,
 };
 
-/// One exact capacity obligation of one selected FIFO shared slot pool under
-/// the durable-acceptance transfer subdomain. `queueClasses` names every
-/// strict-global or tag-local order class sharing this one physical capacity
-/// owner; it never partitions `selectedCapacity`. `sufficientCapacity` is an
-/// occupancy upper bound under that subdomain, present only when established.
-/// It can discharge capacity waits, but exceeding the selected pool cannot
-/// prove a necessary minimum depth or a closed wait. `routeAnchors` names the
-/// selected traversals from which the obligation is rebuilt. This value is
-/// not a persisted proof label.
+/// One exact capacity obligation of one selected FIFO shared slot pool.
+/// `queueClasses` names every strict-global or tag-local order class sharing
+/// this one physical capacity owner. `selectedCapacity` is the number of
+/// distinct nets the pool guarantees one slot each: the reserved channels of
+/// a tag-selective queue, or one under strict order. `sufficientCapacity` is
+/// the distinct selected net count, present only when established. Meeting
+/// it discharges capacity waits, but exceeding the guarantee cannot prove a
+/// necessary minimum or a closed wait. `routeAnchors` names the selected
+/// traversals from which the obligation is rebuilt. This value is not a
+/// persisted proof label.
 struct MappingReconvergentCapacityObligation final {
   ::loom::fabric::FabricFifoOccurrenceRef owner;
   std::vector<MappingStaticQueueClass> queueClasses;

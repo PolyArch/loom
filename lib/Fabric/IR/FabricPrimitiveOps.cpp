@@ -12,6 +12,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <limits>
 #include <optional>
 
 using namespace mlir;
@@ -280,6 +281,7 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   // The discipline is optional and defaults to strict FIFO, so every fabric
   // written before the discipline existed still round-trips unchanged.
   std::optional<FifoQueueDiscipline> discipline;
+  std::optional<int32_t> reservedChannels;
   if (succeeded(parser.parseOptionalComma())) {
     StringRef keyword;
     if (parser.parseKeyword("queue_discipline") || parser.parseEqual() ||
@@ -290,6 +292,13 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
       return parser.emitError(parser.getCurrentLocation(),
                               "unknown FIFO queue discipline '")
              << keyword << "'";
+    if (succeeded(parser.parseOptionalComma())) {
+      int32_t count = 0;
+      if (parser.parseKeyword("reserved_channels") || parser.parseEqual() ||
+          parser.parseInteger(count))
+        return failure();
+      reservedChannels = count;
+    }
   }
   if (parser.parseRSquare())
     return failure();
@@ -299,6 +308,9 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute("queue_discipline", FifoQueueDisciplineAttr::get(
                                                 builder.getContext(),
                                                 *discipline));
+  if (reservedChannels)
+    result.addAttribute("reserved_channels",
+                        builder.getI32IntegerAttr(*reservedChannels));
 
   // Optional software param: {bypassed = true|false}
   if (succeeded(parser.parseOptionalLBrace())) {
@@ -329,18 +341,30 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+std::uint32_t FifoOp::reservedChannelCount() {
+  auto discipline = getQueueDisciplineAttr();
+  if (!discipline ||
+      discipline.getValue() != FifoQueueDiscipline::PerTagVirtualChannel)
+    return 0;
+  return static_cast<std::uint32_t>(getReservedChannels().value_or(1));
+}
+
 void FifoOp::print(OpAsmPrinter &p) {
   p << ' ' << getInput();
   p << " [max_depth = " << getMaxDepth()
     << ", bypassable = " << (getBypassable() ? "true" : "false");
-  if (auto discipline = getQueueDisciplineAttr())
+  if (auto discipline = getQueueDisciplineAttr()) {
     p << ", queue_discipline = "
       << stringifyFifoQueueDiscipline(discipline.getValue());
+    if (auto reserved = getReservedChannels())
+      p << ", reserved_channels = " << *reserved;
+  }
   p << "]";
   if (auto a = getBypassedAttr())
     p << " {bypassed = " << (a.getValue() ? "true" : "false") << "}";
-  SmallVector<StringRef, 4> elided{"max_depth", "bypassable",
-                                   "queue_discipline", "bypassed"};
+  SmallVector<StringRef, 5> elided{"max_depth", "bypassable",
+                                   "queue_discipline", "reserved_channels",
+                                   "bypassed"};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   Type outerTy = getInput().getType();
   Type innerTy = getOutput().getType();
@@ -374,6 +398,23 @@ LogicalResult FifoOp::verify() {
       return emitOpError("'per_tag_virtual_channel' owns no combinational "
                          "bypass alternative and requires 'bypassable' = "
                          "false");
+    // The pool guarantees one slot per reserved channel, so the count is
+    // bounded by the slots that exist and by the channels a tag can name.
+    if (auto reserved = getReservedChannels()) {
+      const std::uint64_t channelValues =
+          tagged.getTagWidth() >= 63 ? std::numeric_limits<std::uint64_t>::max()
+                                     : (std::uint64_t{1} << tagged.getTagWidth());
+      if (*reserved < 1 ||
+          static_cast<std::uint64_t>(*reserved) >
+              std::min<std::uint64_t>(
+                  static_cast<std::uint64_t>(getMaxDepth()), channelValues))
+        return emitOpError("'reserved_channels' must lie in [1, min(max_depth, "
+                           "tag value count)], got ")
+               << *reserved;
+    }
+  } else if (getReservedChannels()) {
+    return emitOpError("'reserved_channels' is only meaningful under "
+                       "'per_tag_virtual_channel'");
   }
   // Width-relaxation rule at the FIFO operand boundary. The outer SSA
   // source type may differ from the FIFO's inner type only in width, and

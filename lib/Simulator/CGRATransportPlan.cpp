@@ -131,6 +131,7 @@ struct StorageProjection final {
   std::uint32_t capacity = 0;
   ::fabric::FifoQueueDiscipline queueDiscipline =
       ::fabric::FifoQueueDiscipline::StrictFifo;
+  std::uint32_t reservedChannels = 0;
   StorageKey key;
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
@@ -166,6 +167,7 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
     result.queueDiscipline =
         fabric.fifoQueueDiscipline(fifo->owner)
             .value_or(::fabric::FifoQueueDiscipline::StrictFifo);
+    result.reservedChannels = fabric.fifoReservedChannels(fifo->owner).value_or(0);
     result.key = {0, ::loom::fabric::canonicalFabricBytes(owner), 0};
     result.enqueuePattern = {
         patternOwner,
@@ -474,8 +476,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       if (inserted) {
         result.traversalStorages.push_back(
             {storageKind, (*storage)->capacity, (*storage)->queueDiscipline,
-             (*storage)->enqueuePattern, (*storage)->dequeuePattern,
-             (*storage)->simultaneousPattern, (*storage)->offerAdvancePattern});
+             (*storage)->reservedChannels, (*storage)->enqueuePattern,
+             (*storage)->dequeuePattern, (*storage)->simultaneousPattern,
+             (*storage)->offerAdvancePattern});
       } else {
         CgraTraversalStoragePlan &existing =
             result.traversalStorages[storageOrdinal];

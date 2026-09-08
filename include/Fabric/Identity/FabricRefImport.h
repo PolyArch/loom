@@ -563,6 +563,11 @@ public:
   /// Absent only when the reference is not a FIFO occurrence of this root.
   std::optional<::fabric::FifoQueueDiscipline>
   fifoQueueDiscipline(FabricFifoOccurrenceRef occurrence) const;
+  /// The guaranteed channel count of one FIFO occurrence's shared pool:
+  /// zero under strict order, otherwise the declared `reserved_channels`
+  /// (one when undeclared). Absent only for a foreign reference.
+  std::optional<std::uint32_t>
+  fifoReservedChannels(FabricFifoOccurrenceRef occurrence) const;
   std::uint32_t peOperandBufferSize(FabricPeOccurrenceRef occurrence) const;
   std::uint32_t peRegisterFifoDepth(FabricPeOccurrenceRef occurrence) const;
   std::uint32_t peRegisterFifoPorts(FabricPeOccurrenceRef occurrence) const;

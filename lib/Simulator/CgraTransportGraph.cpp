@@ -1034,6 +1034,7 @@ llvm::Expected<CgraTransportGraph> freezeCgraTransportGraph(
     binding.kind = storage.kind;
     binding.capacity = storage.capacity;
     binding.queueDiscipline = storage.queueDiscipline;
+    binding.reservedChannels = storage.reservedChannels;
     binding.independentReadWriteServices = storage.independentReadWriteServices;
     binding.enqueueAction = storage.enqueuePhysicalUseOrdinal;
     binding.dequeueAction = storage.dequeuePhysicalUseOrdinal;

@@ -87,6 +87,8 @@ struct CgraTransportGraph final {
     std::uint32_t capacity = 0;
     ::fabric::FifoQueueDiscipline queueDiscipline =
         ::fabric::FifoQueueDiscipline::StrictFifo;
+    /// Channels a per-tag virtual channel pool guarantees one slot each.
+    std::uint32_t reservedChannels = 0;
     bool independentReadWriteServices = false;
     std::uint64_t enqueueAction = invalidCgraTransportOrdinal;
     std::uint64_t dequeueAction = invalidCgraTransportOrdinal;

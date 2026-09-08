@@ -207,7 +207,7 @@ void loom::test::exerciseSpatialProgressWitnessClosure(
   requireSuccess(domain.prepare(*problem));
   requireSuccess(domain.rebuild(*fixture.candidate));
   const auto depth =
-      problem->progressIndex().ownerSharedSlotCapacities()[fixture.owner];
+      problem->progressIndex().ownerGuaranteedNetCapacities()[fixture.owner];
   const auto expectedGap = depth >= fixture.logicalNets.size()
                                ? 0
                                : fixture.logicalNets.size() - depth;

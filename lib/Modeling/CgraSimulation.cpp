@@ -34,6 +34,14 @@
 namespace loom::evaluation::models {
 namespace {
 
+/// Closed-wait diagnostics sample a bounded prefix of every set at Summary
+/// verbosity; Detail verbosity emits the complete sets.
+std::size_t closedWaitSampleLimit(std::size_t summaryLimit) {
+  return diagnosticVerbosityEnabled(DiagnosticVerbosity::Detail)
+             ? std::numeric_limits<std::size_t>::max()
+             : summaryLimit;
+}
+
 constexpr BuiltinEvaluationCase kCase = BuiltinEvaluationCase::CgraSimulation;
 constexpr BuiltinEvaluationModel kModel = BuiltinEvaluationModel::CgraSimulator;
 constexpr CaseSubjectRoleRef kProgramRole(0);
@@ -640,7 +648,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             llvm::json::Array operandQueueHeads;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->operandQueueHeads)) {
-              if (indexed.index() == 16)
+              if (indexed.index() == closedWaitSampleLimit(16))
                 break;
               const auto &head = indexed.value();
               llvm::json::Array consumers;
@@ -675,7 +683,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             llvm::json::Array actors;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->actorFirings)) {
-              if (indexed.index() == 4)
+              if (indexed.index() == closedWaitSampleLimit(4))
                 break;
               const auto &actor = indexed.value();
               actors.push_back(llvm::json::Object{
@@ -712,7 +720,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             llvm::json::Array transfers;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->transfers)) {
-              if (indexed.index() == 4)
+              if (indexed.index() == closedWaitSampleLimit(4))
                 break;
               const auto &transfer = indexed.value();
               llvm::json::Array operandQueueWaits;
@@ -888,7 +896,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
             llvm::json::Array physicalActions;
             for (const auto indexed :
                  llvm::enumerate(outcome->closedWaitSet->physicalActions)) {
-              if (indexed.index() == 4)
+              if (indexed.index() == closedWaitSampleLimit(4))
                 break;
               const auto &action = indexed.value();
               physicalActions.push_back(llvm::json::Object{

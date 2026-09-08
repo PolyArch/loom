@@ -103,7 +103,10 @@ transition, and qualifies its dequeue and offer uses by the exact tag value
 they present. The attribute is optional and absent selects `strict_fifo`, so
 a 7.0 canonical payload is byte-identical to its 7.1 StrictFifo
 re-finalization; only the descriptor framing and any rewritten dependency
-rows change identity. The extended use-pattern value-schema `parameters`
+rows change identity. The same rule admits the optional `reserved_channels`
+credit allocation of a `per_tag_virtual_channel` FIFO under the current
+version: absent means one guaranteed channel, the pre-reservation behavior,
+so a payload authored without it keeps its canonical bytes. The extended use-pattern value-schema `parameters`
 codec field, previously reserved and rejected, is admitted for exactly these
 tag qualifications. A 7.0 root and its 7.1 re-finalization are never
 interchangeable: a 7.1 importer accepted and emitted only the exact

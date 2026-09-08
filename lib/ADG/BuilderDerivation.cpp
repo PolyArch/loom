@@ -951,9 +951,23 @@ llvm::Error SpatialCoreBuilder::changeFifoQueueDiscipline(
     return invalid("FIFO queue-discipline change is a no-op");
   if (discipline == ::fabric::FifoQueueDiscipline::StrictFifo) {
     fifo.removeQueueDisciplineAttr();
+    fifo.removeReservedChannelsAttr();
   } else {
     fifo.setQueueDisciplineAttr(::fabric::FifoQueueDisciplineAttr::get(
         &(*state)->context, discipline));
+    // A pool that becomes tag-selective guarantees every channel a tag can
+    // name one slot, bounded by the slots it has; the change exists to
+    // remove head-of-line coupling, so no channel may starve for capacity.
+    auto tagged = mlir::dyn_cast<::fabric::BitsTagType>(fifo.getOutput().getType());
+    if (!tagged || tagged.getTagWidth() == 0)
+      return invalid("FIFO queue-discipline change requires a tagged FIFO");
+    const std::uint64_t channels =
+        tagged.getTagWidth() >= 31 ? std::numeric_limits<std::uint32_t>::max()
+                                   : (std::uint64_t{1} << tagged.getTagWidth());
+    fifo.setReservedChannelsAttr(mlir::IntegerAttr::get(
+        mlir::IntegerType::get(&(*state)->context, 32),
+        static_cast<std::int64_t>(std::min<std::uint64_t>(
+            channels, static_cast<std::uint64_t>(fifo.getMaxDepth())))));
   }
   return llvm::Error::success();
 }

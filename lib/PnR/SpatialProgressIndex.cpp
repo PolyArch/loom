@@ -95,9 +95,17 @@ loom::pnr::detail::buildFrozenSpatialProgressIndex(
       if (!contract || contract->stateCount() <= state.ordinal() ||
           contract->capacityDimensions(state).size() <= dimension.ordinal())
         return invalid("FIFO owner has no shared queue-slot capacity");
-      result->ownerSharedSlotCapacities_.push_back(
-          contract->capacityDimensions(state)[dimension.ordinal()]
-              .capacity.value());
+      // The slots one shared pool guarantees to distinct nets: one slot per
+      // reserved channel of a tag-selective queue, and exclusive use of a
+      // strict queue, whose global order couples every resident net.
+      const bool tagSelective =
+          result->ownerQueueDisciplines_.back() ==
+          ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+      result->ownerGuaranteedNetCapacities_.push_back(
+          tagSelective
+              ? std::max<std::uint32_t>(
+                    1, fabric.fifoReservedChannels(fifo->owner).value_or(1))
+              : 1);
     }
     result->traversalOwnerOrdinals_[traversalOrdinal] =
         inserted.first->second;
@@ -150,7 +158,7 @@ llvm::Error loom::pnr::detail::FrozenSpatialProgressIndex::verify(
     return invalid("traversal owner table does not cover the routing graph");
   if (ownerTraversalOffsets_.size() != finiteBufferOwners_.size() + 1 ||
       ownerQueueDisciplines_.size() != finiteBufferOwners_.size() ||
-      ownerSharedSlotCapacities_.size() != finiteBufferOwners_.size() ||
+      ownerGuaranteedNetCapacities_.size() != finiteBufferOwners_.size() ||
       ownerTraversalOffsets_.empty() || ownerTraversalOffsets_.front() != 0 ||
       ownerTraversalOffsets_.back() != ownerTraversals_.size())
     return invalid("finite-buffer owner traversal CSR has invalid bounds");
@@ -160,7 +168,7 @@ llvm::Error loom::pnr::detail::FrozenSpatialProgressIndex::verify(
     if (ownerQueueDisciplines_[owner] !=
             fabric.fifoQueueDiscipline(finiteBufferOwners_[owner])
                 .value_or(::fabric::FifoQueueDiscipline::StrictFifo) ||
-        ownerSharedSlotCapacities_[owner] == 0)
+        ownerGuaranteedNetCapacities_[owner] == 0)
       return invalid("finite-buffer owner metadata is stale");
     PnrIndex previous = getInvalidPnrIndex();
     for (PnrIndex traversal : traversalsForOwner(owner)) {

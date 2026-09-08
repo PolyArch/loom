@@ -3307,7 +3307,10 @@ parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, queue discipline, or bypass meaning outside those
 domains. `ChangeFifoQueueDiscipline` selects StrictFifo or
 PerTagVirtualChannel for one exact FIFO occurrence. The ordinary FIFO verifier
-rejects VC on an untagged or bypass-capable occurrence. A discipline change
+rejects VC on an untagged or bypass-capable occurrence. Selecting VC declares
+`reserved_channels` as the smaller of the FIFO depth and the tag value count,
+so every channel the tag can name is guaranteed a slot; selecting StrictFifo
+removes the reservation. A discipline change
 reopens the affected Spatial placement/route/progress cone because global and
 tag-local order are different Mapping semantics; it never reuses the parent's
 progress proof.

@@ -1013,18 +1013,28 @@ deriveMappingReconvergentCapacityProof(
       if (dimensions.size() > queueSlot.ordinal())
         pool = dimensions[queueSlot.ordinal()].capacity.value();
     }
-    // One producer binding cannot own a second active transfer until every
-    // sink of its current token has reached durable acceptance. Therefore one
-    // logical net contributes at most one resident token to a selected FIFO
-    // occurrence, including a distance-one initialized-feedback token. A pool
-    // with one slot per distinct selected net removes shared-pool capacity
-    // from the wait graph for every firing interleaving. Queue classes still
-    // own dequeue order, but they share this one physical capacity bound.
+    // A producer is released at its first durable handoff, so one net may
+    // hold several tokens of one pool at once. Only a slot the pool
+    // guarantees to a net removes shared-pool capacity from the wait graph:
+    // a tag-selective queue guarantees one slot to each of its reserved
+    // channels, and a strict queue, whose global order couples every
+    // resident net, guarantees a slot only under exclusive use. Queue
+    // classes still own dequeue order; the guarantee is the capacity bound.
     const bool proven =
         established[ordinal] && pool.has_value() && !owner.logicalNets.empty();
     const std::optional<std::uint64_t> sufficient =
         proven ? std::optional<std::uint64_t>(owner.logicalNets.size())
                : std::nullopt;
+    const bool tagSelective =
+        fabric.fifoQueueDiscipline(owner.owner).value_or(
+            ::fabric::FifoQueueDiscipline::StrictFifo) ==
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+    const std::uint64_t guaranteed =
+        !pool ? 0
+        : tagSelective
+            ? std::max<std::uint64_t>(
+                  1, fabric.fifoReservedChannels(owner.owner).value_or(1))
+            : 1;
     std::vector<MappingStaticQueueClass> queueClasses;
     queueClasses.reserve(owner.queueClasses.size());
     for (const auto &[key, queueClass] : owner.queueClasses)
@@ -1035,7 +1045,7 @@ deriveMappingReconvergentCapacityProof(
       routeAnchors.push_back(anchor);
     MappingReconvergentCapacityObligation obligation{
         owner.owner, std::move(queueClasses), std::move(routeAnchors),
-        pool.value_or(0), sufficient};
+        guaranteed, sufficient};
     obligations.push_back(std::move(obligation));
   }
   return obligations;

@@ -1065,17 +1065,21 @@ Search and strict verification derive this inventory from the same Dataflow,
 TechMapping, Fabric, and selected edge dispositions.
 
 Reconvergent capacity is proved per physical FIFO occurrence, never per tag.
-One producer binding owns at most one active transfer: its next firing cannot
-complete until every sink of the current transfer has reached a durable
-acceptance point. Consequently each distinct selected logical net contributes
-at most one resident token to a FIFO shared pool, including a distance-one
-initialized-feedback token. The canonical owner-local capacity obligation is
-the number of distinct selected logical nets, while StrictFifo or tag-local VC
-classes independently determine dequeue order. A selected pool below that
-sufficient bound is `ProofNotEstablished(reconvergent_capacity_not_established)`:
-failure to meet a sufficient bound does not establish a necessary minimum or
-a reachable closed wait. The positive gap is retained only as a search measure
-and a hardware-depth proposal. A sufficient pool removes those
+A producer binding is released at its first durable handoff, which includes
+enqueue into selected transport storage, so one logical net may hold several
+resident tokens of one FIFO shared pool at once and can fill a pool that
+another net must cross. Only a slot the pool guarantees to a net removes
+that coupling: a PerTagVirtualChannel pool guarantees one slot to each of its
+`reserved_channels` distinct channels, and a StrictFifo pool, whose global
+order couples every resident net, guarantees a slot only under exclusive
+use. The canonical owner-local capacity obligation is therefore the number of
+distinct selected logical nets against the pool's guaranteed net capacity
+(`reserved_channels`, or one under StrictFifo), while StrictFifo or tag-local
+VC classes independently determine dequeue order. More nets than the
+guarantee is `ProofNotEstablished(reconvergent_capacity_not_established)`:
+failure to meet the guarantee does not establish a necessary minimum or a
+reachable closed wait. The positive gap is retained only as a search measure
+and a hardware reservation proposal. A sufficient guarantee removes those
 capacity edges from the closed-wait graph; it does not excuse a remaining
 global-HOL or same-tag order cycle.
 

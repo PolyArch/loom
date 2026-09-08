@@ -632,6 +632,10 @@ struct FifoSpec final {
   bool bypassable;
   /// Absent selects the Fabric default, which is strict FIFO dequeue order.
   std::optional<::fabric::FifoQueueDiscipline> queueDiscipline;
+  /// Guaranteed channel count of a per-tag virtual-channel pool. Zero leaves
+  /// the Fabric `reserved_channels` capability undeclared, which guarantees
+  /// no channel beyond the first resident one; strict order ignores it.
+  std::uint32_t reservedChannels = 0;
 };
 
 struct BoundarySpec final {
@@ -697,7 +701,8 @@ public:
           std::uint32_t lanesPerDirection, const PortType &linkType,
           std::uint32_t interconnectFifoDepth,
           ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
-          std::vector<MeshCellAttachmentSpec> attachments);
+          std::vector<MeshCellAttachmentSpec> attachments,
+          std::uint32_t interconnectFifoReservedChannels = 0);
 
   static llvm::Expected<MeshSwitchNetworkSpec>
   temporal(std::uint32_t width, std::uint32_t height,
@@ -706,7 +711,8 @@ public:
            ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
            std::uint32_t routeTableSize,
            MeshSwitchGrantPolicyKind grantPolicyKind,
-           std::vector<MeshCellAttachmentSpec> attachments);
+           std::vector<MeshCellAttachmentSpec> attachments,
+           std::uint32_t interconnectFifoReservedChannels = 0);
 
 private:
   MeshSwitchNetworkSpec(
@@ -714,6 +720,7 @@ private:
       std::uint32_t lanesPerDirection, PortType linkType,
       std::uint32_t interconnectFifoDepth,
       ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
+      std::uint32_t interconnectFifoReservedChannels,
       std::optional<std::uint32_t> routeTableSize,
       std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind,
       std::vector<MeshCellAttachmentSpec> attachments)
@@ -721,6 +728,7 @@ private:
         lanesPerDirection_(lanesPerDirection), linkType_(std::move(linkType)),
         interconnectFifoDepth_(interconnectFifoDepth),
         interconnectFifoQueueDiscipline_(interconnectFifoQueueDiscipline),
+        interconnectFifoReservedChannels_(interconnectFifoReservedChannels),
         routeTableSize_(routeTableSize), grantPolicyKind_(grantPolicyKind),
         attachments_(std::move(attachments)) {}
 
@@ -734,6 +742,8 @@ private:
   /// remain strict regardless of the declared discipline.
   std::uint32_t interconnectFifoDepth_;
   ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline_;
+  /// Guaranteed channel count of every tagged virtual-channel link FIFO.
+  std::uint32_t interconnectFifoReservedChannels_;
   std::optional<std::uint32_t> routeTableSize_;
   std::optional<MeshSwitchGrantPolicyKind> grantPolicyKind_;
   std::vector<MeshCellAttachmentSpec> attachments_;

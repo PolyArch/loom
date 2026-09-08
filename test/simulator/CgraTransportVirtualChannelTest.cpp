@@ -34,6 +34,10 @@ void require(bool condition, llvm::StringRef message) {
   if (!condition)
     fail(message);
 }
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
+}
 
 CgraTransportStorageRuntime virtualChannel(std::uint32_t capacity) {
   return take(CgraTransportStorageRuntime::create(
@@ -187,6 +191,44 @@ void unofferedEntryCannotDequeue() {
   require(queue.occupancy() == 2, "a rejected dequeue removed an entry");
 }
 
+/// A pool that guarantees three channels keeps one slot back for every
+/// guaranteed channel that is absent: a resident channel is refused while
+/// free slots remain, the last kept slot admits only an absent channel, a
+/// downstream reservation counts as residency of its channel and holds its
+/// slot until the reserved enqueue lands, and once every guaranteed channel
+/// is resident the remaining slots are shared freely.
+void reservedChannelsGuaranteeAbsentChannelsASlot() {
+  auto queue = take(CgraTransportStorageRuntime::create(
+      4, false, ::fabric::FifoQueueDiscipline::PerTagVirtualChannel, 3));
+  require(queue.claimableCapacity(0) == 2,
+          "an empty pool did not keep one slot per other guaranteed channel");
+  (void)take(queue.commit(entry(1, 0, 0), std::nullopt));
+  (void)take(queue.commit(entry(2, 0, 0), std::nullopt));
+  require(queue.claimableCapacity(0) == 0 && queue.claimableCapacity(1) == 1,
+          "a resident channel took a slot kept for an absent channel");
+  llvm::Error refused = queue.commit(entry(3, 0, 0), std::nullopt).takeError();
+  require(static_cast<bool>(refused),
+          "a resident channel enqueued into a kept slot");
+  llvm::consumeError(std::move(refused));
+  requireSuccess(queue.reserve(1));
+  require(queue.reservations() == 1 && queue.claimableCapacity(1) == 0 &&
+              queue.claimableCapacity(2) == 1 && queue.claimableCapacity(0) == 0,
+          "a reservation did not count as residency of its channel");
+  llvm::Error unreserved =
+      queue.commit(entry(4, 1, 1), std::nullopt).takeError();
+  require(static_cast<bool>(unreserved),
+          "an unreserved enqueue consumed the reserved slot");
+  llvm::consumeError(std::move(unreserved));
+  (void)take(queue.commit(entry(4, 1, 1), true, std::nullopt));
+  require(queue.reservations() == 0 && queue.occupancy() == 3,
+          "a reserved enqueue did not release its reservation");
+  (void)take(queue.commit(entry(5, 2, 2), std::nullopt));
+  require(queue.full() && queue.claimableCapacity(0) == 0,
+          "the last kept slot did not admit the absent channel");
+  grantOffered(queue);
+  require(queue.claimableCapacity(0) == 1 && queue.claimableCapacity(3) == 1,
+          "a pool with every guaranteed channel resident did not share freely");
+}
 /// The plan tag-value interning shares one rank per equal value and orders
 /// ranks by the canonical unsigned tag value order.
 void planTagInterningFollowsCanonicalOrder() {
@@ -217,6 +259,7 @@ int main() {
   sharedPoolCapacityIsExact();
   simultaneousGrantUsesOfferedChannel();
   unofferedEntryCannotDequeue();
+  reservedChannelsGuaranteeAbsentChannelsASlot();
   planTagInterningFollowsCanonicalOrder();
   return EXIT_SUCCESS;
 }

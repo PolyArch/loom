@@ -15,13 +15,15 @@ differences use the module-owned low-bit-aligned truncation and zero-extension
 rule. A FIFO does not convert between spatial and tagged domains and does not
 accept `memref` endpoints.
 
-Fabric owns three hardware capability fields:
+Fabric owns four hardware capability fields:
 
 ```text
 FifoCapability {
   max_depth: positive integer
   bypassable: bool
   queue_discipline: StrictFifo | PerTagVirtualChannel   // default StrictFifo
+  reserved_channels: positive integer                   // PerTagVirtualChannel
+                                                        // only, default 1
 }
 ```
 
@@ -40,6 +42,16 @@ identity it schedules on, and it owns no bypass alternative: a combinational
 passthrough would route around the very queue the discipline orders, so
 `bypassable = true` is rejected for it. A `strict_fifo` occurrence may use
 either port kind and may be bypassable.
+
+`reserved_channels` is the credit allocation of a `per_tag_virtual_channel`
+pool: the number of distinct resident channels the shared pool guarantees one
+slot each. It is an immutable hardware fact like `max_depth`, bounded by
+`max_depth` and by the number of values the tag width can name, and it is
+rejected on a `strict_fifo` occurrence, whose global order owns no channels.
+An undeclared value is one: the first resident channel may use every slot and
+no absent channel is guaranteed admission, which is the pre-reservation
+behavior. The builtin production scales declare a larger value so that
+routes sharing one link FIFO cannot starve each other of capacity.
 
 ## Dequeue Scheduling Discipline
 
@@ -83,6 +95,14 @@ channel per cycle:
 * A channel that drains empty leaves the rotation; a channel that later
   receives a token re-enters at its canonical value position, including
   re-entry at a value the cursor has passed.
+* Enqueue admission honors the channel guarantee. With `R = reserved_channels`
+  and `resident` the number of distinct channels holding at least one entry
+  at cycle start, an enqueue carrying tag `t` is admitted only when the
+  registered free capacity exceeds `max(0, R - resident - [t is absent])`:
+  every guaranteed channel that is neither resident nor `t` keeps one slot
+  back. A resident channel therefore never takes the last slot an absent
+  guaranteed channel may need, and once `R` channels are resident the pool is
+  shared freely. Input ready is this admission for the tag on the input port.
 
 The queue contents, per-channel heads, cursor, and occupancy are dynamic
 execution state. They are not Mapping records, Fabric capability fields, or
@@ -245,18 +265,25 @@ budget, is the terminal outcome of a virtual-channel queue with no ready
 complement, and it is what makes every refused class head quoted by the
 closed-wait certificate an offer the port actually made.
 
-The virtual-channel discipline partitions dequeue order, never capacity. The
-static reconvergent-capacity obligation of a `per_tag_virtual_channel`
-occurrence names every resident tag class but compares one selected pool
-against one sufficient occupancy bound. Falling below that bound retains
-Mapping proof debt and a quantitative search gap; it cannot establish a
-necessary minimum or a reachable closed wait. Queue-order and capacity
-obligations remain separate.
+The virtual-channel discipline partitions dequeue order; `reserved_channels`
+partitions only the capacity guarantee, never the slots themselves. A
+producer is released at its first durable handoff, so one net may hold
+several tokens of one pool at once, and without a guarantee a net that runs
+ahead can fill a pool that another net must cross. The static
+reconvergent-capacity obligation of a `per_tag_virtual_channel` occurrence
+therefore names every resident tag class and compares the number of distinct
+selected nets against `reserved_channels`; a `strict_fifo` pool, whose global
+order couples every resident net, guarantees a slot only under exclusive use.
+Falling below the guarantee retains Mapping proof debt and a quantitative
+search gap; it cannot establish a necessary minimum or a reachable closed
+wait. Queue-order and capacity obligations remain separate.
 
 Fabric-to-RTL implements the same capability and selected-mode behavior. It
 compares the actual tag bits of resident entries, selects the arrival-oldest
 entry of the presented channel, presents one data/tag/valid triple per cycle,
-and rotates its cursor in the same cycle situations as the simulator. It may
+rotates its cursor in the same cycle situations as the simulator, and derives
+input ready from the same reserved-channel admission over the resident tag
+bits and the tag on the input port. It may
 choose any circuit structure consistent with the declared capacity, handshake,
 visibility, lifecycle, and ConfigurationABI. Backend pipeline or storage
 details do not become a second architectural contract.
@@ -274,7 +301,10 @@ rejection only when selected switch rows and bypass traversals close that
 cycle. Discipline anchors additionally cover global order under
 `strict_fifo`, per-channel order and blocked-channel bypass under
 `per_tag_virtual_channel`, cursor wraparound and channel re-entry, the shared
-pool capacity boundary, the refused-offer next-cycle presentation, the
+pool capacity boundary, the reserved-channel admission (a resident channel
+refused while free slots remain for absent guaranteed channels, the last free
+slot admitting only an absent channel, and free sharing once every guaranteed
+channel is resident), the refused-offer next-cycle presentation, the
 no-complement terminal witness (every resident channel refused once, no
 scheduled event, a typed exhausted-rotation witness instead of a budget), the
 static shared-pool capacity control, and simulator/RTL agreement on the
