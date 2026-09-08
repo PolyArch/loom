@@ -476,10 +476,12 @@ struct CardinalityGraphIndex {
     }
   }
 
+  // Activation dependencies belong to the physical phase occurrence. Equal
+  // recurrence counts do not merge independent loops or their carry systems.
   void collectCarries(mlir::Value phase,
                       llvm::SmallVectorImpl<dataflow::CarryOp> &result) const {
     for (const auto &entry : carriesByPhase)
-      if (haveEquivalentPhaseCardinality(entry.first, phase))
+      if (haveEquivalentCorrespondence(entry.first, phase))
         result.append(entry.second);
   }
 
@@ -487,7 +489,7 @@ struct CardinalityGraphIndex {
   collectActivationInputs(mlir::Value phase,
                           llvm::SmallVectorImpl<mlir::Value> &result) const {
     for (const auto &entry : activationInputsByPhase)
-      if (haveEquivalentPhaseCardinality(entry.first, phase))
+      if (haveEquivalentCorrespondence(entry.first, phase))
         result.append(entry.second);
   }
 
