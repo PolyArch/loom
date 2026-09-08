@@ -179,28 +179,35 @@ target_link_libraries(loom-structured-call-ownership-test PRIVATE
 add_executable(loom-structured-schedule-generator-test
   StructuredScheduleGeneratorTest.cpp
 )
-
-target_link_libraries(loom-structured-schedule-generator-test PRIVATE
-  LoomADGBuilder
-  LoomCommon
-  LoomDSECompilerGenerator
-  LoomFrontendCompilation
-  LoomFrontendLowering
-  MLIRAffineDialect
-  MLIRArithDialect
-  MLIRDataflow
-  MLIRDLTIDialect
-  MLIRFuncDialect
-  MLIRIR
-  MLIRLLVMDialect
-  MLIRLoom
-  MLIRMemRefDialect
-  MLIRParser
-  MLIRSCFDialect
-  MLIRSupport
-  MLIRVectorDialect
-  LLVMSupport
+add_executable(loom-structured-schedule-vector-test
+  StructuredScheduleVectorTest.cpp
 )
+foreach(schedule_test IN ITEMS
+    loom-structured-schedule-generator-test
+    loom-structured-schedule-vector-test)
+  target_sources(${schedule_test} PRIVATE StructuredScheduleTestSupport.cpp)
+  target_link_libraries(${schedule_test} PRIVATE
+    LoomADGBuilder
+    LoomCommon
+    LoomDSECompilerGenerator
+    LoomFrontendCompilation
+    LoomFrontendLowering
+    MLIRAffineDialect
+    MLIRArithDialect
+    MLIRDataflow
+    MLIRDLTIDialect
+    MLIRFuncDialect
+    MLIRIR
+    MLIRLLVMDialect
+    MLIRLoom
+    MLIRMemRefDialect
+    MLIRParser
+    MLIRSCFDialect
+    MLIRSupport
+    MLIRVectorDialect
+    LLVMSupport
+  )
+endforeach()
 
 add_executable(loom-structured-polyhedral-schedule-test
   StructuredPolyhedralScheduleTest.cpp

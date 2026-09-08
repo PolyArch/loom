@@ -336,6 +336,7 @@ tools = [
     "loom-structured-ownership-accounting-test",
     "loom-structured-ownership-evaluation-test",
     "loom-structured-schedule-generator-test",
+    "loom-structured-schedule-vector-test",
     "loom-structured-polyhedral-schedule-test",
     "loom-structured-memory-communication-generator-test",
     "loom-structured-memory-communication-lineage-test",

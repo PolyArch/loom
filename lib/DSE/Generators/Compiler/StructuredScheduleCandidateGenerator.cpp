@@ -196,7 +196,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v18",
+    "loom.compiler.structured_schedule.generator.v21",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -390,6 +390,24 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 ++exactFabricRejectedLogicalDomainCount;
                 break;
               }
+            mapping_debug::emit(
+                mapping_debug::Level::Detail,
+                mapping_debug::Stage::DataflowLowering,
+                mapping_debug::Event::DerivedContext,
+                [&](llvm::json::Object &fields) {
+                  fields["context_kind"] =
+                      "structured_schedule_materialization_rejection";
+                  fields["parent"] =
+                      formatArtifactIdentityHex(parent.identity());
+                  fields["loop_ordinal"] = decision.loop.ordinal;
+                  fields["decision_kind"] =
+                      frontend::structuredScheduleDecisionKindSpelling(
+                          decision.kind);
+                  fields["factor"] = decision.factor;
+                  fields["rejection_kind_ordinal"] =
+                      static_cast<std::uint64_t>(error.kind());
+                  fields["diagnostic"] = error.message();
+                });
             if (invocation)
               return detail::StructuredOwnershipInvocationAccess::
                   recordFinalizationRejection(
@@ -668,7 +686,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 terminalProposal.decision();
             const bool logical = producesLogicalThreadDomain(terminalDecision);
             logicalDomainDecisionCount += logical ? 1 : 0;
-            if (!logical)
+            if (terminalDecision.kind !=
+                    frontend::StructuredScheduleDecisionKind::Parallelize ||
+                terminalDecision.loop != transformedRoot)
               continue;
             ++ownedLogicalDomainDecisionCount;
             if (llvm::Error error = accountGeneratedProposal())
