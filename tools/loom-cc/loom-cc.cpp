@@ -387,9 +387,11 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       return parsed.takeError();
     mappingRepairCandidateLimit = *parsed;
   }
-  auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
-      options.mappingStoppingPolicy.empty() ? "first_verified"
-                                            : options.mappingStoppingPolicy);
+  llvm::Expected<loom::dse::JointDesignStoppingPolicy> stoppingPolicy =
+      loom::application::defaultProductMappingStoppingPolicy;
+  if (!options.mappingStoppingPolicy.empty())
+    stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
+        options.mappingStoppingPolicy);
   if (!stoppingPolicy)
     return stoppingPolicy.takeError();
   auto spectrumEndpoint =

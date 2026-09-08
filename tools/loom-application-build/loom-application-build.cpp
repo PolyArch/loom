@@ -64,7 +64,7 @@ llvm::cl::opt<std::string> mappingStoppingPolicy(
     "mapping-stopping-policy",
     llvm::cl::desc(
         "Mapping stopping policy: first_verified or bounded_quality"),
-    llvm::cl::init("first_verified"));
+    llvm::cl::init(""));
 llvm::cl::opt<std::string> mappingSpectrumEndpoint(
     "mapping-spectrum-endpoint",
     llvm::cl::desc("Spectrum ranking focus: automatic, max_temporal, "
@@ -107,8 +107,11 @@ llvm::cl::opt<std::string>
                   llvm::cl::value_desc("path"));
 
 llvm::Expected<loom::application::ProductBuildOptions> productOptions() {
-  auto stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
-      mappingStoppingPolicy);
+  llvm::Expected<loom::dse::JointDesignStoppingPolicy> stoppingPolicy =
+      loom::application::defaultProductMappingStoppingPolicy;
+  if (!mappingStoppingPolicy.empty())
+    stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
+        mappingStoppingPolicy);
   if (!stoppingPolicy)
     return stoppingPolicy.takeError();
   auto spectrumEndpoint =

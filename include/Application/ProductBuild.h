@@ -19,6 +19,8 @@ namespace loom::application {
 inline constexpr std::uint64_t defaultProductTechCandidateLimit = 8;
 inline constexpr std::uint64_t defaultProductMappingWallTimeLimitMilliseconds =
     timeout::milliseconds(timeout::Tier::Fast);
+inline constexpr dse::JointDesignStoppingPolicy defaultProductMappingStoppingPolicy =
+    dse::JointDesignStoppingPolicy::BoundedQuality;
 
 struct ProductBuildOptions final {
   std::string deploymentOutput;
@@ -38,7 +40,7 @@ struct ProductBuildOptions final {
   /// joint repair owner's default; the hardware reopen budget is separate.
   std::optional<std::uint64_t> mappingRepairCandidateLimit;
   dse::JointDesignStoppingPolicy mappingStoppingPolicy =
-      dse::JointDesignStoppingPolicy::FirstVerified;
+      defaultProductMappingStoppingPolicy;
   dse::PreMappingSpectrumEndpoint mappingSpectrumEndpoint =
       dse::PreMappingSpectrumEndpoint::Automatic;
   std::string portfolioManifestPath;
