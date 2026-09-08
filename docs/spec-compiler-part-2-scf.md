@@ -1573,6 +1573,12 @@ same loop condition lowers to `dataflow.invariant`: each true phase repeats
 the initial token and the false phase closes the activation. This applies to
 unchanged scalar values and event frontiers. A feedback path containing body
 work, a memory completion, or another condition remains an explicit recurrence.
+For an unordered loop body whose execution event is unchanged, an unchanged
+write frontier proves that its partition is read-only. The body may then use
+that write frontier as the initial read summary for each iteration. The read
+carry still consumes each iteration's completed summary and the pre-loop read
+event before publishing its exit witness. Atomic, volatile, and other ordered
+effects retain the preceding iteration's frontier.
 Tiling may add
 coordinates, while fusion, linearization, vectorization, and interchange may
 remove or reparameterize them; no equality with source loop depth is required.

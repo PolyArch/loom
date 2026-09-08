@@ -11,6 +11,7 @@
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowSyncRendezvous.h"
 
@@ -1575,6 +1576,11 @@ private:
   RegionResult lowerFor(::mlir::scf::ForOp forOp, ::mlir::Value execution,
                         MemoryState memory) {
     ::mlir::Location loc = forOp.getLoc();
+    bool unorderedMemory = true;
+    forOp.walk([&](::mlir::Operation *op) {
+      if (auto contract = ::dataflow::semantics::getMemoryActorContract(op))
+        unorderedMemory &= !contract->atomic && !contract->isVolatile;
+    });
     setInsertionPoint(loc);
 
     ::mlir::Value lower = forOp.getLowerBound();
@@ -1679,10 +1685,24 @@ private:
       bodyMemory[partition] = {writeBody, readBody};
     }
 
+    MemoryState iterationMemory = bodyMemory;
     RegionResult bodyResult = lowerBlock(forOp.getRegion().front(),
                                          executionBody, std::move(bodyMemory));
     auto yield = ::llvm::cast<::mlir::scf::YieldOp>(
         forOp.getRegion().front().getTerminator());
+    if (unorderedMemory && bodyResult.execution == executionBody) {
+      for (int partition = touched.find_first(); partition >= 0;
+           partition = touched.find_next(partition)) {
+        if (bodyResult.memory[partition].write !=
+            iterationMemory[partition].write)
+          continue;
+        // No write or ordered effect needs the preceding iteration's reads.
+        // The read carry still consumes every iteration's completion summary
+        // before its exit token can retire the loop, including its init event.
+        iterationMemory[partition].read.replaceAllUsesWith(
+            iterationMemory[partition].write);
+      }
+    }
     finishCarry(executionCarry, bodyResult.execution, builder);
     for (unsigned i = 0; i < valueCarries.size(); ++i)
       finishCarry(valueCarries[i], yield.getOperand(i), builder);
