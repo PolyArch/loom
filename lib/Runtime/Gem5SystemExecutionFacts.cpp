@@ -687,17 +687,18 @@ deriveFactsUncached(const EvaluationRequest &request,
   if (!dataflow)
     return dataflow.takeError();
   const auto &dataflowView = dataflow->view();
-  auto contexts = mapping::projectSystemExecutionContexts(
-      dataflowView, systemMapping->view().executionBindings());
-  if (!contexts)
-    return contexts.takeError();
-  if (contexts->spatialDomains.empty())
+  auto launchProjection = deployment::DeploymentSpatialLaunchProjection::get(
+      inputs.deployment, artifacts, blobs);
+  if (!launchProjection)
+    return launchProjection.takeError();
+  const auto &contexts = launchProjection->contexts();
+  if (contexts.spatialDomains.empty())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   std::vector<dataflow::RootedGraphLaunchRef> graphs;
   for (const mapping::SystemSpatialContextDomain &domain :
-       contexts->spatialDomains)
+       contexts.spatialDomains)
     if (!llvm::is_contained(graphs, domain.graph))
       graphs.push_back(domain.graph);
   llvm::sort(graphs, [](const auto &lhs, const auto &rhs) {
@@ -726,8 +727,7 @@ deriveFactsUncached(const EvaluationRequest &request,
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     for (const std::vector<std::uint64_t> &point : **coordinates) {
-      auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-          inputs.deployment, graph, point, artifacts, blobs);
+      auto selection = launchProjection->select(graph, point);
       if (!selection)
         return selection.takeError();
       auto spatialMapping =
@@ -736,7 +736,7 @@ deriveFactsUncached(const EvaluationRequest &request,
         return spatialMapping.takeError();
       std::vector<mapping::SystemPresburgerCell> contextDomain;
       for (const mapping::SystemSpatialContextDomain &domain :
-           contexts->spatialDomains)
+           contexts.spatialDomains)
         if (domain.graph == graph && domain.context == selection->context)
           contextDomain.insert(contextDomain.end(), domain.cells.begin(),
                                domain.cells.end());

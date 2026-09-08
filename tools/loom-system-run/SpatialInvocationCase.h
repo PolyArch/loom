@@ -2,7 +2,7 @@
 #define LOOM_TOOLS_LOOM_SYSTEM_RUN_SPATIALINVOCATIONCASE_H
 
 #include "Common/Artifact.h"
-#include "Deployment/Deployment.h"
+#include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationExecution.h"
 
@@ -49,8 +49,8 @@ struct SpatialInvocationCase final {
 llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     std::size_t ordinal, const ObservedSpatialInvocation &dfg,
     const ObservedSpatialInvocation &cgra,
-    const loom::deployment::FinalizedDeployment &deployment,
-    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs);
+    const loom::deployment::DeploymentSpatialLaunchProjection &launchProjection,
+    const loom::ArtifactStore &artifacts);
 
 } // namespace loom::system_run
 
