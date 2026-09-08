@@ -94,6 +94,11 @@ llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs);
 
+void encodeMemoryObservation(WireWriter &writer,
+                             const MemoryObservationPayload &payload);
+llvm::Expected<MemoryObservationPayload>
+decodeMemoryObservation(WireReader &reader, MemoryObservationForm form);
+
 llvm::Error validateSpatialFunctionalObservations(
     const SpatialFunctionalObservations &observations,
     const ExecutionTerminal &terminal, const SpatialExecutionContext &context);

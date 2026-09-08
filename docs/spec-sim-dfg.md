@@ -447,7 +447,7 @@ reinterpreted as plain load/store.
 
 ## Trace And Termination
 
-`loom.simulation_execution 3.1` has no general diagnostic-trace field. Its
+`loom.simulation_execution 4.0` has no general diagnostic-trace field. Its
 narrow root-lifecycle progress field applies only to System executions and is
 not a carrier for DFG diagnostic events. DFG-sim may produce the current
 invocation-local `SpatialDiagnosticTrace` owned by Simulation Artifacts and
@@ -570,7 +570,7 @@ Stable anchor tests cover:
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
 * rejection of every persistent Spatial diagnostic-trace field in
-  `loom.simulation_execution 3.1` and diagnostic capture noninterference;
+  `loom.simulation_execution 4.0` and diagnostic capture noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
 * deterministic or oracle-governed comparison with one legal CGRA-sim
