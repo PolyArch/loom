@@ -530,6 +530,24 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         blobs);
   };
 
+  const auto recordRuntime = [](
+      ApplicationMappingCandidateOutcome &outcome,
+      const ArtifactRootReference &mapping,
+      const detail::ApplicationRuntimeValidation &runtime) {
+    if (runtime.disposition ==
+        ApplicationMappingRuntimeDisposition::NotRequested)
+      outcome.runtimeMapping.reset();
+    else
+      outcome.runtimeMapping = mapping;
+    outcome.runtimeDisposition = runtime.disposition;
+    outcome.runtimeEvidence = runtime.evidence;
+    outcome.runtimeMemoryContractRefusal = runtime.cgraMemoryContractRefusal;
+    outcome.oracleEvidence = runtime.oracleEvidence;
+    outcome.dfgCycles = runtime.dfgCycles;
+    outcome.cgraCycles = runtime.cgraCycles;
+    outcome.resourceCoreCost = runtime.resourceCoreCost;
+  };
+
   std::optional<dse::JointDesignExecution> selectedExecution;
   std::size_t firstPlan = 0;
   while (firstPlan < plans.size()) {
@@ -642,18 +660,7 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       if (outcome.planOrdinal != selectedPlanOrdinal ||
           !llvm::is_contained(outcome.systemMappings, *runtimeMapping))
         continue;
-      if (runtime->disposition ==
-          ApplicationMappingRuntimeDisposition::NotRequested)
-        outcome.runtimeMapping.reset();
-      else
-        outcome.runtimeMapping = *runtimeMapping;
-      outcome.runtimeDisposition = runtime->disposition;
-      outcome.runtimeEvidence = runtime->evidence;
-      outcome.runtimeMemoryContractRefusal = runtime->cgraMemoryContractRefusal;
-      outcome.oracleEvidence = runtime->oracleEvidence;
-      outcome.dfgCycles = runtime->dfgCycles;
-      outcome.cgraCycles = runtime->cgraCycles;
-      outcome.resourceCoreCost = runtime->resourceCoreCost;
+      recordRuntime(outcome, *runtimeMapping, *runtime);
       joined = true;
     }
     if (!joined)
@@ -1376,11 +1383,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         request.boundedQuality &&
         request.boundedQuality->provenanceDomain ==
             dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
-      auto runtimeDisposition = detail::classifyApplicationQualityRuntime(
-          *request.boundedQuality, *projected);
-      if (!runtimeDisposition)
-        return runtimeDisposition.takeError();
-      outcome.runtimeDisposition = *runtimeDisposition;
+      auto runtime = detail::projectApplicationQualityRuntime(
+          prepared, prepared.mappingAlternatives[outcome.planOrdinal],
+          *projected, *request.boundedQuality, artifacts, blobs);
+      if (!runtime)
+        return runtime.takeError();
+      recordRuntime(outcome, projected->candidate, *runtime);
     }
   }
   selectedExecution->summary.attemptedSoftwarePlans = attemptedSoftwarePlans;
