@@ -275,6 +275,36 @@ void finalizerMatchesKnownEnvelopeAndDigest() {
           "stored object is not the exact identity preimage");
 }
 
+void concurrentSchemaFinalizationPreservesIdentityDomains() {
+  const std::array<ArtifactSchemaDescriptor, 3> schemas = {
+      testSchema, otherSchema, otherVersion};
+  std::vector<ArtifactIdentity> expected;
+  for (const auto &schema : schemas)
+    expected.push_back(
+        finalizeArtifactIdentity(schema, semantic({0x00, 0x10, 0xff})));
+
+  const CanonicalSemanticBytes bytes = semantic({0x00, 0x10, 0xff});
+  std::atomic<bool> start{false};
+  std::atomic<bool> mismatched{false};
+  std::vector<std::thread> threads;
+  for (unsigned worker = 0; worker != 8; ++worker)
+    threads.emplace_back([&, worker, sharedBytes = bytes] {
+      while (!start.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      for (unsigned iteration = 0; iteration != 256; ++iteration) {
+        const unsigned ordinal = (worker + iteration) % schemas.size();
+        if (finalizeArtifactIdentity(schemas[ordinal], sharedBytes) !=
+            expected[ordinal])
+          mismatched.store(true, std::memory_order_relaxed);
+      }
+    });
+  start.store(true, std::memory_order_release);
+  for (auto &thread : threads)
+    thread.join();
+  require(__func__, !mismatched.load(std::memory_order_relaxed),
+          "concurrent copies mixed schema identity domains");
+}
+
 void identityBoundariesRejectInvalidValues() {
   static_assert(!std::is_default_constructible_v<ArtifactIdentity>);
   static_assert(!std::is_default_constructible_v<ArtifactReference<unsigned>>);
@@ -826,6 +856,7 @@ int main() {
   finalizerMatchesKnownEnvelopeAndDigest();
   identityBoundariesRejectInvalidValues();
   concurrentIdenticalPublishDeduplicates();
+  concurrentSchemaFinalizationPreservesIdentityDomains();
   postInsertionIoFailureKeepsCompleteObjectAndAllowsRetry();
   existingWrongOrCorruptObjectIsRejected();
   existingSymlinkObjectIsRejected();

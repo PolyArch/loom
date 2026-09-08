@@ -1,6 +1,7 @@
 #include "Common/ArtifactStore.h"
 
 #include "ArtifactFinalizerInternal.h"
+#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -262,7 +263,7 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
   const std::vector<std::uint8_t> preimage =
       detail::buildArtifactIdentityPreimage(schema, canonicalBytes);
   const ArtifactIdentity identity =
-      detail::finalizeArtifactIdentityPreimage(preimage);
+      finalizeArtifactIdentity(schema, canonicalBytes);
   const std::string objectName = formatArtifactIdentityHex(identity);
 
   auto directoryOrError = openStoreDirectory(root_);
