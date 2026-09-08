@@ -176,7 +176,7 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
       invocation.workload, invocation.runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
-  const auto *workload = inputs->workload.spatial();
+  const auto *workload = (*inputs)->workload.spatial();
   if (!workload)
     return invalid("mapped RTL invocation workload is not Spatial");
   auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(

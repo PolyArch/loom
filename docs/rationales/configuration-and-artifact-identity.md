@@ -39,6 +39,22 @@ admission records. Copies of a store share its domain and records. Publication
 alone never admits a reference through caller-provided bytes. These records
 are disposable process state and do not enter artifact or invocation identity.
 
+## Why Runtime Evidence Is Joined Per Input
+
+An application replay has one exact workload/runtime-input pair, one DFG
+execution, one CGRA execution and one independent comparison. Importing each
+category across the entire portfolio before visiting the next category evicts
+the shared inputs and repeats their strict decoding. The join first indexes
+dependency projections, rejects missing, repeated and foreign associations,
+and then strictly imports each complete group together. Projections only
+establish which objects to validate; they never replace Evidence validation.
+
+The Simulation input importer owns the shared immutable input view used by
+providers, Request verification, execution import and comparison. Its bounded
+invocation cache retains the existing store-domain and hit-validation rules.
+This removes consumer-local input caches without retaining the entire replay
+portfolio or changing any persistent identity.
+
 ## Why Configuration Is Resolved Once
 
 Loom has many components, but a component-local option parser or hidden default

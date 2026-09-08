@@ -1186,8 +1186,8 @@ evaluate(const EvaluationRequest &request,
       *request.workload(), *request.runtimeInput(), artifactStore);
   if (!inputs)
     return classifyExecutionFailure(inputs.takeError());
-  return evaluateWithPrepared(request, resolution, *execution, inputs->workload,
-                              inputs->runtimeInput, {}, artifactStore,
+  return evaluateWithPrepared(request, resolution, *execution, (*inputs)->workload,
+                              (*inputs)->runtimeInput, {}, artifactStore,
                               blobStore, nullptr);
 }
 
@@ -1313,7 +1313,7 @@ resolveCgraSimulationCase(const ArtifactRootReference &spatialMapping,
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow->identity() != owners->dataflow.artifact)
+  if ((*inputs)->dataflow->identity() != owners->dataflow.artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: workload names a foreign Dataflow "
@@ -1348,7 +1348,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
       sim::importSpatialSimulationInputs(workload, runtimeInput, artifactStore);
   if (!inputs)
     return inputs.takeError();
-  if (inputs->dataflow->identity() != canonicalDataflow.artifact)
+  if ((*inputs)->dataflow->identity() != canonicalDataflow.artifact)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "cgra_simulation_model_invalid: workload names a foreign Dataflow "
@@ -1391,7 +1391,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
   if (!published)
     return published.takeError();
   auto workloadExecution = sim::prepareCgraWorkloadExecution(
-      *execution, inputs->workload, inputs->runtimeInput);
+      *execution, (*inputs)->workload, (*inputs)->runtimeInput);
   if (!workloadExecution)
     return workloadExecution.takeError();
   auto executionContext = sim::prepareSpatialExecutionContext(
@@ -1401,8 +1401,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
   return PreparedCgraSimulationEvaluation{std::move(*request),
                                           std::move(*resolution),
                                           std::move(*execution),
-                                          std::move(inputs->workload),
-                                          std::move(inputs->runtimeInput),
+                                          std::move(*inputs),
                                           std::move(*workloadExecution),
                                           std::move(*executionContext)};
 }
@@ -1435,7 +1434,7 @@ evaluateCgraSimulationWithDiagnosticsImpl(
     attemptProfile.emplace();
   auto result = evaluateWithPrepared(
       prepared.request, prepared.resolution, prepared.execution,
-      prepared.workload, prepared.runtimeInput, std::move(limits),
+      prepared.inputs->workload, prepared.inputs->runtimeInput, std::move(limits),
       artifactStore, blobStore, &prepared.workloadExecution,
       &prepared.executionContext, &closedWait,
       attemptProfile ? &*attemptProfile : nullptr);

@@ -1140,11 +1140,10 @@ llvm::Error
 addDependencyRoot(ActivationDependencySet &projection,
                   const ArtifactRootReference &root,
                   const ArtifactStore &artifacts) {
-  auto stored = artifacts.get(root);
-  if (!stored)
+  if (llvm::Error error = artifacts.verifyReference(root))
     return reject(ApplicationActivationDecisionErrorReason::DependencyMismatch,
                   "activation dependency is unavailable: " +
-                      llvm::toString(stored.takeError()));
+                      llvm::toString(std::move(error)));
   projection.artifacts.insert(root);
   return llvm::Error::success();
 }

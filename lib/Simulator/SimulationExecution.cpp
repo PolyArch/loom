@@ -51,17 +51,6 @@ namespace {
 using detail::WireReader;
 using detail::WireWriter;
 
-llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
-importCachedSpatialInputs(const ArtifactRootReference &workload,
-                          const ArtifactRootReference &runtimeInput,
-                          const ArtifactStore &store) {
-  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
-  return evaluation::importCachedArtifact<ImportedSpatialSimulationInputs>(
-      store, nullptr, references, [&]() {
-        return importSpatialSimulationInputs(workload, runtimeInput, store);
-      });
-}
-
 llvm::Error validateProgress(const SpatialProgressObservations &progress,
                              const ExecutionTerminal &terminal) {
   if (compareSpatialEventCoordinates(progress.launchAccepted,
@@ -442,7 +431,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
   if (!(*request)->workload() || !(*request)->runtimeInput())
     return invalid("simulation execution: Request workload inputs are not "
                    "total");
-  auto inputs = importCachedSpatialInputs(*(*request)->workload(),
+  auto inputs = importSpatialSimulationInputs(*(*request)->workload(),
                                           *(*request)->runtimeInput(), store);
   if (!inputs)
     return inputs.takeError();
@@ -470,7 +459,7 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
     const ArtifactRootReference &workloadReference,
     const ArtifactRootReference &runtimeInputReference,
     const ArtifactStore &store) {
-  auto inputs = importCachedSpatialInputs(workloadReference,
+  auto inputs = importSpatialSimulationInputs(workloadReference,
                                           runtimeInputReference, store);
   if (!inputs)
     return inputs.takeError();

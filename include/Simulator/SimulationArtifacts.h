@@ -702,8 +702,10 @@ importStructuredProgramSimulationInputs(
 
 /// Strictly imports one stored Spatial workload/runtime pair and recovers its
 /// sole Canonical Dataflow owner from the workload's RootedGraphLaunchRef.
-/// No caller-provided program reference or path participates.
-llvm::Expected<ImportedSpatialSimulationInputs>
+/// No caller-provided program reference or path participates. All consumers
+/// share this immutable input owner through the invocation's bounded import
+/// cache; a new store or independent scope performs strict validation.
+llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
 importSpatialSimulationInputs(const ::loom::ArtifactRootReference &workload,
                               const ::loom::ArtifactRootReference &runtimeInput,
                               const ::loom::ArtifactStore &store);
