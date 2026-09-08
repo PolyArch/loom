@@ -82,7 +82,7 @@ inline constexpr std::uint64_t kGem5StartupTickBudget = 30'000'000;
 inline constexpr std::uint64_t kGem5SpatialInvocationTickBudget = 15'000'000;
 inline constexpr std::uint64_t kMaximumGem5Ticks =
     kGem5StartupTickBudget +
-    gem5MaximumDynamicSpatialInvocations * kGem5SpatialInvocationTickBudget;
+    gem5MaximumStaticDispatchEntries * kGem5SpatialInvocationTickBudget;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
 

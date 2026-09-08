@@ -77,10 +77,6 @@ llvm::cl::opt<std::uint64_t>
     ticksPerCycle("ticks-per-cycle",
                   llvm::cl::desc("gem5 ticks per Spatial cycle"),
                   llvm::cl::init(1000));
-llvm::cl::opt<std::uint64_t> maximumInvocations(
-    "maximum-invocations",
-    llvm::cl::desc("Maximum dynamic invocations in this engine session"),
-    llvm::cl::init(4096));
 llvm::cl::opt<std::uint64_t> bridgeCount(
     "bridge-count",
     llvm::cl::desc("Number of physical bridges sharing this System session"),
@@ -151,10 +147,10 @@ void appendKeyIdentity(std::string &key,
 int main(int argc, char **argv) {
   llvm::InitLLVM initialization(argc, argv);
   llvm::cl::ParseCommandLineOptions(argc, argv);
-  if (maximumWork == 0 || ticksPerCycle == 0 || maximumInvocations == 0 ||
+  if (maximumWork == 0 || ticksPerCycle == 0 ||
       bridgeCount == 0 || bridgeCount > std::numeric_limits<int>::max())
-    return report(invalid("work, timing, and invocation limits must be "
-                          "positive"));
+    return report(invalid("work, timing, or bridge count is outside its "
+                          "supported domain"));
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
   if (!performanceProfilePath.empty())
     return report(
@@ -270,7 +266,7 @@ int main(int argc, char **argv) {
   }
   auto session = SpatialEngineSession::create(
       std::move(entries), std::move(preparedExecutions),
-      {maximumWork, ticksPerCycle, maximumInvocations}, performanceProfilePath);
+      {maximumWork, ticksPerCycle}, performanceProfilePath);
   if (!session)
     return report(session.takeError());
   auto server = openServer();

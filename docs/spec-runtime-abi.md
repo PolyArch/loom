@@ -465,8 +465,13 @@ ID, and may coexist with submissions to independent InstructionCore contexts.
 Targets that resolve to one physical InstructionCore remain mutually exclusive
 and wait for that context rather than manufacturing another hardware thread.
 Worker completion is qualified by its target record, and Host glue verifies the
-record's occurrence ID before accepting completion. The record bound is the
-existing runtime invocation bound; no unbounded software queue is implied.
+record's occurrence ID before accepting completion. The static dispatch-table
+domain contains at most 4096 entries. Reusing an entry does not consume another
+entry: dynamic occurrence identities advance independently of this capacity.
+Each physical Spatial bridge admits only one active invocation at a time.
+Its lifetime occurrence counter is checked for u64 exhaustion; the enclosing
+attempt's tick budget, per-invocation work limit, and message-size bounds govern
+execution without imposing the static table capacity on sequential reuse.
 
 Generated Host glue preserves the Canonical Dataflow asynchronous boundary. It
 submits all points of a root at `dataflow.thread.launch`, returns one transient
@@ -684,8 +689,8 @@ program observation window. It does not measure payload-byte throughput or chang
 physical capacity. The custom gem5 build-readiness digest covers this observer.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.15`. Version 15 adds the private-cache
-realization: every processor entry carries `caches.instruction` and
+`loom.gem5_system_projection.16`. Every processor entry carries
+`caches.instruction` and
 `caches.data`, every bridge entry carries one `cache`, and every such object
 records `capacity_bytes`, `line_bytes`, `associativity`, `hit_latency_cycles`,
 and `miss_status_entries`. These values are projected from the exact Fabric
@@ -696,9 +701,8 @@ and the SystemXBar, and one cache between each Spatial bridge DMA port and the
 SystemXBar. It requires all projected line sizes to agree and installs that one
 value as the System line size, and it marks the Thread Dispatch and Spatial
 bridge apertures physically uncacheable through the RISC-V PMA checker so a
-device access never enters a private cache. Version 15 also adds
-`dispatch.pio_size` so that aperture is projected rather than restated. It
-retains the Version 14 domains: an empty executable session domain for the
+device access never enters a private cache. `dispatch.pio_size` projects the
+aperture from its owner. An empty executable session domain represents the
 typed host-only Deployment while retaining every physical processor and
 bridge. Its memory projection carries the exact finite bandwidth
 from the bound SimpleMemory contract. The native configuration verifies that
@@ -713,7 +717,7 @@ which an importer may infer target ownership. Sharing one engine across
 several Bridges therefore does not move workloads into the command-owning
 Bridge.
 
-Projection 15 also requires `dispatch.root_event_trace_path`, a logical target
+The projection also requires `dispatch.root_event_trace_path`, a logical target
 count, and parallel endpoint offset/enable arrays. The arrays define a finite
 runtime endpoint table over the immutable dispatch records; they cannot create
 new targets. An endpoint with dispatch disabled may only be selected as a

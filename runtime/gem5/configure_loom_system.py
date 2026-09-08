@@ -38,7 +38,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.15"
+CONFIG_SCHEMA = "loom.gem5_system_projection.16"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.6"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -238,7 +238,6 @@ def start_engines(
                     "engine_command",
                     "result_path",
                     "maximum_message_bytes",
-                    "maximum_invocations",
                 },
                 f"bridge {ordinal}",
             )
@@ -706,11 +705,6 @@ def build_system(
         system.loom_engine_sessions = sessions
     bridges = []
     for bridge in projection["bridges"]:
-        if (
-            not isinstance(bridge["maximum_invocations"], int)
-            or bridge["maximum_invocations"] <= 0
-        ):
-            raise ValueError("Spatial bridge invocation limit must be positive")
         device = LoomSpatialBridge(
             pio_addr=bridge["pio_address"],
             pio_size=bridge["pio_size"],
@@ -719,7 +713,6 @@ def build_system(
             engine_session=engine_sessions.get(bridge["engine_socket"], NULL),
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
-            max_invocations=bridge["maximum_invocations"],
             collect_performance=collect_performance,
         )
         device.pio = system.membus.mem_side_ports

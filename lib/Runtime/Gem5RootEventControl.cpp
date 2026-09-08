@@ -161,7 +161,7 @@ deriveGem5RootEventEndpointTable(const pnr::ResourceTimeTransitionGraph &graph,
                     "transition graph endpoint has no Deployment");
     table.deployments.push_back(*endpoint.deployment);
   }
-  if (table.deployments.size() > gem5MaximumDynamicSpatialInvocations)
+  if (table.deployments.size() > gem5MaximumStaticDispatchEntries)
     return reject(Gem5RootEventControlErrorReason::EndpointBoundExceeded,
                   "transition graph exceeds the gem5 endpoint bound");
   for (const pnr::ResourceTimeTransition &transition : graph.transitions) {

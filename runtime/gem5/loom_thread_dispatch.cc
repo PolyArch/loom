@@ -207,7 +207,7 @@ LoomThreadDispatch::LoomThreadDispatch(const Params &params)
                 endpointDispatchEnabled != std::vector<std::uint64_t>{0} ||
                 !params.root_event_control_path.empty()),
            "host-only Thread Dispatch contains an active endpoint");
-  panic_if(records.size() > gem5MaximumDynamicSpatialInvocations,
+  panic_if(records.size() > gem5MaximumStaticDispatchEntries,
            "LoomThreadDispatch target count exceeds the Runtime ABI bound");
   fatal_if(params.root_event_trace_path.empty(),
            "LoomThreadDispatch root event trace path is empty");

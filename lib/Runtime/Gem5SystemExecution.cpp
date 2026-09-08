@@ -287,7 +287,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.15");
+    json.attribute("schema", gem5SystemProjectionSchema);
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -518,8 +518,6 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value(std::to_string(gem5MaximumSpatialWork));
             json.value("--ticks-per-cycle");
             json.value(std::to_string(ticksPerCycle));
-            json.value("--maximum-invocations");
-            json.value(std::to_string(gem5MaximumDynamicSpatialInvocations));
             json.value("--bridge-count");
             json.value(std::to_string(facts.spatialBridgeSessions.size()));
             if (diagnostics && facts.engine == Gem5SystemEngine::Cgra) {
@@ -531,8 +529,6 @@ renderProjection(const Gem5SystemFacts &facts,
                          spatialBridgeResultPath(indexed.index()));
           json.attribute("maximum_message_bytes",
                          session.bridge.maximumMessageBytes);
-          json.attribute("maximum_invocations",
-                         gem5MaximumDynamicSpatialInvocations);
         });
       }
     });
@@ -680,12 +676,6 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
   if ((bytes.size() - headerBytes) % recordBytes != 0)
     return invalid("gem5 root lifecycle result has a partial record");
   const std::size_t recordCount = (bytes.size() - headerBytes) / recordBytes;
-  const std::size_t sessionCount =
-      std::max<std::size_t>(facts.spatialBridgeSessions.size(), 1);
-  if (recordCount >
-      2 * static_cast<std::size_t>(gem5MaximumDynamicSpatialInvocations) *
-          sessionCount)
-    return invalid("gem5 root lifecycle result exceeds its invocation bound");
 
   std::vector<sim::SystemRootLifecycleObservation> observations;
   observations.reserve(recordCount);
@@ -722,7 +712,7 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
     const auto controlDecision =
         static_cast<Gem5RootEventControlDecision>(decision);
     if (controlDecision == Gem5RootEventControlDecision::Reject ||
-        endpoint >= gem5MaximumDynamicSpatialInvocations)
+        endpoint >= gem5MaximumStaticDispatchEntries)
       return invalid("gem5 root lifecycle records a rejected endpoint");
     if (action == static_cast<std::uint32_t>(
                       Gem5RootLifecycleAction::Start)) {
@@ -1520,7 +1510,7 @@ prepareGem5SystemCompletionControlledInvocation(
     const ExternalToolPreparationContext &context,
     const Gem5RootEventEndpointTable &endpoints) {
   if (endpoints.deployments.empty() ||
-      endpoints.deployments.size() > gem5MaximumDynamicSpatialInvocations)
+      endpoints.deployments.size() > gem5MaximumStaticDispatchEntries)
     return invalid("gem5 root event control endpoint table is outside its "
                    "bounded domain");
   const RootEventControlProjection control{endpoints};
@@ -1671,9 +1661,8 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
     if (!decodeGem5BridgeResultCollection(bridgeBytes, bridgeResults,
                                           bridgeDiagnostic))
       return invalid("bridge result is invalid: " + bridgeDiagnostic);
-    if (session.launchOrdinals.empty() != bridgeResults.results.empty() ||
-        bridgeResults.results.size() > gem5MaximumDynamicSpatialInvocations)
-      return invalid("bridge result count is outside its session limits");
+    if (session.launchOrdinals.empty() != bridgeResults.results.empty())
+      return invalid("bridge result presence disagrees with its launch domain");
     std::vector<bool> observedSessionEntries(session.launchOrdinals.size());
     std::uint64_t previousCompletionTick = systemResult->entryTick;
     for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
