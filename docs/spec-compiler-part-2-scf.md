@@ -1567,7 +1567,13 @@ T = graph-temporal stream, recurrence, and state coordinates
 domain. `S` becomes explicit graph actor replication or typed vector lanes.
 `T` becomes explicit graph streams, carry, invariant, gate, memory-frontier,
 and state-transition structure. These groups are a materialization rule, not a
-persistent schedule tree or another program representation. Tiling may add
+persistent schedule tree or another program representation. A recurrence whose
+next value is exactly the true-lane projection of its own output under the
+same loop condition lowers to `dataflow.invariant`: each true phase repeats
+the initial token and the false phase closes the activation. This applies to
+unchanged scalar values and event frontiers. A feedback path containing body
+work, a memory completion, or another condition remains an explicit recurrence.
+Tiling may add
 coordinates, while fusion, linearization, vectorization, and interchange may
 remove or reparameterize them; no equality with source loop depth is required.
 

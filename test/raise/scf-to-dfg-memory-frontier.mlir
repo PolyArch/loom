@@ -105,7 +105,7 @@ dataflow.graph private @frontier_if_values(
 
 // CHECK-LABEL: dataflow.graph private @frontier_for
 // CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3 step add while slt : i64
-// CHECK: %[[EXEC_RAW:.*]] = dataflow.carry %[[PHASE]], %arg0,
+// CHECK: %[[EXEC_RAW:.*]] = dataflow.invariant %[[PHASE]], %arg0 : none
 // CHECK: %[[EXEC_LANES:.*]]:2 = dataflow.demux %[[PHASE]], %[[EXEC_RAW]] : (i1, none) -> (none, none)
 // CHECK: %[[VALUE_RAW:.*]] = dataflow.invariant %[[PHASE]], %arg5 : i32
 // CHECK: %[[BODY_PHASE:.*]], %[[BODY_VALUE:.*]] = dataflow.gate %[[PHASE]], %[[VALUE_RAW]] : i32
@@ -134,9 +134,9 @@ dataflow.graph private @frontier_for(
 
 // CHECK-LABEL: dataflow.graph private @frontier_for_zero_trip
 // CHECK: %[[ZERO_IV:.*]], %[[ZERO_PHASE:.*]] = dataflow.stream %arg1, %arg1, %arg2 step add while slt : i64
-// CHECK: %[[ZERO_EXEC_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg0,
+// CHECK: %[[ZERO_EXEC_RAW:.*]] = dataflow.invariant %[[ZERO_PHASE]], %arg0 : none
 // CHECK: %[[ZERO_EXEC_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_EXEC_RAW]] : (i1, none) -> (none, none)
-// CHECK: %[[ZERO_VALUE_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg4,
+// CHECK: %[[ZERO_VALUE_RAW:.*]] = dataflow.invariant %[[ZERO_PHASE]], %arg4 : i32
 // CHECK: %[[ZERO_VALUE_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_VALUE_RAW]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[ZERO_INDEX_RAW:.*]] = dataflow.invariant %[[ZERO_PHASE]], %arg3 : index
 // CHECK: %[[ZERO_BODY_PHASE:.*]], %[[ZERO_BODY_VALUE:.*]] = dataflow.gate %[[ZERO_PHASE]], %[[ZERO_INDEX_RAW]] : index
@@ -212,7 +212,7 @@ dataflow.graph private @frontier_for_descending(
 
 // CHECK-LABEL: dataflow.graph private @frontier_while_final_false
 // CHECK: %[[EXEC_RAW:.*]] = dataflow.carry %[[COND:.*]], %arg0,
-// CHECK: %[[W_RAW:.*]] = dataflow.carry %[[COND]], %arg0,
+// CHECK: %[[W_RAW:.*]] = dataflow.invariant %[[COND]], %arg0 : none
 // CHECK: %[[R_RAW:.*]] = dataflow.carry %[[COND]], %arg0,
 // CHECK: %[[BEFORE_LOAD:.*]], %[[BEFORE_DONE:.*]] = dataflow.load %arg6[{{.*}}]
 // CHECK: %[[R_BEFORE:.*]]:2 = dataflow.sync %{{.*}}, %[[BEFORE_DONE]] : (none, none) -> (none, none)
