@@ -1167,7 +1167,7 @@ summarizeCandidate(const SpatialCandidateState &candidate) {
   return summary;
 }
 
-SpatialPnrInterruptionSnapshot
+llvm::Expected<SpatialPnrInterruptionSnapshot>
 projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
                             std::optional<std::uint32_t> restartOrdinal,
                             const SpatialPnrGenerationAccounting &accounting,
@@ -1176,6 +1176,7 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
                             const ExecutionResourceTracker &resources,
                             const MappingObjectiveProgram *objectiveProgram) {
   std::optional<SpatialRestartCandidateSummary> best;
+  const SpatialRestartResult *bestRestart = nullptr;
   for (const SpatialRestartResult &restart : restarts) {
     if (!restart.finalized && !restart.candidate)
       continue;
@@ -1183,8 +1184,10 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
         restart.finalized ? restart.finalized->summary
                           : summarizeCandidate(*restart.candidate);
     if (!summary.objective) {
-      if (!best)
+      if (!best) {
         best = std::move(summary);
+        bestRestart = &restart;
+      }
       continue;
     }
     if (best && best->objective) {
@@ -1198,6 +1201,7 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
         continue;
     }
     best = std::move(summary);
+    bestRestart = &restart;
   }
 
   SpatialPnrInterruptionSnapshot snapshot;
@@ -1226,6 +1230,10 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
   }
   snapshot.closureResidual.retainedCandidates = retainedCandidates;
   snapshot.resources = resources.observe();
+  auto capacity = projectFifoCapacityShortfall(bestRestart);
+  if (!capacity)
+    return capacity.takeError();
+  snapshot.fifoCapacityShortfall = std::move(*capacity);
   return snapshot;
 }
 
@@ -1316,18 +1324,21 @@ interruptedOutcome(SpatialPnrInterruptionStage stage,
   llvm::sort(candidates, artifactRootReferenceLess);
   candidates.erase(std::unique(candidates.begin(), candidates.end()),
                    candidates.end());
-  SpatialPnrInterruptionSnapshot snapshot = projectInterruptionSnapshot(
-      stage, restartOrdinal, accounting, restarts, candidates.size(), resources,
-      objectiveProgram);
+  auto snapshot = projectInterruptionSnapshot(stage, restartOrdinal, accounting,
+                                              restarts, candidates.size(),
+                                              resources, objectiveProgram);
+  if (!snapshot)
+    return internal(InternalSpatialPnrGenerationReason::CandidateVerification,
+                    accounting, snapshot.takeError());
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
       mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
         fields["failure_scope"] = "invocation";
         fields["closure_status"] = "cancelled_or_timeout";
-        fields["interruption"] = interruptionPayload(snapshot);
+        fields["interruption"] = interruptionPayload(*snapshot);
       });
   return InterruptedSpatialPnrGeneration{std::move(candidates), accounting,
-                                         std::move(snapshot)};
+                                         std::move(*snapshot)};
 }
 
 } // namespace

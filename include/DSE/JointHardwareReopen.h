@@ -11,7 +11,6 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialMappingWarmSeed.h"
-#include "PnR/SpatialProgressState.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -371,14 +370,6 @@ executeSpatialFifoHardwareFeedbackReopen(
     const JointDesignPolicy &policy, const SpatialFifoRuntimeFeedback &feedback,
     JointHardwareReopenRequest request, const ArtifactStore &artifacts,
     const BlobStore &blobs);
-
-/// Projects the canonical global-depth comparison domain for one static
-/// shared-pool suggestion: depth one, depth two, the sufficient bound, and
-/// one deeper control. The returned typed domain is consumed by the ordinary
-/// spatial-microarchitecture generator; this adapter owns no Fabric writer.
-llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
-deriveSpatialCapacityHardwareReopenDomains(
-    const pnr::SpatialFifoCapacitySuggestion &feedback);
 
 /// Materializes the bounded Temporal operand-buffer child set admitted by one
 /// exact queue-level closed-wait witness. Incomplete, ambiguous, or analytic

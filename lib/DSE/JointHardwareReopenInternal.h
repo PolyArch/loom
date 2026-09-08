@@ -34,13 +34,14 @@ struct TechHardwareFeedbackObservation final {
   mapping::TechMappingComputeContextHallDeficit feedback;
 };
 
-struct SpatialHardwareFeedbackObservation final {
-  mapping::SpatialGraphBoundaryEndpointHallDeficit feedback;
-};
-
 struct SystemHardwareFeedbackObservation final {
   mapping::SystemAccCoreCapacityPressure feedback;
 };
+
+using MappingHardwareFeedback =
+    std::variant<TechHardwareFeedbackObservation,
+                 mapping::SpatialMappingHardwareFeedback,
+                 SystemHardwareFeedbackObservation>;
 
 struct HardwareRecipeGrowth final {
   ResolvedConfig config;
@@ -168,7 +169,7 @@ llvm::Expected<std::optional<TechHardwareFeedbackObservation>>
 selectTechHardwareFeedback(const JointDesignExecution &execution,
                            const ArtifactStore &artifacts);
 
-llvm::Expected<std::optional<SpatialHardwareFeedbackObservation>>
+llvm::Expected<std::optional<mapping::SpatialMappingHardwareFeedback>>
 selectSpatialHardwareFeedback(const JointDesignExecution &execution,
                               const ArtifactStore &artifacts);
 
@@ -176,12 +177,14 @@ llvm::Expected<std::optional<SystemHardwareFeedbackObservation>>
 selectSystemHardwareFeedback(const JointDesignExecution &execution,
                              const ArtifactStore &artifacts);
 
-llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
-    const ResolvedConfig &baseConfig,
-    const std::optional<TechHardwareFeedbackObservation> &techObservation,
-    const std::optional<SpatialHardwareFeedbackObservation> &spatialObservation,
-    const std::optional<SystemHardwareFeedbackObservation> &systemObservation,
-    const ArtifactStore &artifacts);
+llvm::Expected<std::optional<MappingHardwareFeedback>>
+selectMappingHardwareFeedback(const JointDesignExecution &execution,
+                              const ArtifactStore &artifacts);
+
+llvm::Expected<HardwareRecipeGrowth>
+deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
+                           const MappingHardwareFeedback &feedback,
+                           const ArtifactStore &artifacts);
 
 llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig,

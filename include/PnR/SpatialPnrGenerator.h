@@ -220,6 +220,7 @@ struct SpatialPnrInterruptionSnapshot final {
   std::optional<std::vector<std::uint64_t>> bestSelectedRank;
   SpatialPnrClosureResidual closureResidual;
   ExecutionResourceStatistics resources;
+  std::optional<SpatialFifoCapacitySuggestion> fifoCapacityShortfall;
 };
 
 struct InterruptedSpatialPnrGeneration final {
