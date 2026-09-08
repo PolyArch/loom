@@ -31,20 +31,6 @@ namespace loom::dse {
 
 using namespace joint_reopen_detail;
 
-llvm::Expected<std::vector<SpatialMicroarchitectureDecisionDomain>>
-deriveSpatialCapacityHardwareReopenDomains(
-    const pnr::SpatialFifoCapacitySuggestion &feedback) {
-  if (feedback.logicalNets.empty() || feedback.routeAnchors.empty())
-    return invalid("static FIFO capacity feedback is incomplete or outside "
-                   "the hardware depth domain");
-  auto domain = deriveFifoCapacityDepthDomain(
-      feedback.owner, feedback.selectedCapacity, feedback.sufficientCapacity);
-  if (!domain)
-    return domain.takeError();
-  return std::vector<SpatialMicroarchitectureDecisionDomain>{
-      std::move(*domain)};
-}
-
 llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     llvm::ArrayRef<const JointDesignExplorationPlan *> plans,
     const JointDesignPolicy &policy, JointHardwareReopenRequest request,
@@ -64,10 +50,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     const JointDesignExplorationPlan *plan = nullptr;
     JointSoftwareCoverage coverage;
     JointDesignExecution execution;
-    /// Exact Tech Hall pressure is ranking provenance for bounded hardware
-    /// parent promotion. It never changes the typed feedback disposition or
-    /// proves a child Mapping legal.
-    std::uint64_t techHallDeficit = 0;
+    std::optional<MappingHardwareFeedback> feedback;
   };
   struct VerifiedAlternative final {
     std::uint64_t planOrdinal = 0;
@@ -566,17 +549,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             JointHardwareExplorationScope::BoundedHardwareReopen &&
         policy.maximumSystemFrontier() > 1) {
       for (const FailedSoftwareAttempt &attempt : failedSoftwareAttempts) {
-        auto tech = selectTechHardwareFeedback(attempt.execution, artifacts);
-        if (!tech)
-          return tech.takeError();
-        auto spatial =
-            selectSpatialHardwareFeedback(attempt.execution, artifacts);
-        if (!spatial)
-          return spatial.takeError();
-        auto system = selectSystemHardwareFeedback(attempt.execution, artifacts);
-        if (!system)
-          return system.takeError();
-        if (*tech || *spatial || *system)
+        if (attempt.feedback)
           ++actionableHardwareParents;
       }
       if (request.boundedQuality) {
@@ -775,17 +748,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       // justify one bounded hardware repair. Keep the parent typed incomplete
       // while admitting only the actionable feedback path; absent feedback
       // remains the ordinary first-incomplete witness.
-      auto tech = selectTechHardwareFeedback(*initial, artifacts);
-      if (!tech)
-        return tech.takeError();
-      auto spatial = selectSpatialHardwareFeedback(*initial, artifacts);
-      if (!spatial)
-        return spatial.takeError();
-      auto system = selectSystemHardwareFeedback(*initial, artifacts);
-      if (!system)
-        return system.takeError();
-      if (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
-          (*tech || *spatial || *system)) {
+      auto feedback = selectMappingHardwareFeedback(*initial, artifacts);
+      if (!feedback)
+        return feedback.takeError();
+      if (*feedback) {
         auto coverage = projectJointSoftwareCoverage(plan, artifacts);
         if (!coverage)
           return coverage.takeError();
@@ -794,14 +760,19 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
               fields["operation"] = "incomplete_parent_hardware_feedback";
               fields["plan_ordinal"] = indexed.index();
-              fields["tech_feedback"] = static_cast<bool>(*tech);
-              fields["spatial_feedback"] = static_cast<bool>(*spatial);
-              fields["system_feedback"] = static_cast<bool>(*system);
+              fields["tech_feedback"] =
+                  std::holds_alternative<TechHardwareFeedbackObservation>(
+                      **feedback);
+              fields["spatial_feedback"] = std::holds_alternative<
+                  mapping::SpatialMappingHardwareFeedback>(**feedback);
+              fields["system_feedback"] =
+                  std::holds_alternative<SystemHardwareFeedbackObservation>(
+                      **feedback);
               fields["parent_disposition"] = "incomplete";
             });
         failedSoftwareAttempts.push_back(
             {static_cast<std::uint64_t>(indexed.index()), planPointer,
-             std::move(*coverage), std::move(*initial), 0});
+             std::move(*coverage), std::move(*initial), std::move(*feedback)});
       } else if (!firstIncomplete) {
         firstIncomplete = std::move(*initial);
       }
@@ -820,9 +791,12 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     auto coverage = projectJointSoftwareCoverage(plan, artifacts);
     if (!coverage)
       return coverage.takeError();
+    auto feedback = selectMappingHardwareFeedback(*initial, artifacts);
+    if (!feedback)
+      return feedback.takeError();
     failedSoftwareAttempts.push_back(
         {static_cast<std::uint64_t>(indexed.index()), planPointer,
-         std::move(*coverage), std::move(*initial), 0});
+         std::move(*coverage), std::move(*initial), std::move(*feedback)});
   }
   // Hardware feedback is consumed only after every bounded software/System
   // pair has been tried on the parent System. This preserves the declared
@@ -830,32 +804,29 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   // hiding a later parent-hardware solution.
   std::vector<FailedSoftwareAttempt *> hardwareFeedbackFrontier;
   if (request.hardwareExplorationScope ==
-          JointHardwareExplorationScope::BoundedHardwareReopen &&
-      request.stoppingPolicy != JointDesignStoppingPolicy::BoundedQuality) {
+      JointHardwareExplorationScope::BoundedHardwareReopen) {
     for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts)
-      hardwareFeedbackFrontier.push_back(&attempt);
-  } else if (request.hardwareExplorationScope ==
-             JointHardwareExplorationScope::BoundedHardwareReopen) {
-    for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts) {
-      auto tech = selectTechHardwareFeedback(attempt.execution, artifacts);
-      if (!tech)
-        return tech.takeError();
-      auto spatial =
-          selectSpatialHardwareFeedback(attempt.execution, artifacts);
-      if (!spatial)
-        return spatial.takeError();
-      auto system = selectSystemHardwareFeedback(attempt.execution, artifacts);
-      if (!system)
-        return system.takeError();
-      attempt.techHallDeficit = *tech ? (*tech)->feedback.deficit() : 0;
-      if (*tech || *spatial || *system)
+      if (attempt.feedback)
         hardwareFeedbackFrontier.push_back(&attempt);
-    }
     llvm::sort(hardwareFeedbackFrontier, [&](const FailedSoftwareAttempt *lhs,
                                              const FailedSoftwareAttempt *rhs) {
+      if (lhs->feedback->index() != rhs->feedback->index())
+        return lhs->feedback->index() > rhs->feedback->index();
+      const auto *lhsSpatial =
+          std::get_if<mapping::SpatialMappingHardwareFeedback>(&*lhs->feedback);
+      const auto *rhsSpatial =
+          std::get_if<mapping::SpatialMappingHardwareFeedback>(&*rhs->feedback);
+      if (lhsSpatial && rhsSpatial &&
+          lhsSpatial->index() != rhsSpatial->index())
+        return lhsSpatial->index() > rhsSpatial->index();
+      const auto *lhsTech =
+          std::get_if<TechHardwareFeedbackObservation>(&*lhs->feedback);
+      const auto *rhsTech =
+          std::get_if<TechHardwareFeedbackObservation>(&*rhs->feedback);
       if (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
-          lhs->techHallDeficit != rhs->techHallDeficit)
-        return lhs->techHallDeficit > rhs->techHallDeficit;
+          lhsTech && rhsTech &&
+          lhsTech->feedback.deficit() != rhsTech->feedback.deficit())
+        return lhsTech->feedback.deficit() > rhsTech->feedback.deficit();
       if (lhs->coverage.acceleratedRootCount !=
           rhs->coverage.acceleratedRootCount)
         return lhs->coverage.acceleratedRootCount >
@@ -866,6 +837,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         return lhs->coverage.actorCount > rhs->coverage.actorCount;
       return lhs->planOrdinal < rhs->planOrdinal;
     });
+  }
+  if (request.hardwareExplorationScope ==
+          JointHardwareExplorationScope::BoundedHardwareReopen &&
+      request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
     const std::size_t actionableFeedbackCount = hardwareFeedbackFrontier.size();
     if (request.boundedQuality->hardwarePromotion) {
       std::vector<FailedSoftwareAttempt *> ranked;
@@ -919,15 +894,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       boundedQualitySearchIncomplete = true;
       break;
     }
-    std::optional<PlanExecutionPolicy> feedbackExecutionPolicy;
+    auto feedbackExecutionPolicy = fairRemainingPlanPolicy(
+        request.executionPolicy,
+        hardwareFeedbackFrontier.size() - indexedAttempt.index());
+    if (!feedbackExecutionPolicy)
+      return feedbackExecutionPolicy.takeError();
     std::optional<ArtifactRootReference> promotedParentSystem;
     if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality) {
-      auto fair = fairRemainingPlanPolicy(
-          request.executionPolicy,
-          hardwareFeedbackFrontier.size() - indexedAttempt.index());
-      if (!fair)
-        return fair.takeError();
-      feedbackExecutionPolicy.emplace(std::move(*fair));
       ++hardwareSpectrumParentsConsumed;
       if (request.boundedQuality->hardwarePromotion) {
         if (attempt.plan->frontier.systemFrontier.size() != 1)
@@ -937,18 +910,16 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
     }
     ++hardwareReopenSearches;
-    auto promotedTechFeedback =
-        selectTechHardwareFeedback(attempt.execution, artifacts);
-    if (!promotedTechFeedback)
-      return promotedTechFeedback.takeError();
+    const auto *promotedTechFeedback =
+        std::get_if<TechHardwareFeedbackObservation>(&*attempt.feedback);
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "hardware_feedback_promotion";
           fields["plan_ordinal"] = attempt.planOrdinal;
           fields["tech_hall_deficit"] =
-              *promotedTechFeedback ? (*promotedTechFeedback)->feedback.deficit()
-                                    : 0;
+              promotedTechFeedback ? promotedTechFeedback->feedback.deficit()
+                                   : 0;
           fields["accelerated_root_count"] =
               attempt.coverage.acceleratedRootCount;
           fields["graph_count"] = attempt.coverage.graphCount;
@@ -960,8 +931,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         policy, *attempt.plan, attempt.execution, lastReopenedFailure,
         attempt.planOrdinal, attemptRecords, accounting, encounteredInvocations,
         request.evidence, request, *scheduler, artifacts, blobs,
-        promotedParentSystem,
-        feedbackExecutionPolicy ? &*feedbackExecutionPolicy : nullptr);
+        promotedParentSystem, &*feedbackExecutionPolicy);
     if (!reopened)
       return reopened.takeError();
     if (promotedParentSystem && attemptRecords.size() != firstAttemptRecord) {

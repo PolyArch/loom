@@ -717,12 +717,12 @@ selectTechHardwareFeedback(const dse::JointDesignExecution &execution,
   return selected;
 }
 
-llvm::Expected<std::optional<SpatialHardwareFeedbackObservation>>
+llvm::Expected<std::optional<mapping::SpatialMappingHardwareFeedback>>
 selectSpatialHardwareFeedback(const dse::JointDesignExecution &execution,
                               const ArtifactStore &artifacts) {
   const dse::CompletedDsePlanExecution &available =
       availableExecution(execution.planExecution);
-  std::optional<SpatialHardwareFeedbackObservation> selected;
+  std::optional<mapping::SpatialMappingHardwareFeedback> selected;
   for (const dse::GenerateInvocationFeedback &feedback :
        available.generateFeedback()) {
     const auto invocation = llvm::find_if(
@@ -735,7 +735,7 @@ selectSpatialHardwareFeedback(const dse::JointDesignExecution &execution,
         invocation->generatorBinding.descriptorRef().descriptor();
     if (!descriptor || !descriptor->ownerFeedbackPayload ||
         descriptor->ownerFeedbackPayload->schemaDescriptorBytes !=
-            mapping::spatialGraphBoundaryEndpointHallFeedbackSchemaBytes())
+            mapping::spatialMappingHardwareFeedbackSchemaBytes())
       continue;
 
     std::optional<ArtifactRootReference> moduleReference;
@@ -763,21 +763,12 @@ selectSpatialHardwareFeedback(const dse::JointDesignExecution &execution,
     if (!moduleReference || techMappings.empty())
       return invalid("SpatialMapping feedback lacks its exact Mapping inputs");
     canonicalizeRoots(techMappings);
-    auto adopted = mapping::adoptSpatialGraphBoundaryEndpointHallFeedback(
+    auto adopted = mapping::adoptSpatialMappingHardwareFeedback(
         feedback.canonicalPayload, *moduleReference, techMappings, artifacts);
     if (!adopted)
       return adopted.takeError();
-    SpatialHardwareFeedbackObservation candidate{std::move(*adopted)};
-    if (!selected ||
-        candidate.feedback.requiredBoundaryPairs() >
-            selected->feedback.requiredBoundaryPairs() ||
-        (candidate.feedback.requiredBoundaryPairs() ==
-             selected->feedback.requiredBoundaryPairs() &&
-         mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
-             candidate.feedback) <
-             mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
-                 selected->feedback)))
-      selected = std::move(candidate);
+    mapping::retainSpatialMappingHardwareFeedback(selected,
+                                                  std::move(*adopted));
   }
   return selected;
 }
@@ -858,12 +849,33 @@ selectSystemHardwareFeedback(const dse::JointDesignExecution &execution,
   return selected;
 }
 
-llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
-    const ResolvedConfig &baseConfig,
-    const std::optional<TechHardwareFeedbackObservation> &techObservation,
-    const std::optional<SpatialHardwareFeedbackObservation> &spatialObservation,
-    const std::optional<SystemHardwareFeedbackObservation> &systemObservation,
-    const ArtifactStore &artifacts) {
+llvm::Expected<std::optional<MappingHardwareFeedback>>
+selectMappingHardwareFeedback(const JointDesignExecution &execution,
+                              const ArtifactStore &artifacts) {
+  // A later boundary already has an admitted earlier frontier. Do not also
+  // grow hardware for rejected alternatives from that earlier stage.
+  auto system = selectSystemHardwareFeedback(execution, artifacts);
+  if (!system)
+    return system.takeError();
+  if (*system)
+    return std::optional<MappingHardwareFeedback>(std::move(**system));
+  auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
+  if (!spatial)
+    return spatial.takeError();
+  if (*spatial)
+    return std::optional<MappingHardwareFeedback>(std::move(**spatial));
+  auto tech = selectTechHardwareFeedback(execution, artifacts);
+  if (!tech)
+    return tech.takeError();
+  if (*tech)
+    return std::optional<MappingHardwareFeedback>(std::move(**tech));
+  return std::optional<MappingHardwareFeedback>();
+}
+
+llvm::Expected<HardwareRecipeGrowth>
+deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
+                           const MappingHardwareFeedback &feedback,
+                           const ArtifactStore &artifacts) {
   HardwareRecipeGrowth growth;
   growth.config = baseConfig;
   growth.resultingContexts =
@@ -871,7 +883,8 @@ llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
   growth.resultingGateways = baseConfig.hardwareTarget.parameters.gatewayCount;
   growth.resultingAccCores = baseConfig.hardwareTarget.parameters.accCoreCount;
 
-  if (techObservation) {
+  if (const auto *techObservation =
+          std::get_if<TechHardwareFeedbackObservation>(&feedback)) {
     auto module =
         fabric::importEntireFabricRoot(techObservation->module, artifacts);
     if (!module)
@@ -892,23 +905,48 @@ llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
     growth.techModule = techObservation->module;
     growth.instructionStoreResizes = plan->decisions;
     growth.resizedInstructionStoreCount = plan->decisions.size();
-  }
-
-  if (spatialObservation) {
-    const std::uint64_t addedGateways =
-        spatialObservation->feedback.requiredBoundaryPairs();
-    if (addedGateways == 0 ||
-        addedGateways > std::numeric_limits<std::uint32_t>::max() -
-                            growth.resultingGateways)
-      return invalid("graph-boundary Hall feedback has no representable "
-                     "gateway growth");
-    growth.addedGateways = addedGateways;
-    growth.resultingGateways += addedGateways;
-    growth.config.hardwareTarget.parameters.gatewayCount =
-        static_cast<std::uint32_t>(growth.resultingGateways);
-  }
-
-  if (systemObservation) {
+  } else if (const auto *spatialObservation =
+                 std::get_if<mapping::SpatialMappingHardwareFeedback>(
+                     &feedback)) {
+    if (const auto *fifo =
+            std::get_if<mapping::SpatialFifoChannelCapacitySuggestion>(
+                &*spatialObservation)) {
+      if (fifo->proposedChannels() > std::numeric_limits<std::uint32_t>::max())
+        return invalid("FIFO reservation proposal exceeds the builtin recipe");
+      auto &parameters = growth.config.hardwareTarget.parameters;
+      if (parameters.interconnectFifoQueueDiscipline !=
+          ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+        return invalid(
+            "FIFO reservation proposal requires a virtual-channel recipe");
+      const auto proposed =
+          static_cast<std::uint32_t>(fifo->proposedChannels());
+      parameters.interconnectFifoReservedChannels =
+          std::max(parameters.interconnectFifoReservedChannels, proposed);
+      parameters.interconnectFifoDepth =
+          std::max(parameters.interconnectFifoDepth, proposed);
+      parameters.temporalResidentContexts =
+          std::max(parameters.temporalResidentContexts, proposed);
+      growth.addedContexts =
+          parameters.temporalResidentContexts - growth.resultingContexts;
+      growth.resultingContexts = parameters.temporalResidentContexts;
+    } else {
+      const auto &hall =
+          std::get<mapping::SpatialGraphBoundaryEndpointHallDeficit>(
+              *spatialObservation);
+      const std::uint64_t addedGateways = hall.requiredBoundaryPairs();
+      if (addedGateways == 0 ||
+          addedGateways > std::numeric_limits<std::uint32_t>::max() -
+                              growth.resultingGateways)
+        return invalid("graph-boundary Hall feedback has no representable "
+                       "gateway growth");
+      growth.addedGateways = addedGateways;
+      growth.resultingGateways += addedGateways;
+      growth.config.hardwareTarget.parameters.gatewayCount =
+          static_cast<std::uint32_t>(growth.resultingGateways);
+    }
+  } else {
+    const auto *systemObservation =
+        &std::get<SystemHardwareFeedbackObservation>(feedback);
     if (systemObservation->feedback.compatibleAccCoreCount() !=
         growth.resultingAccCores)
       return invalid("uniform recipe cannot represent heterogeneous AccCore "
@@ -923,9 +961,6 @@ llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
     growth.accCoreTargetModule = systemObservation->feedback.targetModule();
   }
 
-  if (growth.instructionStoreResizes.empty() && growth.addedContexts == 0 &&
-      growth.addedGateways == 0 && growth.addedAccCores == 0)
-    return invalid("Mapping feedback requests no builtin recipe growth");
   growth.config.dse.planNodes.clear();
   return growth;
 }
@@ -1002,6 +1037,11 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
         fields["added_temporal_contexts"] = growth.addedContexts;
         fields["temporal_resident_contexts"] = growth.resultingContexts;
         fields["added_gateways"] = growth.addedGateways;
+        fields["interconnect_fifo_reserved_channels"] =
+            growth.config.hardwareTarget.parameters
+                .interconnectFifoReservedChannels;
+        fields["interconnect_fifo_depth"] =
+            growth.config.hardwareTarget.parameters.interconnectFifoDepth;
         fields["gateway_count"] = growth.resultingGateways;
         fields["added_acc_cores"] = growth.addedAccCores;
         fields["acc_core_count"] = growth.resultingAccCores;

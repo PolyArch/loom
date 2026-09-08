@@ -2017,8 +2017,8 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v31`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v22`. It consumes the
+`loom.mapping.root_complete_spatial_pnr.generator.v32`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v23`. It consumes the
 finite TechMapping output and the same exact Fabric Artifact. Each `T` already
 binds one unique Canonical Dataflow identity, so the descriptor strictly
 recovers `D` from `T` instead of accepting a second `D` slot. It mechanically
@@ -3411,15 +3411,30 @@ by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
 The root-complete Spatial provider may return
-`loom.mapping.spatial_graph_boundary_endpoint_hall_feedback.1.0`. It names the
-exact Module and TechMapping whose graph-boundary attachment relation is Hall
-deficient. Its canonical payload retains the independent input/output demand
-and Hall-neighbor endpoint counts; aggregate cardinalities are derived rather
-than serialized again. The directional split is necessary because one
-additional builtin gateway contributes one input and one output endpoint; the
-required gateway increment is the larger directional deficit. This feedback is
-not a routing failure, does not imply that another TechMapping has the same
-boundary demand, and cannot weaken endpoint exclusivity.
+`loom.mapping.spatial_hardware_feedback.1.0`. Its closed alternatives are a
+graph-boundary Hall deficit and a FIFO channel-reservation proposal. Both name
+the exact Module and TechMapping input. A Hall deficit retains independent
+input/output demand and Hall-neighbor endpoint counts; aggregate cardinalities
+are derived rather than serialized again. One additional builtin gateway
+contributes one input and one output endpoint, so the required gateway
+increment is the larger directional deficit. This does not imply that another
+TechMapping has the same boundary demand and cannot weaken endpoint exclusivity.
+A FIFO proposal retains its exact occurrence, selected and proposed guaranteed
+channel counts, residual logical producer references, and traversal anchors.
+Adoption checks the selected reservation against the Module and resolves the
+logical nets and traversal anchors against the exact input closure. It is a
+search proposal, not an infeasibility proof.
+
+The wire contains the two canonical root references, a u64be alternative
+discriminant (Hall = 0, FIFO = 1), then the alternative's fields. Hall stores
+the four directional counts as u64be. FIFO stores a length-framed canonical
+FIFO reference, selected and proposed counts, then count-prefixed logical-net
+and traversal-anchor tables whose canonical local references are length-framed.
+Counts and lengths use u64be. Both tables are sorted and unique. Unknown kinds,
+foreign references, stale selected reservations, noncanonical tables, and
+trailing bytes are rejected. Retention prefers a proposal from admitted routes
+to a pre-placement Hall deficit, then larger requested capacity and witness
+cardinality within that family, followed by canonical bytes.
 
 The root-complete System provider may return
 `loom.mapping.system_acc_core_capacity_pressure.3.0` only after its exact
@@ -3453,9 +3468,11 @@ owner nor an upper bound for a later typed subset resize.
 Spatial boundary feedback currently has no typed Module-growth decision because
 the Fabric boundary owner intentionally rejects invented domain rows. It uses
 the ordinary template provider and therefore publishes a typed cold-fallback
-reason for Mapping rather than pretending that selections survived. Mixed
-Tech/Spatial/System mutations likewise take the cold path until each mutation
-has an exact owner-level transformation. System capacity feedback raises the
+reason for Mapping rather than pretending that selections survived. The
+controller prioritizes the deepest observed Mapping boundary: System feedback
+already has admitted Spatial mappings, and Spatial feedback already has an
+admitted TechMapping. It does not also grow hardware for rejected alternatives
+from earlier stages. System capacity feedback raises the
 AccCore count by exactly one only when every current occurrence targets the
 named Module; a heterogeneous recipe that cannot express the requested
 compatible occurrence is rejected rather than silently homogenized. There is no
@@ -3487,23 +3504,25 @@ typed fallback reason until a corresponding hardware decision owner is added.
 
 ### Runtime-Derived Spatial FIFO Feedback
 
-Before runtime exists, a Spatial PnR invocation that retains a known
-reconvergent-capacity bound above the selected depth may return one typed
-owner-local hardware feedback record with the exact FIFO occurrence, selected
-shared capacity, sufficient bound, contributing logical producer bindings,
-and selected traversal anchors. The record is invocation output, not a Mapping
-artifact and not an infeasibility proof. It is absent for an unknown bound,
-timeout without a retained candidate, or a non-capacity violation.
+Before runtime exists, a Spatial PnR invocation can retain a known bound above
+the selected guaranteed channel count of a virtual-channel FIFO. Its exact
+occurrence, selected and proposed channel capacities, contributing logical
+producer bindings, and traversal anchors enter the Spatial feedback described
+above. A limit interruption may retain the same proposal from its best retained
+candidate; an interruption without such a candidate has no proposal. Unknown
+bounds and non-capacity violations cannot produce a channel-reservation claim.
 
-`HardwareDecision` owns the canonical global-depth comparison domain derived
-from that record: depth one, depth two, the sufficient bound, and twice the
-bound as a deeper control, capped at positive i32, with duplicate semantic
-values removed. An unrepresentable bound or absent deeper control is rejected.
-Every value remains an ordinary
-`ResizeFifo` candidate with candidate-decision lineage, a distinct Fabric
-identity, cold progress verification, and regenerated Mapping/evaluation
-provenance. Neither PnR nor DSE edits the parent Fabric or treats the bound as
-a private route penalty.
+The joint controller derives an ordinary builtin-recipe candidate by raising
+`interconnect_fifo_reserved_channels` to the proposed count. It also raises
+`interconnect_fifo_depth` and `temporal_resident_contexts` only when required to
+represent that reservation. Guaranteed channels and storage entries remain
+distinct configuration facts. This is a uniform recipe alternative with a
+different Fabric identity and cold Mapping, not a local edit or a claim that
+parent placements survived. The existing controller budget and hardware
+frontier bound apply, and the resulting Mapping and execution must be verified
+normally. Runtime occupancy feedback below still uses the existing typed depth
+and queue-discipline decisions; it is not interchangeable with this static
+channel-capacity proposal.
 
 CGRA runtime may request a bounded SpatialCore FIFO hardware child only from
 an exact quiescent wait witness. The witness must join the parent SystemMapping
@@ -3760,15 +3779,18 @@ later plan is attempted; a plan that finishes early returns its unused share,
 and the invocation deadline itself is unchanged. Under
 `BoundedQuality`, the complete bounded parent frontier is visited first; exact
 failed-candidate feedback and already verified parents then share one explicit
-hardware-parent budget. Actionable failed candidates are ordered by exact
-accelerated root, graph, and actor coverage, rather than simulation-workload
-row count or log order. Only the declared prefix is promoted. Any remaining
+hardware-parent budget. Actionable failed candidates first prioritize the
+deepest admitted Mapping boundary, with a routed FIFO proposal ahead of a
+pre-placement Spatial Hall deficit, then exact accelerated root, graph, and
+actor coverage. Hardware parents also receive a fair share of the remaining
+invocation time. Only the declared prefix is promoted. Any remaining
 budget may expand verified parents in analytic order. A repairable failure of
 an earlier software candidate cannot therefore grow hardware ahead of a later
 candidate that is already legal on the parent System, while a high-coverage
 exact failure is not hidden by an unrelated small verified candidate.
-Cancellation or timeout still stops execution and is never converted into
-permission to reopen.
+Cancellation or expiration of the invocation deadline still stops execution.
+An expired per-parent slice remains typed incomplete but may retain actionable
+owner feedback while the invocation still has time for another candidate.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing
@@ -4898,8 +4920,8 @@ incomplete rather than being replaced by a larger timeout or extra search.
 
 An incomplete or no-Mapping parent may still retain an exact owner feedback
 payload. It remains `Incomplete` and cannot satisfy a sibling-selection gate,
-but an explicit endpoint-focused invocation may promote that payload into one
-bounded hardware-repair parent. Tech Hall pressure is ranking provenance for
+but the ordinary controller may promote that payload into one bounded
+hardware-repair parent. Tech Hall pressure is ranking provenance for
 that bounded promotion; it does not change legality. When the minimal
 compatible-PE Hall closure is not a robust PnR seed, the hardware owner may
 admit one uniform Temporal-PE capacity alternative with a deterministic

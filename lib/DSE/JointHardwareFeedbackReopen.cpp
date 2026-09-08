@@ -120,25 +120,20 @@ tryHardwareFeedbackReopen(
        ++candidateOrdinal) {
     if (dispatchDeadlineReached(effectiveExecutionPolicy))
       break;
-    auto techObservation =
-        selectTechHardwareFeedback(*currentFailure, artifacts);
-    if (!techObservation)
-      return techObservation.takeError();
-    auto spatialObservation =
-        selectSpatialHardwareFeedback(*currentFailure, artifacts);
-    if (!spatialObservation)
-      return spatialObservation.takeError();
-    auto systemObservation =
-        selectSystemHardwareFeedback(*currentFailure, artifacts);
-    if (!systemObservation)
-      return systemObservation.takeError();
-    if (!*techObservation && !*spatialObservation && !*systemObservation)
+    auto feedback = selectMappingHardwareFeedback(*currentFailure, artifacts);
+    if (!feedback)
+      return feedback.takeError();
+    if (!*feedback)
       break;
-    if (*techObservation) {
+    const auto *techObservation =
+        std::get_if<TechHardwareFeedbackObservation>(&**feedback);
+    const auto *systemObservation =
+        std::get_if<SystemHardwareFeedbackObservation>(&**feedback);
+    if (techObservation) {
       const HallProgressObservation currentHallProgress{
-          (*techObservation)->feedback.deficit(),
-          (*techObservation)->feedback.hallDemandCount(),
-          (*techObservation)->feedback.hallContextValueCount()};
+          techObservation->feedback.deficit(),
+          techObservation->feedback.hallDemandCount(),
+          techObservation->feedback.hallContextValueCount()};
       if (previousHallProgress &&
           currentHallProgress.deficit == previousHallProgress->deficit &&
           currentHallProgress.demand > previousHallProgress->demand &&
@@ -165,6 +160,8 @@ tryHardwareFeedbackReopen(
         break;
       }
       previousHallProgress = currentHallProgress;
+    } else {
+      previousHallProgress.reset();
     }
     ++accounting.hardwareRepairProbesPlanned;
     ++accounting.hardwareRepairProbesReserved;
@@ -172,20 +169,16 @@ tryHardwareFeedbackReopen(
     llvm::Expected<HardwareRecipeGrowth> growth =
         (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
          parentHasNoMappingFrontier && candidateOrdinal == 0 &&
-         techObservation && *techObservation &&
-         (*techObservation)->feedback.deficit() > 1)
-            ? deriveUniformTechHardwareRecipeGrowth(
-                  currentConfig, **techObservation, artifacts)
-            : deriveHardwareRecipeGrowth(currentConfig, *techObservation,
-                                         *spatialObservation,
-                                         *systemObservation, artifacts);
+         techObservation && techObservation->feedback.deficit() > 1)
+            ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
+                                                    *techObservation, artifacts)
+            : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts);
     if (!growth)
       return growth.takeError();
     const bool accCoreOnlyGrowth = growth->addedAccCores != 0 &&
                                    growth->addedContexts == 0 &&
                                    growth->addedGateways == 0;
-    const bool typedModuleGrowth =
-        *techObservation && !*spatialObservation && !*systemObservation;
+    const bool typedModuleGrowth = techObservation != nullptr;
     llvm::Expected<MaterializedHardwareCandidate> system =
         accCoreOnlyGrowth ? materializeTypedAccCoreGrowth(std::move(*growth),
                                                           artifacts, blobs)
@@ -436,16 +429,16 @@ tryHardwareFeedbackReopen(
       if (llvm::Error error = bindImmutableSpatialMappingFrontier(
               *reopenPlan, *reusableSpatialMappings, artifacts))
         return std::move(error);
-      if (!*systemObservation || !system->executionBindingCorrespondence)
+      if (!systemObservation || !system->executionBindingCorrespondence)
         return invalid("typed AddAccCore reopen lost its Mapping checkpoint or "
                        "parent-to-child correspondence");
       auto migrationContext = deriveSystemMappingMigrationContext(*reopenPlan);
       if (!migrationContext)
         return migrationContext.takeError();
       auto migrationSeed = pnr::finalizeSystemMappingCheckpointMigrationSeed(
-          (*systemObservation)->feedback.executionBindingCheckpoint(),
+          systemObservation->feedback.executionBindingCheckpoint(),
           *system->executionBindingCorrespondence, *migrationContext,
-          (*systemObservation)->feedback.witnessAccCore(), artifacts);
+          systemObservation->feedback.witnessAccCore(), artifacts);
       if (!migrationSeed)
         return migrationSeed.takeError();
       if (llvm::Error error = bindCheckpointSystemMappingMigrationSeed(
@@ -611,6 +604,8 @@ tryHardwareFeedbackReopen(
           fields["acc_core_count"] = system->resultingAccCores;
           fields["system"] =
               formatArtifactIdentityHex(system->reference.artifact);
+          fields["parent_system"] = formatArtifactIdentityHex(
+              currentPlan->frontier.systemFrontier.front().artifact);
           fields["system_mapping_count"] = systemMappingCount;
         });
     if (systemMappingCount != 0) {

@@ -43,8 +43,8 @@ struct SpatialFiniteBufferConflictWitness final {
   std::vector<SpatialProgressRouteAnchor> routeAnchors;
 };
 
-/// A search proposal derived from a sufficient occupancy bound, not a proof
-/// that the current hardware depth is infeasible.
+/// A search proposal derived from a sufficient guaranteed-channel bound, not
+/// a proof that the current FIFO storage depth or fixed hardware is infeasible.
 struct SpatialFifoCapacitySuggestion final {
   ::loom::fabric::FabricFifoOccurrenceRef owner;
   std::uint64_t selectedCapacity = 0;

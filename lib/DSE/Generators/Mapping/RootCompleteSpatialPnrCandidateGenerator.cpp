@@ -82,17 +82,17 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
-llvm::Error validateGraphBoundaryFeedback(
-    llvm::ArrayRef<std::uint8_t> bytes,
-    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
-    const ArtifactStore &store) {
+llvm::Error
+validateHardwareFeedback(llvm::ArrayRef<std::uint8_t> bytes,
+                         llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                         const ArtifactStore &store) {
   if (inputs.size() != InputSlotCount ||
       inputs[FabricInput].artifacts.size() != 1)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "root_complete_spatial_pnr_generator_feedback_invalid: input "
         "closure has no exact Module");
-  auto adopted = ::loom::mapping::adoptSpatialGraphBoundaryEndpointHallFeedback(
+  auto adopted = ::loom::mapping::adoptSpatialMappingHardwareFeedback(
       bytes, inputs[FabricInput].artifacts.front(),
       inputs[TechMappingCandidatesInput].artifacts, store);
   if (!adopted)
@@ -101,8 +101,8 @@ llvm::Error validateGraphBoundaryFeedback(
 }
 
 const CandidateGeneratorOwnerFeedbackPayloadContract feedbackContract{
-    ::loom::mapping::spatialGraphBoundaryEndpointHallFeedbackSchemaBytes(),
-    validateGraphBoundaryFeedback};
+    ::loom::mapping::spatialMappingHardwareFeedbackSchemaBytes(),
+    validateHardwareFeedback};
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -113,7 +113,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v31",
+    "loom.mapping.root_complete_spatial_pnr.generator.v32",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -554,12 +554,11 @@ incomplete(CandidateGeneratorIncompleteReason reason,
 }
 
 std::optional<std::vector<std::uint8_t>> encodeFeedback(
-    const std::optional<
-        ::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit> &feedback) {
+    const std::optional<::loom::mapping::SpatialMappingHardwareFeedback>
+        &feedback) {
   if (!feedback)
     return std::nullopt;
-  return ::loom::mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
-      *feedback);
+  return ::loom::mapping::encodeSpatialMappingHardwareFeedback(*feedback);
 }
 
 llvm::Error
@@ -692,8 +691,37 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   auto emitActiveProblemCacheStatisticsOnExit = llvm::scope_exit(
       [&] { emitActiveProblemCacheStatistics(activeProblemCacheStatistics); });
   std::vector<ArtifactRootReference> outputs;
-  std::optional<::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit>
-      graphBoundaryFeedback;
+  std::optional<::loom::mapping::SpatialMappingHardwareFeedback>
+      hardwareFeedback;
+  const auto retainFifoFeedback =
+      [&](const std::optional<::loom::pnr::SpatialFifoCapacitySuggestion>
+              &value,
+          const ArtifactRootReference &techReference) -> llvm::Error {
+    if (!value || value->selectedCapacity == 0)
+      return llvm::Error::success();
+    auto feedback = ::loom::mapping::SpatialFifoChannelCapacitySuggestion::get(
+        inputBindings[FabricInput].artifacts.front(), techReference,
+        value->owner, value->selectedCapacity, value->sufficientCapacity,
+        value->logicalNets, value->routeAnchors);
+    if (!feedback)
+      return feedback.takeError();
+    ::loom::mapping_debug::emit(
+        ::loom::mapping_debug::Level::Summary,
+        ::loom::mapping_debug::Stage::SpatialPnr,
+        ::loom::mapping_debug::Event::Candidate,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "fifo_channel_capacity_proposal";
+          fields["tech_mapping"] =
+              formatArtifactIdentityHex(techReference.artifact);
+          fields["selected_channels"] = value->selectedCapacity;
+          fields["proposed_channels"] = value->sufficientCapacity;
+          fields["logical_net_count"] = value->logicalNets.size();
+          fields["route_anchor_count"] = value->routeAnchors.size();
+        });
+    ::loom::mapping::retainSpatialMappingHardwareFeedback(hardwareFeedback,
+                                                          std::move(*feedback));
+    return llvm::Error::success();
+  };
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
@@ -736,7 +764,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     return CandidateGeneratorProviderResult{
         incomplete(CandidateGeneratorIncompleteReason::ExecutionFailed,
                    std::move(outputs)),
-        std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
+        std::move(workSummary), encodeFeedback(hardwareFeedback)};
   };
   // One ranked candidate preparation unit. Units are independent given the
   // thread-safe derived-context session, so they run on a bounded pool; every
@@ -1390,8 +1418,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                 observed.outputDemandCount, observed.outputEndpointCount);
         if (!feedback)
           return feedback.takeError();
-        ::loom::mapping::retainSpatialGraphBoundaryEndpointHallFeedback(
-            graphBoundaryFeedback, std::move(*feedback));
+        ::loom::mapping::retainSpatialMappingHardwareFeedback(
+            hardwareFeedback, std::move(*feedback));
       }
       ::loom::mapping_debug::emit(
           ::loom::mapping_debug::Level::Summary,
@@ -1412,6 +1440,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (const auto *partial =
             std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(
                 &outcome)) {
+      if (auto error =
+              retainFifoFeedback(partial->fifoCapacityShortfall, techReference))
+        return std::move(error);
       const CandidateGeneratorIncompleteReason reason =
           partial->reason == ::loom::pnr::IncompleteSpatialPnrGenerationReason::
                                  SemanticLimitReached
@@ -1451,6 +1482,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (auto *interrupted =
             std::get_if<::loom::pnr::InterruptedSpatialPnrGeneration>(
                 &outcome)) {
+      if (auto error = retainFifoFeedback(
+              interrupted->snapshot.fifoCapacityShortfall, techReference))
+        return std::move(error);
       outputs.insert(outputs.end(),
                      std::make_move_iterator(interrupted->candidates.begin()),
                      std::make_move_iterator(interrupted->candidates.end()));
@@ -1470,7 +1504,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported,
                      std::move(outputs)),
-          std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
+          std::move(workSummary), encodeFeedback(hardwareFeedback)};
     }
     if (const auto *invalid =
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome)) {
@@ -1521,10 +1555,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   if (incompleteReason)
     return CandidateGeneratorProviderResult{
         incomplete(*incompleteReason, std::move(outputs)),
-        std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
-  return CandidateGeneratorProviderResult{
-      completed(std::move(outputs)), std::move(workSummary),
-      encodeFeedback(graphBoundaryFeedback)};
+        std::move(workSummary), encodeFeedback(hardwareFeedback)};
+  return CandidateGeneratorProviderResult{completed(std::move(outputs)),
+                                          std::move(workSummary),
+                                          encodeFeedback(hardwareFeedback)};
 }
 
 const CandidateGeneratorProvider provider{

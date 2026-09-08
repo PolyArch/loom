@@ -429,11 +429,15 @@ def validate_mapping_work(
     if hardware_reopen:
         require(
             any(
-                row.get("added_temporal_contexts", 0) > 0
+                all(
+                    is_artifact_identity(row.get(field))
+                    for field in ("parent_system", "system")
+                )
+                and row["system"] != row["parent_system"]
                 and row.get("system_mapping_count", 0) > 0
                 for row in reopen_attempts
             ),
-            "hardware reopen published no verified grown-System Mapping",
+            "hardware reopen published no verified Mapping on a distinct child System",
         )
     tech_rows = [
         payload
@@ -1103,13 +1107,18 @@ def validate_spatial_unconditional_handshake(
     )
 
 
+def is_artifact_identity(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def validate_reference(value: Any, context: str) -> None:
     require(isinstance(value, dict), f"{context} must be an artifact reference")
-    identity = value.get("artifact")
     require(
-        isinstance(identity, str)
-        and len(identity) == 64
-        and all(character in "0123456789abcdef" for character in identity),
+        is_artifact_identity(value.get("artifact")),
         f"{context} has an invalid artifact identity",
     )
 
