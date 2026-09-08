@@ -1369,6 +1369,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     }
     return invalid("bounded-quality winner has no verified execution owner");
   }
+  // Parents without actionable feedback, or withheld by the hardware budget,
+  // still own a typed outcome even when no hardware attempt ran.
+  if (!firstIncomplete && !lastNoFeasible) {
+    for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts)
+      if (std::holds_alternative<IncompleteDsePlanExecution>(
+              attempt.execution.planExecution)) {
+        firstIncomplete = std::move(attempt.execution);
+        break;
+      }
+    if (!firstIncomplete && !failedSoftwareAttempts.empty())
+      lastNoFeasible = std::move(failedSoftwareAttempts.back().execution);
+  }
   if (firstIncomplete)
     return finish(std::move(*firstIncomplete), std::nullopt, std::nullopt,
                   JointDesignQualityDisposition::NotRequested, std::nullopt,
