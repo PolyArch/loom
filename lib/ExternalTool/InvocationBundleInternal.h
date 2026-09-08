@@ -224,6 +224,16 @@ BlobDigest contentDigest(llvm::StringRef contents);
 /// logic carries InvocationCompletionStatus rather than comparing spellings.
 llvm::StringRef completionStatusSpelling(InvocationCompletionStatus status);
 
+/// Shared canonical file-path domain for manifest admission and bundle reads.
+llvm::Expected<std::string> normalizedRelativePath(llvm::StringRef spelling,
+                                                 llvm::StringRef field);
+
+llvm::Error
+validateSpecification(const ExternalToolInvocationBundleSpec &specification);
+InvocationManifestData
+makeManifest(const ExternalToolInvocationBundleSpec &specification);
+llvm::Expected<InvocationManifestData> parseManifest(llvm::StringRef contents);
+
 /// The canonical manifest JSON bytes of one invocation bundle.
 std::string serializeManifest(const InvocationManifestData &manifest);
 
