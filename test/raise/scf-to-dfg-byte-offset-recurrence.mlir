@@ -9,7 +9,7 @@
 // CHECK: dataflow.graph.launch @byte_offset_recurrence_graph
 // CHECK-LABEL: dataflow.graph private @byte_offset_recurrence_graph(
 // CHECK-SAME: !llvm.ptr
-// CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
+// CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xf32>
 // CHECK-NOT: builtin.unrealized_conversion_cast
 // CHECK: %[[OFFSET:.*]] = dataflow.carry {{.*}} : i64
 // CHECK: %[[ADDRESS:.*]] = llvm.getelementptr inbounds|nuw {{%.*}}[%[[OFFSET]]]

@@ -6,10 +6,13 @@
 // RUN:   | FileCheck %s --check-prefix=RANKED
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/dynamic-rank.mlir \
 // RUN:   2>&1 | FileCheck %s --check-prefix=DYNAMIC-RANK
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %t.dir/alias-views.mlir \
+// RUN:   | FileCheck %s --check-prefix=ALIAS-VIEWS
 
 // A source pointer remains first-class graph data. The enclosing thread
 // explicitly acquires one object-scoped memory service, while the complete
 // typed GEP chain remains the pointer-addressed access function.
+// The acquired memory port retains the source pointer's alias guarantee.
 
 // CHAIN-LABEL: dataflow.thread private @pointer_chain
 // CHAIN: %[[SERVICE:.*]] = dataflow.memory.service %arg0 : !llvm.ptr -> memref<?xf32>
@@ -17,8 +20,8 @@
 // CHAIN-SAME: values(%arg1, %arg2, %arg3, %arg0)
 // CHAIN-SAME: memories(%[[SERVICE]])
 // CHAIN-LABEL: dataflow.graph private @pointer_chain_graph(
-// CHAIN-SAME: %[[BASE:[^, )]+]]: !llvm.ptr
-// CHAIN-SAME: [[MEM:%[^, )]+]]: memref<?xf32>)
+// CHAIN-SAME: %[[BASE:[^, )]+]]: !llvm.ptr {llvm.noalias}
+// CHAIN-SAME: [[MEM:%[^, )]+]]: memref<?xf32> {llvm.noalias})
 // CHAIN: %[[FIRST:.*]] = llvm.getelementptr inbounds %[[BASE]]
 // CHAIN: %[[SECOND:.*]] = llvm.getelementptr inbounds %[[FIRST]]
 // CHAIN: %[[ADDRESS:.*]] = llvm.getelementptr inbounds %[[SECOND]]
@@ -33,7 +36,7 @@ module attributes {
 } {
   dataflow.thread private @pointer_chain
       domain(#dataflow.thread_domain<dense>)(
-          %base: !llvm.ptr, %outer: i64, %middle: i64, %inner: i64)
+          %base: !llvm.ptr {llvm.noalias}, %outer: i64, %middle: i64, %inner: i64)
       ctrl (%ctrl: none) {
     %value = "loom.spatial_region"(%outer, %middle, %inner, %base)
         <{operandSegmentSizes = array<i32: 4, 0, 0, 0>,
@@ -93,5 +96,24 @@ module {
                   result_segments = array<i32: 0, 0, 0>} {
     %value = memref.load %memory[%i, %j] : memref<?x?xf32>
     dataflow.graph.return %start : none
+  }
+}
+
+// Multiple service views of a noalias pointer still address the same object.
+// A byte read after a word write must retain the RAW event dependency.
+// ALIAS-VIEWS-LABEL: dataflow.graph private @alias_views_graph
+// ALIAS-VIEWS: %[[WRITE:.*]] = dataflow.store
+// ALIAS-VIEWS: dataflow.load {{.*}} %[[WRITE]] {{.*}} : memref<?xi8>
+
+//--- alias-views.mlir
+module attributes {llvm.data_layout = "e-p:64:64", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.thread private @alias_views domain(#dataflow.thread_domain<dense>)(%base: !llvm.ptr {llvm.noalias}, %value: i32) ctrl (%ctrl: none) {
+    %result = "loom.spatial_region"(%base, %value) <{operandSegmentSizes = array<i32: 2, 0, 0, 0>, resultSegmentSizes = array<i32: 1, 0>}> ({
+    ^bb0(%memory: !llvm.ptr, %stored: i32):
+      llvm.store %stored, %memory : i32, !llvm.ptr
+      %loaded = llvm.load %memory : !llvm.ptr -> i8
+      "loom.spatial_yield"(%loaded) <{operandSegmentSizes = array<i32: 1, 0>}> : (i8) -> ()
+    }) {graph_name = "alias_views_graph", source_maps = []} : (!llvm.ptr, i32) -> i8
+    dataflow.thread.yield
   }
 }

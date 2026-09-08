@@ -278,13 +278,25 @@ struct CanonicalMemoryPort {
            << " is not an explicit memory capability: " << source.getType();
   }
 
+  ::llvm::DenseMap<::mlir::Value, unsigned> viewCounts;
+  for (const auto &imported : importedViews)
+    ++viewCounts[imported.first.ptr];
   for (const auto &imported : importedViews) {
     auto pointer = ::llvm::dyn_cast<::mlir::BlockArgument>(imported.first.ptr);
     if (!pointer || pointer.getOwner() != &entry ||
         pointer.getArgNumber() == 0 || pointer.getArgNumber() > valueCount)
       return graph.emitError(
           "pointer-addressed service root is not a graph value input");
-    ::mlir::DictionaryAttr attrs = builder.getDictionaryAttr({});
+    // One view retains its source root's distinctness. Multiple typed views
+    // of that root can overlap, so none may claim a distinct hazard partition.
+    ::llvm::SmallVector<::mlir::NamedAttribute, 1> portAttrs;
+    if (viewCounts.lookup(imported.first.ptr) == 1)
+      if (::mlir::DictionaryAttr pointerAttrs =
+              ::mlir::function_interface_impl::getArgAttrDict(
+                  graph, pointer.getArgNumber() - 1))
+        if (::mlir::Attribute noAlias = pointerAttrs.get("llvm.noalias"))
+          portAttrs.push_back(builder.getNamedAttr("llvm.noalias", noAlias));
+    ::mlir::DictionaryAttr attrs = builder.getDictionaryAttr(portAttrs);
     ::llvm::Expected<::loom::CanonicalSemanticBytes> encoded =
         ::dataflow::encodeCanonicalType(imported.second.getType());
     if (!encoded)
