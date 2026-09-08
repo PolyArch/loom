@@ -3427,7 +3427,10 @@ infeasibility proof: temporal sharing may satisfy the original hardware.
 Every proposed child must pass ordinary Mapping and runtime verification.
 A FIFO proposal retains its exact occurrence, selected and proposed guaranteed
 channel counts, residual logical producer references, and traversal anchors.
-Adoption checks the selected reservation against the Module and resolves the
+The producer retains the largest required guarantee across all capacity-shortfall
+owners and all retained canonical-prefix restarts, so an earlier smaller
+shortfall cannot hide a stronger observed demand. Ties retain canonical owner
+and restart order. Adoption checks the selected reservation against the Module and resolves the
 logical nets and traversal anchors against the exact input closure. It is a
 search proposal, not an infeasibility proof.
 

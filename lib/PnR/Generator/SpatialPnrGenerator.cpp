@@ -512,10 +512,19 @@ void preferPreparedRestart(const SpatialRestartResult &candidate,
 }
 
 llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
-projectFifoCapacityShortfall(const SpatialRestartResult *restart) {
-  if (!restart || !restart->candidate)
-    return std::optional<SpatialFifoCapacitySuggestion>();
-  return projectSpatialFifoCapacitySuggestion(*restart->candidate);
+projectFifoCapacityShortfall(llvm::ArrayRef<SpatialRestartResult> restarts) {
+  std::optional<SpatialFifoCapacitySuggestion> strongest;
+  for (const SpatialRestartResult &restart : restarts) {
+    if (!restart.candidate)
+      continue;
+    auto projected = projectSpatialFifoCapacitySuggestion(*restart.candidate);
+    if (!projected)
+      return projected.takeError();
+    if (*projected && (!strongest || (*projected)->sufficientCapacity >
+                                        strongest->sufficientCapacity))
+      strongest = std::move(**projected);
+  }
+  return strongest;
 }
 
 SpatialRestartResult restartInternal(InternalSpatialPnrGenerationReason reason,
@@ -1159,7 +1168,6 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
                             const ExecutionResourceTracker &resources,
                             const MappingObjectiveProgram *objectiveProgram) {
   std::optional<SpatialRestartCandidateSummary> best;
-  const SpatialRestartResult *bestRestart = nullptr;
   for (const SpatialRestartResult &restart : restarts) {
     if (!restart.finalized && !restart.candidate)
       continue;
@@ -1169,7 +1177,6 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
     if (!summary.objective) {
       if (!best) {
         best = std::move(summary);
-        bestRestart = &restart;
       }
       continue;
     }
@@ -1184,7 +1191,6 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
         continue;
     }
     best = std::move(summary);
-    bestRestart = &restart;
   }
 
   SpatialPnrInterruptionSnapshot snapshot;
@@ -1213,7 +1219,7 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
   }
   snapshot.closureResidual.retainedCandidates = retainedCandidates;
   snapshot.resources = resources.observe();
-  auto capacity = projectFifoCapacityShortfall(bestRestart);
+  auto capacity = projectFifoCapacityShortfall(restarts);
   if (!capacity)
     return capacity.takeError();
   snapshot.fifoCapacityShortfall = std::move(*capacity);
@@ -1869,7 +1875,7 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
                                                    ? semanticLimitRepresentative
                                                    : incompleteRepresentative;
   auto fifoCapacityShortfall =
-      projectFifoCapacityShortfall(incompleteRepresentative);
+      projectFifoCapacityShortfall(resultRestarts);
   if (!fifoCapacityShortfall)
     return internal(InternalSpatialPnrGenerationReason::CandidateVerification,
                     accounting, fifoCapacityShortfall.takeError());

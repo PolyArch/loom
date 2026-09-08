@@ -290,19 +290,31 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateProgressWitnessCount(
 llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
 loom::pnr::projectSpatialFifoCapacitySuggestion(
     const SpatialCandidateState &candidate) {
-  const auto owner = candidate.progress().firstCapacityShortfallOwner();
-  if (!owner)
-    return std::optional<SpatialFifoCapacitySuggestion>();
+  std::vector<PnrIndex> owners;
+  if (llvm::Error error =
+          candidate.progress().enumerateCapacityShortfallOwners(owners))
+    return std::move(error);
   const auto capacities =
       candidate.problem().progressIndex().ownerGuaranteedNetCapacities();
-  if (*owner >= capacities.size())
-    return invalid("capacity feedback owner is out of range");
-  const std::uint64_t selected = capacities[*owner];
-  const std::uint64_t shortfall =
-      candidate.progress().capacityShortfall(*owner);
-  if (shortfall == 0 ||
-      shortfall > std::numeric_limits<std::uint64_t>::max() - selected)
-    return invalid("capacity feedback has an invalid shortfall");
+  std::optional<PnrIndex> owner;
+  std::uint64_t sufficient = 0;
+  for (PnrIndex candidateOwner : owners) {
+    if (candidateOwner >= capacities.size())
+      return invalid("capacity feedback owner is out of range");
+    const std::uint64_t selected = capacities[candidateOwner];
+    const std::uint64_t shortfall =
+        candidate.progress().capacityShortfall(candidateOwner);
+    if (shortfall > std::numeric_limits<std::uint64_t>::max() - selected)
+      return invalid("capacity feedback has an invalid shortfall");
+    // Recipe growth raises one shared reservation guarantee. Retain the
+    // strongest witnessed demand, rather than the first physical owner.
+    if (selected != 0 && selected + shortfall > sufficient) {
+      owner = candidateOwner;
+      sufficient = selected + shortfall;
+    }
+  }
+  if (!owner)
+    return std::optional<SpatialFifoCapacitySuggestion>();
   SpatialFiniteBufferConflictWitness witness;
   if (llvm::Error error =
           candidate.rebuildCapacityShortfallWitness(*owner, witness))
@@ -310,8 +322,8 @@ loom::pnr::projectSpatialFifoCapacitySuggestion(
 
   SpatialFifoCapacitySuggestion feedback;
   feedback.owner = witness.owner;
-  feedback.selectedCapacity = selected;
-  feedback.sufficientCapacity = selected + shortfall;
+  feedback.selectedCapacity = capacities[*owner];
+  feedback.sufficientCapacity = sufficient;
   const auto logicalNets = candidate.problem().transfers().logicalNets();
   feedback.logicalNets.reserve(witness.competingLogicalNets.size());
   for (PnrIndex logicalNet : witness.competingLogicalNets) {
