@@ -41,16 +41,21 @@ struct ArtifactSchemaDescriptor {
   }
 };
 
+class ArtifactIdentity;
+
 class CanonicalSemanticBytes {
 public:
-  explicit CanonicalSemanticBytes(std::vector<std::uint8_t> bytes)
-      : bytes_(std::make_shared<const std::vector<std::uint8_t>>(
-            std::move(bytes))) {}
+  explicit CanonicalSemanticBytes(std::vector<std::uint8_t> bytes);
 
-  llvm::ArrayRef<std::uint8_t> bytes() const { return *bytes_; }
+  llvm::ArrayRef<std::uint8_t> bytes() const;
 
 private:
-  std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
+  friend ArtifactIdentity
+  finalizeArtifactIdentity(const ArtifactSchemaDescriptor &schema,
+                           const CanonicalSemanticBytes &canonicalBytes);
+
+  struct Storage;
+  std::shared_ptr<Storage> storage_;
 };
 
 class ArtifactIdentity {

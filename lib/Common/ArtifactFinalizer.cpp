@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <vector>
 
 namespace loom {
@@ -31,6 +33,23 @@ void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (unsigned shift = 56; shift != 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
   bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+std::vector<std::uint8_t>
+buildIdentityHeader(const ArtifactSchemaDescriptor &schema,
+                    std::size_t semanticSize) {
+  assert(schema.identity.size() <= std::numeric_limits<std::uint32_t>::max());
+  std::vector<std::uint8_t> header;
+  header.reserve(identityDomainSize + 4 + schema.identity.size() + 4 + 4 + 8);
+  header.insert(header.end(), identityDomain,
+                identityDomain + identityDomainSize);
+  appendU32Be(header, static_cast<std::uint32_t>(schema.identity.size()));
+  header.insert(header.end(), schema.identity.bytes_begin(),
+                schema.identity.bytes_end());
+  appendU32Be(header, schema.version.major);
+  appendU32Be(header, schema.version.minor);
+  appendU64Be(header, semanticSize);
+  return header;
 }
 
 llvm::Error invalidPreimage(const llvm::Twine &message) {
@@ -63,6 +82,30 @@ llvm::Expected<std::uint64_t> readU64Be(llvm::ArrayRef<std::uint8_t> bytes,
 
 } // namespace
 
+struct CanonicalSemanticBytes::Storage {
+  explicit Storage(std::vector<std::uint8_t> bytes)
+      : bytes(std::move(bytes)) {}
+
+  struct IdentityMemo {
+    std::string schemaIdentity;
+    SchemaVersion schemaVersion;
+    ArtifactIdentity identity;
+  };
+
+  const std::vector<std::uint8_t> bytes;
+  std::mutex identityMutex;
+  // Copies share immutable bytes and their last exact-schema identity. A
+  // different schema replaces this bounded memo; it never changes the bytes.
+  std::optional<IdentityMemo> identity;
+};
+
+CanonicalSemanticBytes::CanonicalSemanticBytes(std::vector<std::uint8_t> bytes)
+    : storage_(std::make_shared<Storage>(std::move(bytes))) {}
+
+llvm::ArrayRef<std::uint8_t> CanonicalSemanticBytes::bytes() const {
+  return storage_->bytes;
+}
+
 llvm::Expected<ArtifactIdentity>
 ArtifactIdentity::fromBytes(llvm::ArrayRef<std::uint8_t> bytes) {
   if (bytes.size() != byteSize)
@@ -77,21 +120,9 @@ ArtifactIdentity::fromBytes(llvm::ArrayRef<std::uint8_t> bytes) {
 std::vector<std::uint8_t> detail::buildArtifactIdentityPreimage(
     const ArtifactSchemaDescriptor &schema,
     const CanonicalSemanticBytes &canonicalBytes) {
-  assert(schema.identity.size() <= std::numeric_limits<std::uint32_t>::max());
-  const std::size_t totalSize = identityDomainSize + 4 +
-                                schema.identity.size() + 4 + 4 + 8 +
-                                canonicalBytes.bytes().size();
-
-  std::vector<std::uint8_t> preimage;
-  preimage.reserve(totalSize);
-  preimage.insert(preimage.end(), identityDomain,
-                  identityDomain + identityDomainSize);
-  appendU32Be(preimage, static_cast<std::uint32_t>(schema.identity.size()));
-  preimage.insert(preimage.end(), schema.identity.bytes_begin(),
-                  schema.identity.bytes_end());
-  appendU32Be(preimage, schema.version.major);
-  appendU32Be(preimage, schema.version.minor);
-  appendU64Be(preimage, canonicalBytes.bytes().size());
+  std::vector<std::uint8_t> preimage =
+      buildIdentityHeader(schema, canonicalBytes.bytes().size());
+  preimage.reserve(preimage.size() + canonicalBytes.bytes().size());
   preimage.insert(preimage.end(), canonicalBytes.bytes().begin(),
                   canonicalBytes.bytes().end());
   return preimage;
@@ -138,9 +169,22 @@ ArtifactIdentity detail::finalizeArtifactIdentityPreimage(
 ArtifactIdentity
 finalizeArtifactIdentity(const ArtifactSchemaDescriptor &schema,
                          const CanonicalSemanticBytes &canonicalBytes) {
-  const std::vector<std::uint8_t> preimage =
-      detail::buildArtifactIdentityPreimage(schema, canonicalBytes);
-  return detail::finalizeArtifactIdentityPreimage(preimage);
+  auto &storage = *canonicalBytes.storage_;
+  std::lock_guard<std::mutex> lock(storage.identityMutex);
+  if (storage.identity &&
+      storage.identity->schemaIdentity == schema.identity &&
+      storage.identity->schemaVersion == schema.version)
+    return storage.identity->identity;
+
+  const auto header = buildIdentityHeader(schema, storage.bytes.size());
+  auto digest = llvm::cantFail(BlobDigestBuilder::create());
+  llvm::cantFail(digest.update(header));
+  llvm::cantFail(digest.update(storage.bytes));
+  const ArtifactIdentity identity = llvm::cantFail(
+      ArtifactIdentity::fromBytes(llvm::cantFail(digest.finish()).bytes()));
+  storage.identity.emplace(CanonicalSemanticBytes::Storage::IdentityMemo{
+      schema.identity.str(), schema.version, identity});
+  return identity;
 }
 
 } // namespace loom

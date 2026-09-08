@@ -6,6 +6,22 @@ Normative contracts are owned by
 [Intermediate Reports](../spec-intermediate-artifacts.md), and
 [Visualization](../spec-mapping-visualization.md).
 
+## Why Immutable Semantic Bytes Retain Their Computed Identity
+
+Runtime-input publication can immediately follow identity finalization over
+the same large semantic byte sequence. Hashing that sequence again adds no
+evidence: `CanonicalSemanticBytes` already owns immutable storage shared by
+its copies. The storage therefore retains one computed identity with its
+exact schema name and version, synchronized across concurrent finalizers.
+Changing the schema replaces this bounded memo. No caller-supplied digest
+can populate it, and it does not cache filesystem state.
+
+The finalizer streams the canonical envelope header and semantic payload
+through the existing SHA-256 owner. ArtifactStore derives its publication key
+through that same finalizer and still verifies stored bytes and publication
+integrity. Reopened stores continue to validate their external objects; neither
+the artifact format nor cold-read integrity depends on this reuse.
+
 ## Why Configuration Is Resolved Once
 
 Loom has many components, but a component-local option parser or hidden default
