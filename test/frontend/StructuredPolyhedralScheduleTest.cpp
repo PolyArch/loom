@@ -2,6 +2,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Common/IndexWidth.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
@@ -240,9 +241,10 @@ loom::frontend::StructuredProgramCandidate materializeRootRelativeOwnership(
       llvmFunctionReference(parent, functionName);
   auto domain = take(
       loom::frontend::enumerateSpatialOwnershipDecisionDomain(parent, scope));
+  const unsigned indexWidth = take(loom::getIndexBitWidth(parent.module()));
   auto selected = llvm::find_if(
-      domain, [](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
-        return point.rootRelativeIndexWidth() == 64 &&
+      domain, [&](const loom::frontend::SpatialOwnershipDecisionPoint &point) {
+        return point.rootRelativeIndexWidth() == indexWidth &&
                !point.forallOwnershipShape &&
                !point.directCallSpecializationShape &&
                !point.directCallInlining;
@@ -907,9 +909,10 @@ module attributes {dlti.dl_spec = #layout} {
 }
 
 void raisedPointerScopTilesAndParallelizes(
-    const loom::fabric::FinalizedFabricRoot &fabric) {
-  constexpr llvm::StringLiteral source = R"mlir(
-module {
+    const loom::fabric::FinalizedFabricRoot &fabric, unsigned indexWidth) {
+  const std::string source =
+      "module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, " +
+      std::to_string(indexWidth) + ">>} " + R"mlir({
   llvm.func internal @kernel(%input: !llvm.ptr, %output: !llvm.ptr) {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -1011,18 +1014,19 @@ module {
   // thread count alone cannot witness this edge.
   std::size_t threadDomainCount = 0;
   std::size_t residualForallCount = 0;
-  std::size_t i64GepCount = 0;
+  std::size_t preservedGepIndexCount = 0;
   parallelChild.structuredProgram.module().walk(
       [&](mlir::Operation *operation) {
         threadDomainCount += llvm::isa<dataflow::ThreadOp>(operation);
         residualForallCount += llvm::isa<mlir::scf::ForallOp>(operation);
         if (auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation))
-          i64GepCount +=
+          preservedGepIndexCount +=
               llvm::hasSingleElement(gep.getDynamicIndices()) &&
-              gep.getDynamicIndices().front().getType().isInteger(64);
+              gep.getDynamicIndices().front().getType().isInteger(indexWidth);
       });
-  if (threadDomainCount != 1 || residualForallCount != 0 || i64GepCount != 2)
-    fail("tiled parallel materialization lost its i64 pointer coordinates");
+  if (threadDomainCount != 1 || residualForallCount != 0 ||
+      preservedGepIndexCount != 2)
+    fail("tiled parallel materialization lost its source pointer coordinates");
 
   auto sameRoot = materializeRootRelativeOwnership(parseProgram(R"mlir(
 module {
@@ -1118,6 +1122,24 @@ module {
           fail("raised-pointer independence disagrees with its byte/effect "
                "contract");
       };
+  requireRefusal(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>} {
+  llvm.func @wrapping_pointer_coordinate(%output: !llvm.ptr) {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %limit = arith.constant 4294967296 : i64
+    %value = arith.constant 1 : i32
+    scf.for %i = %c0 to %limit step %c1 : i64 {
+      %wrapped = arith.trunci %i : i64 to i32
+      %element = llvm.getelementptr inbounds %output[%wrapped]
+          : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<4 x i8>
+      llvm.store %value, %element : i32, !llvm.ptr
+    }
+    llvm.return
+  }
+}
+)mlir",
+      loom::frontend::StructuredScopRefusalKind::AccessRelationProofNotEstablished);
   requireRefusal(
       R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -1741,7 +1763,8 @@ module {
     fail("source-order scalar precedence acquired a false transform refusal");
   scfStatementMajorScheduleMaterializes(fabric);
   tiledPolyhedralSchedulesMaterializeAndReplay(fabric);
-  raisedPointerScopTilesAndParallelizes(fabric);
+  for (unsigned indexWidth : {32U, 64U})
+    raisedPointerScopTilesAndParallelizes(fabric, indexWidth);
   reductionCoordinateComposesWithTiledParallelLineage(fabric);
   imperfectGeneralScheduleMaterializes(fabric);
   generalAnalysisOwnsVectorDomainFallback(fabric);

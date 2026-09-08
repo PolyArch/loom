@@ -746,19 +746,23 @@ same general SCoP, not a second dependence domain. Its root is one signed
 `scf.for` with a lossless 64-bit integer induction variable, constant bounds,
 and unit step. Each memory statement is a scalar, nonvolatile, nonatomic LLVM
 load or store whose address is one direct inbounds, single-index GEP. The GEP
-index is exactly the induction variable, and the shared DataLayout address
-resolver must prove zero bias and one access-element stride from a root outside
-the loop. That root is the direct GEP base and may be an invariant row address
+index is the induction variable or a lossless signed cast of it. The shared
+DataLayout address resolver must prove zero bias and one access-element stride
+from a root outside the loop. That root is the direct GEP base and may be an invariant row address
 computed by an enclosing scope; its allocation provenance remains owned by
 `MemoryProvenance`. SCoP admission and independent parallelization consume this
-one byte-aware projection. A same-root write-bearing pair is iteration-local only
+one byte-aware projection and signed-coordinate comparison. Signed extension,
+non-narrowing signed index casts, and truncation with an explicit no-signed-overflow
+source contract preserve the coordinate; ordinary truncation does not.
+A same-root write-bearing pair is iteration-local only
 when both accesses prove the identical byte partition; unequal access widths
 receive `AccessRelationProofNotEstablished`. Different roots use the common
 `MemoryProvenance` distinctness proof. Mixed memref/pointer effects, pointer
 chains inside the selected loop, non-scalar accesses, unknown roots or layouts,
 other index expressions, and every non-lossless loop form remain typed refusals.
-The materializer
-reconstructs the frozen coordinate as the source `i64` before cloning its
+SCoP analysis preserves the source integer domain independently of the target
+index width. The materializer proves that every emitted coordinate fits the
+target index width, then reconstructs it as the source `i64` before cloning its
 statements. When the enclosing ownership decision selected `RootRelative`,
 each admitted load/store retains that owner's `loom.root_relative_address`
 marker; only then is its direct GEP removable address support rather than an
