@@ -1223,9 +1223,15 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
             "requested endpoint has no verified SystemMapping schedule");
     }
   }
-  if (!execution->execution.summary.selectedMapping)
-    return productError("loom_mapping_selection_incomplete",
-                        "Mapping returned candidates without a selected root");
+  if (!execution->execution.summary.selectedMapping) {
+    const auto &decision = execution->provenance.pairDecision;
+    return productError(
+        "loom_mapping_selection_incomplete",
+        decision ? "application pair ended with disposition " +
+                       llvm::Twine(toString(decision->disposition))
+                 : llvm::Twine("Mapping returned candidates without a selected "
+                               "root"));
+  }
   return std::move(*execution);
 }
 
