@@ -822,6 +822,8 @@ int main(int argc, char **argv) {
                         "        printf %s \"$3\" >\"$4\"\n"
                         "      ' loom-detached \"$3\" \"$4\" \"$value\" "
                         "\"$5\" </dev/null >/dev/null 2>&1 &\n"
+                        "      while [[ ! -f \"$3.detached\" ]]; do "
+                        "sleep 0.01; done\n"
                         "    fi\n"
                         "    ;;\n"
                         "  root-rebind-run)\n"
