@@ -930,14 +930,14 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
           parameters.temporalResidentContexts - growth.resultingContexts;
       growth.resultingContexts = parameters.temporalResidentContexts;
     } else {
-      const auto &hall =
-          std::get<mapping::SpatialGraphBoundaryEndpointHallDeficit>(
+      const auto &boundary =
+          std::get<mapping::SpatialGraphBoundaryCapacitySuggestion>(
               *spatialObservation);
-      const std::uint64_t addedGateways = hall.requiredBoundaryPairs();
+      const std::uint64_t addedGateways = boundary.proposedAdditionalBoundaryPairs();
       if (addedGateways == 0 ||
           addedGateways > std::numeric_limits<std::uint32_t>::max() -
                               growth.resultingGateways)
-        return invalid("graph-boundary Hall feedback has no representable "
+        return invalid("graph-boundary capacity proposal has no representable "
                        "gateway growth");
       growth.addedGateways = addedGateways;
       growth.resultingGateways += addedGateways;

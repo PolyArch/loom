@@ -555,7 +555,6 @@ SpatialPnrInfeasibilityProofKind =
     FrozenDerivedContext       // tag 0
   | FrozenActiveProblem        // tag 1
   | InitializerRelation        // tag 2
-  | GraphBoundaryEndpointHall  // tag 3
 ```
 
 System PnR owns these closed infeasibility-proof kinds:
@@ -584,8 +583,8 @@ and checked from the exact invocation inputs. Every internal Spatial or System
 `ProvenInfeasible` result therefore maps to
 `Incomplete(ProofNotEstablished)` at the DSE boundary.
 
-The graph-boundary Hall deficit is transient hardware-reopen feedback, not a
-durable infeasibility proof. The current Spatial relation model does not create
+Graph-boundary capacity proposals are transient hardware-reopen feedback,
+not durable infeasibility proofs. The current Spatial relation model does not create
 a global graph-boundary all-different relation because legal temporal or
 causally separated endpoint reuse must remain admissible. Counts or diagnostic
 text cannot substitute for that missing constraint and witness. An empty

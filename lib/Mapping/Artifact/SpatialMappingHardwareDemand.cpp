@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <set>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -21,7 +23,7 @@ namespace loom::mapping {
 namespace {
 
 constexpr llvm::StringLiteral feedbackSchema =
-    "loom.mapping.spatial_hardware_feedback.1.0";
+    "loom.mapping.spatial_hardware_feedback.2.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -88,8 +90,8 @@ readRootReference(llvm::ArrayRef<std::uint8_t> bytes, std::size_t &offset) {
 
 } // namespace
 
-llvm::Expected<SpatialGraphBoundaryEndpointHallDeficit>
-SpatialGraphBoundaryEndpointHallDeficit::get(
+llvm::Expected<SpatialGraphBoundaryCapacitySuggestion>
+SpatialGraphBoundaryCapacitySuggestion::get(
     ArtifactRootReference module, ArtifactRootReference techMapping,
     std::uint64_t inputDemandCount, std::uint64_t inputEndpointCount,
     std::uint64_t outputDemandCount, std::uint64_t outputEndpointCount) {
@@ -101,17 +103,16 @@ SpatialGraphBoundaryEndpointHallDeficit::get(
   if (inputEndpointCount >
       std::numeric_limits<std::uint64_t>::max() - outputEndpointCount)
     return invalid("directional endpoint count overflows u64");
-  const std::uint64_t demandCount = inputDemandCount + outputDemandCount;
-  const std::uint64_t endpointCount = inputEndpointCount + outputEndpointCount;
-  if (demandCount == 0 || endpointCount >= demandCount)
-    return invalid("Hall cardinalities are inconsistent or not deficient");
-  return SpatialGraphBoundaryEndpointHallDeficit(
+  if (inputDemandCount <= inputEndpointCount &&
+      outputDemandCount <= outputEndpointCount)
+    return invalid("boundary proposal has no directional capacity increase");
+  return SpatialGraphBoundaryCapacitySuggestion(
       std::move(module), std::move(techMapping), inputDemandCount,
       inputEndpointCount, outputDemandCount, outputEndpointCount);
 }
 
 std::uint64_t
-SpatialGraphBoundaryEndpointHallDeficit::requiredBoundaryPairs() const {
+SpatialGraphBoundaryCapacitySuggestion::proposedAdditionalBoundaryPairs() const {
   const std::uint64_t inputDeficit =
       inputDemandCount_ > inputEndpointCount_
           ? inputDemandCount_ - inputEndpointCount_
@@ -121,6 +122,44 @@ SpatialGraphBoundaryEndpointHallDeficit::requiredBoundaryPairs() const {
           ? outputDemandCount_ - outputEndpointCount_
           : 0;
   return std::max(inputDeficit, outputDeficit);
+}
+
+llvm::Expected<std::optional<SpatialGraphBoundaryCapacitySuggestion>>
+deriveSpatialGraphBoundaryCapacitySuggestion(
+    const ArtifactRootReference &module,
+    const ArtifactRootReference &techMapping, const TechMappingView &tech,
+    const fabric::FabricArtifactView &fabric) {
+  if (tech.fabricIdentity() != module.artifact ||
+      fabric.identity() != module.artifact)
+    return invalid("boundary proposal has inconsistent Module owners");
+  std::uint64_t inputDemand = 0;
+  std::uint64_t outputDemand = 0;
+  for (const auto &net : tech.residualLogicalNets()) {
+    inputDemand += std::holds_alternative<dataflow::GraphIngressTokenRef>(
+        net.producer);
+    // One producer can multicast to multiple graph egresses on one endpoint.
+    outputDemand += llvm::any_of(net.sinks, [](const auto &sink) {
+      return std::holds_alternative<dataflow::GraphEgressTokenRef>(sink);
+    });
+  }
+  std::set<std::vector<std::uint8_t>> inputs;
+  std::set<std::vector<std::uint8_t>> outputs;
+  for (const auto &attachment : fabric.moduleBoundaryTransportAttachments()) {
+    auto &endpoints = attachment.boundary.direction ==
+                              fabric::FabricPortDirection::Input
+                          ? inputs
+                          : outputs;
+    endpoints.insert(fabric::canonicalFabricBytes(attachment.endpoint));
+  }
+  if (inputDemand <= inputs.size() && outputDemand <= outputs.size())
+    return std::optional<SpatialGraphBoundaryCapacitySuggestion>();
+  auto suggestion = SpatialGraphBoundaryCapacitySuggestion::get(
+      module, techMapping, inputDemand, inputs.size(), outputDemand,
+      outputs.size());
+  if (!suggestion)
+    return suggestion.takeError();
+  return std::optional<SpatialGraphBoundaryCapacitySuggestion>(
+      std::move(*suggestion));
 }
 
 llvm::Expected<SpatialFifoChannelCapacitySuggestion>
@@ -174,7 +213,7 @@ std::vector<std::uint8_t> encodeSpatialMappingHardwareFeedback(
         appendU64(bytes, feedback.index());
         using Value = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<Value,
-                                     SpatialGraphBoundaryEndpointHallDeficit>) {
+                                     SpatialGraphBoundaryCapacitySuggestion>) {
           appendU64(bytes, value.inputDemandCount());
           appendU64(bytes, value.inputEndpointCount());
           appendU64(bytes, value.outputDemandCount());
@@ -234,12 +273,20 @@ adoptSpatialMappingHardwareFeedback(
     auto outputEndpointCount = readU64(bytes, offset);
     if (!outputEndpointCount)
       return outputEndpointCount.takeError();
-    auto hall = SpatialGraphBoundaryEndpointHallDeficit::get(
-        std::move(*encodedModule), std::move(*techMapping), *inputDemandCount,
-        *inputEndpointCount, *outputDemandCount, *outputEndpointCount);
-    if (!hall)
-      return hall.takeError();
-    feedback.emplace(std::move(*hall));
+    auto fabric = fabric::importEntireFabricRoot(module, store);
+    if (!fabric)
+      return fabric.takeError();
+    auto suggestion = deriveSpatialGraphBoundaryCapacitySuggestion(
+        module, *techMapping, imported->view(), fabric->view());
+    if (!suggestion)
+      return suggestion.takeError();
+    if (!*suggestion ||
+        (**suggestion).inputDemandCount() != *inputDemandCount ||
+        (**suggestion).inputEndpointCount() != *inputEndpointCount ||
+        (**suggestion).outputDemandCount() != *outputDemandCount ||
+        (**suggestion).outputEndpointCount() != *outputEndpointCount)
+      return invalid("boundary proposal disagrees with its exact inputs");
+    feedback.emplace(std::move(**suggestion));
   } else if (*kind == 1) {
     auto ownerBytes = readBytes(bytes, offset);
     if (!ownerBytes)
@@ -324,9 +371,9 @@ void retainSpatialMappingHardwareFeedback(
         [&](const auto &value) {
           using Value = std::decay_t<decltype(value)>;
           if constexpr (std::is_same_v<Value,
-                                       SpatialGraphBoundaryEndpointHallDeficit>)
+                                       SpatialGraphBoundaryCapacitySuggestion>)
             return std::make_tuple(feedback.index(),
-                                   value.requiredBoundaryPairs(),
+                                   value.proposedAdditionalBoundaryPairs(),
                                    value.demandCount());
           else
             return std::make_tuple(

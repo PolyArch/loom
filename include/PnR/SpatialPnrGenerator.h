@@ -120,40 +120,15 @@ struct GeneratedSpatialMappings final {
   SpatialPnrGenerationAccounting accounting;
 };
 
-/// Exact graph-boundary all-different deficit observed before Spatial search.
-/// Input and output counts remain separate because one bidirectional Fabric
-/// gateway contributes one value to each directional domain.
-struct SpatialGraphBoundaryEndpointHallDeficit final {
-  std::uint64_t inputDemandCount = 0;
-  std::uint64_t inputEndpointCount = 0;
-  std::uint64_t outputDemandCount = 0;
-  std::uint64_t outputEndpointCount = 0;
-
-  std::uint64_t requiredBoundaryPairs() const {
-    const std::uint64_t inputDeficit =
-        inputDemandCount > inputEndpointCount
-            ? inputDemandCount - inputEndpointCount
-            : 0;
-    const std::uint64_t outputDeficit =
-        outputDemandCount > outputEndpointCount
-            ? outputDemandCount - outputEndpointCount
-            : 0;
-    return std::max(inputDeficit, outputDeficit);
-  }
-};
-
 enum class SpatialPnrInfeasibilityProofKind : std::uint8_t {
   FrozenDerivedContext = 0,
   FrozenActiveProblem = 1,
   InitializerRelation = 2,
-  GraphBoundaryEndpointHall = 3,
 };
 
 struct ProvenInfeasibleSpatialMapping final {
   SpatialPnrGenerationAccounting accounting;
   std::string diagnostic;
-  std::optional<SpatialGraphBoundaryEndpointHallDeficit>
-      graphBoundaryEndpointHall = std::nullopt;
   SpatialPnrInfeasibilityProofKind proofKind;
 };
 

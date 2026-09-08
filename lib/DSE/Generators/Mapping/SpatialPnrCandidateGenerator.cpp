@@ -83,7 +83,6 @@ CandidateGeneratorIncompleteReason adaptUnverifiedInfeasibility(
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenDerivedContext:
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::FrozenActiveProblem:
   case ::loom::pnr::SpatialPnrInfeasibilityProofKind::InitializerRelation:
-  case ::loom::pnr::SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall:
     return CandidateGeneratorIncompleteReason::ProofNotEstablished;
   }
   llvm_unreachable("unknown Spatial PnR infeasibility kind");

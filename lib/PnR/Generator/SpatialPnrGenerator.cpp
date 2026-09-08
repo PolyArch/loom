@@ -395,8 +395,6 @@ struct SpatialRestartResult final {
   std::string diagnostic;
   SpatialPnrInterruptionStage interruptionStage =
       SpatialPnrInterruptionStage::SeedConstruction;
-  std::optional<SpatialGraphBoundaryEndpointHallDeficit>
-      graphBoundaryEndpointHall = std::nullopt;
   std::uint64_t workerScratchRetainedBytes = 0;
   std::optional<SpatialFinalizedRestart> finalized;
 };
@@ -819,20 +817,6 @@ SpatialRestartResult runSpatialRestartImpl(
   if (seedFailure) {
     AttemptFailure failure = std::move(*seedFailure);
     if (failure.kind == AttemptFailureKind::ProvenInfeasible) {
-      std::optional<SpatialGraphBoundaryEndpointHallDeficit> feedback;
-      if (failure.hallWitness) {
-        auto projected = problem->bindingRelations().projectGraphBoundaryHall(
-            *failure.hallWitness);
-        if (!projected)
-          return restartInternal(
-              InternalSpatialPnrGenerationReason::SeedConstruction,
-              std::move(accounting), projected.takeError());
-        if (*projected)
-          feedback = SpatialGraphBoundaryEndpointHallDeficit{
-              (**projected).inputDemandCount, (**projected).inputEndpointCount,
-              (**projected).outputDemandCount,
-              (**projected).outputEndpointCount};
-      }
       SpatialRestartResult result{
           SpatialRestartDisposition::ProvenInfeasible,
           std::move(accounting),
@@ -840,7 +824,6 @@ SpatialRestartResult runSpatialRestartImpl(
           false,
           InternalSpatialPnrGenerationReason::SeedConstruction,
           std::move(failure.diagnostic)};
-      result.graphBoundaryEndpointHall = std::move(feedback);
       return result;
     }
     if (failure.kind == AttemptFailureKind::Internal)
@@ -1441,7 +1424,7 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
             std::move(failure.diagnostic)};
       case FreezeFailureKind::ProvenInfeasible:
         return ProvenInfeasibleSpatialMapping{
-            accounting, std::move(failure.diagnostic), std::nullopt,
+            accounting, std::move(failure.diagnostic),
             SpatialPnrInfeasibilityProofKind::FrozenDerivedContext};
       case FreezeFailureKind::Internal:
         return internal(
@@ -1484,7 +1467,7 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
           std::move(failure.diagnostic)};
     case FreezeFailureKind::ProvenInfeasible:
       return ProvenInfeasibleSpatialMapping{
-          accounting, std::move(failure.diagnostic), std::nullopt,
+          accounting, std::move(failure.diagnostic),
           SpatialPnrInfeasibilityProofKind::FrozenActiveProblem};
     case FreezeFailureKind::Internal:
       return internal(
@@ -1822,14 +1805,9 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
     case SpatialRestartDisposition::ProvenInfeasible: {
       emitInvocationAccounting(
           accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
-      const bool hasGraphBoundaryHall =
-          restart.graphBoundaryEndpointHall.has_value();
       return ProvenInfeasibleSpatialMapping{
           accounting, std::move(restart.diagnostic),
-          std::move(restart.graphBoundaryEndpointHall),
-          hasGraphBoundaryHall
-              ? SpatialPnrInfeasibilityProofKind::GraphBoundaryEndpointHall
-              : SpatialPnrInfeasibilityProofKind::InitializerRelation};
+          SpatialPnrInfeasibilityProofKind::InitializerRelation};
     }
     case SpatialRestartDisposition::Incomplete:
       semanticLimitReached |= restart.semanticLimitReached;

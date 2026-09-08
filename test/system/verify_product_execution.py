@@ -910,10 +910,17 @@ def validate_mapping_work(
                 )
             else:
                 require(
-                    closure_status == "semantic_limit_reached",
-                    f"{name} search did not stop at its verified product"
-                    " result",
+                    closure_status in {"semantic_limit_reached", "proof_not_established"},
+                    f"{name} search has an unexpected bounded outcome",
                 )
+                if closure_status == "proof_not_established":
+                    require(
+                        publications == 0
+                        and row.get("finalized_restarts") == 0
+                        and row.get("publication_slots") == 0,
+                        f"{name} unverified search published a candidate",
+                    )
+                    continue
                 # A joint pair whose search exhausts its seeds without a
                 # feasible incumbent is a typed empty outcome: the joint
                 # frontier falls to the next pair. Such an invocation
