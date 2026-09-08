@@ -49,6 +49,11 @@ later restarts only after final closure, independent verification,
 finalization, and publication. The latter returns retained candidates with
 `SemanticLimitReached`; it is a bounded usable prefix, not an exhaustive
 search claim.
+An earlier restart's failure to establish progress remains in that restart's
+diagnostics. Once a later restart publishes an independently verified candidate,
+the FirstVerified invocation reports `SemanticLimitReached`, including when
+the successful restart is the final configured slot. Earlier proof debt does
+not replace the achieved stopping condition with `ProofNotEstablished`.
 
 Objective registry 3.3 separates proven closed waits, proof debt, and exact
 runtime counterexamples.
