@@ -134,3 +134,34 @@ dataflow.graph private @selected_integer_while_condition(
   }
   dataflow.graph.return %start : none
 }
+
+// A possibly empty for in the before region closes on every parent firing,
+// including the final false phase. Its opened-only gate close is available
+// under the nonempty selector; an empty loop still supplies one completion.
+// CHECK-LABEL: dataflow.graph private @nested_for_before
+// CHECK: dataflow.gate
+// CHECK: dataflow.graph.return
+// CHECK-NOT: scf.for
+// CHECK-NOT: scf.while
+dataflow.graph private @nested_for_before(
+    %start: none, %outer_limit: i32, %inner_limit: index,
+    %output: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 2, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %begin = arith.constant 0 : index
+  %step = arith.constant 1 : index
+  %outer = scf.while (%i = %zero) : (i32) -> i32 {
+    scf.for %j = %begin to %inner_limit step %step {
+      memref.store %i, %output[%j] : memref<?xi32>
+    }
+    %next = arith.addi %i, %one : i32
+    %continue = arith.cmpi slt, %next, %outer_limit : i32
+    scf.condition(%continue) %next : i32
+  } do {
+  ^bb0(%i: i32):
+    scf.yield %i : i32
+  }
+  dataflow.graph.return %start : none
+}

@@ -372,6 +372,7 @@ enum class AlignmentQueryKind : uint8_t {
   Close,
   TruePhaseClose,
   GateClose,
+  TruePhaseGateClose,
   SiblingGateClose,
   SelectedClose,
   SelectedTruePhaseClose,
@@ -945,8 +946,10 @@ private:
     if (!def)
       return false;
     if (truePhaseOnly &&
-        (isSiblingGateCloseAligned(value, selector, lane, phase, assumption) ||
-         isNestedGateCloseAligned(value, selector, lane, phase, assumption)))
+        isSiblingGateCloseAligned(value, selector, lane, phase, assumption))
+      return true;
+    if (isNestedGateCloseAligned(value, selector, lane, phase, assumption,
+                                 truePhaseOnly))
       return true;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       if (haveEquivalentSelectorCorrespondence(demux.getSel(), selector) &&
@@ -1179,7 +1182,8 @@ private:
 
   bool isNestedGateCloseAligned(mlir::Value value, mlir::Value selector,
                                 unsigned lane, mlir::Value parentPhase,
-                                mlir::Value parentAssumption) {
+                                mlir::Value parentAssumption,
+                                bool truePhaseOnly) {
     auto gate = dataflow::semantics::getGateCloseProjection(value);
     if (!gate)
       return false;
@@ -1198,13 +1202,14 @@ private:
                          parentAssumption,
                          selector,
                          lane,
-                         AlignmentQueryKind::GateClose};
+                         truePhaseOnly ? AlignmentQueryKind::TruePhaseGateClose
+                                       : AlignmentQueryKind::GateClose};
     return evaluateAlignment(query, [&] {
       GraphCardinalityAnalysis activation(graph, sharedState,
                                           causalDependencies);
       return initializeNestedActivation(stream.getPhase(), parentPhase,
-                                        parentAssumption,
-                                        /*truePhaseOnly=*/true, activation) &&
+                                        parentAssumption, truePhaseOnly,
+                                        activation) &&
              activation.isOneClosePhase(stream.getPhase()) &&
              activation.isPhaseAligned(gate->getBeforeValue(),
                                        stream.getPhase());
