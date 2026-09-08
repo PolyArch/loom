@@ -18,6 +18,7 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <time.h>
@@ -1471,15 +1472,17 @@ evaluateCgraSimulationWithAttemptProfile(
 
 namespace {
 constexpr std::uint64_t kCgraReplayBaseEventFrames = 1'000'000;
-constexpr std::uint64_t kCgraReplayEventFramesPerDfgCycle = 512;
+constexpr std::uint64_t kCgraReplayEventFramesPerActorFire = 512;
 } // namespace
 
-std::uint64_t cgraReplayEventFrameGrant(std::uint64_t dfgCycles) {
+std::uint64_t cgraReplayEventFrameGrant(
+    std::uint64_t dfgCycles, const sim::PreparedCgraExecution &execution) {
+  const auto summary = execution.summary();
+  const std::uint64_t actorCount =
+      llvm::SaturatingAdd(summary.computeActorCount, summary.memoryActorCount);
+  const std::uint64_t fireBound = llvm::SaturatingMultiply(dfgCycles, actorCount);
   const std::uint64_t scaled =
-      dfgCycles <= std::numeric_limits<std::uint64_t>::max() /
-                       kCgraReplayEventFramesPerDfgCycle
-          ? dfgCycles * kCgraReplayEventFramesPerDfgCycle
-          : std::numeric_limits<std::uint64_t>::max();
+      llvm::SaturatingMultiply(fireBound, kCgraReplayEventFramesPerActorFire);
   return std::max(kCgraReplayBaseEventFrames, scaled);
 }
 
