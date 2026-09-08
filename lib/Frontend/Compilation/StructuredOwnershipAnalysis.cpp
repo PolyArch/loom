@@ -2,6 +2,7 @@
 
 #include "StructuredCallSpecialization.h"
 
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 
@@ -199,6 +200,10 @@ completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
     });
   if (unbound.empty())
     return std::nullopt;
+  for (mlir::Operation *operation : unbound)
+    if (operation->hasAttr(::loom::rootRelativeAddressAttrName))
+      return "root-relative access through a stored pointer needs a fixed "
+             "base view";
 
   auto callable = unbound.front()->getParentOfType<mlir::LLVM::LLVMFuncOp>();
   if (!callable)
