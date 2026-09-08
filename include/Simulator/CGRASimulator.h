@@ -141,10 +141,10 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint64_t definingActorEntityId =
         std::numeric_limits<std::uint64_t>::max();
     bool definingActorTerminal = false;
-    /// The exact producer occurrence the blocked input awaits: the next index
-    /// in the channel's dense arrival sequence. Equal to the producer result
-    /// occurrence because one firing appends exactly one token to the channel.
-    std::uint64_t expectedProducerOccurrenceOrdinal =
+    /// The producer firing whose progress is necessary before this input can
+    /// arrive. It may own an unpublished token or precede its production;
+    /// conditional and repeated emissions do not share the channel's index.
+    std::uint64_t blockingProducerOccurrenceOrdinal =
         std::numeric_limits<std::uint64_t>::max();
   };
   struct PhysicalCapacityWait final {

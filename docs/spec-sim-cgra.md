@@ -407,6 +407,15 @@ witness, and recomputes its domain-separated digest. Invocation-local JSON and
 the larger `CgraClosedWaitSetDiagnostic` remain derived diagnostics and cannot
 be substituted for the durable witness.
 
+Input waits reference actual producer firings, not dense channel-arrival
+indices. A conditional transition can emit no token, and one transition can
+emit several tokens. The wait therefore names an unpublished token's producing
+firing, an active firing that must retire before further production, or the
+producer's next firing. A resident FIFO token names only consumers reached on
+its own branch before the next durable boundary; consumers on sibling branches
+do not depend on that FIFO. Queue-order edges retain the exact resident head
+identity so Mapping can independently join them to the selected route.
+
 A physical-capacity wait joins the exact requesting actor firing to every
 active actor firing whose claim envelope occupies an insufficient resource
 dimension. Its typed edge retains the requesting and holding physical-action

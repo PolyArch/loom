@@ -56,7 +56,8 @@ struct CgraStorageResidencyDiagnostic final {
   /// Canonical channel identity of the token; see `tagVirtualChannelKey`.
   std::uint32_t virtualChannelKey = 0;
   std::uint64_t producerActorOrdinal = invalidCgraTransportOrdinal;
-  /// Consumers this token still owes, as semantic actor input channels.
+  /// Consumers reached from this storage before its next durable boundary,
+  /// as semantic actor input channels. Other branches of the net are excluded.
   std::vector<std::uint64_t> destinationChannelOrdinals;
   std::vector<std::uint64_t> destinationActorOrdinals;
   std::vector<std::uint32_t> destinationInputOrdinals;

@@ -165,7 +165,7 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
                    << " channel=" << input.channelOrdinal
                    << " source=" << static_cast<unsigned>(input.sourceKind)
                    << " defining=" << input.definingActorOrdinal
-                   << " expected=" << input.expectedProducerOccurrenceOrdinal
+                   << " producer_occurrence=" << input.blockingProducerOccurrenceOrdinal
                    << '\n';
     for (const auto &firing : closedWait.actorFirings)
       llvm::errs() << "wait-certificate debug: firing actor="
@@ -352,9 +352,9 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
       continue;
     const std::uint64_t waitingOccurrence =
         nextFiring(input.semanticActorOrdinal);
-    const std::uint64_t expectedOccurrence =
-        input.expectedProducerOccurrenceOrdinal;
-    if (waitingOccurrence == absent || expectedOccurrence == absent)
+    const std::uint64_t blockingOccurrence =
+        input.blockingProducerOccurrenceOrdinal;
+    if (waitingOccurrence == absent || blockingOccurrence == absent)
       return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
     const OwnerKey waiting =
         actorNode(input.semanticActorOrdinal, waitingOccurrence);
@@ -368,22 +368,22 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
       edge.kind = EdgeKind::OperandQueueWait;
       edge.waitingInputOrdinal = input.inputOrdinal;
       edge.waitingChannelOrdinal = input.channelOrdinal;
-      edge.occurrenceOrdinal = expectedOccurrence;
+      edge.occurrenceOrdinal = blockingOccurrence;
       appendEdge(std::move(edge));
       continue;
     }
 
     const Diagnostic::Transfer *awaited =
-        findTransfer(input.definingActorOrdinal, expectedOccurrence,
+        findTransfer(input.definingActorOrdinal, blockingOccurrence,
                      input.semanticActorOrdinal, input.inputOrdinal);
     if (!awaited) {
       Diagnostic::WaitEdge edge;
       edge.from = waiting;
-      edge.to = actorNode(input.definingActorOrdinal, expectedOccurrence);
+      edge.to = actorNode(input.definingActorOrdinal, blockingOccurrence);
       edge.kind = EdgeKind::ActorMissingInput;
       edge.waitingInputOrdinal = input.inputOrdinal;
       edge.waitingChannelOrdinal = input.channelOrdinal;
-      edge.occurrenceOrdinal = expectedOccurrence;
+      edge.occurrenceOrdinal = blockingOccurrence;
       appendEdge(std::move(edge));
       continue;
     }
@@ -392,12 +392,12 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
     if (!entry) {
       Diagnostic::WaitEdge edge;
       edge.from = waiting;
-      edge.to = actorNode(input.definingActorOrdinal, expectedOccurrence);
+      edge.to = actorNode(input.definingActorOrdinal, blockingOccurrence);
       edge.kind = EdgeKind::ActorMissingInput;
       edge.waitingInputOrdinal = input.inputOrdinal;
       edge.waitingChannelOrdinal = input.channelOrdinal;
       edge.bindingOrdinal = awaited->bindingOrdinal;
-      edge.occurrenceOrdinal = expectedOccurrence;
+      edge.occurrenceOrdinal = blockingOccurrence;
       appendEdge(std::move(edge));
       continue;
     }
@@ -474,8 +474,7 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
       appendEdge(std::move(edge));
     }
     // The transfer cannot publish into a channel the consumer has not
-    // drained: the channel slot is the durable acceptance point, and the
-    // consumer's next firing owns the outstanding token.
+    // drained; the consumer's next firing must take the outstanding token.
     if (transfer.blockingActorOrdinal != absent) {
       const std::uint64_t consumerOccurrence =
           nextFiring(transfer.blockingActorOrdinal);
@@ -512,9 +511,9 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
           break;
         }
       }
-    // A resident token whose publication is incomplete holds its producer
-    // firing open: behind its queue-class head the firing waits on the queue
-    // order, and at an unconsumed head it waits on the queue's delivery.
+    // A resident token retains its producing firing as its provenance even
+    // after durable handoff retires that firing. Its incomplete delivery waits
+    // on queue order behind the class head, or on consumption at the head.
     if (transfer.publishedSinkCount >= transfer.sinkCount ||
         transfer.sinkCount == 0)
       continue;
@@ -663,10 +662,10 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
             input_.inputOrdinal == input)
           blockedInput = &input_;
       if (!blockedInput || blockedInput->definingActorOrdinal == absent ||
-          blockedInput->expectedProducerOccurrenceOrdinal == absent)
+          blockedInput->blockingProducerOccurrenceOrdinal == absent)
         continue;
       const std::uint64_t awaitedOccurrence =
-          blockedInput->expectedProducerOccurrenceOrdinal;
+          blockedInput->blockingProducerOccurrenceOrdinal;
       const Diagnostic::Transfer *awaited =
           findTransfer(blockedInput->definingActorOrdinal, awaitedOccurrence,
                        consumer, input);
@@ -676,15 +675,32 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
         if (entry) {
           const StorageResidency &storage = residencies[storageOrdinal];
           const bool tagged = awaited->physicalTagOrdinal != absent;
+          const QueueClass queueClass =
+              queueClassOf(storage, awaited->physicalTagValue, tagged);
+          const ResidencyEntry *head = classHead(storage, queueClass);
+          if (!head)
+            return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
           Diagnostic::WaitEdge edge;
           edge.from = queueNode;
-          edge.to = storageNode(
-              storageOrdinal,
-              queueClassOf(storage, awaited->physicalTagValue, tagged));
+          edge.to = storageNode(storageOrdinal, queueClass);
           edge.kind = EdgeKind::StorageOrder;
+          edge.waitingInputOrdinal = input;
+          edge.waitingChannelOrdinal = blockedInput->channelOrdinal;
           edge.bindingOrdinal = awaited->bindingOrdinal;
           edge.occurrenceOrdinal = awaited->occurrenceOrdinal;
           edge.storageOrdinal = storageOrdinal;
+          if (head->tagged)
+            edge.headTagValue = head->tagValue;
+          edge.headBindingOrdinal = head->bindingOrdinal;
+          edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+          if (!head->destinationActorOrdinals.empty()) {
+            edge.headDestinationActorOrdinal =
+                head->destinationActorOrdinals.front();
+            edge.headDestinationChannelOrdinal =
+                head->destinationChannelOrdinals.front();
+            edge.headDestinationInputOrdinal =
+                head->destinationInputOrdinals.front();
+          }
           appendEdge(std::move(edge));
           continue;
         }
@@ -1206,6 +1222,24 @@ llvm::Expected<CgraClosedWaitSetDiagnostic> detail::projectCgraClosedWaitSet(
          transfer.physicalTagOwner});
   }
   const std::size_t actorCount = execution.actorPlans.size();
+  const auto physicalActions = runtime.pendingPhysicalActionDiagnostics();
+  std::vector<std::uint64_t> producerProgressOccurrences(actorCount);
+  for (std::size_t actor = 0; actor != actorCount; ++actor)
+    producerProgressOccurrences[actor] =
+        runtime.nextActorOccurrenceOrdinal(actor).value_or(
+            detail::invalidCgraTransportOrdinal);
+  // Compute and memory bindings serialize their firings until retirement.
+  // An active firing must progress before a later firing can supply an input,
+  // including when the active transition itself emits nothing on that lane.
+  for (const auto &firing : result.actorFirings)
+    producerProgressOccurrences[firing.semanticActorOrdinal] = std::min(
+        producerProgressOccurrences[firing.semanticActorOrdinal],
+        firing.occurrenceOrdinal);
+  for (const auto &action : physicalActions)
+    if (action.semanticFiring)
+      producerProgressOccurrences[action.semanticFiring->first] = std::min(
+          producerProgressOccurrences[action.semanticFiring->first],
+          action.semanticFiring->second);
   ActorTransitionProbeTable probes =
       deriveActorTransitionProbes(execution, dynamicState);
   llvm::DenseMap<mlir::Operation *, std::uint64_t> actorByOperation;
@@ -1263,16 +1297,31 @@ llvm::Expected<CgraClosedWaitSetDiagnostic> detail::projectCgraClosedWaitSet(
         sourceKind =
             CgraClosedWaitSetDiagnostic::ActorInputSourceKind::GraphInput;
       }
-      const std::uint64_t expectedProducerOccurrence =
-          runtime.channelArrivalCount(channel).value_or(
-              detail::invalidCgraTransportOrdinal);
+      std::uint64_t blockingProducerOccurrence =
+          detail::invalidCgraTransportOrdinal;
+      if (definingActor != detail::invalidCgraTransportOrdinal) {
+        blockingProducerOccurrence = producerProgressOccurrences[definingActor];
+        // A producer can retire after handing a token to durable storage.
+        // Retain the oldest unpublished token for this exact input even when
+        // its producing actor has already advanced to a later occurrence.
+        for (const auto &transfer : result.transfers) {
+          if (transfer.producerActorOrdinal != definingActor)
+            continue;
+          for (std::size_t sink = 0;
+               sink != transfer.unpublishedActorOrdinals.size(); ++sink)
+            if (transfer.unpublishedActorOrdinals[sink] == actor &&
+                transfer.unpublishedInputOrdinals[sink] == input)
+              blockingProducerOccurrence = std::min(
+                  blockingProducerOccurrence, transfer.occurrenceOrdinal);
+        }
+      }
       result.blockedActorInputs.push_back(
           {static_cast<std::uint64_t>(actor), actorEntityId, input, channel,
            sourceKind, definingActor, definingActorEntity,
-           definingActorTerminal, expectedProducerOccurrence});
+           definingActorTerminal, blockingProducerOccurrence});
     }
   }
-  for (const auto &action : runtime.pendingPhysicalActionDiagnostics()) {
+  for (const auto &action : physicalActions) {
     result.physicalActions.push_back(
         {action.action.actionOrdinal, action.action.occurrenceOrdinal,
          static_cast<std::uint8_t>(action.client),
