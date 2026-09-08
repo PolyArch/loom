@@ -196,7 +196,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v17",
+    "loom.compiler.structured_schedule.generator.v18",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -567,15 +567,21 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 ScheduleSearchPhase::TiledPrefix)]
             .push_back(ordinal);
     }
+    auto &prefixes = schedule.proposalOrdinals[static_cast<std::size_t>(
+        ScheduleSearchPhase::TiledPrefix)];
+    std::stable_sort(prefixes.begin(), prefixes.end(),
+                     [&](std::size_t left, std::size_t right) {
+                       return schedule.domain.proposals[left].decision().factor >
+                              schedule.domain.proposals[right].decision().factor;
+                     });
     parents.push_back(std::move(schedule));
   }
 
-  // Keep each parent's canonical decision order while sharing the finite
-  // attempt grant across parents. Direct decisions precede tiled-prefix
-  // terminal searches; a prefix and its independent terminal proof remain
-  // one search step, with every materialization charged separately.
+  // A logical-domain search first explores coarse proven tiles to amortize
+  // activation overhead. Parents share each round; a prefix and its independent
+  // terminal proof remain one step, with every materialization charged.
   for (ScheduleSearchPhase phase :
-       {ScheduleSearchPhase::Direct, ScheduleSearchPhase::TiledPrefix}) {
+       {ScheduleSearchPhase::TiledPrefix, ScheduleSearchPhase::Direct}) {
     std::size_t rounds = 0;
     for (const ParentSchedule &parent : parents)
       rounds = std::max(

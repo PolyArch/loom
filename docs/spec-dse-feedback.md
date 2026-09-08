@@ -1706,15 +1706,18 @@ ordinals.
 
 The Structured schedule generator shares its materialization-attempt grant
 across exact input parents in rounds. Each round tries the next eligible
-proposal from each parent in canonical input order, preserving that parent's
-canonical decision order. Typed refusals and no-ops consume attempts normally.
-Direct decisions precede tiled-prefix terminal searches. Each prefix and its
+proposal from each parent in canonical input order. Typed refusals and no-ops
+consume attempts normally. When a logical thread domain is required, proven
+tiled-prefix terminal searches precede direct parallelization. Larger tile
+factors come first to amortize activation overhead; equal factors retain the
+parent's canonical decision order. Direct decisions retain their canonical
+order. Each prefix and its
 independently enumerated terminal proof form one search step, with every
 materialization charged separately. Exhausted grants retain finalized outputs
 and report semantic incompleteness; one parent's rejected alternatives must
 not consume later rounds before the other parents receive their current turn.
 The implementation semantic identity is
-`loom.compiler.structured_schedule.generator.v17`.
+`loom.compiler.structured_schedule.generator.v18`.
 
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact
