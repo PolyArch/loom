@@ -24,6 +24,8 @@ inline constexpr llvm::StringLiteral applicationHostEntrySymbol{
     "__loom_host_entry"};
 
 struct ApplicationSpatialInvocationPlan final {
+  std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
+
   struct MemoryObjectSource final {
     std::uint64_t dispatchArgumentOrdinal = 0;
     std::uint64_t byteOffset = 0;
@@ -70,16 +72,12 @@ struct ApplicationSpatialInvocationPlan final {
   std::vector<Callable> callables;
 };
 
-llvm::Expected<ApplicationSpatialInvocationPlan>
-deriveApplicationSpatialInvocationPlan(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
-    llvm::StringRef entrySymbol);
-
 /// Retry a statically unsupported memory relation using exact source-backed
-/// finite-object provenance. All references are verified through their owners.
+/// finite-object provenance. The plan retains the exact Dataflow owner so its
+/// capture handles remain valid throughout Mapping and Deployment.
 llvm::Expected<ApplicationSpatialInvocationPlan>
 deriveApplicationSpatialInvocationPlan(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const ArtifactRootReference &dataflow,
     llvm::StringRef entrySymbol,
     const ArtifactRootReference &selectedProgram,
     const ArtifactRootReference &sourceWorkload,
@@ -94,7 +92,6 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostOnlyModule(
 
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
-    const dataflow::CanonicalDataflowArtifact &dataflow,
     const ApplicationSourceInvocation &sourceInvocation,
     const ApplicationSpatialInvocationPlan &plan);
 

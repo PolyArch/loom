@@ -1384,9 +1384,9 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostOnlyModule(
 
 llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     const llvm::Module &finalLinkedModule,
-    const dataflow::CanonicalDataflowArtifact &dataflow,
     const ApplicationSourceInvocation &sourceInvocation,
     const ApplicationSpatialInvocationPlan &plan) {
+  const auto &dataflow = *plan.dataflow;
   auto module = llvm::CloneModule(finalLinkedModule);
   llvm::Type *i64 = llvm::Type::getInt64Ty(module->getContext());
   if (module->getGlobalVariable("__loom_dispatch_base", true))

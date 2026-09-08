@@ -842,14 +842,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       ++resourceTimeFunnel->accounting.dataflowMaterializedCandidates;
       if (pending->compilation.functionalReplay)
         ++resourceTimeFunnel->accounting.functionalReplayCandidates;
-      // Deployment reconstructs this exact invocation plan again. Validate it
-      // before any Tech/Spatial/System provider is dispatched so a candidate
-      // with an inexact dynamic capture becomes a typed unsupported finalist,
-      // rather than a late deployment failure after expensive Mapping work.
-      const auto &invocationDataflow =
-          pending->compilation.compilation.canonicalDataflow.view();
+      // Prepare the exact invocation plan before any Mapping provider runs.
+      // Runtime validation and Deployment consume this same proof and its IR
+      // owner; hardware alternatives do not change software memory provenance.
       auto invocationPreflight = detail::deriveApplicationSpatialInvocationPlan(
-          invocationDataflow, request.sourceInvocation.entrySymbol,
+          published->canonicalDataflow, request.sourceInvocation.entrySymbol,
           published->structuredProgram, completed.workload, completed.runtimeInput,
           artifacts,
           request.preMappingOptions.ownership.functionalReplayLimits.maxRetainedCaptureBytes);
@@ -890,7 +887,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       preparedSoftware.push_back({firstRank, pending->planningRecordOrdinal,
                                   identity, std::move(*published),
                                   std::move(roots), std::move(replayCases),
-                                  request.preMappingOptions.ownership.functionalReplayLimits.maxRetainedCaptureBytes});
+                                  std::make_shared<detail::ApplicationSpatialInvocationPlan>(
+                                      std::move(*invocationPreflight))});
       softwareOrdinal = preparedSoftware.size() - 1;
       softwareByCandidate.emplace(identitySpelling, softwareOrdinal);
       promotedIdentities.push_back(identity);

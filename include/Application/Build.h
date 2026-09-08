@@ -26,6 +26,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -42,6 +43,10 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::application {
+
+namespace detail {
+struct ApplicationSpatialInvocationPlan;
+}
 
 inline constexpr llvm::StringLiteral applicationBuildProducerIdentity{
     "loom.application.build.v4"};
@@ -90,10 +95,9 @@ struct PreparedApplicationSoftware final {
   frontend::PublishedPreMappingCompilation compilation;
   std::vector<ArtifactRootReference> workloads;
   std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
-  /// The configured native capture grant follows this prepared software into
-  /// deployment and runtime validation; it does not affect Artifact identity.
-  std::uint64_t invocationCaptureByteLimit =
-      dse::StructuredFunctionalReplayBudget{}.maxRetainedCaptureBytes;
+  /// Prepared once under the configured capture grant. The immutable plan
+  /// owns the Dataflow IR referenced by its invocation and memory captures.
+  std::shared_ptr<const detail::ApplicationSpatialInvocationPlan> invocationPlan;
 };
 
 struct PreparedApplicationMappingAlternative final {

@@ -220,9 +220,10 @@ ApplicationSpatialInvocationPlan::Launch::dispatchOperandOrdinal(
 
 static llvm::Expected<ApplicationSpatialInvocationPlan>
 deriveApplicationSpatialInvocationPlanImpl(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
+    std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflowOwner,
     llvm::StringRef entrySymbol,
     const SourceBoundInvocationMemory *sourceBound = nullptr) {
+  const auto &dataflow = dataflowOwner->view();
   auto roots =
       dataflow.projectRootThreadLaunchesReachableFromAbiEntry(entrySymbol);
   if (!roots)
@@ -606,25 +607,25 @@ deriveApplicationSpatialInvocationPlanImpl(
   launches.reserve(boundaries.size());
   for (LaunchBoundary &boundary : boundaries)
     launches.push_back(std::move(boundary.launch));
-  return ApplicationSpatialInvocationPlan{std::move(launches),
+  return ApplicationSpatialInvocationPlan{std::move(dataflowOwner),
+                                          std::move(launches),
                                           std::move(callables)};
 }
 
 llvm::Expected<ApplicationSpatialInvocationPlan>
 deriveApplicationSpatialInvocationPlan(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
-    llvm::StringRef entrySymbol) {
-  return deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol);
-}
-
-llvm::Expected<ApplicationSpatialInvocationPlan>
-deriveApplicationSpatialInvocationPlan(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const ArtifactRootReference &dataflowReference,
     llvm::StringRef entrySymbol, const ArtifactRootReference &selectedProgram,
     const ArtifactRootReference &sourceWorkload,
     const ArtifactRootReference &sourceRuntimeInput,
     const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes) {
-  auto staticPlan = deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol);
+  auto imported = dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+  if (!imported)
+    return imported.takeError();
+  auto dataflowOwner =
+      std::make_shared<dataflow::CanonicalDataflowArtifact>(std::move(*imported));
+  auto staticPlan =
+      deriveApplicationSpatialInvocationPlanImpl(dataflowOwner, entrySymbol);
   if (staticPlan)
     return std::move(*staticPlan);
   llvm::Error failure = llvm::handleErrors(staticPlan.takeError(),
@@ -653,12 +654,13 @@ deriveApplicationSpatialInvocationPlan(
   if (!callable || callable.getSymName() != entrySymbol)
     return invalid("source-bound invocation entry differs from its workload");
   auto capture = sim::deriveWorkloadBoundMemoryCapture(
-      *selected, dataflow, *inputs, maxRetainedCaptureBytes);
+      *selected, dataflowOwner->view(), *inputs, maxRetainedCaptureBytes);
   if (!capture)
     return capture.takeError();
   SourceBoundInvocationMemory source{*capture,
                                      *inputs->runtimeInput.structuredProgram()};
-  return deriveApplicationSpatialInvocationPlanImpl(dataflow, entrySymbol, &source);
+  return deriveApplicationSpatialInvocationPlanImpl(std::move(dataflowOwner),
+                                                    entrySymbol, &source);
 }
 
 } // namespace loom::application::detail
