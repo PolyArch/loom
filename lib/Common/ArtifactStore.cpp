@@ -20,6 +20,10 @@
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
+#include <list>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <system_error>
@@ -257,6 +261,94 @@ validateExistingObject(int directory, llvm::StringRef objectName,
 
 } // namespace
 
+// Identity admission and retained payload have different lifetimes: closure
+// validation needs the former, while a byte consumer needs the latter. Both
+// derive only from an independently validated read, never from put arguments.
+struct ArtifactStore::VerifiedReadCache final {
+  struct IdentityLess final {
+    bool operator()(const ArtifactIdentity &lhs,
+                    const ArtifactIdentity &rhs) const {
+      return lhs.bytes() < rhs.bytes();
+    }
+  };
+  struct Entry final {
+    std::string schemaIdentity;
+    SchemaVersion schemaVersion;
+    std::optional<CanonicalSemanticBytes> bytes;
+    std::list<ArtifactIdentity>::iterator payloadPosition;
+
+    llvm::Error validateSchema(llvm::StringRef identity,
+                               SchemaVersion version) const {
+      if (schemaIdentity != identity || schemaVersion != version)
+        return storeError("artifact_schema_mismatch",
+                          "stored object schema does not match exact reference");
+      return llvm::Error::success();
+    }
+  };
+  static constexpr std::size_t byteBudget = 256u << 20;
+  static constexpr std::size_t identityBudget = 256u << 10;
+  std::mutex mutex;
+  std::map<ArtifactIdentity, Entry, IdentityLess> entries;
+  std::list<ArtifactIdentity> identityOrder;
+  std::list<ArtifactIdentity> payloadOrder;
+  std::size_t retainedBytes = 0;
+
+  void discardPayload(Entry &entry) {
+    if (!entry.bytes)
+      return;
+    retainedBytes -= entry.bytes->bytes().size();
+    entry.bytes.reset();
+    payloadOrder.erase(entry.payloadPosition);
+  }
+
+  void retain(const ArtifactIdentity &identity, llvm::StringRef schemaIdentity,
+              SchemaVersion schemaVersion, CanonicalSemanticBytes bytes) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found = entries.find(identity);
+    if (found == entries.end()) {
+      if (entries.size() == identityBudget) {
+        auto evicted = entries.find(identityOrder.front());
+        discardPayload(evicted->second);
+        entries.erase(evicted);
+        identityOrder.pop_front();
+      }
+      found = entries.emplace(identity, Entry{schemaIdentity.str(),
+                                              schemaVersion, std::nullopt, {}})
+                  .first;
+      identityOrder.push_back(identity);
+    }
+    Entry &entry = found->second;
+    const std::size_t size = bytes.bytes().size();
+    if (entry.bytes || size > byteBudget)
+      return;
+    while (retainedBytes + size > byteBudget)
+      discardPayload(entries.find(payloadOrder.front())->second);
+    payloadOrder.push_back(identity);
+    entry.payloadPosition = std::prev(payloadOrder.end());
+    entry.bytes = std::move(bytes);
+    retainedBytes += size;
+  }
+};
+
+ArtifactStore::ArtifactStore(llvm::StringRef root, Durability durability)
+    : root_(root.str()), durability_(durability),
+      verifiedReads_(std::make_shared<VerifiedReadCache>()) {}
+
+llvm::Error
+ArtifactStore::verifyReference(const ArtifactRootReference &reference) const {
+  {
+    std::lock_guard<std::mutex> lock(verifiedReads_->mutex);
+    auto found = verifiedReads_->entries.find(reference.artifact);
+    if (found != verifiedReads_->entries.end())
+      return found->second.validateSchema(reference.schemaIdentity,
+                                          reference.schemaVersion);
+  }
+  auto bytes = get(reference);
+  if (!bytes)
+    return bytes.takeError();
+  return llvm::Error::success();
+}
+
 llvm::Expected<ArtifactIdentity>
 ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
                    const CanonicalSemanticBytes &canonicalBytes) const {
@@ -432,15 +524,11 @@ ArtifactStore::getExact(llvm::StringRef schemaIdentity,
     std::lock_guard<std::mutex> lock(verifiedReads_->mutex);
     const auto found = verifiedReads_->entries.find(identity);
     if (found != verifiedReads_->entries.end()) {
-      if (found->second.schemaIdentity != schemaIdentity)
-        return storeError("artifact_schema_mismatch",
-                          "stored object schema identity does not match "
-                          "expected schema identity");
-      if (found->second.schemaVersion != schemaVersion)
-        return storeError("artifact_schema_mismatch",
-                          "stored object schema version does not match "
-                          "expected schema version");
-      return found->second.bytes;
+      if (llvm::Error error =
+              found->second.validateSchema(schemaIdentity, schemaVersion))
+        return error;
+      if (found->second.bytes)
+        return *found->second.bytes;
     }
   }
   auto directoryOrError = openStoreDirectory(root_);
@@ -495,27 +583,7 @@ ArtifactStore::getExact(llvm::StringRef schemaIdentity,
     return std::move(error);
   closeDirectory.release();
   CanonicalSemanticBytes verified(std::move(canonicalBytes));
-  {
-    VerifiedReadCache &cache = *verifiedReads_;
-    std::lock_guard<std::mutex> lock(cache.mutex);
-    if (!cache.entries.count(identity)) {
-      const std::size_t size = verified.bytes().size();
-      if (size <= verifiedReadByteBudget) {
-        while (cache.retainedBytes + size > verifiedReadByteBudget &&
-               !cache.order.empty()) {
-          const auto evicted = cache.entries.find(cache.order.front());
-          cache.retainedBytes -= evicted->second.bytes.bytes().size();
-          cache.entries.erase(evicted);
-          cache.order.pop_front();
-        }
-        cache.entries.emplace(
-            identity,
-            VerifiedRead{schemaIdentity.str(), schemaVersion, verified});
-        cache.order.push_back(identity);
-        cache.retainedBytes += size;
-      }
-    }
-  }
+  verifiedReads_->retain(identity, schemaIdentity, schemaVersion, verified);
   return verified;
 }
 

@@ -205,14 +205,11 @@ llvm::Error validateStoredRoots(llvm::ArrayRef<ArtifactRootReference> roots,
           request->schemaVersion !=
               evaluation::EvaluationRequest::artifactSchema.version)
         return invalid(field + " contains Evidence with a foreign Request");
-      auto storedRequest = store.get(
-          evaluation::EvaluationRequest::artifactSchema, request->artifact);
-      if (!storedRequest)
-        return storedRequest.takeError();
+      if (llvm::Error error = store.verifyReference(*request))
+        return error;
     } else {
-      auto stored = store.get(root);
-      if (!stored)
-        return stored.takeError();
+      if (llvm::Error error = store.verifyReference(root))
+        return error;
     }
   }
   return llvm::Error::success();

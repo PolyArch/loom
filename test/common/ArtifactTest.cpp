@@ -664,6 +664,45 @@ void tamperedSemanticBytesAreRejected() {
                       "artifact_store_corruption");
 }
 
+void referenceAdmissionRespectsStoreBoundary() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes bytes = semantic({0x60, 0x61});
+  const ArtifactIdentity identity =
+      takeExpected(__func__, store.put(testSchema, bytes));
+  const ArtifactRootReference reference{testSchema.identity.str(),
+                                        testSchema.version, identity};
+  if (llvm::Error error = store.verifyReference(reference))
+    fail(__func__, llvm::toString(std::move(error)));
+  for (const ArtifactSchemaDescriptor &schema : {otherSchema, otherVersion}) {
+    llvm::Error error = store.verifyReference(
+        {schema.identity.str(), schema.version, identity});
+    require(__func__, static_cast<bool>(error),
+            "verified identity admitted a different schema");
+    require(__func__, llvm::StringRef(llvm::toString(std::move(error)))
+                          .contains("artifact_schema_mismatch"),
+            "verified schema mismatch lost its typed distinction");
+  }
+
+  auto tampered = expectedPreimage(testSchema, bytes);
+  tampered.back() ^= 0xff;
+  writeFile(__func__, objectPath(directory.path(), identity), tampered);
+  // Admission records are verified handles within one immutable CAS domain.
+  // Explicit transport reads and separately opened stores verify fresh bytes.
+  ArtifactStore copy = store;
+  if (llvm::Error error = copy.verifyReference(reference))
+    fail(__func__, llvm::toString(std::move(error)));
+  expectErrorContains(__func__, store.getStoredObject(reference),
+                      "artifact_store_corruption");
+  ArtifactStore reopened(directory.path());
+  llvm::Error error = reopened.verifyReference(reference);
+  require(__func__, static_cast<bool>(error),
+          "reopened store reused another store's admission record");
+  require(__func__, llvm::StringRef(llvm::toString(std::move(error)))
+                        .contains("artifact_store_corruption"),
+          "cold admission lost stored corruption evidence");
+}
+
 void resolvedConfigUsesArtifactFinalization() {
   require(__func__,
           ResolvedConfig::artifactSchema.identity ==
@@ -867,6 +906,7 @@ int main() {
   malformedStoredPreimagesAreRejected();
   wrongKeyValidPreimageIsRejected();
   tamperedSemanticBytesAreRejected();
+  referenceAdmissionRespectsStoreBoundary();
   resolvedConfigUsesArtifactFinalization();
   componentViewDigestMatchesKnownVector();
   componentViewDigestFollowsSourceBytes();

@@ -422,15 +422,25 @@ Publishing identical content deduplicates, including concurrent publication.
 Different content at an existing valid key is an identity collision; malformed
 framing or key/preimage mismatch is corruption. Publication never overwrites
 an existing object. The current ArtifactStore contract exposes no object
-mutation or deletion API;
+mutation or deletion API. When acquiring an object from storage,
 out-of-band removal is reported as missing and out-of-band modification as
 corruption.
 
-Validated reads derive the object path only from identity, reject symbolic
-links and non-regular files, verify the expected schema descriptor, recompute
-the digest, and return exactly the canonical semantic bytes. The caller
-provides an already established non-symlink store root; the store does not
-create parent directories.
+Reads acquired from storage derive the object path only from identity, reject
+symbolic links and non-regular files, verify the expected schema descriptor,
+recompute the digest, and return exactly the canonical semantic bytes. The
+caller provides an already established non-symlink store root; the store does
+not create parent directories.
+
+A store may retain bounded verified-read handles within its immutable object
+domain; copies share those handles, while newly opened stores acquire reads
+independently. Each handle records the exact identity and schema and may retain
+the validated immutable bytes. `verifyReference` admits an exact reference
+using this record or a validated read. Payload eviction need not evict the
+record, but `get` must reacquire and validate any bytes it no longer retains.
+`getStoredObject` always reacquires and validates the stored identity preimage.
+`put` does not populate verified-read handles. These handles neither establish
+current filesystem availability nor replace independent cold validation.
 
 Failure classification is exact:
 
