@@ -40,6 +40,81 @@ llvm::Error invalid(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
+llvm::Error prepareOperandIngressQueries(
+    const CgraFrozenExecutionPlan &plan, CgraTransportGraph &graph,
+    const TransferBinding &binding, PublicationBinding &publication) {
+  auto &queries = publication.operandIngressQueries;
+  for (std::uint32_t localSink :
+       llvm::ArrayRef(graph.publicationSinks)
+           .slice(publication.sinkOffset, publication.sinkCount)) {
+    if (localSink >= binding.sinkCount)
+      return invalid("CGRA operand ingress priority has an unknown sink");
+    const SinkBinding &sink = graph.sinks[binding.sinkOffset + localSink];
+    if (sink.operandQueueBinding == invalidCgraTransportOrdinal)
+      continue;
+    if (sink.operandQueueBinding >= graph.operandQueues.size() ||
+        sink.operandActivationOrdinal >=
+            plan.transport.operandQueueActivations.size())
+      return invalid("CGRA operand ingress priority has an invalid queue");
+    const OperandQueueBinding &queue =
+        graph.operandQueues[sink.operandQueueBinding];
+    if (queue.bufferBinding >= graph.operandBuffers.size())
+      return invalid("CGRA operand ingress priority lost its Fabric owner");
+    auto query = llvm::find_if(queries, [&](const auto &candidate) {
+      return candidate.buffer == queue.bufferBinding;
+    });
+    if (query == queries.end()) {
+      queries.push_back({queue.bufferBinding, {}, {}});
+      query = queries.end() - 1;
+    }
+    query->matched.push_back(queue.contractQueue);
+    const llvm::APInt &tag =
+        plan.transport.operandQueueActivations[sink.operandActivationOrdinal]
+            .tag;
+    const auto pairing = llvm::find_if(
+        plan.transport.operandQueueProgress.pairings,
+        [&](const auto &candidate) {
+          return candidate.key.context == queue.queue.context &&
+                 candidate.key.fu == queue.fu &&
+                 candidate.key.tag.getBitWidth() == tag.getBitWidth() &&
+                 candidate.key.tag == tag;
+        });
+    if (pairing == plan.transport.operandQueueProgress.pairings.end())
+      return invalid("CGRA operand ingress priority has no PairingKey");
+    if (!llvm::is_contained(publication.operandPairings, pairing->key))
+      publication.operandPairings.push_back(pairing->key);
+    const OperandBufferBinding &buffer =
+        graph.operandBuffers[queue.bufferBinding];
+    for (std::uint32_t role : pairing->requiredInputRoles) {
+      const ::fabric::LogicalOperandQueueKey requiredKey{
+          queue.queue.context, queue.queue.fuOccurrence, role};
+      const auto required =
+          llvm::lower_bound(buffer.contract.logicalQueues(), requiredKey);
+      if (required == buffer.contract.logicalQueues().end() ||
+          *required != requiredKey)
+        return invalid("CGRA operand ingress priority lost a required "
+                       "QueueKey");
+      const std::uint32_t contractQueue = static_cast<std::uint32_t>(
+          std::distance(buffer.contract.logicalQueues().begin(), required));
+      if (buffer.runtimeQueues[contractQueue] == invalidCgraTransportOrdinal)
+        return invalid("CGRA operand ingress priority has no runtime binding "
+                       "for a required QueueKey");
+      query->required.push_back(contractQueue);
+    }
+  }
+
+  for (auto &query : queries) {
+    llvm::sort(query.matched);
+    query.matched.erase(std::unique(query.matched.begin(), query.matched.end()),
+                        query.matched.end());
+    llvm::sort(query.required);
+    query.required.erase(
+        std::unique(query.required.begin(), query.required.end()),
+        query.required.end());
+  }
+  return llvm::Error::success();
+}
+
 using RefBytes = std::vector<std::uint8_t>;
 
 struct TraversalStepKey final {
@@ -959,7 +1034,7 @@ llvm::Expected<CgraTransportGraph> freezeCgraTransportGraph(
       }
       publications.push_back({groupSinkOffset,
                               static_cast<std::uint32_t>(group.size()),
-                              groupUseCount});
+                              groupUseCount, {}, {}});
     }
     const std::uint64_t bindingOrdinal = bindings.size();
     std::optional<std::uint64_t> semanticActorOrdinal;
@@ -1058,6 +1133,14 @@ llvm::Expected<CgraTransportGraph> freezeCgraTransportGraph(
   result.actorSourceBindings = std::move(actorSourceBindings);
   result.ingressSourceBindings = std::move(ingressSourceBindings);
   result.actorInputQueueBindings = std::move(actorInputQueueBindings);
+
+  for (const TransferBinding &binding : result.bindings)
+    for (PublicationBinding &publication :
+         llvm::MutableArrayRef(result.publications)
+             .slice(binding.publicationOffset, binding.publicationCount))
+      if (llvm::Error error =
+              prepareOperandIngressQueries(plan, result, binding, publication))
+        return std::move(error);
 
   result.actorSourceBindingOrdinals.resize(execution.actorPlans.size());
   for (const auto &[key, binding] : result.actorSourceBindings) {

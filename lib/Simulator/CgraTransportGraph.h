@@ -37,9 +37,19 @@ struct CgraTransportGraph final {
   };
 
   struct PublicationBinding final {
+    struct OperandIngressQuery final {
+      std::uint64_t buffer = invalidCgraTransportOrdinal;
+      llvm::SmallVector<std::uint32_t, 8> matched;
+      llvm::SmallVector<std::uint32_t, 8> required;
+    };
+
     std::uint64_t sinkOffset = 0;
     std::uint32_t sinkCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
+    // Derived once from the frozen publication sinks and PairingKey domain.
+    llvm::SmallVector<OperandIngressQuery, 2> operandIngressQueries;
+    llvm::SmallVector<::loom::mapping::SpatialPeOperandQualifiedPairingKey, 4>
+        operandPairings;
   };
 
   struct TransferBinding final {

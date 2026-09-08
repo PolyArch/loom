@@ -522,8 +522,7 @@ private:
   struct OperandIngressAdmission final {
     ::fabric::OperandIngressAdmissionPriority priority =
         ::fabric::OperandIngressAdmissionPriority::Ordinary;
-    llvm::SmallVector<::loom::mapping::SpatialPeOperandQualifiedPairingKey, 4>
-        pairings;
+    llvm::ArrayRef<::loom::mapping::SpatialPeOperandQualifiedPairingKey> pairings;
   };
   llvm::Expected<OperandIngressAdmission>
   operandIngressAdmissionPriority(std::uint64_t slot,

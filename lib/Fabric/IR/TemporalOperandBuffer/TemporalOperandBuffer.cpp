@@ -559,10 +559,9 @@ TemporalOperandBufferContract::ingressAdmissionPriority(
     bool completeAfterIngress = true;
     bool fillsMissingRole = false;
     bool occupiedRoleNearFull = false;
-    for (std::uint32_t role = 0; role != queues_.size(); ++role) {
+    for (std::uint32_t role : requiredQueues) {
       const LogicalOperandQueueKey &candidate = queues_[role];
-      if (!llvm::is_contained(requiredQueues, role) ||
-          candidate.context != key.context ||
+      if (candidate.context != key.context ||
           candidate.fuOccurrence != key.fuOccurrence)
         continue;
       const OperandQueueCycleObservation &observation = observations[role];
