@@ -15,6 +15,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -195,7 +196,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v16",
+    "loom.compiler.structured_schedule.generator.v17",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -306,6 +307,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
         mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
           fields["context_kind"] = "structured_scop_refusal";
+          fields["parent"] = formatArtifactIdentityHex(loop.parent);
           fields["loop_ordinal"] = loop.ordinal;
           fields["refusal_kind"] =
               frontend::structuredScopRefusalKindSpelling(kind);
@@ -379,14 +381,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             rejected = true;
             if (logical)
               switch (error.kind()) {
-            case frontend::SpatialOwnershipCandidateRejectionKind::
-                NonFinalizable:
-              ++nonFinalizableLogicalDomainCount;
-              break;
-            case frontend::SpatialOwnershipCandidateRejectionKind::
-                ExactFabricInadmissible:
-              ++exactFabricRejectedLogicalDomainCount;
-              break;
+              case frontend::SpatialOwnershipCandidateRejectionKind::
+                  NonFinalizable:
+                ++nonFinalizableLogicalDomainCount;
+                break;
+              case frontend::SpatialOwnershipCandidateRejectionKind::
+                  ExactFabricInadmissible:
+                ++exactFabricRejectedLogicalDomainCount;
+                break;
               }
             if (invocation)
               return detail::StructuredOwnershipInvocationAccess::
@@ -455,6 +457,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         std::move(*ownerPayload)});
     return *published;
   };
+  struct ParentSchedule final {
+    ArtifactRootReference reference;
+    frontend::StructuredProgramCandidate program;
+    std::optional<frontend::StructuredEntityRef> spatialRegion;
+    std::vector<frontend::StructuredOperationSourceProvenance> provenance;
+    frontend::StructuredScheduleDecisionDomain domain;
+    std::array<std::vector<std::size_t>, 2> proposalOrdinals;
+  };
+  enum class ScheduleSearchPhase : std::size_t { Direct, TiledPrefix };
+  std::vector<ParentSchedule> parents;
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     if (stopGeneration)
@@ -521,97 +533,56 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       return decisions.takeError();
     if (llvm::Error error = accountDecisionDomain(*decisions))
       return std::move(error);
-    for (const frontend::StructuredScheduleProposal &proposal :
-         decisions->proposals) {
-      if (invocationView.stopRequested()) {
-        cancelled = true;
-        stopGeneration = true;
-        break;
-      }
-      const frontend::StructuredScheduleDecision &decision =
-          proposal.decision();
+    ParentSchedule schedule{reference,
+                            std::move(*parent),
+                            trackedSpatialRegion,
+                            std::move(sourceProvenance),
+                            std::move(*decisions),
+                            {}};
+    for (std::size_t ordinal = 0; ordinal != schedule.domain.proposals.size();
+         ++ordinal) {
+      const auto &decision = schedule.domain.proposals[ordinal].decision();
       const bool logical = producesLogicalThreadDomain(decision);
       logicalDomainDecisionCount += logical ? 1 : 0;
-      if ((config->generationIntent() ==
-               StructuredScheduleGenerationIntent::RequireLogicalThreadDomain &&
-           !logical) ||
-          (config->generationIntent() ==
-               StructuredScheduleGenerationIntent::ForbidLogicalThreadDomain &&
-           logical))
-        continue;
-      if (config->generationIntent() ==
-          StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
-        ++ownedLogicalDomainDecisionCount;
-      if (llvm::Error error = accountGeneratedProposal())
-        return std::move(error);
-      if (!consumeMaterializationAttempt())
-        break;
-      auto materialized = materializeProposal(
-          reference, *parent, proposal, trackedSpatialRegion, sourceProvenance);
-      if (!materialized)
-        return materialized.takeError();
-      if (!*materialized)
-        continue;
-      const ArtifactRootReference childReference{
-          frontend::structuredProgramArtifactSchema.identity.str(),
-          frontend::structuredProgramArtifactSchema.version,
-          (*materialized)->structuredProgram.identity()};
-      if (seenOutputs.find(childReference) != seenOutputs.end())
-        continue;
-      auto published =
-          publishDecision(reference, decision, std::move(**materialized));
-      if (!published)
-        return published.takeError();
-      seenOutputs.insert(*published);
-      outputs.push_back(std::move(*published));
-      materializedLogicalDomainCount += logical ? 1 : 0;
-    }
-
-    if (stopGeneration ||
-        config->generationIntent() !=
+      const auto intent = config->generationIntent();
+      if ((intent !=
+               StructuredScheduleGenerationIntent::RequireLogicalThreadDomain ||
+           logical) &&
+          (intent !=
+               StructuredScheduleGenerationIntent::ForbidLogicalThreadDomain ||
+           !logical)) {
+        schedule
+            .proposalOrdinals[static_cast<std::size_t>(
+                ScheduleSearchPhase::Direct)]
+            .push_back(ordinal);
+        if (intent ==
             StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
-      continue;
-
-    // RequireLogicalThreadDomain owns one finite terminal search in addition
-    // to direct parallel decisions. A tiled polyhedral prefix remains an
-    // ordinary sequential decision. Only a second, independently enumerated
-    // parallel decision may produce a returned logical-domain child.
-    for (const frontend::StructuredScheduleProposal &prefixProposal :
-         decisions->proposals) {
-      if (stopGeneration)
-        break;
-      if (invocationView.stopRequested()) {
-        cancelled = true;
-        stopGeneration = true;
-        break;
+          ++ownedLogicalDomainDecisionCount;
       }
-      const frontend::StructuredScheduleDecision &prefixDecision =
-          prefixProposal.decision();
-      if (!isTiledPolyhedralPrefix(prefixDecision))
-        continue;
-      if (llvm::Error error = accountGeneratedProposal())
-        return std::move(error);
-      if (!consumeMaterializationAttempt())
-        break;
-      auto materializedPrefix =
-          materializeProposal(reference, *parent, prefixProposal,
-                              trackedSpatialRegion, sourceProvenance);
-      if (!materializedPrefix)
-        return materializedPrefix.takeError();
-      if (!*materializedPrefix)
-        continue;
-      frontend::MaterializedStructuredScheduleCandidate &prefix =
-          **materializedPrefix;
-      if (prefix.transformedScheduleRoots.empty())
-        return invalid("tiled prefix lost its transformed schedule roots");
-      const ArtifactRootReference prefixReference{
-          frontend::structuredProgramArtifactSchema.identity.str(),
-          frontend::structuredProgramArtifactSchema.version,
-          prefix.structuredProgram.identity()};
-      bool prefixPublished = false;
+      if (intent ==
+              StructuredScheduleGenerationIntent::RequireLogicalThreadDomain &&
+          isTiledPolyhedralPrefix(decision))
+        schedule
+            .proposalOrdinals[static_cast<std::size_t>(
+                ScheduleSearchPhase::TiledPrefix)]
+            .push_back(ordinal);
+    }
+    parents.push_back(std::move(schedule));
+  }
 
-      for (const frontend::StructuredEntityRef &transformedRoot :
-           prefix.transformedScheduleRoots) {
+  // Keep each parent's canonical decision order while sharing the finite
+  // attempt grant across parents. Direct decisions precede tiled-prefix
+  // terminal searches; a prefix and its independent terminal proof remain
+  // one search step, with every materialization charged separately.
+  for (ScheduleSearchPhase phase :
+       {ScheduleSearchPhase::Direct, ScheduleSearchPhase::TiledPrefix}) {
+    std::size_t rounds = 0;
+    for (const ParentSchedule &parent : parents)
+      rounds = std::max(
+          rounds,
+          parent.proposalOrdinals[static_cast<std::size_t>(phase)].size());
+    for (std::size_t round = 0; round != rounds && !stopGeneration; ++round) {
+      for (ParentSchedule &parent : parents) {
         if (stopGeneration)
           break;
         if (invocationView.stopRequested()) {
@@ -619,84 +590,141 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           stopGeneration = true;
           break;
         }
-        auto terminalDomain = frontend::enumerateStructuredScheduleDecisions(
-            prefix.structuredProgram, *exactFabric,
-            config->scopeExpansionLimit(), transformedRoot);
-        if (!terminalDomain)
-          return terminalDomain.takeError();
-        if (llvm::Error error = accountDecisionDomain(*terminalDomain))
+        const auto &ordinals =
+            parent.proposalOrdinals[static_cast<std::size_t>(phase)];
+        if (round >= ordinals.size())
+          continue;
+        const auto &reference = parent.reference;
+        const auto &proposal = parent.domain.proposals[ordinals[round]];
+        const auto &decision = proposal.decision();
+        if (llvm::Error error = accountGeneratedProposal())
           return std::move(error);
-        for (const frontend::StructuredScheduleProposal &terminalProposal :
-             terminalDomain->proposals) {
+        if (!consumeMaterializationAttempt())
+          break;
+        auto materialized =
+            materializeProposal(reference, parent.program, proposal,
+                                parent.spatialRegion, parent.provenance);
+        if (!materialized)
+          return materialized.takeError();
+        if (!*materialized)
+          continue;
+        if (phase == ScheduleSearchPhase::Direct) {
+          const ArtifactRootReference childReference{
+              frontend::structuredProgramArtifactSchema.identity.str(),
+              frontend::structuredProgramArtifactSchema.version,
+              (*materialized)->structuredProgram.identity()};
+          if (seenOutputs.find(childReference) != seenOutputs.end())
+            continue;
+          auto published =
+              publishDecision(reference, decision, std::move(**materialized));
+          if (!published)
+            return published.takeError();
+          seenOutputs.insert(*published);
+          outputs.push_back(std::move(*published));
+          materializedLogicalDomainCount +=
+              producesLogicalThreadDomain(decision) ? 1 : 0;
+          continue;
+        }
+        frontend::MaterializedStructuredScheduleCandidate &prefix =
+            **materialized;
+        if (prefix.transformedScheduleRoots.empty())
+          return invalid("tiled prefix lost its transformed schedule roots");
+        const ArtifactRootReference prefixReference{
+            frontend::structuredProgramArtifactSchema.identity.str(),
+            frontend::structuredProgramArtifactSchema.version,
+            prefix.structuredProgram.identity()};
+        bool prefixPublished = false;
+
+        for (const frontend::StructuredEntityRef &transformedRoot :
+             prefix.transformedScheduleRoots) {
+          if (stopGeneration)
+            break;
           if (invocationView.stopRequested()) {
             cancelled = true;
             stopGeneration = true;
             break;
           }
-          const frontend::StructuredScheduleDecision &terminalDecision =
-              terminalProposal.decision();
-          const bool logical = producesLogicalThreadDomain(terminalDecision);
-          logicalDomainDecisionCount += logical ? 1 : 0;
-          if (!logical)
-            continue;
-          ++ownedLogicalDomainDecisionCount;
-          if (llvm::Error error = accountGeneratedProposal())
+          auto terminalDomain = frontend::enumerateStructuredScheduleDecisions(
+              prefix.structuredProgram, *exactFabric,
+              config->scopeExpansionLimit(), transformedRoot);
+          if (!terminalDomain)
+            return terminalDomain.takeError();
+          if (llvm::Error error = accountDecisionDomain(*terminalDomain))
             return std::move(error);
-          if (!consumeMaterializationAttempt())
-            break;
-          auto materializedTerminal = materializeProposal(
-              reference, prefix.structuredProgram, terminalProposal,
-              prefix.trackedSpatialRegion, prefix.sourceProvenance);
-          if (!materializedTerminal)
-            return materializedTerminal.takeError();
-          if (!*materializedTerminal)
-            continue;
-          const ArtifactRootReference terminalReference{
-              frontend::structuredProgramArtifactSchema.identity.str(),
-              frontend::structuredProgramArtifactSchema.version,
-              (*materializedTerminal)->structuredProgram.identity()};
-          if (seenOutputs.find(terminalReference) != seenOutputs.end())
-            continue;
-          if (!prefixPublished) {
-            auto prefixClone = cloneMaterializedScheduleCandidate(prefix);
-            if (!prefixClone)
-              return prefixClone.takeError();
-            auto publishedPrefix = publishDecision(reference, prefixDecision,
-                                                   std::move(*prefixClone));
-            if (!publishedPrefix)
-              return publishedPrefix.takeError();
-            if (*publishedPrefix != prefixReference)
-              return invalid("published tiled prefix changed identity");
-            prefixPublished = true;
+          for (const frontend::StructuredScheduleProposal &terminalProposal :
+               terminalDomain->proposals) {
+            if (invocationView.stopRequested()) {
+              cancelled = true;
+              stopGeneration = true;
+              break;
+            }
+            const frontend::StructuredScheduleDecision &terminalDecision =
+                terminalProposal.decision();
+            const bool logical = producesLogicalThreadDomain(terminalDecision);
+            logicalDomainDecisionCount += logical ? 1 : 0;
+            if (!logical)
+              continue;
+            ++ownedLogicalDomainDecisionCount;
+            if (llvm::Error error = accountGeneratedProposal())
+              return std::move(error);
+            if (!consumeMaterializationAttempt())
+              break;
+            auto materializedTerminal = materializeProposal(
+                reference, prefix.structuredProgram, terminalProposal,
+                prefix.trackedSpatialRegion, prefix.sourceProvenance);
+            if (!materializedTerminal)
+              return materializedTerminal.takeError();
+            if (!*materializedTerminal)
+              continue;
+            const ArtifactRootReference terminalReference{
+                frontend::structuredProgramArtifactSchema.identity.str(),
+                frontend::structuredProgramArtifactSchema.version,
+                (*materializedTerminal)->structuredProgram.identity()};
+            if (seenOutputs.find(terminalReference) != seenOutputs.end())
+              continue;
+            if (!prefixPublished) {
+              auto prefixClone = cloneMaterializedScheduleCandidate(prefix);
+              if (!prefixClone)
+                return prefixClone.takeError();
+              auto publishedPrefix =
+                  publishDecision(reference, decision, std::move(*prefixClone));
+              if (!publishedPrefix)
+                return publishedPrefix.takeError();
+              if (*publishedPrefix != prefixReference)
+                return invalid("published tiled prefix changed identity");
+              prefixPublished = true;
+            }
+            auto publishedTerminal =
+                publishDecision(prefixReference, terminalDecision,
+                                std::move(**materializedTerminal));
+            if (!publishedTerminal)
+              return publishedTerminal.takeError();
+            seenOutputs.insert(*publishedTerminal);
+            outputs.push_back(std::move(*publishedTerminal));
+            ++materializedLogicalDomainCount;
           }
-          auto publishedTerminal =
-              publishDecision(prefixReference, terminalDecision,
-                              std::move(**materializedTerminal));
-          if (!publishedTerminal)
-            return publishedTerminal.takeError();
-          seenOutputs.insert(*publishedTerminal);
-          outputs.push_back(std::move(*publishedTerminal));
-          ++materializedLogicalDomainCount;
         }
       }
     }
   }
-  if (config->generationIntent() ==
-      StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
-    mapping_debug::emit(
-        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
-        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
-          fields["context_kind"] = "structured_schedule_generation";
-          fields["logical_domain_decision_count"] = logicalDomainDecisionCount;
-          fields["owned_logical_domain_decision_count"] =
-              ownedLogicalDomainDecisionCount;
-          fields["materialized_logical_domain_count"] =
-              materializedLogicalDomainCount;
-          fields["non_finalizable_logical_domain_count"] =
-              nonFinalizableLogicalDomainCount;
-          fields["exact_fabric_rejected_logical_domain_count"] =
-              exactFabricRejectedLogicalDomainCount;
-        });
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "structured_schedule_generation";
+        fields["materialization_attempts"] = materializationAttempts;
+        fields["truncated"] = truncated;
+        fields["input_count"] =
+            inputBindings[StructuredProgramsInput].artifacts.size();
+        fields["logical_domain_decision_count"] = logicalDomainDecisionCount;
+        fields["owned_logical_domain_decision_count"] =
+            ownedLogicalDomainDecisionCount;
+        fields["materialized_logical_domain_count"] =
+            materializedLogicalDomainCount;
+        fields["non_finalizable_logical_domain_count"] =
+            nonFinalizableLogicalDomainCount;
+        fields["exact_fabric_rejected_logical_domain_count"] =
+            exactFabricRejectedLogicalDomainCount;
+      });
   if (scopRefusalCount != 0)
     mapping_debug::emit(
         mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
