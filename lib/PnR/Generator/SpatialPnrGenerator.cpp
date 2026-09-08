@@ -1846,6 +1846,13 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
     llvm::sort(candidates, artifactRootReferenceLess);
     candidates.erase(std::unique(candidates.begin(), candidates.end()),
                      candidates.end());
+    // A published candidate completes the FirstVerified goal even when an
+    // earlier restart could not establish progress. Those restart diagnostics
+    // remain recorded, but do not invalidate the independently verified result.
+    if (firstVerifiedCandidate) {
+      proofNotEstablished = false;
+      semanticLimitReached = true;
+    }
     const mapping_debug::ClosureStatus closureStatus =
         proofNotEstablished ? mapping_debug::ClosureStatus::ProofNotEstablished
         : semanticLimitReached
