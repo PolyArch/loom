@@ -49,8 +49,9 @@ enum class SimulationWorkloadKind : std::uint32_t {
 //===----------------------------------------------------------------------===//
 
 /// The closed semantic state shared by value lanes and memory bytes. Wire
-/// discriminants are the zero-based declaration order.
-enum class SemanticState : std::uint32_t { Defined = 0, Poison = 1, Undef = 2 };
+/// discriminants are the zero-based declaration order, encoded explicitly by
+/// the wire owner independently of this compact in-memory representation.
+enum class SemanticState : std::uint8_t { Defined = 0, Poison = 1, Undef = 2 };
 
 /// Object-relative provenance accompanying one defined first-class LLVM
 /// pointer lane. The offset is the exact signed two's-complement A(AS)-bit
