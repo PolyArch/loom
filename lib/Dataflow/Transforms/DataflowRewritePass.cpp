@@ -386,6 +386,7 @@ bool applySelectedRewrite(
   case DataflowRewriteKind::PureComputeFanoutRefactor:
   case DataflowRewriteKind::GraphDefinitionRefactor:
   case DataflowRewriteKind::ElementwiseVectorDecompose:
+  case DataflowRewriteKind::StreamCompletionPhaseSplit:
     return false;
   case DataflowRewriteKind::PackUnpackRoundTripEliminate:
     return applyPackUnpackRoundTripEliminate(op, eraseOperation, mutate);
@@ -679,6 +680,11 @@ dataflow::enumerateFixedDataflowRewriteDecisions(
     return graph.takeError();
   decisions.insert(decisions.end(), std::make_move_iterator(graph->begin()),
                    std::make_move_iterator(graph->end()));
+  auto streams = detail::enumerateStreamCompletionPhaseSplitDecisions(parent);
+  if (!streams)
+    return streams.takeError();
+  decisions.insert(decisions.end(), std::make_move_iterator(streams->begin()),
+                   std::make_move_iterator(streams->end()));
   llvm::sort(decisions, dataflowRewriteDecisionLess);
   return decisions;
 }
@@ -726,6 +732,10 @@ dataflow::detail::materializeFixedDataflowRewriteProjection(
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
+  if (const auto *stream =
+          std::get_if<StreamCompletionPhaseSplitRewrite>(&decision))
+    return materializeStreamCompletionPhaseSplitProjection(
+        parent, *stream, trackedStaticGraphLaunches);
   if (const auto *sync = std::get_if<SyncRendezvousRewrite>(&decision))
     return materializeSyncRendezvousRewriteProjection(
         parent, *sync, trackedStaticGraphLaunches);

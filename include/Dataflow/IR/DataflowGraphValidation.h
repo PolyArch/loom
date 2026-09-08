@@ -14,6 +14,11 @@
 
 namespace dataflow {
 
+/// Whether the completion events causally cover this phase's false close.
+/// Ordered phase cardinality alone is not a close witness for another instance.
+bool retirementCoversClose(mlir::Value closeSignal,
+                           mlir::ValueRange completion);
+
 llvm::Error validateFinalizedGraph(GraphOp graph);
 llvm::Error validateFinalizedProgram(::mlir::ModuleOp module);
 

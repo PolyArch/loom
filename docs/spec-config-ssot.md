@@ -54,7 +54,12 @@ application Mapping stopping contract. `first_verified` is the product
 default and reports the first runtime-qualified SystemMapping. The explicit
 `bounded_quality` mode invokes the application QoR owner for every verified
 candidate in the bounded joint frontier; it compares only completed DFG/CGRA
-cycle evidence and imported Fabric resource counts. Missing runtime evidence,
+cycle evidence and imported Fabric resource counts. Completed CGRA cycles rank
+first, followed by abstract DFG cycles and AccCore count. This mode also
+explores optional Dataflow rewrites within the existing software frontier.
+Uncalibrated resource-time screening preserves representatives of distinct
+rewrite families within its existing finalist bound, so a transformation's
+physical benefit can reach measured comparison. Missing runtime evidence,
 unsupported models, execution failure, and cancellation remain typed outcomes,
 never fallback scores. The stopping policy is invocation provenance and is
 not part of a candidate Artifact identity.

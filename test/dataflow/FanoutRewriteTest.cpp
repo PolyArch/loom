@@ -256,6 +256,63 @@ void layeredSelectorFanoutPreservesCompletionProof() {
           "operand replication invalidated selector correspondence");
 }
 
+void completionPhaseSplitPreservesMemoryAndTermination() {
+  auto parent = finalize(R"mlir(
+module {
+  dataflow.graph private @completion_fanout(
+      %start: none, %lower: i16, %upper: i16, %step: i16,
+      %memory: memref<4xi16>) -> ()
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %iv, %phase = dataflow.stream %lower, %upper, %step step add while slt : i16
+    %issue = dataflow.invariant %phase, %start : none
+    %collected = dataflow.carry %phase, %start, %written : none
+    %issue_lane:2 = dataflow.demux %phase, %issue : (i1, none) -> (none, none)
+    %done_lane:2 = dataflow.demux %phase, %collected : (i1, none) -> (none, none)
+    %index = arith.index_cast %iv : i16 to index
+    %written = dataflow.store %memory[%index] %iv %issue_lane#1 : memref<4xi16>
+    dataflow.graph.return values() streams() memories()
+        complete(%issue_lane#0, %done_lane#0 : none, none)
+  }
+}
+)mlir");
+  auto decisions =
+      take(dataflow::enumerateFixedDataflowRewriteDecisions(parent));
+  std::optional<dataflow::DataflowRewriteDecision> selected;
+  for (const auto &decision : decisions)
+    if (std::holds_alternative<dataflow::StreamCompletionPhaseSplitRewrite>(
+            decision))
+      selected = decision;
+  require(selected.has_value(), "completion phase split was not enumerated");
+  auto child = take(dataflow::materializeDataflowRewrite(parent, *selected));
+  require(child.has_value(), "completion phase split produced no candidate");
+  for (const char *upper : {"0", "4"}) {
+    loom::sim::DFGSimulationOptions options;
+    options.args = {{0, "0"}, {1, upper}, {2, "1"}};
+    options.memories = {{3, 0, "9,9,9,9"}};
+    const auto simulate =
+        [&](const dataflow::CanonicalDataflowArtifact &artifact) {
+          options.graphName =
+              mlir::cast<dataflow::GraphOp>(artifact.view().graphs().front().op)
+                  .getSymName()
+                  .str();
+          return take(
+              loom::sim::simulateDataflowGraph(artifact.module(), options));
+        };
+    auto before = simulate(parent);
+    auto after = simulate(*child);
+    require(before.status == "pass" && after.status == "pass" &&
+                before.finalMemoryState == after.finalMemoryState,
+            "phase split changed memory or activation termination");
+  }
+  for (const auto &decision :
+       take(dataflow::enumerateFixedDataflowRewriteDecisions(*child)))
+    require(
+        !std::holds_alternative<dataflow::StreamCompletionPhaseSplitRewrite>(
+            decision),
+        "completion phase splitting did not exhaust its matched domain");
+}
+
 } // namespace
 
 int main() {
@@ -263,5 +320,6 @@ int main() {
   nondeterministicComputeIsRejected();
   selectorFanoutPreservesCompletionProof();
   layeredSelectorFanoutPreservesCompletionProof();
+  completionPhaseSplitPreservesMemoryAndTermination();
   return EXIT_SUCCESS;
 }

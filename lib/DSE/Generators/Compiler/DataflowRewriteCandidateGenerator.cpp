@@ -126,7 +126,7 @@ llvm::Error validateDecisionPayload(
 const CandidateGeneratorDescriptor descriptor{
     dataflowRewriteCandidateGeneratorKind,
     "compiler.dataflow_rewrite",
-    "loom.compiler.dataflow_rewrite.generator.v4",
+    "loom.compiler.dataflow_rewrite.generator.v5",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -296,8 +296,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                        std::make_move_iterator(vectorDecisions->begin()),
                        std::make_move_iterator(vectorDecisions->end()));
     }
-    if (!llvm::is_sorted(decisions, dataflow::dataflowRewriteDecisionLess))
-      return invalid("rewrite decision domain is not canonically ordered");
+    llvm::sort(decisions, dataflow::dataflowRewriteDecisionLess);
 
     std::vector<dataflow::StaticGraphLaunchRef> parentLaunches;
     const auto &parentView = parent.artifact.view();

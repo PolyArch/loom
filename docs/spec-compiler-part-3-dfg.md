@@ -152,7 +152,7 @@ refuse an input accepted by its parent. Concrete Fabric capacity, routing,
 latency, arbitration, and physical deadlock remain Mapping or Evaluation
 facts and cannot weaken this software-equivalence contract.
 
-The closed catalog is version 2.0:
+The closed catalog is version 2.1:
 
 | Ordinal | `DataflowRewriteKind` | Normalized decision |
 |---:|---|---|
@@ -164,6 +164,7 @@ The closed catalog is version 2.0:
 | 5 | `ActivationPreservingConstantFold` | exact Compute `ActorRef` |
 | 6 | `GraphDefinitionRefactor` | `Split` or `Merge` parameters below |
 | 7 | `ElementwiseVectorDecompose` | exact Compute `ActorRef` and `LeadingChunk(C)` or `Scalarize` |
+| 8 | `StreamCompletionPhaseSplit` | exact stream `ActorRef` |
 
 `GraphDefinitionRefactor::Split` carries one exact `GraphRef` and a canonical
 nonempty proper sorted-unique set of `StaticGraphLaunchRef` values that call
@@ -200,8 +201,8 @@ Equal finalized semantic content deduplicates by ArtifactIdentity even when
 reached by different decision paths.
 
 The decision schema identity is `loom.dataflow_rewrite.decision`, version
-2.0. Its exact descriptor bytes are the ASCII bytes
-`loom.dataflow_rewrite.decision.2.0` without a trailing zero byte. Canonical
+2.1. Its exact descriptor bytes are the ASCII bytes
+`loom.dataflow_rewrite.decision.2.1` without a trailing zero byte. Canonical
 payload primitives are:
 
 ```text
@@ -227,6 +228,7 @@ the stated `refs` count. The exact payloads are:
 | `GraphDefinitionRefactor::Merge` | `kind, variant, lower_graph_ref, higher_graph_ref` |
 | `ElementwiseVectorDecompose::LeadingChunk(C)` | `kind, compute_ref, mode, u64be(C)` |
 | `ElementwiseVectorDecompose::Scalarize` | `kind, compute_ref, mode` |
+| `StreamCompletionPhaseSplit` | `kind, stream_ref` |
 
 The owner-local direction or variant ordinals are `DirectToTree = 0`,
 `TreeToDirect = 1`, `MoveInside = 0`, `MoveOutside = 1`, `Replicate = 0`,
@@ -364,6 +366,15 @@ The eight rules have these exact legality boundaries:
   retargets launches of the higher reference. Both preserve every launch
   identity, launch-owned source map, and launch-local binding. Dynamic
   invocations are never enumerated or individually cloned.
+* `StreamCompletionPhaseSplit` separates a stream's issue phase from its
+  event-completion collectors. Eligible `none` carries expose only false-lane
+  demux outputs; their true lanes have no consumer. One identical recurrence
+  supplies the complete collector set and those demux selectors. The original
+  and cloned streams must each retain a causal close witness at graph return.
+  Identical recurrence operands, step kind, and predicate establish ordered
+  phase cardinality, not interchangeable retirement evidence. This is an
+  optional DSE candidate; ordinary lowering retains one stream, and runtime
+  measurements determine whether the extra state improves the mapped pipeline.
 * `ElementwiseVectorDecompose` has exactly the operation, shape, mask,
   poison, activation, and construction contract defined by its linked owner.
   It decomposes an already selected semantic vector actor; it does not revisit
@@ -2824,7 +2835,7 @@ relation. It never searches for or executes a graph-body conversion operation.
 
 Anchor-level tests cover:
 
-* exact catalog-2.0 kind membership and ordinals, every per-kind decision-wire
+* exact catalog-2.1 kind membership and ordinals, every per-kind decision-wire
   layout and round trip, canonical set and pair rejection, and rejection of
   decision-1.0 payloads rather than reinterpretation;
 * deterministic complete match enumeration under presentation reordering,

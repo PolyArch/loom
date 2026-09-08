@@ -6,6 +6,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <limits>
 #include <memory>
@@ -587,6 +588,21 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   std::vector<std::size_t> ranked(screened.size());
   std::iota(ranked.begin(), ranked.end(), 0);
   llvm::sort(ranked, screenedLess);
+  const auto hasUnrepresentedRewriteFamily =
+      [](const ResourceTimeMappingCandidateInput &candidate,
+         llvm::ArrayRef<std::vector<dataflow::DataflowRewriteKind>> covered) {
+        return candidate.physicalModelSupport !=
+                   ResourceTimeEstimateSupport::Calibrated &&
+               !llvm::is_contained(covered, candidate.softwareRewriteKinds);
+      };
+  const auto retainRewriteFamily =
+      [](const ResourceTimeMappingCandidateInput &candidate,
+         std::vector<std::vector<dataflow::DataflowRewriteKind>> &covered) {
+        if (!llvm::is_contained(covered, candidate.softwareRewriteKinds))
+          covered.push_back(candidate.softwareRewriteKinds);
+      };
+  std::vector<std::vector<dataflow::DataflowRewriteKind>>
+      promotedRewriteFamilies;
   std::vector<std::size_t> promotionOrder;
   promotionOrder.reserve(ranked.size());
   const auto appendPromotion = [&](std::size_t screenedOrdinal) {
@@ -594,9 +610,17 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
         llvm::is_contained(promotionOrder, screenedOrdinal))
       return;
     promotionOrder.push_back(screenedOrdinal);
+    retainRewriteFamily(candidates[screened[screenedOrdinal].index],
+                        promotedRewriteFamilies);
   };
   if (!ranked.empty())
     appendPromotion(ranked.front());
+  // An uncalibrated structural estimate cannot observe every physical effect
+  // of a rewrite. Spend existing exploration slots on its distinct families.
+  for (std::size_t ordinal : ranked)
+    if (hasUnrepresentedRewriteFamily(candidates[screened[ordinal].index],
+                                      promotedRewriteFamilies))
+      appendPromotion(ordinal);
   if (!ranked.empty()) {
     const auto minimumCoverage = *std::min_element(
         ranked.begin(), ranked.end(), [&](std::size_t lhs, std::size_t rhs) {
@@ -974,6 +998,17 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   llvm::sort(rankedHints, entryLess);
   const std::uint64_t limit = std::min<std::uint64_t>(
       policy.maximumMappingFinalists, rankedHints.size());
+  const auto inputFor = [&](const EligibleHint *hint)
+      -> const ResourceTimeMappingCandidateInput & {
+    auto found = llvm::find_if(candidates, [&](const auto &candidate) {
+      return candidate.candidateIdentity == hint->evaluation->candidateIdentity;
+    });
+    assert(found != candidates.end() &&
+           "a hint must retain its input candidate");
+    return *found;
+  };
+  std::vector<std::vector<dataflow::DataflowRewriteKind>>
+      selectedRewriteFamilies;
   std::vector<const EligibleHint *> selected;
   selected.reserve(limit);
   const auto append = [&](const EligibleHint *value) {
@@ -981,9 +1016,14 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
         llvm::is_contained(selected, value))
       return;
     selected.push_back(value);
+    retainRewriteFamily(inputFor(value), selectedRewriteFamilies);
   };
   if (!rankedHints.empty())
     append(rankedHints.front());
+  for (const EligibleHint *candidate : rankedHints)
+    if (hasUnrepresentedRewriteFamily(inputFor(candidate),
+                                      selectedRewriteFamilies))
+      append(candidate);
   const EligibleHint *minimumConcurrency = nullptr;
   const EligibleHint *maximumConcurrency = nullptr;
   for (const EligibleHint *candidate : rankedHints) {

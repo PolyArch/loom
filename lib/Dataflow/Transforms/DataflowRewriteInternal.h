@@ -48,6 +48,16 @@ materializePureComputeFanoutRewriteProjection(
     llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches);
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
+enumerateStreamCompletionPhaseSplitDecisions(
+    const CanonicalDataflowArtifact &parent);
+
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeStreamCompletionPhaseSplitProjection(
+    const CanonicalDataflowArtifact &parent,
+    const StreamCompletionPhaseSplitRewrite &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches);
+
+llvm::Expected<std::vector<DataflowRewriteDecision>>
 enumerateGraphDefinitionRefactorDecisions(
     const CanonicalDataflowArtifact &parent);
 

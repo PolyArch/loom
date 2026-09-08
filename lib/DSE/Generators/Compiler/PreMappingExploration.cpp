@@ -1637,7 +1637,9 @@ exploreStructuredCompilationToPreMapping(
         WorkTimer timer(frontierAccounting.dataflowPromotions);
         return exploreDataflowCandidates(
             *d0, reference, fabric, *workloadReference, *runtimeInputReference,
-            config, dataflowSelectionPolicy, plannerMode, false,
+            config, dataflowSelectionPolicy, plannerMode,
+            options.frontier.stoppingPolicy ==
+                JointDesignStoppingPolicy::BoundedQuality,
             options.executionControl, artifactStore, blobStore);
       }();
       if (!dataflowSelection)

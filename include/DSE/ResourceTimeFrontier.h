@@ -21,6 +21,10 @@
 #include <variant>
 #include <vector>
 
+namespace dataflow {
+enum class DataflowRewriteKind : std::uint32_t;
+}
+
 namespace loom::dse {
 
 /// Exact invocation inputs that bound an invocation-local resource-time
@@ -443,6 +447,9 @@ struct ResourceTimeMappingCandidateInput final {
   std::vector<ResourceTimeRegionFeature> regions;
   ResourceTimeEstimateSupport physicalModelSupport =
       ResourceTimeEstimateSupport::Unsupported;
+  /// Sorted unique rewrite-kind set derived from the candidate's lineage.
+  /// They select exploration slots, never legality or a performance score.
+  std::vector<dataflow::DataflowRewriteKind> softwareRewriteKinds;
 };
 
 enum class ResourceTimeCandidateFunnelDisposition : std::uint8_t {

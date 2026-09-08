@@ -325,14 +325,6 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   return false;
 }
 
-bool coversFalseClose(mlir::Value closeSignal, mlir::ValueRange completion) {
-  return llvm::any_of(completion, [&](mlir::Value witness) {
-    llvm::DenseSet<mlir::Value> visited;
-    SelectorLanes selectorLanes;
-    return coversFalseClose(witness, closeSignal, visited, selectorLanes);
-  });
-}
-
 mlir::Value statefulCloseSignal(mlir::Operation *op) {
   if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(op))
     return stream.getPhase();
@@ -451,6 +443,21 @@ struct AlignmentQueryInfo {
   }
 };
 
+// Identical stream recurrences have the same ordered phase sequence even
+// when their physical instances advance independently. This proves token
+// cardinality only: each instance still needs its own causal close witness.
+bool haveEquivalentPhaseCardinality(mlir::Value lhs, mlir::Value rhs) {
+  if (haveEquivalentCorrespondence(lhs, rhs))
+    return true;
+  auto lhsStream = lhs.getDefiningOp<dataflow::StreamOp>();
+  auto rhsStream = rhs.getDefiningOp<dataflow::StreamOp>();
+  return lhsStream && rhsStream && lhs == lhsStream.getPhase() &&
+         rhs == rhsStream.getPhase() &&
+         lhsStream.getStepKind() == rhsStream.getStepKind() &&
+         lhsStream.getPredicate() == rhsStream.getPredicate() &&
+         llvm::equal(lhsStream->getOperands(), rhsStream->getOperands());
+}
+
 struct CardinalityGraphIndex {
   explicit CardinalityGraphIndex(dataflow::GraphOp graph) {
     for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
@@ -472,7 +479,7 @@ struct CardinalityGraphIndex {
   void collectCarries(mlir::Value phase,
                       llvm::SmallVectorImpl<dataflow::CarryOp> &result) const {
     for (const auto &entry : carriesByPhase)
-      if (haveEquivalentCorrespondence(entry.first, phase))
+      if (haveEquivalentPhaseCardinality(entry.first, phase))
         result.append(entry.second);
   }
 
@@ -480,14 +487,15 @@ struct CardinalityGraphIndex {
   collectActivationInputs(mlir::Value phase,
                           llvm::SmallVectorImpl<mlir::Value> &result) const {
     for (const auto &entry : activationInputsByPhase)
-      if (haveEquivalentCorrespondence(entry.first, phase))
+      if (haveEquivalentPhaseCardinality(entry.first, phase))
         result.append(entry.second);
   }
 
   void collectDemuxes(mlir::Value selector,
                       llvm::SmallVectorImpl<dataflow::DemuxOp> &result) const {
     for (const auto &entry : demuxesBySelector)
-      if (haveEquivalentSelectorCorrespondence(entry.first, selector))
+      if (haveEquivalentSelectorCorrespondence(entry.first, selector) ||
+          haveEquivalentPhaseCardinality(entry.first, selector))
         result.append(entry.second);
   }
 
@@ -1064,8 +1072,8 @@ private:
                                         mlir::Value parentAssumption,
                                         bool truePhaseOnly) {
     if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
-        haveEquivalentCorrespondence(close.getSel(), selector) ||
-        haveEquivalentCorrespondence(close.getSel(), parentPhase))
+        haveEquivalentPhaseCardinality(close.getSel(), selector) ||
+        haveEquivalentPhaseCardinality(close.getSel(), parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -1145,7 +1153,7 @@ private:
                             mlir::Value parentPhase,
                             mlir::Value parentAssumption, bool truePhaseOnly) {
     if (result.getResultNumber() != 0 || close.getOutputs().size() != 2 ||
-        haveEquivalentCorrespondence(close.getSel(), parentPhase))
+        haveEquivalentPhaseCardinality(close.getSel(), parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -1208,10 +1216,11 @@ private:
     auto gate = dataflow::semantics::getGateCloseProjection(value);
     auto selectorGate = selector.getDefiningOp<dataflow::GateOp>();
     if (!gate || lane != 0 || !selectorGate ||
-        !haveEquivalentCorrespondence(selector, selectorGate.getAfterCond()) ||
-        !haveEquivalentCorrespondence(gate->getBeforeCond(), parentPhase) ||
-        !haveEquivalentCorrespondence(selectorGate.getBeforeCond(),
-                                      parentPhase))
+        !haveEquivalentPhaseCardinality(selector,
+                                        selectorGate.getAfterCond()) ||
+        !haveEquivalentPhaseCardinality(gate->getBeforeCond(), parentPhase) ||
+        !haveEquivalentPhaseCardinality(selectorGate.getBeforeCond(),
+                                        parentPhase))
       return false;
 
     AlignmentQuery query{internedExactOneAssumptions(),
@@ -1238,7 +1247,7 @@ private:
                  bool truePhaseOnly, llvm::DenseSet<mlir::Value> &visited) {
     if (value == assumption || alignedCarryAssumptions.contains(value))
       return true;
-    if (haveEquivalentCorrespondence(value, phase))
+    if (haveEquivalentPhaseCardinality(value, phase))
       return !truePhaseOnly;
     auto cycleResult = [&] {
       return truePhaseOnly &&
@@ -1327,14 +1336,14 @@ private:
       }
       if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
         return truePhaseOnly && value == stream.getIv() &&
-               phase == stream.getPhase();
+               haveEquivalentPhaseCardinality(phase, stream.getPhase());
       if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
         return !truePhaseOnly && value == invariant.getOutput() &&
-               haveEquivalentCorrespondence(invariant.getCond(), phase) &&
+               haveEquivalentPhaseCardinality(invariant.getCond(), phase) &&
                isExactOne(invariant.getInit());
       if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
         if (truePhaseOnly || value != carry.getOutput() ||
-            !haveEquivalentCorrespondence(carry.getCond(), phase) ||
+            !haveEquivalentPhaseCardinality(carry.getCond(), phase) ||
             !isExactOne(carry.getInit()))
           return false;
         bool inserted = insertAlignedCarryAssumption(carry.getOutput());
@@ -1347,7 +1356,7 @@ private:
       }
       if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
         if (!truePhaseOnly ||
-            !haveEquivalentCorrespondence(gate.getBeforeCond(), phase) ||
+            !haveEquivalentPhaseCardinality(gate.getBeforeCond(), phase) ||
             (value != gate.getAfterCond() && value != gate.getAfterValue()))
           return false;
         return isAligned(gate.getBeforeValue(), phase, assumption,
@@ -1366,7 +1375,7 @@ private:
                     result.getResultNumber(), demux.getInput()))
           return isAligned(*activation, phase, assumption,
                            /*truePhaseOnly=*/true, visited);
-        if (!haveEquivalentCorrespondence(demux.getSel(), phase) ||
+        if (!haveEquivalentPhaseCardinality(demux.getSel(), phase) ||
             result.getResultNumber() != 1)
           return false;
         return isAligned(demux.getInput(), phase, assumption,
@@ -1611,6 +1620,15 @@ private:
 
 } // namespace
 
+bool dataflow::retirementCoversClose(mlir::Value closeSignal,
+                                     mlir::ValueRange completion) {
+  return llvm::any_of(completion, [&](mlir::Value witness) {
+    llvm::DenseSet<mlir::Value> visited;
+    SelectorLanes selectorLanes;
+    return coversFalseClose(witness, closeSignal, visited, selectorLanes);
+  });
+}
+
 llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   if (!graph || graph.isExternal())
     return graphError("finalized graph must have a body");
@@ -1754,7 +1772,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
         closeSignals.empty()
             ? isCovered(causalDependencies, stream, ret.getComplete())
             : llvm::all_of(closeSignals, [&](mlir::Value signal) {
-                return coversFalseClose(signal, ret.getComplete());
+                return retirementCoversClose(signal, ret.getComplete());
               });
     if (!covered)
       return graphError(llvm::Twine("retirement frontier does not causally ") +
@@ -1782,7 +1800,8 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 
   for (mlir::Operation &op : entry.without_terminator()) {
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op)) {
-      bool covered = coversFalseClose(gate.getAfterCond(), ret.getComplete());
+      bool covered =
+          retirementCoversClose(gate.getAfterCond(), ret.getComplete());
       if (!covered) {
         std::string message =
             "retirement frontier does not cover close/reset of "
@@ -1802,7 +1821,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     if (sourceCloses.empty())
       sourceCloses.push_back(closeSignal);
     if (!llvm::all_of(sourceCloses, [&](mlir::Value signal) {
-          return coversFalseClose(signal, ret.getComplete());
+          return retirementCoversClose(signal, ret.getComplete());
         }))
       return graphError(
           llvm::Twine("retirement frontier does not cover close/reset of '") +

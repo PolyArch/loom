@@ -649,6 +649,14 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
          std::move(invocation), pending.projection->resourceClasses,
          pending.projection->regions,
          pending.projection->physicalModelSupport});
+    auto &rewriteKinds = resourceTimeInputs.back().softwareRewriteKinds;
+    for (const auto &derivation :
+         pending.compilation.dataflowRewriteDerivations) {
+      const auto kind = dataflow::dataflowRewriteKind(derivation.decision);
+      if (!llvm::is_contained(rewriteKinds, kind))
+        rewriteKinds.push_back(kind);
+    }
+    llvm::sort(rewriteKinds);
   }
   auto resourceTimeFunnel = dse::selectResourceTimeMappingFinalists(
       resourceTimeInputs, request.resourceTimePolicy,
