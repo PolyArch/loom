@@ -50,13 +50,15 @@ The direct `loom-application-build` driver exposes the same product option as
 `--mapping-replay-wavefront-limit`.
 
 `--loom-mapping-stopping-policy=first_verified|bounded_quality` selects the
-application Mapping stopping contract. `first_verified` is the product
-default and reports the first runtime-qualified SystemMapping. The explicit
-`bounded_quality` mode invokes the application QoR owner for every verified
+application Mapping stopping contract. `bounded_quality` is the product
+default. It invokes the application QoR owner for every verified
 candidate in the bounded joint frontier; it compares only completed DFG/CGRA
 cycle evidence and imported Fabric resource counts. Completed CGRA cycles rank
 first, followed by abstract DFG cycles and AccCore count. This mode also
 explores optional Dataflow rewrites within the existing software frontier.
+Explicit `first_verified` reports the first runtime-qualified SystemMapping
+without comparing the remaining bounded frontier. Both product drivers derive
+their default from `defaultProductMappingStoppingPolicy`.
 Uncalibrated resource-time screening preserves representatives of distinct
 rewrite families within its existing finalist bound, so a transformation's
 physical benefit can reach measured comparison. Missing runtime evidence,
