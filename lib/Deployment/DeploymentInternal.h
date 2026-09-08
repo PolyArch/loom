@@ -7,6 +7,9 @@
 
 namespace loom::deployment::detail {
 
+void writeHostProgramEntry(llvm::json::OStream &json,
+                           const HostProgramEntry &entry);
+
 struct DerivedRuntimeImages final {
   std::optional<CanonicalSemanticBytes> threadDispatch;
   std::optional<CanonicalSemanticBytes> spatialLaunch;

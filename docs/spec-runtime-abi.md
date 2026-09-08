@@ -1220,7 +1220,7 @@ mapped, and packaged disposition selected before runtime.
 root, exact dependency closure, ConfigurationABI and
 HardwareConfigurationImage relations, package projection, and finalization
 rules. Runtime consumes that exact Deployment and does not restate or repair
-its closure. Runtime accepts only `loom.deployment 7.0`, whose hardware
+its closure. Runtime accepts only `loom.deployment 8.0`, whose hardware
 bindings require exact `loom.runtime_platform_binding 4.0` roots. Deployment
 6.0 is incompatible with 5.1 because the accepted child descriptor changed;
 neither version is reinterpreted as the other. The finalized Deployment must

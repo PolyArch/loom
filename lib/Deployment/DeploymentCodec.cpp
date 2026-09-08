@@ -123,14 +123,6 @@ parseRootReferenceField(const llvm::json::Object &object, llvm::StringRef field,
   return parseRootReference(**nested, (context + "." + field).str());
 }
 
-void writeTypeArray(llvm::json::OStream &json, llvm::StringRef field,
-                    llvm::ArrayRef<CanonicalTypeBytes> types) {
-  json.attributeArray(field, [&] {
-    for (const CanonicalTypeBytes &type : types)
-      json.value(formatArtifactLocalPayloadHex(type));
-  });
-}
-
 llvm::Expected<std::vector<CanonicalTypeBytes>>
 parseTypeArray(const llvm::json::Object &object, llvm::StringRef field,
                llvm::StringRef context) {
@@ -206,16 +198,7 @@ void writeHostProgram(llvm::json::OStream &json,
   json.attribute("program_blob", formatBlobDigestHex(program.programBlob()));
   json.attributeArray("program_entries", [&] {
     for (const HostProgramEntry &entry : program.programEntries())
-      json.object([&] {
-        json.attribute("entry_ordinal", entry.entryOrdinal);
-        json.attribute("abi_symbol", entry.abiSymbol);
-        writeTypeArray(json, "value_argument_types", entry.valueArgumentTypes);
-        writeTypeArray(json, "value_result_types", entry.valueResultTypes);
-        json.attributeArray("external_interface_ordinals", [&] {
-          for (std::uint64_t ordinal : entry.externalInterfaceOrdinals)
-            json.value(ordinal);
-        });
-      });
+      detail::writeHostProgramEntry(json, entry);
   });
   json.attributeArray("external_interfaces", [&] {
     for (const HostExternalInterface &interface : program.externalInterfaces())
@@ -282,11 +265,19 @@ parseHostProgram(const llvm::json::Object &object) {
       return invalid(itemContext + " must be an object");
     if (llvm::Error error = rejectUnknownFields(
             *entry, itemContext,
-            {"entry_ordinal", "abi_symbol", "value_argument_types",
+            {"entry_ordinal", "abi_symbol", "dataflow_entry_symbol", "value_argument_types",
              "value_result_types", "external_interface_ordinals"}))
       return std::move(error);
     auto entryOrdinal = requireUnsigned(*entry, "entry_ordinal", itemContext);
     auto symbol = requireString(*entry, "abi_symbol", itemContext);
+    const auto *dataflowSymbol = entry->get("dataflow_entry_symbol");
+    if (!dataflowSymbol ||
+        (!dataflowSymbol->getAsNull() && !dataflowSymbol->getAsString()))
+      return invalid(itemContext +
+                     ".dataflow_entry_symbol must be a string or null");
+    std::optional<std::string> parsedDataflowSymbol;
+    if (auto value = dataflowSymbol->getAsString())
+      parsedDataflowSymbol = value->str();
     auto arguments =
         parseTypeArray(*entry, "value_argument_types", itemContext);
     auto results = parseTypeArray(*entry, "value_result_types", itemContext);
@@ -314,7 +305,7 @@ parseHostProgram(const llvm::json::Object &object) {
     }
     parsedEntries.push_back({*entryOrdinal, symbol->str(),
                              std::move(*arguments), std::move(*results),
-                             std::move(parsedOrdinals)});
+                             std::move(parsedOrdinals), std::move(parsedDataflowSymbol)});
   }
 
   std::vector<HostExternalInterface> parsedInterfaces;

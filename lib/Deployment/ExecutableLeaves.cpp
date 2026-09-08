@@ -1,5 +1,7 @@
 #include "Deployment/ExecutableLeaves.h"
 
+#include "DeploymentInternal.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -34,6 +36,31 @@
 #include <vector>
 
 namespace loom::deployment {
+
+void detail::writeHostProgramEntry(llvm::json::OStream &json,
+                                   const HostProgramEntry &entry) {
+  json.object([&] {
+    json.attribute("entry_ordinal", entry.entryOrdinal);
+    json.attribute("abi_symbol", entry.abiSymbol);
+    if (entry.dataflowEntrySymbol)
+      json.attribute("dataflow_entry_symbol", *entry.dataflowEntrySymbol);
+    else
+      json.attribute("dataflow_entry_symbol", nullptr);
+    const auto writeTypes = [&](llvm::StringRef name,
+                                llvm::ArrayRef<CanonicalTypeBytes> types) {
+      json.attributeArray(name, [&] {
+        for (const CanonicalTypeBytes &type : types)
+          json.value(llvm::toHex(type, true));
+      });
+    };
+    writeTypes("value_argument_types", entry.valueArgumentTypes);
+    writeTypes("value_result_types", entry.valueResultTypes);
+    json.attributeArray("external_interface_ordinals", [&] {
+      for (std::uint64_t ordinal : entry.externalInterfaceOrdinals)
+        json.value(ordinal);
+    });
+  });
+}
 
 class ExecutableLeafBuilder final {
 public:
@@ -178,6 +205,10 @@ canonicalizeEntries(std::vector<HostProgramEntry> entries,
       return invalid("program entry ABI symbol is empty or contains NUL");
     if (!symbols.insert(entry.abiSymbol).second)
       return invalid("duplicate program entry ABI symbol");
+    if (entry.dataflowEntrySymbol &&
+        (entry.dataflowEntrySymbol->empty() ||
+         entry.dataflowEntrySymbol->find('\0') != std::string::npos))
+      return invalid("program Dataflow entry symbol is empty or contains NUL");
     for (const CanonicalTypeBytes &type : entry.valueArgumentTypes)
       if (llvm::Error error = validateValueType(type, "program argument"))
         return std::move(error);
@@ -231,28 +262,12 @@ BlobDigest registrationDigest(
   llvm::SmallString<1024> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output);
-  auto writeTypes = [&](llvm::StringRef name,
-                        llvm::ArrayRef<CanonicalTypeBytes> types) {
-    json.attributeArray(name, [&] {
-      for (const CanonicalTypeBytes &type : types)
-        json.value(llvm::toHex(type, true));
-    });
-  };
   json.object([&] {
     json.attribute("schema", "loom.host_registration_table");
-    json.attribute("schema_version", "1.0");
+    json.attribute("schema_version", "2.0");
     json.attributeArray("program_entries", [&] {
       for (const HostProgramEntry &entry : entries)
-        json.object([&] {
-          json.attribute("entry_ordinal", entry.entryOrdinal);
-          json.attribute("abi_symbol", entry.abiSymbol);
-          writeTypes("value_argument_types", entry.valueArgumentTypes);
-          writeTypes("value_result_types", entry.valueResultTypes);
-          json.attributeArray("external_interface_ordinals", [&] {
-            for (std::uint64_t ordinal : entry.externalInterfaceOrdinals)
-              json.value(ordinal);
-          });
-        });
+        detail::writeHostProgramEntry(json, entry);
     });
     json.attributeArray("external_interfaces", [&] {
       for (const HostExternalInterface &interface : interfaces)

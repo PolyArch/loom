@@ -653,6 +653,17 @@ deriveFactsUncached(const EvaluationRequest &request,
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   const deployment::Deployment &deployment = inputs.deployment.deployment();
+  const auto *systemWorkload = inputs.workload.system();
+  if (!systemWorkload)
+    return invalid("imported System workload lost its typed payload");
+  const auto *systemRuntimeInput = inputs.runtimeInput.system();
+  if (!systemRuntimeInput)
+    return invalid("imported System runtime input lost its typed payload");
+  auto hostEntry = deployment::resolveDeploymentProgramEntry(
+      inputs.deployment, systemWorkload->programEntryRef);
+  if (!hostEntry)
+    return hostEntry.takeError();
+
   std::optional<ArtifactRootReference> dataflowReference;
   std::vector<PendingSpatialLaunch> pendingLaunches;
   std::vector<PendingChannelBuffer> channelBuffers;
@@ -696,8 +707,12 @@ deriveFactsUncached(const EvaluationRequest &request,
                       rhs.staticGraphLaunch.entity.value());
   });
   for (const dataflow::RootedGraphLaunchRef &graph : graphs) {
-    auto coordinates = dataflowView.enumerateStaticDenseCoordinates(
-        graph, gem5MaximumStaticDispatchEntries);
+    auto coordinates = (*hostEntry)->dataflowEntrySymbol
+                           ? dataflowView.enumerateStaticDenseCoordinates(
+                                 graph, gem5MaximumStaticDispatchEntries,
+                                 *(*hostEntry)->dataflowEntrySymbol)
+                           : dataflowView.enumerateStaticDenseCoordinates(
+                                 graph, gem5MaximumStaticDispatchEntries);
     if (!coordinates)
       return coordinates.takeError();
     if (!*coordinates || (*coordinates)->empty())
@@ -1104,16 +1119,6 @@ deriveFactsUncached(const EvaluationRequest &request,
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   const std::uint64_t hostCpuId = hostProcessor->parameters.cpuId;
-  const auto *systemWorkload = inputs.workload.system();
-  if (!systemWorkload)
-    return invalid("imported System workload lost its typed payload");
-  const auto *systemRuntimeInput = inputs.runtimeInput.system();
-  if (!systemRuntimeInput)
-    return invalid("imported System runtime input lost its typed payload");
-  auto hostEntry = deployment::resolveDeploymentProgramEntry(
-      inputs.deployment, systemWorkload->programEntryRef);
-  if (!hostEntry)
-    return hostEntry.takeError();
 
   auto memoryEndValue =
       checkedAdd(memory->baseAddress, memory->sizeBytes, "gem5 memory");
