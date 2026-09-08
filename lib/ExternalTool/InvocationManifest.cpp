@@ -32,13 +32,24 @@ bool isWithin(llvm::StringRef path, llvm::StringRef directory) {
 
 llvm::Error reservePath(std::set<std::string> &paths,
                         llvm::StringRef candidate) {
-  for (const std::string &existing : paths) {
-    if (candidate == existing || isWithin(candidate, existing) ||
-        isWithin(existing, candidate))
-      return invocationBundleError("bundle paths conflict: '" + candidate + "' and '" +
-                         existing + "'");
+  std::string path = candidate.str();
+  auto conflict = paths.find(path);
+  // Reserved paths are mutually non-overlapping. Look up each complete
+  // ancestor component: a lexical neighbor such as "a-b" can otherwise hide
+  // the ancestor "a" of "a/b".
+  for (std::size_t separator = candidate.find('/');
+       conflict == paths.end() && separator != llvm::StringRef::npos;
+       separator = candidate.find('/', separator + 1))
+    conflict = paths.find(candidate.take_front(separator).str());
+  if (conflict == paths.end()) {
+    const auto descendant = paths.lower_bound(path + '/');
+    if (descendant != paths.end() && isWithin(*descendant, candidate))
+      conflict = descendant;
   }
-  paths.insert(candidate.str());
+  if (conflict != paths.end())
+    return invocationBundleError("bundle paths conflict: '" + candidate +
+                                 "' and '" + *conflict + "'");
+  paths.insert(std::move(path));
   return llvm::Error::success();
 }
 
