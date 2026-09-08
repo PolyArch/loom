@@ -65,6 +65,10 @@ namespace {
 /// to enumerate completely while still wrapping the cursor at the top value.
 constexpr std::uint32_t kFifoDepth = 5;
 constexpr std::uint32_t kTagWidthBits = 2;
+/// Three of the four tag values own a guaranteed slot, so the walk reaches
+/// states where a resident channel is refused while slots are still free
+/// and states where the last free slot admits only an absent channel.
+constexpr std::uint32_t kReservedChannels = 3;
 constexpr std::uint32_t kPayloadWidthBits = 8;
 constexpr std::uint32_t kTagMask = (1U << kTagWidthBits) - 1;
 constexpr std::uint32_t kTagValueCount = 1U << kTagWidthBits;
@@ -181,7 +185,8 @@ loom::fabric::FinalizedFabricRoot makeVirtualChannelFifoFabric(
                    spatial.addFifo(take(test, spatial.input(0)),
                                    FifoSpec{tagged, depth, false,
                                             ::fabric::FifoQueueDiscipline::
-                                                PerTagVirtualChannel}));
+                                                PerTagVirtualChannel,
+                                            kReservedChannels}));
   requireSuccess(test, spatial.close({fifo.value()}));
   auto finalized = take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 1,
@@ -201,6 +206,9 @@ Fixture makeFixture(llvm::StringRef test, const loom::ArtifactStore &store,
           module.view().fifoQueueDiscipline(fifo) ==
               ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
           "virtual-channel fixture lost its queue discipline");
+  require(test,
+          module.view().fifoReservedChannels(fifo) == kReservedChannels,
+          "virtual-channel fixture lost its reserved channels");
   loom::fabric::FinalizedFabricRoot system =
       take(test, loom::hardware::test::makeSpatialCoreSystem(module, store, 1));
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore =
@@ -266,7 +274,8 @@ using OracleEntry = loom::sim::detail::CgraTransportStorageEntry;
 OracleQueue makeOracle(llvm::StringRef test) {
   return take(test, OracleQueue::create(
                         kFifoDepth, false,
-                        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel));
+                        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
+                        kReservedChannels));
 }
 
 /// The arbitration state of the oracle: the resident tag values in arrival
@@ -302,7 +311,10 @@ OracleStep stepOracle(llvm::StringRef test, OracleQueue &queue,
   OracleStep step;
   step.offered = queue.offeredEntry();
   ExpectedCycle &expected = step.expected;
-  expected.inputReady = !queue.full();
+  // Input ready is the pool's admission of the tag on the input port; the
+  // testbench drives tag zero when it offers no enqueue.
+  expected.inputReady =
+      queue.claimableCapacity(cycle.enqueueTag.value_or(0)) != 0;
   expected.outputValid = step.offered.has_value();
   if (step.offered) {
     expected.outputTag = step.offered->virtualChannelKey;

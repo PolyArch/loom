@@ -125,6 +125,10 @@ struct BuiltinTargetScale final {
   /// Dequeue scheduling discipline of tag-carrying interconnect FIFOs.
   /// Untagged interconnect FIFOs remain strict regardless of this value.
   ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline;
+  /// Channels each tag-carrying virtual-channel interconnect FIFO guarantees
+  /// one pool slot. Zero under strict order; otherwise at least one and at
+  /// most the FIFO depth and the Temporal tag value count.
+  std::uint32_t interconnectFifoReservedChannels;
   /// Elementary-math formats, behavior, and accuracy exposed by every
   /// SpecialMathFu occurrence. Divide and remainder resources are invariant.
   BuiltinSpecialMathCapabilityProfile specialMathCapabilityProfile;
@@ -151,10 +155,16 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
          scale.spatialMemoryCount != 0 && scale.temporalMemoryCount != 0 &&
          scale.temporalResidentContexts != 0 &&
          scale.interconnectFifoDepth != 0 &&
-         (scale.interconnectFifoQueueDiscipline ==
-              ::fabric::FifoQueueDiscipline::StrictFifo ||
-          scale.interconnectFifoQueueDiscipline ==
-              ::fabric::FifoQueueDiscipline::PerTagVirtualChannel) &&
+         ((scale.interconnectFifoQueueDiscipline ==
+               ::fabric::FifoQueueDiscipline::StrictFifo &&
+           scale.interconnectFifoReservedChannels == 0) ||
+          (scale.interconnectFifoQueueDiscipline ==
+               ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
+           scale.interconnectFifoReservedChannels != 0 &&
+           scale.interconnectFifoReservedChannels <=
+               scale.interconnectFifoDepth &&
+           scale.interconnectFifoReservedChannels <=
+               scale.temporalResidentContexts)) &&
          isValidBuiltinSpecialMathCapabilityProfile(
              scale.specialMathCapabilityProfile) &&
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
@@ -180,7 +190,7 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     2,
     {4, 4, 2, 2, 12, 4, builtinBalancedFuOccurrences(12),
      builtinBalancedFuOccurrences(4), 1, 1, 2, 2,
-     ::fabric::FifoQueueDiscipline::StrictFifo,
+     ::fabric::FifoQueueDiscipline::StrictFifo, 0,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024,
      builtinDefaultPrivateCacheScale()}};
@@ -193,7 +203,7 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     2,
     {8, 6, 2, 2, 27, 9, builtinCoverageSpatialFuOccurrences(),
      builtinBalancedFuOccurrences(9), 4, 4, 4, 4,
-     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
+     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel, 3,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024,
      builtinDefaultPrivateCacheScale()}};
@@ -206,7 +216,7 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     2,
     {16, 8, 2, 2, 48, 16, builtinBalancedFuOccurrences(48),
      builtinBalancedFuOccurrences(16), 4, 4, 8, 16,
-     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel,
+     ::fabric::FifoQueueDiscipline::PerTagVirtualChannel, 4,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024,
      builtinDefaultPrivateCacheScale()}};

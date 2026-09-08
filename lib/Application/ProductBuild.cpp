@@ -50,6 +50,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -212,7 +213,12 @@ public:
     return workspace;
   }
 
+  /// The bounded workspace is invocation-local scratch. Setting
+  /// LOOM_PRODUCT_RETAIN_WORKSPACE keeps it for post-mortem inspection of the
+  /// Mapping journal and every candidate artifact the invocation produced.
   ~ProductWorkspace() {
+    if (std::getenv("LOOM_PRODUCT_RETAIN_WORKSPACE"))
+      return;
     std::error_code ignored;
     std::filesystem::remove_all(root_, ignored);
   }

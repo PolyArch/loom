@@ -126,6 +126,17 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
                        and it is never bypassable: a combinational passthrough
                        would route around the queue the discipline orders.
 
+    Optional hardware parameter of a `per_tag_virtual_channel` occurrence
+    (printed in `[...]` after `queue_discipline` when present):
+      * `reserved_channels` : i32, the number of distinct resident channels
+                       the shared pool guarantees one slot each. An enqueue
+                       of tag `t` is admitted only when the registered free
+                       capacity exceeds the guaranteed channels that are
+                       neither resident nor `t`. Absent means 1: no channel
+                       beyond the first resident one is guaranteed a slot.
+                       It is an immutable hardware fact bounded by
+                       `max_depth` and by the tag value count.
+
     `bypassable` is unrelated: it is the whole-FIFO combinational passthrough
     mode, not a per-token scheduling choice.
 
@@ -140,11 +151,18 @@ def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
   let arguments = (ins Fabric_AnyType:$input, I32Attr:$max_depth,
       BoolAttr:$bypassable,
       OptionalAttr<Fabric_FifoQueueDisciplineAttr>:$queue_discipline,
+      OptionalAttr<I32Attr>:$reserved_channels,
       OptionalAttr<BoolAttr>:$bypassed);
   let results = (outs Fabric_AnyType:$output);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// The guaranteed channel count of the shared pool: the declared
+    /// `reserved_channels`, 1 when a virtual-channel occurrence declares
+    /// none, and 0 under strict FIFO order, which owns no channels.
+    std::uint32_t reservedChannelCount();
+  }];
 }
 
 def Fabric_OpOp : Fabric_Op<"op", []> {

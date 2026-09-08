@@ -40,8 +40,8 @@ public:
   llvm::ArrayRef<::fabric::FifoQueueDiscipline> ownerQueueDisciplines() const {
     return ownerQueueDisciplines_;
   }
-  llvm::ArrayRef<std::uint32_t> ownerSharedSlotCapacities() const {
-    return ownerSharedSlotCapacities_;
+  llvm::ArrayRef<std::uint32_t> ownerGuaranteedNetCapacities() const {
+    return ownerGuaranteedNetCapacities_;
   }
   PnrIndex traversalOwner(PnrIndex traversal) const {
     return traversal < traversalOwnerOrdinals_.size()
@@ -67,7 +67,7 @@ private:
   std::vector<PnrIndex> ownerTraversalOffsets_;
   std::vector<PnrIndex> ownerTraversals_;
   std::vector<::fabric::FifoQueueDiscipline> ownerQueueDisciplines_;
-  std::vector<std::uint32_t> ownerSharedSlotCapacities_;
+  std::vector<std::uint32_t> ownerGuaranteedNetCapacities_;
 
   friend llvm::Expected<std::shared_ptr<const FrozenSpatialProgressIndex>>
   buildFrozenSpatialProgressIndex(

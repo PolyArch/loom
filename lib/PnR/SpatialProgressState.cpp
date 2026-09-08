@@ -462,7 +462,7 @@ SpatialProgressState::ownerCapacityShortfall(PnrIndex owner) const {
     return 0;
   const std::uint64_t required = ownerLogicalNetCounts_[owner];
   const std::uint64_t selected =
-      problem_->progressIndex().ownerSharedSlotCapacities()[owner];
+      problem_->progressIndex().ownerGuaranteedNetCapacities()[owner];
   return required > selected ? required - selected : 0;
 }
 
@@ -1164,7 +1164,7 @@ SpatialProgressState::verifyCachedState(
                                         PerTagVirtualChannel &&
                                 expectedIndeterminateClasses[owner] != 0));
     const std::uint64_t selectedCapacity =
-        problem_->progressIndex().ownerSharedSlotCapacities()[owner];
+        problem_->progressIndex().ownerGuaranteedNetCapacities()[owner];
     const std::uint64_t expectedOwnerShortfall =
         !expectedDebt && ownerLogicalNetCounts_[owner] > selectedCapacity
             ? ownerLogicalNetCounts_[owner] - selectedCapacity

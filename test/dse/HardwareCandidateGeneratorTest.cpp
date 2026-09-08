@@ -216,6 +216,7 @@ void parameterizedTemplateScale(
   scale.interconnectFifoDepth = 3;
   scale.interconnectFifoQueueDiscipline =
       ::fabric::FifoQueueDiscipline::PerTagVirtualChannel;
+  scale.interconnectFifoReservedChannels = 2;
   auto projected =
       take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
   auto inputs = take(loom::dse::bindFabricTemplateCandidateGeneratorInputs());
@@ -293,6 +294,9 @@ void localMemoryPortVariantRoundTrip() {
     loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
     resolved.hardwareTarget.parameters.interconnectFifoQueueDiscipline =
         discipline;
+    resolved.hardwareTarget.parameters.interconnectFifoReservedChannels =
+        discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel ? 3
+                                                                          : 0;
     auto projected =
         take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
     auto adopted = take(loom::dse::adoptResolvedFabricTemplateConfigView(

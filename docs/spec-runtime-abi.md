@@ -1000,6 +1000,9 @@ The Spatial Bridge binding's `maximumMessageBytes` is a separate provider wire
 and staging limit. It may reject an unrepresentable invocation or message with
 a typed provider outcome, but it cannot change logical capacity, split one
 message across several SendSeq ordinals, or admit more outstanding messages.
+It bounds each staged message, including each launch's result member; the
+per-Bridge result collection appends one member per launch and is bounded by
+the launch count, not by the message limit.
 Likewise, a consumer launch that arrives before its next message remains a
 bounded pending launch; absence at that instant is not infeasibility. The
 session retries it only after relevant channel state advances and reports a

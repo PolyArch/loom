@@ -666,10 +666,12 @@ round trips, or implementation-specific verifier decomposition.
 Strict Spatial and System import rebuild the same derived MatchKey, QueueKey,
 qualified pairing-key, allocation-unit, reservation, and FIFO shared-pool
 capacity projection used by PnR and simulator planning. The capacity proof
-counts distinct logical producer bindings at each FIFO because durable
-acceptance admits no second active transfer for one binding. It joins that
-bound with the Fabric-owned shared slot capacity and with the independently
-rebuilt strict-global or actual-tag-local buffer-dependency graph. A Mapping
+counts distinct logical nets at each FIFO and joins that count with the
+pool's guaranteed net capacity (the Fabric-owned `reserved_channels` of a
+per-tag virtual channel pool, or one under strict order, because a released
+producer may hold several resident tokens of one pool) and with the
+independently rebuilt strict-global or actual-tag-local buffer-dependency
+graph. A Mapping
 with an indeterminate tag, a repeated owner on one channel, or another
 unproved queue-level relation is not promoted to a liveness endpoint. The
 result remains distinct among `ProvenNoClosedWaitSet`,

@@ -66,6 +66,8 @@ struct CgraTraversalStoragePlan final {
   /// Dequeue scheduling discipline declared by the selected Fabric owner.
   ::fabric::FifoQueueDiscipline queueDiscipline =
       ::fabric::FifoQueueDiscipline::StrictFifo;
+  /// Channels a per-tag virtual channel pool guarantees one slot each.
+  std::uint32_t reservedChannels = 0;
   ::loom::fabric::FabricUsePatternRef enqueuePattern;
   ::loom::fabric::FabricUsePatternRef dequeuePattern;
   std::optional<::loom::fabric::FabricUsePatternRef> simultaneousPattern;

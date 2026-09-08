@@ -57,10 +57,16 @@ struct CgraTransportStorageCommit final {
 /// once every N cycles and the choice is a function of queue state alone.
 class CgraTransportStorageRuntime final {
 public:
+  /// `reservedChannels` is the Fabric `reserved_channels` capability of a
+  /// PerTagVirtualChannel queue: the shared pool guarantees one slot to each
+  /// of that many distinct channels, so an enqueue of channel `c` is admitted
+  /// only while the free slots exceed the guaranteed channels that are
+  /// neither resident nor `c`. Zero (and strict order) guarantees nothing.
   static llvm::Expected<CgraTransportStorageRuntime>
   create(std::uint32_t capacity, bool fullReplacementAllowed = false,
          ::fabric::FifoQueueDiscipline discipline =
-             ::fabric::FifoQueueDiscipline::StrictFifo);
+             ::fabric::FifoQueueDiscipline::StrictFifo,
+         std::uint32_t reservedChannels = 0);
 
   std::uint32_t capacity() const { return capacity_; }
   std::uint32_t occupancy() const {
@@ -69,8 +75,25 @@ public:
   bool empty() const { return entries_.empty(); }
   bool full() const { return entries_.size() == capacity_; }
   ::fabric::FifoQueueDiscipline discipline() const { return discipline_; }
+  std::uint32_t reservedChannels() const { return reservedChannels_; }
   const CgraTransportStorageEntry &front() const;
-  bool admits(bool enqueue, bool dequeue) const;
+
+  /// Slots held for traversals that will enqueue later. A reservation holds
+  /// one slot of its channel exactly like a resident token, so the channel
+  /// counts as resident for every other channel's guarantee.
+  std::uint32_t reservations() const { return reservationCount_; }
+  /// Slots channel `channel` may still claim at cycle start: the free slots
+  /// beyond reservations, minus the slots guaranteed to absent channels.
+  std::uint32_t claimableCapacity(std::uint32_t channel) const;
+  /// Holds one claimable slot for a later enqueue of `channel`.
+  llvm::Error reserve(std::uint32_t channel);
+  llvm::Error unreserve(std::uint32_t channel);
+
+  /// Whether one cycle-start transition is admissible: an enqueue needs a
+  /// claimable slot of its channel unless it holds a reservation, and a
+  /// dequeue needs a resident entry.
+  bool admits(std::optional<std::uint32_t> enqueueChannel,
+              bool enqueueReserved, bool dequeue) const;
 
   /// Appends the resident entries from the oldest toward the newest. The index
   /// of an appended entry is its exact queue position, so a closed-wait
@@ -111,20 +134,36 @@ public:
   /// dequeue must name an entry this discipline currently offers.
   llvm::Expected<CgraTransportStorageCommit>
   commit(std::optional<CgraTransportStorageEntry> enqueue,
+         std::optional<CgraTransportStorageEntry> dequeue) {
+    return commit(std::move(enqueue), false, std::move(dequeue));
+  }
+  /// `enqueueReserved` names an enqueue that holds a reservation of its
+  /// channel; the commit releases that reservation as the token lands.
+  llvm::Expected<CgraTransportStorageCommit>
+  commit(std::optional<CgraTransportStorageEntry> enqueue,
+         bool enqueueReserved,
          std::optional<CgraTransportStorageEntry> dequeue);
 
 private:
-  explicit CgraTransportStorageRuntime(std::uint32_t capacity,
-                                       bool fullReplacementAllowed,
-                                       ::fabric::FifoQueueDiscipline discipline)
+  CgraTransportStorageRuntime(std::uint32_t capacity,
+                              bool fullReplacementAllowed,
+                              ::fabric::FifoQueueDiscipline discipline,
+                              std::uint32_t reservedChannels)
       : capacity_(capacity), fullReplacementAllowed_(fullReplacementAllowed),
-        discipline_(discipline) {}
+        discipline_(discipline), reservedChannels_(reservedChannels) {}
+
+  bool channelResident(std::uint32_t channel) const;
+  std::uint32_t residentChannelCount() const;
 
   llvm::SmallVector<CgraTransportStorageEntry, 4> entries_;
+  /// Pending reservations as (channel, count) pairs.
+  llvm::SmallVector<std::pair<std::uint32_t, std::uint32_t>, 2> reservations_;
+  std::uint32_t reservationCount_ = 0;
   std::uint32_t capacity_ = 0;
   bool fullReplacementAllowed_ = false;
   ::fabric::FifoQueueDiscipline discipline_ =
       ::fabric::FifoQueueDiscipline::StrictFifo;
+  std::uint32_t reservedChannels_ = 0;
   /// The virtual channel the round robin resumes at. Rotation is over the
   /// canonical ascending tag-value ranks, wrapping at the highest observed
   /// rank, so the cursor is meaningful even when the channel it names is

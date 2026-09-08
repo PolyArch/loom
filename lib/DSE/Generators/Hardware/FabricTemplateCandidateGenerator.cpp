@@ -108,6 +108,7 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.interconnectFifoDepth);
   appendU32(bytes,
             static_cast<std::uint32_t>(scale.interconnectFifoQueueDiscipline));
+  appendU32(bytes, scale.interconnectFifoReservedChannels);
   appendU32(bytes, specialMathCapabilityProfileWireTag(
                        scale.specialMathCapabilityProfile));
   appendU64(bytes, scale.privateCaches.instructionCoreCacheBytes);
@@ -135,8 +136,6 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 176)
-    return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
   for (std::uint8_t byte : bytes.take_front(4))
@@ -178,6 +177,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   scale.interconnectFifoDepth = readU32();
   scale.interconnectFifoQueueDiscipline =
       static_cast<::fabric::FifoQueueDiscipline>(readU32());
+  scale.interconnectFifoReservedChannels = readU32();
   auto specialMathProfile =
       specialMathCapabilityProfileFromWireTag(readU32());
   if (!specialMathProfile)
@@ -200,6 +200,8 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");
+  if (!bytes.empty())
+    return invalid("template descriptor and scale are not canonical");
   const auto *descriptor =
       loom::adg::findBuiltinTargetDescriptor(identity, major, minor);
   if (descriptor)

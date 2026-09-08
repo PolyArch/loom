@@ -399,8 +399,15 @@ CgraTransportRuntime::acceptPhysicalEvents(
     if (commit.retireCount > storage.activeActionCount)
       return invalid("CGRA storage frame retires too many actions");
     if ((commit.enqueue || commit.expectedDequeue) &&
-        !storage.queue.admits(commit.enqueue.has_value(),
-                              commit.expectedDequeue.has_value()))
+        !storage.queue.admits(
+            commit.enqueue ? std::optional<std::uint32_t>(
+                                 commit.enqueue->virtualChannelKey)
+                           : std::nullopt,
+            commit.enqueue &&
+                traversalState(commit.enqueue->transferSlot,
+                               commit.enqueue->traversalNodeOrdinal)
+                    .storageReserved,
+            commit.expectedDequeue.has_value()))
       return invalid("CGRA storage frame violates cycle-start capacity");
   }
 
@@ -509,8 +516,13 @@ CgraTransportRuntime::acceptPhysicalEvents(
     StorageState &storage = storages_[storageOrdinal];
     if (!commit.enqueue && !commit.expectedDequeue)
       continue;
-    auto committed =
-        storage.queue.commit(commit.enqueue, commit.expectedDequeue);
+    const bool enqueueReserved =
+        commit.enqueue &&
+        traversalState(commit.enqueue->transferSlot,
+                       commit.enqueue->traversalNodeOrdinal)
+            .storageReserved;
+    auto committed = storage.queue.commit(commit.enqueue, enqueueReserved,
+                                          commit.expectedDequeue);
     if (!committed)
       return committed.takeError();
     if (auto *activity = physical_->activity())
@@ -538,16 +550,10 @@ CgraTransportRuntime::acceptPhysicalEvents(
       if (pending == storage.pendingEnqueueNodes.end())
         return invalid("CGRA storage commit lost its enqueue request");
       storage.pendingEnqueueNodes.erase(pending);
-      if (traversalState(commit.enqueue->transferSlot,
-                         commit.enqueue->traversalNodeOrdinal)
-              .storageReserved) {
-        if (storage.reservations == 0)
-          return invalid("CGRA downstream storage reservation underflow");
-        --storage.reservations;
-        traversalState(commit.enqueue->transferSlot,
-                       commit.enqueue->traversalNodeOrdinal)
-            .storageReserved = false;
-      }
+      // The queue released the reservation as the token landed.
+      traversalState(commit.enqueue->transferSlot,
+                     commit.enqueue->traversalNodeOrdinal)
+          .storageReserved = false;
       if (storage.binding.kind == CgraTraversalStorageKind::BufferedFifo)
         traversalState(commit.enqueue->transferSlot,
                        commit.enqueue->traversalNodeOrdinal)
@@ -900,12 +906,22 @@ bool CgraTransportRuntime::canAdvanceBufferedStorage(
         boundary.storageOrdinal >= storages_.size())
       return false;
     const StorageState &storage = storages_[boundary.storageOrdinal];
-    if (storage.queue.occupancy() > storage.queue.capacity() ||
-        storage.reservations >=
-            storage.queue.capacity() - storage.queue.occupancy())
+    if (storage.queue.claimableCapacity(storageChannel(storage, downstream)) ==
+        0)
       return false;
   }
   return true;
+}
+
+std::uint32_t
+CgraTransportRuntime::storageChannel(const StorageState &storage,
+                                     std::uint64_t nodeOrdinal) const {
+  if (storage.queue.discipline() !=
+      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+    return 0;
+  const std::uint64_t tag = graph_.traversalNodes[nodeOrdinal].physicalTagOrdinal;
+  return tag < graph_.tagVirtualChannelKeys.size() ? tagVirtualChannelKey(tag)
+                                                   : 0;
 }
 
 llvm::Error
@@ -917,9 +933,9 @@ CgraTransportRuntime::reserveDownstreamStorage(std::uint64_t slot,
        graph_.traversalNodes[nodeOrdinal].downstreamStorageNodes) {
     const TraversalNodeBinding &boundary = graph_.traversalNodes[downstream];
     StorageState &storage = storages_[boundary.storageOrdinal];
-    if (storage.reservations == std::numeric_limits<std::uint32_t>::max())
-      return invalid("CGRA downstream storage reservation exceeds u32");
-    ++storage.reservations;
+    if (llvm::Error error =
+            storage.queue.reserve(storageChannel(storage, downstream)))
+      return error;
     traversalState(slot, downstream).storageReserved = true;
   }
   return llvm::Error::success();
@@ -1264,9 +1280,9 @@ CgraTransportRuntime::advance() {
           traversalState(enqueueNode->transferSlot, enqueueNode->nodeOrdinal)
               .storageReserved;
       const bool unreservedCapacity =
-          storage.queue.occupancy() <= storage.queue.capacity() &&
-          storage.reservations <
-              storage.queue.capacity() - storage.queue.occupancy();
+          enqueueNode &&
+          storage.queue.claimableCapacity(
+              storageChannel(storage, enqueueNode->nodeOrdinal)) != 0;
       bool enqueue =
           enqueueNode.has_value() && (enqueueReserved || unreservedCapacity);
       if (enqueueNode && dequeue &&
@@ -1414,16 +1430,15 @@ CgraTransportRuntime::advance() {
       if (enqueue && !independentReplacement &&
           !traversalState(enqueueNode->transferSlot, enqueueNode->nodeOrdinal)
                .storageReserved) {
-        if (storage.queue.occupancy() > storage.queue.capacity() ||
-            storage.reservations >=
-                storage.queue.capacity() - storage.queue.occupancy())
+        if (llvm::Error error = storage.queue.reserve(
+                storageChannel(storage, enqueueNode->nodeOrdinal)))
           return invalid(llvm::Twine("CGRA storage enqueue node ") +
                          llvm::Twine(enqueueNode->nodeOrdinal) +
                          " at storage " + llvm::Twine(storageOrdinal) +
                          " has " + llvm::Twine(storage.queue.occupancy()) +
-                         "+" + llvm::Twine(storage.reservations) + "/" +
-                         llvm::Twine(storage.queue.capacity()));
-        ++storage.reservations;
+                         "+" + llvm::Twine(storage.queue.reservations()) +
+                         "/" + llvm::Twine(storage.queue.capacity()) + ": " +
+                         llvm::toString(std::move(error)));
         traversalState(enqueueNode->transferSlot, enqueueNode->nodeOrdinal)
             .storageReserved = true;
       }

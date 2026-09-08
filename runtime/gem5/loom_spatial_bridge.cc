@@ -524,10 +524,12 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
     return ResultPublication::Published;
   }
 
+  // The message limit bounds one staged result, never the collection: every
+  // launch appends its own member to the result file, so the collection
+  // grows with the launch count while the staging memory does not.
   const std::vector<std::uint8_t> member =
       loom::runtime::encodeGem5BridgeResult(completedResults.results.back());
-  if (publishedResultBytes > maximumMessageBytes ||
-      member.size() > maximumMessageBytes - publishedResultBytes)
+  if (member.size() > maximumMessageBytes)
     return ResultPublication::TooLarge;
   std::fstream output(resultPath,
                       std::ios::binary | std::ios::in | std::ios::out);
@@ -550,6 +552,8 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
   if (!output)
     return ResultPublication::WriteFailed;
   publishedResultBytes += member.size();
+  // The member is durable in the file; only its sequence position stays.
+  std::vector<std::uint8_t>().swap(completedResults.results.back().result);
   return ResultPublication::Published;
 }
 

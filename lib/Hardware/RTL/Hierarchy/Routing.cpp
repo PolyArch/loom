@@ -779,6 +779,12 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
   if (virtualChannel &&
       (operation.getBypassable() || output->dataPath.tagWidthBits == 0))
     return invalid("virtual-channel FIFO must be tagged and non-bypassable");
+  // The channels the shared pool guarantees one slot each; one is the
+  // undeclared default and guarantees nothing beyond the first resident.
+  const std::uint32_t reservedChannels =
+      virtualChannel ? fabric.fifoReservedChannels(fifo).value_or(1) : 0;
+  if (reservedChannels > depth)
+    return invalid("FIFO reserves more channels than it has slots");
   const fabric::FabricSemanticConfigFieldRef field{
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(fifo)),
@@ -884,21 +890,6 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
         mlir::Value full = circt::comb::ICmpOp::create(
             bodyBuilder, location, circt::comb::ICmpPredicate::eq, occupancy,
             fullOccupancy, true);
-        mlir::Value bufferedInputReady =
-            andValues(bodyBuilder, location,
-                      {buffered, circt::comb::createOrFoldNot(bodyBuilder,
-                                                              location, full)});
-        mlir::Value bufferedOutputValid = andValues(
-            bodyBuilder, location,
-            {buffered,
-             circt::comb::createOrFoldNot(bodyBuilder, location, empty)});
-        mlir::Value enqueue = andValues(
-            bodyBuilder, location,
-            {bufferedInputReady, accessor.getInput(input->valid.getName())});
-        mlir::Value dequeue = andValues(
-            bodyBuilder, location,
-            {bufferedOutputValid, accessor.getInput(output->ready.getName())});
-
         struct StorageBank final {
           std::vector<circt::Backedge> next;
           std::vector<mlir::Value> current;
@@ -926,6 +917,119 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
         StorageBank dataBank =
             makeBank(output->dataPath.payloadWidthBits, "data");
         StorageBank tagBank = makeBank(output->dataPath.tagWidthBits, "tag");
+        auto adaptedInput = adaptForwardTransportSignals(
+            bodyBuilder, location, input->dataPath, output->dataPath,
+            ForwardTransportSignals{
+                accessor.getInput(input->valid.getName()),
+                input->data ? std::optional<mlir::Value>{accessor.getInput(
+                                  input->data->getName())}
+                            : std::nullopt,
+                input->tag ? std::optional<mlir::Value>{accessor.getInput(
+                                 input->tag->getName())}
+                           : std::nullopt});
+        if (!adaptedInput) {
+          materializationError = llvm::toString(adaptedInput.takeError());
+          backedges.abandon();
+          return;
+        }
+        // Input ready is registered cycle-start capacity. A virtual-channel
+        // pool with reserved channels keeps one free slot for every
+        // guaranteed channel that is neither resident nor the arriving one,
+        // so a channel that runs ahead cannot starve an absent channel.
+        mlir::Value admissible =
+            circt::comb::createOrFoldNot(bodyBuilder, location, full);
+        if (virtualChannel && reservedChannels > 1 && tagBank.width != 0 &&
+            adaptedInput->tag) {
+          llvm::SmallVector<mlir::Value, 8> occupied;
+          for (std::uint64_t slot = 0; slot != depth; ++slot)
+            occupied.push_back(circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+                integerConstant(occupancyBits, slot), occupancy, true));
+          const auto sameTag = [&](mlir::Value lhs, mlir::Value rhs) {
+            return circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::eq, lhs,
+                rhs, true);
+          };
+          // A slot heads a distinct channel when no older occupied slot
+          // carries its tag; the distinct heads count the resident channels.
+          llvm::SmallVector<mlir::Value, 8> channelHeads;
+          llvm::SmallVector<mlir::Value, 8> inputMatches;
+          for (std::uint64_t slot = 0; slot != depth; ++slot) {
+            llvm::SmallVector<mlir::Value, 8> olderSameTag;
+            for (std::uint64_t older = 0; older != slot; ++older)
+              olderSameTag.push_back(andValues(
+                  bodyBuilder, location,
+                  {occupied[older],
+                   sameTag(tagBank.current[older], tagBank.current[slot])}));
+            mlir::Value head = andValues(
+                bodyBuilder, location,
+                {occupied[slot],
+                 circt::comb::createOrFoldNot(
+                     bodyBuilder, location,
+                     orValues(bodyBuilder, location, olderSameTag))});
+            channelHeads.push_back(circt::comb::MuxOp::create(
+                bodyBuilder, location, head, integerConstant(occupancyBits, 1),
+                integerConstant(occupancyBits, 0), true));
+            inputMatches.push_back(
+                andValues(bodyBuilder, location,
+                          {occupied[slot],
+                           sameTag(tagBank.current[slot], *adaptedInput->tag)}));
+          }
+          // A balanced adder tree keeps the count logarithmic in the depth.
+          std::vector<mlir::Value> countLevel(channelHeads.begin(),
+                                              channelHeads.end());
+          while (countLevel.size() != 1) {
+            std::vector<mlir::Value> next;
+            next.reserve((countLevel.size() + 1) / 2);
+            for (std::size_t index = 0; index < countLevel.size(); index += 2) {
+              if (index + 1 == countLevel.size())
+                next.push_back(countLevel[index]);
+              else
+                next.push_back(circt::comb::AddOp::create(
+                    bodyBuilder, location, countLevel[index],
+                    countLevel[index + 1], true));
+            }
+            countLevel = std::move(next);
+          }
+          mlir::Value residentCount = countLevel.front();
+          mlir::Value inputResident =
+              orValues(bodyBuilder, location, inputMatches);
+          mlir::Value claimed = circt::comb::AddOp::create(
+              bodyBuilder, location, residentCount,
+              circt::comb::MuxOp::create(bodyBuilder, location, inputResident,
+                                         integerConstant(occupancyBits, 0),
+                                         integerConstant(occupancyBits, 1),
+                                         true),
+              true);
+          mlir::Value guaranteed =
+              integerConstant(occupancyBits, reservedChannels);
+          mlir::Value belowGuarantee = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::ult, claimed,
+              guaranteed, true);
+          mlir::Value reservedForOthers = circt::comb::MuxOp::create(
+              bodyBuilder, location, belowGuarantee,
+              circt::comb::SubOp::create(bodyBuilder, location, guaranteed,
+                                         claimed, true),
+              integerConstant(occupancyBits, 0), true);
+          mlir::Value free = circt::comb::SubOp::create(
+              bodyBuilder, location, fullOccupancy, occupancy, true);
+          admissible = circt::comb::ICmpOp::create(
+              bodyBuilder, location, circt::comb::ICmpPredicate::ugt, free,
+              reservedForOthers, true);
+        }
+        mlir::Value bufferedInputReady =
+            andValues(bodyBuilder, location, {buffered, admissible});
+        mlir::Value bufferedOutputValid = andValues(
+            bodyBuilder, location,
+            {buffered,
+             circt::comb::createOrFoldNot(bodyBuilder, location, empty)});
+        mlir::Value enqueue = andValues(
+            bodyBuilder, location,
+            {bufferedInputReady, accessor.getInput(input->valid.getName())});
+        mlir::Value dequeue = andValues(
+            bodyBuilder, location,
+            {bufferedOutputValid, accessor.getInput(output->ready.getName())});
+
         // The virtual-channel discipline presents the head of exactly one
         // non-empty channel per cycle. Resident entries occupy slots
         // [0, occupancy), so slot order is arrival order. Minimizing the
@@ -1027,21 +1131,6 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                 bodyBuilder, location, appendHere, *source, next, true));
           }
         };
-        auto adaptedInput = adaptForwardTransportSignals(
-            bodyBuilder, location, input->dataPath, output->dataPath,
-            ForwardTransportSignals{
-                accessor.getInput(input->valid.getName()),
-                input->data ? std::optional<mlir::Value>{accessor.getInput(
-                                  input->data->getName())}
-                            : std::nullopt,
-                input->tag ? std::optional<mlir::Value>{accessor.getInput(
-                                 input->tag->getName())}
-                           : std::nullopt});
-        if (!adaptedInput) {
-          materializationError = llvm::toString(adaptedInput.takeError());
-          backedges.abandon();
-          return;
-        }
         mlir::Value readPointer = head;
         mlir::Value appendPosition = tail;
         mlir::Value grantedSlot;
@@ -1161,6 +1250,7 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
   appendKeyU64(implementationKey, depth);
   appendKeyU64(implementationKey, operation.getBypassable());
   appendKeyU64(implementationKey, virtualChannel);
+  appendKeyU64(implementationKey, reservedChannels);
   appendKeyU64(implementationKey, clockReset.asynchronousReset);
   appendKeyDataPath(implementationKey, input->dataPath);
   appendKeyDataPath(implementationKey, output->dataPath);

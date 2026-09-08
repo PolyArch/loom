@@ -42,7 +42,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         binding.kind != CgraTraversalStorageKind::BufferedFifo &&
         binding.independentReadWriteServices;
     auto queue = CgraTransportStorageRuntime::create(
-        binding.capacity, fullReplacementAllowed, binding.queueDiscipline);
+        binding.capacity, fullReplacementAllowed, binding.queueDiscipline,
+        binding.reservedChannels);
     if (!queue)
       return queue.takeError();
     runtime.storages_.emplace_back(binding, std::move(*queue));

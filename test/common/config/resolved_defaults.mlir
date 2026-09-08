@@ -30,6 +30,7 @@
 // JSON-DAG: "temporal_fu_occurrences"
 // JSON-DAG: "memory_capacity_bytes": 262144
 // JSON-DAG: "interconnect_fifo_queue_discipline": "per_tag_virtual_channel"
+// JSON-DAG: "interconnect_fifo_reserved_channels": 3
 // JSON-DAG: "private_caches"
 // JSON-DAG: "instruction_core_cache_bytes": 16384
 // JSON-DAG: "spatial_memory_cache_bytes": 32768

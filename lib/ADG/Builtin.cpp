@@ -397,6 +397,14 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
               ? std::optional<::fabric::FifoQueueDiscipline>(
                     scale.interconnectFifoQueueDiscipline)
               : std::nullopt;
+  const std::uint32_t taggedInterconnectFifoReservedChannels =
+      taggedInterconnectFifoDiscipline ? scale.interconnectFifoReservedChannels
+                                       : 0;
+  if (taggedInterconnectFifoDiscipline &&
+      (temporalTagWidth >= 32 ||
+       taggedInterconnectFifoReservedChannels > (1U << temporalTagWidth)))
+    return invalid("builtin target reserves more virtual channels than the "
+                   "Temporal tag can name");
   auto bits128 = PortType::bits(128);
   if (!bits128)
     return bits128.takeError();
@@ -570,7 +578,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       meshDimension, meshDimension, scale.spatialMeshLanesPerDirection,
       *bits128, scale.interconnectFifoDepth,
       scale.interconnectFifoQueueDiscipline,
-      std::move(spatialAttachmentSpecs));
+      std::move(spatialAttachmentSpecs),
+      taggedInterconnectFifoReservedChannels);
   if (!spatialNetworkSpec)
     return spatialNetworkSpec.takeError();
   auto spatialNetwork = spatial->addMeshSwitchNetwork(*spatialNetworkSpec);
@@ -581,7 +590,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       *tagged128, scale.interconnectFifoDepth,
       scale.interconnectFifoQueueDiscipline, scale.temporalResidentContexts,
       MeshSwitchGrantPolicyKind::RoundRobin,
-      std::move(temporalAttachmentSpecs));
+      std::move(temporalAttachmentSpecs),
+      taggedInterconnectFifoReservedChannels);
   if (!temporalNetworkSpec)
     return temporalNetworkSpec.takeError();
   auto temporalNetwork = spatial->addMeshSwitchNetwork(*temporalNetworkSpec);
@@ -713,7 +723,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
           output, FifoSpec{*tagged128, scale.interconnectFifoDepth, false,
-                           taggedInterconnectFifoDiscipline});
+                           taggedInterconnectFifoDiscipline,
+                           taggedInterconnectFifoReservedChannels});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -751,7 +762,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       auto tagged = spatial->addFifo(
           outputs->values().front(),
           FifoSpec{*tagged128, scale.interconnectFifoDepth, false,
-                   taggedInterconnectFifoDiscipline});
+                   taggedInterconnectFifoDiscipline,
+                   taggedInterconnectFifoReservedChannels});
       if (!tagged)
         return tagged.takeError();
       taggedOutputs.push_back(tagged->value());

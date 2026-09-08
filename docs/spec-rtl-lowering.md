@@ -459,7 +459,10 @@ visibility, bypass backpressure, or inactive-state semantics. A
 offer cursor over Physical Tag values: each cycle presents the arrival-oldest
 entry of the resident channel nearest the cursor in wrapped ascending tag
 order, and a grant or a refused offer moves the cursor past that channel,
-exactly the arbitration transition the Fabric contract owns.
+exactly the arbitration transition the Fabric contract owns. Its input ready
+is the reserved-channel admission of the tag on the input port: the resident
+channels are counted from the tag bits of occupied slots, and the free slots
+must exceed the guaranteed channels that are neither resident nor arriving.
 
 An unbound or inactive operation input is not an implicit sink. A provider
 must not assert readiness merely to drain and discard tokens unless the exact

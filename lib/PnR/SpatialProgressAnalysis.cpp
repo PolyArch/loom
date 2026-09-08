@@ -255,7 +255,7 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateProgressWitnessCount(
     const bool shortfall =
         !debt && selectedNets[owner] > candidate.problem()
                                            .progressIndex()
-                                           .ownerSharedSlotCapacities()[owner];
+                                           .ownerGuaranteedNetCapacities()[owner];
     if (debt || shortfall) {
       if (count == std::numeric_limits<std::uint64_t>::max())
         return invalid("cold capacity proof witness count exceeds u64");
@@ -294,7 +294,7 @@ loom::pnr::projectSpatialFifoCapacitySuggestion(
   if (!owner)
     return std::optional<SpatialFifoCapacitySuggestion>();
   const auto capacities =
-      candidate.problem().progressIndex().ownerSharedSlotCapacities();
+      candidate.problem().progressIndex().ownerGuaranteedNetCapacities();
   if (*owner >= capacities.size())
     return invalid("capacity feedback owner is out of range");
   const std::uint64_t selected = capacities[*owner];

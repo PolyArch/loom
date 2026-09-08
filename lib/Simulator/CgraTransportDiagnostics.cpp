@@ -157,7 +157,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
           diagnostic.blockingFifoOccurrence = fifo->owner;
         }
         diagnostic.blockingStorageOccupancy = storage.queue.occupancy();
-        diagnostic.blockingStorageReservations = storage.reservations;
+        diagnostic.blockingStorageReservations = storage.queue.reservations();
         diagnostic.blockingStorageCapacity = storage.queue.capacity();
         diagnostic.blockingStorageHead = storageHead(traversal.storageOrdinal);
         diagnostic.blockingTraversalWaitingForStorage =
@@ -181,7 +181,7 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
             diagnostic.blockingDownstreamStorageOccupancy =
                 downstreamStorage.queue.occupancy();
             diagnostic.blockingDownstreamStorageReservations =
-                downstreamStorage.reservations;
+                downstreamStorage.queue.reservations();
             diagnostic.blockingDownstreamStorageCapacity =
                 downstreamStorage.queue.capacity();
             diagnostic.blockingDownstreamStorageReserved =

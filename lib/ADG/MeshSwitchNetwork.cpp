@@ -129,17 +129,18 @@ llvm::Expected<MeshSwitchNetworkSpec> MeshSwitchNetworkSpec::spatial(
     std::uint32_t width, std::uint32_t height, std::uint32_t lanesPerDirection,
     const PortType &linkType, std::uint32_t interconnectFifoDepth,
     ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
-    std::vector<MeshCellAttachmentSpec> attachments) {
+    std::vector<MeshCellAttachmentSpec> attachments,
+    std::uint32_t interconnectFifoReservedChannels) {
   if (llvm::Error error = validateMeshSpec(
           ::fabric::Schedule::Spatial, width, height, lanesPerDirection,
           linkType, interconnectFifoDepth, std::nullopt, std::nullopt,
           attachments))
     return std::move(error);
-  return MeshSwitchNetworkSpec(::fabric::Schedule::Spatial, width, height,
-                               lanesPerDirection, linkType,
-                               interconnectFifoDepth,
-                               interconnectFifoQueueDiscipline, std::nullopt,
-                               std::nullopt, std::move(attachments));
+  return MeshSwitchNetworkSpec(
+      ::fabric::Schedule::Spatial, width, height, lanesPerDirection, linkType,
+      interconnectFifoDepth, interconnectFifoQueueDiscipline,
+      interconnectFifoReservedChannels, std::nullopt, std::nullopt,
+      std::move(attachments));
 }
 
 llvm::Expected<MeshSwitchNetworkSpec> MeshSwitchNetworkSpec::temporal(
@@ -147,17 +148,18 @@ llvm::Expected<MeshSwitchNetworkSpec> MeshSwitchNetworkSpec::temporal(
     const PortType &linkType, std::uint32_t interconnectFifoDepth,
     ::fabric::FifoQueueDiscipline interconnectFifoQueueDiscipline,
     std::uint32_t routeTableSize, MeshSwitchGrantPolicyKind grantPolicyKind,
-    std::vector<MeshCellAttachmentSpec> attachments) {
+    std::vector<MeshCellAttachmentSpec> attachments,
+    std::uint32_t interconnectFifoReservedChannels) {
   if (llvm::Error error = validateMeshSpec(
           ::fabric::Schedule::Temporal, width, height, lanesPerDirection,
           linkType, interconnectFifoDepth, routeTableSize, grantPolicyKind,
           attachments))
     return std::move(error);
-  return MeshSwitchNetworkSpec(::fabric::Schedule::Temporal, width, height,
-                               lanesPerDirection, linkType,
-                               interconnectFifoDepth,
-                               interconnectFifoQueueDiscipline, routeTableSize,
-                               grantPolicyKind, std::move(attachments));
+  return MeshSwitchNetworkSpec(
+      ::fabric::Schedule::Temporal, width, height, lanesPerDirection, linkType,
+      interconnectFifoDepth, interconnectFifoQueueDiscipline,
+      interconnectFifoReservedChannels, routeTableSize, grantPolicyKind,
+      std::move(attachments));
 }
 
 llvm::ArrayRef<SpatialValue> MeshCellAttachment::inputs() const {
@@ -516,10 +518,12 @@ SpatialCoreBuilder::addMeshSwitchNetwork(const MeshSwitchNetworkSpec &spec) {
     if (cell.outgoing.size() != cell.outgoingSources.size())
       return detail::invalid("mesh link construction lost an outgoing lane");
     for (std::size_t ordinal = 0; ordinal != cell.outgoing.size(); ++ordinal) {
-      auto fifo =
-          addFifo(cell.outgoingSources[ordinal],
-                  FifoSpec{spec.linkType_, spec.interconnectFifoDepth_, false,
-                           linkFifoDiscipline});
+      auto fifo = addFifo(
+          cell.outgoingSources[ordinal],
+          FifoSpec{spec.linkType_, spec.interconnectFifoDepth_, false,
+                   linkFifoDiscipline,
+                   linkFifoDiscipline ? spec.interconnectFifoReservedChannels_
+                                      : 0});
       if (!fifo)
         return fifo.takeError();
       networkState->domainMembers.push_back(fifo->domainMember());

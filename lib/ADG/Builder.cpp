@@ -1101,6 +1101,12 @@ llvm::Expected<FifoResult> SpatialCoreBuilder::addFifo(SpatialValue input,
           ? ::fabric::FifoQueueDisciplineAttr::get(&(*state)->context,
                                                    *spec.queueDiscipline)
           : ::fabric::FifoQueueDisciplineAttr(),
+      spec.reservedChannels != 0 &&
+              spec.queueDiscipline ==
+                  ::fabric::FifoQueueDiscipline::PerTagVirtualChannel
+          ? builder.getI32IntegerAttr(
+                static_cast<std::int32_t>(spec.reservedChannels))
+          : mlir::IntegerAttr(),
       mlir::BoolAttr());
   if (llvm::Error error = verifyNewOperation(fifo, "FIFO"))
     return std::move(error);

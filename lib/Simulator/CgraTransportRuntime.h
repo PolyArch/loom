@@ -429,7 +429,6 @@ private:
     std::vector<TraversalOccurrence> pendingDequeueNodes;
     bool eventScheduled = false;
     std::uint8_t activeActionCount = 0;
-    std::uint32_t reservations = 0;
     /// A virtual-channel refusal rotates the cursor until every resident
     /// channel has been refused. Only a readiness change then wakes the queue.
     std::uint32_t offerRefusalsSinceCommit = 0;
@@ -542,6 +541,11 @@ private:
                        llvm::ArrayRef<std::uint32_t> localSinkOrdinals) const;
   bool canPublishSink(const SinkBinding &sink,
                       bool operandCapacityReserved) const;
+  /// The virtual channel a traversal node's token occupies in `storage`:
+  /// the dense rank of its Physical Tag value on a tag-selective queue and
+  /// channel zero on a strict queue, which owns no channels.
+  std::uint32_t storageChannel(const StorageState &storage,
+                               std::uint64_t nodeOrdinal) const;
   bool canAdvanceBufferedStorage(std::uint64_t slot,
                                  std::uint64_t nodeOrdinal) const;
   llvm::Error reserveDownstreamStorage(std::uint64_t slot,

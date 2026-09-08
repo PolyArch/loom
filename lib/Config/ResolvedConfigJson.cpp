@@ -387,6 +387,8 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"interconnect_fifo_queue_discipline",
                  ::fabric::stringifyFifoQueueDiscipline(
                      scale.interconnectFifoQueueDiscipline)},
+                {"interconnect_fifo_reserved_channels",
+                 scale.interconnectFifoReservedChannels},
                 {"private_caches", privateCaches(scale.privateCaches)}}}}},
       {"dse",
        llvm::json::Object{
