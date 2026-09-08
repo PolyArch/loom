@@ -385,6 +385,17 @@ loom::pnr::detail::enumerateSpatialRuntimeCounterexampleBreakers(
       if (llvm::Error error = appendOwner(decision))
         return std::move(error);
   }
+  // Prefer the blocked consumer's attachment before rerouting a shared trunk.
+  // Another path to the same shared ingress can preserve the join wait, while
+  // a distinct ingress can separate its delivery. Every original breaker
+  // remains in the finite domain, with stable order within each group.
+  std::stable_partition(result.begin(), result.end(), [&](const auto &breaker) {
+    if (breaker.kind !=
+        SpatialRuntimeCounterexampleBreakerKind::TransferAttachment)
+      return false;
+    return literals[clause.literalOffset + breaker.clauseLocalLiteralOrdinal]
+        .sink.has_value();
+  });
   return result;
 }
 

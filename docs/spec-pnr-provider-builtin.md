@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.13
+  loom.spatial_pnr.config.15.14
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.4
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -80,6 +80,13 @@ conservative complete-assignment blocker, not a minimal closed-SCC core. An
 explicitly authored clause has no runtime lineage. Frozen indexes and
 CandidateState cache literal truth but cannot become an alternative legality
 or provenance owner.
+
+Runtime-counterexample repair visits consumer-attachment alternatives before
+the other finite literal breakers, preserving canonical order within both
+groups. A separate consumer ingress can break a multicast join wait that
+survives moving the shared trunk to another FIFO. The complete breaker domain,
+solver-call limits, accumulated clauses, and independent replay requirements
+remain applicable to every attempt.
 
 Config projection and adoption fail closed for every unsupported combination.
 There is no compatibility fallback, ignored field, focused-closure field,
