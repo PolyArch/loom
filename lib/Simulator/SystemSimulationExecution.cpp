@@ -896,14 +896,10 @@ importSimulationExecution(const ArtifactRootReference &reference,
         bytes->bytes(), resolution, store, blobs);
     if (!execution)
       return execution.takeError();
-    CanonicalSemanticBytes canonical(std::vector<std::uint8_t>(
-        bytes->bytes().begin(), bytes->bytes().end()));
-    ArtifactIdentity identity =
-        finalizeArtifactIdentity(simulationExecutionSchema, canonical);
-    if (identity != reference.artifact)
-      return detail::invalid("stale SimulationExecution reference identity");
-    return CanonicalSimulationExecution(identity, std::move(*execution),
-                                        std::move(canonical));
+    // The exact store read already verified the schema and identity of these
+    // bytes. Retain that verified payload after validating its typed contents.
+    return CanonicalSimulationExecution(reference.artifact,
+                                        std::move(*execution), std::move(*bytes));
   }
   if (*kind != SimulationWorkloadKind::System)
     return detail::invalid("simulation execution: workload root does not have "
@@ -911,14 +907,8 @@ importSimulationExecution(const ArtifactRootReference &reference,
   auto execution = decodeExecution(bytes->bytes(), resolution, store, blobs);
   if (!execution)
     return execution.takeError();
-  CanonicalSemanticBytes canonical(
-      std::vector<std::uint8_t>(bytes->bytes().begin(), bytes->bytes().end()));
-  ArtifactIdentity identity =
-      finalizeArtifactIdentity(simulationExecutionSchema, canonical);
-  if (identity != reference.artifact)
-    return detail::invalid("stale SimulationExecution reference identity");
-  return CanonicalSimulationExecution(identity, std::move(*execution),
-                                      std::move(canonical));
+  return CanonicalSimulationExecution(reference.artifact,
+                                      std::move(*execution), std::move(*bytes));
 }
 
 } // namespace loom::sim
