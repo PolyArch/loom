@@ -179,19 +179,33 @@ tryHardwareFeedbackReopen(
                                    growth->addedContexts == 0 &&
                                    growth->addedGateways == 0;
     const bool typedModuleGrowth = techObservation != nullptr;
-    llvm::Expected<MaterializedHardwareCandidate> system =
-        accCoreOnlyGrowth ? materializeTypedAccCoreGrowth(std::move(*growth),
-                                                          artifacts, blobs)
-        : typedModuleGrowth
-            ? materializeTypedModuleSystemGrowth(
-                  std::move(*growth),
-                  currentPlan->frontier.systemFrontier.front(), artifacts,
-                  blobs)
-            : materializeHardwareRecipeGrowth(std::move(*growth), evidence,
-                                              request, scheduler, artifacts,
-                                              blobs);
-    if (!system)
-      return system.takeError();
+    auto materialization =
+        [&]() -> llvm::Expected<HardwareRecipeMaterializationOutcome> {
+      if (!accCoreOnlyGrowth && !typedModuleGrowth)
+        return materializeHardwareRecipeGrowth(
+            std::move(*growth), evidence, request, scheduler, artifacts, blobs);
+      auto candidate = accCoreOnlyGrowth
+                           ? materializeTypedAccCoreGrowth(std::move(*growth),
+                                                           artifacts, blobs)
+                           : materializeTypedModuleSystemGrowth(
+                                 std::move(*growth),
+                                 currentPlan->frontier.systemFrontier.front(),
+                                 artifacts, blobs);
+      if (!candidate)
+        return candidate.takeError();
+      return HardwareRecipeMaterializationOutcome{std::move(*candidate)};
+    }();
+    if (!materialization)
+      return materialization.takeError();
+    if (const auto *incomplete =
+            std::get_if<IncompleteHardwareRecipeMaterialization>(
+                &*materialization)) {
+      if (llvm::Error error =
+              retainObservedInvocation(incomplete->constructionInvocation))
+        return error;
+      break;
+    }
+    auto *system = &std::get<MaterializedHardwareCandidate>(*materialization);
     if (system->constructionInvocation)
       if (llvm::Error error =
               retainObservedInvocation(*system->constructionInvocation))

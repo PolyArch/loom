@@ -1022,10 +1022,13 @@ llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
   return growth;
 }
 
-llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
-    HardwareRecipeGrowth growth, llvm::ArrayRef<ArtifactRootReference> evidence,
-    const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+llvm::Expected<HardwareRecipeMaterializationOutcome>
+materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
+                                llvm::ArrayRef<ArtifactRootReference> evidence,
+                                const JointHardwareReopenRequest &request,
+                                dse::SiteScheduler &scheduler,
+                                const ArtifactStore &artifacts,
+                                const BlobStore &blobs) {
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -1068,6 +1071,11 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
   const dse::CompletedDsePlanExecution &available =
       availableExecution(execution->planExecution);
   const auto outputs = available.resolve({0, 0});
+  if (outputs.empty() && std::holds_alternative<IncompleteDsePlanExecution>(
+                             execution->planExecution))
+    return HardwareRecipeMaterializationOutcome{
+        IncompleteHardwareRecipeMaterialization{
+            std::move(execution->invocationManifest)}};
   if (outputs.size() != 1 || available.generateInvocations().size() != 1)
     return invalid("uniform recipe growth did not publish one System");
   auto system = fabric::importEntireFabricRoot(outputs.front(), artifacts);
@@ -1076,22 +1084,22 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
   if (system->view().rootKind() != fabric::FabricRootKind::System)
     return invalid("uniform recipe growth published a non-System root");
   growth.config.dse.planNodes.clear();
-  return MaterializedHardwareCandidate{
-      outputs.front(),
-      std::move(growth.config),
-      std::nullopt,
-      {},
-      std::nullopt,
-      {},
-      growth.resizedInstructionStoreCount,
-      growth.maximumInstructionStoreCapacity,
-      growth.addedContexts,
-      growth.resultingContexts,
-      growth.addedGateways,
-      growth.resultingGateways,
-      growth.addedAccCores,
-      growth.resultingAccCores,
-      std::move(execution->invocationManifest)};
+  return HardwareRecipeMaterializationOutcome{
+      MaterializedHardwareCandidate{outputs.front(),
+                                    std::move(growth.config),
+                                    std::nullopt,
+                                    {},
+                                    std::nullopt,
+                                    {},
+                                    growth.resizedInstructionStoreCount,
+                                    growth.maximumInstructionStoreCapacity,
+                                    growth.addedContexts,
+                                    growth.resultingContexts,
+                                    growth.addedGateways,
+                                    growth.resultingGateways,
+                                    growth.addedAccCores,
+                                    growth.resultingAccCores,
+                                    std::move(execution->invocationManifest)}};
 }
 
 namespace {

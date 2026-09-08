@@ -3488,6 +3488,13 @@ compatible occurrence is rejected rather than silently homogenized. There is no
 mapper-side Fabric mutation, local occurrence exception, or ordinal-based
 attachment rewrite.
 
+Recipe generation remains a bounded DSE invocation. If it ends Incomplete
+without publishing a System, hardware reopening retains that exact invocation
+manifest and stops the attempted extension. The original Mapping failure and
+the generator's typed incomplete outcome remain available for diagnosis; no
+child System or Mapping attempt is invented. A completed generator must still
+publish exactly one System, and any retained child must pass normal import.
+
 When a child changes only the AccCore count, the target Module roots are
 identity-equal to the parent targets. The controller binds the already
 verified immutable SpatialMapping frontier directly to the new System
