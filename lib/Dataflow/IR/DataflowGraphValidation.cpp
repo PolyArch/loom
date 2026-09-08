@@ -316,6 +316,8 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
     return covers(carry.getInit()) || covers(carry.getCarry());
   }
+  if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
+    return covers(invariant.getInit());
   if (mlir::Value done = dataflow::semantics::getMemoryActorDone(def)) {
     return witness == done &&
            covers(dataflow::semantics::getMemoryActorControl(def));
