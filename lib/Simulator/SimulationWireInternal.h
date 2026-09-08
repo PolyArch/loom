@@ -297,6 +297,8 @@ struct RuntimeObjectBindingKey {
 llvm::Error validateRuntimeMemoryObjectStructure(
     llvm::ArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope);
 
+// Requires validated object structure. Consistent ordinal permutation
+// preserves byte states and pointer storage ranges.
 llvm::Error canonicalizeRuntimeMemoryPointers(
     llvm::MutableArrayRef<RuntimeMemoryObject> objects, mlir::Operation *scope);
 

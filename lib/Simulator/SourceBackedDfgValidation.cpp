@@ -554,6 +554,9 @@ llvm::Expected<std::vector<RuntimeMemoryObject>> canonicalizeNativeFinalObjects(
     }
   }
   if (llvm::Error error =
+          detail::validateRuntimeMemoryObjectStructure(objects, layoutScope))
+    return std::move(error);
+  if (llvm::Error error =
           detail::canonicalizeRuntimeMemoryPointers(objects, layoutScope))
     return std::move(error);
   return objects;
