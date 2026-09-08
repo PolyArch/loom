@@ -3,7 +3,6 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
-#include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
@@ -229,8 +228,8 @@ bool sameWrites(llvm::ArrayRef<loom::sim::SpatialInvocationMemoryWrite> lhs,
 llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     std::size_t ordinal, const ObservedSpatialInvocation &dfg,
     const ObservedSpatialInvocation &cgra,
-    const loom::deployment::FinalizedDeployment &deployment,
-    const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
+    const loom::deployment::DeploymentSpatialLaunchProjection &launchProjection,
+    const loom::ArtifactStore &artifacts) {
   if (dfg.dispatchTargetOrdinal != cgra.dispatchTargetOrdinal ||
       dfg.accCoreReference != cgra.accCoreReference ||
       dfg.executionContextKey != cgra.executionContextKey ||
@@ -323,8 +322,7 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
       dfgInputs.runtimeInput, artifacts);
   if (!runtimeReference)
     return runtimeReference.takeError();
-  auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(
-      deployment, graph, dfgWire.denseCoordinates, artifacts, blobs);
+  auto selection = launchProjection.select(graph, dfgWire.denseCoordinates);
   if (!selection)
     return selection.takeError();
   const std::string selectedAccCoreReference =

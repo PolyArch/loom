@@ -1697,13 +1697,22 @@ llvm::Error run() {
     }
     if (dfg->spatialInvocations.size() != cgra->spatialInvocations.size())
       return invalid("System engines observed different launch counts");
+    std::optional<loom::deployment::DeploymentSpatialLaunchProjection>
+        launchProjection;
+    if (!dfg->spatialInvocations.empty()) {
+      auto projected = loom::deployment::DeploymentSpatialLaunchProjection::get(
+          deployment, artifacts, blobs);
+      if (!projected)
+        return projected.takeError();
+      launchProjection.emplace(std::move(*projected));
+    }
     std::vector<SpatialInvocationCase> spatialInvocations;
     spatialInvocations.reserve(dfg->spatialInvocations.size());
     for (std::size_t ordinal = 0; ordinal != dfg->spatialInvocations.size();
          ++ordinal) {
       auto invocation = materializeSpatialInvocationCase(
           ordinal, dfg->spatialInvocations[ordinal],
-          cgra->spatialInvocations[ordinal], deployment, artifacts, blobs);
+          cgra->spatialInvocations[ordinal], *launchProjection, artifacts);
       if (!invocation)
         return invocation.takeError();
       spatialInvocations.push_back(std::move(*invocation));

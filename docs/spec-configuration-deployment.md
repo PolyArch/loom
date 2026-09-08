@@ -679,6 +679,17 @@ Deployment-global direct System images and the local images for its exact
 SpatialCore occurrence, but no local image for another occurrence. The whole
 child is absent exactly when the imported SpatialMapping set is empty.
 
+Concrete workload points consume one transient
+`DeploymentSpatialLaunchProjection` per Deployment import invocation. Its
+construction strictly imports the SystemMapping, Dataflow, hardware bindings,
+ConfigurationABI, and configuration images, and joins the local images to
+their SpatialCore occurrences. Point selection then uses the Mapping-owned
+execution-context projection to choose the exact occurrence and SpatialMapping.
+Grid cardinality does not multiply hardware or image validation. This
+projection owns no persistent identity or cross-store cache; a fresh import
+invocation establishes its own dependency proof. The Spatial engine receives
+occurrence-local images, while the System provider owns direct System images.
+
 `AdmissionImage.payload` is:
 
 ```text
