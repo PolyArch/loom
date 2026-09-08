@@ -205,7 +205,7 @@ publishApplicationWorkloads(
           launch.rootThreadLaunch != root)
         return;
       auto coordinates = view.enumerateStaticDenseCoordinates(
-          launch, runtime::gem5MaximumDynamicSpatialInvocations, entrySymbol);
+          launch, runtime::gem5MaximumStaticDispatchEntries, entrySymbol);
       if (!coordinates) {
         workloadError = coordinates.takeError();
         return;

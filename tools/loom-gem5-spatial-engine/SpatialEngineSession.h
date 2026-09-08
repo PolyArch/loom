@@ -34,7 +34,6 @@ struct SpatialSessionEntry final {
 struct SpatialEngineLimits final {
   std::uint64_t maximumWork;
   std::uint64_t ticksPerCycle;
-  std::uint64_t maximumInvocations;
 };
 
 class SpatialEngineSession final {

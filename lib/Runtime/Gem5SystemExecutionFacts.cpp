@@ -697,7 +697,7 @@ deriveFactsUncached(const EvaluationRequest &request,
   });
   for (const dataflow::RootedGraphLaunchRef &graph : graphs) {
     auto coordinates = dataflowView.enumerateStaticDenseCoordinates(
-        graph, gem5MaximumDynamicSpatialInvocations);
+        graph, gem5MaximumStaticDispatchEntries);
     if (!coordinates)
       return coordinates.takeError();
     if (!*coordinates || (*coordinates)->empty())

@@ -87,7 +87,6 @@ private:
   LoomSpatialEngineSession *engineSession;
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;
-  const std::uint64_t maximumInvocations;
   const bool collectPerformance;
 
   State state = State::Idle;
@@ -115,7 +114,6 @@ private:
   /// servicing. They are reclaimed at the next boundary or completion.
   std::vector<std::unique_ptr<MemoryTransaction>> retiredMemoryTransactions;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
-  loom::runtime::Gem5BridgeResultCollection completedResults;
   std::uint64_t publishedResultBytes = 0;
   std::optional<std::chrono::steady_clock::time_point> engineWaitStarted;
 

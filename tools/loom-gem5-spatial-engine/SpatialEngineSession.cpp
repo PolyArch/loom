@@ -1127,9 +1127,10 @@ llvm::Error SpatialEngineSession::Impl::acceptInput(
   if (message.sequence != bridge.nextSequence)
     return invalid("causal input has a stale or foreign invocation sequence");
   if (message.kind == loom::runtime::Gem5BridgeMessageKind::SpatialLaunch) {
-    if (bridge.active || bridge.nextSequence >= limits.maximumInvocations)
-      return invalid(
-          "bridge launch overlaps an invocation or exceeds its limit");
+    if (bridge.active)
+      return invalid("bridge launch overlaps an active invocation");
+    if (bridge.nextSequence == std::numeric_limits<std::uint64_t>::max())
+      return invalid("bridge invocation sequence is exhausted");
     auto invocation = startInvocation(message);
     if (!invocation)
       return invocation.takeError();

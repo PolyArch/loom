@@ -263,7 +263,7 @@ deriveApplicationSpatialInvocationPlanImpl(
     if (!shapes)
       return shapes.takeError();
     auto coordinates = dataflow.enumerateStaticDenseCoordinates(
-        graphs.front(), runtime::gem5MaximumDynamicSpatialInvocations,
+        graphs.front(), runtime::gem5MaximumStaticDispatchEntries,
         entrySymbol);
     if (!coordinates)
       return coordinates.takeError();

@@ -1209,7 +1209,7 @@ An optimization-level comparison changes only that build setting and preserves
 all strict inputs and outputs. Source, plan, command and auxiliary-tool
 identities belong to the frozen invocation. The mapped simulator descriptor
 `loom.mapped_rtl.simulator.v2` and the shared-flow System descriptor
-`loom.gem5.system_rtl.v2` invalidate InvocationCache entries produced by the
+`loom.gem5.system_rtl.v3` invalidate InvocationCache entries produced by the
 old compilation policy. Diagnostic verbosity retains its existing cache
 treatment because it changes no functional result or transport receipt.
 

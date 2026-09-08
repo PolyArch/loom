@@ -608,7 +608,7 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Array *dispatchTargets =
       dispatch ? dispatch->getArray("targets") : nullptr;
   const auto schema = object ? object->getString("schema") : std::nullopt;
-  if (!schema || *schema != "loom.gem5_system_projection.15" || !bridges ||
+  if (!schema || *schema != loom::runtime::gem5SystemProjectionSchema || !bridges ||
       bridges->empty() || !dispatchTargets)
     return invalid("gem5 projection contains no Spatial bridge");
 

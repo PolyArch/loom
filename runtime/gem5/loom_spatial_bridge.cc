@@ -92,7 +92,6 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       bridgeSessionOrdinal(params.session_ordinal),
       engineSession(params.engine_session), resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
-      maximumInvocations(params.max_invocations),
       collectPerformance(params.collect_performance),
       launchEvent(
           [this] { runAccounted([this] { fetchStaticLaunch(); }); },
@@ -117,8 +116,6 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
   panic_if(maximumMessageBytes >
                static_cast<std::uint64_t>(std::numeric_limits<int>::max()),
            "LoomSpatialBridge message limit exceeds the DMA size domain");
-  panic_if(maximumInvocations == 0,
-           "LoomSpatialBridge invocation limit must be positive");
   panic_if(publishResults() != ResultPublication::Published,
            "LoomSpatialBridge could not publish its empty result");
 }
@@ -236,8 +233,8 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
       fail(3, "launch requested on a bridge without an executable session");
     else if (state != State::Idle && state != State::Complete)
       fail(3, "launch requested while the bridge is not idle");
-    else if (nextSequence >= maximumInvocations)
-      fail(20, "launch count exceeds the bridge session limit");
+    else if (nextSequence == std::numeric_limits<std::uint64_t>::max())
+      fail(20, "bridge invocation sequence is exhausted");
     else if (!launchFitsMessageLimit(staticLaunchSize, invocationSize,
                                      maximumMessageBytes)) {
       fail(17, "launch payload size is outside the bridge limit");
@@ -508,9 +505,9 @@ void LoomSpatialBridge::completeChannelCommit() {
 }
 
 LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
-  if (completedResults.results.empty()) {
+  if (publishedResultBytes == 0) {
     const std::vector<std::uint8_t> header =
-        loom::runtime::encodeGem5BridgeResultCollection(completedResults);
+        loom::runtime::encodeGem5BridgeResultCollection({});
     if (header.size() > maximumMessageBytes)
       return ResultPublication::TooLarge;
     std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
@@ -528,7 +525,9 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
   // launch appends its own member to the result file, so the collection
   // grows with the launch count while the staging memory does not.
   const std::vector<std::uint8_t> member =
-      loom::runtime::encodeGem5BridgeResult(completedResults.results.back());
+      loom::runtime::encodeGem5BridgeResult(
+          {pendingCompletion.status, lastCompletionTick, nextSequence,
+           std::move(pendingCompletion.result)});
   if (member.size() > maximumMessageBytes)
     return ResultPublication::TooLarge;
   std::fstream output(resultPath,
@@ -543,7 +542,7 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
   std::vector<std::uint8_t> count;
   count.reserve(sizeof(std::uint64_t));
   loom::runtime::detail::appendGem5BridgeU64(count,
-                                             completedResults.results.size());
+                                             nextSequence + 1);
   output.seekp(loom::runtime::gem5BridgeResultCollectionMagic.size(),
                std::ios::beg);
   output.write(reinterpret_cast<const char *>(count.data()),
@@ -552,21 +551,13 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
   if (!output)
     return ResultPublication::WriteFailed;
   publishedResultBytes += member.size();
-  // The member is durable in the file; only its sequence position stays.
-  std::vector<std::uint8_t>().swap(completedResults.results.back().result);
   return ResultPublication::Published;
 }
 
 void LoomSpatialBridge::completeInvocation() {
   lastCompletionTick = curTick();
-  panic_if(completedResults.results.size() != nextSequence,
-           "LoomSpatialBridge result sequence is not dense");
-  completedResults.results.push_back({pendingCompletion.status,
-                                      lastCompletionTick, nextSequence,
-                                      pendingCompletion.result});
   const ResultPublication publication = publishResults();
   if (publication != ResultPublication::Published) {
-    completedResults.results.pop_back();
     switch (publication) {
     case ResultPublication::TooLarge:
       fail(21, "normalized result collection exceeds the bridge limit");
