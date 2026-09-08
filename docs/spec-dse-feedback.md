@@ -1710,14 +1710,16 @@ proposal from each parent in canonical input order. Typed refusals and no-ops
 consume attempts normally. When a logical thread domain is required, proven
 tiled-prefix terminal searches precede direct parallelization. Larger tile
 factors come first to amortize activation overhead; equal factors retain the
-parent's canonical decision order. Direct decisions retain their canonical
-order. Each prefix and its
+parent's canonical decision order. A tiled prefix composes only with direct
+parallelization of its transformed outer tile roots, preserving the point
+loops inside each tile. Point-loop and whole-nest parallelization remain in
+the direct search phase. Direct decisions retain their canonical order. Each prefix and its
 independently enumerated terminal proof form one search step, with every
 materialization charged separately. Exhausted grants retain finalized outputs
 and report semantic incompleteness; one parent's rejected alternatives must
 not consume later rounds before the other parents receive their current turn.
 The implementation semantic identity is
-`loom.compiler.structured_schedule.generator.v18`.
+`loom.compiler.structured_schedule.generator.v21`.
 
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact
