@@ -218,6 +218,10 @@ SatParameters parameters(std::int32_t randomSeed) {
   // presolve transformation dominates large repair models; proof obligations
   // and the deterministic solve budget remain unchanged.
   result.set_merge_at_most_one_work_limit(0);
+  // Canonical extraction fixes every typed decision after the objective proof.
+  // Rebuilding symmetry graphs for these successive models adds search cost
+  // without replacing any part of that proof or canonicalization protocol.
+  result.set_symmetry_level(0);
   // A convergence budget per solve. Deterministic time is an instruction-count
   // clock, so the same model and seed exhaust it identically on every host; an
   // exhausted solve returns UNKNOWN or FEASIBLE without the required proof.

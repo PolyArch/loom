@@ -439,9 +439,9 @@ The Spatial provider uses the required in-process `CpSat_3_0` adapter from the
 pinned OR-Tools v9.15 source commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`.
 
-Every canonical solve disables presolve probing and optional at-most-one
-clique merging, retaining the original constraints, and runs under a fixed
-deterministic-time budget of 2.0. The initial mutation-count proof orders its
+Every canonical solve disables presolve probing, optional at-most-one
+clique merging, and symmetry-graph construction, retaining the original
+constraints, and runs under a fixed deterministic-time budget of 2.0. The initial mutation-count proof orders its
 objective and the Boolean terms that define it before canonical physical
 choices; canonical mixed-radix extraction restores typed decision-key order
 after fixing the proven objective. The budget is an instruction-count clock,
