@@ -765,15 +765,29 @@ finishCgra(loom::sim::CgraExecutionSession &session,
       stream << "]";
     }
     if (outcome->closedWaitSet)
-      for (const auto &action : outcome->closedWaitSet->physicalActions)
+      for (const auto &action : outcome->closedWaitSet->physicalActions) {
         stream << ", physical_action={action=" << action.actionOrdinal
                << ", occurrence=" << action.occurrenceOrdinal
-               << ", client=" << static_cast<unsigned>(action.clientKind)
-               << ", granted=" << action.granted
+               << ", client=" << static_cast<unsigned>(action.clientKind);
+        if (action.semanticActorOrdinal)
+          stream << ", actor=" << *action.semanticActorOrdinal;
+        if (action.semanticOccurrenceOrdinal)
+          stream << ", actor_occurrence=" << *action.semanticOccurrenceOrdinal;
+        stream << ", granted=" << action.granted
                << ", has_commit=" << action.hasCommit
                << ", requires_causal_release=" << action.requiresCausalRelease
                << ", intrinsic_release=" << action.intrinsicReleaseReached
-               << ", causal_release=" << action.causalReleaseReached << "}";
+               << ", causal_release=" << action.causalReleaseReached;
+        for (const auto &wait : action.capacityWaits)
+          stream << ", capacity_wait={holder=" << wait.holdingActionOrdinal
+                 << ", occurrence=" << wait.holdingOccurrenceOrdinal
+                 << ", dimension=" << wait.dimensionOrdinal
+                 << ", capacity=" << wait.capacity
+                 << ", occupancy=" << wait.occupancy
+                 << ", requested=" << wait.requestedAmount
+                 << ", held=" << wait.heldAmount << "}";
+        stream << "}";
+      }
     return invalid(diagnostic);
   }
   if (performanceProfile)
