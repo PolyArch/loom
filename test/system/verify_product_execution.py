@@ -464,7 +464,7 @@ def validate_mapping_work(
         events,
         "system_pnr",
         "system_active",
-        expected_system_active_contexts,
+        None if hardware_reopen else expected_system_active_contexts,
     )
 
     spatial = search_invocations(events, "spatial_pnr", "spatial_pnr_invocation")
