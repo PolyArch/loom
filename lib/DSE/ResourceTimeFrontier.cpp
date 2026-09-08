@@ -43,6 +43,7 @@ struct Dependency final {
   std::size_t consumer = 0;
   pnr::ResourceTimeReadinessKind readiness =
       pnr::ResourceTimeReadinessKind::Completion;
+  std::uint64_t minimumReadinessLatency = 0;
 };
 
 struct FrozenInput final {
@@ -76,7 +77,6 @@ struct SearchState final {
   std::vector<ResourceTimeActionDelta> actions;
   std::vector<ResourceTimeHintState> snapshots;
   std::uint64_t lowerBound = 0;
-  std::uint64_t minimumRemainingResourceWork = 0;
   bool lowerBoundInitialized = false;
   std::uint64_t peakConcurrentRegions = 0;
   std::uint64_t totalAllocatedResourceTime = 0;
@@ -225,56 +225,40 @@ retainedHintBytes(llvm::ArrayRef<ResourceTimeScheduleHint> hints) {
   return bytes;
 }
 
-std::uint64_t optimisticLowerBound(const FrozenInput &input,
-                                   const SearchState &state,
-                                   llvm::ArrayRef<std::uint64_t> capacity) {
-  std::vector<std::uint64_t> remaining(input.regions.size(), 0);
-  for (std::size_t region = 0; region != input.regions.size(); ++region) {
-    if (state.completed[region])
-      continue;
-    const auto active =
-        llvm::find_if(state.active, [&](const ActiveRegion &row) {
-          return row.region == region;
-        });
-    remaining[region] = active == state.active.end()
-                            ? input.minimumDurations[region]
-                        : active->completionTime > state.time
-                            ? active->completionTime - state.time
-                            : 0;
-  }
-
-  std::vector<std::uint64_t> critical(input.regions.size(), 0);
-  for (std::size_t region : input.reverseTopologicalOrder) {
-    std::uint64_t successor = 0;
-    for (std::size_t edge : input.outgoingDependencies[region])
-      successor =
-          std::max(successor, critical[input.dependencies[edge].consumer]);
-    critical[region] = llvm::checkedAddUnsigned(remaining[region], successor)
-                           .value_or(std::numeric_limits<std::uint64_t>::max());
-  }
-  const std::uint64_t criticalPath =
-      critical.empty() ? 0
-                       : *std::max_element(critical.begin(), critical.end());
-
-  std::uint64_t totalWork = 0;
-  for (std::size_t region = 0; region != input.regions.size(); ++region) {
-    if (state.completed[region])
-      continue;
-    const auto sum =
-        llvm::checkedAddUnsigned(totalWork, input.minimumResourceWork[region]);
-    if (!sum) {
-      totalWork = std::numeric_limits<std::uint64_t>::max();
-      break;
-    }
-    totalWork = *sum;
+std::uint64_t
+remainingResourceWorkLowerBound(const FrozenInput &input,
+                                const SearchState &state,
+                                llvm::ArrayRef<std::uint64_t> capacity) {
+  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t work = 0;
+  for (std::size_t region = 0; region != input.regions.size(); ++region)
+    if (!state.started[region])
+      work = llvm::checkedAddUnsigned(work, input.minimumResourceWork[region])
+                 .value_or(maximum);
+  for (const ActiveRegion &active : state.active) {
+    const auto &point = input.regions[active.region].speedupCurve[active.point];
+    const auto remaining =
+        llvm::checkedMulUnsigned(active.completionTime - state.time,
+                                 allocationMagnitude(point.resourceUnits));
+    work = llvm::checkedAddUnsigned(work, remaining.value_or(maximum))
+               .value_or(maximum);
   }
   const std::uint64_t totalCapacity = allocationMagnitude(capacity);
-  const std::uint64_t workBound =
-      totalCapacity == 0
-          ? std::numeric_limits<std::uint64_t>::max()
-          : totalWork / totalCapacity + (totalWork % totalCapacity != 0);
-  return llvm::checkedAddUnsigned(state.time, std::max(criticalPath, workBound))
-      .value_or(std::numeric_limits<std::uint64_t>::max());
+  if (totalCapacity == 0)
+    return maximum;
+  const std::uint64_t duration =
+      work / totalCapacity + (work % totalCapacity != 0);
+  return llvm::checkedAddUnsigned(state.time, duration).value_or(maximum);
+}
+
+std::uint64_t initialLowerBound(const FrozenInput &input,
+                                const SearchState &state,
+                                llvm::ArrayRef<std::uint64_t> capacity) {
+  const auto &tails = input.minimumSuccessorTails;
+  const std::uint64_t criticalPath =
+      tails.empty() ? 0 : *std::max_element(tails.begin(), tails.end());
+  return std::max(criticalPath,
+                  remainingResourceWorkLowerBound(input, state, capacity));
 }
 
 std::uint64_t
@@ -292,29 +276,25 @@ incrementalLowerBound(const FrozenInput &input, const SearchState &parent,
         result, candidate.value_or(std::numeric_limits<std::uint64_t>::max()));
   };
   for (const ActiveRegion &active : state.active) {
-    const std::uint64_t tail =
-        input.minimumSuccessorTails[active.region] >=
-                input.minimumDurations[active.region]
-            ? input.minimumSuccessorTails[active.region] -
-                  input.minimumDurations[active.region]
-            : 0;
-    const auto candidate =
-        llvm::checkedAddUnsigned(active.completionTime, tail);
-    result = std::max(
-        result, candidate.value_or(std::numeric_limits<std::uint64_t>::max()));
+    result = std::max(result, active.completionTime);
+    for (std::size_t edge : input.outgoingDependencies[active.region]) {
+      if (state.dependencySatisfied[edge])
+        continue;
+      const Dependency &dependency = input.dependencies[edge];
+      const std::uint64_t releaseTime =
+          dependency.readiness == pnr::ResourceTimeReadinessKind::Completion
+              ? active.completionTime
+              : *active.tokenTime;
+      const auto candidate = llvm::checkedAddUnsigned(
+          releaseTime, input.minimumSuccessorTails[dependency.consumer]);
+      result = std::max(result, candidate.value_or(
+                                    std::numeric_limits<std::uint64_t>::max()));
+    }
   }
   for (std::size_t region : changedRegions)
     includeRegion(region);
-  const std::uint64_t totalCapacity = allocationMagnitude(capacity);
-  if (totalCapacity != 0) {
-    const std::uint64_t workBound =
-        state.minimumRemainingResourceWork / totalCapacity +
-        (state.minimumRemainingResourceWork % totalCapacity != 0);
-    const auto candidate = llvm::checkedAddUnsigned(state.time, workBound);
-    result = std::max(
-        result, candidate.value_or(std::numeric_limits<std::uint64_t>::max()));
-  }
-  return result;
+  return std::max(result,
+                  remainingResourceWorkLowerBound(input, state, capacity));
 }
 
 ResourceTimeHintState makeSnapshot(const FrozenInput &input,
@@ -372,8 +352,7 @@ bool temporalHintLess(const ResourceTimeScheduleHint &lhs,
                   rhs.totalAllocatedResourceTime);
 }
 
-std::uint64_t
-totalAdmittedResourceUnits(const ResourceTimeScheduleHint &hint) {
+std::uint64_t totalAdmittedResourceUnits(const ResourceTimeScheduleHint &hint) {
   std::uint64_t total = 0;
   for (std::size_t index = 0; index != hint.actions.size(); ++index) {
     const ResourceTimeActionDelta &action = hint.actions[index];
@@ -592,19 +571,27 @@ freezeInput(llvm::ArrayRef<ArtifactRootReference> resourceClasses,
         return invalid("dependency references a foreign or identical region");
       if (!seen.emplace(producer->second, dependency.readiness).second)
         return invalid("region has a duplicate dependency");
+      std::uint64_t minimumReadinessLatency =
+          input.minimumDurations[producer->second];
+      if (dependency.readiness == pnr::ResourceTimeReadinessKind::FifoToken) {
+        minimumReadinessLatency = std::numeric_limits<std::uint64_t>::max();
+        for (const auto &point : regions[producer->second].speedupCurve) {
+          if (!point.firstTokenLatencyPicoseconds) {
+            unsupported = ResourceTimeFrontierIncompleteReason::Unsupported;
+            continue;
+          }
+          minimumReadinessLatency =
+              std::min(minimumReadinessLatency,
+                       pointDuration(point) - point.executionTimePicoseconds +
+                           *point.firstTokenLatencyPicoseconds);
+        }
+      }
       const std::size_t edge = input.dependencies.size();
-      input.dependencies.push_back(
-          {producer->second, indexed.index(), dependency.readiness});
+      input.dependencies.push_back({producer->second, indexed.index(),
+                                    dependency.readiness,
+                                    minimumReadinessLatency});
       input.outgoingDependencies[producer->second].push_back(edge);
       input.incomingDependencies[indexed.index()].push_back(edge);
-      if (dependency.readiness == pnr::ResourceTimeReadinessKind::FifoToken) {
-        const bool supported = llvm::all_of(
-            regions[producer->second].speedupCurve, [](const auto &point) {
-              return point.firstTokenLatencyPicoseconds.has_value();
-            });
-        if (!supported)
-          unsupported = ResourceTimeFrontierIncompleteReason::Unsupported;
-      }
     }
   }
 
@@ -647,9 +634,9 @@ freezeInput(llvm::ArrayRef<ArtifactRootReference> resourceClasses,
     std::uint64_t tail = input.minimumDurations[region];
     for (std::size_t edge : input.outgoingDependencies[region]) {
       const std::size_t consumer = input.dependencies[edge].consumer;
-      const auto candidate =
-          llvm::checkedAddUnsigned(input.minimumDurations[region],
-                                   input.minimumSuccessorTails[consumer]);
+      const auto candidate = llvm::checkedAddUnsigned(
+          input.dependencies[edge].minimumReadinessLatency,
+          input.minimumSuccessorTails[consumer]);
       tail = std::max(
           tail, candidate.value_or(std::numeric_limits<std::uint64_t>::max()));
     }
@@ -807,10 +794,6 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
   for (std::size_t region = 0; region != regions.size(); ++region) {
     if (frozen->incomingDependencies[region].empty())
       initial.ready.push_back(region);
-    initial.minimumRemainingResourceWork =
-        llvm::checkedAddUnsigned(initial.minimumRemainingResourceWork,
-                                 frozen->minimumResourceWork[region])
-            .value_or(std::numeric_limits<std::uint64_t>::max());
   }
   initial.snapshots.push_back(makeSnapshot(*frozen, initial));
 
@@ -839,7 +822,7 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
       {
         WorkTimer timer(accounting.estimates);
         state.lowerBound =
-            optimisticLowerBound(*frozen, state, policy.availableResourceUnits);
+            initialLowerBound(*frozen, state, policy.availableResourceUnits);
       }
       state.lowerBoundInitialized = true;
       ++accounting.estimates.consumed;
@@ -1022,24 +1005,9 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
           if (!completion)
             return invalid("schedule completion time overflows");
           std::optional<std::uint64_t> tokenTime;
-          if (point.firstTokenLatencyPicoseconds) {
-            const auto configurationAndState = llvm::checkedAddUnsigned(
-                point.configurationTimePicoseconds,
-                point.liveStateMigrationTimePicoseconds);
-            if (!configurationAndState)
-              return invalid("first-token prefix time overflows");
-            const auto prefix = llvm::checkedAddUnsigned(
-                *configurationAndState, point.hostTransferTimePicoseconds);
-            if (!prefix)
-              return invalid("first-token prefix time overflows");
-            const auto latency = llvm::checkedAddUnsigned(
-                *prefix, *point.firstTokenLatencyPicoseconds);
-            if (!latency)
-              return invalid("first-token time overflows");
-            tokenTime = llvm::checkedAddUnsigned(state.time, *latency);
-            if (!tokenTime)
-              return invalid("first-token event time overflows");
-          }
+          if (point.firstTokenLatencyPicoseconds)
+            tokenTime = *completion - point.executionTimePicoseconds +
+                        *point.firstTokenLatencyPicoseconds;
           child.active.push_back(
               {region, indexedPoint.index(), *completion, tokenTime, false});
           llvm::sort(child.active, [](const auto &lhs, const auto &rhs) {
@@ -1128,14 +1096,6 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
                 changedEdges.push_back(edge);
             const ResourceTimeSpeedupPoint &point =
                 frozen->regions[active.region].speedupCurve[active.point];
-            const std::uint64_t completedWork =
-                frozen->minimumResourceWork[active.region];
-            if (child.minimumRemainingResourceWork !=
-                std::numeric_limits<std::uint64_t>::max()) {
-              if (completedWork > child.minimumRemainingResourceWork)
-                return invalid("remaining resource-work underflowed");
-              child.minimumRemainingResourceWork -= completedWork;
-            }
             for (std::size_t resource = 0;
                  resource != child.usedResources.size(); ++resource)
               child.usedResources[resource] -= point.resourceUnits[resource];

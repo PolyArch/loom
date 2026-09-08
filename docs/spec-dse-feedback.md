@@ -4086,8 +4086,14 @@ partition count without that schedule remains an intermediate point.
 
 The event frontier computes its full graph lower bound once for the initial
 state. Each admitted admission/event child then updates the bound from frozen
-successor tails, active completion times, newly-ready regions, and remaining
-minimum resource work; it must not rescan the complete dependency graph. The
+successor tails, active dependency-release times, newly-ready regions, and
+remaining resource work; it must not rescan the complete dependency graph.
+Completion edges use producer duration, while FIFO-token edges use the
+configuration, migration, and transfer prefix plus first-token latency. An
+already released FIFO edge does not wait again for producer completion.
+Remaining work includes minimum work for unstarted regions and only the actual
+remaining duration times the selected allocation for active regions. Every
+state bound must be no greater than any feasible continuation makespan. The
 frontier ledger reports full lower-bound evaluations separately from
 incremental updates, and both are part of the deterministic state-work
 reconciliation.
