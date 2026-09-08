@@ -5,6 +5,7 @@
 #include "StructuredScheduleInternal.h"
 
 #include "Common/IndexWidth.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -707,9 +708,23 @@ applyVectorize(mlir::affine::AffineForOp loop,
   if (llvm::Error error =
           detail::validateStructuredVectorScheduleCoordinate(coordinate))
     return std::move(error);
+  const auto refused = [&](llvm::StringRef diagnostic) -> VectorizationAttempt {
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+          fields["operation"] = "structured_vectorization";
+          fields["diagnostic"] = diagnostic;
+          fields["vector_factor"] = coordinate.shape.front();
+          std::string text;
+          llvm::raw_string_ostream stream(text);
+          loop.print(stream);
+          fields["affine_loop"] = std::move(text);
+        });
+    return StructuredScopRefusalKind::ProviderMaterializationRejected;
+  };
   llvm::SmallVector<mlir::affine::LoopReduction> reductions;
   if (!mlir::affine::isLoopParallel(loop, &reductions))
-    return StructuredScopRefusalKind::ProviderMaterializationRejected;
+    return refused("Affine loop parallelism was not established");
   if ((coordinate.reductionSchedule == StructuredReductionSchedule::None) !=
       reductions.empty())
     return invalid("vector reduction coordinate differs from the source loop");
@@ -726,7 +741,7 @@ applyVectorize(mlir::affine::AffineForOp loop,
   mlir::Operation *successor = loop->getNextNode();
   std::vector<llvm::SmallVector<mlir::affine::AffineForOp, 2>> loops = {{loop}};
   if (mlir::failed(mlir::affine::vectorizeAffineLoopNest(loops, strategy)))
-    return StructuredScopRefusalKind::ProviderMaterializationRejected;
+    return refused("Affine vectorization did not materialize the coordinate");
 
   mlir::affine::AffineForOp replacement;
   mlir::Operation *operation =
