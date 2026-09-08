@@ -278,7 +278,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.10`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.12`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -310,7 +310,7 @@ The current descriptors are:
 
 ```text
 loom.system_pnr_search_domain.4.0
-loom.system_pnr.config.8.5
+loom.system_pnr.config.8.6
 ```
 
 The System config may carry a canonical root-keyed binding-partition intent.

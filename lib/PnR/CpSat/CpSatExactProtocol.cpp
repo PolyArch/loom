@@ -209,11 +209,15 @@ SatParameters parameters(std::int32_t randomSeed) {
   result.set_search_branching(SatParameters::FIXED_SEARCH);
   result.set_randomize_search(false);
   result.set_cp_model_presolve(true);
-  // FIXED_SEARCH over the canonical decision strategy does not consume the
-  // failed-literal information presolve probing computes, and probing
-  // dominated repair solve time on temporal fabrics. Level zero keeps the
-  // rest of presolve; the exact-protocol descriptors version this choice.
+  // Failed-literal probing dominated repair solve time on temporal fabrics.
+  // Level zero keeps the remaining presolve transformations; the protocol
+  // descriptors version this search choice.
   result.set_cp_model_probing_level(0);
+  // Keep the original at-most-one constraints instead of spending each
+  // canonical restart discovering larger equivalent cliques. This optional
+  // presolve transformation dominates large repair models; proof obligations
+  // and the deterministic solve budget remain unchanged.
+  result.set_merge_at_most_one_work_limit(0);
   // A convergence budget per solve. Deterministic time is an instruction-count
   // clock, so the same model and seed exhaust it identically on every host; an
   // exhausted solve returns UNKNOWN or FEASIBLE without the required proof.
