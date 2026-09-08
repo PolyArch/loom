@@ -39,6 +39,14 @@ struct CgraSimulationAttemptLimits final {
   std::optional<std::chrono::steady_clock::time_point> executionDeadline;
 };
 
+/// The event frames one CGRA replay of a case may spend when its DFG replay
+/// of the same case took `dfgCycles`. CGRA replay spends event frames on
+/// every physical action, traversal hop, and queue transition of a firing,
+/// so the grant grows with the exact DFG work and keeps a fixed base for
+/// small cases; a whole-loop region replays thousands of iterations in one
+/// case.
+std::uint64_t cgraReplayEventFrameGrant(std::uint64_t dfgCycles);
+
 /// Invocation-local host measurements for one in-process CGRA attempt. These
 /// observations are not Evaluation Evidence and never participate in request,
 /// candidate, Mapping, or cache identity.

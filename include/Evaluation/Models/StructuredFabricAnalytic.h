@@ -175,15 +175,26 @@ struct StructuredScopeActivityProjection final {
   std::uint64_t dynamicLeafExecutions = 0;
 };
 
-/// Projects dynamic activation and executable-leaf counts for exact source
-/// scopes in caller order. The projection validates the complete
-/// block-observation correspondence once and performs no candidate
-/// materialization, ranking, or target admission.
+/// Which program the projected scopes belong to. A source scope's leaves
+/// all execute on the host, so its work is bounded by the host leaf total;
+/// an owned Spatial region of a candidate program runs its leaves off the
+/// host, so that bound does not apply to it.
+enum class StructuredScopeActivityDomain : std::uint8_t {
+  SourceScopes,
+  OwnedRegions,
+};
+
+/// Projects dynamic activation and executable-leaf counts for exact scopes
+/// in caller order. The projection validates the complete block-observation
+/// correspondence once and performs no candidate materialization, ranking,
+/// or target admission.
 llvm::Expected<std::vector<StructuredScopeActivityProjection>>
 projectStructuredScopeActivity(
-    const ::loom::frontend::StructuredProgramCandidate &sourceProgram,
+    const ::loom::frontend::StructuredProgramCandidate &program,
     const ::loom::sim::NativeStructuredProgramObservations &sourceObservations,
-    llvm::ArrayRef<::loom::frontend::StructuredEntityRef> scopes);
+    llvm::ArrayRef<::loom::frontend::StructuredEntityRef> scopes,
+    StructuredScopeActivityDomain domain =
+        StructuredScopeActivityDomain::SourceScopes);
 
 /// Projects only exact activation multiplicities for arbitrary selected
 /// Structured scopes, including already-owned Spatial carriers. This shares

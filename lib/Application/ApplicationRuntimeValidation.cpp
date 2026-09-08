@@ -248,7 +248,8 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationReplay(
     return preparedCgra.takeError();
   auto cgraEvaluation =
       evaluation::models::evaluateCgraSimulationWithDiagnostics(
-          *preparedCgra, {kApplicationReplayExecutionLimit, deadline},
+          *preparedCgra,
+          {evaluation::models::cgraReplayEventFrameGrant(*dfgCycles), deadline},
           artifacts, blobs);
   if (!cgraEvaluation)
     return cgraEvaluation.takeError();

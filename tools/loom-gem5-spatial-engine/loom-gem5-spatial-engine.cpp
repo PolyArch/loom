@@ -68,7 +68,10 @@ llvm::cl::list<std::string>
     spatialMappingIdentities("spatial-mapping",
                              llvm::cl::desc("SpatialMapping ArtifactIdentity"));
 llvm::cl::opt<std::uint64_t>
-    maximumWork("maximum-work", llvm::cl::desc("Engine semantic work limit"),
+    maximumWork("maximum-work",
+                llvm::cl::desc("Engine semantic work limit: DFG wavefront "
+                               "steps per invocation, or CGRA event frames "
+                               "spent without retiring an actor"),
                 llvm::cl::init(100000));
 llvm::cl::opt<std::uint64_t>
     ticksPerCycle("ticks-per-cycle",

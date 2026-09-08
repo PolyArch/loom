@@ -253,6 +253,23 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
       return invalid("ready CGRA actor probe omitted its transition case");
     if (*selected->transitionCaseOrdinal >= binding.transitionCount)
       return invalid("CGRA probe selected an unknown transition case");
+    // A Temporal PE context shares its operation slot with its siblings and
+    // holds it until its results hand off, so it commits only when every
+    // result the selected case produces can leave now; the transport offers
+    // it again when capacity or sink readiness changes.
+    if (binding.temporalDispatchDomain && transport_) {
+      const auto handshake = llvm::find_if(
+          binding.semantic->handshakeCases, [&](const auto &candidateCase) {
+            return candidateCase.ordinal == *selected->transitionCaseOrdinal;
+          });
+      if (handshake == binding.semantic->handshakeCases.end())
+        return invalid("CGRA probe selected a case outside the actor schema");
+      if (!transport_->actorOutputsDeliverable(binding.semanticActorOrdinal,
+                                               handshake->activeResults)) {
+        transport_->noteOutputGated(binding.semanticActorOrdinal);
+        continue;
+      }
+    }
     const std::uint64_t transitionOrdinal =
         transitionByCase_[binding.transitionIndexOffset +
                           *selected->transitionCaseOrdinal];

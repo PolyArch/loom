@@ -515,7 +515,7 @@ finishCgra(loom::sim::CgraExecutionSession &session,
   if (outcome->state == loom::sim::SpatialExecutionSessionState::StoppedByLimit)
     return llvm::createStringError(
         std::make_error_code(std::errc::timed_out),
-        "CGRA engine reached its work limit: frames=" +
+        "CGRA engine retired no actor within its work limit: frames=" +
             std::to_string(outcome->counters.eventFrameCount) +
             ", actor_commits=" +
             std::to_string(outcome->counters.actorCommitCount) +
@@ -896,6 +896,11 @@ struct SpatialInvocation final {
 #else
   std::optional<Gem5CgraExternalMemoryProvider> externalMemory;
   std::optional<loom::sim::CgraExecutionSession> cgra;
+  /// The event frame count at the last observed actor retirement and that
+  /// retirement count: the work limit bounds frames spent without progress,
+  /// not the finite work of a long invocation.
+  std::uint64_t progressWork = 0;
+  std::uint64_t progressRetirements = 0;
   std::uint64_t activeWallNanoseconds = 0;
   std::uint64_t activeCpuNanoseconds = 0;
 #endif
@@ -1239,11 +1244,25 @@ SpatialEngineSession::Impl::advanceModel(SpatialInvocation &invocation) {
       return session.takeError();
     invocation.cgra.emplace(std::move(*session));
   }
-  const auto frames = invocation.cgra->counters().eventFrameCount;
-  if (frames < limits.maximumWork) {
-    auto advanced = invocation.cgra->advance(limits.maximumWork - frames);
+  // The work limit is a livelock guard: it bounds the frames spent without
+  // retiring an actor, so a long invocation that keeps retiring actors runs
+  // to completion while one that spins without progress stops.
+  while (true) {
+    const auto &before = invocation.cgra->counters();
+    const std::uint64_t sinceProgress =
+        before.eventFrameCount - invocation.progressWork;
+    if (sinceProgress >= limits.maximumWork)
+      break;
+    auto advanced = invocation.cgra->advance(limits.maximumWork - sinceProgress);
     if (!advanced)
       return advanced.takeError();
+    const auto &after = invocation.cgra->counters();
+    if (after.actorRetirementCount > invocation.progressRetirements) {
+      invocation.progressRetirements = after.actorRetirementCount;
+      invocation.progressWork = after.eventFrameCount;
+    }
+    if (*advanced != loom::sim::SpatialExecutionSessionState::Runnable)
+      break;
   }
   if (profile) {
     const auto finishedWall = std::chrono::steady_clock::now();

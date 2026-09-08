@@ -1469,4 +1469,18 @@ evaluateCgraSimulationWithAttemptProfile(
       prepared, std::move(limits), artifactStore, blobStore, true);
 }
 
+namespace {
+constexpr std::uint64_t kCgraReplayBaseEventFrames = 1'000'000;
+constexpr std::uint64_t kCgraReplayEventFramesPerDfgCycle = 512;
+} // namespace
+
+std::uint64_t cgraReplayEventFrameGrant(std::uint64_t dfgCycles) {
+  const std::uint64_t scaled =
+      dfgCycles <= std::numeric_limits<std::uint64_t>::max() /
+                       kCgraReplayEventFramesPerDfgCycle
+          ? dfgCycles * kCgraReplayEventFramesPerDfgCycle
+          : std::numeric_limits<std::uint64_t>::max();
+  return std::max(kCgraReplayBaseEventFrames, scaled);
+}
+
 } // namespace loom::evaluation::models

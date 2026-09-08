@@ -12,6 +12,10 @@
 
 namespace loom::runtime {
 
+/// Semantic work limit handed to every Spatial engine session: DFG wavefront
+/// steps per invocation, or CGRA event frames an invocation may spend without
+/// retiring an actor. It guards against livelock; finite work of any size
+/// completes under it.
 inline constexpr std::uint64_t gem5MaximumSpatialWork = 1'000'000;
 inline constexpr char gem5RootEventControlSocketPath[] =
     "outputs/system-root-event-control.sock";

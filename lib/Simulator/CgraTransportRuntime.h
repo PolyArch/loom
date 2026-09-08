@@ -210,6 +210,19 @@ public:
 
   bool actorSourcesAvailable(std::uint64_t semanticActorOrdinal) const;
 
+  /// Whether every named result of the actor can leave its source register
+  /// now: each result's first traversal hop has a claimable slot for the
+  /// result's channel, or its unbuffered sinks accept. A Temporal PE context
+  /// commits only with this finite output-delivery capacity available, so a
+  /// context whose result would wait never holds the shared operation slot.
+  /// `activeResults` are the result ordinals the selected transition case
+  /// produces; a result the case leaves inactive imposes no wait.
+  bool actorOutputsDeliverable(std::uint64_t semanticActorOrdinal,
+                               llvm::ArrayRef<std::uint32_t> activeResults) const;
+  /// Records an actor refused by `actorOutputsDeliverable`; released storage
+  /// capacity or changed sink readiness offers it again as a candidate.
+  void noteOutputGated(std::uint64_t semanticActorOrdinal);
+
   llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrameView &physicalFrame);
 
@@ -578,6 +591,9 @@ private:
   std::vector<std::uint64_t> channelArrivalCounts_;
   /// Indexed by in-flight transfer slot, including overlapping occurrences.
   llvm::SmallBitVector blocked_;
+  /// Actors waiting for output-delivery capacity before they may commit.
+  llvm::SmallBitVector outputGatedActors_;
+  void wakeOutputGated();
   std::vector<std::uint64_t> nextActionOccurrence_;
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>, ActionOwner>
       actionOwners_;
