@@ -315,6 +315,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   auto systemView = fabric::requireSystemRoot(system->view());
   if (!systemView)
     return systemView.takeError();
+  auto platformModel = evaluation::models::projectSystemPlatformModel(*system);
+  if (!platformModel)
+    return platformModel.takeError();
   auto analyticClockPeriodPicoseconds =
       evaluation::models::fabricLowConfidenceClockPeriodPicoseconds(*system);
   if (!analyticClockPeriodPicoseconds)
@@ -582,7 +585,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       auto computedProjection = dse::projectResourceTimeDataflow(
           dataflowView, *systemView, request.sourceInvocation.entrySymbol,
           planningRecord.estimatedRuntimePicoseconds,
-          planningRecord.launchEstimates, physicalModelSupport);
+          planningRecord.launchEstimates, &*platformModel,
+          physicalModelSupport);
       const std::uint64_t projectionElapsed =
           elapsedNanoseconds(projectionBegin);
       resourceTimeProjectionElapsedNanoseconds =

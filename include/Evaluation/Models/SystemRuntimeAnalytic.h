@@ -2,6 +2,7 @@
 #define LOOM_EVALUATION_MODELS_SYSTEMRUNTIMEANALYTIC_H
 
 #include "Dataflow/IR/DataflowStructuralRefs.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -26,9 +27,11 @@ struct SystemPlatformModel final {
   std::uint64_t memoryLatencyPicoseconds = 0;
   /// Acceptance service cost of one byte at the shared memory service.
   std::uint64_t memoryServicePicosecondsPerByte = 0;
-  /// Requests one SpatialCore may keep outstanding at the shared memory.
+  /// Line fills one SpatialCore may keep outstanding at the shared memory:
+  /// the miss-status entries of its access cache, capped by the endpoint.
   std::uint64_t accCoreOutstandingRequests = 0;
-  /// Bytes one outstanding SpatialCore request transfers.
+  /// Bytes one outstanding SpatialCore request transfers: one line of its
+  /// access cache.
   std::uint64_t accCoreRequestBytes = 0;
   /// Host-side cost of submitting one Spatial activation through Thread
   /// Dispatch; activations of one root serialize on the HostCore.
@@ -36,6 +39,10 @@ struct SystemPlatformModel final {
   /// Accelerator-side fixed cost of one activation: InstructionCore entry,
   /// bridge programming, and completion signalling, excluding the wire fetch.
   std::uint64_t launchFixedPicoseconds = 0;
+  /// Configuration payload one SpatialCore loads before its first launch:
+  /// the packed ConfigurationABI programming units of the System divided
+  /// over its AccCores.
+  std::uint64_t configurationBytesPerCore = 0;
 
   friend bool operator==(const SystemPlatformModel &lhs,
                          const SystemPlatformModel &rhs) {
@@ -49,12 +56,16 @@ struct SystemPlatformModel final {
            lhs.accCoreOutstandingRequests == rhs.accCoreOutstandingRequests &&
            lhs.accCoreRequestBytes == rhs.accCoreRequestBytes &&
            lhs.launchDispatchPicoseconds == rhs.launchDispatchPicoseconds &&
-           lhs.launchFixedPicoseconds == rhs.launchFixedPicoseconds;
+           lhs.launchFixedPicoseconds == rhs.launchFixedPicoseconds &&
+           lhs.configurationBytesPerCore == rhs.configurationBytesPerCore;
   }
 };
 
+/// Derives the platform model of one complete System root. The configuration
+/// payload comes from the packed ConfigurationABI of the exact Fabric, which
+/// is derived once per Fabric identity and memoized for the process.
 llvm::Expected<SystemPlatformModel>
-projectSystemPlatformModel(const fabric::FabricSystemRootView &system);
+projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot);
 
 /// Per-activation work of one static graph launch site, independent of the
 /// AccCore allocation. Activations count dynamic graph firings of the site
@@ -109,6 +120,12 @@ llvm::Expected<AnalyticLaunchDuration>
 estimateLaunchDuration(const SystemPlatformModel &platform,
                        const AnalyticLaunchEstimate &launch,
                        std::uint64_t accCores);
+
+/// Time to load the configuration payload into `accCores` SpatialCores that
+/// stream it concurrently through the shared memory service.
+llvm::Expected<std::uint64_t>
+estimateConfigurationLoadPicoseconds(const SystemPlatformModel &platform,
+                                     std::uint64_t accCores);
 
 /// Serialized-host residual: executable leaves outside Spatial ownership.
 llvm::Expected<std::uint64_t>

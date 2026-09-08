@@ -1611,8 +1611,9 @@ and event budgets are never cached as candidate-invariant state.
 The immutable plane is loaded once per configuration residency. The Bridge
 retains the descriptor and bytes of the static launch image it last fetched
 and reuses them while a launch names that exact address and size; it re-reads
-guest memory only when the descriptor changes, and a Bridge reset drops the
-residency. A residency statistic reports how many static launch images the
+guest memory only when the descriptor changes. A Bridge reset, which the
+AccCore issues before every launch, leaves the residency in place because the
+image is configuration state rather than launch state. A residency statistic reports how many static launch images the
 Bridge fetched. The image is immutable configuration state, so this is a
 residency of that state and not a cache of mutable guest memory; the engine's
 byte comparison of the immutable plane against the Deployment projection

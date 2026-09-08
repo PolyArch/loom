@@ -24,9 +24,9 @@ vecadd_memory(const int *restrict lhs, const int *restrict rhs,
 }
 
 int main(void) {
-  int lhs[VECTOR_LENGTH];
-  int rhs[VECTOR_LENGTH];
-  int result[VECTOR_LENGTH];
+  static int lhs[VECTOR_LENGTH];
+  static int rhs[VECTOR_LENGTH];
+  static int result[VECTOR_LENGTH];
   for (int index = 0; index < VECTOR_LENGTH; ++index) {
     lhs[index] = index;
     rhs[index] = index * LOOM_VECADD_MULTIPLIER + LOOM_VECADD_BIAS;

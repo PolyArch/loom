@@ -1,13 +1,24 @@
 #include "Evaluation/Models/SystemRuntimeAnalytic.h"
 
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/MemoryConsistencyContract.h"
 #include "Fabric/IR/MemoryServiceContract.h"
+#include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Runtime/Gem5SimulationBinding.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/MLIRContext.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <variant>
 
 namespace loom::evaluation::models {
@@ -79,6 +90,46 @@ clockPeriodPicoseconds(const fabric::FabricSystemRootView &system,
   return period;
 }
 
+/// Configuration payload bytes per AccCore, memoized by the immutable Fabric
+/// identity because the packed ConfigurationABI derivation is expensive and
+/// deterministic.
+llvm::Expected<std::uint64_t>
+configurationBytesPerCore(const fabric::FinalizedFabricRoot &fabricRoot,
+                          std::uint64_t accCoreCount) {
+  using Key = std::array<std::uint8_t, ArtifactIdentity::byteSize>;
+  static std::mutex mutex;
+  static std::map<Key, std::uint64_t> memo;
+  Key key{};
+  const auto bytes = fabricRoot.reference().artifact.bytes();
+  std::copy(bytes.begin(), bytes.end(), key.begin());
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (auto found = memo.find(key); found != memo.end())
+      return found->second;
+  }
+  mlir::DialectRegistry registry;
+  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto draft = hardware::derivePackedConfigurationABIDraft(fabricRoot, context);
+  if (!draft)
+    return draft.takeError();
+  std::uint64_t bits = 0;
+  for (const hardware::ProgrammingUnitDraft &unit : draft->programmingUnits) {
+    auto sum = checkedAdd(bits, unit.payloadBitCount, "configuration bits");
+    if (!sum)
+      return sum.takeError();
+    bits = *sum;
+  }
+  const std::uint64_t perCore =
+      ceilDiv(ceilDiv(bits, 8), std::max<std::uint64_t>(1, accCoreCount));
+  std::lock_guard<std::mutex> lock(mutex);
+  memo.try_emplace(key, perCore);
+  return perCore;
+}
+
 } // namespace
 
 llvm::StringRef toString(AnalyticLaunchBottleneck bottleneck) {
@@ -96,7 +147,11 @@ llvm::StringRef toString(AnalyticLaunchBottleneck bottleneck) {
 }
 
 llvm::Expected<SystemPlatformModel>
-projectSystemPlatformModel(const fabric::FabricSystemRootView &system) {
+projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
+  auto systemRoot = fabric::requireSystemRoot(fabricRoot.view());
+  if (!systemRoot)
+    return systemRoot.takeError();
+  const fabric::FabricSystemRootView &system = *systemRoot;
   const auto hosts = system.artifact().hostCoreOccurrences();
   if (hosts.size() != 1)
     return invalid("System runtime model requires exactly one HostCore");
@@ -152,22 +207,39 @@ projectSystemPlatformModel(const fabric::FabricSystemRootView &system) {
     beatBits = std::max(beatBits, declaration.serviceBeatWidthBits);
   if (beatBits < 8)
     return invalid("System memory service declares no service beat width");
-  platform.accCoreRequestBytes = beatBits / 8;
   if (rate.operationsPerWindow() == 0 || rate.windowTicks() == 0)
     return invalid("System memory service rate window is empty");
   auto windowPicoseconds =
       checkedMul(rate.windowTicks(), *period, "memory service window");
   if (!windowPicoseconds)
     return windowPicoseconds.takeError();
-  auto windowBytes = checkedMul(rate.operationsPerWindow(),
-                                platform.accCoreRequestBytes,
+  auto windowBytes = checkedMul(rate.operationsPerWindow(), beatBits / 8,
                                 "memory service window bytes");
   if (!windowBytes)
     return windowBytes.takeError();
   platform.memoryServicePicosecondsPerByte =
       std::max<std::uint64_t>(1, ceilDiv(*windowPicoseconds, *windowBytes));
+  // Every SpatialCore reaches the shared memory through its private access
+  // cache, so a request is one line fill and the miss-status entries bound
+  // the requests in flight; the endpoint's own outstanding limit still caps
+  // them. The most constrained AccCore bounds the model.
+  platform.accCoreRequestBytes = 0;
   platform.accCoreOutstandingRequests =
       std::max<std::uint64_t>(1, rate.maxOutstanding());
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const auto *access = system.spatialMemoryAccess(core);
+    if (!access)
+      return invalid("AccCore declares no Spatial memory access realization");
+    const std::uint64_t line = access->cache().lineBytes();
+    platform.accCoreRequestBytes = platform.accCoreRequestBytes == 0
+                                       ? line
+                                       : std::min(platform.accCoreRequestBytes,
+                                                  line);
+    platform.accCoreOutstandingRequests =
+        std::min<std::uint64_t>(platform.accCoreOutstandingRequests,
+                                std::max<std::uint32_t>(
+                                    1, access->cache().missStatusEntries()));
+  }
   if (const auto *bounded =
           std::get_if<::fabric::BoundedCompletion>(&rate.progress())) {
     auto progressPeriod =
@@ -214,7 +286,38 @@ projectSystemPlatformModel(const fabric::FabricSystemRootView &system) {
   if (!fixed)
     return fixed.takeError();
   platform.launchFixedPicoseconds = *fixed;
+  auto configuration =
+      configurationBytesPerCore(fabricRoot, platform.accCoreCount);
+  if (!configuration)
+    return configuration.takeError();
+  platform.configurationBytesPerCore = *configuration;
   return platform;
+}
+
+llvm::Expected<std::uint64_t>
+estimateConfigurationLoadPicoseconds(const SystemPlatformModel &platform,
+                                     std::uint64_t accCores) {
+  if (accCores == 0 || platform.configurationBytesPerCore == 0)
+    return std::uint64_t{0};
+  if (platform.accCoreOutstandingRequests == 0 ||
+      platform.accCoreRequestBytes == 0)
+    return invalid("platform model has no SpatialCore memory request shape");
+  auto bytes = checkedMul(platform.configurationBytesPerCore, accCores,
+                          "configuration payload");
+  if (!bytes)
+    return bytes.takeError();
+  auto service = checkedMul(*bytes, platform.memoryServicePicosecondsPerByte,
+                            "configuration service");
+  if (!service)
+    return service.takeError();
+  const std::uint64_t requests =
+      ceilDiv(platform.configurationBytesPerCore, platform.accCoreRequestBytes);
+  auto chain = checkedMul(ceilDiv(requests, platform.accCoreOutstandingRequests),
+                          platform.memoryLatencyPicoseconds,
+                          "configuration request chain");
+  if (!chain)
+    return chain.takeError();
+  return std::max(*service, *chain);
 }
 
 llvm::Expected<AnalyticLaunchDuration>

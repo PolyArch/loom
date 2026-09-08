@@ -199,6 +199,7 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     std::optional<std::uint64_t> estimatedRuntimePicoseconds = std::nullopt,
     llvm::ArrayRef<evaluation::models::AnalyticLaunchEstimate> launchEstimates =
         {},
+    const evaluation::models::SystemPlatformModel *platform = nullptr,
     ResourceTimeEstimateSupport physicalModelSupport =
         ResourceTimeEstimateSupport::Unsupported);
 

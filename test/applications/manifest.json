@@ -386,11 +386,11 @@
           "workload": "vecadd-memory-smoke",
           "runtime_input": "vecadd-memory-smoke-input",
           "cached_inputs": [],
-          "compiler_options": [],
+          "compiler_options": ["-DLOOM_VECADD_VECTOR_LENGTH=4096"],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-smoke.txt",
-            "sha256": "81125116a03032eff194e6f5d84b71fe3a53e2a703e3713a301e0f2e35d7286f",
+            "sha256": "9d1f4a74564203124cb454cbf2ddfd08c27ded28701a29964954077340a98b7d",
             "encoding": "utf8"
           },
           "profile": {
@@ -408,12 +408,12 @@
           "compiler_options": [
             "-DLOOM_VECADD_BIAS=1",
             "-DLOOM_VECADD_MULTIPLIER=3",
-            "-DLOOM_VECADD_VECTOR_LENGTH=96"
+            "-DLOOM_VECADD_VECTOR_LENGTH=8192"
           ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-validation.txt",
-            "sha256": "ed3f48cbd5d94d315ecc733d42e4cfb4add0963b2eece2c35d525a94cd45a221",
+            "sha256": "a9e1094db6a3e2f1384312135dd6b6bdfde9dec7ab2fbd0bbb938b8136961ebc",
             "encoding": "utf8"
           },
           "profile": {
@@ -431,12 +431,12 @@
           "compiler_options": [
             "-DLOOM_VECADD_BIAS=7",
             "-DLOOM_VECADD_MULTIPLIER=5",
-            "-DLOOM_VECADD_VECTOR_LENGTH=128"
+            "-DLOOM_VECADD_VECTOR_LENGTH=16384"
           ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-scale.txt",
-            "sha256": "3625877a095abc2d4c1871905210f5233931d387da8fed6cacf35660f650db46",
+            "sha256": "1905fc0439aad5ff87f4cf1752d70e81178de2cad993f0d00cc14cf78cf7a8a4",
             "encoding": "utf8"
           },
           "profile": {
