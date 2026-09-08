@@ -11,9 +11,11 @@
 # RUN:   -include %S/gapbs-pagerank-smoke.h \
 # RUN:   %loom_external/gapbs/src/pr.cc -o %t.pagerank
 # RUN: %t.pagerank | diff -u %S/gapbs-pagerank-expected-smoke.txt -
-# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
-# RUN:   -DLOOM_APPLICATION_HOST_EXECUTION=1 \
-# RUN:   %S/vecadd-memory/vecadd_memory.c -o %t.vecadd
+# RUN: %python -c "import json, subprocess; \
+# RUN:   app = next(a for a in json.load(open('%S/manifest.json'))['applications'] if a['identity'] == 'vecadd-memory'); \
+# RUN:   smoke = next(i for i in app['inputs'] if i['name'] == 'smoke'); \
+# RUN:   subprocess.run(['clang', '-std=c11', *app['build']['compiler_options'], *smoke['compiler_options'], \
+# RUN:     '-DLOOM_APPLICATION_HOST_EXECUTION=1', '%S/vecadd-memory/vecadd_memory.c', '-o', '%t.vecadd'], check=True)"
 # RUN: %t.vecadd | diff -u %S/vecadd-memory/expected-smoke.txt -
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   -Wno-unknown-pragmas -I%S/llama2c-kernels-include \
