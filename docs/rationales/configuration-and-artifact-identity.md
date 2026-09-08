@@ -22,6 +22,23 @@ through that same finalizer and still verifies stored bytes and publication
 integrity. Reopened stores continue to validate their external objects; neither
 the artifact format nor cold-read integrity depends on this reuse.
 
+## Why Reference Admission Outlives Retained Payloads
+
+DSE closure construction admits every exact semantic-input reference. It does
+not consume those inputs' bytes. Large replay portfolios exceed the store's
+retained-payload budget, so equating reference admission with byte retrieval
+repeatedly reads and hashes the whole portfolio as hardware candidates reopen.
+
+ArtifactStore owns one bounded table derived exclusively from validated reads.
+An entry records the exact identity and schema and may retain immutable bytes.
+Payload eviction preserves the admission record; record eviction discards both.
+`verifyReference` may reuse the record for the same immutable store domain.
+`get` needs retained bytes or a fresh validated read. `getStoredObject` always
+validates the actual stored preimage, and a newly opened store shares no prior
+admission records. Copies of a store share its domain and records. Publication
+alone never admits a reference through caller-provided bytes. These records
+are disposable process state and do not enter artifact or invocation identity.
+
 ## Why Configuration Is Resolved Once
 
 Loom has many components, but a component-local option parser or hidden default

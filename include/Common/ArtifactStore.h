@@ -7,10 +7,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <list>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -24,9 +21,7 @@ public:
   /// requires a durably provisioned root. Transient publication is restricted
   /// to invocation-owned workspaces with no crash-recovery contract.
   explicit ArtifactStore(llvm::StringRef root,
-                         Durability durability = Durability::Durable)
-      : root_(root.str()), durability_(durability),
-        verifiedReads_(std::make_shared<VerifiedReadCache>()) {}
+                         Durability durability = Durability::Durable);
 
   llvm::Expected<ArtifactIdentity>
   put(const ArtifactSchemaDescriptor &schema,
@@ -40,6 +35,11 @@ public:
   llvm::Expected<CanonicalSemanticBytes>
   get(const ArtifactRootReference &reference) const;
 
+  /// Admits an exact reference into this store's immutable content-addressed
+  /// domain. A bounded record of a validated read can satisfy later admission
+  /// after its bytes are evicted. A newly opened store validates from disk.
+  llvm::Error verifyReference(const ArtifactRootReference &reference) const;
+
   /// Returns the exact validated identity preimage stored under reference.
   /// This is the transport form used by content-addressed package projections;
   /// callers do not reconstruct schema framing around canonical semantic bytes.
@@ -51,28 +51,7 @@ private:
   getExact(llvm::StringRef schemaIdentity, SchemaVersion schemaVersion,
            const ArtifactIdentity &identity) const;
 
-  /// Bounded cache of reads whose stored identity preimage has already been
-  /// validated. Stored objects are content addressed and immutable, so a
-  /// validated read is a verified handle: a hit shares the immutable bytes
-  /// without rereading or rehashing, and never trusts caller-supplied bytes.
-  struct VerifiedRead final {
-    std::string schemaIdentity;
-    SchemaVersion schemaVersion;
-    CanonicalSemanticBytes bytes;
-  };
-  struct IdentityLess final {
-    bool operator()(const ArtifactIdentity &lhs,
-                    const ArtifactIdentity &rhs) const {
-      return lhs.bytes() < rhs.bytes();
-    }
-  };
-  static constexpr std::size_t verifiedReadByteBudget = 256u << 20;
-  struct VerifiedReadCache final {
-    std::mutex mutex;
-    std::map<ArtifactIdentity, VerifiedRead, IdentityLess> entries;
-    std::list<ArtifactIdentity> order;
-    std::size_t retainedBytes = 0;
-  };
+  struct VerifiedReadCache;
 
   std::string root_;
   Durability durability_;
