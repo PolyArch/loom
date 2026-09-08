@@ -95,6 +95,9 @@ findPreparedSoftwareImpl(const PreparedApplicationBuild &prepared,
   }
   if (!selected)
     return invalid("SystemMapping names a foreign prepared software owner");
+  if (!selected->invocationPlan ||
+      selected->invocationPlan->dataflow->identity() != dataflowIdentity)
+    return invalid("prepared software has no matching invocation plan");
   return selected;
 }
 
@@ -497,12 +500,7 @@ llvm::Expected<ApplicationRuntimeValidation> validateApplicationMappingRuntime(
       imported->dataflow->view(), imported->mapping.view().executionBindings());
   if (!contexts)
     return contexts.takeError();
-  auto invocationPlan = deriveApplicationSpatialInvocationPlan(
-      imported->dataflow->view(), prepared.sourceInvocation.entrySymbol,
-      (*software)->compilation.structuredProgram, prepared.preMappingWorkload,
-      prepared.preMappingRuntimeInput, artifacts, (*software)->invocationCaptureByteLimit);
-  if (!invocationPlan)
-    return invocationPlan.takeError();
+  const auto &invocationPlan = (*software)->invocationPlan;
 
   std::vector<ApplicationSpatialRuntimePoint> requiredPoints;
   for (const ApplicationSpatialInvocationPlan::Launch &launch :

@@ -631,12 +631,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
       imported->mapping.view().dataflowIdentity()};
-  auto invocationPlan = detail::deriveApplicationSpatialInvocationPlan(
-      imported->dataflow->view(), prepared.sourceInvocation.entrySymbol,
-      (*software)->compilation.structuredProgram, prepared.preMappingWorkload,
-      prepared.preMappingRuntimeInput, artifacts, (*software)->invocationCaptureByteLimit);
-  if (!invocationPlan)
-    return invocationPlan.takeError();
+  const auto &invocationPlan = (*software)->invocationPlan;
   std::vector<dataflow::RootThreadLaunchRef> invocationRoots;
   invocationRoots.reserve(invocationPlan->launches.size());
   for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
@@ -658,8 +653,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   hostEntry->entry.abiSymbol = detail::applicationHostEntrySymbol.str();
   hostEntry->entry.dataflowEntrySymbol = prepared.sourceInvocation.entrySymbol;
   auto hostModule = detail::materializeHostDispatchModule(
-      finalLinkedModule, *imported->dataflow, prepared.sourceInvocation,
-      *invocationPlan);
+      finalLinkedModule, prepared.sourceInvocation, *invocationPlan);
   if (!hostModule)
     return hostModule.takeError();
   if (llvm::Error error =

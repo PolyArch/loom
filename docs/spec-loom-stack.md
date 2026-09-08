@@ -277,6 +277,15 @@ layer must not convert either into an empty successful plan. Mapping execution
 continues through the shared journal, scheduler, exact repair, and independent
 artifact verifiers.
 
+Preparation also derives each retained software candidate's exact Spatial
+invocation plan under the configured native capture grant. The prepared plan
+owns the imported Canonical Dataflow IR referenced by its capture handles.
+Runtime validation and Deployment consume this same immutable plan after
+matching its Dataflow identity to the selected Mapping. Hardware exploration
+does not repeat software memory-provenance capture. Host dispatch translation
+uses the plan's retained IR owner, so a separately imported module cannot
+invalidate or substitute the plan's operation and value handles.
+
 The joint-plan owner mechanically projects the run's persistent semantic
 closure from the complete software and System frontiers plus every exact plan
 binding. Both CLI and library composition must use that projection when
