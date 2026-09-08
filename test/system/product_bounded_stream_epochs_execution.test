@@ -15,6 +15,7 @@
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=bounded_stream_chain \
 # RUN:   --loom-operator-protocol-symbol=stream_consumer \
+# RUN:   --loom-mapping-spectrum-endpoint=max_temporal \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
 # RUN: FileCheck %s --check-prefix=NATIVE-REPLAY < %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
@@ -24,6 +25,7 @@
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --spatial-invocations=4 --spatial-search-frontier \
+# RUN:   --mapping-inspector=loom-product-mapping-inspection-test --require-stream-pipeline \
 # RUN:   --required-dataflow-text=stream_inputs \
 # RUN:   --required-dataflow-text=stream_outputs \
 # RUN:   --required-dataflow-text=arith.addi \
