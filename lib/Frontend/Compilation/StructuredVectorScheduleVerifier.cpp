@@ -31,11 +31,6 @@
 namespace loom::frontend {
 namespace {
 
-llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "structured_schedule_invalid: " + message);
-}
-
 bool operationTouchesVector(mlir::Operation *operation) {
   const auto isVector = [](mlir::Type type) {
     return llvm::isa<mlir::VectorType>(type);
@@ -83,7 +78,7 @@ resolveScheduledLoop(const ExactStructuredScopView &source,
   mlir::Operation *owner =
       mlir::SymbolTable::lookupSymbolIn(materialized, source.ownerSymbol);
   if (!owner)
-    return invalid("materialized vector child lost its exact symbol owner");
+    return detail::invalidStructuredSchedule("materialized vector child lost its exact symbol owner");
   mlir::Operation *result = nullptr;
   std::uint64_t ordinal = 0;
   owner->walk([&](mlir::Operation *operation) {
@@ -96,7 +91,7 @@ resolveScheduledLoop(const ExactStructuredScopView &source,
     return mlir::WalkResult::advance();
   });
   if (!result)
-    return invalid("materialized vector child lost its exact loop image");
+    return detail::invalidStructuredSchedule("materialized vector child lost its exact loop image");
   return result;
 }
 
@@ -420,14 +415,14 @@ exactReductionNeutral(const ExactStructuredScopView &source,
     return mlir::Value{};
   if (source.reductionCount != 1 || !source.reductionKind ||
       loop->getNumResults() != 1)
-    return invalid("exact SCoP has an ambiguous reduction identity");
+    return detail::invalidStructuredSchedule("exact SCoP has an ambiguous reduction identity");
 
   mlir::ValueRange inits =
       llvm::isa<mlir::affine::AffineForOp>(loop)
           ? llvm::cast<mlir::affine::AffineForOp>(loop).getInits()
           : llvm::cast<mlir::scf::ForOp>(loop).getInitArgs();
   if (inits.size() != 1)
-    return invalid("materialized vector reduction has ambiguous inits");
+    return detail::invalidStructuredSchedule("materialized vector reduction has ambiguous inits");
   mlir::Value neutral = inits.front();
   auto vectorType = llvm::dyn_cast<mlir::VectorType>(neutral.getType());
   auto constant = neutral.getDefiningOp<mlir::arith::ConstantOp>();
@@ -435,13 +430,13 @@ exactReductionNeutral(const ExactStructuredScopView &source,
       constant ? llvm::dyn_cast<mlir::DenseElementsAttr>(constant.getValue())
                : mlir::DenseElementsAttr{};
   if (!vectorType || !elements || !elements.isSplat())
-    return invalid("materialized vector reduction lost its neutral init");
+    return detail::invalidStructuredSchedule("materialized vector reduction lost its neutral init");
   mlir::OpBuilder builder(loop);
   const mlir::TypedAttr identity = mlir::arith::getIdentityValueAttr(
       *source.reductionKind, vectorType.getElementType(), builder,
       loop->getLoc());
   if (elements.getSplatValue<mlir::Attribute>() != identity)
-    return invalid("materialized vector reduction changed its neutral init");
+    return detail::invalidStructuredSchedule("materialized vector reduction changed its neutral init");
   return neutral;
 }
 
@@ -461,19 +456,19 @@ verifyReductionImage(const ExactStructuredScopView &source,
   if (source.reductionCount == 0)
     return reductions.empty() && extracts.empty()
                ? llvm::Error::success()
-               : invalid("non-reduction vector child acquired a reduction");
+               : detail::invalidStructuredSchedule("non-reduction vector child acquired a reduction");
   if (source.reductionCount != 1 || !source.reductionKind ||
       loop->getNumResults() != 1)
-    return invalid("exact SCoP reduction identity is incomplete");
+    return detail::invalidStructuredSchedule("exact SCoP reduction identity is incomplete");
   const std::optional<mlir::vector::CombiningKind> expectedKind =
       vectorReductionKind(*source.reductionKind);
   if (!expectedKind)
-    return invalid("exact SCoP reduction kind has no vector image");
+    return detail::invalidStructuredSchedule("exact SCoP reduction kind has no vector image");
   mlir::Value loopResult = loop->getResult(0);
 
   if (!reductions.empty()) {
     if (reductions.size() != 1 || !extracts.empty())
-      return invalid("provider reduction image has ambiguous operations");
+      return detail::invalidStructuredSchedule("provider reduction image has ambiguous operations");
     mlir::vector::ReductionOp reduction = reductions.front();
     mlir::arith::FastMathFlagsAttr fastMath = reduction.getFastmathAttr();
     auto returned = reduction.getResult().hasOneUse()
@@ -486,15 +481,15 @@ verifyReductionImage(const ExactStructuredScopView &source,
         (fastMath && fastMath.getValue() != mlir::arith::FastMathFlags::none) ||
         !returned || returned.getNumOperands() != 1 ||
         returned.getOperand(0) != reduction.getResult())
-      return invalid("provider reduction kind or value relation changed");
+      return detail::invalidStructuredSchedule("provider reduction kind or value relation changed");
     if (!loopResult.hasOneUse() || *loopResult.user_begin() != reduction)
-      return invalid("provider reduction no longer uniquely consumes the loop");
+      return detail::invalidStructuredSchedule("provider reduction no longer uniquely consumes the loop");
     return llvm::Error::success();
   }
 
   const std::uint64_t factor = coordinate.shape.front();
   if (extracts.size() != factor)
-    return invalid("lowered reduction has the wrong extract cardinality");
+    return detail::invalidStructuredSchedule("lowered reduction has the wrong extract cardinality");
   std::vector<mlir::Value> lanes(factor);
   for (mlir::vector::ExtractOp extract : extracts) {
     llvm::ArrayRef<std::int64_t> position = extract.getStaticPosition();
@@ -503,17 +498,17 @@ verifyReductionImage(const ExactStructuredScopView &source,
         static_cast<std::uint64_t>(position.front()) >= factor ||
         lanes[static_cast<std::size_t>(position.front())] ||
         !extract.getResult().hasOneUse())
-      return invalid("lowered reduction changed an extract lane or source");
+      return detail::invalidStructuredSchedule("lowered reduction changed an extract lane or source");
     lanes[static_cast<std::size_t>(position.front())] = extract.getResult();
   }
   std::size_t loopResultUsers = 0;
   for (mlir::Operation *user : loopResult.getUsers()) {
     ++loopResultUsers;
     if (!llvm::isa<mlir::vector::ExtractOp>(user))
-      return invalid("lowered reduction loop result has a foreign user");
+      return detail::invalidStructuredSchedule("lowered reduction loop result has a foreign user");
   }
   if (loopResultUsers != factor)
-    return invalid("lowered reduction loop result has missing lane users");
+    return detail::invalidStructuredSchedule("lowered reduction loop result has missing lane users");
 
   llvm::SmallVector<mlir::Operation *> combiners;
   llvm::SmallPtrSet<mlir::Operation *, 16> combinerSet;
@@ -525,7 +520,7 @@ verifyReductionImage(const ExactStructuredScopView &source,
     }
   }
   if (combiners.size() != factor - 1)
-    return invalid("lowered reduction has the wrong combiner cardinality");
+    return detail::invalidStructuredSchedule("lowered reduction has the wrong combiner cardinality");
 
   llvm::DenseMap<mlir::Value, std::uint64_t> laneUses;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> combinerUses;
@@ -533,7 +528,7 @@ verifyReductionImage(const ExactStructuredScopView &source,
     laneUses.try_emplace(lane, 0);
   for (mlir::Operation *combiner : combiners) {
     if (combiner->getNumOperands() != 2 || combiner->getNumResults() != 1)
-      return invalid("lowered reduction combiner has the wrong arity");
+      return detail::invalidStructuredSchedule("lowered reduction combiner has the wrong arity");
     for (mlir::Value operand : combiner->getOperands()) {
       auto lane = laneUses.find(operand);
       if (lane != laneUses.end()) {
@@ -542,22 +537,22 @@ verifyReductionImage(const ExactStructuredScopView &source,
       }
       mlir::Operation *definition = operand.getDefiningOp();
       if (!definition || !combinerSet.contains(definition))
-        return invalid("lowered reduction combiner has a foreign operand");
+        return detail::invalidStructuredSchedule("lowered reduction combiner has a foreign operand");
       ++combinerUses[definition];
     }
   }
   if (llvm::any_of(laneUses,
                    [](const auto &entry) { return entry.second != 1; }))
-    return invalid("lowered reduction does not consume every lane once");
+    return detail::invalidStructuredSchedule("lowered reduction does not consume every lane once");
   mlir::Operation *root = nullptr;
   for (mlir::Operation *combiner : combiners) {
     const std::uint64_t uses = combinerUses.lookup(combiner);
     if (uses == 0) {
       if (root)
-        return invalid("lowered reduction has multiple scalar roots");
+        return detail::invalidStructuredSchedule("lowered reduction has multiple scalar roots");
       root = combiner;
     } else if (uses != 1 || !combiner->getResult(0).hasOneUse()) {
-      return invalid("lowered reduction combiner is reused");
+      return detail::invalidStructuredSchedule("lowered reduction combiner is reused");
     }
   }
   auto returned = root && root->getResult(0).hasOneUse()
@@ -567,7 +562,7 @@ verifyReductionImage(const ExactStructuredScopView &source,
   if (!root || !root->getResult(0).hasOneUse() || !returned ||
       returned.getNumOperands() != 1 ||
       returned.getOperand(0) != root->getResult(0))
-    return invalid("lowered reduction lost its externally visible result");
+    return detail::invalidStructuredSchedule("lowered reduction lost its externally visible result");
   return llvm::Error::success();
 }
 
@@ -581,7 +576,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
           detail::validateStructuredVectorScheduleCoordinate(coordinate))
     return error;
   if (coordinate.reductionSchedule != source.reductionSchedule)
-    return invalid("materialized vector reduction policy differs from source");
+    return detail::invalidStructuredSchedule("materialized vector reduction policy differs from source");
   const std::optional<std::uint64_t> requiredAlignment =
       llvm::checkedMulUnsigned(source.maximumElementBytes,
                                coordinate.shape.front());
@@ -592,7 +587,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
                      return access.elementBytes != source.maximumElementBytes ||
                             access.alignmentBytes % *requiredAlignment != 0;
                    }))
-    return invalid("materialized vector alignment proof is inconsistent");
+    return detail::invalidStructuredSchedule("materialized vector alignment proof is inconsistent");
   const bool divisible =
       source.constantTripCount &&
       *source.constantTripCount % coordinate.shape.front() == 0;
@@ -602,7 +597,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
   if (coordinate.tailPolicy != expectedTail ||
       (!divisible &&
        source.reductionSchedule == StructuredReductionSchedule::None))
-    return invalid("materialized vector tail policy is inconsistent");
+    return detail::invalidStructuredSchedule("materialized vector tail policy is inconsistent");
 
   auto resolved = resolveScheduledLoop(source, materialized);
   if (!resolved)
@@ -611,7 +606,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
   if (!source.constantTripCount ||
       !hasExactLoopDomain(loop, *source.constantTripCount,
                           coordinate.shape.front()))
-    return invalid("materialized vector loop has the wrong exact domain");
+    return detail::invalidStructuredSchedule("materialized vector loop has the wrong exact domain");
   mlir::Value induction = inductionVariable(loop);
   auto neutral = exactReductionNeutral(source, loop);
   if (!neutral)
@@ -627,7 +622,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
   std::size_t createMasks = 0;
   for (mlir::Operation *statement : statements) {
     if (!vectorShapeMatches(statement, coordinate.shape.front()))
-      return invalid("materialized vector statement has the wrong shape");
+      return detail::invalidStructuredSchedule("materialized vector statement has the wrong shape");
     if (auto mask = llvm::dyn_cast<mlir::vector::CreateMaskOp>(statement)) {
       tailMask = mask.getResult();
       ++createMasks;
@@ -644,13 +639,13 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
     }
   }
   if (transfers.size() != source.accesses.size())
-    return invalid("materialized vector access cardinality changed");
+    return detail::invalidStructuredSchedule("materialized vector access cardinality changed");
   if (coordinate.tailPolicy == StructuredVectorTailPolicy::Exact &&
       (tailMask || createMasks != 0))
-    return invalid("exact vector coordinate acquired a tail mask");
+    return detail::invalidStructuredSchedule("exact vector coordinate acquired a tail mask");
   if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask &&
       (!tailMask || createMasks > 1))
-    return invalid("masked vector coordinate lost its unique tail mask");
+    return detail::invalidStructuredSchedule("masked vector coordinate lost its unique tail mask");
 
   std::vector<mlir::Value> statementValues(source.statementCount);
   std::vector<std::pair<std::uint64_t, mlir::Value>> pendingStores;
@@ -664,7 +659,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
     mlir::Value loaded;
     if (auto read = llvm::dyn_cast<mlir::vector::TransferReadOp>(operation)) {
       if (access.kind != StructuredScopAccessKind::Read)
-        return invalid("materialized vector access direction changed");
+        return detail::invalidStructuredSchedule("materialized vector access direction changed");
       base = read.getBase();
       indices = read.getIndices();
       permutation = read.getPermutationMap();
@@ -674,7 +669,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
     } else {
       auto write = llvm::cast<mlir::vector::TransferWriteOp>(operation);
       if (access.kind != StructuredScopAccessKind::Write)
-        return invalid("materialized vector access direction changed");
+        return detail::invalidStructuredSchedule("materialized vector access direction changed");
       base = write.getBase();
       indices = write.getIndices();
       permutation = write.getPermutationMap();
@@ -686,12 +681,12 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
         indices.size() != 1 || indices.front() != induction ||
         permutation != mlir::AffineMap::getMultiDimIdentityMap(
                            1, materialized.getContext()))
-      return invalid("materialized vector access relation changed");
+      return detail::invalidStructuredSchedule("materialized vector access relation changed");
     if (coordinate.tailPolicy == StructuredVectorTailPolicy::Exact) {
       if (mask || !inBounds)
-        return invalid("exact vector transfer is not proven in-bounds");
+        return detail::invalidStructuredSchedule("exact vector transfer is not proven in-bounds");
     } else if (!mask || mask != tailMask) {
-      return invalid("vector transfer uses a different tail mask");
+      return detail::invalidStructuredSchedule("vector transfer uses a different tail mask");
     }
     if (auto read = llvm::dyn_cast<mlir::vector::TransferReadOp>(operation)) {
       if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask &&
@@ -703,13 +698,13 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
                         select.getTrueValue() == read.getResult() &&
                         select.getFalseValue() == *neutral;
                })))
-        return invalid("masked vector read lost its exact neutral guard");
+        return detail::invalidStructuredSchedule("masked vector read lost its exact neutral guard");
     }
     if (loaded)
       statementValues[access.statementOrdinal] = loaded;
     if (stored) {
       if (!access.storedStatementOrdinal)
-        return invalid("materialized vector store lost its source value");
+        return detail::invalidStructuredSchedule("materialized vector store lost its source value");
       pendingStores.emplace_back(*access.storedStatementOrdinal, stored);
     }
   }
@@ -718,18 +713,18 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
   if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask) {
     auto createMask = tailMask.getDefiningOp<mlir::vector::CreateMaskOp>();
     if (!source.constantTripCount)
-      return invalid("masked vector coordinate lost its static trip count");
+      return detail::invalidStructuredSchedule("masked vector coordinate lost its static trip count");
     if (createMask) {
       if (createMasks != 1 || createMask.getNumOperands() != 1 ||
           !isExactTailBoundProducer(createMask.getOperand(0).getDefiningOp(),
                                     induction, tailMask,
                                     *source.constantTripCount))
-        return invalid("provider vector tail bound changed");
+        return detail::invalidStructuredSchedule("provider vector tail bound changed");
     } else if (createMasks != 0 ||
                !collectExactLoweredTailMask(
                    tailMask, induction, *source.constantTripCount,
                    coordinate.shape.front(), loweredTailSupport)) {
-      return invalid("materialized vector tail mask changed");
+      return detail::invalidStructuredSchedule("materialized vector tail mask changed");
     }
   }
 
@@ -750,7 +745,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
     auto projection =
         dataflow::projectRegisteredActorSchemaProjection(statement);
     if (!projection) {
-      return invalid("materialized vector child has unregistered support: " +
+      return detail::invalidStructuredSchedule("materialized vector child has unregistered support: " +
                      llvm::toString(projection.takeError()));
     }
     if (nextCompute == source.computes.size() ||
@@ -764,7 +759,7 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
            projection->schema == dataflow::OperationSchemaId::ArithCmpI ||
            projection->schema == dataflow::OperationSchemaId::VectorInsert);
       if (!generatedTailSupport)
-        return invalid("materialized vector compute semantics changed");
+        return detail::invalidStructuredSchedule("materialized vector compute semantics changed");
       continue;
     }
     const StructuredScopComputeView &expected = source.computes[nextCompute++];
@@ -776,33 +771,33 @@ llvm::Error verifyStructuredVectorScheduleMaterialization(
                      });
     if (statement->getNumResults() != 1 ||
         statement->getNumOperands() != expected.operandStatements.size())
-      return invalid("materialized vector compute arity changed");
+      return detail::invalidStructuredSchedule("materialized vector compute arity changed");
     for (auto [actual, sourceStatement] : llvm::zip_equal(
              statement->getOperands(), expected.operandStatements)) {
       if (sourceStatement) {
         if (!statementValues[*sourceStatement] ||
             !matchesStatementValue(actual, statementValues[*sourceStatement],
                                    tailMask, maskedRecurrence, *neutral))
-          return invalid("materialized vector compute data dependence changed");
+          return detail::invalidStructuredSchedule("materialized vector compute data dependence changed");
       } else if (!isLoopIterArgument(actual, loop)) {
-        return invalid("materialized vector reduction recurrence changed");
+        return detail::invalidStructuredSchedule("materialized vector reduction recurrence changed");
       }
     }
     statementValues[expected.statementOrdinal] = statement->getResult(0);
   }
   if (nextCompute != source.computes.size())
-    return invalid("materialized vector child lost a source computation");
+    return detail::invalidStructuredSchedule("materialized vector child lost a source computation");
   for (auto [sourceStatement, stored] : pendingStores) {
     if (sourceStatement >= statementValues.size() ||
         !statementValues[sourceStatement] ||
         stored != statementValues[sourceStatement])
-      return invalid("materialized vector store data dependence changed");
+      return detail::invalidStructuredSchedule("materialized vector store data dependence changed");
   }
 
   if (llvm::Error error = verifyReductionImage(source, coordinate, loop))
     return error;
   if (mlir::failed(mlir::verify(materialized)))
-    return invalid("materialized vector child does not verify");
+    return detail::invalidStructuredSchedule("materialized vector child does not verify");
   return llvm::Error::success();
 }
 

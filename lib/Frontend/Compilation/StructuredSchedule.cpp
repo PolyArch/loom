@@ -66,67 +66,8 @@ std::error_code StructuredScheduleProposalRefusal::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-namespace detail {
-
-llvm::Error validateStructuredVectorScheduleCoordinate(
-    const StructuredVectorScheduleCoordinate &coordinate) {
-  const auto invalidCoordinate = [](const llvm::Twine &message) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "structured_schedule_invalid: " + message);
-  };
-  if (coordinate.shape.size() != 1 || coordinate.shape.front() <= 1 ||
-      coordinate.shape.front() > maximumCanonicalStructuredScheduleFactor)
-    return invalidCoordinate(
-        "vector coordinate has no supported rank-one shape");
-  if (coordinate.requiredAlignmentBytes == 0)
-    return invalidCoordinate("vector coordinate has no required alignment");
-  if (coordinate.tailPolicy > StructuredVectorTailPolicy::ReductionMask ||
-      coordinate.aliasPolicy !=
-          StructuredVectorAliasPolicy::ProviderProvenNoAlias ||
-      coordinate.reductionSchedule >
-          StructuredReductionSchedule::FloatingReassociated)
-    return invalidCoordinate("vector coordinate has an unknown typed policy");
-  if (coordinate.tailPolicy == StructuredVectorTailPolicy::ReductionMask &&
-      coordinate.reductionSchedule == StructuredReductionSchedule::None)
-    return invalidCoordinate(
-        "non-reduction vector coordinate selects a reduction mask");
-  return llvm::Error::success();
-}
-
-} // namespace detail
 
 namespace {
-
-constexpr llvm::StringLiteral decisionSchema =
-    "loom.structured_schedule.decision.6.0";
-
-llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "structured_schedule_invalid: " + message);
-}
-
-/// Replication decisions carry a canonical factor; interchange, parallel, and
-/// vector decisions are factorless; a polyhedral decision is factorless for
-/// the provider schedule itself and carries the tile factor of a tiled one.
-bool admitsDecisionFactor(StructuredScheduleDecisionKind kind,
-                          std::uint64_t factor) {
-  const bool canonicalFactor =
-      factor >= 2 && factor <= maximumCanonicalStructuredScheduleFactor;
-  switch (kind) {
-  case StructuredScheduleDecisionKind::Tile:
-  case StructuredScheduleDecisionKind::Unroll:
-  case StructuredScheduleDecisionKind::UnrollAndJam:
-    return canonicalFactor;
-  case StructuredScheduleDecisionKind::Interchange:
-  case StructuredScheduleDecisionKind::Parallelize:
-  case StructuredScheduleDecisionKind::ParallelizeNest:
-  case StructuredScheduleDecisionKind::Vectorize:
-    return factor == 0;
-  case StructuredScheduleDecisionKind::PolyhedralSchedule:
-    return factor == 0 || canonicalFactor;
-  }
-  return false;
-}
 
 std::optional<std::uint64_t> staticTripCount(mlir::scf::ForOp loop) {
   std::optional<llvm::APInt> count = loop.getStaticTripCount();
@@ -228,7 +169,7 @@ llvm::Expected<mlir::scf::ForallOp>
 applyParallelizeNest(mlir::scf::ForOp root) {
   llvm::SmallVector<mlir::scf::ForOp> nest = rectangularParallelNest(root);
   if (nest.size() < 2)
-    return invalid("parallel nest preconditions are not satisfied");
+    return detail::invalidStructuredSchedule("parallel nest preconditions are not satisfied");
 
   mlir::OpBuilder builder(root);
   llvm::SmallVector<mlir::OpFoldResult> lowerBounds;
@@ -300,7 +241,7 @@ projectAggregateUnrollActor(mlir::Operation *operation,
   if (!projections)
     return projections.takeError();
   if (projections->empty())
-    return invalid("unresolved special-math domain is empty");
+    return detail::invalidStructuredSchedule("unresolved special-math domain is empty");
   auto key =
       dataflow::encodeCanonicalActorSchemaProjection(projections->front());
   if (!key)
@@ -339,13 +280,13 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
       multiplicity.resourceUpperBound = projection->resourceUpperBound;
     } else if (multiplicity.resourceUpperBound !=
                projection->resourceUpperBound) {
-      projectionError = invalid("actor-equivalent capacity bounds disagree");
+      projectionError = detail::invalidStructuredSchedule("actor-equivalent capacity bounds disagree");
       return mlir::WalkResult::interrupt();
     }
     const std::optional<std::uint64_t> next =
         llvm::checkedAddUnsigned(multiplicity.count, std::uint64_t{1});
     if (!next) {
-      projectionError = invalid("actor multiplicity overflow");
+      projectionError = detail::invalidStructuredSchedule("actor multiplicity overflow");
       return mlir::WalkResult::interrupt();
     }
     multiplicity.count = *next;
@@ -361,7 +302,7 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
     mlir::Operation *actor = entry.second.representative;
     auto kind = dataflow::classifyCanonicalDataflowActor(actor);
     if (!kind)
-      return invalid("registered actor lost its canonical kind");
+      return detail::invalidStructuredSchedule("registered actor lost its canonical kind");
     if (entry.second.resourceUpperBound) {
       capacity = std::min(capacity, *entry.second.resourceUpperBound /
                                         entry.second.count);
@@ -386,7 +327,7 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
     mlir::IRMapping &mapping, mlir::Operation *&clonedLoop,
     mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Operation)
-    return invalid("schedule decision does not reference an operation");
+    return detail::invalidStructuredSchedule("schedule decision does not reference an operation");
   auto view = parent.view();
   if (!view)
     return view.takeError();
@@ -396,7 +337,7 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
   mlir::Operation *sourceLoop = entity->operation;
   if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::affine::AffineForOp>(
           sourceLoop))
-    return invalid("schedule decision does not reference a supported loop");
+    return detail::invalidStructuredSchedule("schedule decision does not reference a supported loop");
 
   auto privateClone = cloneStructuredProgramWithSourceLocations(
       parent, sourceProvenance, mapping);
@@ -405,37 +346,37 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
   mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   clonedLoop = mapping.lookupOrNull(sourceLoop);
   if (!clonedLoop)
-    return invalid("selected loop was not mapped into the private clone");
+    return detail::invalidStructuredSchedule("selected loop was not mapped into the private clone");
   if (trackedSpatialRegion) {
     auto spatialEntity = view->resolve(*trackedSpatialRegion);
     if (!spatialEntity)
       return spatialEntity.takeError();
     if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(spatialEntity->operation))
-      return invalid("tracked operation is not a Spatial region");
+      return detail::invalidStructuredSchedule("tracked operation is not a Spatial region");
     clonedSpatialRegion = mapping.lookupOrNull(spatialEntity->operation);
     if (!clonedSpatialRegion)
-      return invalid("tracked Spatial region was not mapped into the clone");
+      return detail::invalidStructuredSchedule("tracked Spatial region was not mapped into the clone");
   }
   return clone;
 }
 
 llvm::Error applyTile(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (factor <= 1 || !loop.getInitArgs().empty())
-    return invalid("tile factor or loop shape is not canonical");
+    return detail::invalidStructuredSchedule("tile factor or loop shape is not canonical");
   mlir::OpBuilder builder(loop);
   mlir::Value size = mlir::arith::ConstantOp::create(
       builder, loop.getLoc(),
       builder.getIntegerAttr(loop.getStep().getType(), factor));
   if (mlir::tilePerfectlyNested(loop, {size}).empty())
-    return invalid("SCF tiling did not materialize an intra-tile loop");
+    return detail::invalidStructuredSchedule("SCF tiling did not materialize an intra-tile loop");
   return llvm::Error::success();
 }
 
 llvm::Error applyUnroll(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (factor <= 1 || !loop.getInitArgs().empty())
-    return invalid("unroll factor or loop shape is not canonical");
+    return detail::invalidStructuredSchedule("unroll factor or loop shape is not canonical");
   if (mlir::failed(mlir::loopUnrollByFactor(loop, factor)))
-    return invalid("SCF unroll rejected the selected decision");
+    return detail::invalidStructuredSchedule("SCF unroll rejected the selected decision");
   return llvm::Error::success();
 }
 
@@ -469,7 +410,7 @@ llvm::Error applyInterchange(mlir::scf::ForOp outer) {
           lowering::ParallelDependenceResult::ProvenIndependent ||
       lowering::proveIndependentIterations(inner) !=
           lowering::ParallelDependenceResult::ProvenIndependent)
-    return invalid("interchange preconditions are not satisfied");
+    return detail::invalidStructuredSchedule("interchange preconditions are not satisfied");
 
   return interchangeScfLoops(outer, inner);
 }
@@ -592,7 +533,7 @@ classifyPolyhedralScheduleMaterialization(
 
 llvm::Error applyProvenAdjacentInterchange(mlir::Operation *root) {
   if (!hasMaterializableAdjacentInterchange(root))
-    return invalid("polyhedral interchange shape is not materializable");
+    return detail::invalidStructuredSchedule("polyhedral interchange shape is not materializable");
   llvm::SmallVector<mlir::Operation *> nest = perfectStructuredNest(root);
   if (auto outer = llvm::dyn_cast<mlir::scf::ForOp>(nest[0]))
     return interchangeScfLoops(outer, llvm::cast<mlir::scf::ForOp>(nest[1]));
@@ -607,13 +548,13 @@ distributePolyhedralStatements(mlir::Operation *root,
                                std::size_t statementCount) {
   llvm::SmallVector<mlir::Operation *> nest = perfectStructuredNest(root);
   if (nest.empty())
-    return invalid("polyhedral distribution source is not a perfect nest");
+    return detail::invalidStructuredSchedule("polyhedral distribution source is not a perfect nest");
   mlir::Block *innermost = structuredLoopBody(nest.back());
   llvm::SmallVector<mlir::Operation *> statements;
   for (mlir::Operation &operation : innermost->without_terminator())
     statements.push_back(&operation);
   if (statements.size() != statementCount)
-    return invalid("polyhedral distribution statement count changed");
+    return detail::invalidStructuredSchedule("polyhedral distribution statement count changed");
 
   llvm::SmallVector<mlir::Operation *> roots;
   roots.reserve(statementCount);
@@ -626,10 +567,10 @@ distributePolyhedralStatements(mlir::Operation *root,
     llvm::SmallVector<mlir::Operation *> clonedNest =
         perfectStructuredNest(clone);
     if (!selected || clonedNest.size() != nest.size())
-      return invalid("polyhedral distribution clone lost its statement");
+      return detail::invalidStructuredSchedule("polyhedral distribution clone lost its statement");
     mlir::Block *clonedBody = structuredLoopBody(clonedNest.back());
     if (selected->getBlock() != clonedBody)
-      return invalid("polyhedral distribution changed statement nesting");
+      return detail::invalidStructuredSchedule("polyhedral distribution changed statement nesting");
     llvm::SmallVector<mlir::Operation *> discarded;
     for (mlir::Operation &operation : clonedBody->without_terminator())
       if (&operation != selected)
@@ -646,7 +587,7 @@ llvm::Error applyPolyhedralSchedule(mlir::Operation *root,
                                     const StructuredPolyhedralScopView &scop) {
   if (!canMaterializeCanonicalPolyhedralSchedule(root, scop) ||
       scop.schedule.form == StructuredPolyhedralScheduleForm::SourceOrder)
-    return invalid("polyhedral schedule form is not a transform coordinate");
+    return detail::invalidStructuredSchedule("polyhedral schedule form is not a transform coordinate");
   if (!scheduleFormDistributesStatements(scop.schedule.form))
     return applyProvenAdjacentInterchange(root);
   auto roots = distributePolyhedralStatements(root, scop.statements.size());
@@ -661,9 +602,9 @@ llvm::Error applyPolyhedralSchedule(mlir::Operation *root,
 
 llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (factor <= 1 || !loop.getInitArgs().empty())
-    return invalid("unroll-and-jam factor or loop shape is not canonical");
+    return detail::invalidStructuredSchedule("unroll-and-jam factor or loop shape is not canonical");
   if (mlir::failed(mlir::loopUnrollJamByFactor(loop, factor)))
-    return invalid("SCF unroll-and-jam rejected the selected decision");
+    return detail::invalidStructuredSchedule("SCF unroll-and-jam rejected the selected decision");
   return llvm::Error::success();
 }
 
@@ -677,7 +618,7 @@ coordinateFor(const ExactStructuredScopView &scop, std::uint64_t factor) {
   const std::optional<std::uint64_t> requiredAlignment =
       llvm::checkedMulUnsigned(scop.maximumElementBytes, factor);
   if (!requiredAlignment)
-    return invalid("vector alignment requirement overflows u64");
+    return detail::invalidStructuredSchedule("vector alignment requirement overflows u64");
   if (llvm::any_of(scop.accesses, [&](const StructuredScopAccessView &access) {
         return access.elementBytes != scop.maximumElementBytes ||
                access.alignmentBytes % *requiredAlignment != 0;
@@ -727,7 +668,7 @@ applyVectorize(mlir::affine::AffineForOp loop,
     return refused("Affine loop parallelism was not established");
   if ((coordinate.reductionSchedule == StructuredReductionSchedule::None) !=
       reductions.empty())
-    return invalid("vector reduction coordinate differs from the source loop");
+    return detail::invalidStructuredSchedule("vector reduction coordinate differs from the source loop");
 
   mlir::affine::VectorizationStrategy strategy;
   strategy.vectorSizes.push_back(
@@ -749,14 +690,14 @@ applyVectorize(mlir::affine::AffineForOp loop,
   while (operation && operation != successor) {
     if (auto candidate = llvm::dyn_cast<mlir::affine::AffineForOp>(operation)) {
       if (replacement)
-        return invalid("Affine vectorizer produced an ambiguous loop root");
+        return detail::invalidStructuredSchedule("Affine vectorizer produced an ambiguous loop root");
       replacement = candidate;
     }
     operation = operation->getNextNode();
   }
   if (!replacement || replacement.getStepAsInt() !=
                           static_cast<std::int64_t>(coordinate.shape.front()))
-    return invalid("Affine vectorizer did not materialize the selected shape");
+    return detail::invalidStructuredSchedule("Affine vectorizer did not materialize the selected shape");
   return replacement;
 }
 
@@ -770,7 +711,7 @@ selectedTailMask(mlir::affine::AffineForOp loop) {
     return mlir::WalkResult::advance();
   });
   if (!result)
-    return invalid("masked vector coordinate produced no tail mask");
+    return detail::invalidStructuredSchedule("masked vector coordinate produced no tail mask");
   return result;
 }
 
@@ -800,7 +741,7 @@ llvm::Error attachTailMask(mlir::affine::AffineForOp loop) {
   for (mlir::vector::TransferReadOp read : reads) {
     if (!mlir::matchPattern(read.getPadding(), mlir::m_Zero()) &&
         !transferResultIsTailGuarded(read, mask->getResult()))
-      return invalid("masked vector read has observable nonzero padding");
+      return detail::invalidStructuredSchedule("masked vector read has observable nonzero padding");
     mlir::OpBuilder builder(read);
     auto replacement = mlir::vector::TransferReadOp::create(
         builder, read.getLoc(), read.getVectorType(), read.getBase(),
@@ -825,7 +766,7 @@ llvm::Error lowerTailMask(mlir::affine::AffineForOp loop) {
   if (!mask)
     return mask.takeError();
   if (mask->getNumOperands() != 1)
-    return invalid("rank-one tail mask has the wrong bound arity");
+    return detail::invalidStructuredSchedule("rank-one tail mask has the wrong bound arity");
   mlir::OpBuilder builder(*mask);
   mlir::VectorType type = mask->getResult().getType();
   auto falseElements =
@@ -891,13 +832,13 @@ lowerVectorizedScop(mlir::affine::AffineForOp loop,
   while (operation && operation != successor) {
     if (auto candidate = llvm::dyn_cast<mlir::scf::ForOp>(operation)) {
       if (lowered)
-        return invalid("Affine lowering produced an ambiguous SCF loop root");
+        return detail::invalidStructuredSchedule("Affine lowering produced an ambiguous SCF loop root");
       lowered = candidate;
     }
     operation = operation->getNextNode();
   }
   if (!lowered)
-    return invalid("Affine lowering produced no SCF loop root");
+    return detail::invalidStructuredSchedule("Affine lowering produced no SCF loop root");
 
   for (mlir::vector::ReductionOp reduction : reductions) {
     mlir::RewritePatternSet reductionPatterns(context);
@@ -1009,7 +950,7 @@ admittingStructuredActorResources(mlir::Operation *operation,
   const std::optional<dataflow::OperationSchemaId> schema =
       dataflow::operationSchemaOf(operation);
   if (!schema)
-    return invalid("structured actor has no operation schema");
+    return detail::invalidStructuredSchedule("structured actor has no operation schema");
   if (dataflow::actorKind(*schema) ==
       dataflow::CanonicalDataflowActorKind::Memory)
     return fabric.admittingMemoryResourceCount(operation);
@@ -1101,167 +1042,6 @@ fabricAdmitsVectorizedClosure(mlir::Operation *root,
 }
 
 } // namespace
-llvm::ArrayRef<std::uint8_t> structuredScheduleDecisionSchemaBytes() {
-  return {reinterpret_cast<const std::uint8_t *>(decisionSchema.data()),
-          decisionSchema.size()};
-}
-
-llvm::StringRef
-structuredScheduleDecisionKindSpelling(StructuredScheduleDecisionKind kind) {
-  switch (kind) {
-  case StructuredScheduleDecisionKind::Tile:
-    return "tile";
-  case StructuredScheduleDecisionKind::Unroll:
-    return "unroll";
-  case StructuredScheduleDecisionKind::Interchange:
-    return "interchange";
-  case StructuredScheduleDecisionKind::UnrollAndJam:
-    return "unroll_and_jam";
-  case StructuredScheduleDecisionKind::Parallelize:
-    return "parallelize";
-  case StructuredScheduleDecisionKind::ParallelizeNest:
-    return "parallelize_nest";
-  case StructuredScheduleDecisionKind::Vectorize:
-    return "vectorize";
-  case StructuredScheduleDecisionKind::PolyhedralSchedule:
-    return "polyhedral_schedule";
-  }
-  llvm_unreachable("unknown structured schedule decision kind");
-}
-
-llvm::Expected<std::vector<std::uint8_t>>
-encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
-  if (decision.loop.kind != StructuredEntityKind::Operation)
-    return invalid("decision does not reference an operation");
-  if (static_cast<std::uint32_t>(decision.kind) >
-      static_cast<std::uint32_t>(
-          StructuredScheduleDecisionKind::PolyhedralSchedule))
-    return invalid("decision has an unknown kind");
-  if (!admitsDecisionFactor(decision.kind, decision.factor))
-    return invalid("decision has an invalid factor");
-  if (decision.kind == StructuredScheduleDecisionKind::Vectorize) {
-    if (!decision.vector)
-      return invalid("vector decision has no vector coordinate");
-    if (llvm::Error error = detail::validateStructuredVectorScheduleCoordinate(
-            *decision.vector))
-      return std::move(error);
-  } else if (decision.vector) {
-    return invalid("non-vector decision carries a vector coordinate");
-  }
-  std::vector<std::uint8_t> bytes = encodeStructuredEntityRef(decision.loop);
-  const auto appendU32 = [&](std::uint32_t value) {
-    for (int shift = 24; shift >= 0; shift -= 8)
-      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  };
-  const auto appendU64 = [&](std::uint64_t value) {
-    for (int shift = 56; shift >= 0; shift -= 8)
-      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
-  };
-  appendU32(static_cast<std::uint32_t>(decision.kind));
-  appendU64(decision.factor);
-  if (decision.vector) {
-    appendU32(static_cast<std::uint32_t>(decision.vector->shape.size()));
-    for (std::uint64_t dimension : decision.vector->shape)
-      appendU64(dimension);
-    appendU32(static_cast<std::uint32_t>(decision.vector->tailPolicy));
-    appendU64(decision.vector->requiredAlignmentBytes);
-    appendU32(static_cast<std::uint32_t>(decision.vector->aliasPolicy));
-    appendU32(static_cast<std::uint32_t>(decision.vector->reductionSchedule));
-  }
-  return bytes;
-}
-
-llvm::Expected<StructuredScheduleDecision>
-adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
-  constexpr std::size_t scalarWireSize = structuredEntityRefWireSize + 12;
-  if (canonicalBytes.size() < scalarWireSize)
-    return invalid("decision payload is truncated");
-  auto loop = decodeStructuredEntityRef(
-      canonicalBytes.take_front(structuredEntityRefWireSize));
-  if (!loop)
-    return loop.takeError();
-  if (loop->kind != StructuredEntityKind::Operation)
-    return invalid("decision does not reference an operation");
-  llvm::ArrayRef<std::uint8_t> suffix =
-      canonicalBytes.drop_front(structuredEntityRefWireSize);
-  std::size_t offset = 0;
-  const auto readU32 = [&]() -> llvm::Expected<std::uint32_t> {
-    if (suffix.size() - offset < 4)
-      return invalid("decision payload has a truncated u32");
-    std::uint32_t value = 0;
-    for (std::uint8_t byte : suffix.slice(offset, 4))
-      value = (value << 8) | byte;
-    offset += 4;
-    return value;
-  };
-  const auto readU64 = [&]() -> llvm::Expected<std::uint64_t> {
-    if (suffix.size() - offset < 8)
-      return invalid("decision payload has a truncated u64");
-    std::uint64_t value = 0;
-    for (std::uint8_t byte : suffix.slice(offset, 8))
-      value = (value << 8) | byte;
-    offset += 8;
-    return value;
-  };
-  auto kind = readU32();
-  if (!kind)
-    return kind.takeError();
-  if (*kind > static_cast<std::uint32_t>(
-                  StructuredScheduleDecisionKind::PolyhedralSchedule))
-    return invalid("decision payload has an unknown kind");
-  auto factor = readU64();
-  if (!factor)
-    return factor.takeError();
-  const auto typedKind = static_cast<StructuredScheduleDecisionKind>(*kind);
-  if (!admitsDecisionFactor(typedKind, *factor))
-    return invalid("decision payload has an invalid factor");
-  std::optional<StructuredVectorScheduleCoordinate> vector;
-  if (typedKind == StructuredScheduleDecisionKind::Vectorize) {
-    auto rank = readU32();
-    if (!rank)
-      return rank.takeError();
-    if (*rank != 1)
-      return invalid("vector decision payload has an unsupported rank");
-    std::vector<std::uint64_t> shape;
-    shape.reserve(*rank);
-    for (std::uint32_t dimension = 0; dimension != *rank; ++dimension) {
-      auto size = readU64();
-      if (!size)
-        return size.takeError();
-      shape.push_back(*size);
-    }
-    auto tail = readU32();
-    if (!tail)
-      return tail.takeError();
-    auto alignment = readU64();
-    if (!alignment)
-      return alignment.takeError();
-    auto alias = readU32();
-    if (!alias)
-      return alias.takeError();
-    auto reduction = readU32();
-    if (!reduction)
-      return reduction.takeError();
-    vector.emplace(StructuredVectorScheduleCoordinate{
-        std::move(shape), static_cast<StructuredVectorTailPolicy>(*tail),
-        *alignment, static_cast<StructuredVectorAliasPolicy>(*alias),
-        static_cast<StructuredReductionSchedule>(*reduction)});
-    if (llvm::Error error =
-            detail::validateStructuredVectorScheduleCoordinate(*vector))
-      return std::move(error);
-  }
-  if (offset != suffix.size())
-    return invalid("decision payload has trailing bytes");
-  StructuredScheduleDecision decision{*loop, typedKind, *factor,
-                                      std::move(vector)};
-  auto reencoded = encodeStructuredScheduleDecision(decision);
-  if (!reencoded)
-    return reencoded.takeError();
-  if (llvm::ArrayRef<std::uint8_t>(*reencoded) != canonicalBytes)
-    return invalid("decision payload does not re-encode exactly");
-  return decision;
-}
-
 llvm::Expected<StructuredScheduleDecisionDomain>
 enumerateStructuredScheduleDecisions(
     const StructuredProgramCandidate &parent,
@@ -1269,14 +1049,14 @@ enumerateStructuredScheduleDecisions(
     std::uint64_t scopeExpansionLimit,
     std::optional<StructuredEntityRef> schedulingScope) {
   if (scopeExpansionLimit == 0)
-    return invalid("scope expansion limit must be positive");
+    return detail::invalidStructuredSchedule("scope expansion limit must be positive");
   auto view = parent.view();
   if (!view)
     return view.takeError();
   mlir::Operation *scopeOperation = nullptr;
   if (schedulingScope) {
     if (schedulingScope->kind != StructuredEntityKind::Operation)
-      return invalid("schedule scope does not reference an operation");
+      return detail::invalidStructuredSchedule("schedule scope does not reference an operation");
     auto resolved = view->resolve(*schedulingScope);
     if (!resolved)
       return resolved.takeError();
@@ -1293,7 +1073,7 @@ enumerateStructuredScheduleDecisions(
     const std::optional<std::uint64_t> next =
         llvm::checkedAddUnsigned(inspectedCoordinates, count);
     if (!next)
-      return invalid("schedule-coordinate accounting overflows u64");
+      return detail::invalidStructuredSchedule("schedule-coordinate accounting overflows u64");
     inspectedCoordinates = *next;
     return llvm::Error::success();
   };
@@ -1301,7 +1081,7 @@ enumerateStructuredScheduleDecisions(
     const std::optional<std::uint64_t> next =
         llvm::checkedAddUnsigned(inspectedPolyhedralDependenceQueries, count);
     if (!next)
-      return invalid("polyhedral dependence-query accounting overflows u64");
+      return detail::invalidStructuredSchedule("polyhedral dependence-query accounting overflows u64");
     inspectedPolyhedralDependenceQueries = *next;
     return llvm::Error::success();
   };
@@ -1577,13 +1357,13 @@ materializeStructuredScheduleImpl(
       if (!analysis)
         return analysis.takeError();
       if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis))
-        return invalid("selected vector SCoP is locally refused with kind " +
+        return detail::invalidStructuredSchedule("selected vector SCoP is locally refused with kind " +
                        llvm::Twine(static_cast<std::uint32_t>(refusal->kind)));
       vectorSource.emplace(std::get<ExactStructuredScopView>(*analysis));
       exactVectorSource = &*vectorSource;
     }
     if (exactVectorSource->loop != decision.loop)
-      return invalid("frozen vector SCoP belongs to another source loop");
+      return detail::invalidStructuredSchedule("frozen vector SCoP belongs to another source loop");
     auto expected =
         coordinateFor(*exactVectorSource, decision.vector->shape.front());
     if (!expected)
@@ -1591,14 +1371,14 @@ materializeStructuredScheduleImpl(
     const auto *canonical =
         std::get_if<StructuredVectorScheduleCoordinate>(&*expected);
     if (!canonical || !(*canonical == *decision.vector))
-      return invalid("vector coordinate is not canonical for its source SCoP");
+      return detail::invalidStructuredSchedule("vector coordinate is not canonical for its source SCoP");
   }
   std::optional<StructuredPolyhedralScopView> polyhedralSource;
   const StructuredPolyhedralScopView *exactPolyhedralSource =
       frozenPolyhedralScop;
   if (decision.kind == StructuredScheduleDecisionKind::PolyhedralSchedule) {
     if (decision.vector)
-      return invalid("polyhedral decision carries a vector coordinate");
+      return detail::invalidStructuredSchedule("polyhedral decision carries a vector coordinate");
     if (!exactPolyhedralSource) {
       const std::uint64_t tileFactors[] = {decision.factor};
       auto analysis = analyzeStructuredPolyhedralScop(
@@ -1608,7 +1388,7 @@ materializeStructuredScheduleImpl(
       if (!analysis)
         return analysis.takeError();
       if (auto *refusal = std::get_if<StructuredScopRefusal>(&*analysis))
-        return invalid(
+        return detail::invalidStructuredSchedule(
             "selected polyhedral SCoP is locally refused with kind " +
             llvm::Twine(static_cast<std::uint32_t>(refusal->kind)));
       polyhedralSource.emplace(
@@ -1619,18 +1399,18 @@ materializeStructuredScheduleImpl(
                                      return candidate.factor == decision.factor;
                                    });
         if (tiled == polyhedralSource->tiledSchedules.end())
-          return invalid("polyhedral tile factor has no proven tiled schedule");
+          return detail::invalidStructuredSchedule("polyhedral tile factor has no proven tiled schedule");
         polyhedralSource->schedule = std::move(tiled->schedule);
         polyhedralSource->tiledSchedules.clear();
       }
       exactPolyhedralSource = &*polyhedralSource;
     }
     if (exactPolyhedralSource->root != decision.loop)
-      return invalid("frozen polyhedral SCoP belongs to another source loop");
+      return detail::invalidStructuredSchedule("frozen polyhedral SCoP belongs to another source loop");
     if (decision.factor == 0 &&
         exactPolyhedralSource->schedule.form ==
             StructuredPolyhedralScheduleForm::SourceOrder)
-      return invalid("polyhedral decision has no transform schedule form");
+      return detail::invalidStructuredSchedule("polyhedral decision has no transform schedule form");
   }
 
   mlir::Operation *selectedLoop = nullptr;
@@ -1649,45 +1429,45 @@ materializeStructuredScheduleImpl(
   switch (decision.kind) {
   case StructuredScheduleDecisionKind::Tile:
     if (!scfLoop)
-      return invalid("tile decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("tile decision does not reference scf.for");
     if (llvm::Error error = applyTile(scfLoop, decision.factor))
       return std::move(error);
     break;
   case StructuredScheduleDecisionKind::Unroll:
     if (!scfLoop)
-      return invalid("unroll decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("unroll decision does not reference scf.for");
     if (llvm::Error error = applyUnroll(scfLoop, decision.factor))
       return std::move(error);
     break;
   case StructuredScheduleDecisionKind::Interchange:
     if (!scfLoop)
-      return invalid("interchange decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("interchange decision does not reference scf.for");
     if (decision.factor != 0)
-      return invalid("interchange decision carries a factor");
+      return detail::invalidStructuredSchedule("interchange decision carries a factor");
     if (llvm::Error error = applyInterchange(scfLoop))
       return std::move(error);
     break;
   case StructuredScheduleDecisionKind::UnrollAndJam:
     if (!scfLoop)
-      return invalid("unroll-and-jam decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("unroll-and-jam decision does not reference scf.for");
     if (llvm::Error error = applyUnrollAndJam(scfLoop, decision.factor))
       return std::move(error);
     break;
   case StructuredScheduleDecisionKind::Parallelize:
     if (!scfLoop)
-      return invalid("parallelize decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("parallelize decision does not reference scf.for");
     if (decision.factor != 0)
-      return invalid("parallelize decision carries a factor");
+      return detail::invalidStructuredSchedule("parallelize decision carries a factor");
     {
       mlir::Block *parentBlock = scfLoop->getBlock();
       mlir::Operation *successor = scfLoop->getNextNode();
       if (mlir::failed(raising::materializeIndependentLoopAsForall(scfLoop)))
-        return invalid("SCF parallelization rejected the selected decision");
+        return detail::invalidStructuredSchedule("SCF parallelization rejected the selected decision");
       mlir::Operation *replacement =
           successor ? successor->getPrevNode() : &parentBlock->back();
       auto parallel = llvm::dyn_cast_or_null<mlir::scf::ForallOp>(replacement);
       if (!parallel)
-        return invalid("SCF parallelization did not produce one forall");
+        return detail::invalidStructuredSchedule("SCF parallelization did not produce one forall");
       if (insideSpatialRegion)
         if (llvm::Error error =
                 materializeOwnedSpatialForallThreadDomain(parallel))
@@ -1696,9 +1476,9 @@ materializeStructuredScheduleImpl(
     break;
   case StructuredScheduleDecisionKind::ParallelizeNest:
     if (!scfLoop)
-      return invalid("parallel-nest decision does not reference scf.for");
+      return detail::invalidStructuredSchedule("parallel-nest decision does not reference scf.for");
     if (decision.factor != 0)
-      return invalid("parallel-nest decision carries a factor");
+      return detail::invalidStructuredSchedule("parallel-nest decision carries a factor");
     if (auto parallel = applyParallelizeNest(scfLoop)) {
       if (insideSpatialRegion)
         if (llvm::Error error =
@@ -1710,7 +1490,7 @@ materializeStructuredScheduleImpl(
     break;
   case StructuredScheduleDecisionKind::Vectorize:
     if (!exactVectorSource || !decision.vector)
-      return invalid("vector decision has no exact SCoP coordinate");
+      return detail::invalidStructuredSchedule("vector decision has no exact SCoP coordinate");
     {
       auto projected = projectExactStructuredScopToAffine(selectedLoop);
       if (!projected)
@@ -1723,7 +1503,7 @@ materializeStructuredScheduleImpl(
         if (fabric)
           return llvm::make_error<StructuredScheduleProposalRefusal>(
               decision.loop, *refusal);
-        return invalid("Affine provider rejected the selected coordinate");
+        return detail::invalidStructuredSchedule("Affine provider rejected the selected coordinate");
       }
       mlir::affine::AffineForOp vectorizedLoop =
           std::get<mlir::affine::AffineForOp>(*vectorized);
@@ -1742,7 +1522,7 @@ materializeStructuredScheduleImpl(
         if (fabric)
           return llvm::make_error<StructuredScheduleProposalRefusal>(
               decision.loop, *refusal);
-        return invalid("vector lowering rejected the selected coordinate");
+        return detail::invalidStructuredSchedule("vector lowering rejected the selected coordinate");
       }
       mlir::scf::ForOp loweredLoop = std::get<mlir::scf::ForOp>(*lowered);
       if (fabric && decision.vector->tailPolicy ==
@@ -1767,7 +1547,7 @@ materializeStructuredScheduleImpl(
     break;
   case StructuredScheduleDecisionKind::PolyhedralSchedule:
     if (!exactPolyhedralSource)
-      return invalid("polyhedral decision has no exact SCoP schedule");
+      return detail::invalidStructuredSchedule("polyhedral decision has no exact SCoP schedule");
     if (canMaterializeCanonicalPolyhedralSchedule(selectedLoop,
                                                   *exactPolyhedralSource)) {
       if (llvm::Error error =
@@ -1787,7 +1567,7 @@ materializeStructuredScheduleImpl(
         if (fabric)
           return llvm::make_error<StructuredScheduleProposalRefusal>(
               decision.loop, **materialized);
-        return invalid("polyhedral schedule materialization was refused");
+        return detail::invalidStructuredSchedule("polyhedral schedule materialization was refused");
       }
       if (decision.factor != 0) {
         llvm::SmallPtrSet<mlir::Operation *, 32> materializedSet(
@@ -1809,7 +1589,7 @@ materializeStructuredScheduleImpl(
             transformedScheduleRoots.push_back(operation);
         }
         if (transformedScheduleRoots.empty())
-          return invalid("tiled polyhedral schedule has no transformed root");
+          return detail::invalidStructuredSchedule("tiled polyhedral schedule has no transformed root");
       }
       if (fabric) {
         for (mlir::Operation *operation : materializedOperations) {
@@ -1862,7 +1642,7 @@ materializeStructuredScheduleImpl(
         SpatialOwnershipCandidateRejectionKind::NonFinalizable,
         std::move(*parallelRejection));
   if (mlir::failed(mlir::verify(**clone)))
-    return invalid("materialized schedule candidate does not verify");
+    return detail::invalidStructuredSchedule("materialized schedule candidate does not verify");
   llvm::SmallVector<mlir::Operation *, 3> trackedOperations;
   if (clonedSpatialRegion)
     trackedOperations.push_back(clonedSpatialRegion);
@@ -1872,7 +1652,7 @@ materializeStructuredScheduleImpl(
   if (!finalized)
     return finalized.takeError();
   if (finalized->trackedOperations.size() != trackedOperations.size())
-    return invalid("tracked schedule projection changed cardinality");
+    return detail::invalidStructuredSchedule("tracked schedule projection changed cardinality");
   std::optional<StructuredEntityRef> projectedSpatial;
   std::size_t scheduleRootOffset = 0;
   if (clonedSpatialRegion)
@@ -1907,18 +1687,18 @@ materializeStructuredScheduleProposal(
     std::optional<StructuredEntityRef> trackedSpatialRegion,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   if (proposal.decision_.loop.parent != parent.identity())
-    return invalid("schedule proposal belongs to another parent");
+    return detail::invalidStructuredSchedule("schedule proposal belongs to another parent");
   if (proposal.fabric_ != fabric.reference())
-    return invalid("schedule proposal belongs to another Fabric");
+    return detail::invalidStructuredSchedule("schedule proposal belongs to another Fabric");
   if ((proposal.decision_.kind == StructuredScheduleDecisionKind::Vectorize) !=
       static_cast<bool>(proposal.exactScop_))
-    return invalid("schedule proposal has an inconsistent frozen SCoP");
+    return detail::invalidStructuredSchedule("schedule proposal has an inconsistent frozen SCoP");
   if ((proposal.decision_.kind ==
        StructuredScheduleDecisionKind::PolyhedralSchedule) !=
       static_cast<bool>(proposal.polyhedralScop_))
-    return invalid("schedule proposal has an inconsistent polyhedral SCoP");
+    return detail::invalidStructuredSchedule("schedule proposal has an inconsistent polyhedral SCoP");
   if (proposal.exactScop_ && proposal.polyhedralScop_)
-    return invalid("schedule proposal has competing exact SCoP views");
+    return detail::invalidStructuredSchedule("schedule proposal has competing exact SCoP views");
   FabricCapabilityIndex capabilityIndex(fabric.view());
   return materializeStructuredScheduleImpl(
       parent, proposal.decision_, proposal.exactScop_.get(),
@@ -1932,9 +1712,9 @@ verifyStructuredScheduleDerivation(const StructuredProgramCandidate &parent,
                                    const StructuredScheduleDecision &decision,
                                    const StructuredProgramCandidate &child) {
   if (decision.loop.parent != parent.identity())
-    return invalid("schedule derivation decision belongs to another parent");
+    return detail::invalidStructuredSchedule("schedule derivation decision belongs to another parent");
   if (parent.identity() == child.identity())
-    return invalid("schedule derivation is a self edge");
+    return detail::invalidStructuredSchedule("schedule derivation is a self edge");
   auto domain = enumerateStructuredScheduleDecisions(
       parent, fabric, std::numeric_limits<std::uint64_t>::max(), decision.loop);
   if (!domain)
@@ -1944,7 +1724,7 @@ verifyStructuredScheduleDerivation(const StructuredProgramCandidate &parent,
         return proposal.decision() == decision;
       });
   if (admitted == domain->proposals.end())
-    return invalid("schedule derivation decision is outside the admitted "
+    return detail::invalidStructuredSchedule("schedule derivation decision is outside the admitted "
                    "domain: loop=" +
                    llvm::Twine(decision.loop.ordinal) + " kind=" +
                    llvm::Twine(static_cast<std::uint32_t>(decision.kind)) +
@@ -1956,7 +1736,7 @@ verifyStructuredScheduleDerivation(const StructuredProgramCandidate &parent,
   if (replayed->structuredProgram.identity() != child.identity() ||
       replayed->structuredProgram.canonicalBytes().bytes() !=
           child.canonicalBytes().bytes())
-    return invalid("schedule derivation does not replay to its exact child");
+    return detail::invalidStructuredSchedule("schedule derivation does not replay to its exact child");
   return llvm::Error::success();
 }
 

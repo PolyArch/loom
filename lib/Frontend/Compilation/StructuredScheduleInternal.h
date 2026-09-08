@@ -5,6 +5,8 @@
 
 namespace loom::frontend::detail {
 
+llvm::Error invalidStructuredSchedule(const llvm::Twine &message);
+
 llvm::Error validateStructuredVectorScheduleCoordinate(
     const StructuredVectorScheduleCoordinate &coordinate);
 
