@@ -376,14 +376,24 @@ SystemPlatformModel {
                                       window under FairEventual)
   memory_service_picoseconds_per_byte : rate window / (operations per window
                                         * service beat bytes)
-  acc_core_outstanding_requests     : rate maxOutstanding
-  acc_core_request_bytes            : service beat bytes
+  acc_core_outstanding_requests     : miss-status entries of the most
+                                      constrained Spatial access cache,
+                                      capped by rate maxOutstanding
+  acc_core_request_bytes            : smallest Spatial access cache line
   launch_dispatch_picoseconds       : host Thread Dispatch leaves and PIO
                                       operations per activation
   launch_fixed_picoseconds          : AccCore InstructionCore entry, bridge
                                       programming, and completion PIO
+  configuration_bytes_per_core      : packed ConfigurationABI programming
+                                      unit bits of the exact Fabric, rounded
+                                      to bytes, divided over the AccCores
 }
 ```
+
+Every SpatialCore reaches the shared memory through its Spatial memory access
+cache, so one request is one line fill and the miss-status entries bound the
+line fills in flight. The configuration payload is derived from the packed
+ConfigurationABI once per Fabric identity and memoized for the process.
 
 The launch protocol operation counts follow the launch sequence owned by
 `docs/spec-runtime-abi.md`; the model identity pins them together with the
@@ -411,6 +421,9 @@ point            = max(compute, bandwidth, latency_chain)
 wire             = memory_latency + boundary_bytes * service_ps_per_byte
 duration         = activations * launch_dispatch
                  + per_core * (launch_fixed + wire + point)
+configuration(u) = max(configuration_bytes * u * service_ps_per_byte,
+                       ceil(ceil(configuration_bytes / request_bytes)
+                            / outstanding) * memory_latency)
 ```
 
 The largest term is the site's typed bottleneck: `Launch` when the fixed cost
@@ -418,11 +431,15 @@ reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
 `MemoryLatency`. Whole-case Runtime is the serialized host residual
 (executable leaves outside Spatial ownership times the host cycles per leaf
 and the clock period) plus every launch site's duration under the widest
-useful allocation. The same per-site estimates feed the resource-time
-projection: a region whose every rooted launch site carries an estimate takes
-the sum of those durations as its speedup-curve point for each allocation, so
-launch cost, shared bandwidth, and latency-bound request chains bound the
-schedule frontier instead of a weight-split runtime divided by units.
+useful allocation, plus the configuration load of the widest allocation any
+site uses: every configured AccCore streams its share of the packed
+configuration image concurrently before its first launch. The same per-site
+estimates feed the resource-time projection: a region whose every rooted
+launch site carries an estimate takes the sum of those durations as its
+speedup-curve point for each allocation and `configuration(u)` as the point's
+configuration time, so launch cost, configuration load, shared bandwidth, and
+latency-bound request chains bound the schedule frontier instead of a
+weight-split runtime divided by units.
 
 Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config

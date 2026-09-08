@@ -134,16 +134,13 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
     llvm::StringRef entrySymbol,
     std::optional<std::uint64_t> estimatedRuntimePicoseconds,
     llvm::ArrayRef<evaluation::models::AnalyticLaunchEstimate> launchEstimates,
+    const evaluation::models::SystemPlatformModel *platform,
     ResourceTimeEstimateSupport physicalModelSupport) {
   if (entrySymbol.empty())
     return invalid("resource-time projection requires an ABI entry symbol");
-  std::optional<evaluation::models::SystemPlatformModel> platform;
-  if (!launchEstimates.empty()) {
-    auto projected = evaluation::models::projectSystemPlatformModel(system);
-    if (!projected)
-      return projected.takeError();
-    platform.emplace(*projected);
-  }
+  if (!launchEstimates.empty() && !platform)
+    return invalid("resource-time projection has launch estimates but no "
+                   "System platform model");
   if (physicalModelSupport != ResourceTimeEstimateSupport::Calibrated &&
       physicalModelSupport != ResourceTimeEstimateSupport::OutOfDomain &&
       physicalModelSupport != ResourceTimeEstimateSupport::Unsupported)
@@ -353,12 +350,17 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
             return invalid("resource-time region duration overflows");
           duration = *sum;
         }
+        auto configuration =
+            evaluation::models::estimateConfigurationLoadPicoseconds(*platform,
+                                                                     units);
+        if (!configuration)
+          return configuration.takeError();
         feature.speedupCurve.push_back({{units},
                                         std::max<std::uint64_t>(1, duration),
                                         std::nullopt,
                                         std::nullopt,
                                         0,
-                                        0,
+                                        *configuration,
                                         0,
                                         ResourceTimeEstimateSupport::Analytic});
       }

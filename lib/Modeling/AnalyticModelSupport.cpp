@@ -648,6 +648,7 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
   auto runtime = estimateHostResidualPicoseconds(platform, instructionLeaves);
   if (!runtime)
     return runtime.takeError();
+  std::uint64_t configuredCores = 0;
   for (const AnalyticLaunchEstimate &launch : launches) {
     auto duration =
         estimateLaunchDuration(platform, launch, platform.accCoreCount);
@@ -656,7 +657,16 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
     if (llvm::Error error = accumulateScaled(*runtime, duration->picoseconds, 1,
                                              "launch Runtime"))
       return std::move(error);
+    configuredCores = std::max(
+        configuredCores, std::min(platform.accCoreCount, launch.activations));
   }
+  auto configuration =
+      estimateConfigurationLoadPicoseconds(platform, configuredCores);
+  if (!configuration)
+    return configuration.takeError();
+  if (llvm::Error error =
+          accumulateScaled(*runtime, *configuration, 1, "configuration load"))
+    return std::move(error);
   if (*runtime >
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return llvm::createStringError(
@@ -696,7 +706,7 @@ projectFabricPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
     llvm::consumeError(system.takeError());
     return std::optional<SystemPlatformModel>{};
   }
-  auto platform = projectSystemPlatformModel(*system);
+  auto platform = projectSystemPlatformModel(fabricRoot);
   if (!platform)
     return platform.takeError();
   return std::optional<SystemPlatformModel>(*platform);

@@ -613,9 +613,9 @@ void LoomSpatialBridge::resetBridge() {
       deschedule(&transaction->issueEvent);
   memoryTransactions.clear();
   retiredMemoryTransactions.clear();
-  staticLaunchPayload.clear();
-  residentStaticLaunchAddress = 0;
-  residentStaticLaunchSize = 0;
+  // The resident immutable plane is configuration state, not launch state:
+  // the AccCore resets the Bridge before every launch, and the next launch
+  // reuses the image while its descriptor is unchanged.
   invocationPayload.clear();
   memorySnapshotPayload.clear();
   pendingCompletion = {};
