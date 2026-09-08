@@ -292,12 +292,19 @@ CgraTransportRuntime::storageResidencyDiagnostics(
     const InFlight &inFlight = inFlight_[entry.transferSlot];
     record.bindingOrdinal = inFlight.bindingOrdinal;
     record.occurrenceOrdinal = inFlight.occurrenceOrdinal;
-    if (inFlight.bindingOrdinal < graph_.bindings.size()) {
+    if (inFlight.bindingOrdinal < graph_.bindings.size() &&
+        entry.traversalNodeOrdinal < graph_.traversalNodes.size()) {
       const TransferBinding &binding = graph_.bindings[inFlight.bindingOrdinal];
       record.producerActorOrdinal =
           binding.semanticActorOrdinal.value_or(invalidCgraTransportOrdinal);
-      for (std::uint64_t sink = binding.sinkOffset;
-           sink != binding.sinkOffset + binding.sinkCount; ++sink) {
+      const TraversalNodeBinding &traversal =
+          graph_.traversalNodes[entry.traversalNodeOrdinal];
+      const auto &destinations =
+          traversal.kind == TraversalNodeKind::BufferedStorage
+              ? traversal.unbufferedDescendantSinks
+              : traversal.descendantSinks;
+      for (std::uint32_t localSink : destinations) {
+        const std::uint64_t sink = binding.sinkOffset + localSink;
         if (sink >= graph_.sinks.size())
           break;
         const SinkBinding &binding = graph_.sinks[sink];

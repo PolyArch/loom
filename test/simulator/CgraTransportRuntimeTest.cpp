@@ -809,6 +809,117 @@ void ordinaryFanoutPublicationsProgressIndependently() {
           "ordinary fanout retry duplicated or lost a branch token");
 }
 
+void bufferedFanoutWaitNamesOnlyItsOwnBranch() {
+  auto artifact = fanoutProgram();
+  const auto &view = artifact.view();
+  llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
+  for (const auto &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::ArithAddI)
+      adds.push_back(&actor);
+  require(adds.size() == 3, "buffered fanout lacks its consumers");
+  const auto &left = *adds[0];
+  const auto &right = *adds[1];
+  auto graph = mlir::cast<dataflow::GraphOp>(take(view.resolve(left.graph)).op);
+  auto preparation = take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparation);
+  require(prepared, "buffered fanout graph preparation failed");
+
+  const dataflow::CanonicalGraphProducerEndpointRef producer(
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{left.graph, 0}});
+  CgraFrozenExecutionPlan plan;
+  plan.transport.localTransfers.push_back({producer, left.graph, 0, 1});
+  plan.transport.localTransferSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{right.ref, 0}}});
+  plan.transport.traversals.resize(1);
+  auto &traversal = plan.transport.traversals.front();
+  traversal.kind = loom::fabric::FabricPhysicalTraversalKind::FifoTraversal;
+  traversal.storageKind = CgraTraversalStorageKind::BufferedFifo;
+  traversal.storageOrdinal = 0;
+  plan.transport.traversalStorages.push_back({});
+  auto &storage = plan.transport.traversalStorages.front();
+  storage.kind = CgraTraversalStorageKind::BufferedFifo;
+  storage.capacity = 1;
+  storage.enqueuePhysicalUseOrdinal = 0;
+  storage.dequeuePhysicalUseOrdinal = 1;
+  storage.simultaneousPhysicalUseOrdinal = 2;
+  plan.transport.routeNodes.push_back(
+      {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
+  plan.transport.routeSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{left.ref, 0}},
+       0, invalidCgraTransportOrdinal});
+  plan.transport.routes.push_back({producer, left.graph, 0, 0, 1, 0, 1});
+  for (std::uint64_t action = 0; action != 3; ++action) {
+    plan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::TraversalTransport);
+    plan.resources.selectedUses.push_back({});
+    plan.physicalUseTimings.push_back({action, 0, 1, 2, 0, 2, 1});
+  }
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  const auto token = [](std::uint64_t value) {
+    return take(tokenFromBitPattern(llvm::APInt(32, value),
+                                    mlir::IntegerType::get(&context(), 32)));
+  };
+  TokenQueue &leftChannel = channelQueue(state, left.op->getOpOperand(0));
+  TokenQueue &rightChannel = channelQueue(state, right.op->getOpOperand(0));
+  leftChannel.push_back(token(7));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transportGraph =
+      take(freezeCgraTransportGraph(plan, view, left.graph, *prepared));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, transportGraph, state, physical));
+  const auto drainEvents = [&]() {
+    for (unsigned step = 0; step != 64; ++step) {
+      const auto transportTime = transport.nextCoordinate();
+      const auto physicalTime = physical.nextCoordinate();
+      if (!transportTime && !physicalTime)
+        return;
+      if (physicalTime &&
+          (!transportTime || loom::sim::compareSpatialEventCoordinates(
+                                 *physicalTime, *transportTime) <= 0)) {
+        auto frame = take(physical.advance());
+        require(frame.has_value(), "buffered fanout physical event disappeared");
+        take(transport.acceptPhysicalEvents(*frame));
+      } else {
+        take(transport.advance());
+      }
+    }
+    fail("buffered fanout did not reach quiescence");
+  };
+  llvm::SmallVector<GraphIngressEmission, 1> ingress;
+  ingress.push_back({1, 0, token(19)});
+  if (llvm::Error error =
+          transport.acceptGraphIngressEmissions(coordinate(0), ingress))
+    fail(llvm::toString(std::move(error)));
+  drainEvents();
+  const auto resident = transport.storageResidencyDiagnostics(0);
+  require(leftChannel.size() == 1 && rightChannel.size() == 1 &&
+              resident.size() == 1 &&
+              resident.front().destinationChannelOrdinals ==
+                  std::vector<std::uint64_t>{
+                      prepared->channelOrdinals.lookup(
+                          &left.op->getOpOperand(0))},
+          "FIFO wait included a fanout consumer outside its buffered branch");
+  leftChannel.pop_front();
+  if (llvm::Error error = transport.retryBlocked(coordinate(100)))
+    fail(llvm::toString(std::move(error)));
+  drainEvents();
+  require(transport.storageResidencyDiagnostics(0).empty() &&
+              leftChannel.size() == 1 && rightChannel.size() == 1 &&
+              take(tokenBitPattern(leftChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 19) &&
+              take(tokenBitPattern(rightChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 19),
+          "buffered fanout retry lost or duplicated a branch token");
+}
+
 void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   auto artifact = fanoutProgram();
   const auto &view = artifact.view();
@@ -1361,6 +1472,7 @@ int main() {
   localRealizationEdgePublishesThroughExactConsumer();
   registerFifoWriteAndReadShareOneDurableQueue();
   ordinaryFanoutPublicationsProgressIndependently();
+  bufferedFanoutWaitNamesOnlyItsOwnBranch();
   temporalOperandQueueCapacityAndFanoutAreAtomic();
   temporalOperandQueueAdmissionPrioritizesComplement();
   virtualChannelNoComplementRotationIsAClosedWait();
