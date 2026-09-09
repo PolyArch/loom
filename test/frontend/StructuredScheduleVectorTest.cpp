@@ -9,6 +9,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Frontend/Compilation/StructuredScop.h"
 #include "Frontend/IR/LoomOps.h"
@@ -1012,9 +1013,6 @@ module attributes {dlti.dl_spec = #layout} {
           %sum = arith.addi %left, %right : i32
           memref.store %sum, %right_aligned[%i] : memref<16xi32>
         }
-        scf.for %j = %c0 to %c16 step %c1 {
-          %doubled = arith.addi %j, %j : index
-        }
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {graph_name = "vector_graph", source_maps = []} :
@@ -1056,14 +1054,56 @@ module attributes {dlti.dl_spec = #layout} {
     fail("schedule derivation replay rejected its exact child: " +
          llvm::toString(std::move(verification)));
 
+  auto parallelParent = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  memref.global @output : memref<16xi32> = dense<0>
+  dataflow.thread private @parallel_thread
+      domain(#dataflow.thread_domain<dense>)(%out: memref<16xi32>)
+      ctrl (%start: none) {
+    "loom.spatial_region"(%out)
+        <{operandSegmentSizes = array<i32: 0, 0, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%memory: memref<16xi32>):
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c16 = arith.constant 16 : index
+        scf.for %i = %c0 to %c16 step %c1 {
+          %value = arith.index_cast %i : index to i32
+          memref.store %value, %memory[%i] : memref<16xi32>
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {source_maps = []} : (memref<16xi32>) -> ()
+    dataflow.thread.yield
+  }
+  llvm.func @entry() {
+    %out = memref.get_global @output : memref<16xi32>
+    %token = dataflow.thread.launch @parallel_thread(%out) :
+        (memref<16xi32>) -> !dataflow.thread_token
+    dataflow.thread.wait %token : !dataflow.thread_token
+    llvm.return
+  }
+}
+)mlir");
+  auto parallelDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      parallelParent, fabric, 8));
+  auto parallelMemoryLoop = [](const auto &proposal, const auto &view) {
+    if (proposal.decision().kind !=
+        loom::frontend::StructuredScheduleDecisionKind::Parallelize)
+      return false;
+    auto loop = take(view.resolve(proposal.decision().loop));
+    bool hasStore = false;
+    loop.operation->walk([&](mlir::memref::StoreOp) { hasStore = true; });
+    return hasStore;
+  };
+  auto view = take(parallelParent.view());
   auto parallelProposal =
-      llvm::find_if(domain.proposals, [](const auto &proposal) {
-        return proposal.decision().kind ==
-               loom::frontend::StructuredScheduleDecisionKind::Parallelize;
+      llvm::find_if(parallelDomain.proposals, [&](const auto &proposal) {
+        return parallelMemoryLoop(proposal, view);
       });
-  if (parallelProposal == domain.proposals.end())
-    fail("production Spatial fixture produced no parallel proposal");
-  auto view = take(parent.view());
+  if (parallelProposal == parallelDomain.proposals.end())
+    fail("production Spatial fixture produced no parallel memory proposal");
   std::optional<loom::frontend::StructuredEntityRef> spatial;
   for (const loom::frontend::StructuredEntity &entity :
        view.entities(loom::frontend::StructuredEntityKind::Operation))
@@ -1075,15 +1115,57 @@ module attributes {dlti.dl_spec = #layout} {
     fail("production Spatial fixture lost its exact region reference");
   auto untrackedParallel =
       take(loom::frontend::materializeStructuredScheduleProposal(
-          parent, *parallelProposal, fabric));
+          parallelParent, *parallelProposal, fabric));
   auto trackedParallel =
       take(loom::frontend::materializeStructuredScheduleProposal(
-          parent, *parallelProposal, fabric, *spatial));
+          parallelParent, *parallelProposal, fabric, *spatial));
   if (untrackedParallel.structuredProgram.identity() !=
           trackedParallel.structuredProgram.identity() ||
       untrackedParallel.trackedSpatialRegion ||
       !trackedParallel.trackedSpatialRegion)
     fail("tracked Spatial projection changed schedule child semantics");
+
+  // A store outside the selected loop must execute once even for an empty
+  // loop. Expanding the entire thread's launch domain would change its count.
+  mlir::OwningOpRef<mlir::ModuleOp> withSiblingEffect(
+      llvm::cast<mlir::ModuleOp>(parallelParent.module()->clone()));
+  withSiblingEffect->walk([&](loom::SpatialRegionOp region) {
+    mlir::Block &body = region.getBody().front();
+    mlir::OpBuilder builder(body.getTerminator());
+    mlir::Value index =
+        mlir::arith::ConstantIndexOp::create(builder, region.getLoc(), 0);
+    mlir::Value value =
+        mlir::arith::ConstantIntOp::create(builder, region.getLoc(), 1, 32);
+    mlir::memref::StoreOp::create(builder, region.getLoc(), value,
+                                  body.getArgument(0), mlir::ValueRange{index});
+  });
+  auto effectParent =
+      take(loom::frontend::finalizeStructuredProgram(withSiblingEffect.get()));
+  auto effectDomain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+      effectParent, fabric, 8));
+  auto effectView = take(effectParent.view());
+  auto effectParallel =
+      llvm::find_if(effectDomain.proposals, [&](const auto &proposal) {
+        return parallelMemoryLoop(proposal, effectView);
+      });
+  if (effectParallel == effectDomain.proposals.end())
+    fail("sibling effect fixture lost its independently parallel loop");
+  auto replicated = loom::frontend::materializeStructuredScheduleProposal(
+      effectParent, *effectParallel, fabric);
+  if (replicated)
+    fail("thread domain replicated an effect outside the selected loop");
+  bool nonFinalizable = false;
+  llvm::Error unhandled = llvm::handleErrors(
+      replicated.takeError(),
+      [&](const loom::frontend::SpatialOwnershipCandidateRejection &rejection) {
+        nonFinalizable = rejection.kind() ==
+                         loom::frontend::SpatialOwnershipCandidateRejectionKind::
+                             NonFinalizable;
+      });
+  if (unhandled || !nonFinalizable)
+    fail("sibling effect was not a typed thread-domain refusal: " +
+         llvm::toString(std::move(unhandled)));
+
   auto lowered = take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
       child.structuredProgram));
 

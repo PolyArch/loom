@@ -947,6 +947,26 @@ materializeOwnedSpatialForallThreadDomainImpl(mlir::scf::ForallOp forall) {
   if (!spatial || !thread || spatial->getBlock() != &thread.getBody().front())
     return invalid("thread-domain forall is not inside one owned Spatial "
                    "carrier");
+  // The launch domain replicates the complete thread, not only the selected
+  // loop. Every observable effect must belong to that iteration; otherwise
+  // promotion duplicates sibling work or drops it for an empty domain.
+  mlir::Operation *uncoveredEffect = nullptr;
+  thread.walk<mlir::WalkOrder::PreOrder>(
+      [&](mlir::Operation *operation) {
+        if (operation == forall.getOperation())
+          return mlir::WalkResult::skip();
+        if (operation == thread.getOperation() ||
+            operation == spatial.getOperation())
+          return mlir::WalkResult::advance();
+        if (mlir::isMemoryEffectFree(operation))
+          return mlir::WalkResult::skip();
+        uncoveredEffect = operation;
+        return mlir::WalkResult::interrupt();
+      });
+  if (uncoveredEffect)
+    return invalid("thread-domain promotion would replicate effects outside "
+                   "the selected forall: " +
+                   uncoveredEffect->getName().getStringRef());
   const std::size_t inputCount = thread.getFunctionType().getNumInputs();
   mlir::Block &threadEntry = thread.getBody().front();
   if (threadEntry.getNumArguments() != inputCount + 1)
