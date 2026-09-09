@@ -188,7 +188,7 @@ std::optional<MemoryOrderFrontierId> publishAtomicRelation(
     }
   }
   state.memoryActions.retain(ready.action, effect, synchronization);
-  return state.memoryOrderFrontiers.internCanonical(effect);
+  return MemoryOrderFrontierId::fromEffect(effect);
 }
 
 PrimitiveValue exceptionalRmwResult(const PrimitiveValue &oldValue,
@@ -550,8 +550,9 @@ bool fireFence(dataflow::FenceOp op, SimulatorState &state) {
   if (!hasInputToken(state, 0))
     return false;
   llvm::SmallVector<SyncEffectId, 2> frontier;
-  state.memoryOrderFrontiers.appendCanonicalEffects(
-      peekInputToken(state, 0).memoryOrder, frontier);
+  const MemoryOrderFrontierId incoming = peekInputToken(state, 0).memoryOrder;
+  if (!incoming.empty())
+    frontier.push_back(incoming.effect());
   MemorySynchronization &synchronization = memorySynchronization(state);
   auto declared = synchronization.declareEffectSequencedAfter(frontier);
   if (!declared)
@@ -567,7 +568,7 @@ bool fireFence(dataflow::FenceOp op, SimulatorState &state) {
             synchronization.appendSequentiallyConsistent(effect, *domain))
       return fail(state, RunFailure::ProviderInvariant, std::move(error));
   const MemoryOrderFrontierId publication =
-      state.memoryOrderFrontiers.internCanonical(effect);
+      MemoryOrderFrontierId::fromEffect(effect);
 
   (void)popInputToken(state, 0);
   emitResultTokenWithMemoryOrder(state, 0, noneToken(), publication);

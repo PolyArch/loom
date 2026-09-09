@@ -177,8 +177,10 @@ PlainMemoryConflictIndex::queryKind(const MemoryActionRecord &action,
 }
 
 llvm::SmallVector<SyncEffectId> PlainMemoryConflictIndex::querySameKind(
-    const MemoryActionRecord &action) const {
-  return queryKind(action, action.isAtomic);
+    const MemoryActionRecord &action,
+    const MemorySynchronization &synchronization) const {
+  return llvm::cantFail(synchronization.maximalHappensBeforeFrontier(
+      queryKind(action, action.isAtomic)));
 }
 
 llvm::SmallVector<SyncEffectId> PlainMemoryConflictIndex::queryCrossKind(
@@ -243,22 +245,27 @@ void PlainMemoryConflictIndex::applyAccess(
     AccessHazards &hazards, bool isWrite, SyncEffectId effect,
     MemorySynchronization &synchronization) {
   if (isWrite) {
-    hazards.reads.erase(
-        std::remove_if(hazards.reads.begin(), hazards.reads.end(),
-                       [&](SyncEffectId read) {
-                         return synchronization.happensBefore(read, effect);
-                       }),
-        hazards.reads.end());
+    if (!hazards.reads.isEmpty()) {
+      llvm::SmallVector<SyncEffectId> reads(hazards.reads.begin(),
+                                           hazards.reads.end());
+      const std::size_t previousCount = reads.size();
+      reads.push_back(effect);
+      reads = llvm::cantFail(
+          synchronization.maximalHappensBeforeFrontier(reads));
+      llvm::erase(reads, effect);
+      if (reads.size() != previousCount) {
+        hazards.reads = {};
+        for (SyncEffectId read : llvm::reverse(reads))
+          hazards.reads = readHistories_.add(read, hazards.reads);
+      }
+    }
     hazards.writes.push_back(effect);
     if (hazards.writes.size() > 1)
       hazards.writes = llvm::cantFail(
           synchronization.maximalHappensBeforeFrontier(hazards.writes));
     return;
   }
-  hazards.reads.push_back(effect);
-  if (hazards.reads.size() > 1)
-    hazards.reads = llvm::cantFail(
-        synchronization.maximalHappensBeforeFrontier(hazards.reads));
+  hazards.reads = readHistories_.add(effect, hazards.reads);
 }
 
 PlainMemoryConflictIndex::Hazards
@@ -404,7 +411,8 @@ bool admitReadyPlainMemoryActions(SimulatorState &state) {
     if (!state.memoryActions.queryCrossKind(candidate.action).empty())
       return rejectMixedMemoryConflict(state);
     llvm::SmallVector<SyncEffectId> conflict =
-        state.memoryActions.querySameKind(candidate.action);
+        state.memoryActions.querySameKind(candidate.action,
+                                          memorySynchronization(state));
     if (!conflict.empty() && !state.memorySync->areCoveredByHappensBefore(
                                  conflict, candidate.ctrlFrontier))
       return rejectPlainMemoryConflict(state);

@@ -1023,9 +1023,12 @@ MemorySynchronization &memorySynchronization(SimulatorState &state) {
 static llvm::SmallVector<SyncEffectId, 2>
 peekMemoryOrderFrontier(SimulatorState &state, unsigned controlOperandOrdinal) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
-  if (hasInputToken(state, controlOperandOrdinal))
-    state.memoryOrderFrontiers.appendCanonicalEffects(
-        peekInputToken(state, controlOperandOrdinal).memoryOrder, frontier);
+  if (hasInputToken(state, controlOperandOrdinal)) {
+    const MemoryOrderFrontierId incoming =
+        peekInputToken(state, controlOperandOrdinal).memoryOrder;
+    if (!incoming.empty())
+      frontier.push_back(incoming.effect());
+  }
   return frontier;
 }
 
@@ -1035,8 +1038,10 @@ issueMemoryAction(const MemoryActionRecord &action,
                   llvm::ArrayRef<SyncEffectId> orderFrontier,
                   SimulatorState &state) {
   if (action.byteRanges.empty()) {
-    // The admitted ctrl frontier is already canonical and reduced.
-    return state.memoryOrderFrontiers.internCanonical(orderFrontier);
+    assert(orderFrontier.size() <= 1 && "ctrl carries one order witness");
+    return orderFrontier.empty()
+               ? MemoryOrderFrontierId()
+               : MemoryOrderFrontierId::fromEffect(orderFrontier.front());
   }
   MemorySynchronization &sync = memorySynchronization(state);
   auto effect = sync.declareEffectSequencedAfter(orderFrontier);
@@ -1050,7 +1055,7 @@ issueMemoryAction(const MemoryActionRecord &action,
     return std::nullopt;
   }
   state.memoryActions.retain(action, *effect, sync);
-  return state.memoryOrderFrontiers.internCanonical(*effect);
+  return MemoryOrderFrontierId::fromEffect(*effect);
 }
 
 std::optional<DataflowMemoryRead>

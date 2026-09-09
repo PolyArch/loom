@@ -106,51 +106,61 @@ bool hasCycle(const Graph &graph) {
   return false;
 }
 
+} // namespace
+
 llvm::SmallVector<SyncEffectId>
-maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
-                  const Graph &predecessors) {
+MemorySynchronization::maximalCandidates(
+    llvm::ArrayRef<SyncEffectId> candidates, const Graph &predecessors,
+    bool declarationOrderIsTopological) const {
   llvm::SmallVector<SyncEffectId> accepted(candidates);
   canonicalize(accepted);
   if (accepted.size() < 2)
     return accepted;
 
-  std::vector<bool> isCandidate(predecessors.size(), false);
-  std::vector<bool> dominated(predecessors.size(), false);
-  std::vector<bool> seen(predecessors.size(), false);
-  llvm::SmallVector<SyncEffectId> worklist;
+  llvm::SmallVector<bool> dominated(accepted.size(), false);
+  std::size_t remaining = accepted.size();
+  beginTraversal(predecessors.size());
   for (SyncEffectId effect : accepted) {
-    isCandidate[effect.value()] = true;
-    seen[effect.value()] = true;
-    worklist.push_back(effect);
+    markVisited(effect);
+    traversalWorklist_.push_back(effect);
   }
-  while (!worklist.empty()) {
-    const SyncEffectId effect = worklist.pop_back_val();
+  while (!traversalWorklist_.empty() && remaining > 1) {
+    const SyncEffectId effect = traversalWorklist_.pop_back_val();
     for (SyncEffectId predecessor : predecessors[effect.value()]) {
-      if (isCandidate[predecessor.value()])
-        dominated[predecessor.value()] = true;
-      if (seen[predecessor.value()])
+      // When declaration order is a verified topological order, the prefix
+      // before the oldest candidate cannot contain another candidate ancestor.
+      if (declarationOrderIsTopological && predecessor < accepted.front())
         continue;
-      seen[predecessor.value()] = true;
-      worklist.push_back(predecessor);
+      auto candidate = llvm::lower_bound(accepted, predecessor);
+      if (candidate != accepted.end() && *candidate == predecessor) {
+        const std::size_t ordinal = candidate - accepted.begin();
+        if (!dominated[ordinal]) {
+          dominated[ordinal] = true;
+          --remaining;
+        }
+      }
+      if (markVisited(predecessor))
+        traversalWorklist_.push_back(predecessor);
     }
   }
-
-  llvm::erase_if(
-      accepted, [&](SyncEffectId effect) { return dominated[effect.value()]; });
-  return accepted;
+  traversalWorklist_.clear();
+  llvm::SmallVector<SyncEffectId> maximal;
+  for (auto [ordinal, effect] : llvm::enumerate(accepted))
+    if (!dominated[ordinal])
+      maximal.push_back(effect);
+  return maximal;
 }
 
-Graph transitivelyReduced(const Graph &graph) {
+MemorySynchronization::Graph MemorySynchronization::transitivelyReduced(
+    const Graph &graph, bool declarationOrderIsTopological) const {
   const Graph predecessors = reverseGraph(graph);
   Graph reduced(graph.size());
   for (std::uint64_t target = 0; target < predecessors.size(); ++target)
-    for (SyncEffectId predecessor :
-         maximalCandidates(predecessors[target], predecessors))
+    for (SyncEffectId predecessor : maximalCandidates(
+             predecessors[target], predecessors, declarationOrderIsTopological))
       reduced[predecessor.value()].push_back(SyncEffectId(target));
   return reduced;
 }
-
-} // namespace
 
 char MemorySynchronizationError::ID = 0;
 
@@ -364,25 +374,27 @@ MemorySynchronization::requireNoFenceRole(SyncEffectId effect) const {
   return llvm::Error::success();
 }
 
-void MemorySynchronization::reduceSequencedRelation(Facts &facts) const {
-  facts.sequenced = transitivelyReduced(facts.sequenced);
-}
-
 llvm::Error MemorySynchronization::commit(Facts candidate,
                                           bool reduceSequenced) {
   Graph relation = buildGraph(candidate);
   if (hasCycle(relation))
     return reject(Kind::CyclicOrder,
                   "the update closes a happens-before cycle");
+  bool declarationOrderIsTopological = true;
+  for (auto [ordinal, successors] : llvm::enumerate(relation))
+    for (SyncEffectId successor : successors)
+      declarationOrderIsTopological &= ordinal < successor.value();
   if (reduceSequenced) {
-    reduceSequencedRelation(candidate);
+    candidate.sequenced =
+        transitivelyReduced(candidate.sequenced, declarationOrderIsTopological);
     relation = buildGraph(candidate);
   }
   Graph sequencedPredecessors = reverseGraph(candidate.sequenced);
-  relation = transitivelyReduced(relation);
+  relation = transitivelyReduced(relation, declarationOrderIsTopological);
   Graph predecessors = reverseGraph(relation);
   facts_ = std::move(candidate);
   sequencedPredecessors_ = std::move(sequencedPredecessors);
+  declarationOrderIsTopological_ = declarationOrderIsTopological;
   relation_ = std::move(relation);
   predecessors_ = std::move(predecessors);
   return llvm::Error::success();
@@ -401,23 +413,10 @@ llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
                   "effect " + llvm::Twine(duplicate->value()) +
                       " occurs more than once in an incoming frontier");
 
-  if (accepted.size() == 2) {
-    if (reaches(facts_.sequenced, accepted[0], accepted[1]))
-      accepted.erase(accepted.begin());
-    else if (reaches(facts_.sequenced, accepted[1], accepted[0]))
-      accepted.pop_back();
-  } else if (accepted.size() > 2)
-    accepted = maximalCandidates(accepted, sequencedPredecessors_);
-  llvm::SmallVector<SyncEffectId, 2> relationPredecessors(accepted);
-  if (relationPredecessors.size() == 2) {
-    if (reaches(relation_, relationPredecessors[0], relationPredecessors[1]))
-      relationPredecessors.erase(relationPredecessors.begin());
-    else if (reaches(relation_, relationPredecessors[1],
-                     relationPredecessors[0]))
-      relationPredecessors.pop_back();
-  } else if (relationPredecessors.size() > 2)
-    relationPredecessors =
-        maximalCandidates(relationPredecessors, predecessors_);
+  accepted = maximalCandidates(accepted, sequencedPredecessors_,
+                                declarationOrderIsTopological_);
+  const auto relationPredecessors = maximalCandidates(
+      accepted, predecessors_, declarationOrderIsTopological_);
 
   const SyncEffectId effect(facts_.effects);
   ++facts_.effects;
@@ -675,8 +674,10 @@ bool MemorySynchronization::areCoveredByHappensBefore(
   if (undecided.empty())
     return true;
 
-  // Whatever one edge did not settle needs the frontier's full predecessor
-  // closure, which stays the authority's answer for a distant predecessor.
+  // A distant predecessor needs a reverse traversal, but a successful query
+  // is complete as soon as every requested effect has been reached.
+  canonicalize(undecided);
+  std::size_t remaining = undecided.size();
   beginTraversal(facts_.effects);
   for (SyncEffectId effect : seeds) {
     if (markVisited(effect))
@@ -685,34 +686,29 @@ bool MemorySynchronization::areCoveredByHappensBefore(
   while (!traversalWorklist_.empty()) {
     SyncEffectId effect = traversalWorklist_.pop_back_val();
     for (SyncEffectId predecessor : predecessors_[effect.value()]) {
+      if (declarationOrderIsTopological_ && predecessor < undecided.front())
+        continue;
       if (!markVisited(predecessor))
         continue;
+      if (std::binary_search(undecided.begin(), undecided.end(), predecessor) &&
+          --remaining == 0) {
+        traversalWorklist_.clear();
+        return true;
+      }
       traversalWorklist_.push_back(predecessor);
     }
   }
-  return llvm::all_of(undecided, [&](SyncEffectId effect) {
-    return traversalMarks_[effect.value()] == traversalGeneration_;
-  });
+  return false;
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>
 MemorySynchronization::maximalHappensBeforeFrontier(
     llvm::ArrayRef<SyncEffectId> effects) const {
-  llvm::SmallVector<SyncEffectId> accepted(effects);
-  canonicalize(accepted);
-  for (SyncEffectId effect : accepted)
+  for (SyncEffectId effect : effects)
     if (llvm::Error error = requireKnown(effect))
       return std::move(error);
-  if (accepted.size() == 2) {
-    if (happensBefore(accepted[0], accepted[1]))
-      accepted.erase(accepted.begin());
-    else if (happensBefore(accepted[1], accepted[0]))
-      accepted.pop_back();
-    return accepted;
-  }
-  if (accepted.size() > 2)
-    return maximalCandidates(accepted, predecessors_);
-  return accepted;
+  return maximalCandidates(effects, predecessors_,
+                            declarationOrderIsTopological_);
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>

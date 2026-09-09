@@ -4,6 +4,7 @@
 #include "Simulator/MemoryAtomicOrder.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -19,15 +20,17 @@
 namespace loom {
 namespace sim {
 
-/// Execution-local identity of one memory effect that participates in software
-/// ordering. Only MemorySynchronization effect declarations allocate one. It
-/// is a handle, not the MemoryAction projection: actor occurrence, contract
+/// Execution-local identity of one memory-order event, including an access,
+/// fence, or control publication. Only MemorySynchronization declarations
+/// allocate one. It is a handle, not the MemoryAction projection: occurrence, contract
 /// reference, operands, and lanes stay with the caller.
 class SyncEffectId {
 public:
   explicit constexpr SyncEffectId(std::uint64_t value) : value_(value) {}
 
   constexpr std::uint64_t value() const { return value_; }
+
+  void Profile(llvm::FoldingSetNodeID &id) const { id.AddInteger(value_); }
 
   friend constexpr bool operator==(SyncEffectId lhs, SyncEffectId rhs) {
     return lhs.value_ == rhs.value_;
@@ -270,7 +273,6 @@ private:
   /// rule independent of which fact the caller records first.
   llvm::Error requireNoFenceRole(SyncEffectId effect) const;
   llvm::Error commit(Facts candidate, bool reduceSequenced = false);
-  void reduceSequencedRelation(Facts &facts) const;
 
   const Carrier *carrierOf(const Facts &facts, SyncEffectId effect) const;
   const Role *roleOf(const Facts &facts, SyncEffectId effect) const;
@@ -279,6 +281,12 @@ private:
   bool sequencedReaches(const Facts &facts, SyncEffectId from,
                         SyncEffectId to) const;
   bool reaches(const Graph &graph, SyncEffectId from, SyncEffectId to) const;
+  llvm::SmallVector<SyncEffectId>
+  maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
+                    const Graph &predecessors,
+                    bool declarationOrderIsTopological) const;
+  Graph transitivelyReduced(const Graph &graph,
+                             bool declarationOrderIsTopological) const;
   void beginTraversal(std::size_t effectCount) const;
   bool markVisited(SyncEffectId effect) const;
 
@@ -295,6 +303,9 @@ private:
   // authority; these directions are rebuilt together after general updates
   // and extended directly for a fresh effect.
   Graph sequencedPredecessors_;
+  // Derived from the accepted relation after general updates. Appending a
+  // fresh effect after existing predecessors preserves this certificate.
+  bool declarationOrderIsTopological_ = true;
   Graph relation_;
   Graph predecessors_;
   // Traversals reuse one generation-marked workspace. This stores no relation
