@@ -221,3 +221,18 @@ target_link_libraries(loom-dataflow-operation-schema-codec-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-causal-dependency-test
+  CausalDependencyTest.cpp
+)
+
+target_include_directories(loom-dataflow-causal-dependency-test PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib/Dataflow/IR
+)
+
+target_link_libraries(loom-dataflow-causal-dependency-test PRIVATE
+  MLIRDataflow
+  MLIRArithDialect
+  MLIRIR
+  LLVMSupport
+)

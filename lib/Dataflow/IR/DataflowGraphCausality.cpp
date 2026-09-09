@@ -4,256 +4,208 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <tuple>
+#include <vector>
 
 namespace {
 
-template <typename... Ts> unsigned denseMapKeyHash(const Ts &...values) {
-  using Key = std::tuple<Ts...>;
-  return llvm::DenseMapInfo<Key>::getHashValue(Key(values...));
-}
+// A reduced ordered decision diagram shares selector conditions across paths.
+// Each decision has one successor per lane, so a selector always denotes one
+// lane even when several muxes and demuxes consume the same value.
+class CausalConditions {
+public:
+  using Condition = unsigned;
+  static constexpr Condition impossible = 0;
+  static constexpr Condition unconditional = 1;
 
-struct CausalConstraintTransition {
-  unsigned parent;
-  mlir::Value selector;
-  unsigned lane;
+  void registerSelector(mlir::Value selector, unsigned lanes) {
+    auto [it, inserted] = selectorIds.try_emplace(selector, laneCounts.size());
+    if (inserted)
+      laneCounts.push_back(lanes);
+    else
+      laneCounts[it->second] = std::max(laneCounts[it->second], lanes);
+  }
 
-  bool operator==(const CausalConstraintTransition &other) const {
-    return parent == other.parent && selector == other.selector &&
-           lane == other.lane;
+  Condition lane(mlir::Value selector, unsigned selectedLane) {
+    unsigned id = selectorIds.lookup(selector);
+    std::vector<Condition> children(laneCounts[id], impossible);
+    children[selectedLane] = unconditional;
+    return intern(id, std::move(children));
   }
-};
 
-struct CausalConstraintTransitionInfo {
-  static CausalConstraintTransition getEmptyKey() {
-    return {std::numeric_limits<unsigned>::max(), {}, 0};
+  Condition intersect(Condition lhs, Condition rhs) {
+    return combine(Connective::And, lhs, rhs);
   }
-  static CausalConstraintTransition getTombstoneKey() {
-    return {std::numeric_limits<unsigned>::max() - 1, {}, 0};
-  }
-  static unsigned getHashValue(const CausalConstraintTransition &key) {
-    return denseMapKeyHash(key.parent, key.selector.getAsOpaquePointer(),
-                           key.lane);
-  }
-  static bool isEqual(const CausalConstraintTransition &lhs,
-                      const CausalConstraintTransition &rhs) {
-    return lhs == rhs;
-  }
-};
 
-struct CausalMemoKey {
-  mlir::Value value;
-  unsigned constraints;
+  Condition unite(Condition lhs, Condition rhs) {
+    return combine(Connective::Or, lhs, rhs);
+  }
 
-  bool operator==(const CausalMemoKey &other) const {
-    return value == other.value && constraints == other.constraints;
-  }
-};
+private:
+  enum class Connective : unsigned { And, Or };
+  static constexpr unsigned terminal = std::numeric_limits<unsigned>::max();
+  struct Node {
+    unsigned selector;
+    std::vector<Condition> children;
+  };
+  llvm::DenseMap<mlir::Value, unsigned> selectorIds;
+  std::vector<unsigned> laneCounts;
+  std::vector<Node> nodes{{terminal, {}}, {terminal, {}}};
+  llvm::DenseMap<std::uint64_t, llvm::SmallVector<Condition, 1>> uniqueNodes;
+  llvm::DenseMap<std::tuple<unsigned, Condition, Condition>, Condition>
+      combined;
 
-struct CausalMemoKeyInfo {
-  static CausalMemoKey getEmptyKey() {
-    return {{}, std::numeric_limits<unsigned>::max()};
+  Condition intern(unsigned selector, std::vector<Condition> children) {
+    if (llvm::all_of(children, [&](Condition child) {
+          return child == children.front();
+        }))
+      return children.front();
+    std::uint64_t hash = llvm::hash_combine(
+        selector, llvm::hash_combine_range(children.begin(), children.end()));
+    if (hash >= std::numeric_limits<std::uint64_t>::max() - 1)
+      hash -= 2;
+    auto &bucket = uniqueNodes[hash];
+    for (Condition candidate : bucket)
+      if (nodes[candidate].selector == selector &&
+          nodes[candidate].children == children)
+        return candidate;
+    Condition result = nodes.size();
+    nodes.push_back({selector, std::move(children)});
+    bucket.push_back(result);
+    return result;
   }
-  static CausalMemoKey getTombstoneKey() {
-    return {{}, std::numeric_limits<unsigned>::max() - 1};
-  }
-  static unsigned getHashValue(const CausalMemoKey &key) {
-    return denseMapKeyHash(key.value.getAsOpaquePointer(), key.constraints);
-  }
-  static bool isEqual(const CausalMemoKey &lhs, const CausalMemoKey &rhs) {
-    return lhs == rhs;
+
+  Condition combine(Connective connective, Condition lhs, Condition rhs) {
+    if (lhs > rhs)
+      std::swap(lhs, rhs);
+    if (lhs == rhs)
+      return lhs;
+    if (connective == Connective::And) {
+      if (lhs == impossible)
+        return impossible;
+      if (lhs == unconditional)
+        return rhs;
+    } else {
+      if (lhs == impossible)
+        return rhs;
+      if (lhs == unconditional)
+        return unconditional;
+    }
+    auto key = std::make_tuple(static_cast<unsigned>(connective), lhs, rhs);
+    auto known = combined.find(key);
+    if (known != combined.end())
+      return known->second;
+    unsigned selector = std::min(nodes[lhs].selector, nodes[rhs].selector);
+    std::vector<Condition> children;
+    children.reserve(laneCounts[selector]);
+    for (unsigned lane = 0; lane < laneCounts[selector]; ++lane) {
+      Condition left =
+          nodes[lhs].selector == selector ? nodes[lhs].children[lane] : lhs;
+      Condition right =
+          nodes[rhs].selector == selector ? nodes[rhs].children[lane] : rhs;
+      children.push_back(combine(connective, left, right));
+    }
+    Condition result = intern(selector, std::move(children));
+    combined.try_emplace(key, result);
+    return result;
   }
 };
 
 class CausalDependencyAnalysis {
 public:
-  explicit CausalDependencyAnalysis(mlir::Value event) : event(event) {
-    constraintStates.emplace_back();
-    constraintStatesByHash[hashConstraintState(constraintStates.front())]
-        .push_back(0);
+  explicit CausalDependencyAnalysis(mlir::Value event) {
+    CausalConditions conditions;
+    llvm::DenseMap<mlir::Value, CausalConditions::Condition> reachable;
+    llvm::DenseSet<mlir::Value> ancestors;
+    llvm::SmallVector<mlir::Value, 64> pending{event};
+    while (!pending.empty()) {
+      mlir::Value value = pending.pop_back_val();
+      if (!value || !ancestors.insert(value).second)
+        continue;
+      mlir::Operation *owner = value.getDefiningOp();
+      if (!owner)
+        continue;
+      if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(owner))
+        conditions.registerSelector(mux.getSel(), mux->getNumOperands() - 1);
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(owner))
+        conditions.registerSelector(demux.getSel(), demux->getNumResults());
+      pending.append(owner->getOperands().begin(), owner->getOperands().end());
+    }
+
+    // The least fixed point describes all finite feasible paths to the event.
+    // Sharing their conditions avoids enumerating the Cartesian product of
+    // lane assignments. Cycles add paths but cannot invent a causal witness.
+    reachable[event] = outputCondition(conditions, event);
+    std::deque<mlir::Value> worklist{event};
+    llvm::DenseSet<mlir::Value> queued{event};
+    while (!worklist.empty()) {
+      mlir::Value value = worklist.front();
+      worklist.pop_front();
+      queued.erase(value);
+      mlir::Operation *owner = value.getDefiningOp();
+      if (!owner)
+        continue;
+      auto mux = llvm::dyn_cast<dataflow::MuxOp>(owner);
+      for (mlir::OpOperand &operand : owner->getOpOperands()) {
+        mlir::Value prerequisite = operand.get();
+        auto candidate = reachable.lookup(value);
+        if (mux && operand.getOperandNumber() != 0)
+          candidate = conditions.intersect(
+              candidate,
+              conditions.lane(mux.getSel(), operand.getOperandNumber() - 1));
+        candidate = conditions.intersect(
+            candidate, outputCondition(conditions, prerequisite));
+        auto previous = reachable.lookup(prerequisite);
+        auto updated = conditions.unite(previous, candidate);
+        if (updated == previous)
+          continue;
+        reachable[prerequisite] = updated;
+        if (queued.insert(prerequisite).second)
+          worklist.push_back(prerequisite);
+      }
+    }
+    for (auto [value, condition] : reachable)
+      if (condition != CausalConditions::impossible)
+        prerequisites.insert(value);
   }
 
-  bool dependsOn(mlir::Value prerequisite) {
-    if (queryReaches(prerequisite, 0))
+  bool dependsOn(mlir::Value prerequisite) const {
+    if (reaches(prerequisite))
       return true;
-
     auto result = llvm::dyn_cast<mlir::OpResult>(prerequisite);
     if (!result)
       return false;
     mlir::Operation *owner = result.getOwner();
-    if (llvm::isa<dataflow::SyncOp>(owner) && queryReachesAnyResult(owner, 0))
+    if (llvm::isa<dataflow::SyncOp>(owner) &&
+        llvm::any_of(owner->getResults(),
+                     [&](mlir::Value output) { return reaches(output); }))
       return true;
     mlir::Value done = dataflow::semantics::getMemoryActorDone(owner);
-    return done && prerequisite != done && queryReaches(done, 0);
+    return done && prerequisite != done && reaches(done);
   }
 
 private:
-  enum class MemoState : uint8_t {
-    Visiting,
-    ProvisionalFalse,
-    StableFalse,
-    True
-  };
-  struct MemoEntry {
-    std::uint64_t generation;
-    MemoState state;
-  };
+  llvm::DenseSet<mlir::Value> prerequisites;
 
-  mlir::Value event;
-  std::uint64_t generation = 0;
-  llvm::DenseMap<mlir::Value, unsigned> selectorIds;
-  llvm::SmallVector<llvm::SmallVector<std::uint64_t, 4>, 8> constraintStates;
-  llvm::DenseMap<std::uint64_t, llvm::SmallVector<unsigned, 1>>
-      constraintStatesByHash;
-  llvm::DenseMap<CausalConstraintTransition, unsigned,
-                 CausalConstraintTransitionInfo>
-      constraintTransitions;
-  llvm::DenseMap<CausalMemoKey, MemoEntry, CausalMemoKeyInfo> memo;
-  llvm::SmallVector<CausalMemoKey, 64> queryKeys;
-
-  static std::uint64_t
-  hashConstraintState(llvm::ArrayRef<std::uint64_t> assignments) {
-    std::uint64_t hash = 1469598103934665603ULL;
-    for (std::uint64_t assignment : assignments) {
-      hash ^= assignment;
-      hash *= 1099511628211ULL;
-    }
-    if (hash >= std::numeric_limits<std::uint64_t>::max() - 1)
-      hash -= 2;
-    return hash;
+  static CausalConditions::Condition
+  outputCondition(CausalConditions &conditions, mlir::Value value) {
+    if (auto result = llvm::dyn_cast<mlir::OpResult>(value))
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()))
+        return conditions.lane(demux.getSel(), result.getResultNumber());
+    return CausalConditions::unconditional;
   }
 
-  unsigned
-  internConstraintState(llvm::SmallVector<std::uint64_t, 4> assignments) {
-    std::uint64_t hash = hashConstraintState(assignments);
-    auto &bucket = constraintStatesByHash[hash];
-    for (unsigned candidate : bucket)
-      if (constraintStates[candidate] == assignments)
-        return candidate;
-    unsigned next = constraintStates.size();
-    constraintStates.push_back(std::move(assignments));
-    bucket.push_back(next);
-    return next;
-  }
-
-  std::optional<unsigned> constrain(unsigned state, mlir::Value selector,
-                                    unsigned lane) {
-    auto selectorIt =
-        selectorIds.try_emplace(selector, selectorIds.size()).first;
-    unsigned selectorId = selectorIt->second;
-    std::uint64_t assignment =
-        (static_cast<std::uint64_t>(selectorId) << 32) | lane;
-    const auto &current = constraintStates[state];
-    unsigned position = 0;
-    while (position != current.size() && (current[position] >> 32) < selectorId)
-      ++position;
-    if (position != current.size() && (current[position] >> 32) == selectorId)
-      return current[position] == assignment ? std::optional<unsigned>(state)
-                                             : std::nullopt;
-
-    CausalConstraintTransition transition{state, selector, lane};
-    auto known = constraintTransitions.find(transition);
-    if (known != constraintTransitions.end())
-      return known->second;
-    llvm::SmallVector<std::uint64_t, 4> nextState(current);
-    nextState.insert(nextState.begin() + position, assignment);
-    unsigned next = internConstraintState(std::move(nextState));
-    constraintTransitions.try_emplace(transition, next);
-    return next;
-  }
-
-  bool queryReaches(mlir::Value value, unsigned state) {
-    if (++generation == 0) {
-      memo.clear();
-      generation = 1;
-    }
-    queryKeys.clear();
-    bool result = reaches(value, state);
-    // A failed root query proves its entire explored closure unreachable. A
-    // successful query only proves the positive path: provisional failures
-    // may have observed an ancestor before that ancestor reached the event.
-    for (const CausalMemoKey &key : queryKeys) {
-      auto known = memo.find(key);
-      if (known == memo.end() || known->second.generation != generation ||
-          known->second.state == MemoState::True)
-        continue;
-      if (result)
-        memo.erase(known);
-      else
-        known->second.state = MemoState::StableFalse;
-    }
-    return result;
-  }
-
-  bool queryReachesAnyResult(mlir::Operation *operation, unsigned state) {
-    return llvm::any_of(operation->getResults(), [&](mlir::Value result) {
-      return queryReaches(result, state);
-    });
-  }
-
-  bool reaches(mlir::Value value, unsigned state) {
-    if (!value)
-      return false;
-    if (auto result = llvm::dyn_cast<mlir::OpResult>(value)) {
-      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
-        auto constrained =
-            constrain(state, demux.getSel(), result.getResultNumber());
-        if (!constrained)
-          return false;
-        state = *constrained;
-      }
-    }
-
-    CausalMemoKey key{value, state};
-    auto known = memo.find(key);
-    if (known != memo.end()) {
-      if (known->second.state == MemoState::True)
-        return true;
-      if (known->second.state == MemoState::StableFalse ||
-          known->second.generation == generation)
-        return false;
-    }
-    memo[key] = MemoEntry{generation, MemoState::Visiting};
-    queryKeys.push_back(key);
-    bool result = compute(value, state);
-    memo[key] = MemoEntry{generation, result ? MemoState::True
-                                             : MemoState::ProvisionalFalse};
-    return result;
-  }
-
-  bool reachesAnyResult(mlir::Operation *operation, unsigned state) {
-    return llvm::any_of(operation->getResults(), [&](mlir::Value result) {
-      return reaches(result, state);
-    });
-  }
-
-  bool compute(mlir::Value value, unsigned state) {
-    if (value == event)
-      return true;
-
-    for (mlir::OpOperand &use : value.getUses()) {
-      mlir::Operation *user = use.getOwner();
-      if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(user)) {
-        if (use.getOperandNumber() == 0) {
-          if (reachesAnyResult(user, state))
-            return true;
-          continue;
-        }
-        const unsigned lane = use.getOperandNumber() - 1;
-        auto constrained = constrain(state, mux.getSel(), lane);
-        if (constrained && reachesAnyResult(user, *constrained))
-          return true;
-        continue;
-      }
-      if (reachesAnyResult(user, state))
-        return true;
-    }
-    return false;
+  bool reaches(mlir::Value value) const {
+    return prerequisites.contains(value);
   }
 };
 
