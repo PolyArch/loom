@@ -129,6 +129,7 @@ add_mlir_library(LoomNativeSimulationOracle
 
   LINK_LIBS PUBLIC
   LoomFrontendCompilation
+  MLIRDataflowTransforms
   LoomRuntimePlatformBinding
   LoomSimulator
   ${loom_native_oracle_llvm_libs}

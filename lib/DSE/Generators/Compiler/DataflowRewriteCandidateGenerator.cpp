@@ -327,9 +327,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         break;
       }
       expansions += *cost;
-      auto child =
-          dataflow::materializeDataflowRewriteWithTrackedStaticGraphLaunches(
-              parent.artifact, decision, parentLaunches);
+      auto child = dataflow::materializeDataflowRewriteWithTrackedEntities(
+          parent.artifact, decision, parentLaunches);
       if (!child)
         return child.takeError();
       if (!*child)

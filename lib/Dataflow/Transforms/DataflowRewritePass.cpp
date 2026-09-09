@@ -7,6 +7,7 @@
 
 #include "Dataflow/Transforms/DataflowRewrite.h"
 
+#include "Common/ArtifactLocalReference.h"
 #include "DataflowRewriteInternal.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
@@ -693,7 +694,8 @@ llvm::Expected<std::optional<dataflow::MaterializedDataflowRewriteProjection>>
 dataflow::detail::finalizeDataflowRewriteCandidate(
     const CanonicalDataflowArtifact &parent, mlir::ModuleOp candidate,
     const mlir::IRMapping &mapping,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   const auto &parentView = parent.view();
   llvm::SmallVector<mlir::Operation *> trackedOperations;
   trackedOperations.reserve(trackedStaticGraphLaunches.size());
@@ -712,8 +714,17 @@ dataflow::detail::finalizeDataflowRewriteCandidate(
           "dataflow_rewrite_invalid: tracked launch was not preserved");
     trackedOperations.push_back(mapped);
   }
-  auto finalized = finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
-      candidate, trackedOperations);
+  llvm::SmallVector<mlir::Value> mappedValues;
+  for (mlir::Value value : trackedValues) {
+    mlir::Value mapped = mapping.lookupOrNull(value);
+    if (!mapped)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dataflow_rewrite_invalid: tracked value was not preserved");
+    mappedValues.push_back(mapped);
+  }
+  auto finalized = finalizeCanonicalDataflowWithTrackedEntities(
+      candidate, trackedOperations, {}, mappedValues);
   if (!finalized)
     return finalized.takeError();
   if (finalized->artifact.identity() == parent.identity())
@@ -721,36 +732,38 @@ dataflow::detail::finalizeDataflowRewriteCandidate(
   return std::optional<MaterializedDataflowRewriteProjection>(
       MaterializedDataflowRewriteProjection{
           std::move(finalized->artifact),
-          std::move(finalized->trackedStaticGraphLaunches)});
+          std::move(finalized->trackedStaticGraphLaunches),
+          std::move(finalized->trackedValues)});
 }
 
 llvm::Expected<std::optional<dataflow::MaterializedDataflowRewriteProjection>>
 dataflow::detail::materializeFixedDataflowRewriteProjection(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
   if (const auto *stream =
           std::get_if<StreamCompletionPhaseSplitRewrite>(&decision))
     return materializeStreamCompletionPhaseSplitProjection(
-        parent, *stream, trackedStaticGraphLaunches);
+        parent, *stream, trackedStaticGraphLaunches, trackedValues);
   if (const auto *sync = std::get_if<SyncRendezvousRewrite>(&decision))
     return materializeSyncRendezvousRewriteProjection(
-        parent, *sync, trackedStaticGraphLaunches);
+        parent, *sync, trackedStaticGraphLaunches, trackedValues);
   if (const auto *cardinality =
           std::get_if<ElementwiseCardinalityCommuteRewrite>(&decision))
     return materializeCardinalityCommuteRewriteProjection(
-        parent, *cardinality, trackedStaticGraphLaunches);
+        parent, *cardinality, trackedStaticGraphLaunches, trackedValues);
   if (std::holds_alternative<PureComputeFanoutReplicateRewrite>(decision) ||
       std::holds_alternative<PureComputeFanoutFactorRewrite>(decision))
     return materializePureComputeFanoutRewriteProjection(
-        parent, decision, trackedStaticGraphLaunches);
+        parent, decision, trackedStaticGraphLaunches, trackedValues);
   if (std::holds_alternative<GraphDefinitionSplitRewrite>(decision) ||
       std::holds_alternative<GraphDefinitionMergeRewrite>(decision))
     return materializeGraphDefinitionRefactorProjection(
-        parent, decision, trackedStaticGraphLaunches);
+        parent, decision, trackedStaticGraphLaunches, trackedValues);
   const auto &view = parent.view();
   auto matches = matchesImplementedFixedDecision(view, decision);
   if (!matches)
@@ -778,7 +791,8 @@ dataflow::detail::materializeFixedDataflowRewriteProjection(
         ::llvm::inconvertibleErrorCode(),
         "dataflow_rewrite_invalid: legal match failed to materialize");
   return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                          trackedStaticGraphLaunches);
+                                          trackedStaticGraphLaunches,
+                                          trackedValues);
 }
 
 llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
@@ -793,6 +807,87 @@ dataflow::detail::materializeFixedDataflowRewrite(
     return std::optional<CanonicalDataflowArtifact>{};
   return std::optional<CanonicalDataflowArtifact>(
       std::move((*projected)->artifact));
+}
+
+llvm::Expected<dataflow::MaterializedDataflowRewriteProjection>
+dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+    CanonicalDataflowArtifact parent, const loom::ArtifactRootReference &target,
+    llvm::ArrayRef<DataflowRewriteDerivation> derivations,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
+  const auto reference = [](const CanonicalDataflowArtifact &artifact) {
+    return loom::ArtifactRootReference{canonicalDataflowSchema.identity.str(),
+                                       canonicalDataflowSchema.version,
+                                       artifact.identity()};
+  };
+  const auto invalid = [](llvm::StringRef message) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "dataflow_rewrite_lineage_invalid: " +
+                                       message);
+  };
+  // Breadth-first discovery selects one canonical shortest path. A previously
+  // reached identity is not expanded again, so reconvergence and cycles cannot
+  // multiply replay work. Every selected edge is still rematerialized below.
+  std::vector<const DataflowRewriteDerivation *> edges;
+  for (const auto &edge : derivations)
+    edges.push_back(&edge);
+  llvm::sort(edges, [](const auto *lhs, const auto *rhs) {
+    if (lhs->parent != rhs->parent)
+      return loom::artifactRootReferenceLess(lhs->parent, rhs->parent);
+    if (lhs->child != rhs->child)
+      return loom::artifactRootReferenceLess(lhs->child, rhs->child);
+    return dataflowRewriteDecisionLess(lhs->decision, rhs->decision);
+  });
+  struct Reached final {
+    loom::ArtifactRootReference root;
+    std::size_t predecessor;
+    const DataflowRewriteDerivation *edge;
+  };
+  std::vector<Reached> reached{{reference(parent), 0, nullptr}};
+  std::size_t targetOrdinal = 0;
+  for (; targetOrdinal < reached.size(); ++targetOrdinal) {
+    if (reached[targetOrdinal].root == target)
+      break;
+    for (const auto *edge : edges) {
+      if (edge->parent != reached[targetOrdinal].root ||
+          llvm::any_of(reached, [&](const Reached &node) {
+            return node.root == edge->child;
+          }))
+        continue;
+      reached.push_back({edge->child, targetOrdinal, edge});
+    }
+  }
+  if (targetOrdinal == reached.size())
+    return invalid("target has no derivation from the lowered program");
+  std::vector<const DataflowRewriteDerivation *> path;
+  for (std::size_t ordinal = targetOrdinal; reached[ordinal].edge;
+       ordinal = reached[ordinal].predecessor)
+    path.push_back(reached[ordinal].edge);
+  std::optional<MaterializedDataflowRewriteProjection> result(
+      MaterializedDataflowRewriteProjection{
+          std::move(parent),
+          {trackedStaticGraphLaunches.begin(),
+           trackedStaticGraphLaunches.end()},
+          {trackedValues.begin(), trackedValues.end()}});
+  for (const auto *edge : llvm::reverse(path)) {
+    if (edge->parent != reference(result->artifact))
+      return invalid("parent differs from the replayed artifact");
+    auto child = materializeDataflowRewriteWithTrackedEntities(
+        result->artifact, edge->decision, result->trackedStaticGraphLaunches,
+        result->trackedValues);
+    if (!child)
+      return child.takeError();
+    if (!*child || reference((*child)->artifact) != edge->child)
+      return invalid("child differs from the replayed artifact");
+    if ((*child)->trackedStaticGraphLaunches.size() !=
+            trackedStaticGraphLaunches.size() ||
+        (*child)->trackedValues.size() != trackedValues.size())
+      return invalid("rewrite changed tracked entity correspondence count");
+    result.emplace(std::move(**child));
+  }
+  if (reference(result->artifact) != target)
+    return invalid("replayed artifact differs from the target");
+  return std::move(*result);
 }
 
 void dataflow::registerDataflowTransformsPasses() {

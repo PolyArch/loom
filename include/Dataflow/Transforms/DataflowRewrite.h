@@ -162,13 +162,27 @@ using DataflowRewriteDecision = std::variant<
     GraphDefinitionMergeRewrite, ElementwiseVectorChunkRewrite,
     ElementwiseVectorScalarizeRewrite, StreamCompletionPhaseSplitRewrite>;
 
+/// Exact typed provenance for one immutable Dataflow rewrite transaction.
+struct DataflowRewriteDerivation final {
+  loom::ArtifactRootReference parent;
+  loom::ArtifactRootReference child;
+  DataflowRewriteDecision decision;
+
+  friend bool operator==(const DataflowRewriteDerivation &lhs,
+                         const DataflowRewriteDerivation &rhs) {
+    return lhs.parent == rhs.parent && lhs.child == rhs.child &&
+           lhs.decision == rhs.decision;
+  }
+};
+
 /// Ephemeral correspondence produced by one exact rewrite transaction. The
-/// tracked launch references preserve the caller's input order and belong to
+/// tracked launch references and SSA values preserve input order and belong to
 /// `artifact`; they are mechanically derived by the canonical finalizer and
 /// are never serialized beside the child.
 struct MaterializedDataflowRewriteProjection final {
   CanonicalDataflowArtifact artifact;
   std::vector<StaticGraphLaunchRef> trackedStaticGraphLaunches;
+  std::vector<mlir::Value> trackedValues = {};
 };
 
 DataflowRewriteKind
@@ -206,13 +220,23 @@ llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            const DataflowRewriteDecision &decision);
 
-/// Applies one exact decision while carrying selected parent static graph
-/// launches through the rewrite and canonical relabeling transaction.
+/// Applies one exact decision while carrying selected parent graph launches
+/// and SSA values through the rewrite and canonical relabeling transaction.
 llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
-materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+materializeDataflowRewriteWithTrackedEntities(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches);
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues = {});
+
+/// Replays a path from the freshly lowered parent to the exact target. Every
+/// edge is rematerialized and checked; launch correspondence is derived anew.
+llvm::Expected<MaterializedDataflowRewriteProjection>
+replayDataflowRewriteDerivationsWithTrackedEntities(
+    CanonicalDataflowArtifact parent, const loom::ArtifactRootReference &target,
+    llvm::ArrayRef<DataflowRewriteDerivation> derivations,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues = {});
 
 /// Developer-only bulk driver for the three one-way legacy test surfaces. It
 /// composes exact per-match decisions and is not a lineage decision API.

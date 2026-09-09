@@ -614,11 +614,12 @@ deriveApplicationSpatialInvocationPlanImpl(
 
 llvm::Expected<ApplicationSpatialInvocationPlan>
 deriveApplicationSpatialInvocationPlan(
-    const ArtifactRootReference &dataflowReference,
-    llvm::StringRef entrySymbol, const ArtifactRootReference &selectedProgram,
+    const ArtifactRootReference &dataflowReference, llvm::StringRef entrySymbol,
+    const ArtifactRootReference &selectedProgram,
     const ArtifactRootReference &sourceWorkload,
     const ArtifactRootReference &sourceRuntimeInput,
-    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes) {
+    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes,
+    llvm::ArrayRef<dataflow::DataflowRewriteDerivation> derivations) {
   auto imported = dataflow::importCanonicalDataflow(dataflowReference, artifacts);
   if (!imported)
     return imported.takeError();
@@ -654,7 +655,8 @@ deriveApplicationSpatialInvocationPlan(
   if (!callable || callable.getSymName() != entrySymbol)
     return invalid("source-bound invocation entry differs from its workload");
   auto capture = sim::deriveWorkloadBoundMemoryCapture(
-      *selected, dataflowOwner->view(), *inputs, maxRetainedCaptureBytes);
+      *selected, dataflowOwner->view(), *inputs, maxRetainedCaptureBytes,
+      derivations);
   if (!capture)
     return capture.takeError();
   SourceBoundInvocationMemory source{*capture,

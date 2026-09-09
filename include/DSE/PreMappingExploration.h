@@ -45,7 +45,7 @@ struct SelectedPreMappingCompilation final {
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;
-  std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
+  std::vector<dataflow::DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

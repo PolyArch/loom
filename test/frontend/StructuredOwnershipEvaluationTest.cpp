@@ -392,7 +392,7 @@ void verifyStagedOwnershipEvidence(
         selected.compilation.canonicalDataflow, store));
     closures[structured];
     closures[dataflow];
-    for (const loom::dse::DataflowRewriteDerivation &derivation :
+    for (const dataflow::DataflowRewriteDerivation &derivation :
          selected.dataflowRewriteDerivations) {
       closures[derivation.parent];
       closures[derivation.child];

@@ -423,7 +423,8 @@ llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
 materializeCardinalityCommuteRewriteProjection(
     const CanonicalDataflowArtifact &parent,
     const ElementwiseCardinalityCommuteRewrite &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   auto decisions = enumerateCardinalityCommuteDecisions(parent);
   if (!decisions)
     return decisions.takeError();
@@ -463,7 +464,8 @@ materializeCardinalityCommuteRewriteProjection(
     return std::move(error);
 
   return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                          trackedStaticGraphLaunches);
+                                          trackedStaticGraphLaunches,
+                                          trackedValues);
 }
 
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>

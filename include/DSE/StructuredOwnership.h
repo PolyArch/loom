@@ -132,18 +132,6 @@ struct StructuredMemoryCommunicationDerivation final {
   }
 };
 
-struct DataflowRewriteDerivation final {
-  ArtifactRootReference parent;
-  ArtifactRootReference child;
-  dataflow::DataflowRewriteDecision decision;
-
-  friend bool operator==(const DataflowRewriteDerivation &lhs,
-                         const DataflowRewriteDerivation &rhs) {
-    return lhs.parent == rhs.parent && lhs.child == rhs.child &&
-           lhs.decision == rhs.decision;
-  }
-};
-
 /// One exact coordinate in the invocation-local finite ownership domain. An
 /// absent decision denotes a definition-level scope rejection before a typed
 /// decision domain could be derived.
@@ -224,7 +212,7 @@ struct SelectedStructuredOwnershipCandidate final {
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;
-  std::vector<DataflowRewriteDerivation> dataflowRewriteDerivations;
+  std::vector<dataflow::DataflowRewriteDerivation> dataflowRewriteDerivations;
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 

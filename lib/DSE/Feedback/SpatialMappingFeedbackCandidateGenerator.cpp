@@ -396,9 +396,8 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
         if (decisionAttempts == std::numeric_limits<std::uint64_t>::max())
           return invalid("feedback decision accounting overflows u64");
         ++decisionAttempts;
-        auto child = ::dataflow::
-            materializeDataflowRewriteWithTrackedStaticGraphLaunches(
-                parent, decision, parentLaunches);
+        auto child = ::dataflow::materializeDataflowRewriteWithTrackedEntities(
+            parent, decision, parentLaunches);
         if (!child)
           return child.takeError();
         if (!*child)

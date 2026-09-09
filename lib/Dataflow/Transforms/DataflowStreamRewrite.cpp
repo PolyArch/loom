@@ -97,7 +97,8 @@ llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
 materializeStreamCompletionPhaseSplitProjection(
     const CanonicalDataflowArtifact &parent,
     const StreamCompletionPhaseSplitRewrite &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   auto actor =
       parent.view().resolve(ActorRef{parent.identity(), decision.stream});
   if (!actor)
@@ -113,8 +114,8 @@ materializeStreamCompletionPhaseSplitProjection(
       llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
   auto source = llvm::cast<StreamOp>(mapping.lookup(stream.getOperation()));
   splitCompletionPhase(source, collectCompletions(source));
-  return finalizeDataflowRewriteCandidate(parent, *candidate, mapping,
-                                          trackedStaticGraphLaunches);
+  return finalizeDataflowRewriteCandidate(
+      parent, *candidate, mapping, trackedStaticGraphLaunches, trackedValues);
 }
 
 } // namespace dataflow::detail

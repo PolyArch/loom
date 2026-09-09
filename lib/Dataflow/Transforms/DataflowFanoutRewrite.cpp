@@ -190,7 +190,8 @@ llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
 materializePureComputeFanoutRewriteProjection(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   const auto &view = parent.view();
   auto replicas = collectReplicas(view);
   if (!replicas)
@@ -226,7 +227,8 @@ materializePureComputeFanoutRewriteProjection(
     }
     clonedSource->erase();
     return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                            trackedStaticGraphLaunches);
+                                            trackedStaticGraphLaunches,
+                                            trackedValues);
   }
 
   const auto *factor = std::get_if<PureComputeFanoutFactorRewrite>(&decision);
@@ -253,7 +255,8 @@ materializePureComputeFanoutRewriteProjection(
     clonedReplica->erase();
   }
   return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                          trackedStaticGraphLaunches);
+                                          trackedStaticGraphLaunches,
+                                          trackedValues);
 }
 
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>

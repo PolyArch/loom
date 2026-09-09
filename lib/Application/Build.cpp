@@ -847,9 +847,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       // owner; hardware alternatives do not change software memory provenance.
       auto invocationPreflight = detail::deriveApplicationSpatialInvocationPlan(
           published->canonicalDataflow, request.sourceInvocation.entrySymbol,
-          published->structuredProgram, completed.workload, completed.runtimeInput,
-          artifacts,
-          request.preMappingOptions.ownership.functionalReplayLimits.maxRetainedCaptureBytes);
+          published->structuredProgram, completed.workload,
+          completed.runtimeInput, artifacts,
+          request.preMappingOptions.ownership.functionalReplayLimits
+              .maxRetainedCaptureBytes,
+          pending->compilation.dataflowRewriteDerivations);
       if (!invocationPreflight) {
         const std::string diagnostic =
             llvm::toString(invocationPreflight.takeError());

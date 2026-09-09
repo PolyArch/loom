@@ -167,7 +167,8 @@ llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
 materializeGraphDefinitionRefactorProjection(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   const auto &view = parent.view();
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> candidate(
@@ -199,7 +200,8 @@ materializeGraphDefinitionRefactorProjection(
       clonedLaunch.setCallee(clone.getSymName());
     }
     return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                            trackedStaticGraphLaunches);
+                                            trackedStaticGraphLaunches,
+                                            trackedValues);
   }
 
   const auto *merge = std::get_if<GraphDefinitionMergeRewrite>(&decision);
@@ -232,7 +234,8 @@ materializeGraphDefinitionRefactorProjection(
   }
   clonedHigher.erase();
   return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                          trackedStaticGraphLaunches);
+                                          trackedStaticGraphLaunches,
+                                          trackedValues);
 }
 
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>

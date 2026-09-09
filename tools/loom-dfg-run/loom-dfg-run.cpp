@@ -325,13 +325,13 @@ llvm::Expected<loom::ArtifactIdentity> initialCanonicalDataflowIdentity(
 
   std::vector<loom::ArtifactRootReference> roots;
   bool selectedIsDerived = false;
-  for (const loom::dse::DataflowRewriteDerivation &candidate :
+  for (const dataflow::DataflowRewriteDerivation &candidate :
        selected.dataflowRewriteDerivations) {
     if (candidate.child.artifact ==
         selected.compilation.canonicalDataflow.identity())
       selectedIsDerived = true;
     bool parentIsDerived = false;
-    for (const loom::dse::DataflowRewriteDerivation &other :
+    for (const dataflow::DataflowRewriteDerivation &other :
          selected.dataflowRewriteDerivations)
       parentIsDerived |= candidate.parent == other.child;
     if (!parentIsDerived && llvm::find(roots, candidate.parent) == roots.end())
@@ -480,7 +480,7 @@ writeReport(llvm::StringRef path,
             derivation.decision)));
   transformLineage["memory_communication"] = std::move(memoryCommunication);
   llvm::json::Array dataflowRewrite;
-  for (const loom::dse::DataflowRewriteDerivation &derivation :
+  for (const dataflow::DataflowRewriteDerivation &derivation :
        compilation.selected.dataflowRewriteDerivations)
     dataflowRewrite.push_back(static_cast<std::int64_t>(
         dataflow::dataflowRewriteKind(derivation.decision)));
