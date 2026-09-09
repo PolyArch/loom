@@ -106,15 +106,18 @@ canonical or reinterpret the schema's semantic projection.
 
 ### Initial Scalar Compute Families
 
-`ScalarIntegerAddSub` reserves `LLVMGetElementPtr` as an eligible family member
-because a stable-integral GEP's final address formation may share a real
-integer add/sub datapath. Eligibility is not a complete concrete capability.
-The current `ScalarIntegerParams` does not bound the static layout or index
-tuple and therefore cannot derive the fixed semantic-field carrier required by
-Fabric. A current concrete `fabric.op` must omit `LLVMGetElementPtr` and keep
-its pointer-format relation empty. The compiler normalizes a selected GEP,
-under its exact DataLayout, to explicit canonical integer address arithmetic
-before binding the current resource.
+`ScalarIntegerAddSub` admits the canonical byte-offset form of
+`LLVMGetElementPtr`: one dynamic `A(AS)`-bit index, source element type `i8`, and
+an explicitly admitted stable integral pointer format with `R(AS) == A(AS)`.
+The concrete capability also enables `ArithAddI`; both actors share its `Add`
+physical behavior and configuration. The exact finite pointer-format relation
+and integer width domain jointly bound that capability.
+
+The compiler expands a selected GEP's layout, index casts and scaling under
+its exact DataLayout before binding this resource. It retains pointer
+provenance and all overflow and inbounds checks. Family membership does not
+admit an arbitrary GEP layout, a static index tuple, or a partial-width pointer
+format; those forms require a different concrete address-generation relation.
 
 The same `LLVMGetElementPtr` schema may also belong to a dedicated address-
 generation implementation family. TechMapping selects one concrete family and

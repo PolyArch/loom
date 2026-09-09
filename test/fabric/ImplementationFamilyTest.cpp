@@ -574,6 +574,11 @@ bool checkPointerAdmission(MLIRContext &context) {
       64, wrongWidth, false, "pointer format");
   ok &= expectAdmissionAtPointerLayout(
       ImplementationFamilyId::ScalarIntegerAddSub, &pointerCapable, *projection,
+      64, exact, false, "canonical full-width byte-offset");
+  std::get<dataflow::GetElementPtrPayload>(projection->payload).sourceElementType =
+      fixture.builder.getI8Type();
+  ok &= expectAdmissionAtPointerLayout(
+      ImplementationFamilyId::ScalarIntegerAddSub, &pointerCapable, *projection,
       64, exact, true, {});
   return ok;
 }

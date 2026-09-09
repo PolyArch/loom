@@ -760,9 +760,26 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     case BehaviorRelationOwner::FixedVectorFloat:
       return detail::projectFixedVectorFloatBehavior(family_, actor,
                                                      finiteBehaviorDomain_);
-    case BehaviorRelationOwner::ScalarInteger:
+    case BehaviorRelationOwner::ScalarInteger: {
+      // Admission above proves an exact R(AS) == A(AS) byte-offset GEP.
+      // Its pointer provenance stays in the actor; only the physical behavior
+      // key is the same as integer addition at that explicit layout width.
+      if (actor.schema == ::dataflow::OperationSchemaId::LLVMGetElementPtr) {
+        const auto integer = mlir::IntegerType::get(
+            actor.type.getContext(), pointerLayout->addressBits);
+        representedActor = {
+            ::dataflow::OperationSchemaId::ArithAddI,
+            mlir::FunctionType::get(actor.type.getContext(),
+                                    {integer, integer}, {integer}),
+            ::dataflow::IntegerOverflowPayload{}};
+      }
       return detail::projectScalarIntegerBehavior(
-          family_, actor, resolvedIndexWidth, finiteBehaviorDomain_);
+          family_,
+          actor.schema == ::dataflow::OperationSchemaId::LLVMGetElementPtr
+              ? representedActor
+              : actor,
+          resolvedIndexWidth, finiteBehaviorDomain_);
+    }
     case BehaviorRelationOwner::FixedVectorInteger:
       return detail::projectFixedVectorIntegerBehavior(family_, actor,
                                                        finiteBehaviorDomain_);
@@ -789,11 +806,6 @@ fabric::resolveFabricOpSemanticFieldRelation(
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     ::mlir::MLIRContext &context) {
-  if (llvm::is_contained(enabledSchemas,
-                         ::dataflow::OperationSchemaId::LLVMGetElementPtr))
-    return reject("GEP behavior relation requires canonical integer address "
-                  "normalization");
-
   const auto owner = behaviorRelationOwner(family);
   if (!owner)
     return reject("implementation family has no behavior relation owner");

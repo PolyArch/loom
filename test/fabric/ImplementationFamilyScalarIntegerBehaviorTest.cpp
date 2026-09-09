@@ -179,8 +179,66 @@ void addSubUsesRolesAndRejectsGep() {
               fabric::resolveFabricOpSemanticFieldRelation(
                   ImplementationFamilyId::ScalarIntegerAddSub, params,
                   gepSchemas, inputs, results, context),
-              "GEP behavior relation requires canonical integer address "
-              "normalization");
+              "GEP requires integer addition and exact pointer formats");
+}
+
+void canonicalPointerAdditionSharesTheIntegerBehavior() {
+  const char *test = __func__;
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
+  const auto pointer = mlir::LLVM::LLVMPointerType::get(&context);
+  const auto i8 = mlir::IntegerType::get(&context, 8);
+  const auto i32 = mlir::IntegerType::get(&context, 32);
+  const auto i64 = mlir::IntegerType::get(&context, 64);
+  const loom::PointerLayout layout{0, 32, 32,
+                                   loom::PointerLayoutKind::StableIntegral};
+  const FamilyCapabilityParams params = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64}),
+      fabric::PointerFormatRelation::get({{0, 32, 32, layout.kind}})};
+  constexpr std::array schemas = {OperationSchemaId::ArithAddI,
+                                  OperationSchemaId::ArithSubI,
+                                  OperationSchemaId::LLVMGetElementPtr};
+  constexpr std::array inputs = {64U, 64U};
+  constexpr std::array results = {64U};
+  auto relation = take(test, fabric::resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarIntegerAddSub, params, schemas,
+      inputs, results, context));
+  require(test, relation.finiteBehaviorDomain().size() == 2,
+          "pointer addition introduced an extra physical mode");
+  dataflow::CanonicalActorSchemaProjection gep{
+      OperationSchemaId::LLVMGetElementPtr,
+      mlir::FunctionType::get(&context, {pointer, i32}, {pointer}),
+      dataflow::GetElementPtrPayload{
+          i8, {mlir::LLVM::GEPOp::kDynamicIndex},
+          mlir::LLVM::GEPNoWrapFlags::inbounds}};
+  const dataflow::CanonicalActorSchemaProjection add{
+      OperationSchemaId::ArithAddI,
+      mlir::FunctionType::get(&context, {i32, i32}, {i32}),
+      dataflow::IntegerOverflowPayload{}};
+  constexpr std::array<std::uint64_t, 2> operands = {0, 1};
+  constexpr std::array<std::uint64_t, 1> output = {0};
+  const auto addKey = take(test, relation.projectSemanticValue(add, operands, output));
+  const auto pointerKey = take(test, relation.projectSemanticValue(
+      gep, operands, output, ResolvedIndexWidth::I64, &layout));
+  require(test, addKey.bytes().equals(pointerKey.bytes()),
+          "canonical pointer addition did not select the integer adder");
+  expectError(test, relation.projectSemanticValue(gep, operands, output),
+              "exact pointer layout");
+  gep.type = mlir::FunctionType::get(&context, {pointer, i64}, {pointer});
+  expectError(test, relation.projectSemanticValue(
+      gep, operands, output, ResolvedIndexWidth::I64, &layout),
+      "canonical full-width byte-offset");
+  gep.type = mlir::FunctionType::get(&context, {pointer, i32}, {pointer});
+  std::get<dataflow::GetElementPtrPayload>(gep.payload).sourceElementType = i32;
+  expectError(test, relation.projectSemanticValue(
+      gep, operands, output, ResolvedIndexWidth::I64, &layout),
+      "canonical full-width byte-offset");
+  const FamilyCapabilityParams partial = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I32, IntegerWidth::I64}),
+      fabric::PointerFormatRelation::get({{0, 64, 32, layout.kind}})};
+  expectError(test, fabric::resolveFabricOpSemanticFieldRelation(
+      ImplementationFamilyId::ScalarIntegerAddSub, partial, schemas,
+      inputs, results, context), "full-width integer address");
 }
 
 void publicRelationProjectsItsOwnedBehaviorKey() {
@@ -553,6 +611,7 @@ void everyEnabledSchemaRequiresAReachableWitness() {
 
 int main() {
   addSubUsesRolesAndRejectsGep();
+  canonicalPointerAdditionSharesTheIntegerBehavior();
   publicRelationProjectsItsOwnedBehaviorKey();
   publicRelationRejectsDisabledAliases();
   publicRelationRejectsMalformedActorsAndInvalidSingletons();

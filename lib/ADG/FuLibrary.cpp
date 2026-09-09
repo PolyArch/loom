@@ -332,11 +332,15 @@ llvm::Error addSelectableFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
 SelectableResource scalarInteger(ImplementationFamilyId family,
                                  std::vector<std::uint32_t> inputs,
                                  bool logic = false) {
-  return {family,
-          ::fabric::ScalarIntegerParams{
-              logic ? detail::catalogLogicIntegerWidths()
-                    : detail::catalogOrdinaryIntegerWidths()},
-          std::move(inputs)};
+  ::fabric::ScalarIntegerParams parameters{
+      logic ? detail::catalogLogicIntegerWidths()
+            : detail::catalogOrdinaryIntegerWidths()};
+  std::vector<OperationSchemaId> members = familyMembers(family);
+  if (family == ImplementationFamilyId::ScalarIntegerAddSub) {
+    parameters.pointerFormats = detail::catalogPointerFormats();
+    members.push_back(OperationSchemaId::LLVMGetElementPtr);
+  }
+  return {family, std::move(parameters), std::move(inputs), std::move(members)};
 }
 
 SelectableResource scalarFloat(ImplementationFamilyId family,

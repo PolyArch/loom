@@ -76,6 +76,21 @@ target_link_libraries(loom-pointer-service-boundary-test PRIVATE
   LoomSimulator
 )
 
+add_executable(loom-graph-pointer-addressing-test
+  GraphPointerAddressingTest.cpp
+)
+
+target_include_directories(loom-graph-pointer-addressing-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Frontend/Lowering
+)
+
+target_link_libraries(loom-graph-pointer-addressing-test PRIVATE
+  LoomFrontendLowering
+  LoomSimulator
+  MLIRDLTIDialect
+  MLIRParser
+)
+
 add_executable(loom-structured-address-index-narrowing-test
   StructuredAddressIndexNarrowingTest.cpp
 )
