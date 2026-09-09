@@ -100,38 +100,6 @@ void require(bool condition, llvm::StringRef message) {
     fail(message);
 }
 
-void publishedWideFrontierForwardsByHandle() {
-  MemoryOrderFrontierArena arena;
-  const llvm::SmallVector<loom::sim::SyncEffectId, 2> effects = {
-      loom::sim::SyncEffectId(1), loom::sim::SyncEffectId(2)};
-  const MemoryOrderFrontierId frontier = arena.internCanonical(effects);
-
-  MemoryOrderAccumulator accumulator;
-  accumulator.absorb(frontier);
-
-  require(accumulator.published() == frontier,
-          "a stored wide frontier was expanded instead of forwarded");
-}
-
-void growingFrontierSharesPublishedPrefixes() {
-  constexpr std::uint64_t kEffects = 2048;
-  MemoryOrderFrontierArena arena;
-  MemoryOrderFrontierId frontier;
-  for (std::uint64_t ordinal = 0; ordinal < kEffects; ++ordinal) {
-    const MemoryOrderFrontierId effect =
-        arena.internCanonical(loom::sim::SyncEffectId(ordinal));
-    frontier = arena.internUnion({frontier, effect});
-  }
-
-  llvm::SmallVector<loom::sim::SyncEffectId> effects;
-  arena.appendCanonicalEffects(frontier, effects);
-  require(effects.size() == kEffects && effects.front().value() == 0 &&
-              effects.back().value() == kEffects - 1,
-          "a persistent frontier union changed its effect set");
-  require(arena.retainedEffectReferences() == kEffects,
-          "a growing frontier copied previously published effects");
-}
-
 void atomicHazardsRequireExactObjectIdentity() {
   loom::sim::MemoryAtomicOrder order;
   loom::sim::MemorySynchronization synchronization(order);
@@ -163,7 +131,7 @@ void atomicHazardsRequireExactObjectIdentity() {
   retainedObjects.retain(wideRead, wideEffect, synchronization);
   retainedObjects.retain(narrowRead, narrowEffect, synchronization);
   const llvm::SmallVector<loom::sim::SyncEffectId> frontier =
-      retainedObjects.querySameKind(narrowWrite);
+      retainedObjects.querySameKind(narrowWrite, synchronization);
   require(frontier.size() == 1 && frontier.front() == narrowEffect,
           "atomic read frontier did not exercise HB reduction");
   require(retainedObjects.hasInexactAtomicHazard(narrowWrite),
@@ -1040,7 +1008,7 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
       .push_back(tokenWithBits(op.getData().getType(), 0xAB43));
   Token ctrl = noneToken();
   ctrl.memoryOrder =
-      state.memoryOrderFrontiers.internCanonical(loom::sim::SyncEffectId(99));
+      MemoryOrderFrontierId::fromEffect(loom::sim::SyncEffectId(99));
   testChannelQueue(state, op.getCtrlMutable()).push_back(std::move(ctrl));
   MemoryActionProjection projected =
       projectReadyMemoryAction(op.getOperation(), state);
@@ -1150,8 +1118,6 @@ void runFailureProjectsOnceToExecutionFailed() {
 int main() {
   tokenWidthNarrowsAtTokenBoundary();
   actorTransitionDescriptorContract();
-  publishedWideFrontierForwardsByHandle();
-  growingFrontierSharesPublishedPrefixes();
   atomicHazardsRequireExactObjectIdentity();
 
   mlir::DialectRegistry registry;

@@ -2,18 +2,11 @@
 //
 // Resolution of the memory-order frontiers that simulator tokens carry.
 //
-// A frontier is accumulated as immutable handles and interned only when a
-// token actually carries their union. Growing frontiers retain one union node
-// per publication instead of copying every earlier effect into every prefix.
-//
-// A stateful actor's activation retains one union across its firings. The
-// union trades between the activation's slot and the firing slot with its
-// publication memo intact, so an unchanged union is never interned twice and
-// order that no token carries is never interned at all.
-//
-// MemorySynchronization stays the sole authority for happens-before. Union
-// nodes only defer canonical effect-set materialization until that authority
-// needs it; nothing here relates two effects.
+// Publication joins incoming effect witnesses through MemorySynchronization,
+// the sole happens-before authority. A join follows every input without
+// ordering the inputs with respect to one another. Tokens carry that one
+// witness; a stateful activation retains its accumulator and publication memo
+// across firings so unchanged order is forwarded directly.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,15 +19,30 @@ namespace loom::sim::detail {
 
 MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
                                          MemoryOrderAccumulator &accumulator) {
-  // The arena reserves handle zero for the empty frontier. Leaving an empty
+  // Handle zero is the empty frontier. Leaving an empty
   // accumulator pristine makes the overwhelmingly common no-memory firing
   // and every subsequent not-ready scheduler probe allocation-free.
   if (accumulator.empty())
     return MemoryOrderFrontierId{};
   if (std::optional<MemoryOrderFrontierId> published = accumulator.published())
     return *published;
+  llvm::SmallVector<SyncEffectId, 4> predecessors;
+  for (MemoryOrderFrontierId frontier : accumulator.frontiers())
+    predecessors.push_back(frontier.effect());
+  llvm::sort(predecessors);
+  predecessors.erase(std::unique(predecessors.begin(), predecessors.end()),
+                     predecessors.end());
+  // A join records only that every incoming effect precedes this publication;
+  // it creates no order between those effects. Keeping that event as the
+  // token's witness avoids expanding the same control join at each later
+  // memory access. The memory-order authority owns every resulting relation.
+  const SyncEffectId effect =
+      predecessors.size() == 1
+          ? predecessors.front()
+          : llvm::cantFail(memorySynchronization(state)
+                               .declareEffectSequencedAfter(predecessors));
   const MemoryOrderFrontierId id =
-      state.memoryOrderFrontiers.internUnion(accumulator.frontiers());
+      MemoryOrderFrontierId::fromEffect(effect);
   accumulator.markPublished(id);
   return id;
 }
@@ -44,7 +52,7 @@ MemoryOrderFrontierId publishFiredMemoryOrder(SimulatorState &state,
   if (state.firingMemoryOrderFrontier.empty())
     return carried;
   // Every result of one firing observes the firing's order, so the firing
-  // reduces and interns once and each further result copies only the handle.
+  // joins once and each further result copies only the handle.
   const MemoryOrderFrontierId fired =
       publishMemoryOrder(state, state.firingMemoryOrderFrontier);
   if (carried.empty())
@@ -70,12 +78,12 @@ void retainAndPublishActivationMemoryOrder(SimulatorState &state,
   // moves into the firing slot as one accumulator, memos included, rather
   // than being copied into a fresh one. A copy would look unpublished and
   // would have absorbed nothing, so the first emission would reduce and
-  // intern the union again and a forwarded token would merge back into the
+  // join the inputs again and a forwarded token would merge back into the
   // frontier it already contributed to. Folding the firing's consumed order
   // in before the trade keeps a contribution the union already represents
   // from touching the union's memos, so a firing that consumed nothing new
   // republishes the unchanged union as one handle lookup, and a transition
-  // that emits nothing never reduces or interns the order it is about to
+  // that emits nothing never joins the order it is about to
   // drop.
   activation.absorbAll(state.firingMemoryOrderFrontier);
   std::swap(state.firingMemoryOrderFrontier, activation);

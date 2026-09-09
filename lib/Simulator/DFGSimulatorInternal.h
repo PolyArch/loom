@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/IntervalMap.h"
+#include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -83,17 +84,27 @@ enum class TokenKind {
   MemoryCapability,
 };
 
-/// Dense execution-local handle to one immutable memory-order frontier owned
-/// by the run's arena. A default handle is the empty frontier, so a token that
-/// never observed memory order costs one word and no allocation. The handle
-/// names a set of effects and no order between them; MemorySynchronization
-/// remains the only authority that relates two effects.
+/// Compact optional witness of published memory order. A nonempty handle names
+/// one effect owned by MemorySynchronization; an all-of publication uses that
+/// authority's join event. Empty tokens need no allocation.
 class MemoryOrderFrontierId {
 public:
   constexpr MemoryOrderFrontierId() = default;
-  explicit constexpr MemoryOrderFrontierId(std::uint32_t value)
-      : value_(value) {}
 
+  static MemoryOrderFrontierId fromEffect(SyncEffectId effect) {
+    if (effect.value() >= std::numeric_limits<std::uint32_t>::max())
+      llvm::report_fatal_error(
+          "a memory effect cannot be represented by the simulator frontier "
+          "handle domain");
+    MemoryOrderFrontierId frontier;
+    frontier.value_ = static_cast<std::uint32_t>(effect.value()) + 1;
+    return frontier;
+  }
+
+  SyncEffectId effect() const {
+    assert(!empty() && "an empty frontier has no effect");
+    return SyncEffectId(value_ - 1);
+  }
   constexpr std::uint32_t value() const { return value_; }
   constexpr bool empty() const { return value_ == 0; }
 
@@ -110,260 +121,11 @@ private:
   std::uint32_t value_ = 0;
 };
 
-/// Execution-local owner of every memory-order frontier a run publishes.
-///
-/// Tokens share immutable effect leaves and union nodes. A growing all-of
-/// frontier therefore retains one new node instead of copying every prior
-/// effect into each prefix. Consumers materialize a canonical effect set only
-/// when the memory-order authority needs one. The union graph stores no order
-/// between effects and is never a second happens-before authority.
-class MemoryOrderFrontierArena {
-public:
-  MemoryOrderFrontierArena() { entries_.push_back(Entry{nullptr, nullptr, 0}); }
-
-  // Entries point into this arena's own chunks, so a copied arena would keep
-  // referencing the original's storage. The run owns its arena in place for
-  // its whole lifetime, so no move is defined either.
-  MemoryOrderFrontierArena(const MemoryOrderFrontierArena &) = delete;
-  MemoryOrderFrontierArena &
-  operator=(const MemoryOrderFrontierArena &) = delete;
-
-  /// Interns the frontier of one effect.
-  MemoryOrderFrontierId internCanonical(SyncEffectId effect) {
-    if (effect.value() >= std::numeric_limits<std::uint32_t>::max())
-      llvm::report_fatal_error(
-          "a memory effect cannot be represented by the simulator frontier "
-          "handle domain");
-    const std::size_t ordinal = static_cast<std::size_t>(effect.value());
-    if (ordinal >= singletonFrontiers_.size())
-      singletonFrontiers_.resize(ordinal + 1);
-    MemoryOrderFrontierId &cached = singletonFrontiers_[ordinal];
-    if (!cached.empty())
-      return cached;
-    cached = storeEffectFrontier(llvm::ArrayRef<SyncEffectId>(effect));
-    return cached;
-  }
-
-  /// Interns one frontier that is already ascending and free of repeats.
-  MemoryOrderFrontierId internCanonical(llvm::ArrayRef<SyncEffectId> elements) {
-    assert(std::adjacent_find(elements.begin(), elements.end(),
-                              [](SyncEffectId lhs, SyncEffectId rhs) {
-                                return !(lhs < rhs);
-                              }) == elements.end() &&
-           "a canonical frontier is ascending and free of repeats");
-    if (elements.empty())
-      return MemoryOrderFrontierId();
-    if (elements.size() == 1)
-      return internCanonical(elements.front());
-    const std::uint64_t key = hashEffects(elements);
-    llvm::SmallVector<MemoryOrderFrontierId, 1> &bucket = effectInterned_[key];
-    for (MemoryOrderFrontierId candidate : bucket)
-      if (effectElements(candidate) == elements)
-        return candidate;
-
-    const MemoryOrderFrontierId id = storeEffectFrontier(elements);
-    bucket.push_back(id);
-    return id;
-  }
-
-  /// Interns an unordered union of already-published frontiers. Empty and
-  /// duplicate handles disappear, and one remaining handle is returned
-  /// directly. The node shape is a cache representation only; effect identity
-  /// is recovered by appendCanonicalEffects.
-  MemoryOrderFrontierId
-  internUnion(llvm::ArrayRef<MemoryOrderFrontierId> frontiers) {
-    llvm::SmallVector<MemoryOrderFrontierId, 4> canonical;
-    canonical.reserve(frontiers.size());
-    for (MemoryOrderFrontierId frontier : frontiers)
-      if (!frontier.empty())
-        canonical.push_back(frontier);
-    llvm::sort(canonical,
-               [](MemoryOrderFrontierId lhs, MemoryOrderFrontierId rhs) {
-                 return lhs.value() < rhs.value();
-               });
-    canonical.erase(std::unique(canonical.begin(), canonical.end()),
-                    canonical.end());
-    if (canonical.empty())
-      return MemoryOrderFrontierId();
-    if (canonical.size() == 1)
-      return canonical.front();
-
-    const std::uint64_t key = hashFrontiers(canonical);
-    llvm::SmallVector<MemoryOrderFrontierId, 1> &bucket = unionInterned_[key];
-    for (MemoryOrderFrontierId candidate : bucket)
-      if (unionChildren(candidate) ==
-          llvm::ArrayRef<MemoryOrderFrontierId>(canonical))
-        return candidate;
-
-    const MemoryOrderFrontierId id = storeUnion(canonical);
-    bucket.push_back(id);
-    return id;
-  }
-
-  /// Appends the frontier's ascending, duplicate-free effect set. Traversal is
-  /// iterative so a long-running loop cannot consume the host call stack.
-  void
-  appendCanonicalEffects(MemoryOrderFrontierId frontier,
-                         llvm::SmallVectorImpl<SyncEffectId> &effects) const {
-    if (frontier.empty())
-      return;
-    llvm::SmallBitVector visited(entries_.size());
-    llvm::SmallVector<MemoryOrderFrontierId, 16> worklist{frontier};
-    while (!worklist.empty()) {
-      const MemoryOrderFrontierId current = worklist.pop_back_val();
-      if (visited.test(current.value()))
-        continue;
-      visited.set(current.value());
-      const Entry &entry = entries_[current.value()];
-      if (entry.effects) {
-        effects.append(entry.effects, entry.effects + entry.size);
-        continue;
-      }
-      worklist.append(entry.frontiers, entry.frontiers + entry.size);
-    }
-    llvm::sort(effects);
-    effects.erase(std::unique(effects.begin(), effects.end()), effects.end());
-  }
-
-  std::size_t retainedEffectReferences() const {
-    return retainedEffectReferences_;
-  }
-
-private:
-  struct Entry {
-    const SyncEffectId *effects;
-    const MemoryOrderFrontierId *frontiers;
-    std::size_t size;
-  };
-
-  // Bump-allocated storage keeps one frontier contiguous and never moves it:
-  // a chunk is allocated once at a fixed capacity and only ever filled, so a
-  // stored frontier keeps its address for the lifetime of the arena.
-  static constexpr std::size_t kChunkElements = 1024;
-
-  // A chunk reserves its capacity once and is only ever appended to, so it
-  // never reallocates and the addresses it hands out stay valid.
-  using EffectChunk = std::vector<SyncEffectId>;
-  using FrontierChunk = std::vector<MemoryOrderFrontierId>;
-
-  // Deterministic incremental hash over the effect identities themselves, so a
-  // frontier of any width is keyed without a temporary copy. The constants are
-  // the 64-bit FNV-1a basis and prime, mixed per effect.
-  static std::uint64_t hashEffects(llvm::ArrayRef<SyncEffectId> elements) {
-    std::uint64_t hash = 0xcbf29ce484222325ULL;
-    for (SyncEffectId effect : elements) {
-      std::uint64_t value = effect.value();
-      for (unsigned byte = 0; byte < sizeof(value); ++byte) {
-        hash ^= value & 0xffULL;
-        hash *= 0x100000001b3ULL;
-        value >>= 8;
-      }
-    }
-    // Clearing the top bits keeps the key away from the DenseMap empty and
-    // tombstone identities without weakening the hash in any realistic range.
-    return hash >> 2;
-  }
-
-  static std::uint64_t
-  hashFrontiers(llvm::ArrayRef<MemoryOrderFrontierId> frontiers) {
-    std::uint64_t hash = 0x9e3779b97f4a7c15ULL;
-    for (MemoryOrderFrontierId frontier : frontiers) {
-      std::uint32_t value = frontier.value();
-      for (unsigned byte = 0; byte < sizeof(value); ++byte) {
-        hash ^= value & 0xffU;
-        hash *= 0x100000001b3ULL;
-        value >>= 8;
-      }
-    }
-    return hash >> 2;
-  }
-
-  llvm::ArrayRef<SyncEffectId> effectElements(MemoryOrderFrontierId id) const {
-    const Entry &entry = entries_[id.value()];
-    return entry.effects
-               ? llvm::ArrayRef<SyncEffectId>(entry.effects, entry.size)
-               : llvm::ArrayRef<SyncEffectId>();
-  }
-
-  llvm::ArrayRef<MemoryOrderFrontierId>
-  unionChildren(MemoryOrderFrontierId id) const {
-    const Entry &entry = entries_[id.value()];
-    return entry.frontiers ? llvm::ArrayRef<MemoryOrderFrontierId>(
-                                 entry.frontiers, entry.size)
-                           : llvm::ArrayRef<MemoryOrderFrontierId>();
-  }
-
-  const SyncEffectId *storeEffects(llvm::ArrayRef<SyncEffectId> elements) {
-    if (effectChunks_.empty() || effectChunks_.back().size() + elements.size() >
-                                     effectChunks_.back().capacity()) {
-      effectChunks_.emplace_back();
-      effectChunks_.back().reserve(std::max(kChunkElements, elements.size()));
-    }
-    EffectChunk &chunk = effectChunks_.back();
-    const SyncEffectId *begin = chunk.data() + chunk.size();
-    chunk.insert(chunk.end(), elements.begin(), elements.end());
-    assert(chunk.size() <= chunk.capacity() &&
-           "a frontier chunk reallocated and invalidated stored frontiers");
-    return begin;
-  }
-
-  const MemoryOrderFrontierId *
-  storeFrontiers(llvm::ArrayRef<MemoryOrderFrontierId> frontiers) {
-    if (frontierChunks_.empty() ||
-        frontierChunks_.back().size() + frontiers.size() >
-            frontierChunks_.back().capacity()) {
-      frontierChunks_.emplace_back();
-      frontierChunks_.back().reserve(
-          std::max(kChunkElements, frontiers.size()));
-    }
-    FrontierChunk &chunk = frontierChunks_.back();
-    const MemoryOrderFrontierId *begin = chunk.data() + chunk.size();
-    chunk.insert(chunk.end(), frontiers.begin(), frontiers.end());
-    assert(chunk.size() <= chunk.capacity() &&
-           "a frontier chunk reallocated and invalidated stored unions");
-    return begin;
-  }
-
-  MemoryOrderFrontierId nextId() const {
-    if (entries_.size() >= std::numeric_limits<std::uint32_t>::max())
-      llvm::report_fatal_error(
-          "the simulator retained more than 2^32 distinct memory-order "
-          "frontiers in one run; the frontier handle space is exhausted");
-    return MemoryOrderFrontierId(static_cast<std::uint32_t>(entries_.size()));
-  }
-
-  MemoryOrderFrontierId
-  storeEffectFrontier(llvm::ArrayRef<SyncEffectId> elements) {
-    const MemoryOrderFrontierId id = nextId();
-    entries_.push_back(Entry{storeEffects(elements), nullptr, elements.size()});
-    retainedEffectReferences_ += elements.size();
-    return id;
-  }
-
-  MemoryOrderFrontierId
-  storeUnion(llvm::ArrayRef<MemoryOrderFrontierId> frontiers) {
-    const MemoryOrderFrontierId id = nextId();
-    entries_.push_back(
-        Entry{nullptr, storeFrontiers(frontiers), frontiers.size()});
-    return id;
-  }
-
-  std::vector<Entry> entries_;
-  std::vector<EffectChunk> effectChunks_;
-  std::vector<FrontierChunk> frontierChunks_;
-  std::vector<MemoryOrderFrontierId> singletonFrontiers_;
-  llvm::DenseMap<std::uint64_t, llvm::SmallVector<MemoryOrderFrontierId, 1>>
-      effectInterned_;
-  llvm::DenseMap<std::uint64_t, llvm::SmallVector<MemoryOrderFrontierId, 1>>
-      unionInterned_;
-  std::size_t retainedEffectReferences_ = 0;
-};
-
 /// Memory order that is still being accumulated and has not been published.
 ///
-/// This is transient mutable state, never an arena entry. It accumulates
-/// immutable frontier handles, not copied effect sets. Publication interns one
-/// union node and collapses the accumulator back to that handle. The absorbed
+/// This transient state accumulates effect witnesses, not copied effect sets.
+/// Publication joins them through MemorySynchronization and collapses the
+/// accumulator back to that witness. The absorbed
 /// memo prevents reconvergent token flow from adding the same handle twice;
 /// none of this state relates two effects or competes with
 /// MemorySynchronization.
@@ -423,8 +185,8 @@ public:
   }
 
   /// True when this accumulator already absorbed `frontier`, so re-merging it
-  /// would add nothing. Reduction only drops effects that a retained maximal
-  /// member happens-after, so an absorbed frontier stays covered.
+  /// would add nothing. Publication happens-after every incoming witness, so
+  /// an absorbed frontier stays covered.
   bool hasAbsorbed(MemoryOrderFrontierId frontier) const {
     return frontier.empty() || containsAbsorbed(frontier.value());
   }
@@ -528,9 +290,9 @@ private:
 
   llvm::SmallVector<MemoryOrderFrontierId, 4> frontiers_;
   std::unique_ptr<llvm::DenseSet<std::uint32_t>> frontierIndex_;
-  // Handles this accumulator already merged. Published union nodes retain
-  // their components transitively, so re-merging an observed handle cannot
-  // change the represented effect set. This is a memo of merged content,
+  // Handles this accumulator already merged. The published event follows
+  // every component, so re-merging an observed handle cannot add order.
+  // This is a memo of merged content,
   // cleared with the components, and never a relation of its own.
   llvm::SmallVector<std::uint32_t, 4> absorbed_;
   std::unique_ptr<llvm::DenseSet<std::uint32_t>> absorbedIndex_;
@@ -755,7 +517,7 @@ struct ParallelizeState {
   llvm::SmallVector<std::optional<Token>, 8> slots;
   // Memory-order frontiers of scalar phases consumed while assembling the
   // current group. Only the final firing publishes their union, so this stays
-  // an unpublished accumulator and never interns a partial group.
+  // an unpublished accumulator and never publishes a partial group.
   MemoryOrderAccumulator phaseFrontier;
 };
 
@@ -962,17 +724,18 @@ struct ReadyMemoryAction {
   std::optional<unsigned> maskOperandOrdinal;
 };
 
-// Exact byte-interval cache of the maximal issued hazards. It stores effect
-// handles but no order relation; MemorySynchronization alone decides whether
-// one effect covers another and reduces read frontiers.
+// Exact byte-interval cache of issued hazards. Read histories share immutable
+// prefixes and are reduced only when a conflicting access queries them.
+// MemorySynchronization alone decides whether one effect covers another.
 class PlainMemoryConflictIndex {
 public:
   /// The maximal issued hazards `action` meets in its own access class,
   /// without deciding whether any of them is ordered before it.
   llvm::SmallVector<SyncEffectId>
-  querySameKind(const MemoryActionRecord &action) const;
+  querySameKind(const MemoryActionRecord &action,
+                 const MemorySynchronization &synchronization) const;
 
-  /// The maximal issued hazards `action` meets in the other access class.
+  /// The issued hazards `action` meets in the other access class.
   llvm::SmallVector<SyncEffectId>
   queryCrossKind(const MemoryActionRecord &action) const;
 
@@ -990,7 +753,7 @@ public:
 private:
   struct AccessHazards {
     llvm::SmallVector<SyncEffectId, 2> writes;
-    llvm::SmallVector<SyncEffectId, 2> reads;
+    llvm::ImmutableList<SyncEffectId> reads;
 
     friend bool operator==(const AccessHazards &lhs, const AccessHazards &rhs) {
       return lhs.writes == rhs.writes && lhs.reads == rhs.reads;
@@ -1025,18 +788,17 @@ private:
     Hazards hazards;
   };
 
-  static void applyAccess(AccessHazards &hazards, bool isWrite,
-                          SyncEffectId effect,
-                          MemorySynchronization &synchronization);
-  static Hazards makeHazards(bool isWrite, bool isAtomic, SyncEffectId effect,
-                             MemorySynchronization &synchronization);
-  static void updateRange(RootIntervals &root, std::int64_t begin,
-                          std::int64_t end, bool isWrite, bool isAtomic,
-                          SyncEffectId effect,
-                          MemorySynchronization &synchronization);
+  void applyAccess(AccessHazards &hazards, bool isWrite, SyncEffectId effect,
+                   MemorySynchronization &synchronization);
+  Hazards makeHazards(bool isWrite, bool isAtomic, SyncEffectId effect,
+                      MemorySynchronization &synchronization);
+  void updateRange(RootIntervals &root, std::int64_t begin, std::int64_t end,
+                   bool isWrite, bool isAtomic, SyncEffectId effect,
+                   MemorySynchronization &synchronization);
   llvm::SmallVector<SyncEffectId> queryKind(const MemoryActionRecord &action,
                                             bool isAtomic) const;
 
+  llvm::ImmutableList<SyncEffectId>::Factory readHistories_;
   llvm::DenseMap<std::uint64_t, std::unique_ptr<RootIntervals>> intervals_;
   // Object identity must outlive HB frontier reduction: a later differently
   // sized write still has to observe every overlapping object ever admitted.
@@ -1136,9 +898,6 @@ struct SimulatorState {
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
   PlainMemoryConflictIndex memoryActions;
-  // The one owner of every frontier this run publishes. Tokens and retained
-  // actor state reference it by handle.
-  MemoryOrderFrontierArena memoryOrderFrontiers;
   // The structural actor-order mask for plain memory actors and the subset
   // whose token queues changed or may still contain another firing. Admission
   // walks the dense mask in actor order, avoiding an allocated ordered node
@@ -1208,8 +967,7 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr,
                                          mlir::Operation *scope);
 llvm::Expected<Token> zeroToken(mlir::Type type);
 
-/// Resolves the frontier an accumulator publishes, interning its immutable
-/// union at most once however many tokens go on to carry it.
+/// Publishes one join witness at most once however many tokens carry it.
 MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
                                          MemoryOrderAccumulator &accumulator);
 
@@ -1223,14 +981,13 @@ MemoryOrderFrontierId publishFiredMemoryOrder(SimulatorState &state,
 /// union and hands the union to the firing slot, memos included, so the
 /// firing's emissions publish it. A firing that consumed nothing leaves the
 /// union's memos untouched, and an activation that emits nothing is never
-/// reduced or interned.
+/// joined.
 void retainAndPublishActivationMemoryOrder(SimulatorState &state,
                                            mlir::Operation *actor);
 
 /// Returns the published union to its activation slot for the next firing of
 /// the same activation, or erases it when the activation retired. A retired
-/// union keeps nothing; its frontier lives on in the arena only if a token
-/// carries it.
+/// accumulator keeps nothing; tokens retain their own published witnesses.
 void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
                                   bool retire);
 

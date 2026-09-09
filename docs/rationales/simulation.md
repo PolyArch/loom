@@ -407,3 +407,25 @@ proves compatibility from the selected region's actual layout roots and used
 types, then retargets only an ephemeral execution clone. This keeps the
 original target artifacts authoritative while allowing an independent host
 functional oracle where no target-specific behavior is involved.
+
+## Memory-Order Witnesses and Read Histories
+
+Simulator tokens carry an optional event identity from MemorySynchronization.
+Publishing several incoming witnesses declares one event sequenced after every
+input. This orders the publication after its inputs without ordering those
+inputs against each other. Stateful activations retain the publication and the
+identities already absorbed, so unchanged order is forwarded without another
+join. There is no separate frontier arena or union graph.
+
+Plain-memory read histories have a different purpose: they retain accesses
+that a later conflicting write must check. Reads of immutable weights do not
+need a happens-before reduction on every append. Persistent lists share read
+history across byte intervals; the synchronization authority computes maximal
+read witnesses when a conflicting access queries them. Writes prune only reads
+that the authority proves covered. Unordered conflicts remain observable.
+
+The authority batches ancestor queries and stops once every requested effect
+is covered. It bounds reverse traversal by the oldest requested identity only
+when all admitted edges have verified declaration order as a topological order.
+An edge that breaks that ordering disables the shortcut; arbitrary acyclic
+orders retain the same query semantics.
