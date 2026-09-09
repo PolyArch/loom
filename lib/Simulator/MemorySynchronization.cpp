@@ -2,6 +2,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -392,6 +393,8 @@ llvm::Error MemorySynchronization::commit(Facts candidate,
   Graph sequencedPredecessors = reverseGraph(candidate.sequenced);
   relation = transitivelyReduced(relation, declarationOrderIsTopological);
   Graph predecessors = reverseGraph(relation);
+  coverageRoot_.reset();
+  coverageAncestors_.clear();
   facts_ = std::move(candidate);
   sequencedPredecessors_ = std::move(sequencedPredecessors);
   declarationOrderIsTopological_ = declarationOrderIsTopological;
@@ -679,21 +682,60 @@ bool MemorySynchronization::areCoveredByHappensBefore(
   canonicalize(undecided);
   std::size_t remaining = undecided.size();
   beginTraversal(facts_.effects);
+  llvm::SmallVector<SyncEffectId, 16> visitedEffects;
+  llvm::SmallVector<bool, 4> covered(undecided.size(), false);
+  bool reachedCachedRoot = false;
+  // Only a long traversal amortizes retaining its proof. These bits name
+  // ancestors actually reached from this one frontier, never inferred order.
+  constexpr std::size_t kCoverageMemoMinimumVisits = 4096;
+  llvm::scope_exit rememberCoverage([&] {
+    if (seeds.size() != 1 || visitedEffects.size() < kCoverageMemoMinimumVisits)
+      return;
+    if (!reachedCachedRoot)
+      coverageAncestors_.reset();
+    coverageAncestors_.resize(facts_.effects);
+    for (SyncEffectId effect : visitedEffects)
+      coverageAncestors_.set(effect.value());
+    coverageRoot_ = seeds.front();
+  });
+  auto cover = [&](std::size_t ordinal) {
+    if (!covered[ordinal]) {
+      covered[ordinal] = true;
+      --remaining;
+    }
+  };
   for (SyncEffectId effect : seeds) {
-    if (markVisited(effect))
+    if (markVisited(effect)) {
       traversalWorklist_.push_back(effect);
+      visitedEffects.push_back(effect);
+    }
   }
   while (!traversalWorklist_.empty()) {
     SyncEffectId effect = traversalWorklist_.pop_back_val();
+    if (coverageRoot_ && effect == *coverageRoot_) {
+      reachedCachedRoot = true;
+      for (auto [ordinal, requested] : llvm::enumerate(undecided))
+        if (requested.value() < coverageAncestors_.size() &&
+            coverageAncestors_.test(requested.value()))
+          cover(ordinal);
+      if (remaining == 0) {
+        traversalWorklist_.clear();
+        return true;
+      }
+    }
     for (SyncEffectId predecessor : predecessors_[effect.value()]) {
       if (declarationOrderIsTopological_ && predecessor < undecided.front())
         continue;
       if (!markVisited(predecessor))
         continue;
-      if (std::binary_search(undecided.begin(), undecided.end(), predecessor) &&
-          --remaining == 0) {
-        traversalWorklist_.clear();
-        return true;
+      visitedEffects.push_back(predecessor);
+      auto requested = llvm::lower_bound(undecided, predecessor);
+      if (requested != undecided.end() && *requested == predecessor) {
+        cover(requested - undecided.begin());
+        if (remaining == 0) {
+          traversalWorklist_.clear();
+          return true;
+        }
       }
       traversalWorklist_.push_back(predecessor);
     }
@@ -707,6 +749,18 @@ MemorySynchronization::maximalHappensBeforeFrontier(
   for (SyncEffectId effect : effects)
     if (llvm::Error error = requireKnown(effect))
       return std::move(error);
+  // A preceding coverage query often proved the same old hazards before
+  // this newly declared write. Reuse that proof only after reaching its root
+  // from the proposed maximal effect; an unrelated frontier proves nothing.
+  if (coverageRoot_ && effects.size() > 1) {
+    const SyncEffectId newest = *llvm::max_element(effects);
+    if (llvm::all_of(effects, [&](SyncEffectId effect) {
+          return effect == newest ||
+                 (effect.value() < coverageAncestors_.size() &&
+                  coverageAncestors_.test(effect.value()));
+        }) && areCoveredByHappensBefore(effects, {newest}))
+      return llvm::SmallVector<SyncEffectId>{newest};
+  }
   return maximalCandidates(effects, predecessors_,
                             declarationOrderIsTopological_);
 }

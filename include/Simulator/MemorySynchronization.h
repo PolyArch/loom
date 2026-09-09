@@ -4,6 +4,7 @@
 #include "Simulator/MemoryAtomicOrder.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -308,6 +309,11 @@ private:
   bool declarationOrderIsTopological_ = true;
   Graph relation_;
   Graph predecessors_;
+  // One partial ancestor proof from an expensive coverage query. A fresh
+  // effect cannot change an existing root's ancestors. General accepted
+  // updates clear the memo; the graph remains the only relation authority.
+  mutable std::optional<SyncEffectId> coverageRoot_;
+  mutable llvm::BitVector coverageAncestors_;
   // Traversals reuse one generation-marked workspace. This stores no relation
   // result and therefore needs no semantic invalidation when accepted facts
   // change; MemorySynchronization remains execution-local and single-threaded.

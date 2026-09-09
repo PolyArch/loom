@@ -429,3 +429,10 @@ is covered. It bounds reverse traversal by the oldest requested identity only
 when all admitted edges have verified declaration order as a topological order.
 An edge that breaks that ordering disables the shortcut; arbitrary acyclic
 orders retain the same query semantics.
+
+A long ancestor traversal may retain one partial proof: the frontier root and
+only the ancestors actually reached. A later query reuses those ancestors
+only after its own traversal reaches that root. This avoids revisiting a long
+completed phase for each subsequent write without ordering unrelated strands.
+The memo has linear space in declared events. Appending a fresh effect leaves
+existing ancestors unchanged; general accepted relation updates clear it.

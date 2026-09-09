@@ -759,6 +759,46 @@ void incomingFrontierPreservesReleaseFencePublication() {
   }
 }
 
+void longHistoriesKeepUnrelatedFrontiersSeparate() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  llvm::SmallVector<SyncEffectId> chain;
+  chain.push_back(sync.declareEffect());
+  constexpr unsigned kHistoryLength = 8192;
+  for (unsigned index = 1; index != kHistoryLength; ++index)
+    chain.push_back(takeExpected(
+        sync.declareEffectSequencedAfter({chain.back()})));
+  const SyncEffectId first = chain.front();
+  const SyncEffectId middle = chain[kHistoryLength / 2];
+  const SyncEffectId tail = chain.back();
+  const SyncEffectId unrelated = sync.declareEffect();
+
+  require(sync.areCoveredByHappensBefore({first, middle}, {tail}),
+          "a long ordered history lost its early effects");
+  require(!sync.areCoveredByHappensBefore({first, middle}, {unrelated}),
+          "a previous coverage proof ordered an unrelated frontier");
+  auto maximal = takeExpected(
+      sync.maximalHappensBeforeFrontier({first, middle, unrelated}));
+  require(maximal == llvm::SmallVector<SyncEffectId>({middle, unrelated}),
+          "an unrelated frontier replaced a maximal ordered effect");
+
+  const SyncEffectId continuation =
+      takeExpected(sync.declareEffectSequencedAfter({tail}));
+  require(sync.areCoveredByHappensBefore({first, middle}, {continuation}),
+          "a continuation lost its predecessor's history");
+  require(!sync.areCoveredByHappensBefore({unrelated, middle}, {continuation}),
+          "a continuation imported an unrelated effect");
+
+  accept(sync.sequencedBefore(unrelated, first),
+         "connect a later-declared effect before the long history");
+  require(sync.areCoveredByHappensBefore({unrelated, middle}, {continuation}),
+          "updated order was hidden by an earlier coverage proof");
+  maximal = takeExpected(
+      sync.maximalHappensBeforeFrontier({tail, unrelated}));
+  require(maximal == llvm::SmallVector<SyncEffectId>({tail}),
+          "declaration identity was mistaken for topological order");
+}
+
 // Sequential consistency is an independent provider-selected total order per
 // resolved domain. It must not manufacture happens-before, and the first
 // effect in a second domain has no predecessor from the first domain.
@@ -807,6 +847,7 @@ int main() {
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
   incomingFrontierPreservesReleaseFencePublication();
+  longHistoriesKeepUnrelatedFrontiersSeparate();
   sequentialConsistencyHasOneDomainLocalOwner();
   return 0;
 }
