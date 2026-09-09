@@ -339,6 +339,34 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   return false;
 }
 
+// One immutable graph verification binds a fixed retirement frontier. Many
+// stateful actors share a close signal, and all of its proofs share selector
+// correspondence facts. Neither cache survives this verification transaction.
+class RetirementCoverage final {
+public:
+  explicit RetirementCoverage(mlir::ValueRange completion)
+      : completion(completion) {}
+
+  bool covers(mlir::Value closeSignal) {
+    if (auto found = closeCoverage.find(closeSignal);
+        found != closeCoverage.end())
+      return found->second;
+    const bool covered = llvm::any_of(completion, [&](mlir::Value witness) {
+      llvm::DenseSet<mlir::Value> visited;
+      SelectorLanes selectorLanes;
+      return coversFalseClose(witness, closeSignal, visited, selectorLanes,
+                              correspondences);
+    });
+    closeCoverage.try_emplace(closeSignal, covered);
+    return covered;
+  }
+
+private:
+  mlir::ValueRange completion;
+  llvm::DenseMap<mlir::Value, bool> closeCoverage;
+  SelectorCorrespondences correspondences;
+};
+
 mlir::Value statefulCloseSignal(mlir::Operation *op) {
   if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(op))
     return stream.getPhase();
@@ -1643,16 +1671,7 @@ private:
 
 bool dataflow::retirementCoversClose(mlir::Value closeSignal,
                                      mlir::ValueRange completion) {
-  // Selector correspondence depends on immutable graph structure, not the
-  // path's selected lanes. Share those proofs across reconvergent paths and
-  // completion witnesses for this query only.
-  SelectorCorrespondences correspondences;
-  return llvm::any_of(completion, [&](mlir::Value witness) {
-    llvm::DenseSet<mlir::Value> visited;
-    SelectorLanes selectorLanes;
-    return coversFalseClose(witness, closeSignal, visited, selectorLanes,
-                            correspondences);
-  });
+  return RetirementCoverage(completion).covers(closeSignal);
 }
 
 llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
@@ -1770,6 +1789,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 
   dataflow::detail::GraphCausalDependencyCache causalDependencies;
   GraphCardinalityAnalysis cardinality(graph, causalDependencies);
+  RetirementCoverage retirementCoverage(ret.getComplete());
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
     if (!cardinality.isExactOne(value))
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
@@ -1798,7 +1818,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
         closeSignals.empty()
             ? isCovered(causalDependencies, stream, ret.getComplete())
             : llvm::all_of(closeSignals, [&](mlir::Value signal) {
-                return retirementCoversClose(signal, ret.getComplete());
+                return retirementCoverage.covers(signal);
               });
     if (!covered)
       return graphError(llvm::Twine("retirement frontier does not causally ") +
@@ -1826,8 +1846,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 
   for (mlir::Operation &op : entry.without_terminator()) {
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op)) {
-      bool covered =
-          retirementCoversClose(gate.getAfterCond(), ret.getComplete());
+      bool covered = retirementCoverage.covers(gate.getAfterCond());
       if (!covered) {
         std::string message =
             "retirement frontier does not cover close/reset of "
@@ -1847,7 +1866,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     if (sourceCloses.empty())
       sourceCloses.push_back(closeSignal);
     if (!llvm::all_of(sourceCloses, [&](mlir::Value signal) {
-          return retirementCoversClose(signal, ret.getComplete());
+          return retirementCoverage.covers(signal);
         }))
       return graphError(
           llvm::Twine("retirement frontier does not cover close/reset of '") +
