@@ -254,7 +254,6 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
 
   llvm::SmallVector<mlir::Operation *> stackOwners;
   llvm::DenseSet<mlir::Operation *> seenStackOwners;
-  bool hasStackLifetimeEnd = false;
   for (const ProgramObjectCaptureSite &site : *objectSites) {
     auto allocation = site.base
                           ? site.base.getDefiningOp<mlir::LLVM::AllocaOp>()
@@ -269,8 +268,6 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       return invalid("stack allocation has no executable owner");
     if (seenStackOwners.insert(owner).second)
       stackOwners.push_back(owner);
-    for (mlir::Operation *user : allocation.getRes().getUsers())
-      hasStackLifetimeEnd |= llvm::isa<mlir::LLVM::LifetimeEndOp>(user);
   }
 
   mlir::MLIRContext *context = module.getContext();
@@ -286,8 +283,6 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer});
   const mlir::Type objectRegistrationType = mlir::LLVM::LLVMFunctionType::get(
       voidType, {pointer, i64, i64, i64, i64});
-  const mlir::Type stackObjectEndType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, {pointer, i64});
   const mlir::Type valueType =
       mlir::LLVM::LLVMFunctionType::get(voidType, {i64, pointer, i64});
   const mlir::Type memoryWriteType =
@@ -306,14 +301,24 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
       return source.takeError();
     names.programObjectSources.push_back(std::move(*source));
   }
+  // Capture observes backing bytes at entry and retirement even when the
+  // selected region contains the source lifetime markers. Keep stack storage
+  // distinct and available for those observations in this execution clone;
+  // the registry retires it when its allocating call frame exits.
+  llvm::SmallVector<mlir::Operation *> lifetimeMarkers;
+  module.walk([&](mlir::Operation *operation) {
+    if (llvm::isa<mlir::LLVM::LifetimeStartOp, mlir::LLVM::LifetimeEndOp>(
+            operation))
+      lifetimeMarkers.push_back(operation);
+  });
+  for (mlir::Operation *marker : lifetimeMarkers)
+    marker->erase();
+
   names.begin = uniqueMlirSymbolName(module, "__loom_workload_capture_begin");
   names.end = uniqueMlirSymbolName(module, "__loom_workload_capture_end");
   if (!objectSites->empty())
     names.registerObject =
         uniqueMlirSymbolName(module, "__loom_workload_capture_register_object");
-  if (hasStackLifetimeEnd)
-    names.endStackObject = uniqueMlirSymbolName(
-        module, "__loom_workload_capture_end_stack_object");
   if (!stackOwners.empty()) {
     names.enterStackFrame = uniqueMlirSymbolName(
         module, "__loom_workload_capture_enter_stack_frame");
@@ -362,9 +367,6 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (names.registerObject)
     mlir::LLVM::LLVMFuncOp::create(
         declarations, location, *names.registerObject, objectRegistrationType);
-  if (names.endStackObject)
-    mlir::LLVM::LLVMFuncOp::create(declarations, location,
-                                   *names.endStackObject, stackObjectEndType);
   if (names.enterStackFrame) {
     mlir::LLVM::LLVMFuncOp::create(declarations, location,
                                    *names.enterStackFrame, lifecycleType);
@@ -415,21 +417,12 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
               builder, factorLocation, i64, factor.runtimeValue));
         };
     for (auto [ordinal, site] : llvm::enumerate(*objectSites)) {
-      llvm::SmallVector<mlir::Operation *> lifetimeStarts;
-      llvm::SmallVector<mlir::Operation *> lifetimeEnds;
       ProgramObjectCaptureKind kind =
           ProgramObjectCaptureKind::RuntimeAllocation;
       if (site.isGlobal()) {
         kind = ProgramObjectCaptureKind::Global;
-      } else if (auto allocation =
-                     site.base.getDefiningOp<mlir::LLVM::AllocaOp>()) {
+      } else if (site.base.getDefiningOp<mlir::LLVM::AllocaOp>()) {
         kind = ProgramObjectCaptureKind::StackAllocation;
-        for (mlir::Operation *user : allocation.getRes().getUsers()) {
-          if (llvm::isa<mlir::LLVM::LifetimeStartOp>(user))
-            lifetimeStarts.push_back(user);
-          if (llvm::isa<mlir::LLVM::LifetimeEndOp>(user))
-            lifetimeEnds.push_back(user);
-        }
       }
       auto emitRegistration = [&](mlir::OpBuilder &registration,
                                   mlir::Location siteLocation) {
@@ -456,24 +449,10 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         site.base = mlir::LLVM::AddressOfOp::create(
             registration, site.global.getLoc(), site.global);
         emitRegistration(registration, site.global.getLoc());
-      } else if (lifetimeStarts.empty()) {
+      } else {
         mlir::OpBuilder registration(context);
         registration.setInsertionPointAfter(site.base.getDefiningOp());
         emitRegistration(registration, site.base.getLoc());
-      } else {
-        for (mlir::Operation *start : lifetimeStarts) {
-          mlir::OpBuilder registration(start);
-          registration.setInsertionPointAfter(start);
-          emitRegistration(registration, start->getLoc());
-        }
-      }
-      for (mlir::Operation *end : lifetimeEnds) {
-        mlir::OpBuilder finish(end);
-        mlir::Value allocation = mlir::LLVM::ConstantOp::create(
-            finish, end->getLoc(), i64, finish.getI64IntegerAttr(ordinal));
-        mlir::LLVM::CallOp::create(finish, end->getLoc(), mlir::TypeRange{},
-                                   *names.endStackObject,
-                                   mlir::ValueRange{site.base, allocation});
       }
     }
   }
