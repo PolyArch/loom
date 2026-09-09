@@ -190,11 +190,22 @@ bool hasProvenDistinctActiveAddresses(dataflow::StoreOp store) {
 }
 
 using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
+using SelectorCorrespondences =
+    llvm::DenseMap<std::pair<mlir::Value, mlir::Value>, bool>;
 
-SelectorLanes::iterator findEquivalentSelector(SelectorLanes &lanes,
-                                               mlir::Value selector) {
+SelectorLanes::iterator findEquivalentSelector(
+    SelectorLanes &lanes, mlir::Value selector,
+    SelectorCorrespondences &correspondences) {
   return llvm::find_if(lanes, [&](const auto &entry) {
-    return haveEquivalentSelectorCorrespondence(entry.first, selector);
+    if (entry.first == selector)
+      return true;
+    const auto query = std::make_pair(entry.first, selector);
+    if (auto found = correspondences.find(query); found != correspondences.end())
+      return found->second;
+    const bool equivalent =
+        haveEquivalentSelectorCorrespondence(entry.first, selector);
+    correspondences.try_emplace(query, equivalent);
+    return equivalent;
   });
 }
 
@@ -217,14 +228,16 @@ bool isCovered(dataflow::detail::GraphCausalDependencyCache &causalDependencies,
 
 bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
                       llvm::DenseSet<mlir::Value> &visited,
-                      SelectorLanes &selectorLanes) {
+                      SelectorLanes &selectorLanes,
+                      SelectorCorrespondences &correspondences) {
   if (!witness)
     return false;
 
   std::optional<mlir::Value> insertedSelector;
   if (auto result = llvm::dyn_cast<mlir::OpResult>(witness)) {
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner())) {
-      auto it = findEquivalentSelector(selectorLanes, demux.getSel());
+      auto it = findEquivalentSelector(selectorLanes, demux.getSel(),
+                                       correspondences);
       if (it != selectorLanes.end()) {
         if (it->second != result.getResultNumber())
           return false;
@@ -247,11 +260,12 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
     return false;
 
   auto covers = [&](mlir::Value value) {
-    return coversFalseClose(value, closeSignal, visited, selectorLanes);
+    return coversFalseClose(value, closeSignal, visited, selectorLanes,
+                            correspondences);
   };
   auto coversInLane = [&](mlir::Value value, mlir::Value selector,
                           unsigned lane) {
-    auto it = findEquivalentSelector(selectorLanes, selector);
+    auto it = findEquivalentSelector(selectorLanes, selector, correspondences);
     bool inserted = it == selectorLanes.end();
     if (!inserted) {
       if (it->second != lane)
@@ -1629,10 +1643,15 @@ private:
 
 bool dataflow::retirementCoversClose(mlir::Value closeSignal,
                                      mlir::ValueRange completion) {
+  // Selector correspondence depends on immutable graph structure, not the
+  // path's selected lanes. Share those proofs across reconvergent paths and
+  // completion witnesses for this query only.
+  SelectorCorrespondences correspondences;
   return llvm::any_of(completion, [&](mlir::Value witness) {
     llvm::DenseSet<mlir::Value> visited;
     SelectorLanes selectorLanes;
-    return coversFalseClose(witness, closeSignal, visited, selectorLanes);
+    return coversFalseClose(witness, closeSignal, visited, selectorLanes,
+                            correspondences);
   });
 }
 
