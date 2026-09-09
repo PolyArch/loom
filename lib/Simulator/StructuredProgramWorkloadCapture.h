@@ -41,15 +41,10 @@ struct WorkloadCaptureActiveCall final {
   std::set<TrackedPointerKey> writtenPointerPayloads;
 };
 
-struct WorkloadCaptureStackAllocation final {
-  std::uint64_t allocationOrdinal = 0;
-  std::size_t frameDepth = 0;
-};
-
 struct WorkloadCaptureRuntimeObject final {
   std::uint8_t *base = nullptr;
   std::size_t byteCount = 0;
-  std::optional<WorkloadCaptureStackAllocation> stackAllocation;
+  std::optional<std::size_t> stackFrameDepth;
   std::optional<NativeMemoryObjectSource> source;
 };
 
@@ -80,7 +75,6 @@ void workloadCaptureBegin();
 void workloadCaptureEnd();
 void workloadCaptureEnterStackFrame();
 void workloadCaptureLeaveStackFrame();
-void workloadCaptureEndStackObject(void *base, std::uint64_t allocation);
 void workloadCaptureRegisterObject(void *base, std::uint64_t extentFactor0,
                                    std::uint64_t extentFactor1,
                                    ProgramObjectCaptureKind kind,

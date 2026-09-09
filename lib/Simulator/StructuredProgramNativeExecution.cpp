@@ -66,7 +66,6 @@ using native_detail::WorkloadCaptureContext;
 using native_detail::WorkloadCaptureValueShape;
 using native_detail::workloadCaptureBegin;
 using native_detail::workloadCaptureEnd;
-using native_detail::workloadCaptureEndStackObject;
 using native_detail::workloadCaptureEnterStackFrame;
 using native_detail::workloadCaptureLeaveStackFrame;
 using native_detail::workloadCaptureRegisterObject;
@@ -1024,10 +1023,6 @@ llvm::Error runInstrumentedExecution(
     if (workloadCaptureNames->registerObject)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->registerObject)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureRegisterObject),
-          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
-    if (workloadCaptureNames->endStackObject)
-      callbacks[jit->mangleAndIntern(*workloadCaptureNames->endStackObject)] = {
-          llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureEndStackObject),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
     if (workloadCaptureNames->enterStackFrame) {
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->enterStackFrame)] =

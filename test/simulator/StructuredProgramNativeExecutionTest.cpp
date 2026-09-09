@@ -1062,7 +1062,7 @@ module {
       "repeated allocsize registration changed the selected object lifetime");
 }
 
-void stackLifetimeMarkersPreserveAllocationExtents() {
+void stackLifetimeMarkersPreserveAllocationExtents(bool captureWholeFunction) {
   const char *test = __func__;
   if (llvm::InitializeNativeTarget() ||
       llvm::InitializeNativeTargetAsmPrinter())
@@ -1124,6 +1124,13 @@ module {
   auto runtimeInput = take(test, loom::sim::finalizeSimulationRuntimeInput(
                                      runtimeDraft, workload, view));
   auto kernel = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("kernel");
+  mlir::LLVM::LLVMFuncOp selected = kernel;
+  mlir::Value boundary = kernel.getArgument(0);
+  if (captureWholeFunction) {
+    selected = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("main");
+    boundary = (*selected.getBody().front().getOps<mlir::LLVM::AllocaOp>()
+                     .begin()).getRes();
+  }
   const auto identity = source.identity();
   loom::sim::WorkloadBackedSimulationInputCapturePlan plan{
       dataflow::RootedGraphLaunchRef{
@@ -1139,10 +1146,10 @@ module {
       {}};
   plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
                                   identity, dataflow::LogicalMemoryRootId(0)},
-                              kernel.getArgument(0)});
+                              boundary});
   std::vector<loom::sim::NativeSimulationCallCapture> calls;
   if (auto error = loom::sim::visitWorkloadBackedSimulationInputCaptures(
-          std::move(module), kernel, plan, source, workload, runtimeInput,
+          std::move(module), selected, plan, source, workload, runtimeInput,
           1024 * 1024, [&](loom::sim::NativeSimulationCallCapture &&capture) {
             calls.push_back(std::move(capture));
             return llvm::Error::success();
@@ -1152,10 +1159,11 @@ module {
           calls.size() == 1 && calls.front().objects.size() == 1 &&
               calls.front().objects.front().initialBytes.size() == 64 &&
               calls.front().objects.front().finalBytes.size() == 64 &&
-              calls.front().objects.front().initialBytes[0] == 7 &&
+              (captureWholeFunction ||
+               calls.front().objects.front().initialBytes[0] == 7) &&
               calls.front().objects.front().finalBytes[0] == 7 &&
               calls.front().objects.front().finalBytes[48] == 42,
-          "host stack-slot reuse changed the live allocation extent or bytes");
+          "capture lost stack storage across source lifetime markers");
 }
 
 void pointerCaptureFollowsSelectedMemoryEffects() {
@@ -1301,7 +1309,8 @@ int main() {
   denseThreadDomainsPreserveWholeProgramSemantics();
   negativeDynamicThreadExtentFailsExecution();
   runtimeAllocationsEnterTheCaptureRegistry();
-  stackLifetimeMarkersPreserveAllocationExtents();
+  stackLifetimeMarkersPreserveAllocationExtents(false);
+  stackLifetimeMarkersPreserveAllocationExtents(true);
   pointerCaptureFollowsSelectedMemoryEffects();
   llvm::outs() << "structured program native execution anchors passed\n";
   return EXIT_SUCCESS;

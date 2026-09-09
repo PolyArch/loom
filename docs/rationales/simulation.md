@@ -363,6 +363,14 @@ graph would falsify ownership. The independent oracle therefore replays the
 already selected Structured ownership decision and observes its exact boundary
 inside the complete program execution.
 
+Boundary capture observes backing storage before and after the selected
+region, including when that region contains an allocation's lifetime markers.
+The native capture clone therefore omits LLVM stack lifetime hints and binds
+stack objects from allocation until their owning call frame exits. This keeps
+distinct source allocations from sharing host stack slots during observation
+and preserves their exact extents. Source artifacts retain their lifetime
+markers; captured bytes do not authorize source accesses outside a lifetime.
+
 For an operation-owned region, matching the target graph back to a separate
 native module by debug location, symbol spelling, or operation position would
 create a second and unstable identity system. Invocation-local DSE lineage

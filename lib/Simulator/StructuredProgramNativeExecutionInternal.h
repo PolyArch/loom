@@ -101,7 +101,6 @@ struct WorkloadCaptureCallbackNames final {
   std::string begin;
   std::string end;
   std::optional<std::string> registerObject;
-  std::optional<std::string> endStackObject;
   std::optional<std::string> enterStackFrame;
   std::optional<std::string> leaveStackFrame;
   std::optional<std::string> coordinate;

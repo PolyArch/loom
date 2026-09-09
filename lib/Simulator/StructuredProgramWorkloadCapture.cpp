@@ -87,7 +87,7 @@ static bool endRuntimeObjectLifetime(std::uint64_t ordinal) {
     ++position;
   }
   object.byteCount = 0;
-  object.stackAllocation.reset();
+  object.stackFrameDepth.reset();
   object.source.reset();
   return true;
 }
@@ -102,26 +102,11 @@ void workloadCaptureLeaveStackFrame() {
     return;
   WorkloadCaptureContext &context = *activeWorkloadCapture;
   for (auto [ordinal, object] : llvm::enumerate(context.runtimeObjects))
-    if (object.stackAllocation &&
-        object.stackAllocation->frameDepth == context.stackFrameDepth &&
+    if (object.stackFrameDepth &&
+        *object.stackFrameDepth == context.stackFrameDepth &&
         !endRuntimeObjectLifetime(ordinal))
       return;
   --context.stackFrameDepth;
-}
-
-void workloadCaptureEndStackObject(void *base, std::uint64_t allocation) {
-  if (!activeWorkloadCapture || activeWorkloadCapture->error)
-    return;
-  for (auto [ordinal, object] :
-       llvm::enumerate(activeWorkloadCapture->runtimeObjects)) {
-    if (object.base == base && object.stackAllocation &&
-        object.stackAllocation->allocationOrdinal == allocation &&
-        object.stackAllocation->frameDepth ==
-            activeWorkloadCapture->stackFrameDepth) {
-      endRuntimeObjectLifetime(ordinal);
-      return;
-    }
-  }
 }
 
 void workloadCaptureRegisterObject(void *base, std::uint64_t extentFactor0,
@@ -182,8 +167,7 @@ void workloadCaptureRegisterObject(void *base, std::uint64_t extentFactor0,
   object.base = static_cast<std::uint8_t *>(base);
   object.byteCount = static_cast<std::size_t>(byteCount);
   if (kind == ProgramObjectCaptureKind::StackAllocation)
-    object.stackAllocation =
-        WorkloadCaptureStackAllocation{allocation, context.stackFrameDepth};
+    object.stackFrameDepth = context.stackFrameDepth;
 }
 
 static std::optional<std::pair<std::uint64_t, std::uint64_t>>
@@ -483,11 +467,11 @@ void workloadCaptureMemoryRoot(std::uint64_t rootOrdinal, void *pointer) {
     active.objectBases.push_back(base);
     capture.objects.emplace_back();
     capture.objects.back().source = object.source;
-    if (object.stackAllocation && capture.objects.back().source)
+    if (object.stackFrameDepth && capture.objects.back().source)
       if (auto *stack = std::get_if<NativeStackMemoryObjectSource>(
               &*capture.objects.back().source))
         stack->captureFrameDistance =
-            context.stackFrameDepth - object.stackAllocation->frameDepth;
+            context.stackFrameDepth - *object.stackFrameDepth;
     copyWorkloadCaptureBytes(capture.objects.back().initialBytes, base,
                              byteCount);
   } else {
