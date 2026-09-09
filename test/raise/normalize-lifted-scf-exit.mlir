@@ -170,24 +170,21 @@ func.func @normalize_live_projected_exit(%bound: i32, %enabled: i1) -> i32 {
   return %result#2 : i32
 }
 
-// The exit edge must carry poison even when the loop result is dead. This
-// near-match uses an ordinary computed value while preserving every other
-// lift-owned scaffold invariant.
-// CHECK-LABEL: func.func @preserve_non_poison_exit
+// An unused exit payload does not constrain loop normalization. The loop's
+// store and recurrence still execute before each condition, including exit.
+// CHECK-LABEL: func.func @normalize_unused_exit_value
 // CHECK: scf.while
-// CHECK: %[[NON_POISON_NEXT:.*]] = arith.addi
-// CHECK: %[[NON_POISON:.*]]:3 = scf.if
-// CHECK: scf.yield %[[NON_POISON_NEXT]],
-// CHECK: %[[NON_POISON_SELECTOR:.*]] = arith.trunci %[[NON_POISON]]#2
-// CHECK-NEXT: scf.condition(%[[NON_POISON_SELECTOR]]) %[[NON_POISON]]#0
-// UPLIFT-LABEL: func.func @preserve_non_poison_exit
+// CHECK: llvm.store
+// CHECK: %[[UNUSED_NEXT:.*]] = arith.addi
+// CHECK: %[[UNUSED_CONDITION:.*]] = arith.cmpi ne, %[[UNUSED_NEXT]], %arg0
+// CHECK-NEXT: scf.condition(%[[UNUSED_CONDITION]]) %[[UNUSED_NEXT]]
+// UPLIFT-LABEL: func.func @normalize_unused_exit_value
 // UPLIFT: scf.while
-// UPLIFT: %[[NON_POISON_NEXT:.*]] = arith.addi
-// UPLIFT: %[[NON_POISON:.*]]:3 = scf.if
-// UPLIFT: scf.yield %[[NON_POISON_NEXT]],
-// UPLIFT: %[[NON_POISON_SELECTOR:.*]] = arith.trunci %[[NON_POISON]]#2
-// UPLIFT-NEXT: scf.condition(%[[NON_POISON_SELECTOR]]) %[[NON_POISON]]#0
-func.func @preserve_non_poison_exit(%bound: i64, %output: !llvm.ptr) {
+// UPLIFT: llvm.store
+// UPLIFT: %[[UNUSED_UPLIFT_NEXT:.*]] = arith.addi
+// UPLIFT: %[[UNUSED_UPLIFT_CONDITION:.*]] = arith.cmpi ne, %[[UNUSED_UPLIFT_NEXT]], %arg0
+// UPLIFT-NEXT: scf.condition(%[[UNUSED_UPLIFT_CONDITION]]) %[[UNUSED_UPLIFT_NEXT]]
+func.func @normalize_unused_exit_value(%bound: i64, %output: !llvm.ptr) {
   %iv0 = arith.constant 0 : i64
   %step = arith.constant 1 : i64
   %flag0 = arith.constant 0 : i32

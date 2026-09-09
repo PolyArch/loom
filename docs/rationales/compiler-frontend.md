@@ -46,6 +46,14 @@ retaining the loop result creates a false cross-loop dependence. Projecting
 that result back to the same SSA value removes the accidental state without
 moving the loop, changing termination, or weakening poison and undef semantics.
 
+Inactive edge and publication slots introduced by structuring have no source
+observation before their defining edge. Synthesizing exceptional integer
+values for those slots needlessly exports a compiler artifact into the graph
+ABI. A defined integer padding value removes that artifact at its construction
+owner. Original exceptional source values still retain their own semantics;
+no later pass guesses whether an arbitrary undef was compiler-generated.
+
+
 ## Why Thread Parallelism Uses Coordinate Tuples
 
 A scalar thread ID would impose a linear order and flattening convention on
