@@ -267,6 +267,14 @@ Fixed vectors may carry exceptional state per lane. A normalization is legal
 only when it preserves the operation-specific rules for propagation,
 non-observation, and undefined behavior.
 
+CFG structuring pads unselected successor slots and publication latches that
+cannot be observed before their original defining edge. Imported integer
+padding is constructed as a defined zero. This construction does not replace
+source exceptional values: original CFG dominance and edge selection protect
+the newly introduced slots. An unused loop-exit payload does not constrain
+normalization; a live exit value retains its exact source value or a proven
+recurrence projection.
+
 Scalable vectors are legal S0 values. Before a region containing one can
 finalize as a SpatialRegion, a typed structured transform must materialize its
 semantics as fixed-width chunks, loops, and masks or tails. If it cannot, the

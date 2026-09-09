@@ -11,10 +11,10 @@
 //
 //   * return -- `llvm.return` is return-like, so the upstream exit combiner
 //     already merges the callable's returns without a Loom-specific rule.
-//   * undef -- structuring creates paths on which a value is never defined.
-//     Upstream materializes `ub.poison`, which is deferred undefined behavior
-//     and therefore stronger than what LLVM states here; an imported callable
-//     gets `llvm.mlir.undef` of the same type instead.
+//   * inactive edge payloads -- structuring pads unselected successor slots
+//     and publication latches that cannot be read before their defining edge.
+//     Integer padding is a defined zero; it creates no source nondeterminism
+//     or exceptional graph ABI input. Other imported types keep LLVM undef.
 //   * unreachable -- upstream builds a `func.return` of poison results, which
 //     an LLVM callable cannot host. `llvm.unreachable` states the same fact
 //     without inventing a result value.
@@ -491,18 +491,21 @@ public:
   CallableStructuring(bool importedLLVMCallable, LoopHintMap &annotations)
       : importedLLVMCallable(importedLLVMCallable), annotations(annotations) {}
 
-  // Structuring can leave a value undefined on a created path. An imported
-  // callable states that with LLVM's own undef, which is exactly as weak as
-  // the value LLVM had there; `ub.poison` would deepen it into deferred
-  // undefined behavior. Acceptance proved every value type of an imported
-  // callable region is LLVM-spellable, so this never falls back there. A
-  // genuinely native callable keeps the upstream spelling, which is its own
-  // semantics.
+  // Every upstream request here fills an unselected EdgeMultiplexer slot or
+  // a publication latch whose original definition dominates every source use.
+  // No padding value can be observed before that defining edge. Choose a
+  // defined integer payload at this construction boundary; existing source
+  // undef, poison, and freeze operations are never passed to this callback.
+  // Non-integer imported types retain LLVM's undef spelling, and native
+  // callable types remain owned by the upstream implementation.
   ::mlir::Value getUndefValue(::mlir::Location loc, ::mlir::OpBuilder &builder,
                               ::mlir::Type type) override {
     if (importedLLVMCallable) {
       assert(::mlir::LLVM::isCompatibleType(type) &&
              "accepted imported callable holds only LLVM-spellable values");
+      if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type))
+        return ::mlir::arith::ConstantOp::create(
+            builder, loc, builder.getIntegerAttr(integer, 0));
       return ::mlir::LLVM::UndefOp::create(builder, loc, type);
     }
     return ControlFlowToSCFTransformation::getUndefValue(loc, builder, type);

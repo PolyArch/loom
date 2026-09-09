@@ -1,10 +1,9 @@
 // Normalize only the loop-exit scaffold emitted by CFG-to-SCF structuring.
 //
 // The lift encodes an exit with a yield-only scf.if that selects either
-// continuation values or undefined-value placeholders, followed by an i32
-// discriminator and an i32 shouldRepeat flag. The placeholder is
-// llvm.mlir.undef inside an imported LLVM callable and ub.poison inside a
-// native one. The shouldRepeat flag is truncated to i1 for scf.condition.
+// continuation values or inactive exit payloads, followed by an i32
+// discriminator and an i32 shouldRepeat flag. The shouldRepeat flag is
+// truncated to i1 for scf.condition.
 // The scaffold collapses back into the direct arith.cmpi condition it
 // selects, which is the exact canonical form of the lifted exit.
 //
@@ -198,9 +197,7 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
     ::mlir::Value result = loop.getResult(index);
     if (result.use_empty()) {
       if (controlledResultByLane[index] >= 0 &&
-          !exceptionalPlaceholder(exitArgs[index]))
-        return false;
-      if (controlledResultByLane[index] >= 0)
+          exceptionalPlaceholder(exitArgs[index]))
         rememberPlaceholder(exitArgs[index]);
       continue;
     }
@@ -227,10 +224,10 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
       projection.uses.push_back(&use);
 
     if (targetIndex != index) {
-      if (!loop.getBeforeArguments()[index].use_empty() ||
-          !exceptionalPlaceholder(loop.getInits()[index]))
+      if (!loop.getBeforeArguments()[index].use_empty())
         return false;
-      rememberPlaceholder(loop.getInits()[index]);
+      if (exceptionalPlaceholder(loop.getInits()[index]))
+        rememberPlaceholder(loop.getInits()[index]);
       if (exceptionalPlaceholder(continuationArgs[index]))
         rememberPlaceholder(continuationArgs[index]);
     }

@@ -1,7 +1,7 @@
 // RUN: split-file %s %t
 // RUN: %loom-raise %t/counted.ll | FileCheck %s --check-prefix=LOOP
 // RUN: %loom-raise %t/spin.ll | FileCheck %s --check-prefix=SPIN
-// RUN: %loom-raise %t/irreducible.ll | FileCheck %s --check-prefix=UNDEF --implicit-check-not=ub.poison
+// RUN: %loom-raise %t/irreducible.ll | FileCheck %s --check-prefix=PADDING --implicit-check-not=ub.poison --implicit-check-not=llvm.mlir.undef
 // RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-lift-cf-to-scf %t/switch-carrier.mlir | FileCheck %s --check-prefix=SWITCH
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/preserved.mlir | FileCheck %s --check-prefix=PRESERVE
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=cf.cond_br
@@ -34,12 +34,12 @@
 // SPIN: llvm.unreachable
 // SPIN-NOT: llvm.return
 
-// Structuring an irreducible cycle creates paths on which a value is never
-// defined. Inside an imported callable that value is LLVM's own undef; poison
-// would deepen it into deferred undefined behavior the source never stated.
-// UNDEF-LABEL: llvm.func @irreducible
-// UNDEF: llvm.mlir.undef : i32
-// UNDEF: scf.while
+// Integer slots for inactive successor edges and publication latches are
+// defined padding. The original CFG dominance relation protects these slots
+// until their defining edge is selected.
+// PADDING-LABEL: llvm.func @irreducible
+// PADDING: arith.constant 0 : i32
+// PADDING: scf.while
 
 // The structured switch reads its selector through index and its cases through
 // 64-bit storage, so a selector wider than the target's index would silently
