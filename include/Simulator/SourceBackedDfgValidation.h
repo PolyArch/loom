@@ -2,10 +2,11 @@
 #define LOOM_SIMULATOR_SOURCEBACKEDDFGVALIDATION_H
 
 #include "Dataflow/IR/OperationSchema.h"
+#include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredExecutionShape.h"
-#include "Simulator/SimulationArtifacts.h"
 #include "Simulator/NativeSimulationOracle.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/Support/Error.h"
 
@@ -49,7 +50,8 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
     const frontend::StructuredProgramCandidate &selectedProgram,
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const ImportedStructuredProgramSimulationInputs &sourceInputs,
-    std::uint64_t maxRetainedCaptureBytes);
+    std::uint64_t maxRetainedCaptureBytes,
+    llvm::ArrayRef<dataflow::DataflowRewriteDerivation> derivations);
 
 enum class SourceBackedDfgValidationStatus : std::uint8_t {
   Equivalent,

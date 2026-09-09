@@ -1008,7 +1008,8 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
     const frontend::StructuredProgramCandidate &selectedProgram,
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const ImportedStructuredProgramSimulationInputs &sourceInputs,
-    std::uint64_t maxRetainedCaptureBytes) {
+    std::uint64_t maxRetainedCaptureBytes,
+    llvm::ArrayRef<dataflow::DataflowRewriteDerivation> derivations) {
   const CanonicalSimulationWorkload &workload = sourceInputs.workload;
   const CanonicalSimulationRuntimeInput &runtimeInput = sourceInputs.runtimeInput;
   const auto *structuredWorkload = workload.structuredProgram();
@@ -1032,8 +1033,18 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
       selectedProgram);
   if (!projected)
     return projected.takeError();
-  if (projected->artifact.identity() != dataflow.identity())
-    return invalid("memory provenance program does not derive this Dataflow");
+  std::vector<dataflow::StaticGraphLaunchRef> trackedLaunches;
+  for (const auto &graph : projected->spatialGraphs)
+    trackedLaunches.push_back(graph.staticGraphLaunch);
+  auto replayed = dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+      std::move(projected->artifact),
+      {dataflow::canonicalDataflowSchema.identity.str(),
+       dataflow::canonicalDataflowSchema.version, dataflow.identity()},
+      derivations, trackedLaunches);
+  if (!replayed)
+    return replayed.takeError();
+  for (auto [ordinal, graph] : llvm::enumerate(projected->spatialGraphs))
+    graph.staticGraphLaunch = replayed->trackedStaticGraphLaunches[ordinal];
   WorkloadBoundMemoryCapture result{selectedProgram.identity(),
                                     sourceInputs.structuredProgram.identity(),
                                     dataflow.identity(), workload.identity(),
@@ -1151,15 +1162,21 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
       selectedProgram, {}, hostAllocations);
   if (!tracked)
     return tracked.takeError();
-  if (tracked->artifact.identity() != dataflow.identity())
-    return invalid("tracked host bases changed the canonical Dataflow identity");
+  auto trackedReplay =
+      dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+          std::move(tracked->artifact),
+          {dataflow::canonicalDataflowSchema.identity.str(),
+           dataflow::canonicalDataflowSchema.version, dataflow.identity()},
+          derivations, {}, tracked->trackedValues);
+  if (!trackedReplay)
+    return trackedReplay.takeError();
   auto rootView = dataflow.resolve(result.graphs.front().launch.rootThreadLaunch);
   if (!rootView)
     return rootView.takeError();
   auto targetModule = rootView->op->getParentOfType<mlir::ModuleOp>();
   for (auto [root, ordinal] : sourceBindings) {
     auto canonicalSource = projectNativeProgramMemoryObjectSource(
-        tracked->trackedValues[ordinal].getDefiningOp());
+        trackedReplay->trackedValues[ordinal].getDefiningOp());
     if (!canonicalSource)
       return canonicalSource.takeError();
     auto rebound = resolveNativeProgramMemoryObjectSource(targetModule,

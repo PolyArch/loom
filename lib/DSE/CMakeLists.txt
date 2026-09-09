@@ -16,6 +16,7 @@ add_library(LoomDSE
   StructuredEvaluationAcquisition.cpp
   StructuredFunctionalReplayBudget.cpp
   StructuredOwnership.cpp
+  StructuredOwnershipDataflowLineage.cpp
   StructuredOwnershipInvocation.cpp
 )
 

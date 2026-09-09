@@ -23,6 +23,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -233,6 +234,83 @@ void pointerServiceBoundary() {
          ", value_lanes=" + std::to_string(replay.valueLanesCompared) +
          ", memory_bytes=" + std::to_string(replay.memoryBytesCompared) +
          ", events=" + std::to_string(replay.eventCount));
+
+  std::vector<mlir::OpResult> hostBases;
+  candidate.structuredProgram.module().walk(
+      [&](mlir::LLVM::AllocaOp allocation) {
+        hostBases.push_back(llvm::cast<mlir::OpResult>(allocation.getRes()));
+      });
+  auto lowered = take(
+      loom::lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
+          candidate.structuredProgram, {}, hostBases));
+  if (hostBases.empty() || lowered.trackedValues.size() != hostBases.size() ||
+      lowered.spatialGraphs.size() != 1)
+    fail("pointer cursor fixture lost its host bases or selected launch");
+  const auto reference =
+      [](const dataflow::CanonicalDataflowArtifact &artifact) {
+        return loom::ArtifactRootReference{
+            dataflow::canonicalDataflowSchema.identity.str(),
+            dataflow::canonicalDataflowSchema.version, artifact.identity()};
+      };
+  std::vector<dataflow::DataflowRewriteDerivation> derivations;
+  std::optional<dataflow::CanonicalDataflowArtifact> child;
+  const dataflow::CanonicalDataflowArtifact *parent = &lowered.artifact;
+  // Two transactions exercise composition, including rebinding the second
+  // transaction's SSA inputs to the first child's owned module.
+  for (unsigned step = 0; step != 2; ++step) {
+    bool changed = false;
+    for (const auto &decision :
+         take(dataflow::enumerateFixedDataflowRewriteDecisions(*parent))) {
+      auto rewritten =
+          take(dataflow::materializeDataflowRewrite(*parent, decision));
+      if (!rewritten || rewritten->identity() == lowered.artifact.identity())
+        continue;
+      derivations.push_back(
+          {reference(*parent), reference(*rewritten), decision});
+      child.emplace(std::move(*rewritten));
+      parent = &*child;
+      changed = true;
+      break;
+    }
+    if (!changed)
+      fail("pointer cursor has no distinct two-step rewrite path");
+  }
+  const auto target = reference(*child);
+  auto missing = dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+      take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
+          candidate.structuredProgram)),
+      target, {}, {});
+  if (missing)
+    fail("rewritten pointer cursor accepted missing derivation");
+  llvm::consumeError(missing.takeError());
+  auto wrongDerivations = derivations;
+  wrongDerivations.back().decision =
+      dataflow::PackUnpackRoundTripRewrite{dataflow::ActorId(1)};
+  auto wrong = dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+      take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
+          candidate.structuredProgram)),
+      target, wrongDerivations, {});
+  if (wrong)
+    fail("rewritten pointer cursor accepted a foreign rewrite decision");
+  llvm::consumeError(wrong.takeError());
+  std::reverse(derivations.begin(), derivations.end());
+  auto replayed =
+      take(dataflow::replayDataflowRewriteDerivationsWithTrackedEntities(
+          std::move(lowered.artifact), target, derivations,
+          {lowered.spatialGraphs.front().staticGraphLaunch},
+          lowered.trackedValues));
+  if (replayed.artifact.identity() != child->identity() ||
+      replayed.trackedStaticGraphLaunches.size() != 1 ||
+      replayed.trackedValues.size() != hostBases.size())
+    fail("rewrite replay lost its exact artifact or tracked entities");
+  take(replayed.artifact.view().resolve(
+      replayed.trackedStaticGraphLaunches.front()));
+  for (mlir::Value base : replayed.trackedValues) {
+    auto allocation = base.getDefiningOp<mlir::LLVM::AllocaOp>();
+    if (!allocation || allocation->getParentOfType<mlir::ModuleOp>() !=
+                           replayed.artifact.module())
+      fail("rewrite replay retained a foreign host allocation value");
+  }
 
   if (std::error_code error = llvm::sys::fs::remove_directories(directory))
     fail("cannot remove artifact store: " + error.message());

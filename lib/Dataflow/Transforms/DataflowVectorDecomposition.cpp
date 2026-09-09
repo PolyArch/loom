@@ -332,17 +332,18 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
 }
 
 llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
-materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+materializeDataflowRewriteWithTrackedEntities(
     const CanonicalDataflowArtifact &parent,
     const DataflowRewriteDecision &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
   if (dataflowRewriteKind(decision) !=
       DataflowRewriteKind::ElementwiseVectorDecompose)
     return detail::materializeFixedDataflowRewriteProjection(
-        parent, decision, trackedStaticGraphLaunches);
+        parent, decision, trackedStaticGraphLaunches, trackedValues);
 
   auto analyzed = validateElementwiseDecision(parent, decision);
   if (!analyzed)
@@ -367,14 +368,15 @@ materializeDataflowRewriteWithTrackedStaticGraphLaunches(
   }
 
   return detail::finalizeDataflowRewriteCandidate(
-      parent, candidate.get(), mapping, trackedStaticGraphLaunches);
+      parent, candidate.get(), mapping, trackedStaticGraphLaunches,
+      trackedValues);
 }
 
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            const DataflowRewriteDecision &decision) {
-  auto projected = materializeDataflowRewriteWithTrackedStaticGraphLaunches(
-      parent, decision, {});
+  auto projected =
+      materializeDataflowRewriteWithTrackedEntities(parent, decision, {});
   if (!projected)
     return projected.takeError();
   if (!*projected)

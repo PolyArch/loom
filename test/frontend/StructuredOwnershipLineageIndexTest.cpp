@@ -18,7 +18,6 @@ namespace {
 using loom::ArtifactIdentity;
 using loom::ArtifactRootReference;
 using loom::ArtifactSchemaDescriptor;
-using loom::dse::DataflowRewriteDerivation;
 using loom::dse::detail::StructuredOwnershipDataflowLineageIndex;
 
 [[noreturn]] void fail(llvm::StringRef message) {
@@ -120,13 +119,13 @@ void populateReconvergent(StructuredOwnershipDataflowLineageIndex &index,
       index.recordDecision(fixture.first, fixture.joined, firstKind));
 }
 
-std::vector<DataflowRewriteDerivation>
+std::vector<dataflow::DataflowRewriteDerivation>
 resolveForA(StructuredOwnershipDataflowLineageIndex &index,
             const Fixture &fixture) {
   auto lineage = take(index.tryResolve(fixture.structuredA, fixture.joined));
   if (!lineage || lineage->size() != 4)
     fail("reconvergent lineage did not retain exactly the rooted A edges");
-  for (const DataflowRewriteDerivation &edge : *lineage)
+  for (const dataflow::DataflowRewriteDerivation &edge : *lineage)
     if (edge.parent == fixture.foreign || edge.parent == fixture.rootB)
       fail("root A resolution retained an edge owned by root B");
   return std::move(*lineage);
@@ -192,12 +191,12 @@ void lateRootPathReachesExistingDescendants() {
   if (!lineage || lineage->size() != 2)
     fail("late root path did not reach an existing descendant");
   if (!std::any_of(lineage->begin(), lineage->end(),
-                   [&](const DataflowRewriteDerivation &edge) {
+                   [&](const dataflow::DataflowRewriteDerivation &edge) {
                      return edge.parent == fixture.rootB &&
                             edge.child == fixture.joined;
                    }) ||
       !std::any_of(lineage->begin(), lineage->end(),
-                   [&](const DataflowRewriteDerivation &edge) {
+                   [&](const dataflow::DataflowRewriteDerivation &edge) {
                      return edge.parent == fixture.joined &&
                             edge.child == fixture.descendant;
                    }))

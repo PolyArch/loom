@@ -77,12 +77,12 @@ struct ApplicationSpatialInvocationPlan final {
 /// capture handles remain valid throughout Mapping and Deployment.
 llvm::Expected<ApplicationSpatialInvocationPlan>
 deriveApplicationSpatialInvocationPlan(
-    const ArtifactRootReference &dataflow,
-    llvm::StringRef entrySymbol,
+    const ArtifactRootReference &dataflow, llvm::StringRef entrySymbol,
     const ArtifactRootReference &selectedProgram,
     const ArtifactRootReference &sourceWorkload,
     const ArtifactRootReference &sourceRuntimeInput,
-    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes);
+    const ArtifactStore &artifacts, std::uint64_t maxRetainedCaptureBytes,
+    llvm::ArrayRef<dataflow::DataflowRewriteDerivation> derivations);
 
 /// Preserves the source callable closure and shares the System entry ABI;
 /// no source invocation is rewritten into accelerator dispatch.

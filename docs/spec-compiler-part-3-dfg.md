@@ -200,6 +200,15 @@ spelling, pointer order, or pass traversal order. A no-op publishes no child.
 Equal finalized semantic content deduplicates by ArtifactIdentity even when
 reached by different decision paths.
 
+Source-bound memory provenance for a rewritten candidate must lower its exact
+Structured parent and replay a typed Dataflow derivation path to the requested
+final identity. The Dataflow rewrite owner rematerializes every selected edge,
+checks its complete parent and child Artifact references, and derives tracked
+static graph launch and host SSA value correspondence through canonical
+finalization. A missing path or a mismatched child cannot authorize capture
+for another Dataflow.
+
+
 The decision schema identity is `loom.dataflow_rewrite.decision`, version
 2.1. Its exact descriptor bytes are the ASCII bytes
 `loom.dataflow_rewrite.decision.2.1` without a trailing zero byte. Canonical

@@ -1,13 +1,52 @@
 #ifndef LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
 #define LOOM_DSE_STRUCTUREDOWNERSHIPINVOCATIONINTERNAL_H
 
+#include "Common/ArtifactLocalReference.h"
 #include "DSE/StructuredOwnershipInvocation.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
 #include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 #include "Simulator/NativeSimulationOracle.h"
 
+#include <map>
+#include <set>
+
 namespace loom::dse::detail {
+
+struct ArtifactReferenceLess final {
+  bool operator()(const ArtifactRootReference &lhs,
+                  const ArtifactRootReference &rhs) const {
+    return artifactRootReferenceLess(lhs, rhs);
+  }
+};
+
+using ArtifactReferenceSet =
+    std::set<ArtifactRootReference, ArtifactReferenceLess>;
+
+struct CanonicalDerivationKey final {
+  ArtifactRootReference parent;
+  std::vector<std::uint8_t> ownerPayload;
+};
+
+struct CanonicalDerivationKeyLess final {
+  bool operator()(const CanonicalDerivationKey &lhs,
+                  const CanonicalDerivationKey &rhs) const {
+    if (artifactRootReferenceLess(lhs.parent, rhs.parent))
+      return true;
+    if (artifactRootReferenceLess(rhs.parent, lhs.parent))
+      return false;
+    return lhs.ownerPayload < rhs.ownerPayload;
+  }
+};
+
+template <typename Derivation>
+using CanonicalDerivationSet =
+    std::map<CanonicalDerivationKey, Derivation, CanonicalDerivationKeyLess>;
+
+template <typename Derivation>
+using CanonicalDerivationIndex =
+    std::map<ArtifactRootReference, CanonicalDerivationSet<Derivation>,
+             ArtifactReferenceLess>;
 
 /// Invocation-local, removable index for exact D0-rooted rewrite lineage.
 /// Canonical Artifact references and typed decisions remain the authorities;
@@ -32,7 +71,8 @@ public:
       const dataflow::DataflowRewriteDecision &decision,
       llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches = {},
       llvm::ArrayRef<dataflow::StaticGraphLaunchRef> childLaunches = {});
-  llvm::Expected<std::optional<std::vector<DataflowRewriteDerivation>>>
+  llvm::Expected<
+      std::optional<std::vector<dataflow::DataflowRewriteDerivation>>>
   tryResolve(const ArtifactRootReference &structuredParent,
              const ArtifactRootReference &candidate) const;
   llvm::Expected<dataflow::StaticGraphLaunchRef>

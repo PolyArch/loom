@@ -190,7 +190,8 @@ llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
 materializeSyncRendezvousRewriteProjection(
     const CanonicalDataflowArtifact &parent,
     const SyncRendezvousRewrite &decision,
-    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches,
+    llvm::ArrayRef<mlir::Value> trackedValues) {
   auto resolved = resolveRoot(parent, decision.root);
   if (!resolved)
     return resolved.takeError();
@@ -238,7 +239,8 @@ materializeSyncRendezvousRewriteProjection(
   }
 
   return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
-                                          trackedStaticGraphLaunches);
+                                          trackedStaticGraphLaunches,
+                                          trackedValues);
 }
 
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
