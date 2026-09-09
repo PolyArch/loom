@@ -59,9 +59,12 @@ explores optional Dataflow rewrites within the existing software frontier.
 Explicit `first_verified` reports the first runtime-qualified SystemMapping
 without comparing the remaining bounded frontier. Both product drivers derive
 their default from `defaultProductMappingStoppingPolicy`.
-Uncalibrated resource-time screening preserves representatives of distinct
-rewrite families within its existing finalist bound, so a transformation's
-physical benefit can reach measured comparison. Missing runtime evidence,
+Resource-time screening and final selection retain the current best candidate
+and representatives of distinct ownership-coverage extremes before allocating
+remaining slots to uncalibrated rewrite families. Equal coverage does not
+consume additional extreme-selection slots. All choices stay within the
+existing finalist bound so both ownership and rewrite benefits can reach
+measured comparison. Missing runtime evidence,
 unsupported models, execution failure, and cancellation remain typed outcomes,
 never fallback scores. The stopping policy is invocation provenance and is
 not part of a candidate Artifact identity.

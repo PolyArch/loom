@@ -588,6 +588,12 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   std::vector<std::size_t> ranked(screened.size());
   std::iota(ranked.begin(), ranked.end(), 0);
   llvm::sort(ranked, screenedLess);
+  const auto coverageKey =
+      [](const ResourceTimeMappingCandidateInput &candidate) {
+        return std::tie(candidate.acceleratedRegionCount,
+                        candidate.acceleratedGraphCount,
+                        candidate.acceleratedActorCount);
+      };
   const auto hasUnrepresentedRewriteFamily =
       [](const ResourceTimeMappingCandidateInput &candidate,
          llvm::ArrayRef<std::vector<dataflow::DataflowRewriteKind>> covered) {
@@ -615,41 +621,30 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   };
   if (!ranked.empty())
     appendPromotion(ranked.front());
-  // An uncalibrated structural estimate cannot observe every physical effect
-  // of a rewrite. Spend existing exploration slots on its distinct families.
+  // Ownership coverage changes launch overhead and retained host work. Preserve
+  // its distinct extremes before spending bounded slots on rewrite variants.
+  if (!ranked.empty()) {
+    const auto extremes = std::minmax_element(
+        ranked.begin(), ranked.end(), [&](std::size_t lhs, std::size_t rhs) {
+          const auto &left = candidates[screened[lhs].index];
+          const auto &right = candidates[screened[rhs].index];
+          return std::tuple(coverageKey(left), left.candidateIdentity.bytes()) <
+                 std::tuple(coverageKey(right),
+                            right.candidateIdentity.bytes());
+        });
+    for (std::size_t ordinal : {*extremes.first, *extremes.second})
+      if (llvm::none_of(promotionOrder, [&](std::size_t prior) {
+            return coverageKey(candidates[screened[prior].index]) ==
+                   coverageKey(candidates[screened[ordinal].index]);
+          }))
+        appendPromotion(ordinal);
+  }
+  // Structural estimates cannot observe every physical effect of a rewrite.
   for (std::size_t ordinal : ranked)
     if (hasUnrepresentedRewriteFamily(candidates[screened[ordinal].index],
                                       promotedRewriteFamilies))
       appendPromotion(ordinal);
   if (!ranked.empty()) {
-    const auto minimumCoverage = *std::min_element(
-        ranked.begin(), ranked.end(), [&](std::size_t lhs, std::size_t rhs) {
-          const auto &left = candidates[screened[lhs].index];
-          const auto &right = candidates[screened[rhs].index];
-          return std::tuple(left.acceleratedRegionCount,
-                            left.acceleratedGraphCount,
-                            left.acceleratedActorCount,
-                            left.candidateIdentity.bytes()) <
-                 std::tuple(right.acceleratedRegionCount,
-                            right.acceleratedGraphCount,
-                            right.acceleratedActorCount,
-                            right.candidateIdentity.bytes());
-        });
-    const auto maximumCoverage = *std::max_element(
-        ranked.begin(), ranked.end(), [&](std::size_t lhs, std::size_t rhs) {
-          const auto &left = candidates[screened[lhs].index];
-          const auto &right = candidates[screened[rhs].index];
-          return std::tuple(left.acceleratedRegionCount,
-                            left.acceleratedGraphCount,
-                            left.acceleratedActorCount,
-                            left.candidateIdentity.bytes()) <
-                 std::tuple(right.acceleratedRegionCount,
-                            right.acceleratedGraphCount,
-                            right.acceleratedActorCount,
-                            right.candidateIdentity.bytes());
-        });
-    appendPromotion(minimumCoverage);
-    appendPromotion(maximumCoverage);
     const auto maximumConcentration = *std::max_element(
         ranked.begin(), ranked.end(), [&](std::size_t lhs, std::size_t rhs) {
           const auto &left = candidates[screened[lhs].index];
@@ -1020,6 +1015,21 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   };
   if (!rankedHints.empty())
     append(rankedHints.front());
+  const EligibleHint *minimumCoverage = nullptr;
+  const EligibleHint *maximumCoverage = nullptr;
+  for (const EligibleHint *candidate : rankedHints) {
+    const auto coverage = coverageKey(inputFor(candidate));
+    if (!minimumCoverage || coverage < coverageKey(inputFor(minimumCoverage)))
+      minimumCoverage = candidate;
+    if (!maximumCoverage || coverage > coverageKey(inputFor(maximumCoverage)))
+      maximumCoverage = candidate;
+  }
+  for (const EligibleHint *candidate : {minimumCoverage, maximumCoverage})
+    if (candidate && llvm::none_of(selected, [&](const EligibleHint *prior) {
+          return coverageKey(inputFor(prior)) ==
+                 coverageKey(inputFor(candidate));
+        }))
+      append(candidate);
   for (const EligibleHint *candidate : rankedHints)
     if (hasUnrepresentedRewriteFamily(inputFor(candidate),
                                       selectedRewriteFamilies))
@@ -1044,37 +1054,6 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   }
   append(minimumConcurrency);
   append(maximumConcurrency);
-  const EligibleHint *minimumCoverage = nullptr;
-  const EligibleHint *maximumCoverage = nullptr;
-  for (const EligibleHint *candidate : rankedHints) {
-    const auto *evaluation = candidate->evaluation;
-    if (!minimumCoverage ||
-        std::tie(evaluation->acceleratedRegionCount,
-                 evaluation->acceleratedGraphCount,
-                 evaluation->acceleratedActorCount,
-                 evaluation->inputPreferenceRank) <
-            std::tie(minimumCoverage->evaluation->acceleratedRegionCount,
-                     minimumCoverage->evaluation->acceleratedGraphCount,
-                     minimumCoverage->evaluation->acceleratedActorCount,
-                     minimumCoverage->evaluation->inputPreferenceRank))
-      minimumCoverage = candidate;
-    if (!maximumCoverage ||
-        evaluation->acceleratedRegionCount >
-            maximumCoverage->evaluation->acceleratedRegionCount ||
-        (evaluation->acceleratedRegionCount ==
-             maximumCoverage->evaluation->acceleratedRegionCount &&
-         evaluation->acceleratedGraphCount >
-             maximumCoverage->evaluation->acceleratedGraphCount) ||
-        (evaluation->acceleratedRegionCount ==
-             maximumCoverage->evaluation->acceleratedRegionCount &&
-         evaluation->acceleratedGraphCount ==
-             maximumCoverage->evaluation->acceleratedGraphCount &&
-         evaluation->acceleratedActorCount >
-             maximumCoverage->evaluation->acceleratedActorCount))
-      maximumCoverage = candidate;
-  }
-  append(minimumCoverage);
-  append(maximumCoverage);
   const EligibleHint *maximumConcentration = nullptr;
   for (const EligibleHint *candidate : rankedHints)
     if (!maximumConcentration ||

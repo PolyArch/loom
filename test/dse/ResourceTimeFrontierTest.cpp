@@ -908,6 +908,30 @@ void uncalibratedRewriteGetsAMappingOpportunity() {
                        }),
           "uncalibrated structural ranking suppressed an unmeasured rewrite "
           "family");
+
+  auto coarse = candidates.front();
+  coarse.candidateIdentity = digest(50);
+  coarse.inputPreferenceRank = candidates.size();
+  coarse.invocation.sourceLineage = reference(50);
+  coarse.acceleratedActorCount *= 10;
+  for (auto &region : coarse.regions)
+    for (auto &point : region.speedupCurve)
+      point.executionTimePicoseconds *= 100;
+  candidates.push_back(std::move(coarse));
+  const auto withCoarse =
+      take(loom::dse::selectResourceTimeMappingFinalists(candidates, bounded));
+  require(withCoarse.finalists.size() == bounded.maximumMappingFinalists &&
+              withCoarse.accounting.detailedFrontierCandidates ==
+                  bounded.maximumMappingFinalists,
+          "coverage exploration exceeded the existing Mapping work bound");
+  for (const auto &required : {candidates.front().candidateIdentity,
+                               candidates.back().candidateIdentity})
+    require(llvm::any_of(withCoarse.finalists,
+                         [&](const auto &finalist) {
+                           return finalist.candidateIdentity == required;
+                         }),
+            "rewrite variants suppressed the baseline or a distinct ownership "
+            "coverage extreme");
 }
 
 } // namespace
