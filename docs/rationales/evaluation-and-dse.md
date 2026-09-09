@@ -832,3 +832,9 @@ variants from starving others. The same selector handles publication so a
 candidate admitted through that policy is not lost to an unrelated canonical
 prefix after successful materialization. These finite bounds still report
 incompleteness and cannot promise a globally optimal candidate.
+
+The same hierarchy matters after Dataflow rewrite exploration. Concatenating
+each parent's preferred children and then taking a global prefix can discard
+every representative of the next retained ownership parent. Taking children
+in rounds preserves those parent choices under the same Mapping bound, while
+retaining the ranking within each parent.

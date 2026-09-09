@@ -760,6 +760,13 @@ coordinate identity, fanout, and budgets. Thus a locally inferior parent may
 survive when it is a distinct beam representative, while unrestricted Cartesian
 composition is still forbidden.
 
+The final Mapping frontier takes Dataflow descendants in rounds across the
+retained Structured parents. Each round preserves the parents' preference
+order and takes their next unique Dataflow child in that parent's preference
+order. The existing Mapping bound and exact Dataflow deduplication still apply.
+A parent's rewrite fanout cannot consume the whole final frontier before the
+other retained parents receive their first opportunity.
+
 The ownership provider keeps three bounds distinct. Its resolved Generate
 binding carries a positive decision-materialization attempt grant reserved by
 the enclosing frontier; its plan-derived output demand limits distinct child
