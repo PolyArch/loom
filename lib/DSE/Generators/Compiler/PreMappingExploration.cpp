@@ -1713,27 +1713,40 @@ exploreStructuredCompilationToPreMapping(
   std::vector<SelectedPreMappingCompilation> bounded;
   bounded.reserve(static_cast<std::size_t>(
       std::min<std::uint64_t>(options.ownership.selection.k, selected.size())));
-  std::vector<ArtifactIdentity> retainedDataflows;
-  retainedDataflows.reserve(bounded.capacity());
+  std::vector<ArtifactIdentity> seenDataflows;
+  seenDataflows.reserve(selected.size());
+  // Preserve the retained Structured frontier before taking more rewrites
+  // from any one parent. Parent order and each parent's Dataflow preference
+  // order remain intact within these rounds.
+  std::map<ArtifactIdentity::Storage, std::size_t> nextRewriteRank;
+  std::vector<std::pair<std::size_t, std::size_t>> rewriteRankedCandidates;
   for (auto indexed : llvm::enumerate(selected)) {
-    SelectedPreMappingCompilation &candidate = indexed.value();
     const ArtifactIdentity identity =
-        candidate.compilation.canonicalDataflow.identity();
-    if (llvm::is_contained(retainedDataflows, identity))
+        indexed.value().compilation.canonicalDataflow.identity();
+    if (llvm::is_contained(seenDataflows, identity))
       continue;
+    seenDataflows.push_back(identity);
+    rewriteRankedCandidates.emplace_back(
+        nextRewriteRank[indexed.value()
+                            .compilation.structuredProgram.identity().bytes()]++,
+        indexed.index());
+  }
+  llvm::sort(rewriteRankedCandidates);
+  for (const auto &[rewriteRank, selectedOrdinal] : rewriteRankedCandidates) {
+    (void)rewriteRank;
+    SelectedPreMappingCompilation &candidate = selected[selectedOrdinal];
     if (frontierAccounting.mappingPairs.consumed >=
         frontierAccounting.mappingPairs.limit)
       return invalid("compiler frontier retained more Mapping pairs than its "
                      "admitted bound");
     ++frontierAccounting.mappingPairs.consumed;
     candidate.preferenceRank = bounded.size();
-    if (selectedPlanningRecords[indexed.index()]) {
+    if (selectedPlanningRecords[selectedOrdinal]) {
       auto &record =
-          candidateInventory[*selectedPlanningRecords[indexed.index()]];
+          candidateInventory[*selectedPlanningRecords[selectedOrdinal]];
       record.disposition = PreMappingCandidatePlanningDisposition::Retained;
       record.preferenceRank = candidate.preferenceRank;
     }
-    retainedDataflows.push_back(identity);
     bounded.push_back(std::move(candidate));
     if (bounded.size() == options.ownership.selection.k)
       break;

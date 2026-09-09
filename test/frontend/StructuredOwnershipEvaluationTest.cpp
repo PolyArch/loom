@@ -1440,6 +1440,35 @@ void runEvaluationAnchor() {
             loom::sim::SourceBackedDfgValidationStatus::Equivalent)
       fail("semantic conformance retained an unverified ownership prefix");
 
+  auto rewriteChainSource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto rewriteChainExploration = semanticChainExploration;
+  rewriteChainExploration.frontier.stoppingPolicy =
+      loom::dse::JointDesignStoppingPolicy::BoundedQuality;
+  rewriteChainExploration.ownership.protocolCallableRoots = {
+      findCallable(rewriteChainSource.structuredProgram, "kernel"),
+      findCallable(rewriteChainSource.structuredProgram, "warm")};
+  auto rewriteChain = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(rewriteChainSource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(),
+      rewriteChainExploration, store, blobs));
+  const auto *rewriteChainSelection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&rewriteChain);
+  if (!rewriteChainSelection || rewriteChainSelection->selected.size() != 2)
+    fail("Dataflow rewrites did not fill the bounded Mapping frontier");
+  const auto firstParent = rewriteChainSelection->selected.front()
+                               .compilation.structuredProgram.identity();
+  if (firstParent == rewriteChainSelection->selected.back()
+                         .compilation.structuredProgram.identity())
+    fail("one parent's Dataflow rewrites displaced another retained parent");
+  unsigned firstParentChildren = 0;
+  for (const auto &record : rewriteChainSelection->candidateInventory)
+    if (record.structuredProgram && record.canonicalDataflow &&
+        record.structuredProgram->artifact == firstParent)
+      ++firstParentChildren;
+  if (firstParentChildren < 2)
+    fail("the Mapping frontier did not exercise competing Dataflow siblings");
+
   auto parallelExploration = exploration;
   parallelExploration.ownership.candidateWorkerCount = 2;
   auto parallelSource = take(loom::frontend::raiseLlvmModuleToStructured(
