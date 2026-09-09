@@ -8,6 +8,7 @@
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/GepAddressPlan.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -814,23 +815,6 @@ struct MemoryActorExecutionPlan {
   ResolvedMemoryElementLayout elementLayout;
 };
 
-/// One typed GEP path component. A dynamic component names its actor operand;
-/// otherwise constantIndex carries the exact source integer. scale is already
-/// projected to A(AS) bits from the exact LLVM DataLayout.
-struct GepOffsetTerm {
-  std::optional<unsigned> dynamicOperandOrdinal;
-  llvm::APInt constantIndex = llvm::APInt(1, 0);
-  llvm::APInt scale = llvm::APInt(1, 0);
-};
-
-/// Immutable execution projection of one scalar LLVM GEP. Type walking and
-/// DataLayout queries happen once during graph preparation, never per firing.
-struct GepExecutionPlan {
-  ::loom::PointerLayout pointerLayout;
-  mlir::LLVM::GEPNoWrapFlags noWrapFlags = mlir::LLVM::GEPNoWrapFlags::none;
-  llvm::SmallVector<GepOffsetTerm, 4> terms;
-};
-
 using ActorProvider = bool (*)(mlir::Operation *,
                                const dataflow::CanonicalActorSchemaProjection &,
                                SimulatorState &);
@@ -899,7 +883,7 @@ struct ActorExecutionPlan {
   llvm::SmallVector<Output, 2> outputs;
   std::optional<PrimitiveOperationDescriptor> primitive;
   std::optional<MemoryActorExecutionPlan> memory;
-  std::optional<GepExecutionPlan> gep;
+  std::optional<dataflow::semantics::GepAddressPlan> gep;
   llvm::SmallVector<dataflow::semantics::ActorHandshakeCase, 4> handshakeCases;
   ActorTransitionProbeKind transitionProbe =
       ActorTransitionProbeKind::Unavailable;
@@ -1455,8 +1439,6 @@ llvm::Expected<MemoryActorExecutionPlan>
 memoryActorExecutionPlan(mlir::Operation *op, mlir::Operation *graphScope);
 std::optional<std::string>
 unsupportedMemoryActorRepresentation(mlir::Operation *op);
-llvm::Expected<GepExecutionPlan> gepExecutionPlan(mlir::LLVM::GEPOp op,
-                                                  mlir::Operation *graphScope);
 bool fireGetElementPtr(
     mlir::Operation *op,
     const dataflow::CanonicalActorSchemaProjection &projection,

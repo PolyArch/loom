@@ -623,9 +623,9 @@ prepareGraphExecution(mlir::ModuleOp module, dataflow::GraphOp graph) {
                                      llvm::toString(plan.takeError())}}};
       memoryActor = std::move(*plan);
     }
-    std::optional<GepExecutionPlan> gepActor;
+    std::optional<dataflow::semantics::GepAddressPlan> gepActor;
     if (auto gep = mlir::dyn_cast<mlir::LLVM::GEPOp>(op)) {
-      auto plan = gepExecutionPlan(gep, graph);
+      auto plan = dataflow::semantics::projectGepAddressPlan(gep, graph);
       if (!plan) {
         unsupported.emplace(unsupportedOperationLabel(&op),
                             llvm::toString(plan.takeError()));
