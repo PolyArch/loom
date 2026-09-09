@@ -19,7 +19,10 @@
 // CHECK-SAME: [[INDEX:%[^, )]+]]: i64, [[BASE:%[^, )]+]]: !llvm.ptr
 // CHECK-SAME: [[MEM:%[^, )]+]]: memref<?xi32>
 // CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK: %[[ADDR:.*]] = llvm.getelementptr [[BASE]][[[INDEX]]]
+// CHECK: %[[STRIDE:.*]] = dataflow.constant {{.*}} {const_value = 4 : i64}
+// CHECK: %[[OFFSET:.*]] = arith.muli [[INDEX]], %[[STRIDE]] : i64
+// CHECK: %[[ADDR:.*]] = llvm.getelementptr [[BASE]][%[[OFFSET]]]
+// CHECK-SAME: (!llvm.ptr, i64) -> !llvm.ptr, i8
 // CHECK: %[[DATA:.*]], %[[DONE:.*]] = dataflow.load [[MEM]][%[[ADDR]]]
 // CHECK: dataflow.graph.return
 

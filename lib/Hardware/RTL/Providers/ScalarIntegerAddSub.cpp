@@ -39,9 +39,6 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
       &request.capability.parameterizedCapability);
   if (!parameters)
     return invalid("capability has the wrong parameter schema");
-  if (!parameters->pointerFormats.empty())
-    return llvm::make_error<FabricOperationProviderUnsupportedError>(
-        request.capability.implementationFamily, request.recipe);
 
   auto actualContract = ::fabric::encodeResourceContractRecord(
       request.capability.resourceStateAndTimingContract);
@@ -59,7 +56,8 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
   bool hasSubtract = false;
   for (::dataflow::OperationSchemaId schema :
        request.capability.enabledOperationSchemas) {
-    if (schema == ::dataflow::OperationSchemaId::ArithAddI)
+    if (schema == ::dataflow::OperationSchemaId::ArithAddI ||
+        schema == ::dataflow::OperationSchemaId::LLVMGetElementPtr)
       hasAdd = true;
     else if (schema == ::dataflow::OperationSchemaId::ArithSubI)
       hasSubtract = true;

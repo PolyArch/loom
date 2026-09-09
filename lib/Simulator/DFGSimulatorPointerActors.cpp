@@ -27,7 +27,7 @@ bool hasFlag(mlir::LLVM::GEPNoWrapFlags flags,
   return mlir::LLVM::bitEnumContainsAny(flags, flag);
 }
 
-llvm::Expected<llvm::APInt>
+std::optional<llvm::APInt>
 canonicalizeIndex(const llvm::APInt &index, unsigned addressBits,
                   mlir::LLVM::GEPNoWrapFlags flags) {
   if (index.getBitWidth() == addressBits)
@@ -35,12 +35,10 @@ canonicalizeIndex(const llvm::APInt &index, unsigned addressBits,
   if (index.getBitWidth() > addressBits) {
     if (hasFlag(flags, mlir::LLVM::GEPNoWrapFlags::nusw) &&
         !index.isSignedIntN(addressBits))
-      return llvm::createStringError(std::errc::result_out_of_range,
-                                     "LLVM GEP nusw index truncation");
+      return std::nullopt;
     if (hasFlag(flags, mlir::LLVM::GEPNoWrapFlags::nuw) &&
         !index.isIntN(addressBits))
-      return llvm::createStringError(std::errc::result_out_of_range,
-                                     "LLVM GEP nuw index truncation");
+      return std::nullopt;
     return index.trunc(addressBits);
   }
   return index.sext(addressBits);

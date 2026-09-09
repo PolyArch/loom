@@ -228,6 +228,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-rewrite-generator-test
   loom-pre-mapping-compilation-test
   loom-pointer-service-boundary-test
+  loom-graph-pointer-addressing-test
   loom-frontend-payload-framing-test
   loom-mapping-artifact-test
   loom-system-mapping-constraint-set-test

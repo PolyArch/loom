@@ -11,6 +11,7 @@
 
 #include "GraphMemoryLowering.h"
 #include "GraphRegionLowering.h"
+#include "GraphPointerAddressing.h"
 #include "StreamOrdinal.h"
 
 #include "Common/IndexWidth.h"
@@ -1221,7 +1222,8 @@ namespace lowering {
     if (graph.isExternal())
       continue;
     std::optional<unsigned> indexBits = getGraphIndexBits(graph);
-    if (!indexBits || ::mlir::failed(lowerGraphRegions(graph, *indexBits, independentLoops)))
+    if (!indexBits || ::mlir::failed(normalizeGraphPointerAddresses(graph)) ||
+        ::mlir::failed(lowerGraphRegions(graph, *indexBits, independentLoops)))
       return ::mlir::failure();
   }
   return ::mlir::success();

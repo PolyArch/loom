@@ -719,9 +719,26 @@ fabric::detail::resolveScalarIntegerBehaviorDomain(
     return reject("implementation family is not registered");
   if (enabledSchemas.empty())
     return reject("scalar integer capability has no enabled schema");
-  if (llvm::is_contained(enabledSchemas,
-                         ::dataflow::OperationSchemaId::LLVMGetElementPtr))
-    return reject("GEP has no bounded scalar integer behavior relation");
+  const bool enablesPointer = llvm::is_contained(
+      enabledSchemas, ::dataflow::OperationSchemaId::LLVMGetElementPtr);
+  const auto *integerParams = std::get_if<ScalarIntegerParams>(&params);
+  if (enablesPointer || (integerParams && !integerParams->pointerFormats.empty())) {
+    if (family != ImplementationFamilyId::ScalarIntegerAddSub ||
+        !enablesPointer || !integerParams ||
+        integerParams->pointerFormats.empty() ||
+        !integerParams->pointerFormats.valid() ||
+        !llvm::is_contained(enabledSchemas,
+                            ::dataflow::OperationSchemaId::ArithAddI))
+      return reject("GEP requires integer addition and exact pointer formats");
+    for (const PointerFormat &format : integerParams->pointerFormats.formats())
+      if (format.representationBits != format.addressBits ||
+          !llvm::any_of(integerWidthDomain,
+                        [&](IntegerWidth width) {
+                          return integerParams->integerWidths.contains(width) &&
+                                 getBitWidth(width) == format.addressBits;
+                        }))
+        return reject("GEP requires an admitted full-width integer address");
+  }
 
   const ImplementationFamilyDescriptor &descriptor =
       implementationFamily(family);
@@ -736,7 +753,8 @@ fabric::detail::resolveScalarIntegerBehaviorDomain(
 
   std::vector<::dataflow::OperationSchemaId> orderedSchemas;
   for (::dataflow::OperationSchemaId schema : descriptor.admittedSchemas)
-    if (llvm::is_contained(enabledSchemas, schema))
+    if (llvm::is_contained(enabledSchemas, schema) &&
+        schema != ::dataflow::OperationSchemaId::LLVMGetElementPtr)
       orderedSchemas.push_back(schema);
 
   std::vector<ScalarIntegerBehaviorCandidate> candidates;
@@ -800,6 +818,15 @@ fabric::detail::resolveScalarIntegerBehaviorDomain(
     if (*physical)
       reachable.push_back(std::move(candidate));
   }
+  if (enablesPointer &&
+      (physicalInputWidths.size() != 2 || physicalResultWidths.size() != 1 ||
+       llvm::none_of(integerParams->pointerFormats.formats(),
+                     [&](const PointerFormat &format) {
+                       return format.representationBits <= physicalInputWidths[0] &&
+                              format.addressBits <= physicalInputWidths[1] &&
+                              format.representationBits <= physicalResultWidths[0];
+                     })))
+    return reject("GEP enabled schema has no reachable behavior witness");
   if (reachable.empty())
     return reject(
         "scalar integer capability has no physically reachable behavior");

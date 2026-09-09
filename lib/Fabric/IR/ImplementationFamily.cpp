@@ -1650,6 +1650,14 @@ llvm::Error admitGetElementPtr(const FamilyCapabilityParams &capability,
                   "provider");
   if (llvm::Error error = verifyScalarOrdinaryIntegerActorShape(actor))
     return error;
+  const auto &payload = std::get<dataflow::GetElementPtrPayload>(actor.payload);
+  if (pointerLayout.representationBits != pointerLayout.addressBits ||
+      !payload.sourceElementType.isInteger(8) ||
+      payload.rawConstantIndices.size() != 1 ||
+      payload.rawConstantIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex ||
+      actor.type.getNumInputs() != 2 ||
+      !actor.type.getInput(1).isInteger(pointerLayout.addressBits))
+    return reject("GEP requires a canonical full-width byte-offset address");
   auto base =
       ::mlir::dyn_cast<::mlir::LLVM::LLVMPointerType>(actor.type.getInput(0));
   if (base.getAddressSpace() != pointerLayout.addressSpace)

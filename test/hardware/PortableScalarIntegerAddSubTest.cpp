@@ -170,10 +170,13 @@ makeFabric(llvm::StringRef test, const ArtifactStore &store,
           %fu = fabric.fu
               (%fa = %pa : !fabric.bits<8>, %fb = %pb : !fabric.bits<8>)
               -> !fabric.bits<8> {
-            %value = fabric.op [@arith.addi, @arith.subi] (%fa, %fb)
+            %value = fabric.op [@arith.addi, @arith.subi, @llvm.getelementptr] (%fa, %fb)
               {implementation_family =
                  #fabric.implementation_family<ScalarIntegerAddSub>,
-               hw_params = {integer_widths = [8 : i32]}}
+               hw_params = {integer_widths = [8 : i32],
+                 pointer_formats = [{address_space = 0 : i32,
+                   representation_bits = 8 : i32, address_bits = 8 : i32,
+                   kind = "stable_integral"}]}}
               : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
             fabric.yield %value : !fabric.bits<8>
           }

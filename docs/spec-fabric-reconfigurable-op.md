@@ -131,17 +131,26 @@ PointerFormat = {
 }
 ```
 
-The current reconfigurable-operation relation requires this pointer-format
-relation to be empty. `LLVMGetElementPtr` has an unbounded static layout and
-index tuple, while `ScalarIntegerParams` provides no rank, layout, or direct-bit
-carrier bound from which a total finite-width configuration relation can be
-derived. A selected stable-integral GEP must therefore be normalized, under its
-exact DataLayout, to explicit canonical integer address arithmetic before
-TechMapping binds it to the current `ScalarIntegerAddSub` resource. A future
-resource may admit GEP directly only after one typed capability record closes
-the address-expression domain and its semantic-field carrier. Endpoint
-capacity, `representation_bits`, `address_bits`, and selected `index` width
-remain independent facts and must never be inferred from one another.
+A `ScalarIntegerAddSub` resource may enable `LLVMGetElementPtr` together with
+`ArithAddI` and a nonempty exact pointer-format relation. Each enabled format
+must have `representation_bits == address_bits`, and that width must belong to
+`integer_widths`. Its GEP actor must have source element type `i8`, exactly one
+dynamic index of `address_bits` width, and matching scalar pointer input and
+result types. This bounds address formation to one full-width byte addition;
+there is no static layout or index tuple in its configuration domain.
+
+The compiler expands other selected GEPs under their exact DataLayout into
+integer index extension or truncation, scaling, and byte-offset GEP steps.
+It preserves index, scale, accumulated-offset and pointer-step overflow
+promises, intermediate inbounds checks, and pointer object provenance.
+Source-IR canonicalization precedes this expansion. After address expansion
+and region lowering establish the token and poison dependencies, publication
+removes dead operations without applying general arithmetic folds that may
+refine away those dependencies.
+Unnormalized GEPs and partial-width pointer formats remain inadmissible to this
+resource. Endpoint capacity, pointer representation width, address width and
+selected `index` width remain independent facts; admission compares their
+explicit values and never infers one from another.
 
 `hw_params` stores hardware facts: fixed implementation parameters, supported
 typed semantic parameter domains, configurable arity and port-selection
@@ -564,14 +573,14 @@ resolved width-transform role. An alias may collapse only when registered
 schema semantics prove equal required physical behavior; equal names or equal
 bit widths alone are insufficient.
 
-A `ScalarIntegerAddSub` capability that enables `LLVMGetElementPtr` cannot
-finalize its semantic-field relation. HSG membership still states that a
-stable-integral GEP may share a physical add/sub organization, but it does not
-define the bounded address-generation carrier needed for layout, static-index,
-and dynamic-scale semantics. Finalization remains fail-closed until this
-document normatively defines a dedicated bounded address-generation `Direct`
-relation. GEP must not be projected to `Add`, enumerated as a nominal finite
-mode, or interpreted by a backend-private codec.
+After exact-layout admission proves the canonical full-width byte-offset
+form above, `LLVMGetElementPtr` projects to the existing `Add` physical behavior.
+It introduces no selector mode or configuration bits. The finite domain uses
+`ArithAddI` as that behavior's representative; GEP retains its pointer type,
+provenance and no-wrap payload in Canonical Dataflow. The behavior-key
+projection is not a pointer-to-integer IR rewrite. Overflow and inbounds
+promises restrict defined executions without selecting another circuit.
+Arbitrary GEP layouts and static-index tuples have no such behavior projection.
 
 #### Canonical Direct Carriers
 

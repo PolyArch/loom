@@ -43,6 +43,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Rewrite/FrozenRewritePatternSet.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
@@ -1240,7 +1241,12 @@ struct LowerForToGraphPass
     finalizer.addPass(::loom::lowering::createLowerGraphConstantsPass());
     if (::mlir::failed(finalizer.run(module)))
       return ::mlir::failure();
-    canonicalize(module);
+    // Address expansion and region lowering have established exact token and
+    // poison dependencies. General source-IR folds may refine away poison
+    // (for example subtracting one operand of a checked sum). Only remove
+    // dead operations after that semantic boundary.
+    ::mlir::IRRewriter rewriter(module.getContext());
+    (void)::mlir::runRegionDCE(rewriter, module->getRegions());
     return verify(module);
   }
 

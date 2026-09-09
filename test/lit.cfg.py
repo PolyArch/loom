@@ -353,6 +353,7 @@ tools = [
     "loom-dataflow-rewrite-generator-test",
     "loom-pre-mapping-compilation-test",
     "loom-pointer-service-boundary-test",
+    "loom-graph-pointer-addressing-test",
     "mlir-opt",
     "mlir-translate",
 ]
