@@ -211,6 +211,7 @@ tools = [
     "loom-dataflow-rewrite-decision-test",
     "loom-dataflow-sync-rewrite-test",
     "loom-dataflow-cardinality-rewrite-test",
+    "loom-dataflow-causal-dependency-test",
     "loom-dataflow-fanout-rewrite-test",
     "loom-dataflow-graph-definition-rewrite-test",
     "loom-dataflow-vector-decomposition-rewrite-test",
