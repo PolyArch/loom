@@ -225,12 +225,12 @@ def main(argv: list[str] | None = None) -> int:
   scripts/cleanup.py                         # Preview files older than 7 days
   scripts/cleanup.py --apply --free-gib 200   # Stop at 200 GiB free per filesystem
   scripts/cleanup.py --apply --older-than-days 30
-  scripts/cleanup.py --root temp --keep temp/current-repro --older-than-days 0
+  scripts/cleanup.py --root build/external-tool-cache --keep build/external-tool-cache/entries --older-than-days 0
   scripts/cleanup.py --root ~/.cache/ccache   # Explicit alternative cache root
 
 Markdown (.md, case-insensitive), symlinks, mount subtrees, Git metadata and
 cache lock/control files are preserved. --root replaces the default roots:
-this repository's temp/ and build/external-tool-cache/. Stop their producers
+the repository temp directory and build/external-tool-cache/. Stop their producers
 before --apply. Preview sizes are estimates; hardlinks/reflinks can reduce
 actual reclaimed space. Application checks actual free space after deletions.
 """,
