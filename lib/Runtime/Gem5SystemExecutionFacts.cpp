@@ -446,7 +446,9 @@ std::string spatialChannelBufferPath(std::size_t ordinal) {
 }
 
 std::string spatialBridgeSocketPath(std::size_t ordinal) {
-  return "outputs/spatial-bridge-" + std::to_string(ordinal) + ".sock";
+  // The bridge socket is transient attempt state, not a declared result, so
+  // it lives under work/ and never enters the declared outputs closure.
+  return "work/spatial-bridge-" + std::to_string(ordinal) + ".sock";
 }
 
 std::string spatialBridgeResultPath(std::size_t ordinal) {
