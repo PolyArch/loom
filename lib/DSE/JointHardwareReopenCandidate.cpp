@@ -93,7 +93,8 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy) {
 
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
-                        std::uint64_t remainingPlanCount) {
+                        std::uint64_t remainingPlanCount,
+                        bool reserveTerminalQorShare) {
   if (remainingPlanCount == 0)
     return invalid("remaining-plan time slice has no remaining plan");
   const auto globalDeadline = base.dispatchNotAfterUnixNanoseconds();
@@ -114,8 +115,12 @@ fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
   // untried Mapping plan or evidenced hardware parent receives a fair share
   // of the rest. A difficult software finalist cannot consume the invocation
   // before an actionable hardware repair. The global deadline is unchanged.
+  // The terminal share is withheld only once a verified Mapping exists.
+  // Before then QoR acquisition has nothing to measure, and holding an equal
+  // share back shortens every plan slice for no observable work.
   const std::uint64_t divisor =
-      remainingPlanCount == std::numeric_limits<std::uint64_t>::max()
+      !reserveTerminalQorShare ||
+              remainingPlanCount == std::numeric_limits<std::uint64_t>::max()
           ? remainingPlanCount
           : remainingPlanCount + 1;
   const std::uint64_t slice = std::max<std::uint64_t>(1, remaining / divisor);
