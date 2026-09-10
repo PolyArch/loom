@@ -869,6 +869,9 @@ SpatialRestartResult runSpatialRestartImpl(
       DeterministicPnrRandomStream::create(
           problem->config().policy().determinism.masterSeed, attempt,
           PnrRandomStreamPurpose::ExactRepair);
+  // Memo reuse consumes canonical solve work without invoking CP-SAT again.
+  // Bound the restart by that logical work; the ledger records actual calls.
+  std::uint64_t exactRepairLogicalSolverCalls = 0;
   bool transportRepairRequested = annealed->repairReadyHandoff;
   bool finalClosureRequired = true;
 
@@ -897,8 +900,7 @@ SpatialRestartResult runSpatialRestartImpl(
 
     if (hasAtomicCapacityOveruse || transportRepairRequested) {
       transportRepairRequested = false;
-      if (accounting.exactRepairSolverCalls >=
-          search.exactRepair.maxSolverCalls)
+      if (exactRepairLogicalSolverCalls >= search.exactRepair.maxSolverCalls)
         return {SpatialRestartDisposition::Incomplete,
                 std::move(accounting),
                 std::move(seed->candidate),
@@ -911,7 +913,7 @@ SpatialRestartResult runSpatialRestartImpl(
             InternalSpatialPnrGenerationReason::AccountingOverflow,
             std::move(accounting), std::move(error));
       const std::uint64_t remainingSolverCalls =
-          search.exactRepair.maxSolverCalls - accounting.exactRepairSolverCalls;
+          search.exactRepair.maxSolverCalls - exactRepairLogicalSolverCalls;
       reporter.restartClock();
       auto repaired = repair.repair(*seed->candidate, attempt,
                                     remainingSolverCalls, exactRepairStream,
@@ -920,22 +922,23 @@ SpatialRestartResult runSpatialRestartImpl(
       if (!repaired)
         return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
                                std::move(accounting), repaired.takeError());
-      if (repaired->solverCalls > remainingSolverCalls)
+      if (repaired->logicalSolverCalls > remainingSolverCalls)
         return restartInternal(
             InternalSpatialPnrGenerationReason::ExactRepair,
             std::move(accounting),
             "exact repair exceeded the restart solver-call budget");
+      exactRepairLogicalSolverCalls += repaired->logicalSolverCalls;
       if (executionControl.stopRequested())
         return restartInterrupted(SpatialPnrInterruptionStage::ExactRepair,
                                   std::move(accounting),
                                   std::move(seed->candidate));
       switch (repaired->kind) {
       case SpatialExactRepairResultKind::Repaired:
-        if (repaired->solverCalls == 0)
+        if (repaired->logicalSolverCalls == 0)
           return restartInternal(
               InternalSpatialPnrGenerationReason::ExactRepair,
               std::move(accounting),
-              "successful exact repair consumed no solver call");
+              "successful exact repair consumed no logical solver work");
         finalClosureRequired = true;
         continue;
       case SpatialExactRepairResultKind::UnknownBudgetExhausted:

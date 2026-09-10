@@ -15,6 +15,7 @@
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/Gem5SystemExecution.h"
 #include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationExecution.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -191,6 +192,18 @@ using Gem5SystemFactsOrUnsupported =
     std::variant<Gem5SystemFacts, evaluation::UnsupportedEvidence>;
 
 llvm::Error invalid(const llvm::Twine &message);
+
+struct Gem5AttemptResult final {
+  std::uint64_t entryTick = 0;
+  std::uint64_t exitTick = 0;
+  std::string cause;
+  sim::SystemMemoryActivity memoryActivity;
+  std::optional<sim::SystemComputationInterval> computationInterval;
+};
+
+llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text);
+llvm::Expected<std::vector<sim::SystemRootLifecycleObservation>>
+parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts);
 
 llvm::Expected<std::pair<ArtifactRootReference, ArtifactRootReference>>
 systemSubjects(const evaluation::EvaluationRequest &request);

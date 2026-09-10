@@ -835,8 +835,8 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
         draft.memoryRootBindings.push_back(RuntimeMemoryBindingDraft{
             root.root, call.memoryRootObjectOrdinals[ordinal],
             call.memoryRootByteOffsets[ordinal]});
-      auto replayInput =
-          finalizeSimulationRuntimeInput(draft, *replayWorkload, view);
+      auto replayInput = finalizeSimulationRuntimeInput(std::move(draft),
+                                                        *replayWorkload, view);
       if (!replayInput)
         return replayInput.takeError();
       if (publishReplayCase) {

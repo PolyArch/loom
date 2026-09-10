@@ -31,6 +31,8 @@ add_library(LoomApplicationRuntimeManifest
   ActivationInputs.cpp
   ActivationDecision.cpp
   ApplicationRuntimeEvidenceJoin.cpp
+  ApplicationSystemRuntimeEvidence.cpp
+  ApplicationSystemRuntimeEvidenceJoin.cpp
   ActivationRepairLineage.cpp
   Package.cpp
   ProductOracleEvaluation.cpp
@@ -58,6 +60,7 @@ target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
   LoomSimulator
   LoomStructuredFabricAnalyticModel
   LLVMSupport
+  LoomGem5SystemExecution
 )
 
 file(GLOB_RECURSE LOOM_LLVM_LIBC_RUNTIME_HEADERS CONFIGURE_DEPENDS
@@ -168,6 +171,7 @@ add_library(LoomApplicationBuild
   ProductBuild.cpp
   ProductVisualization.cpp
   Quality.cpp
+  SystemQuality.cpp
   "${LOOM_FREESTANDING_MATH_HEADER}"
   "${LOOM_FREESTANDING_MEMORY_HEADER}"
 )
@@ -216,6 +220,7 @@ target_link_libraries(LoomApplicationBuild PUBLIC
   LoomHardwareImplementation
   LoomMappingArtifact
   LoomRuntimePlatformBinding
+  LoomGem5SystemExecution
   LoomSimulator
   LLVMCore
   LLVMipo

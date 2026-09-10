@@ -1,11 +1,13 @@
 from m5.objects.Device import BasicPioDevice
 from m5.params import Param, VectorParam
+from m5.util.pybind import PyBindMethod
 
 
 class LoomThreadDispatch(BasicPioDevice):
     type = "LoomThreadDispatch"
     cxx_class = "gem5::LoomThreadDispatch"
     cxx_header = "runtime/gem5/loom_thread_dispatch.hh"
+    cxx_exports = [PyBindMethod("computationInterval")]
 
     workload = Param.LoomRiscvDeploymentWorkload(
         "Deployment workload that owns exact executable entries"
@@ -13,9 +15,7 @@ class LoomThreadDispatch(BasicPioDevice):
     memory_service = Param.LoomMemoryServiceProbe(
         "Shared-memory service observer sampled at each root lifecycle event"
     )
-    root_event_trace_path = Param.String(
-        "Canonical root lifecycle attempt output"
-    )
+    root_event_trace_path = Param.String("Canonical root lifecycle attempt output")
     root_event_control_path = Param.String(
         "", "Optional acknowledged root lifecycle control socket"
     )

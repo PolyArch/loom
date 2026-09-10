@@ -99,6 +99,17 @@ public:
   }
 
   std::string
+  releaseEvent(const mapping::MappingCausalReleaseEventProjection &event) {
+    auto bytes =
+        mapping::encodeMappingCausalReleaseEventKey(dataflowIdentity_, event);
+    if (!bytes) {
+      record(bytes.takeError());
+      return {};
+    }
+    return formatArtifactLocalPayloadHex(*bytes);
+  }
+
+  std::string
   serviceObligation(const mapping::SystemServiceObligationKey &key) {
     auto bytes =
         mapping::encodeSystemServiceObligationKey(dataflowIdentity_, key);
@@ -393,8 +404,7 @@ activationKey(ReferenceEncoder &encoder,
            std::to_string(claim.amount);
   for (const auto &point : activation.causalRelease) {
     key += '|';
-    for (const auto &event : point.alternatives)
-      key += eventKey(encoder, event) + ',';
+    key += encoder.releaseEvent(point.event);
     if (point.guaranteedOffset)
       key += formatArtifactLocalPayloadHex(*point.guaranteedOffset);
   }
@@ -488,10 +498,27 @@ void writeReleaseRule(llvm::json::OStream &json, ReferenceEncoder &encoder,
         json.attributeArray("all_of", [&] {
           for (const auto &point : member.causalRelease)
             json.object([&] {
-              json.attributeArray("alternatives", [&] {
-                for (const auto &event : point.alternatives)
-                  writeEvent(json, encoder, event);
-              });
+              if (const auto *events =
+                      std::get_if<std::vector<dataflow::EventFamilyKey>>(
+                          &point.event)) {
+                json.attributeArray("alternatives", [&] {
+                  for (const auto &event : *events)
+                    writeEvent(json, encoder, event);
+                });
+              } else {
+                const auto &handoff =
+                    std::get<mapping::RootedSpatialResultHandoffProjection>(
+                        point.event);
+                json.attributeObject("spatial_result_handoff", [&] {
+                  json.attribute("graph_launch_ref",
+                                 encoder.dataflow(handoff.graph));
+                  json.attribute(
+                      "producer_ref",
+                      encoder.dataflow(
+                          dataflow::CanonicalGraphProducerEndpointRef(
+                              handoff.result.producer)));
+                });
+              }
               if (point.guaranteedOffset)
                 json.attribute(
                     "guaranteed_offset",

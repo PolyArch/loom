@@ -1,6 +1,8 @@
 #ifndef LOOM_TEST_APPLICATIONS_LLAMA2C_KERNELS_SMOKE_H
 #define LOOM_TEST_APPLICATIONS_LLAMA2C_KERNELS_SMOKE_H
 
+#include "../../include/Runtime/Computation.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,7 +30,14 @@ int main(void) {
 #endif
   float weight[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   float normalized[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float probabilities[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+  float matrix[8] = {1.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float product[2] = {0.0f, 0.0f};
+  loom_computation_begin();
   rmsnorm(normalized, input, weight, 4);
+  softmax(probabilities, 4);
+  matmul(product, input, matrix, 4, 2);
+  loom_computation_end();
   float squareMean = 0.0f;
   for (int index = 0; index < 4; ++index)
     squareMean += normalized[index] * normalized[index];
@@ -36,8 +45,6 @@ int main(void) {
   if (llama2cAbs(squareMean - 1.0f) > 2.0e-5f)
     return 1;
 
-  float probabilities[4] = {1.0f, 2.0f, 3.0f, 4.0f};
-  softmax(probabilities, 4);
   float probabilitySum = 0.0f;
   for (int index = 0; index < 4; ++index)
     probabilitySum += probabilities[index];
@@ -47,9 +54,6 @@ int main(void) {
         probabilities[2] < probabilities[3]))
     return 2;
 
-  float matrix[8] = {1.0f, 0.0f, 0.0f, 1.0f, 0.5f, 0.5f, 0.5f, 0.5f};
-  float product[2] = {0.0f, 0.0f};
-  matmul(product, input, matrix, 4, 2);
 #if LOOM_LLAMA_INPUT_VARIANT == 1
   const float expectedFirst = 5.0f;
   const float expectedSecond = 4.5f;

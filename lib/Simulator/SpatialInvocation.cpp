@@ -277,7 +277,8 @@ materializeSpatialInvocationRuntimeInput(
   }
   if (llvm::Error error = validateResultDestinations(wire, *spatial, *shapes))
     return std::move(error);
-  return finalizeSimulationRuntimeInput(draft, workload.workload, view);
+  return finalizeSimulationRuntimeInput(std::move(draft), workload.workload,
+                                        view);
 }
 
 llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
@@ -299,8 +300,8 @@ llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
     normalized.memoryRootBindings.push_back({binding.root,
                                              binding.binding.objectOrdinal,
                                              binding.binding.byteOffset});
-  auto normalizedInput =
-      finalizeSimulationRuntimeInput(normalized, workload.workload, view);
+  auto normalizedInput = finalizeSimulationRuntimeInput(
+      std::move(normalized), workload.workload, view);
   if (!normalizedInput)
     return normalizedInput.takeError();
   auto invocationInput =

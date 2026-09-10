@@ -276,6 +276,7 @@ private:
   std::vector<PnrIndex> progressDirtyNets_;
   std::vector<std::uint64_t> progressDependencyJournalMarks_;
   std::vector<ProgressDependencyDelta> progressDependencyDeltas_;
+  SpatialComputeProgressStateHandle previousComputeProgress_;
   std::vector<PnrIndex> runtimeCounterexampleAffectedClauses_;
   std::vector<RuntimeCounterexampleLiteralDelta>
       runtimeCounterexampleLiteralDeltas_;

@@ -92,6 +92,7 @@ llvm::Expected<application::ApplicationSystemComputeInputs>
 aggregateSpatialComputeInputs(
     llvm::ArrayRef<SpatialInvocationCase> invocations,
     llvm::ArrayRef<const sim::SpatialSimulationExecution *> cgraReplays,
+    const std::optional<sim::SystemComputationInterval> &computation,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (invocations.size() != cgraReplays.size())
     return invalid("candidate compute aggregation lost a CGRA replay");
@@ -106,6 +107,12 @@ aggregateSpatialComputeInputs(
   std::set<ArtifactIdentity::Storage> visitedImplementations;
   for (std::size_t ordinal = 0; ordinal != invocations.size(); ++ordinal) {
     const SpatialInvocationCase &invocation = invocations[ordinal];
+    // The boundary device refuses unfinished launches at either source marker,
+    // so completion membership selects whole invocations, excluding warmup.
+    if (!computation ||
+        invocation.systemCgraCompletionTick < computation->beginTick ||
+        invocation.systemCgraCompletionTick > computation->endTick)
+      continue;
     const sim::SpatialSimulationExecution *replay = cgraReplays[ordinal];
     if (!replay)
       return invalid("candidate compute aggregation lost a CGRA replay");

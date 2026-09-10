@@ -22,6 +22,8 @@ add_library(LoomMappingArtifact
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
   SpatialPhysicalDemandProjection.cpp
+  SpatialResultHandoffProjection.cpp
+  SpatialResourceEventProjection.cpp
   SystemMappingConstraintSet.cpp
   SystemEventProgress.cpp
   SystemMappingConstraintSetBuilder.cpp

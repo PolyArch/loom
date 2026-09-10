@@ -253,6 +253,7 @@ ResolvedConfig buildSpatialResolvedConfig() {
   };
   resolved.dse.spatialPnr.objectiveSelection = {0, 0};
   auto &search = resolved.dse.spatialPnr.search;
+  search.completionGoal = ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   search.initializer.seedAttemptCount = 2;
   search.actionProposal = {0, 1, 0};
   search.annealing.calibrationProposalCount = 1;

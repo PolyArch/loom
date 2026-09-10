@@ -129,6 +129,10 @@ void exerciseJointExploration(bool runFifoHardwareRepair,
   const loom::dse::JointDesignPolicy policy =
       take(loom::dse::JointDesignPolicy::get(2, 1, 1, 2, 32));
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  config.dse.systemPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   config.hardwareTarget = {loom::adg::builtinSmallTarget.templateIdentity.str(),
                            {loom::adg::builtinSmallTarget.schemaMajor,
                             loom::adg::builtinSmallTarget.schemaMinor},

@@ -17,6 +17,7 @@
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/CompilerTargetLinker.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Runtime/Gem5SimulationBinding.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 
@@ -174,6 +175,16 @@ struct ApplicationDeploymentRequest final {
   CompilerTargetPolicy compilerTargetPolicy;
   CompilerTargetLinkWorkspace linkerWorkspace;
   ExecutionControlView executionControl;
+};
+
+/// Explicit native System evaluation of candidate images before selection.
+/// The image source and execution deadline remain owned by the enclosing
+/// product invocation; the pinned gem5 build enters each Evaluation Request.
+struct ApplicationSystemQualityContext final {
+  const llvm::Module &finalLinkedModule;
+  ApplicationDeploymentRequest deploymentRequest;
+  runtime::Gem5BuildIdentity gem5Build;
+  external_tool::ExternalToolPreparationContext preparationContext;
 };
 
 /// Exact provider ledger projection for one Mapping execution. Invocation is
@@ -355,7 +366,7 @@ inline constexpr std::size_t applicationObjectiveDimensionCount =
     1;
 
 /// Prediction is derived from the exact pair's matched model observations.
-/// None of these states proves a measured complete-program speedup.
+/// None of these states proves a measured source-computation speedup.
 enum class ApplicationBenefitStatus : std::uint8_t {
   Unknown,
   PredictedBeneficial,
@@ -791,7 +802,9 @@ llvm::Expected<dse::JointBoundedQualityPolicy>
 makeApplicationBoundedQualityPolicy(
     const PreparedApplicationBuild &prepared,
     const dse::PlanExecutionPolicy &executionPolicy,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<ApplicationSystemQualityContext> systemQuality =
+        std::nullopt);
 
 /// Requires one uniquely selected, independently imported SystemMapping and
 /// derives the complete declarative Deployment closure. The host executable

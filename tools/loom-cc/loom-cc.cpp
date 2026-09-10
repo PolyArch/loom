@@ -107,6 +107,7 @@ struct LoomDriverOptions final {
   std::string fpaArtifactStorePath;
   std::string fpaBlobStorePath;
   std::string fpaConditionsPath;
+  std::string gem5ReadinessPath;
   std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
@@ -122,7 +123,8 @@ struct LoomDriverOptions final {
            !portfolioApplicationIdentity.empty() ||
            !portfolioInputName.empty() || !fpaWeightRootPath.empty() ||
            !fpaArtifactStorePath.empty() || !fpaBlobStorePath.empty() ||
-           !fpaConditionsPath.empty() || !operatorProtocolSymbols.empty();
+           !fpaConditionsPath.empty() || !gem5ReadinessPath.empty() ||
+           !operatorProtocolSymbols.empty();
   }
 };
 
@@ -182,6 +184,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (!visualization)
       return visualization.takeError();
     if (*visualization)
+      continue;
+    auto gem5Readiness =
+        consumeLoomOption(argument, "--loom-gem5-readiness", index, arguments,
+                          seen, options.gem5ReadinessPath);
+    if (!gem5Readiness)
+      return gem5Readiness.takeError();
+    if (*gem5Readiness)
       continue;
     auto localToolConfig =
         consumeLoomOption(argument, "--loom-local-config", index, arguments,
@@ -422,7 +431,8 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       options.fpaWeightRootPath,
       options.fpaArtifactStorePath,
       options.fpaBlobStorePath,
-      options.fpaConditionsPath};
+      options.fpaConditionsPath,
+      options.gem5ReadinessPath};
 }
 
 llvm::StringRef projectedValue(llvm::ArrayRef<std::string> projection,

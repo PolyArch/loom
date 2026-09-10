@@ -35,7 +35,7 @@ inline constexpr ArtifactSchemaDescriptor threadDispatchImageSchema{
 inline constexpr ArtifactSchemaDescriptor spatialLaunchImageSchema{
     "loom.spatial_launch_image", SchemaVersion{1, 0}};
 inline constexpr ArtifactSchemaDescriptor admissionImageSchema{
-    "loom.admission_image", SchemaVersion{1, 0}};
+    "loom.admission_image", SchemaVersion{2, 0}};
 
 enum class RuntimeImageUnsupportedReason : std::uint8_t {
   StableKeyLookup,

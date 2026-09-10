@@ -10,18 +10,19 @@
 #include "Application/ProductVisualization.h"
 #include "Application/SourceAdmission.h"
 #include "Common/ArtifactStore.h"
-#include "Evaluation/ArtifactImportCache.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Common/ExecutionControl.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/CandidateGenerator.h"
 #include "Deployment/HardwareConfigurationImage.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Evaluation/Request.h"
 #include "ExternalTool/LocalConfig.h"
+#include "ExternalTool/Provider.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -31,9 +32,12 @@
 #include "Frontend/Payload/AcceleratorFinalLink.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Runtime/Gem5BuildReadiness.h"
+#include "Runtime/Gem5SystemExecution.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
@@ -503,27 +507,10 @@ prepareProductTarget(const ProductBuildOptions &options) {
   auto fpa = prepareProductFpaInputs(options, **workspace);
   if (!fpa)
     return fpa.takeError();
-  auto profile = resolveConfigProfileWithProvenance(options.accelerationProfile);
+  auto profile = resolveConfigProfile(options.accelerationProfile);
   if (!profile)
     return profile.takeError();
-  auto config = std::move(profile->config);
-  // A product build needs one verified Mapping, not the best Mapping in the
-  // configured restart budget. Exhausting every restart multiplies Spatial and
-  // System PnR by the restart count for a result the product path discards, so
-  // a builtin preset stops at its first verified candidate. An explicit
-  // ResolvedConfig remains the single policy owner: when the profile names a
-  // configuration file, its completion goals are published and executed
-  // exactly as written.
-  if (isBuiltinConfigProfile(options.accelerationProfile) ||
-      !profile->spatialPnrAuthored) {
-    config.dse.spatialPnr.search.completionGoal =
-        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  }
-  if (isBuiltinConfigProfile(options.accelerationProfile) ||
-      !profile->systemPnrAuthored) {
-    config.dse.systemPnr.search.completionGoal =
-        ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  }
+  auto config = std::move(*profile);
   auto publishedConfig = (*workspace)
                              ->artifacts()
                              .put(ResolvedConfig::artifactSchema,
@@ -1034,6 +1021,7 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
 
 llvm::Expected<ApplicationMappingExecution>
 executeProductMapping(const PreparedApplicationBuild &prepared,
+                      const llvm::Module &finalLinkedModule,
                       PreparedProductTarget &target,
                       const ProductBuildOptions &options,
                       const external_tool::LocalToolConfig &localToolConfig,
@@ -1067,13 +1055,45 @@ executeProductMapping(const PreparedApplicationBuild &prepared,
   std::optional<dse::JointBoundedQualityPolicy> boundedQuality;
   if (options.mappingStoppingPolicy ==
       dse::JointDesignStoppingPolicy::BoundedQuality) {
+    std::optional<ApplicationSystemQualityContext> systemQuality;
+    if (!options.gem5ReadinessPath.empty()) {
+      auto readiness =
+          runtime::readGem5BuildReadiness(options.gem5ReadinessPath);
+      if (!readiness)
+        return readiness.takeError();
+      auto systemTools = localToolConfig;
+      auto &gem5 = systemTools.tools[external_tool::gem5Provider().binding.key];
+      gem5.binding.executable = readiness->binary;
+      gem5.providerOptions["readiness"] = readiness->path;
+      llvm::SmallString<256> bundles(target.workspace->journalPath());
+      llvm::sys::path::append(bundles, "system-quality");
+      systemQuality.emplace(ApplicationSystemQualityContext{
+          finalLinkedModule,
+          {target.compilerPolicy,
+           {target.workspace->linkerPath().str()},
+           executionControl},
+          readiness->identity,
+          {std::move(systemTools), bundles.str().str()}});
+    }
     auto quality = makeApplicationBoundedQualityPolicy(
         prepared, *policy, target.workspace->artifacts(),
-        target.workspace->blobs());
+        target.workspace->blobs(), std::move(systemQuality));
     if (!quality)
       return quality.takeError();
     boundedQuality.emplace(std::move(*quality));
   }
+  std::optional<evaluation::ArtifactImportCacheScope> systemImports;
+  std::optional<runtime::Gem5SystemFactsSession> systemFacts;
+  if (!options.gem5ReadinessPath.empty()) {
+    systemImports.emplace(target.workspace->artifacts(),
+                          &target.workspace->blobs());
+    systemFacts.emplace(target.workspace->artifacts(),
+                        target.workspace->blobs());
+  }
+  auto reportSystemFacts = llvm::scope_exit([&] {
+    if (systemFacts)
+      runtime::emitGem5SystemFactsSessionStatistics(systemFacts->statistics());
+  });
   auto execution = executeApplicationMapping(
       prepared,
       {std::move(*producer),
@@ -1251,7 +1271,7 @@ llvm::Error publishProductDeployment(
   if (!prepared)
     return prepared.takeError();
   auto mapping = executeProductMapping(
-      *prepared, target, options, localToolConfig,
+      *prepared, *finalLink.linkedModule, target, options, localToolConfig,
       deadline->notAfterUnixNanoseconds, executionControl);
   if (!mapping)
     return mapping.takeError();
@@ -1292,8 +1312,9 @@ llvm::Error publishProductDeployment(
       return error;
   const auto packageBegin = MonotonicClock::now();
   llvm::Error packageError = publishApplicationPackage(
-      *deployment, target.workspace->deploymentPath(),
-      target.workspace->artifacts(), target.workspace->blobs());
+      deployment->runtimeManifest, deployment->deployment,
+      target.workspace->deploymentPath(), target.workspace->artifacts(),
+      target.workspace->blobs());
   emitApplicationBuildOperationStatistics(
       {ApplicationBuildOperation::PackagePublication,
        elapsedNanoseconds(packageBegin), 1});
@@ -1326,6 +1347,12 @@ llvm::Error validateProductOptions(const ProductBuildOptions &options) {
       *options.mappingRepairCandidateLimit == 0)
     return productError("loom_product_option_invalid",
                         "Mapping repair candidate limit must be positive");
+  if (!options.gem5ReadinessPath.empty() &&
+      options.mappingStoppingPolicy !=
+          dse::JointDesignStoppingPolicy::BoundedQuality)
+    return productError(
+        "loom_product_option_invalid",
+        "native System quality requires bounded_quality Mapping selection");
   const unsigned fpaStorageCount =
       static_cast<unsigned>(!options.fpaWeightRootPath.empty()) +
       static_cast<unsigned>(!options.fpaArtifactStorePath.empty()) +

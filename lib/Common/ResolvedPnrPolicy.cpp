@@ -193,6 +193,14 @@ parseResolvedPnrCompletionGoal(llvm::StringRef spelling) {
 ResolvedPnrPolicyConfig
 resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
   const BuiltinLimits limits = limitsFor(preset);
+  // Interactive exploration compares verified software and hardware choices.
+  // Leave deep per-Mapping refinement to the performance/implementation
+  // presets instead of spending their work inside every outer candidate.
+  const ResolvedPnrCompletionGoal completionGoal =
+      preset == ResolvedProfilePreset::QuickExplore ||
+              preset == ResolvedProfilePreset::BalancedExplore
+          ? ResolvedPnrCompletionGoal::FirstVerifiedCandidate
+          : ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   return {{ResolvedPnrInitializerPolicy{limits.seeds, limits.assignments},
            ResolvedPnrActionProposalPolicy{1, 3, 2},
            ResolvedPnrRoutingPolicy{
@@ -207,7 +215,7 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
                limits.temperatureLevels, limits.levelBase, limits.perMovable},
            ResolvedPnrExactRepairPolicy{
                limits.repairKind, limits.repairDecisions, limits.solverCalls},
-           ResolvedPnrCompletionGoal::ExhaustConfiguredWork},
+           completionGoal},
           ResolvedPnrDeterminismPolicy{
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
@@ -339,8 +347,11 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
       std::move(closure),        std::move(spatialEnergy),
       std::move(energy)};
   catalogs.totalOrderings = {
-      {{1, 9, 0, 5, 6, 7, 3, 2, 4}},
-      {{1, 9, 0, 5, 6, 8, 3, 2, 4}}};
+      // Critical-path and recurrence placement precede the mixed timing and
+      // transport score. A shorter route must not buy temporal serialization
+      // of critical work; off-path temporal sharing remains an area option.
+      {{1, 9, 0, 5, 6, 3, 7, 2, 4}},
+      {{1, 9, 0, 5, 6, 3, 8, 2, 4}}};
   return catalogs;
 }
 

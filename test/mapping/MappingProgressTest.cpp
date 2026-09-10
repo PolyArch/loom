@@ -4,7 +4,9 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Mapping/Artifact/SpatialResourceEventProjection.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -258,6 +260,121 @@ module {
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProofNotEstablished)
     fail("an unsupported actor cycle did not fail closed");
+}
+
+void independentActivationCanBlockResultRelease() {
+  using namespace loom::mapping;
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @join(%start: none, %a: i32, %b: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %left = arith.muli %a, %a : i32
+    %right = arith.muli %b, %b : i32
+    %sum = arith.addi %left, %right : i32
+    %published:2 = dataflow.sync %start, %sum : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %a: i32, %b: i32) ctrl (%start: none) {
+    %value, %done = dataflow.graph.launch @join deps(%start) values(%a, %b)
+        stream_inputs() memories() stream_outputs()
+        : (none, i32, i32) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%a: i32, %b: i32) {
+    %completion = dataflow.thread.launch @worker(%a, %b)
+        : (i32, i32) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse independent activation fixture");
+  auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
+  const auto &view = artifact.view();
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  view.forEachRootedGraphLaunch(
+      [&](auto launch) { launches.push_back(launch); });
+  std::vector<dataflow::ActorRef> multiplies;
+  std::optional<dataflow::ActorRef> join;
+  for (const auto &actor : view.actors()) {
+    if (mlir::isa<mlir::arith::MulIOp>(actor.op))
+      multiplies.push_back(actor.ref);
+    else if (mlir::isa<mlir::arith::AddIOp>(actor.op))
+      join = actor.ref;
+  }
+  if (launches.size() != 1 || multiplies.size() != 2 || !join)
+    fail("independent activation fixture lost its fork/join");
+  const auto event = [&](dataflow::ActorRef actor) {
+    return dataflow::EventFamilyKey(dataflow::ContextualActorTransitionEventRef{
+        dataflow::ContextualActorRef{launches.front(), actor}, 0});
+  };
+  const auto left = event(multiplies[0]);
+  const auto right = event(multiplies[1]);
+  const auto release = event(*join);
+  const auto start =
+      dataflow::rootThreadStartEventFamily(launches.front().rootThreadLaunch);
+  const dataflow::ActorTokenResultRef heldResult{multiplies[0], 0};
+  SpatialComputeResultHandoffView handoff{heldResult, {}};
+  if (llvm::Error error = view.forEachGraphEdge(
+          [&](const auto &producer, const auto &consumer) -> llvm::Error {
+            if (producer ==
+                dataflow::CanonicalGraphProducerEndpointRef(heldResult))
+              handoff.sinks.push_back({consumer, std::nullopt});
+            return llvm::Error::success();
+          }))
+    fail(llvm::toString(std::move(error)));
+  const SpatialEventPointView produced{
+      dataflow::CanonicalGraphProducerEndpointRef(heldResult), std::nullopt};
+  const auto physicalRelease = take(projectRootedSpatialCausalRelease(
+      view, launches.front(), {produced}, {handoff}));
+  auto prerequisites =
+      take(projectMappingCausalReleasePrerequisites(view, physicalRelease));
+  const auto model =
+      take(freezeMappingProgressModel(view, {left, right, release, start}));
+  MappingProgressProjection projection;
+  projection.basis = take(
+      deriveMappingDataflowProgressBasis(view, {view.graphs().front().ref}));
+  projection.capacityCells.push_back({1, 0});
+  const InstructionExecutionContextKey contextKey{
+      loom::fabric::AccCoreOccurrenceRef{}};
+  projection.resourceActivations = {
+      {contextKey,
+       launches.front().rootThreadLaunch,
+       {SystemPresburgerCell{}},
+       {left},
+       {{0, 1}},
+       std::move(prerequisites),
+       {"shared-result", 0, MappingResourceGrantPolicyKind::RoundRobin}},
+      {contextKey,
+       launches.front().rootThreadLaunch,
+       {SystemPresburgerCell{}},
+       {right},
+       {{0, 1}},
+       {{{right}}},
+       {"shared-result", 1, MappingResourceGrantPolicyKind::RoundRobin}}};
+  const auto blocked = take(deriveMappingProgressClosure(model, projection));
+  if (blocked.kind != MappingProgressClosureKind::ProofNotEstablished ||
+      blocked.reason != MappingProgressClosureReason::PossibleWaitCycle ||
+      blocked.possibleWaitCycle.empty())
+    fail("independent activation was omitted from a result-holding wait");
+  projection.capacityCells.front().capacity = 2;
+  if (take(deriveMappingProgressClosure(model, projection)).kind !=
+      MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("nonblocking result capacity retained a possible wait cycle");
+  projection.capacityCells.front().capacity = 1;
+  projection.resourceActivations[1].triggerAlternatives = {start};
+  projection.resourceActivations[1].causalRelease = {{{start}}};
+  if (take(deriveMappingProgressClosure(model, projection)).kind !=
+      MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("an activation preceding the holder became a pending prerequisite");
 }
 
 void completionFrontierRequiresReadyRoots() {
@@ -1018,6 +1135,7 @@ module {
 
 int main() {
   initializedFeedbackProgressBasis();
+  independentActivationCanBlockResultRelease();
   completionFrontierRequiresReadyRoots();
   orderedRuntimeHeadsRequireCompleteExactPairing();
   bufferDependencyClosure();

@@ -1216,6 +1216,14 @@ minimum-incremental-conflict coloring because exhaustive search would make one
 route proposal unbounded. Both policies prefer low unsigned values and retain
 typed violations when the hardware namespace is insufficient.
 
+Before exact search, the provider greedily constructs cliques from actual
+conflict edges. A clique larger than the union of candidate tag values proves
+that component cannot be colored by the exact palette, so enumerating its
+assignments would waste the bounded search work. Missing such a clique only
+leaves the ordinary exact search in place. Match-domain membership alone is
+never a clique certificate, and a palette deficit retains the ordinary
+conflict-bearing coloring for route repair rather than rejecting the Fabric.
+
 The coloring components follow physical interpretation continuity, not logical
 stream identity. In particular, a `t2t` boundary consumes one local tag and
 writes another, so its two sides may reuse independent palettes. Adding an

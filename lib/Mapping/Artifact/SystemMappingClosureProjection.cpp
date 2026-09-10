@@ -122,7 +122,7 @@ struct PendingActivation final {
   ExecutionContextKey context;
   std::vector<SystemPresburgerCell> relationDomain;
   std::vector<::dataflow::EventFamilyKey> triggerAlternatives;
-  std::vector<SystemCausalReleasePointProjection> causalRelease;
+  std::vector<MappingCausalReleasePointProjection> causalRelease;
   std::vector<::fabric::UsePatternValue> parameters;
   std::vector<::fabric::UsePatternValue> sharingAssignments;
 };
@@ -174,72 +174,6 @@ llvm::Error collectSpatialRouteTraversals(
     routes.push_back(std::move(selected));
   }
   return llvm::Error::success();
-}
-
-llvm::Expected<std::vector<::dataflow::EventFamilyKey>>
-projectSpatialEvent(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                    ::dataflow::RootedGraphLaunchRef graph,
-                    const SpatialActivityEventRef &event) {
-  return std::visit(
-      [&](const auto &typed)
-          -> llvm::Expected<std::vector<::dataflow::EventFamilyKey>> {
-        using Event = std::decay_t<decltype(typed)>;
-        if constexpr (std::is_same_v<Event, SpatialActorTransitionEventRef>) {
-          ::dataflow::EventFamilyKey projected(
-              ::dataflow::ContextualActorTransitionEventRef{
-                  ::dataflow::ContextualActorRef{graph, typed.actor},
-                  typed.transition});
-          if (llvm::Error error = dataflow.validate(projected))
-            return std::move(error);
-          return std::vector<::dataflow::EventFamilyKey>{std::move(projected)};
-        } else {
-          return dataflow.projectRootedGraphEndpointEventFamilies(graph, typed);
-        }
-      },
-      event);
-}
-
-llvm::Expected<::dataflow::GraphRef>
-spatialEventGraph(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                  const SpatialActivityEventRef &event) {
-  return std::visit(
-      [&](const auto &typed) -> llvm::Expected<::dataflow::GraphRef> {
-        using Event = std::decay_t<decltype(typed)>;
-        if constexpr (std::is_same_v<Event, SpatialActorTransitionEventRef>) {
-          auto actor = dataflow.resolve(typed.actor);
-          if (!actor)
-            return actor.takeError();
-          return actor->graph;
-        } else {
-          return dataflow.graphOf(typed);
-        }
-      },
-      event);
-}
-
-llvm::Expected<std::vector<SystemCausalReleasePointProjection>>
-projectSpatialRelease(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                      ::dataflow::RootedGraphLaunchRef graph,
-                      llvm::ArrayRef<SpatialEventPointView> release) {
-  auto launchedGraph = dataflow.resolve(graph);
-  if (!launchedGraph)
-    return launchedGraph.takeError();
-  std::vector<SystemCausalReleasePointProjection> result;
-  result.reserve(release.size());
-  for (const auto &point : release) {
-    auto ownerGraph = spatialEventGraph(dataflow, point.event);
-    if (!ownerGraph)
-      return ownerGraph.takeError();
-    if (*ownerGraph != *launchedGraph)
-      continue;
-    auto alternatives = projectSpatialEvent(dataflow, graph, point.event);
-    if (!alternatives)
-      return alternatives.takeError();
-    result.push_back({std::move(*alternatives), point.guaranteedOffset});
-  }
-  if (!release.empty() && result.empty())
-    return invalid("Spatial activation has no release in its rooted graph");
-  return result;
 }
 
 llvm::Expected<std::vector<SystemPresburgerCell>>
@@ -352,7 +286,8 @@ appendDirectActivation(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                                           use.sharingAssignments});
       for (const auto &release : use.activation.release)
         pending.back().causalRelease.push_back(
-            {{release.event}, release.guaranteedOffset});
+            {std::vector<::dataflow::EventFamilyKey>{release.event},
+             release.guaranteedOffset});
     }
     if (!found)
       return invalid("Instruction ResourceUse has no reachable context");
@@ -396,7 +331,8 @@ appendDirectActivation(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                                         use.sharingAssignments});
     for (const auto &release : use.activation.release)
       pending.back().causalRelease.push_back(
-          {{release.event}, release.guaranteedOffset});
+          {std::vector<::dataflow::EventFamilyKey>{release.event},
+           release.guaranteedOffset});
   }
   if (!found)
     return invalid("service ResourceUse has no selected plan domain");
@@ -463,13 +399,11 @@ activationKey(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   }
   appendU64(result, activation.causalRelease.size());
   for (const auto &point : activation.causalRelease) {
-    appendU64(result, point.alternatives.size());
-    for (const auto &event : point.alternatives) {
-      auto encoded = dataflowKey(dataflow, event);
-      if (!encoded)
-        return encoded.takeError();
-      appendSized(result, *encoded);
-    }
+    auto encoded =
+        encodeMappingCausalReleaseEventKey(dataflow.identity(), point.event);
+    if (!encoded)
+      return encoded.takeError();
+    appendSized(result, *encoded);
     appendU32(result, point.guaranteedOffset ? 1 : 0);
     if (point.guaranteedOffset)
       appendSized(result, *point.guaranteedOffset);
@@ -478,28 +412,6 @@ activationKey(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 }
 
 } // namespace
-
-llvm::Expected<std::vector<::dataflow::EventFamilyKey>>
-projectSystemSpatialActivityEvent(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef graph,
-    const SpatialActivityEventRef &event) {
-  return projectSpatialEvent(dataflow, graph, event);
-}
-
-llvm::Expected<::dataflow::GraphRef> resolveSystemSpatialActivityEventGraph(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const SpatialActivityEventRef &event) {
-  return spatialEventGraph(dataflow, event);
-}
-
-llvm::Expected<std::vector<SystemCausalReleasePointProjection>>
-projectSystemSpatialCausalRelease(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef graph,
-    llvm::ArrayRef<SpatialEventPointView> release) {
-  return projectSpatialRelease(dataflow, graph, release);
-}
 
 llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -554,6 +466,8 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   std::map<std::string, std::size_t> namespaceByOccurrence;
   std::map<std::string, const FinalizedSpatialMapping *> importedMappings;
   std::map<std::string, FinalizedTechMapping> importedTechMappings;
+  std::map<std::string, std::vector<SpatialComputeResultHandoffView>>
+      importedResultHandoffs;
   std::map<std::string, std::size_t> namespaceByContext;
 
   for (const auto &domain : contexts->spatialDomains) {
@@ -586,6 +500,16 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
                                                  imported->second->view());
     if (!module)
       return invalid("Spatial context does not match its AccCore Module");
+    if (importedResultHandoffs.count(mappingKey) == 0) {
+      const auto &spatial = imported->second->view();
+      auto handoffs = deriveSpatialComputeResultHandoffs(
+          dataflow, importedTechMappings.at(mappingKey).view(), *module,
+          spatial.computeBindings(), spatial.registerFifoTransfers(),
+          spatial.routeTrees());
+      if (!handoffs)
+        return handoffs.takeError();
+      importedResultHandoffs.emplace(mappingKey, std::move(*handoffs));
+    }
     const std::string occurrenceKey = fabricKey(spatialCore);
     auto [position, inserted] =
         namespaceByOccurrence.try_emplace(occurrenceKey, namespaces.size());
@@ -627,18 +551,19 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     if (imported == importedMappings.end())
       return invalid("Spatial context lost its imported Mapping");
     for (const auto &use : imported->second->view().resourceUses()) {
-      auto ownerGraph =
-          spatialEventGraph(dataflow, use.activation.trigger.event);
+      auto ownerGraph = resolveSpatialActivityEventGraph(
+          dataflow, use.activation.trigger.event);
       if (!ownerGraph)
         return ownerGraph.takeError();
       if (*ownerGraph != *launchedGraph)
         continue;
-      auto trigger = projectSpatialEvent(dataflow, domain.graph,
-                                         use.activation.trigger.event);
+      auto trigger = projectRootedSpatialActivityEvent(
+          dataflow, domain.graph, use.activation.trigger.event);
       if (!trigger)
         return trigger.takeError();
-      auto release =
-          projectSpatialRelease(dataflow, domain.graph, use.activation.release);
+      auto release = projectRootedSpatialCausalRelease(
+          dataflow, domain.graph, use.activation.release,
+          importedResultHandoffs.at(mappingKey));
       if (!release)
         return release.takeError();
       pending.push_back(

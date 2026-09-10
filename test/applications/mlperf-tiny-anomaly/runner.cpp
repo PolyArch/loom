@@ -1,3 +1,4 @@
+#include "../../../include/Runtime/Computation.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -704,6 +705,8 @@ extern "C" __attribute__((noinline)) int loom_mlperf_tiny_measured_batch(
     return 4;
   int8_t sampleOutput[kSampleElementCount]{};
   for (uint64_t sample = 0; sample != totalSamples; ++sample) {
+    if (sample == warmupSamples)
+      loom_computation_begin();
     if (!model.invoke(datasetBytes + sample * kSampleByteCount,
                       kSampleByteCount, sampleOutput, kSampleElementCount))
       return 5;
@@ -715,6 +718,7 @@ extern "C" __attribute__((noinline)) int loom_mlperf_tiny_measured_batch(
       measuredOutput[outputOffset + index] =
           static_cast<uint8_t>(sampleOutput[index]);
   }
+  loom_computation_end();
   return 0;
 }
 

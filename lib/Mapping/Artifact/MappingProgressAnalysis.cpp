@@ -188,13 +188,18 @@ void appendCellKey(std::string &bytes, const SystemPresburgerCell &cell) {
 llvm::Expected<std::string>
 atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
                     const MappingProgressActivationProjection &activation) {
-  auto context = encodeExecutionContextKey(activation.context);
-  if (!context)
-    return context.takeError();
+  std::vector<std::uint8_t> context;
+  if (activation.context) {
+    auto encoded = encodeExecutionContextKey(*activation.context);
+    if (!encoded)
+      return encoded.takeError();
+    context = std::move(*encoded);
+  }
   if (activation.relationRoot.artifact != dataflowIdentity)
     return invalid("resource activation has a foreign relation root");
   std::string result;
-  appendSized(result, *context);
+  appendU32(result, activation.context.has_value());
+  appendSized(result, context);
   appendU64(result, activation.relationRoot.entity.value());
   std::vector<std::string> cells;
   cells.reserve(activation.relationDomain.size());
@@ -243,24 +248,6 @@ llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &value,
     return invalid(subject + " overflows u64");
   value += amount;
   return llvm::Error::success();
-}
-
-bool capacityBlocks(
-    const ProgressActivationGroup &pending,
-    const ProgressActivationGroup &holder,
-    llvm::ArrayRef<MappingProgressCapacityCellProjection> cells) {
-  for (const auto &[cell, pendingAmount] : pending.claims) {
-    const auto held = holder.claims.find(cell);
-    if (held == holder.claims.end() || cell >= cells.size())
-      continue;
-    const auto &capacity = cells[cell];
-    const unsigned __int128 demand =
-        static_cast<unsigned __int128>(capacity.baselineOccupancy) +
-        pendingAmount + held->second;
-    if (demand > capacity.capacity)
-      return true;
-  }
-  return false;
 }
 
 llvm::Expected<bool>
@@ -713,10 +700,36 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
     return static_cast<std::uint32_t>(2 * group + 1);
   };
   std::vector<std::vector<std::uint32_t>> waitFor(groups.size() * 2);
-
+  std::vector<std::vector<std::pair<std::size_t, std::uint64_t>>> cellUsers(
+      projection.capacityCells.size());
+  for (std::size_t group = 0; group != groups.size(); ++group)
+    for (const auto &[cell, amount] : groups[group].claims)
+      cellUsers[cell].emplace_back(group, amount);
+  std::vector<bool> contends(groups.size(), false);
+  for (const auto [cell, users] : llvm::enumerate(cellUsers)) {
+    const auto &capacity = projection.capacityCells[cell];
+    for (std::size_t left = 0; left != users.size(); ++left)
+      for (std::size_t right = left + 1; right != users.size(); ++right) {
+        const unsigned __int128 demand =
+            static_cast<unsigned __int128>(capacity.baselineOccupancy) +
+            users[left].second + users[right].second;
+        if (demand <= capacity.capacity)
+          continue;
+        const auto first = users[left].first;
+        const auto second = users[right].first;
+        waitFor[pendingNode(first)].push_back(activeNode(second));
+        waitFor[pendingNode(second)].push_back(activeNode(first));
+        contends[first] = contends[second] = true;
+      }
+  }
+  // A cycle must enter each active holder through a capacity-blocking edge
+  // and leave each pending acquisition through one. Exclusive capacity users
+  // cannot participate, regardless of their logical release dependencies.
   for (std::size_t holder = 0; holder != groups.size(); ++holder) {
+    if (!contends[holder] || groups[holder].releases.empty())
+      continue;
     for (std::size_t pending = 0; pending != groups.size(); ++pending) {
-      if (pending == holder)
+      if (pending == holder || !contends[pending])
         continue;
       bool causallyRequired = false;
       for (const auto &releasePoint : groups[holder].releases) {
@@ -726,10 +739,12 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
             if (holderTrigger == pendingTrigger ||
                 llvm::is_contained(releasePoint, holderTrigger))
               continue;
-            const std::vector<bool> &pendingAncestors =
-                ancestors(pendingTrigger);
-            if (holderTrigger >= pendingAncestors.size() ||
-                !pendingAncestors[holderTrigger])
+            // An independent activation may still be pending when the holder
+            // acquires. Only an activation that already precedes acquisition
+            // is unavailable as a same-occurrence wait prerequisite.
+            const std::vector<bool> &holderAncestors = ancestors(holderTrigger);
+            if (pendingTrigger < holderAncestors.size() &&
+                holderAncestors[pendingTrigger])
               continue;
             const bool strictlyPrecedesRelease =
                 llvm::any_of(releasePoint, [&](std::uint32_t release) {
@@ -762,13 +777,6 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
         waitFor[activeNode(holder)].push_back(pendingNode(pending));
     }
   }
-  for (std::size_t pending = 0; pending != groups.size(); ++pending)
-    for (std::size_t holder = 0; holder != groups.size(); ++holder) {
-      if (pending == holder || !capacityBlocks(groups[pending], groups[holder],
-                                               projection.capacityCells))
-        continue;
-      waitFor[pendingNode(pending)].push_back(activeNode(holder));
-    }
   for (auto &successors : waitFor) {
     llvm::sort(successors);
     successors.erase(std::unique(successors.begin(), successors.end()),

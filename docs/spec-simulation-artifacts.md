@@ -12,7 +12,7 @@ The fixed schema descriptors are:
 ```text
 loom.simulation_workload      1.1
 loom.simulation_runtime_input 3.0
-loom.simulation_execution     4.0
+loom.simulation_execution     5.0
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
@@ -274,6 +274,15 @@ never contain a native process address. Their exact `P(AS)`-bit projection is
 validated against the module DataLayout and must round-trip through the owning
 pointer codec; poison and undef carry no object target. This is a typed pointer
 alternative, not an integer convention or a second alias graph.
+
+The canonical byte-address projection starts the first object at one and
+places each subsequent object after its predecessor's one-past address.
+The pointer codec and mapped RTL memory image derive their bases from this
+same projection. After strict runtime-input import validates pointer bits
+against their object provenance, RTL input transport may carry those bits
+without the provenance metadata. This does not authorize using the canonical
+address as a host or guest address; an invocation boundary resolves its own
+address from the object's binding.
 
 ## SimulationRuntimeInput
 
@@ -543,7 +552,7 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 4.0` wire. The invocation-local
+define the complete `loom.simulation_execution 5.0` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
 root; the narrow System root-lifecycle progress sequence is a distinct
 mandatory observation.
@@ -902,7 +911,7 @@ or gem5 event priority. Evaluation derives metrics through the exact model.
 The root lifecycle is not a general gem5 event trace and does not admit raw
 provider records or diagnostic events. Raw gem5 traces remain attempt or
 scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
-event algebra below only outside `loom.simulation_execution 4.0` identity.
+event algebra below only outside `loom.simulation_execution 5.0` identity.
 
 ## Activity Summaries
 
@@ -1083,8 +1092,21 @@ utilization ratios are derived. Memory service alone does not qualify
 application QoR; the Application owner joins it with an independent compute
 occupancy. Other System models may omit memory activity.
 
+System execution additionally carries an optional `computation_interval`.
+After the memory-activity field, its wire is a u32 presence tag followed, when
+present, by four u64 values: begin tick, end tick, cumulative memory occupied
+ticks at begin, and cumulative memory occupied ticks at end. This is the one
+source-declared useful computation, not an accelerator-selected subregion.
+The Runtime ABI owns source marker observation. The interval must be positive,
+contained in the retired program window, and accompanied by native memory
+activity. Service samples are monotone, bounded by full-program occupied ticks,
+and their difference cannot exceed the computation duration. Absence remains
+unmeasured and never aliases the full-program or root-lifecycle interval.
+Application speedup and resource qualification consume this interval; the
+existing full-program and root-lifecycle projections remain diagnostics.
+
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 4.0` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 5.0` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -1127,7 +1149,7 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 4.0` contains no general diagnostic-trace field.
+`loom.simulation_execution 5.0` contains no general diagnostic-trace field.
 Its mandatory narrow System root-lifecycle progress sequence is not a
 `SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
 Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
@@ -1564,7 +1586,7 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 4.0` import admits only
+noninterference. Persistent `loom.simulation_execution 5.0` import admits only
 the narrow System root-lifecycle progress field and rejects any general trace,
 manifest, chunk, coverage, path, or opaque diagnostic field.
 

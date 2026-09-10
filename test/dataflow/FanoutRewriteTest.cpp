@@ -256,6 +256,74 @@ void layeredSelectorFanoutPreservesCompletionProof() {
           "operand replication invalidated selector correspondence");
 }
 
+void replicatedStreamBoundPreservesConditionalRetirement() {
+  auto parent = finalize(R"mlir(
+module {
+  dataflow.graph private @gated_bound_fanout(
+      %start: none, %lower: i16, %upper: i16, %step: i16,
+      %memory: memref<4xi16>) -> ()
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %bound = arith.addi %upper, %lower : i16
+    %seed = dataflow.constant %start {const_value = 3 : i16} : i16
+    %iv, %phase = dataflow.stream %lower, %bound, %step step add while slt : i16
+    %issue = dataflow.invariant %phase, %start : none
+    %payload = dataflow.invariant %phase, %seed : i16
+    %after_cond, %after_value = dataflow.gate %phase, %payload : i16
+    %final:2 = dataflow.demux %after_cond, %after_value
+        : (i1, i16) -> (i16, i16)
+    %collected = dataflow.carry %phase, %start, %written : none
+    %issue_lane:2 = dataflow.demux %phase, %issue : (i1, none) -> (none, none)
+    %done_lane:2 = dataflow.demux %phase, %collected : (i1, none) -> (none, none)
+    %index = arith.index_cast %iv : i16 to index
+    %written = dataflow.store %memory[%index] %after_value %issue_lane#1
+        : memref<4xi16>
+    %nonempty = arith.cmpi slt, %lower, %bound : i16
+    %branches:2 = dataflow.demux %nonempty, %issue_lane#0
+        : (i1, none) -> (none, none)
+    %gated:2 = dataflow.sync %branches#1, %final#0 : (none, i16) -> (none, i16)
+    %retired = dataflow.mux %nonempty, %branches#0, %gated#0
+        : (i1, none, none) -> none
+    dataflow.graph.return values() streams() memories()
+        complete(%retired, %done_lane#0 : none, none)
+  }
+}
+)mlir");
+  auto child = take(dataflow::materializeDataflowRewrite(
+      parent, dataflow::PureComputeFanoutReplicateRewrite{
+                  actorId<mlir::arith::AddIOp>(parent)}));
+  require(child.has_value(), "stream-bound replication produced no candidate");
+  for (const char *upper : {"0", "4"}) {
+    loom::sim::DFGSimulationOptions options;
+    options.args = {{0, "0"}, {1, upper}, {2, "1"}};
+    options.memories = {{3, 0, "9,9,9,9"}};
+    const auto simulate = [&](const auto &artifact) {
+      options.graphName =
+          mlir::cast<dataflow::GraphOp>(artifact.view().graphs().front().op)
+              .getSymName()
+              .str();
+      return take(loom::sim::simulateDataflowGraph(artifact.module(), options));
+    };
+    auto before = simulate(parent);
+    auto after = simulate(*child);
+    const llvm::SmallVector<std::string> expected(
+        4, llvm::StringRef(upper) == "0" ? "i16:9" : "i16:3");
+    require(
+        before.status == "pass" && after.status == "pass" &&
+            before.finalMemoryState.at("arg3") == expected &&
+            before.finalMemoryState == after.finalMemoryState,
+        "replicated gate bounds changed empty/nonempty retirement or writes");
+  }
+
+  auto mismatched = mlir::OwningOpRef<mlir::ModuleOp>(parent.module().clone());
+  mismatched->walk([&](mlir::arith::CmpIOp predicate) {
+    auto graph = predicate->getParentOfType<dataflow::GraphOp>();
+    predicate->setOperand(1, graph.getBody().front().getArgument(3));
+  });
+  require(isRejected(dataflow::finalizeCanonicalDataflow(mismatched.get())),
+          "an unrelated gate bound acquired a conditional completion proof");
+}
+
 void completionPhaseSplitPreservesMemoryAndTermination() {
   auto parent = finalize(R"mlir(
 module {
@@ -320,6 +388,7 @@ int main() {
   nondeterministicComputeIsRejected();
   selectorFanoutPreservesCompletionProof();
   layeredSelectorFanoutPreservesCompletionProof();
+  replicatedStreamBoundPreservesConditionalRetirement();
   completionPhaseSplitPreservesMemoryAndTermination();
   return EXIT_SUCCESS;
 }

@@ -4,6 +4,7 @@
 
 #include "Application/Build.h"
 #include "ApplicationRuntimeValidationInternal.h"
+#include "ApplicationSystemRuntimeEvidence.h"
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
@@ -1410,10 +1411,13 @@ validateDecision(ApplicationActivationDecisionDraft &draft,
 
   auto spatialMappings =
       mapping->view().executionBindings().spatialMappingImports();
+  const detail::ApplicationSystemRuntimeEvidenceContext systemContext{
+      draft.sourceProgram, draft.workload, draft.runtimeInput,
+      draft.selectedMapping};
   auto evidenceJoin = detail::resolveApplicationRuntimeEvidenceJoin(
       draft.runtimeEvidence, draft.oracleEvidence,
       draft.planning.canonicalDataflow, spatialMappings,
-      draft.sourceBackedReplayCases, artifacts, blobs);
+      draft.sourceBackedReplayCases, artifacts, blobs, &systemContext);
   if (!evidenceJoin)
     return evidenceJoin.takeError();
 

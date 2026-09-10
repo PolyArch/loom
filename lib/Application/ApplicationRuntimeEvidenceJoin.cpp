@@ -1,9 +1,11 @@
 #include "Application/ActivationDecision.h"
 
 #include "ApplicationRuntimeValidationInternal.h"
+#include "ApplicationSystemRuntimeEvidence.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Deployment/Deployment.h"
 #include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/CgraClosedWait.h"
@@ -43,7 +45,8 @@ resolveApplicationRuntimeEvidenceJoin(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappings,
     llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference> replayCases,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ApplicationSystemRuntimeEvidenceContext *systemContext) {
   evaluation::ArtifactImportCacheScope importCache(artifacts, &blobs);
   fabric::FabricArtifactImportSession fabricImports;
   if (runtimeEvidence.empty() || oracleEvidence.empty() || replayCases.empty())
@@ -114,6 +117,7 @@ resolveApplicationRuntimeEvidenceJoin(
   std::vector<EvidenceFacts> comparisons;
   std::vector<ArtifactRootReference> allExecutionOutputs;
   ApplicationRuntimeEvidenceJoin result;
+  std::vector<ArtifactRootReference> systemEvidence;
   comparisons.reserve(oracleEvidence.size());
 
   // First index only exact dependency projections. Full imports are grouped
@@ -151,6 +155,21 @@ resolveApplicationRuntimeEvidenceJoin(
           allExecutionOutputs.push_back(root);
         }
       }
+    const bool isSystem =
+        llvm::any_of(*requestReferences, [](const auto &root) {
+          return root.schemaIdentity == deployment::deploymentSchema.identity;
+        });
+    if (isSystem) {
+      if (!systemContext || oracleRoots.count(evidence))
+        return reject(
+            ApplicationActivationDecisionErrorReason::EvidenceMismatch,
+            "System runtime Evidence has no source invocation owner");
+      systemEvidence.push_back(evidence);
+      result.executionOutputs.insert(result.executionOutputs.end(),
+                                     outputExecutions.begin(),
+                                     outputExecutions.end());
+      continue;
+    }
     EvidenceFacts row{evidence, std::move(*projection),
                       std::move(*requestReferences)};
     std::optional<ArtifactRootReference> workload;
@@ -227,6 +246,14 @@ resolveApplicationRuntimeEvidenceJoin(
             "replay input has more than one CGRA execution");
       replay.cgra = CgraRecord{std::move(record), selectedMappings.front()};
     }
+  }
+
+  if (!systemEvidence.empty()) {
+    auto ticks = resolveApplicationSystemRuntimeEvidenceJoin(
+        systemEvidence, *systemContext, artifacts, blobs);
+    if (!ticks)
+      return ticks.takeError();
+    result.systemComputationTicks = *ticks;
   }
 
   for (EvidenceFacts &row : comparisons) {

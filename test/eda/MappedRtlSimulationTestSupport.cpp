@@ -773,6 +773,7 @@ pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
   config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy =
       *repairableEnergy;
   auto &search = config.dse.spatialPnr.search;
+  search.completionGoal = ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   search.initializer.seedAttemptCount = 1;
   search.actionProposal = {1, 1, 0};
   search.annealing.calibrationProposalCount = 1;

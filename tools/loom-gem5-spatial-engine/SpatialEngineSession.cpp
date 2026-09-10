@@ -1,6 +1,7 @@
 #include "SpatialEngineSession.h"
 
 #include "Common/ArtifactText.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Runtime/OrderedChannelABI.h"
 #include "Simulator/SpatialChannelWire.h"
@@ -117,6 +118,8 @@ public:
     if (!write)
       entry.response.readData.resize(request.elements.size());
     pending_.emplace(nextPendingOrdinal_++, std::move(entry));
+    peakPendingRequests_ =
+        std::max<std::uint64_t>(peakPendingRequests_, pending_.size());
     return loom::sim::CgraExternalMemoryPending{};
   }
 
@@ -136,6 +139,8 @@ public:
       const auto &object =
           invocation_->memoryObjects[entry.request.objectOrdinal];
       inFlight_.emplace(transactionId, ElementKey{ordinal, elementOrdinal});
+      peakInFlightTransactions_ =
+          std::max<std::uint64_t>(peakInFlightTransactions_, inFlight_.size());
       return Transaction{
           {entry.request.operation ==
                    loom::sim::CgraExternalMemoryOperation::Write
@@ -178,6 +183,21 @@ public:
       return error;
     pending_.erase(entry);
     return llvm::Error::success();
+  }
+
+  void emitStatistics(std::uint64_t sessionEntry) const {
+    loom::emitInvocationDiagnostic(
+        loom::DiagnosticVerbosity::Summary,
+        loom::InvocationDiagnosticStage::Deployment,
+        loom::InvocationDiagnosticEvent::Statistics, [&] {
+          return llvm::json::Object{
+              {"operation", "cgra_external_memory_concurrency"},
+              {"session_entry", sessionEntry},
+              {"outstanding_capacity", outstandingCapacity_},
+              {"submitted_requests", nextPendingOrdinal_},
+              {"peak_pending_requests", peakPendingRequests_},
+              {"peak_in_flight_transactions", peakInFlightTransactions_}};
+        });
   }
 
   std::vector<loom::sim::SpatialInvocationMemoryWrite> retainUncommittedWrites(
@@ -239,6 +259,8 @@ private:
   };
   const loom::runtime::SpatialInvocationWire *invocation_;
   const std::uint64_t outstandingCapacity_;
+  std::uint64_t peakPendingRequests_ = 0;
+  std::uint64_t peakInFlightTransactions_ = 0;
   std::uint64_t nextPendingOrdinal_ = 0;
   std::map<std::uint64_t, Pending> pending_;
   std::map<std::uint64_t, ElementKey> inFlight_;
@@ -1366,6 +1388,10 @@ llvm::Error SpatialEngineSession::Impl::finishModel(
     return publications.takeError();
   const bool retired =
       std::holds_alternative<loom::sim::RetiredExecution>(result.terminal);
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+  if (invocation.externalMemory)
+    invocation.externalMemory->emitStatistics(entry.sessionEntryOrdinal);
+#endif
   invocation.completion.emplace(
       PendingCompletion{std::move(*publications), std::move(invocationWrites),
                         std::move(completionResult), 0, *delay, retired});

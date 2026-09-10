@@ -6,6 +6,7 @@
 #include "Application/DeploymentRuntime.h"
 #include "Application/Package.h"
 #include "Application/ProductOracleEvaluation.h"
+#include "Application/SystemQor.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -36,13 +37,13 @@
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/FabricModelRuntimeProvider.h"
 #include "Runtime/Gem5BridgeWire.h"
+#include "Runtime/Gem5BuildReadiness.h"
 #include "Runtime/Gem5RootEventControl.h"
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/Gem5SystemExecution.h"
 #include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
-#include "Application/SystemQor.h"
 #include "Simulator/SpatialInvocation.h"
 #include "Simulator/SpatialObservationComparison.h"
 
@@ -68,7 +69,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -307,43 +307,6 @@ llvm::Expected<InitializedWorkspace> initializeWorkspace() {
   return InitializedWorkspace{output.string(), std::move(*workspacePackage)};
 }
 
-struct Readiness final {
-  loom::runtime::Gem5BuildIdentity identity;
-  std::string path;
-  std::string binary;
-};
-
-llvm::Expected<Readiness> readReadiness() {
-  auto path = canonicalPath(gem5Readiness, false);
-  if (!path)
-    return path.takeError();
-  auto contents = readText(*path);
-  if (!contents)
-    return contents.takeError();
-  auto value = llvm::json::parse(*contents);
-  if (!value)
-    return value.takeError();
-  const llvm::json::Object *object = value->getAsObject();
-  if (!object)
-    return invalid("gem5 readiness is not an object");
-  const auto schema = object->getString("schema");
-  const auto repository = object->getString("gem5_repository_identity");
-  const auto commit = object->getString("gem5_full_commit_identity");
-  const auto configuration = object->getString("build_configuration_digest");
-  const auto fingerprint = object->getString("binary_sha256");
-  const auto binary = object->getString("binary");
-  if (!schema || *schema != "loom.gem5_build_readiness.1" || !repository ||
-      !commit || !configuration || !fingerprint || !binary)
-    return invalid("gem5 readiness omits an identity field");
-  auto binaryPath = canonicalPath(*binary, false);
-  if (!binaryPath)
-    return binaryPath.takeError();
-  return Readiness{{repository->str(), commit->str(), configuration->str(),
-                    fingerprint->str()},
-                   std::move(*path),
-                   std::move(*binaryPath)};
-}
-
 struct PublishedInputs final {
   loom::ArtifactRootReference workload;
   loom::ArtifactRootReference runtimeInput;
@@ -492,64 +455,6 @@ publishResourceTimeDriveTrace(ResourceTimeDrive &drive,
           drive.loaded.resourceTimeExecution()->joinMappedRoots())
     return std::move(error);
   return drive.loaded.publishResourceTimeExecutionTrace(artifacts, blobs);
-}
-
-llvm::Expected<loom::evaluation::CaseArtifactResolution>
-buildResolution(const loom::deployment::FinalizedDeployment &deployment,
-                const loom::runtime::FinalizedGem5SimulationBinding &binding,
-                const PublishedInputs &inputs,
-                const loom::ArtifactStore &artifacts,
-                const loom::BlobStore &blobs) {
-  auto package = loom::deployment::deriveDeploymentPackageClosure(
-      deployment, artifacts, blobs);
-  if (!package)
-    return package.takeError();
-  std::map<loom::ArtifactRootReference,
-           std::vector<loom::ArtifactRootReference>,
-           decltype(&loom::artifactRootReferenceLess)>
-      entries(&loom::artifactRootReferenceLess);
-  for (const loom::ArtifactRootReference &root : package->artifacts())
-    entries.emplace(root, std::vector<loom::ArtifactRootReference>{});
-  std::vector<loom::ArtifactRootReference> deploymentClosure;
-  for (const loom::ArtifactRootReference &root : package->artifacts())
-    if (root != deployment.reference())
-      deploymentClosure.push_back(root);
-  entries[deployment.reference()] = deploymentClosure;
-  entries[inputs.workload] = package->artifacts().vec();
-  std::vector<loom::ArtifactRootReference> runtimeClosure =
-      package->artifacts().vec();
-  runtimeClosure.push_back(inputs.workload);
-  entries[inputs.runtimeInput] = std::move(runtimeClosure);
-
-  std::set<loom::ArtifactRootReference,
-           decltype(&loom::artifactRootReferenceLess)>
-      fabricClosure(&loom::artifactRootReferenceLess);
-  std::function<llvm::Error(const loom::ArtifactRootReference &)> addFabric =
-      [&](const loom::ArtifactRootReference &root) -> llvm::Error {
-    if (!fabricClosure.insert(root).second)
-      return llvm::Error::success();
-    auto imported = loom::fabric::importEntireFabricRoot(root, artifacts);
-    if (!imported)
-      return imported.takeError();
-    entries.emplace(root, std::vector<loom::ArtifactRootReference>{});
-    for (const loom::fabric::FabricDirectDependency &dependency :
-         imported->directDependencies())
-      if (llvm::Error error = addFabric(dependency.root))
-        return error;
-    return llvm::Error::success();
-  };
-  if (llvm::Error error = addFabric(binding.binding().fabric()))
-    return std::move(error);
-  if (llvm::Error error =
-          addFabric(binding.binding().interconnectImplementation()))
-    return std::move(error);
-  entries[binding.reference()] = {fabricClosure.begin(), fabricClosure.end()};
-
-  std::vector<loom::evaluation::CaseArtifactResolution::Entry> result;
-  result.reserve(entries.size());
-  for (auto &[root, closure] : entries)
-    result.push_back({root, std::move(closure)});
-  return loom::evaluation::CaseArtifactResolution::get(std::move(result));
 }
 
 enum class Engine : std::uint8_t { Dfg, Cgra, Rtl };
@@ -705,14 +610,15 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
       if (invocationResult.invocation.empty() || !invocationResult.runtimeInput)
         return invalid("public execution matrix requires a complete dynamic "
                        "invocation");
-      invocations.push_back(
-          {targetOrdinals[sessionEntryOrdinal], accCoreReference->str(),
-           contextKeys[sessionEntryOrdinal],
-           workloadReferences[sessionEntryOrdinal],
-           std::move(invocationResult.invocation),
-           std::move(invocationResult.memorySnapshot),
-           std::move(*invocationResult.runtimeInput),
-           std::move(invocationResult.spatialBoundaryResult)});
+      invocations.push_back({targetOrdinals[sessionEntryOrdinal],
+                             accCoreReference->str(),
+                             contextKeys[sessionEntryOrdinal],
+                             workloadReferences[sessionEntryOrdinal],
+                             std::move(invocationResult.invocation),
+                             std::move(invocationResult.memorySnapshot),
+                             std::move(*invocationResult.runtimeInput),
+                             std::move(invocationResult.spatialBoundaryResult),
+                             bridgeResult.completionTick});
     }
     if (llvm::is_contained(observedSessionEntries, false))
       return invalid("gem5 bridge results omit a declared target entry");
@@ -733,8 +639,9 @@ execute(Engine engine, llvm::StringRef workspace,
         const loom::runtime::FinalizedGem5SimulationBinding &binding,
         const PublishedInputs &inputs,
         const loom::evaluation::CaseArtifactResolution &resolution,
-        const Readiness &readiness, const loom::ArtifactStore &artifacts,
-        const loom::BlobStore &blobs, ResourceTimeDrive *drive) {
+        const loom::runtime::Gem5BuildReadiness &readiness,
+        const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs,
+        ResourceTimeDrive *drive) {
   auto subjects = loom::evaluation::EvaluationSubjectBindings::get(
       {{loom::evaluation::CaseSubjectRoleRef(0), {deployment.reference()}},
        {loom::evaluation::CaseSubjectRoleRef(1), {binding.reference()}}});
@@ -1614,7 +1521,7 @@ llvm::Error run() {
             std::filesystem::path(workspacePath) / "bundles", directoryError) ||
         directoryError)
       return ioError("cannot create bundle directory");
-    auto readiness = readReadiness();
+    auto readiness = loom::runtime::readGem5BuildReadiness(gem5Readiness);
     if (!readiness)
       return readiness.takeError();
     auto binding = loom::runtime::finalizeBuiltinGem5SimulationBinding(
@@ -1624,8 +1531,9 @@ llvm::Error run() {
     auto inputs = loadInputs(manifest, deployment, artifacts, blobs);
     if (!inputs)
       return inputs.takeError();
-    auto resolution =
-        buildResolution(deployment, *binding, *inputs, artifacts, blobs);
+    auto resolution = loom::runtime::buildGem5SystemCaseResolution(
+        deployment, *binding, inputs->workload, inputs->runtimeInput, artifacts,
+        blobs);
     if (!resolution)
       return resolution.takeError();
     auto drive = prepareResourceTimeDrive(workspace->package.manifest(),
@@ -1663,8 +1571,9 @@ llvm::Error run() {
       return baselineDeployment.takeError();
     const PublishedInputs baselineInputs{baseline.inputs.workload,
                                          baseline.inputs.runtimeInput};
-    auto baselineResolution = buildResolution(*baselineDeployment, *binding,
-                                               baselineInputs, artifacts, blobs);
+    auto baselineResolution = loom::runtime::buildGem5SystemCaseResolution(
+        *baselineDeployment, *binding, baselineInputs.workload,
+        baselineInputs.runtimeInput, artifacts, blobs);
     if (!baselineResolution)
       return baselineResolution.takeError();
     const std::string baselineWorkspace = child(workspacePath, "host-only");
@@ -1814,7 +1723,9 @@ llvm::Error run() {
       if (run.engine == Engine::Cgra)
         cgraReplays[run.invocationOrdinal] = run.importedExecution.spatial();
     auto computeInputs = loom::system_run::aggregateSpatialComputeInputs(
-        spatialInvocations, cgraReplays, artifacts, blobs);
+        spatialInvocations, cgraReplays,
+        cgra->importedExecution.system()->computationInterval, artifacts,
+        blobs);
     if (!computeInputs)
       return computeInputs.takeError();
     auto systemQor = loom::application::qualifyApplicationSystemQor(

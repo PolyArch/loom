@@ -12,6 +12,7 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
     const FrozenSpatialLocalTransferIndex &localTransfers,
     const FrozenSpatialPortIndex &ports,
     const FrozenSpatialCapacityIndex &capacity,
+    const detail::SpatialComputeProgressIndex &computeProgress,
     const FrozenSpatialActiveRoutingDomain &activeRouting,
     const FrozenSpatialHandshakeIndex &handshake,
     std::uint64_t constructionNanoseconds);

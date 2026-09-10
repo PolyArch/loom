@@ -467,6 +467,31 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         prepared.resourceTimePolicy.spectrumEndpoint;
     reopenRequest.hardwareExplorationScope = request.hardwareExplorationScope;
     reopenRequest.invocationSemanticInputs = invocationSemanticInputs;
+    const auto admitsMapping = [&](const ArtifactRootReference &mapping,
+                                    std::uint64_t planOrdinal)
+        -> llvm::Expected<bool> {
+      if (planOrdinal >= tail.size())
+        return invalid("endpoint selection has a foreign plan ordinal");
+      const auto &alternative =
+          prepared.mappingAlternatives[firstPlan + planOrdinal];
+      for (const ComponentViewDigest &hint :
+           alternativeScheduleHintDigests(alternative)) {
+        auto spectrum = verifyResourceTimeAlternative(
+            prepared.resourceTimeFunnel, alternative,
+            llvm::ArrayRef<ArtifactRootReference>(mapping), artifacts, blobs,
+            hint, {}, request.executionControl);
+        if (!spectrum)
+          return spectrum.takeError();
+        if (*spectrum && dse::resourceTimeSpectrumAdmitsMappingClass(
+                             **spectrum, mapping, requestedSpectrumClass))
+          return true;
+      }
+      return false;
+    };
+    if (request.boundedQuality && requestedSpectrumClass)
+      return dse::executeJointDesignWithHardwareReopen(
+          tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs,
+          admitsMapping);
     return dse::executeJointDesignWithHardwareReopen(
         tail, prepared.jointPolicy, std::move(reopenRequest), artifacts, blobs);
   };
@@ -519,9 +544,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           const dse::JointDesignExecution &execution,
           const ArtifactRootReference &mapping)
       -> llvm::Expected<detail::ApplicationRuntimeValidation> {
-    if (request.boundedQuality &&
-        request.boundedQuality->provenanceDomain ==
-            dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
+    if (request.boundedQuality && dse::isApplicationRuntimeQualityDomain(
+                                      request.boundedQuality->provenanceDomain))
       return detail::projectApplicationQualityRuntime(
           prepared, alternative, execution, mapping, *request.boundedQuality,
           artifacts, blobs);
@@ -672,12 +696,14 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       selectedScheduleHint =
           acceptedScheduleHint(selectedPlanOrdinal, *runtimeMapping);
     // An explicit spectrum endpoint constrains selection, not just reporting.
-    // Keep a verified non-endpoint result as evidence, but continue through
-    // the already bounded finalist frontier until a real SystemMapping proves
-    // the requested class.
+    // FirstVerified continues through its remaining frontier. BoundedQuality
+    // already constrained its full comparison domain before choosing a winner.
     if (runtime->disposition ==
             ApplicationMappingRuntimeDisposition::Completed &&
         execution->summary.selectedMapping && !selectedScheduleHint) {
+      if (request.boundedQuality)
+        return invalid("bounded-quality endpoint selection lost its verified "
+                       "schedule proof");
       execution->summary.selectedPlanOrdinal.reset();
       execution->summary.selectedMapping.reset();
       selectedExecution.emplace(std::move(*execution));
@@ -878,8 +904,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           projected.disposition =
               ApplicationMappingRuntimeDisposition::NotRequested;
           if (request.boundedQuality &&
-              request.boundedQuality->provenanceDomain ==
-                  dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+              dse::isApplicationRuntimeQualityDomain(
+                  request.boundedQuality->provenanceDomain)) {
             auto runtime = detail::projectApplicationQualityRuntime(
                 prepared, prepared.mappingAlternatives[selectedPlanOrdinal],
                 owner, *qualityIncomplete->incomplete.candidate,
@@ -1381,8 +1407,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     if (outcome.runtimeDisposition ==
             ApplicationMappingRuntimeDisposition::NotRequested &&
         request.boundedQuality &&
-        request.boundedQuality->provenanceDomain ==
-            dse::JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+        dse::isApplicationRuntimeQualityDomain(
+            request.boundedQuality->provenanceDomain)) {
       auto runtime = detail::projectApplicationQualityRuntime(
           prepared, prepared.mappingAlternatives[outcome.planOrdinal],
           *projected, *request.boundedQuality, artifacts, blobs);

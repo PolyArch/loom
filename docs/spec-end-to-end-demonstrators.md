@@ -186,13 +186,28 @@ retains provider outcomes, work counts, feedback bytes, rewrite configuration,
 Fabric lineage, and separate host time accounting. It never treats a deadline
 or an incomplete rewrite as a capacity proof.
 
-Source preparation uses one shared artifact store. After all ten cases have
+Source preparation uses one shared artifact store. After all ten sources have
 usable TechMapping frontiers on the same Fabric, each workload independently
 runs the complete qualification below against that exact Fabric and the same
 ResolvedConfig. No workload chooses a private hardware point. The search report
 is retained with the run's diagnostics; the gate continues to bind the actual
 common Fabric and configuration through every measured profile. Each run uses
 a fresh temporary directory and preserves earlier qualification evidence.
+
+One source may capture several distinct `(workload, runtime_input)` pairs,
+including different runtime inputs for the same workload Artifact. Hardware
+search retains that complete source-owned input inventory and its occurrence
+count. Each source performs one shared TechMapping/Spatial PnR search, then
+screens the resulting Mapping frontier, validates retirement, and performs the
+unchanged warmup and measurement protocol separately for every distinct input.
+Repeated occurrences of an identical pair do not create a different input.
+
+The ten source profiles retain their expected input inventory and one ordered
+replay result per pair. Gate import requires exact complete input coverage;
+neither deduplication by workload alone nor selecting one convenient input is
+valid. Shared Mapping work and per-input execution have separate phase ledgers.
+An incomplete replay retains the completed input prefix, the exact failing
+input, and its repair evidence. It cannot publish a gate for the prefix.
 
 Qualification uses the production resolved Spatial PnR policy with
 `ExhaustConfiguredWork`; it does not replace that policy with a bounded-prefix
@@ -241,7 +256,7 @@ reference-cycles-per-wall-second target, and is derived with integer arithmetic:
 
 ```text
 case_target_ns = ceil(reference_cycles * 1,000,000,000 / 100,000)
-spatial_absolute_budget_ns = max(case_target_ns across the ten rows)
+spatial_absolute_budget_ns = max(case_target_ns across all inputs of all ten sources)
 ```
 
 Every measured active wall time must be no greater than its `case_target_ns`

@@ -5,6 +5,7 @@
 #include "Fabric/Identity/FabricRefs.h"
 #include "PnR/PhysicalTagKeyedMap.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/SpatialComputeProgressState.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -95,6 +96,9 @@ struct SpatialProgressStatistics final {
   std::uint64_t coldVerificationWallTimeNanoseconds = 0;
   std::uint64_t coldProgressScanCount = 0;
   std::uint64_t coldProgressScanWallTimeNanoseconds = 0;
+  std::uint64_t computeProjectionCount = 0;
+  std::uint64_t computeProjectionWallTimeNanoseconds = 0;
+  std::uint64_t computeProjectionCacheHitCount = 0;
 };
 
 /// Rebuildable exact projection of route-selected durable progress facts.
@@ -112,7 +116,8 @@ public:
     return routeDependencyViolationCount_;
   }
   std::uint64_t proofDebtWitnessCount() const {
-    return capacityProofDebtWitnessCount_ + capacityShortfallOwnerCount_;
+    return capacityProofDebtWitnessCount_ + capacityShortfallOwnerCount_ +
+           computeProgress_->objective.proofDebtWitnessCount;
   }
   std::uint64_t capacityShortfallOwnerCount() const {
     return capacityShortfallOwnerCount_;
@@ -135,9 +140,26 @@ public:
   /// a Spatial violation: the ordinary Mapping remains importable while the
   /// unestablished recurrence withholds Dataflow spectrum qualification, and
   /// the router prices foreign residency as negotiable congestion. Only route
-  /// dependency violations remain hard progress violations.
+  /// dependency violations and proven compute waits are hard violations.
   std::uint64_t hardProgressViolation() const {
-    return routeDependencyViolationCount_;
+    return routeDependencyViolationCount_ +
+           computeProgress_->objective.hardViolationCount;
+  }
+  const SpatialComputeProgressStateHandle &computeProgress() const {
+    return computeProgress_;
+  }
+  /// FIFO owner ordinals precede the one shared compute closure witness.
+  std::optional<PnrIndex> computeProofDebtWitness() const {
+    return computeProgress_->objective.proofDebtWitnessCount != 0
+               ? std::optional<PnrIndex>(ownerCount_)
+               : std::nullopt;
+  }
+  bool isComputeProofDebtWitness(PnrIndex ordinal) const {
+    return computeProofDebtWitness() == std::optional<PnrIndex>(ordinal);
+  }
+  llvm::Error refreshComputeProgress(const SpatialCandidateState &candidate);
+  void restoreComputeProgress(SpatialComputeProgressStateHandle state) {
+    computeProgress_ = std::move(state);
   }
   PnrIndex finiteBufferOwnerLogicalNetCount(PnrIndex owner) const;
   bool finiteBufferOwnerConflicts(PnrIndex owner) const;
@@ -190,6 +212,7 @@ public:
   llvm::Error verify(const SpatialCandidateState &candidate) const;
 
 private:
+  SpatialComputeProgressStateHandle computeProgress_;
   SpatialProgressState() = default;
   SpatialProgressState(
       const FrozenSpatialPnrProblem &problem, PnrIndex logicalNetCount,

@@ -12,25 +12,27 @@ namespace loom::application {
 
 inline constexpr llvm::StringLiteral applicationSystemQorProjectionSchema =
     "loom.application.system_qor_projection";
-inline constexpr llvm::StringLiteral applicationSystemQorProjectionVersion = "2.0";
+inline constexpr llvm::StringLiteral applicationSystemQorProjectionVersion =
+    "3.0";
 
-/// Qualification is a strict complete-program speedup joined with a saturated
-/// accelerator resource. Both resource branches are measured over the candidate's
-/// accelerated window: the interval from its first root Start lifecycle event
-/// through its last root Completion lifecycle event, host gaps between launches
-/// included. Speedup remains the complete-program comparison, so a run that
-/// spends most of its program on the host cannot hide that cost in the window.
-/// A run with no launches has no window and no accelerated resource claim.
+/// Qualification compares the same source-declared computation on both images,
+/// from prepared shared-memory inputs through visible output completion. All
+/// intervening host work and dispatch remain charged. Full-program Runtime is
+/// retained separately and never substitutes for a missing computation
+/// interval.
 inline constexpr std::uint64_t applicationMinimumResourceUtilizationNumerator = 9;
 inline constexpr std::uint64_t applicationMinimumResourceUtilizationDenominator = 10;
 
-/// A candidate whose accelerated window covers less than this fraction of its
-/// complete program is host bound: neither accelerator resource can explain its
-/// runtime, because the accelerator is barely running.
+/// An accelerator active for less than this fraction of useful computation
+/// cannot explain that computation's runtime; its host residual dominates.
 inline constexpr std::uint64_t applicationHostBoundWindowNumerator = 1;
 inline constexpr std::uint64_t applicationHostBoundWindowDenominator = 10;
 
-enum class ApplicationSystemQorStatus : std::uint8_t { Qualified, NotQualified };
+enum class ApplicationSystemQorStatus : std::uint8_t {
+  Qualified,
+  NotQualified,
+  Unmeasured
+};
 
 /// Typed classification of the measured candidate window, derived in this
 /// order: a saturated memory service, then a saturated compute array, then a
@@ -41,6 +43,7 @@ enum class ApplicationSystemBottleneck : std::uint8_t {
   ComputeBound,
   HostBound,
   LatencyBound,
+  Unmeasured,
 };
 
 llvm::StringRef
@@ -60,14 +63,15 @@ struct ApplicationSystemRunMeasurement final {
   std::uint64_t elapsedTicks;
   sim::SystemMemoryActivity memoryActivity;
   evaluation::ExactRatio memoryUtilization;
+  std::optional<sim::SystemComputationInterval> computationInterval;
 };
 
 /// Compute-occupancy inputs the System driver aggregates for the candidate.
 /// `retiredComputeFirings` sums the retired firings of Compute-kind actors over
-/// every candidate Spatial invocation replayed standalone on the CGRA engine
-/// across its LaunchToTerminal window. `mappedComputeUnits` counts the distinct
-/// physical PE occurrences, spatial and temporal, that carry at least one
-/// compute realization or binding in the selected SpatialMapping.
+/// every measured candidate Spatial invocation replayed standalone on the CGRA
+/// engine across its LaunchToTerminal window. `mappedComputeUnits` counts the
+/// distinct physical PE occurrences, spatial and temporal, that carry at least
+/// one compute realization or binding in the selected SpatialMapping.
 /// `launchedAccCores` counts the distinct AccCores that received at least one
 /// invocation. `referenceCycleTicks` is the SpatialCore clock-domain period in
 /// gem5 ticks, taken from the Fabric clock contract rather than assumed.
@@ -90,10 +94,11 @@ struct ApplicationSystemComputeMeasurement final {
   evaluation::ExactRatio occupancy;
 };
 
-/// The candidate's accelerated window and both resource occupancies measured
-/// over it. Host-only members structurally have none: they launch nothing.
+/// The candidate's source-declared computation interval and resource occupancy.
+/// Native root activity inside it explains the host-residual classification.
 struct ApplicationSystemWindowMeasurement final {
-  sim::SystemAcceleratedWindow window;
+  sim::SystemComputationInterval window;
+  std::uint64_t acceleratedTicks = 0;
   evaluation::ExactRatio memoryUtilization;
   ApplicationSystemComputeMeasurement compute;
 };
@@ -106,17 +111,21 @@ public:
   const ArtifactRootReference &gem5Binding() const { return binding_; }
   const ApplicationSystemRunMeasurement &hostOnly() const { return host_; }
   const ApplicationSystemRunMeasurement &candidate() const { return candidate_; }
-  const ApplicationSystemWindowMeasurement &candidateWindow() const { return window_; }
-  evaluation::ExactRatio speedup() const { return speedup_; }
+  const std::optional<ApplicationSystemWindowMeasurement> &
+  candidateWindow() const {
+    return window_;
+  }
+  std::optional<evaluation::ExactRatio> speedup() const { return speedup_; }
   ApplicationSystemBottleneck bottleneck() const;
   ApplicationSystemQorStatus status() const;
 
 private:
-  ApplicationSystemQor(ArtifactRootReference manifest, ArtifactRootReference binding,
+  ApplicationSystemQor(ArtifactRootReference manifest,
+                       ArtifactRootReference binding,
                        ApplicationSystemRunMeasurement host,
                        ApplicationSystemRunMeasurement candidate,
-                       ApplicationSystemWindowMeasurement window,
-                       evaluation::ExactRatio speedup)
+                       std::optional<ApplicationSystemWindowMeasurement> window,
+                       std::optional<evaluation::ExactRatio> speedup)
       : manifest_(std::move(manifest)), binding_(std::move(binding)),
         host_(std::move(host)), candidate_(std::move(candidate)),
         window_(std::move(window)), speedup_(speedup) {}
@@ -124,8 +133,8 @@ private:
   ArtifactRootReference binding_;
   ApplicationSystemRunMeasurement host_;
   ApplicationSystemRunMeasurement candidate_;
-  ApplicationSystemWindowMeasurement window_;
-  evaluation::ExactRatio speedup_;
+  std::optional<ApplicationSystemWindowMeasurement> window_;
+  std::optional<evaluation::ExactRatio> speedup_;
 
   friend llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
       const FinalizedApplicationRuntimeManifest &, const ApplicationSystemRunEvidence &,

@@ -272,8 +272,12 @@ llvm::Error validateSpatialRuntimeInput(
                                          view);
 }
 
-llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
-    const SpatialSimulationRuntimeInputDraft &draft,
+// Validate the author tables and derive object ordinals from sorted binding
+// keys. The draft owns its storage, so canonicalization transfers objects
+// into their canonical slots without copying each object's complete contents.
+static llvm::Expected<SpatialSimulationRuntimeInput>
+canonicalizeSpatialRuntimeInput(
+    SpatialSimulationRuntimeInputDraft draft,
     const SpatialSimulationWorkload &workload,
     const ::loom::ArtifactIdentity &workloadIdentity,
     const ResolvedLaunchContext &context,
@@ -283,12 +287,12 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
                    "workload");
 
   SpatialSimulationRuntimeInput input{draft.workloadIdentity};
-  input.runtimeValues = draft.runtimeValues;
+  input.runtimeValues = std::move(draft.runtimeValues);
   std::sort(input.runtimeValues.begin(), input.runtimeValues.end(),
             [](const auto &lhs, const auto &rhs) {
               return lhs.valueInputOrdinal < rhs.valueInputOrdinal;
             });
-  input.runtimeStreams = draft.runtimeStreams;
+  input.runtimeStreams = std::move(draft.runtimeStreams);
   if (llvm::Error error = validateRuntimeMemoryObjectStructure(
           draft.memoryObjects, context.graphOp))
     return std::move(error);
@@ -321,7 +325,8 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
 
   input.memoryObjects.resize(draft.memoryObjects.size());
   for (std::size_t author = 0; author < draft.memoryObjects.size(); ++author)
-    input.memoryObjects[canonical->at(author)] = draft.memoryObjects[author];
+    input.memoryObjects[canonical->at(author)] =
+        std::move(draft.memoryObjects[author]);
   for (RuntimeMemoryObject &object : input.memoryObjects)
     for (RuntimeMemoryPointer &pointer : object.pointerValues)
       pointer.target.objectOrdinal =
@@ -527,7 +532,7 @@ decodeSpatialRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
 //===----------------------------------------------------------------------===//
 
 llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
-    const SpatialSimulationRuntimeInputDraft &draft,
+    SpatialSimulationRuntimeInputDraft draft,
     const CanonicalSimulationWorkload &workload,
     const dataflow::CanonicalDataflowProgramView &view) {
   const SpatialSimulationWorkload *spatialWorkload = workload.spatial();
@@ -540,7 +545,8 @@ llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
     return context.takeError();
   llvm::Expected<SpatialSimulationRuntimeInput> input =
       detail::canonicalizeSpatialRuntimeInput(
-          draft, *spatialWorkload, workload.identity(), *context, view);
+          std::move(draft), *spatialWorkload, workload.identity(), *context,
+          view);
   if (!input)
     return input.takeError();
   if (llvm::Error error = detail::validateSpatialRuntimeInput(

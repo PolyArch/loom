@@ -1,3 +1,4 @@
+#include "SpatialComputeProgressIndex.h"
 #include "SpatialActiveProblemStatistics.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -39,6 +40,7 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
     const FrozenSpatialLocalTransferIndex &localTransfers,
     const FrozenSpatialPortIndex &ports,
     const FrozenSpatialCapacityIndex &capacity,
+    const detail::SpatialComputeProgressIndex &computeProgress,
     const FrozenSpatialActiveRoutingDomain &activeRouting,
     const FrozenSpatialHandshakeIndex &handshake,
     std::uint64_t constructionNanoseconds) {
@@ -109,6 +111,9 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   saturatingAdd(work, result.computeAttachmentClassLookupCount);
   addTrackedArray(bytes, work, capacity.resourceEvents());
   addTrackedArray(bytes, work, capacity.resourceUses());
+  addTrackedArray(bytes, work, capacity.resourceReleaseEvents());
+  saturatingAdd(bytes, computeProgress.retainedStorageBytes());
+  saturatingAdd(work, computeProgress.activationCount());
   addTrackedArray(bytes, work, capacity.resourceTimeEnvelopes());
   addTrackedArray(bytes, work, capacity.resourceTimeSegments());
   addTrackedArray(bytes, work, handshake.ownerModels());

@@ -3,6 +3,7 @@
 
 #include "Common/ExecutionControl.h"
 #include "Mapping/Artifact/MappingProgressProjection.h"
+#include "Mapping/Artifact/SpatialResourceEventProjection.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "Fabric/IR/UsePatternValue.h"
@@ -28,11 +29,6 @@ struct SystemCapacityClaimProjection final {
   std::uint64_t amount = 0;
 };
 
-struct SystemCausalReleasePointProjection final {
-  std::vector<::dataflow::EventFamilyKey> alternatives;
-  std::optional<std::vector<std::uint8_t>> guaranteedOffset;
-};
-
 /// One exact ResourceUse projected into a reachable execution context. The
 /// relation domain uses the same logical signature as its event projection.
 /// Several trigger alternatives denote one acquisition opportunity.
@@ -45,7 +41,7 @@ struct SystemResourceActivationProjection final {
   std::vector<::fabric::UsePatternValue> parameters;
   std::vector<::fabric::UsePatternValue> sharingAssignments;
   std::vector<SystemCapacityClaimProjection> capacityClaims;
-  std::vector<SystemCausalReleasePointProjection> causalRelease;
+  std::vector<MappingCausalReleasePointProjection> causalRelease;
 };
 
 /// The one removable projection shared by SystemMapping verification,
@@ -59,25 +55,6 @@ struct SystemMappingClosureProjection final {
   std::vector<SystemCapacityCellProjection> capacityCells;
   std::vector<SystemResourceActivationProjection> resourceActivations;
 };
-
-/// Rebase one SpatialMapping-relative activation event into a selected rooted
-/// graph execution. These helpers are the sole event projection used by both
-/// System PnR and strict SystemMapping closure reconstruction.
-llvm::Expected<std::vector<::dataflow::EventFamilyKey>>
-projectSystemSpatialActivityEvent(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef graph,
-    const SpatialActivityEventRef &event);
-
-llvm::Expected<::dataflow::GraphRef> resolveSystemSpatialActivityEventGraph(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const SpatialActivityEventRef &event);
-
-llvm::Expected<std::vector<SystemCausalReleasePointProjection>>
-projectSystemSpatialCausalRelease(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    ::dataflow::RootedGraphLaunchRef graph,
-    llvm::ArrayRef<SpatialEventPointView> release);
 
 llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

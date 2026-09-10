@@ -472,6 +472,14 @@ events.
 Trace capture is observational. Enabling or changing it cannot affect grants,
 event scheduling, outputs, terminal form, cycle count, metrics, or findings.
 
+At summary verbosity, the gem5 CGRA engine emits one
+`cgra_external_memory_concurrency` diagnostic per completed model invocation.
+It identifies the session entry and reports the exact service outstanding
+capacity, submitted logical requests, peak pending logical requests, and peak
+in-flight Bridge transactions. The two peaks distinguish request concurrency
+from per-request element expansion; they are invocation-local diagnostics, not
+System-wide occupancy or bandwidth metrics.
+
 CGRA-sim always retains one complete `ActorTransitions` summary over its
 launch-to-terminal window. The engine already observes every actor commit and
 retirement to maintain its own counters; the summary keeps their actor
@@ -541,7 +549,7 @@ Stable anchor tests cover:
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
 * rejection of every persistent Spatial diagnostic-trace field in
-  `loom.simulation_execution 4.0` and diagnostic capture noninterference;
+  `loom.simulation_execution 5.0` and diagnostic capture noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
 * deterministic or oracle-governed agreement with DFG-sim.

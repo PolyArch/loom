@@ -285,6 +285,10 @@ enum class SystemSearchProbeDomain : std::uint8_t {
 loom::ResolvedConfig buildResolvedConfig(
     SystemSearchProbeDomain probeDomain = SystemSearchProbeDomain::Routing) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  resolved.dse.systemPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
   resolved.dse.objectiveCatalogs.dimensions = {
       {loom::ResolvedMappingViolationObjectiveSource{

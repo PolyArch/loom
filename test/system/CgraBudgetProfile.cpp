@@ -9,8 +9,8 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
-#include "DSE/SpatialTransportCegar.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
+#include "DSE/SpatialTransportCegar.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
@@ -24,9 +24,11 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/PnrConfig.h"
 #include "Runtime/Gem5SystemExecution.h"
+#include "Simulator/SourceBackedDfgValidation.h"
 
 #include "MappedRtlSimulationTestSupport.h"
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
@@ -46,15 +48,16 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
 constexpr llvm::StringLiteral kHardwareSearchSchema =
-    "loom.cgra_qualification_hardware_search.1";
+    "loom.cgra_qualification_hardware_search.2";
 
-constexpr llvm::StringLiteral kProfileSchema = "loom.cgra_budget_profile.6";
+constexpr llvm::StringLiteral kProfileSchema = "loom.cgra_budget_profile.7";
 constexpr llvm::StringLiteral kProfileOutcomeSchema =
-    "loom.cgra_budget_profile_outcome.3";
+    "loom.cgra_budget_profile_outcome.4";
 
 constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
@@ -329,13 +332,13 @@ llvm::json::Object spatialPnrResultJson(
       {"work_units", std::move(generatorSummary)}};
 }
 
-struct SourceCase final {
+struct SourceWorkload final {
   loom::ArtifactRootReference dataflow;
-  loom::ArtifactRootReference workload;
-  loom::ArtifactRootReference runtimeInput;
+  std::vector<loom::sim::SourceBackedDfgReplayCaseReference> replayCases;
+  std::uint64_t replayCaseOccurrences = 0;
 };
 
-SourceCase readSourceCase(llvm::StringRef path) {
+SourceWorkload readSourceWorkload(llvm::StringRef path) {
   auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
   if (!buffer)
     fail("cannot read source report: " + buffer.getError().message());
@@ -351,26 +354,53 @@ SourceCase readSourceCase(llvm::StringRef path) {
       root ? root->getInteger("replay_case_occurrences") : std::nullopt;
   require(dataflowSpelling.has_value(),
           "source report has no canonical Dataflow identity");
-  require(replayCases && replayCases->size() == 1,
-          "source report must contain one exact replay case");
-  require(replayCaseOccurrences && *replayCaseOccurrences == 1,
-          "source report must contain one replay occurrence");
-  const llvm::json::Object *replay = replayCases->front().getAsObject();
-  const llvm::json::Object *workload =
-      replay ? replay->getObject("workload") : nullptr;
-  const llvm::json::Object *runtimeInput =
-      replay ? replay->getObject("runtime_input") : nullptr;
-  require(workload && runtimeInput,
-          "source report replay case is not a reference pair");
-  return {{dataflow::canonicalDataflowSchema.identity.str(),
-           dataflow::canonicalDataflowSchema.version,
-           take(loom::parseArtifactIdentityHex(*dataflowSpelling))},
-          take(loom::parseArtifactRootReferenceJson(*workload)),
-          take(loom::parseArtifactRootReferenceJson(*runtimeInput))};
+  require(replayCases && !replayCases->empty(),
+          "source report has no exact replay cases");
+  require(replayCaseOccurrences && *replayCaseOccurrences > 0 &&
+              static_cast<std::uint64_t>(*replayCaseOccurrences) >=
+                  replayCases->size(),
+          "source report lost its replay occurrences");
+  SourceWorkload result{
+      {dataflow::canonicalDataflowSchema.identity.str(),
+       dataflow::canonicalDataflowSchema.version,
+       take(loom::parseArtifactIdentityHex(*dataflowSpelling))},
+      {},
+      static_cast<std::uint64_t>(*replayCaseOccurrences)};
+  for (const auto &value : *replayCases) {
+    const auto *replay = value.getAsObject();
+    const auto *workload = replay ? replay->getObject("workload") : nullptr;
+    const auto *runtimeInput =
+        replay ? replay->getObject("runtime_input") : nullptr;
+    require(workload && runtimeInput,
+            "source report replay case is not a reference pair");
+    loom::sim::SourceBackedDfgReplayCaseReference input{
+        take(loom::parseArtifactRootReferenceJson(*workload)),
+        take(loom::parseArtifactRootReferenceJson(*runtimeInput))};
+    require(!llvm::is_contained(result.replayCases, input),
+            "source report repeats an exact replay input");
+    result.replayCases.push_back(std::move(input));
+  }
+  return result;
+}
+
+llvm::json::Object
+replayCaseJson(const loom::sim::SourceBackedDfgReplayCaseReference &input) {
+  return llvm::json::Object{
+      {"workload", referenceJson(input.workload)},
+      {"runtime_input", referenceJson(input.runtimeInput)}};
+}
+
+llvm::json::Array sourceReplayCasesJson(const SourceWorkload &source) {
+  llvm::json::Array result;
+  for (const auto &input : source.replayCases)
+    result.push_back(replayCaseJson(input));
+  return result;
 }
 
 loom::ResolvedConfig qualificationConfig() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
+  config.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   const auto &target = loom::adg::builtinLargeTarget;
   auto scale = target.scale;
   scale.temporalResidentContexts = 16;
@@ -399,7 +429,7 @@ struct QualificationSource final {
   std::string workload;
   std::string operatorId;
   std::string protocolSymbol;
-  SourceCase source;
+  SourceWorkload source;
 };
 
 llvm::json::Object sourceIdentityJson(const QualificationSource &source) {
@@ -408,8 +438,8 @@ llvm::json::Object sourceIdentityJson(const QualificationSource &source) {
       {"operator_id", source.operatorId},
       {"protocol_symbol", source.protocolSymbol},
       {"canonical_dataflow", referenceJson(source.source.dataflow)},
-      {"simulation_workload", referenceJson(source.source.workload)},
-      {"simulation_runtime_input", referenceJson(source.source.runtimeInput)}};
+      {"replay_case_occurrences", source.source.replayCaseOccurrences},
+      {"replay_cases", sourceReplayCasesJson(source.source)}};
 }
 
 llvm::json::Object selectQualificationHardware(
@@ -433,9 +463,10 @@ llvm::json::Object selectQualificationHardware(
                 sources,
                 [&](const auto &source) { return source.workload == name; }),
             "qualification source repeats a workload");
-    sources.push_back({name.str(), request->getString("operator_id")->str(),
-                       request->getString("protocol_symbol")->str(),
-                       readSourceCase(*request->getString("source_report"))});
+    sources.push_back(
+        {name.str(), request->getString("operator_id")->str(),
+         request->getString("protocol_symbol")->str(),
+         readSourceWorkload(*request->getString("source_report"))});
   }
 
   const MonotonicExecutionDeadline deadline(kSpatialPnrQualificationLimit);
@@ -829,7 +860,7 @@ int main(int argc, char **argv) {
     llvm::outs() << llvm::formatv("{0:2}\n", llvm::json::Value(std::move(report)));
     return EXIT_SUCCESS;
   }
-  const SourceCase source = readSourceCase(argv[2]);
+  const SourceWorkload source = readSourceWorkload(argv[2]);
   auto module = readQualificationHardware(
       argv[6], {argv[3], argv[4], argv[5], source}, resolvedConfigReference,
       artifacts);
@@ -860,6 +891,9 @@ int main(int argc, char **argv) {
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
+        {"canonical_dataflow", referenceJson(source.dataflow)},
+        {"source_replay_cases", sourceReplayCasesJson(source)},
+        {"replay_case_occurrences", source.replayCaseOccurrences},
         {"stage", "tech_mapping"},
         {"resolved_config", referenceJson(resolvedConfigReference)},
         {"fabric", referenceJson(pnrInvocation.module.reference())},
@@ -884,6 +918,9 @@ int main(int argc, char **argv) {
         {"workload", argv[3]},
         {"operator_id", argv[4]},
         {"protocol_symbol", argv[5]},
+        {"canonical_dataflow", referenceJson(source.dataflow)},
+        {"source_replay_cases", sourceReplayCasesJson(source)},
+        {"replay_case_occurrences", source.replayCaseOccurrences},
         {"stage", "spatial_pnr"},
         {"resolved_config", referenceJson(resolvedConfigReference)},
         {"fabric", referenceJson(pnrInvocation.module.reference())},
@@ -898,345 +935,376 @@ int main(int argc, char **argv) {
   // Nested strict imports reuse this bounded session; dynamic executions and
   // Mapping-specific preparations keep their existing separate lifetimes.
   loom::fabric::FabricArtifactImportSession fabricImports;
-  // Every published Spatial candidate cost a complete restart, and the
-  // published order is canonical artifact identity, not quality. Screen the
-  // whole frontier against the one dynamic oracle that the static Mapping
-  // model does not decide, and retain the first candidate that retires.
-  llvm::json::Array candidateScreening;
-  std::optional<loom::eda::test::MappedSpatialMappingFixture> selectedHardware;
-  std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
-      selectedPrepared;
-  std::optional<loom::evaluation::models::CgraSimulationEvaluation>
-      selectedWarmup;
-  std::optional<loom::eda::test::MappedSpatialMappingFixture> repairHardware;
-  std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
-      repairPrepared;
-  std::optional<loom::evaluation::models::CgraSimulationEvaluation>
-      repairWarmup;
-  std::optional<std::pair<std::uint64_t, std::uint64_t>> repairScore;
-  for (const loom::ArtifactRootReference &candidate :
-       publishedSpatialMappings) {
-    PhaseLedger screeningPhases;
-    auto imported =
-        take(loom::mapping::importSpatialMapping(candidate, artifacts));
-    const loom::ArtifactRootReference candidateTechMapping{
-        loom::mapping::mappingArtifactSchema.identity.str(),
-        loom::mapping::mappingArtifactSchema.version,
-        imported.view().techMappingIdentity()};
-    const auto [buffered, bypass] =
-        selectedFifoTraversalCounts(imported.view());
-    auto candidateHardware = loom::eda::test::MappedSpatialMappingFixture{
-        pnrInvocation.module, candidateTechMapping, std::move(imported)};
-    screeningPhases.record("mapping_import");
-    auto candidatePrepared =
-        take(loom::evaluation::models::prepareCgraSimulationEvaluation(
-            source.dataflow, candidateHardware.module.reference(),
-            candidateHardware.spatialMapping.reference(), source.workload,
-            source.runtimeInput, resolvedConfig, artifacts, blobs));
-    screeningPhases.record("preparation");
-    const bool last = candidate == publishedSpatialMappings.back();
-    const auto screeningDeadline =
-        std::chrono::steady_clock::now() + (selectedWarmup || !last
-                                                ? kCandidateScreeningLimit
-                                                : kQualificationLimit);
-    auto screened =
-        take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-            candidatePrepared,
-            {loom::runtime::gem5MaximumSpatialWork, screeningDeadline},
-            artifacts, blobs));
-    screeningPhases.record("evaluation");
-    loom::emitInvocationDiagnostic(
-        loom::DiagnosticVerbosity::Summary,
-        loom::InvocationDiagnosticStage::SystemPnr,
-        loom::InvocationDiagnosticEvent::Statistics, [&] {
-          llvm::json::Object fields{
-              {"operation", "cgra_candidate_screening"},
-              {"spatial_mapping", referenceJson(candidate)},
-              {"phase_ledger", screeningPhases.release()}};
-          if (screened.attemptProfile) {
-            const auto &profile = *screened.attemptProfile;
-            fields["active_wall_nanoseconds"] = profile.activeWallNanoseconds;
-            fields["engine_active_wall_nanoseconds"] =
-                profile.engineActiveWallNanoseconds;
-            fields["artifact_publication_wall_nanoseconds"] =
-                profile.artifactPublicationWallNanoseconds;
-          }
-          return llvm::json::Value(std::move(fields));
-        });
-    const bool retired = completed(screened);
-    if (!retired)
-      llvm::errs() << "CGRA screening outcome: "
-                   << loom::evaluation::toString(screened.evidence.outcomeKind())
-                   << " event_frames="
-                   << (screened.attemptProfile
-                           ? screened.attemptProfile->counters.eventFrameCount
-                           : 0)
-                   << " actor_retirements="
-                   << (screened.attemptProfile
-                           ? screened.attemptProfile->counters
-                                 .actorRetirementCount
-                           : 0)
-                   << " publications="
-                   << (screened.attemptProfile
-                           ? screened.attemptProfile->counters
-                                 .tokenPublicationCount
-                           : 0)
-                   << '\n';
-    if (screened.closedWait)
-      emitClosedWaitDiagnostic(*screened.closedWait);
-    candidateScreening.push_back(llvm::json::Object{
-        {"spatial_mapping", referenceJson(candidate)},
-        {"buffered_fifo_traversals", buffered},
-        {"bypass_fifo_traversals", bypass},
-        {"retired", retired},
-        {"closed_wait_actor_cycle_edges",
-         screened.closedWait ? llvm::json::Value(static_cast<std::uint64_t>(
-                                   screened.closedWait->actorWaitCycle.size()))
-                             : llvm::json::Value(nullptr)},
-        {"closed_wait_pending_transfers",
-         screened.closedWait
-             ? llvm::json::Value(screened.closedWait->pendingTransfers)
-             : llvm::json::Value(nullptr)},
-        {"closed_wait_certificate_edges",
-         screened.closedWait
-             ? llvm::json::Value(static_cast<std::uint64_t>(
-                   screened.closedWait->waitCertificate.size()))
-             : llvm::json::Value(nullptr)},
-        {"closed_wait_certificate_closed",
-         screened.closedWait
-             ? llvm::json::Value(
-                   loom::sim::verifyClosedWaitCertificateClosure(
-                       *screened.closedWait))
-             : llvm::json::Value(nullptr)},
-        {"closed_wait_proof_failure",
-         screened.closedWait && screened.closedWait->waitProofFailure
-             ? llvm::json::Value(static_cast<std::uint64_t>(
-                   *screened.closedWait->waitProofFailure))
-             : llvm::json::Value(nullptr)},
-        {"operand_queue_shared_ingress_pressure",
-         screened.closedWait
-             ? llvm::json::Value(
-                   screened.closedWait->operandQueueSharedIngressPressure)
-             : llvm::json::Value(nullptr)}});
-    if (retired && !selectedWarmup) {
-      selectedHardware = std::move(candidateHardware);
-      selectedPrepared = std::move(candidatePrepared);
-      selectedWarmup = std::move(screened);
-    } else if (!retired && screened.closedWait &&
-               !screened.closedWait->waitProofFailure &&
-               loom::sim::verifyClosedWaitCertificateClosure(
-                   *screened.closedWait)) {
-      const std::pair<std::uint64_t, std::uint64_t> score{
-          screened.closedWait->waitCertificate.size(),
-          screened.closedWait->pendingTransfers};
-      if (!repairScore || score < *repairScore) {
-        repairScore = score;
-        repairHardware = std::move(candidateHardware);
-        repairPrepared = std::move(candidatePrepared);
-        repairWarmup = std::move(screened);
+  const llvm::scope_exit recordFabricImports([&] {
+    loom::fabric::emitFabricArtifactImportSessionStatistics(
+        loom::fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
+        loom::InvocationDiagnosticStage::SystemPnr, fabricImports.statistics());
+  });
+  llvm::json::Array replayReports;
+  for (const auto &input : source.replayCases) {
+    PhaseLedger replayLedger;
+    // Every published Spatial candidate cost a complete restart, and the
+    // published order is canonical artifact identity, not quality. Screen the
+    // whole frontier against each dynamic input that the static Mapping
+    // model does not decide, and retain the first candidate that retires.
+    llvm::json::Array candidateScreening;
+    std::optional<loom::eda::test::MappedSpatialMappingFixture>
+        selectedHardware;
+    std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
+        selectedPrepared;
+    std::optional<loom::evaluation::models::CgraSimulationEvaluation>
+        selectedWarmup;
+    std::optional<loom::eda::test::MappedSpatialMappingFixture> repairHardware;
+    std::optional<loom::evaluation::models::PreparedCgraSimulationEvaluation>
+        repairPrepared;
+    std::optional<loom::evaluation::models::CgraSimulationEvaluation>
+        repairWarmup;
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> repairScore;
+    for (const loom::ArtifactRootReference &candidate :
+         publishedSpatialMappings) {
+      PhaseLedger screeningPhases;
+      auto imported =
+          take(loom::mapping::importSpatialMapping(candidate, artifacts));
+      const loom::ArtifactRootReference candidateTechMapping{
+          loom::mapping::mappingArtifactSchema.identity.str(),
+          loom::mapping::mappingArtifactSchema.version,
+          imported.view().techMappingIdentity()};
+      const auto [buffered, bypass] =
+          selectedFifoTraversalCounts(imported.view());
+      auto candidateHardware = loom::eda::test::MappedSpatialMappingFixture{
+          pnrInvocation.module, candidateTechMapping, std::move(imported)};
+      screeningPhases.record("mapping_import");
+      auto candidatePrepared =
+          take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+              source.dataflow, candidateHardware.module.reference(),
+              candidateHardware.spatialMapping.reference(), input.workload,
+              input.runtimeInput, resolvedConfig, artifacts, blobs));
+      screeningPhases.record("preparation");
+      const bool last = candidate == publishedSpatialMappings.back();
+      const auto screeningDeadline =
+          std::chrono::steady_clock::now() + (selectedWarmup || !last
+                                                  ? kCandidateScreeningLimit
+                                                  : kQualificationLimit);
+      auto screened = take(
+          loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
+              candidatePrepared,
+              {loom::runtime::gem5MaximumSpatialWork, screeningDeadline},
+              artifacts, blobs));
+      screeningPhases.record("evaluation");
+      loom::emitInvocationDiagnostic(
+          loom::DiagnosticVerbosity::Summary,
+          loom::InvocationDiagnosticStage::SystemPnr,
+          loom::InvocationDiagnosticEvent::Statistics, [&] {
+            llvm::json::Object fields{
+                {"operation", "cgra_candidate_screening"},
+                {"spatial_mapping", referenceJson(candidate)},
+                {"phase_ledger", screeningPhases.release()}};
+            if (screened.attemptProfile) {
+              const auto &profile = *screened.attemptProfile;
+              fields["active_wall_nanoseconds"] = profile.activeWallNanoseconds;
+              fields["engine_active_wall_nanoseconds"] =
+                  profile.engineActiveWallNanoseconds;
+              fields["artifact_publication_wall_nanoseconds"] =
+                  profile.artifactPublicationWallNanoseconds;
+            }
+            return llvm::json::Value(std::move(fields));
+          });
+      const bool retired = completed(screened);
+      if (!retired)
+        llvm::errs()
+            << "CGRA screening outcome: "
+            << loom::evaluation::toString(screened.evidence.outcomeKind())
+            << " event_frames="
+            << (screened.attemptProfile
+                    ? screened.attemptProfile->counters.eventFrameCount
+                    : 0)
+            << " actor_retirements="
+            << (screened.attemptProfile
+                    ? screened.attemptProfile->counters.actorRetirementCount
+                    : 0)
+            << " publications="
+            << (screened.attemptProfile
+                    ? screened.attemptProfile->counters.tokenPublicationCount
+                    : 0)
+            << '\n';
+      if (screened.closedWait)
+        emitClosedWaitDiagnostic(*screened.closedWait);
+      candidateScreening.push_back(llvm::json::Object{
+          {"spatial_mapping", referenceJson(candidate)},
+          {"buffered_fifo_traversals", buffered},
+          {"bypass_fifo_traversals", bypass},
+          {"retired", retired},
+          {"closed_wait_actor_cycle_edges",
+           screened.closedWait
+               ? llvm::json::Value(static_cast<std::uint64_t>(
+                     screened.closedWait->actorWaitCycle.size()))
+               : llvm::json::Value(nullptr)},
+          {"closed_wait_pending_transfers",
+           screened.closedWait
+               ? llvm::json::Value(screened.closedWait->pendingTransfers)
+               : llvm::json::Value(nullptr)},
+          {"closed_wait_certificate_edges",
+           screened.closedWait
+               ? llvm::json::Value(static_cast<std::uint64_t>(
+                     screened.closedWait->waitCertificate.size()))
+               : llvm::json::Value(nullptr)},
+          {"closed_wait_certificate_closed",
+           screened.closedWait
+               ? llvm::json::Value(
+                     loom::sim::verifyClosedWaitCertificateClosure(
+                         *screened.closedWait))
+               : llvm::json::Value(nullptr)},
+          {"closed_wait_proof_failure",
+           screened.closedWait && screened.closedWait->waitProofFailure
+               ? llvm::json::Value(static_cast<std::uint64_t>(
+                     *screened.closedWait->waitProofFailure))
+               : llvm::json::Value(nullptr)},
+          {"operand_queue_shared_ingress_pressure",
+           screened.closedWait
+               ? llvm::json::Value(
+                     screened.closedWait->operandQueueSharedIngressPressure)
+               : llvm::json::Value(nullptr)}});
+      if (retired && !selectedWarmup) {
+        selectedHardware = std::move(candidateHardware);
+        selectedPrepared = std::move(candidatePrepared);
+        selectedWarmup = std::move(screened);
+      } else if (!retired && screened.closedWait &&
+                 !screened.closedWait->waitProofFailure &&
+                 loom::sim::verifyClosedWaitCertificateClosure(
+                     *screened.closedWait)) {
+        const std::pair<std::uint64_t, std::uint64_t> score{
+            screened.closedWait->waitCertificate.size(),
+            screened.closedWait->pendingTransfers};
+        if (!repairScore || score < *repairScore) {
+          repairScore = score;
+          repairHardware = std::move(candidateHardware);
+          repairPrepared = std::move(candidatePrepared);
+          repairWarmup = std::move(screened);
+        }
       }
     }
-  }
-  ledger.record("candidate_screening");
-  loom::fabric::emitFabricArtifactImportSessionStatistics(
-      loom::fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
-      loom::InvocationDiagnosticStage::SystemPnr, fabricImports.statistics());
-  require(selectedHardware || repairHardware,
-          "screened Spatial frontier has no retiring or proven closed-wait "
-          "candidate");
-  // A retiring Mapping remains the first choice. Otherwise repair the
-  // deterministic smallest closed certificate; ties retain canonical
-  // publication order.
-  auto hardware = selectedHardware ? std::move(*selectedHardware)
-                                   : std::move(*repairHardware);
-  const loom::ArtifactRootReference initialSpatialMapping =
-      hardware.spatialMapping.reference();
-  const auto [bufferedFifoTraversals, bypassFifoTraversals] =
-      selectedFifoTraversalCounts(hardware.spatialMapping.view());
-  llvm::errs() << "CGRA selected FIFO traversals: buffered="
-               << bufferedFifoTraversals << " bypass=" << bypassFifoTraversals
-               << '\n';
-  const auto prepare = [&] {
-    return take(loom::evaluation::models::prepareCgraSimulationEvaluation(
-        source.dataflow, hardware.module.reference(),
-        hardware.spatialMapping.reference(), source.workload,
-        source.runtimeInput, resolvedConfig, artifacts, blobs));
-  };
-  auto prepared = selectedPrepared ? std::move(*selectedPrepared)
-                                   : std::move(*repairPrepared);
-  auto warmup = selectedWarmup ? std::move(*selectedWarmup)
-                               : std::move(*repairWarmup);
-  std::optional<loom::ArtifactRootReference> preRepairEvidence;
-  std::optional<loom::ArtifactRootReference> parentSystemMapping;
-  std::optional<loom::dse::SpatialTransportCegarTermination> repairTermination;
-  llvm::json::Array transportRepairAttempts;
-  if (!completed(warmup)) {
-    preRepairEvidence = take(loom::evaluation::publishEvaluationEvidence(
-        warmup.evidence, artifacts));
-    llvm::errs() << "CGRA warmup outcome: "
-                 << loom::evaluation::toString(warmup.evidence.outcomeKind())
-                 << " event_frames="
-                 << (warmup.attemptProfile
-                         ? warmup.attemptProfile->counters.eventFrameCount
-                         : 0)
-                 << " actor_retirements="
-                 << (warmup.attemptProfile
-                         ? warmup.attemptProfile->counters.actorRetirementCount
-                         : 0)
-                 << " publications="
-                 << (warmup.attemptProfile
-                         ? warmup.attemptProfile->counters.tokenPublicationCount
-                         : 0)
+    replayLedger.record("candidate_screening");
+    require(selectedHardware || repairHardware,
+            "screened Spatial frontier has no retiring or proven closed-wait "
+            "candidate");
+    // A retiring Mapping remains the first choice. Otherwise repair the
+    // deterministic smallest closed certificate; ties retain canonical
+    // publication order.
+    auto hardware = selectedHardware ? std::move(*selectedHardware)
+                                     : std::move(*repairHardware);
+    const loom::ArtifactRootReference initialSpatialMapping =
+        hardware.spatialMapping.reference();
+    const auto [bufferedFifoTraversals, bypassFifoTraversals] =
+        selectedFifoTraversalCounts(hardware.spatialMapping.view());
+    llvm::errs() << "CGRA selected FIFO traversals: buffered="
+                 << bufferedFifoTraversals << " bypass=" << bypassFifoTraversals
                  << '\n';
-    require(warmup.closedWait.has_value(),
-            "incomplete CGRA warmup has no closed-wait diagnostic");
-    auto system = loom::eda::test::buildMappedBuiltinSystemFixture(
-        "cgra-budget-profile", targetScale, hardware.module, artifacts);
-    auto systemMapping = loom::deployment::test::buildMappedSystemMapping(
-        "cgra-budget-profile", dataflow, system,
-        {hardware.spatialMapping.reference()}, artifacts);
-    parentSystemMapping = systemMapping.reference();
-    const auto &dataflowView = dataflow.view();
-    auto techMapping =
-        take(loom::mapping::importTechMapping(hardware.techMapping, artifacts));
-    auto parentConstraints =
-        take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
-            dataflowView, techMapping.view(), hardware.module.view(),
-            artifacts));
-    auto verifiedWait = take(
-        loom::evaluation::models::importVerifiedCgraClosedWaitEvidence(
-            *preRepairEvidence, artifacts, blobs));
-    auto physicalTiming =
-        take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
-            hardware.module.view()));
-    const auto cegarDeadline =
-        std::chrono::steady_clock::now() +
-        kTransportRepairQualificationLimit;
-    auto cegar = take(loom::dse::executeSpatialTransportCegar(
-        hardware.spatialMapping.reference(), parentConstraints.reference(),
-        verifiedWait, resolvedConfig, physicalTiming,
-        {kTransportRepairMaximumIterations,
-         kTransportRepairMaximumIterations,
-         spatialPnrConfig.policy().search.exactRepair.maxSolverCalls,
-         loom::runtime::gem5MaximumSpatialWork,
-         cegarDeadline},
-        artifacts, blobs));
-    repairTermination = cegar.termination;
-    llvm::errs() << "CGRA CEGAR termination: "
-                 << loom::dse::spatialTransportCegarTerminationSpelling(
-                        cegar.termination)
-                 << " iterations=" << cegar.iterations.size() << '\n';
-    for (const auto &iteration : cegar.iterations)
-      llvm::errs() << "CGRA CEGAR iteration: repair_kind="
-                   << static_cast<std::uint64_t>(iteration.repair.kind)
-                   << " logical_solver_calls="
-                   << iteration.repair.logicalSolverCalls
-                   << " endpoint_expansions="
-                   << iteration.repair.endpointExpansions
-                   << " negotiation_iterations="
-                   << iteration.repair.negotiationIterations
-                   << " actions=" << iteration.repair.actionCount
-                   << " retired=" << iteration.retired
-                   << " promotion_wall_ns="
-                   << iteration.work.promotion.activeWallTimeNanoseconds
-                   << " freeze_wall_ns="
-                   << iteration.work.problemFreeze.activeWallTimeNanoseconds
-                   << " warm_seed_wall_ns="
-                   << iteration.work.warmSeed.activeWallTimeNanoseconds
-                   << " exact_repair_wall_ns="
-                   << iteration.work.exactRepair.activeWallTimeNanoseconds
-                   << " finalization_wall_ns="
-                   << iteration.work.childFinalization.activeWallTimeNanoseconds
-                   << " runtime_wall_ns="
-                   << iteration.work.runtimeEvaluation.activeWallTimeNanoseconds
-                   << " evidence_verification_wall_ns="
-                   << iteration.work.evidenceVerification
-                          .activeWallTimeNanoseconds
-                   << '\n';
-    for (const auto &iteration : cegar.iterations)
-      transportRepairAttempts.push_back(llvm::json::Object{
-          {"parent_spatial_mapping", referenceJson(iteration.parentMapping)},
-          {"runtime_evidence", referenceJson(iteration.runtimeEvidence)},
-          {"constraint_set", referenceJson(iteration.accumulatedConstraints)},
-          {"child_spatial_mapping",
-           iteration.childMapping
-               ? llvm::json::Value(referenceJson(*iteration.childMapping))
-               : llvm::json::Value(nullptr)},
-          {"child_evidence",
-           iteration.childEvidence
-               ? llvm::json::Value(referenceJson(*iteration.childEvidence))
-               : llvm::json::Value(nullptr)},
-          {"repair_kind", static_cast<std::uint64_t>(iteration.repair.kind)},
-          {"solver_calls", iteration.repair.solverCalls},
-          {"logical_solver_calls", iteration.repair.logicalSolverCalls},
-          {"action_count", iteration.repair.actionCount},
-          {"retired", iteration.retired}});
-    const bool replayed =
-        cegar.termination ==
-            loom::dse::SpatialTransportCegarTermination::Retired &&
-        cegar.finalMapping.has_value();
-    if (replayed) {
-      hardware.spatialMapping = take(loom::mapping::importSpatialMapping(
-          *cegar.finalMapping, artifacts));
-      prepared = prepare();
-      warmup = take(
+    const auto prepare = [&] {
+      return take(loom::evaluation::models::prepareCgraSimulationEvaluation(
+          source.dataflow, hardware.module.reference(),
+          hardware.spatialMapping.reference(), input.workload,
+          input.runtimeInput, resolvedConfig, artifacts, blobs));
+    };
+    auto prepared = selectedPrepared ? std::move(*selectedPrepared)
+                                     : std::move(*repairPrepared);
+    auto warmup =
+        selectedWarmup ? std::move(*selectedWarmup) : std::move(*repairWarmup);
+    std::optional<loom::ArtifactRootReference> preRepairEvidence;
+    std::optional<loom::ArtifactRootReference> parentSystemMapping;
+    std::optional<loom::dse::SpatialTransportCegarTermination>
+        repairTermination;
+    llvm::json::Array transportRepairAttempts;
+    if (!completed(warmup)) {
+      preRepairEvidence = take(loom::evaluation::publishEvaluationEvidence(
+          warmup.evidence, artifacts));
+      llvm::errs()
+          << "CGRA warmup outcome: "
+          << loom::evaluation::toString(warmup.evidence.outcomeKind())
+          << " event_frames="
+          << (warmup.attemptProfile
+                  ? warmup.attemptProfile->counters.eventFrameCount
+                  : 0)
+          << " actor_retirements="
+          << (warmup.attemptProfile
+                  ? warmup.attemptProfile->counters.actorRetirementCount
+                  : 0)
+          << " publications="
+          << (warmup.attemptProfile
+                  ? warmup.attemptProfile->counters.tokenPublicationCount
+                  : 0)
+          << '\n';
+      require(warmup.closedWait.has_value(),
+              "incomplete CGRA warmup has no closed-wait diagnostic");
+      auto system = loom::eda::test::buildMappedBuiltinSystemFixture(
+          "cgra-budget-profile", targetScale, hardware.module, artifacts);
+      auto systemMapping = loom::deployment::test::buildMappedSystemMapping(
+          "cgra-budget-profile", dataflow, system,
+          {hardware.spatialMapping.reference()}, artifacts);
+      parentSystemMapping = systemMapping.reference();
+      const auto &dataflowView = dataflow.view();
+      auto techMapping = take(
+          loom::mapping::importTechMapping(hardware.techMapping, artifacts));
+      auto parentConstraints =
+          take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+              dataflowView, techMapping.view(), hardware.module.view(),
+              artifacts));
+      auto verifiedWait =
+          take(loom::evaluation::models::importVerifiedCgraClosedWaitEvidence(
+              *preRepairEvidence, artifacts, blobs));
+      auto physicalTiming =
+          take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+              hardware.module.view()));
+      const auto cegarDeadline =
+          std::chrono::steady_clock::now() + kTransportRepairQualificationLimit;
+      auto cegar = take(loom::dse::executeSpatialTransportCegar(
+          hardware.spatialMapping.reference(), parentConstraints.reference(),
+          verifiedWait, resolvedConfig, physicalTiming,
+          {kTransportRepairMaximumIterations, kTransportRepairMaximumIterations,
+           spatialPnrConfig.policy().search.exactRepair.maxSolverCalls,
+           loom::runtime::gem5MaximumSpatialWork, cegarDeadline},
+          artifacts, blobs));
+      repairTermination = cegar.termination;
+      llvm::errs() << "CGRA CEGAR termination: "
+                   << loom::dse::spatialTransportCegarTerminationSpelling(
+                          cegar.termination)
+                   << " iterations=" << cegar.iterations.size() << '\n';
+      for (const auto &iteration : cegar.iterations)
+        llvm::errs()
+            << "CGRA CEGAR iteration: repair_kind="
+            << static_cast<std::uint64_t>(iteration.repair.kind)
+            << " logical_solver_calls=" << iteration.repair.logicalSolverCalls
+            << " endpoint_expansions=" << iteration.repair.endpointExpansions
+            << " negotiation_iterations="
+            << iteration.repair.negotiationIterations
+            << " actions=" << iteration.repair.actionCount
+            << " retired=" << iteration.retired << " promotion_wall_ns="
+            << iteration.work.promotion.activeWallTimeNanoseconds
+            << " freeze_wall_ns="
+            << iteration.work.problemFreeze.activeWallTimeNanoseconds
+            << " warm_seed_wall_ns="
+            << iteration.work.warmSeed.activeWallTimeNanoseconds
+            << " exact_repair_wall_ns="
+            << iteration.work.exactRepair.activeWallTimeNanoseconds
+            << " finalization_wall_ns="
+            << iteration.work.childFinalization.activeWallTimeNanoseconds
+            << " runtime_wall_ns="
+            << iteration.work.runtimeEvaluation.activeWallTimeNanoseconds
+            << " evidence_verification_wall_ns="
+            << iteration.work.evidenceVerification.activeWallTimeNanoseconds
+            << '\n';
+      for (const auto &iteration : cegar.iterations)
+        transportRepairAttempts.push_back(llvm::json::Object{
+            {"parent_spatial_mapping", referenceJson(iteration.parentMapping)},
+            {"runtime_evidence", referenceJson(iteration.runtimeEvidence)},
+            {"constraint_set", referenceJson(iteration.accumulatedConstraints)},
+            {"child_spatial_mapping",
+             iteration.childMapping
+                 ? llvm::json::Value(referenceJson(*iteration.childMapping))
+                 : llvm::json::Value(nullptr)},
+            {"child_evidence",
+             iteration.childEvidence
+                 ? llvm::json::Value(referenceJson(*iteration.childEvidence))
+                 : llvm::json::Value(nullptr)},
+            {"repair_kind", static_cast<std::uint64_t>(iteration.repair.kind)},
+            {"solver_calls", iteration.repair.solverCalls},
+            {"logical_solver_calls", iteration.repair.logicalSolverCalls},
+            {"action_count", iteration.repair.actionCount},
+            {"retired", iteration.retired}});
+      const bool replayed =
+          cegar.termination ==
+              loom::dse::SpatialTransportCegarTermination::Retired &&
+          cegar.finalMapping.has_value();
+      if (replayed) {
+        hardware.spatialMapping = take(loom::mapping::importSpatialMapping(
+            *cegar.finalMapping, artifacts));
+        prepared = prepare();
+        warmup = take(
+            loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
+                prepared,
+                {loom::runtime::gem5MaximumSpatialWork,
+                 std::chrono::steady_clock::now() + kQualificationLimit},
+                artifacts, blobs));
+        require(completed(warmup),
+                "CEGAR-retired child did not replay as a retired Mapping");
+      }
+      replayLedger.record("transport_repair");
+      if (!replayed) {
+        // A qualification that cannot retire still owns complete evidence: the
+        // screened frontier, every repair attempt, and the phase ledger.
+        // Exiting without it would discard work that was already paid for.
+        llvm::json::Object report{
+            {"schema", kProfileOutcomeSchema},
+            {"workload", argv[3]},
+            {"operator_id", argv[4]},
+            {"protocol_symbol", argv[5]},
+            {"canonical_dataflow", referenceJson(source.dataflow)},
+            {"source_replay_cases", sourceReplayCasesJson(source)},
+            {"replay_case_occurrences", source.replayCaseOccurrences},
+            {"stage", "transport_repair"},
+            {"completed_replay_cases", std::move(replayReports)},
+            {"failed_replay_case", replayCaseJson(input)},
+            {"resolved_config", referenceJson(resolvedConfigReference)},
+            {"fabric", referenceJson(pnrInvocation.module.reference())},
+            {"tech_mapping_search", std::move(techMappingResult)},
+            {"spatial_pnr", std::move(pnrResult)},
+            {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
+            {"spatial_candidate_screening", std::move(candidateScreening)},
+            {"transport_repair",
+             llvm::json::Object{
+                 {"parent_system_mapping", referenceJson(*parentSystemMapping)},
+                 {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+                 {"termination",
+                  loom::dse::spatialTransportCegarTerminationSpelling(
+                      *repairTermination)},
+                 {"attempts", std::move(transportRepairAttempts)}}},
+            {"phase_ledger", ledger.release()},
+            {"replay_case_phase_ledger", replayLedger.release()}};
+        llvm::outs() << llvm::formatv("{0:2}\n",
+                                      llvm::json::Value(std::move(report)));
+        return EXIT_SUCCESS;
+      }
+    }
+    const auto warmupEvidence =
+        take(loom::evaluation::publishEvaluationEvidence(warmup.evidence,
+                                                         artifacts));
+    (void)referenceCycles(warmup);
+
+    llvm::json::Array measurements;
+    for (std::uint64_t ordinal = 0; ordinal != kMeasurementRuns; ++ordinal) {
+      const auto deadline =
+          std::chrono::steady_clock::now() + kQualificationLimit;
+      auto evaluated = take(
           loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-              prepared,
-              {loom::runtime::gem5MaximumSpatialWork,
-               std::chrono::steady_clock::now() + kQualificationLimit},
+              prepared, {loom::runtime::gem5MaximumSpatialWork, deadline},
               artifacts, blobs));
-      require(completed(warmup),
-              "CEGAR-retired child did not replay as a retired Mapping");
+      const auto evidence = take(loom::evaluation::publishEvaluationEvidence(
+          evaluated.evidence, artifacts));
+      measurements.push_back(measurementJson(evaluated, evidence));
     }
-    ledger.record("transport_repair");
-    if (!replayed) {
-      // A qualification that cannot retire still owns complete evidence: the
-      // screened frontier, every repair attempt, and the phase ledger. Exiting
-      // without it would discard work that was already paid for.
-      llvm::json::Object report{
-          {"schema", kProfileOutcomeSchema},
-          {"workload", argv[3]},
-          {"operator_id", argv[4]},
-          {"protocol_symbol", argv[5]},
-          {"stage", "transport_repair"},
-          {"resolved_config", referenceJson(resolvedConfigReference)},
-          {"fabric", referenceJson(pnrInvocation.module.reference())},
-          {"tech_mapping_search", std::move(techMappingResult)},
-          {"spatial_pnr", std::move(pnrResult)},
-          {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
-          {"spatial_candidate_screening", std::move(candidateScreening)},
-          {"transport_repair",
-           llvm::json::Object{
-               {"parent_system_mapping", referenceJson(*parentSystemMapping)},
-               {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
-               {"termination",
-                loom::dse::spatialTransportCegarTerminationSpelling(
-                    *repairTermination)},
-               {"attempts", std::move(transportRepairAttempts)}}},
-          {"phase_ledger", ledger.release()}};
-      llvm::outs() << llvm::formatv("{0:2}\n",
-                                    llvm::json::Value(std::move(report)));
-      return EXIT_SUCCESS;
-    }
-  }
-  const auto warmupEvidence = take(
-      loom::evaluation::publishEvaluationEvidence(warmup.evidence, artifacts));
-  (void)referenceCycles(warmup);
 
-  llvm::json::Array measurements;
-  for (std::uint64_t ordinal = 0; ordinal != kMeasurementRuns; ++ordinal) {
-    const auto deadline =
-        std::chrono::steady_clock::now() + kQualificationLimit;
-    auto evaluated =
-        take(loom::evaluation::models::evaluateCgraSimulationWithAttemptProfile(
-            prepared, {loom::runtime::gem5MaximumSpatialWork, deadline},
-            artifacts, blobs));
-    const auto evidence = take(loom::evaluation::publishEvaluationEvidence(
-        evaluated.evidence, artifacts));
-    measurements.push_back(measurementJson(evaluated, evidence));
+    replayLedger.record("measurements");
+    replayReports.push_back(llvm::json::Object{
+        {"input", replayCaseJson(input)},
+        {"tech_mapping", referenceJson(hardware.techMapping)},
+        {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
+        {"spatial_candidate_screening", std::move(candidateScreening)},
+        {"spatial_mapping", referenceJson(hardware.spatialMapping.reference())},
+        {"transport_repair",
+         parentSystemMapping && preRepairEvidence
+             ? llvm::json::Value(llvm::json::Object{
+                   {"parent_system_mapping",
+                    referenceJson(*parentSystemMapping)},
+                   {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
+                   {"termination",
+                    loom::dse::spatialTransportCegarTerminationSpelling(
+                        *repairTermination)},
+                   {"attempts", std::move(transportRepairAttempts)}})
+             : llvm::json::Value(nullptr)},
+        {"warmup_evidence", referenceJson(warmupEvidence)},
+        {"measurements", std::move(measurements)},
+        {"phase_ledger", replayLedger.release()},
+    });
   }
-
-  ledger.record("measurements");
   llvm::json::Object report{
       {"schema", kProfileSchema},
       {"workload", argv[3]},
@@ -1247,29 +1315,14 @@ int main(int argc, char **argv) {
       {"measurement_runs", kMeasurementRuns},
       {"batch_peak_resident_bytes", peakResidentBytes()},
       {"canonical_dataflow", referenceJson(source.dataflow)},
-      {"simulation_workload", referenceJson(source.workload)},
-      {"simulation_runtime_input", referenceJson(source.runtimeInput)},
+      {"source_replay_cases", sourceReplayCasesJson(source)},
+      {"replay_case_occurrences", source.replayCaseOccurrences},
       {"resolved_config", referenceJson(resolvedConfigReference)},
-      {"fabric", referenceJson(hardware.module.reference())},
-      {"tech_mapping", referenceJson(hardware.techMapping)},
+      {"fabric", referenceJson(pnrInvocation.module.reference())},
       {"tech_mapping_search", std::move(techMappingResult)},
-      {"initial_spatial_mapping", referenceJson(initialSpatialMapping)},
-      {"spatial_candidate_screening", std::move(candidateScreening)},
-      {"spatial_mapping", referenceJson(hardware.spatialMapping.reference())},
       {"spatial_pnr", std::move(pnrResult)},
-      {"transport_repair",
-       parentSystemMapping && preRepairEvidence
-           ? llvm::json::Value(llvm::json::Object{
-                 {"parent_system_mapping", referenceJson(*parentSystemMapping)},
-                 {"pre_repair_evidence", referenceJson(*preRepairEvidence)},
-                 {"termination",
-                  loom::dse::spatialTransportCegarTerminationSpelling(
-                      *repairTermination)},
-                 {"attempts", std::move(transportRepairAttempts)}})
-           : llvm::json::Value(nullptr)},
-      {"warmup_evidence", referenceJson(warmupEvidence)},
-      {"measurements", std::move(measurements)},
       {"phase_ledger", ledger.release()},
+      {"replay_cases", std::move(replayReports)},
   };
   llvm::outs() << llvm::formatv("{0:2}\n",
                                 llvm::json::Value(std::move(report)));

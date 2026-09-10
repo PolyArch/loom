@@ -657,6 +657,14 @@ encodeExecution(const SystemSimulationExecution &execution,
   if (execution.memoryActivity) {
     writer.u64(execution.memoryActivity->occupiedTicks);
   }
+  writer.u32(execution.computationInterval ? 1 : 0);
+  if (execution.computationInterval) {
+    const auto &interval = *execution.computationInterval;
+    writer.u64(interval.beginTick);
+    writer.u64(interval.endTick);
+    writer.u64(interval.beginMemoryOccupiedTicks);
+    writer.u64(interval.endMemoryOccupiedTicks);
+  }
   std::vector<std::uint8_t> tail = writer.take();
   bytes.insert(bytes.end(), tail.begin(), tail.end());
   return bytes;
@@ -698,13 +706,35 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
   } else if (*activityTag != 0) {
     return detail::invalid("simulation execution: unknown System memory activity tag");
   }
+  auto intervalTag = reader.u32();
+  if (!intervalTag)
+    return intervalTag.takeError();
+  std::optional<SystemComputationInterval> interval;
+  if (*intervalTag > 1)
+    return detail::invalid(
+        "simulation execution: unknown computation interval tag");
+  if (*intervalTag == 1) {
+    auto begin = reader.u64();
+    if (!begin)
+      return begin.takeError();
+    auto end = reader.u64();
+    if (!end)
+      return end.takeError();
+    auto beginOccupied = reader.u64();
+    if (!beginOccupied)
+      return beginOccupied.takeError();
+    auto endOccupied = reader.u64();
+    if (!endOccupied)
+      return endOccupied.takeError();
+    interval =
+        SystemComputationInterval{*begin, *end, *beginOccupied, *endOccupied};
+  }
   if (!reader.atEnd())
     return detail::invalid("simulation execution: trailing bytes");
-  SystemSimulationExecution execution{requestPrefix->reference,
-                                      std::move(*terminal),
-                                      std::move(*functional),
-                                      std::move(*progress),
-                                      std::move(memoryActivity)};
+  SystemSimulationExecution execution{
+      requestPrefix->reference,  std::move(*terminal),
+      std::move(*functional),    std::move(*progress),
+      std::move(memoryActivity), std::move(interval)};
   if (llvm::Error error = validateExecution(execution, *context))
     return std::move(error);
   auto canonical = encodeExecution(execution, *context);

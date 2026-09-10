@@ -17,6 +17,7 @@ llvm::Expected<application::ApplicationSystemComputeInputs>
 aggregateSpatialComputeInputs(
     llvm::ArrayRef<SpatialInvocationCase> invocations,
     llvm::ArrayRef<const sim::SpatialSimulationExecution *> cgraReplays,
+    const std::optional<sim::SystemComputationInterval> &computation,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::system_run

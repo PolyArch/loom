@@ -217,7 +217,9 @@ struct MappingProgressCausalReleaseProjection final {
 };
 
 struct MappingProgressActivationProjection final {
-  ExecutionContextKey context;
+  /// Standalone Spatial progress is relative to its sole Module; System
+  /// progress qualifies that same activation by a selected execution context.
+  std::optional<ExecutionContextKey> context;
   ::dataflow::RootThreadLaunchRef relationRoot;
   std::vector<SystemPresburgerCell> relationDomain;
   std::vector<::dataflow::EventFamilyKey> triggerAlternatives;

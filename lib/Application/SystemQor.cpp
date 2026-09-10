@@ -1,14 +1,13 @@
 #include "Application/SystemQor.h"
 
 #include "Application/ProductOracleEvaluation.h"
+#include "ApplicationSystemRuntimeEvidence.h"
 #include "Common/ArtifactText.h"
-#include "Evaluation/ProductionRegistry.h"
-#include "Runtime/Gem5BuiltinModels.h"
 #include "Simulator/SystemActivity.h"
-#include "Simulator/SpatialObservationComparison.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/JSON.h"
 
+#include <algorithm>
 #include <limits>
 #include <system_error>
 
@@ -38,73 +37,20 @@ bool isSaturated(evaluation::ExactRatio value) {
                          applicationMinimumResourceUtilizationDenominator) > 0;
 }
 
-struct ImportedRun final {
-  sim::CanonicalSimulationExecution execution;
-  evaluation::EvaluationRequest request;
-  ArtifactRootReference gem5Binding;
-  ApplicationSystemRunMeasurement measurement;
-};
-
-llvm::Expected<ImportedRun> importRun(
-    const FinalizedApplicationRuntimeManifest &manifest,
-    const ApplicationSystemRunEvidence &roots,
-    const ArtifactRootReference &expectedDeployment,
-    const ArtifactRootReference &expectedWorkload,
-    const ArtifactRootReference &expectedInput,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ResolvedConfig &config, const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto execution = sim::importSimulationExecution(roots.execution, resolution, artifacts, blobs);
-  if (!execution)
-    return execution.takeError();
-  const auto *system = execution->system();
-  if (!system || !std::holds_alternative<sim::RetiredExecution>(execution->terminal()))
-    return invalid("pair member did not retire a complete System invocation");
-  auto request = evaluation::importEvaluationRequest(execution->request(), resolution, artifacts, blobs);
-  if (!request)
-    return request.takeError();
-  if (!request->workload() || *request->workload() != expectedWorkload ||
-      !request->runtimeInput() || *request->runtimeInput() != expectedInput)
-    return invalid("pair member does not execute its exact manifest input pair");
-  const ArtifactRootReference *binding = nullptr;
-  const ArtifactRootReference *deployment = nullptr;
-  for (const auto &role : request->subjectBindings().roleBindings())
-    for (const auto &subject : role.subjects) {
-      if (subject.schemaIdentity == runtime::gem5SimulationBindingSchema.identity)
-        binding = &subject;
-      if (subject.schemaIdentity == deployment::deploymentSchema.identity)
-        deployment = &subject;
-    }
-  if (!binding || !deployment || *deployment != expectedDeployment)
-    return invalid("pair member does not bind its exact Deployment and gem5 machine");
-  auto utilization = sim::projectSystemMemoryUtilization(*execution, resolution, artifacts, blobs);
-  if (!utilization)
-    return utilization.takeError();
-  if (!*utilization)
-    return invalid("pair member omitted native shared-memory service occupancy");
-  const auto elapsed = system->progressObservations.programExitVisible->gem5Tick -
-                       system->progressObservations.programEntryAccepted.gem5Tick;
-  auto evidence = evaluation::importEvaluationEvidence(roots.evidence, resolution, artifacts, blobs);
-  if (!evidence)
-    return evidence.takeError();
-  const auto *completed = std::get_if<evaluation::CompletedEvidence>(&evidence->outcome());
-  if (!completed || evidence->requestRef() != execution->request() ||
-      evidence->outputBindings().size() != 1 ||
-      llvm::ArrayRef<ArtifactRootReference>(evidence->outputBindings().front().artifacts) != llvm::ArrayRef<ArtifactRootReference>{roots.execution})
-    return invalid("execution Evidence is not joined to this exact pair member");
-  if (request->metricRequests().size() != 1 || completed->metricResults.size() != 1 ||
-      request->metricRequests().front().query().metric != evaluation::MetricKind::Runtime ||
-      completed->metricResults.front().uncertainty != evaluation::UncertaintyKind::ExactWithinModel)
-    return invalid("pair member omitted its exact complete-System Runtime observation");
-  if (elapsed > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
-    return invalid("pair runtime exceeds the metric decimal domain");
-  auto expectedRuntime = evaluation::DecimalValue::get(static_cast<std::int64_t>(elapsed),
-                                                       runtime::gem5TickSecondsExponent);
-  if (!expectedRuntime)
-    return expectedRuntime.takeError();
-  const auto *point = std::get_if<evaluation::PointObservation>(&completed->metricResults.front().observation);
-  if (!point || point->value != evaluation::MetricValue{*expectedRuntime})
-    return invalid("Runtime observation disagrees with the full program tick window");
-
+llvm::Expected<detail::ImportedApplicationSystemRun>
+importRun(const FinalizedApplicationRuntimeManifest &manifest,
+          const ApplicationSystemRunEvidence &roots,
+          const ArtifactRootReference &expectedDeployment,
+          const ArtifactRootReference &expectedWorkload,
+          const ArtifactRootReference &expectedInput,
+          const evaluation::CaseArtifactResolution &resolution,
+          const ResolvedConfig &config, const ArtifactStore &artifacts,
+          const BlobStore &blobs) {
+  auto run = detail::importApplicationSystemRun(roots, expectedDeployment,
+                                                expectedWorkload, expectedInput,
+                                                resolution, artifacts, blobs);
+  if (!run)
+    return run.takeError();
   std::optional<ArtifactRootReference> oracleRequest;
   if (manifest.manifest().productOracle()) {
     if (!roots.productOracleEvidence)
@@ -126,56 +72,50 @@ llvm::Expected<ImportedRun> importRun(
   } else if (roots.productOracleEvidence) {
     return invalid("non-product pair member carries an unowned product oracle");
   }
-  const ArtifactRootReference exactBinding = *binding;
-  ApplicationSystemRunMeasurement measurement{
-      roots, evidence->requestRef(), std::move(oracleRequest), elapsed,
-      *system->memoryActivity, **utilization};
-  return ImportedRun{std::move(*execution), std::move(*request), exactBinding,
-                     std::move(measurement)};
+  run->measurement.productOracleRequest = std::move(oracleRequest);
+  return run;
 }
 
-/// Derives the candidate's accelerated window and both resource occupancies
-/// over it. The compute capacity offered across the window is the mapped
-/// compute units of every launched accelerator held for its reference cycles.
-llvm::Expected<ApplicationSystemWindowMeasurement> measureCandidateWindow(
-    const sim::CanonicalSimulationExecution &execution,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ApplicationSystemComputeInputs &compute, const ArtifactStore &artifacts,
-    const BlobStore &blobs) {
-  auto window = sim::projectSystemAcceleratedWindow(execution, resolution,
-                                                    artifacts, blobs);
-  if (!window)
-    return window.takeError();
-  if (!*window)
-    return invalid("candidate completed no accelerator launch, so it has no "
-                   "accelerated window");
-  const std::uint64_t elapsed = (*window)->elapsedTicks();
-  if (elapsed == 0)
-    return invalid("candidate accelerated window is empty");
+/// All useful host and accelerator work occupies the source-declared interval.
+llvm::Expected<std::optional<ApplicationSystemWindowMeasurement>>
+measureCandidateWindow(const sim::CanonicalSimulationExecution &execution,
+                       const evaluation::CaseArtifactResolution &resolution,
+                       const ApplicationSystemComputeInputs &compute,
+                       const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto &interval = execution.system()->computationInterval;
+  if (!interval)
+    return std::optional<ApplicationSystemWindowMeasurement>{};
+  const std::uint64_t elapsed = interval->elapsedTicks();
   auto memoryUtilization =
-      evaluation::ExactRatio::get((*window)->occupiedTicks, elapsed);
+      evaluation::ExactRatio::get(interval->occupiedTicks(), elapsed);
   if (!memoryUtilization)
     return memoryUtilization.takeError();
-  if (compute.referenceCycleTicks == 0 || compute.mappedComputeUnits == 0 ||
-      compute.launchedAccCores == 0)
-    return invalid("candidate compute measurement has no accelerator capacity");
-  // firings / (units * cores * elapsed / period) reduced by multiplying both
-  // sides by the period, so a window that is not a whole number of reference
-  // cycles stays exact instead of rounding the capacity.
+  auto accelerated = sim::projectSystemAcceleratedWindow(
+      execution, resolution, artifacts, blobs, &*interval);
+  if (!accelerated)
+    return accelerated.takeError();
+  const std::uint64_t acceleratedTicks =
+      *accelerated ? (*accelerated)->elapsedTicks() : 0;
   constexpr unsigned width = 128;
   const llvm::APInt capacity = llvm::APInt(width, elapsed) *
                                compute.mappedComputeUnits *
                                compute.launchedAccCores;
   const llvm::APInt firings =
-      llvm::APInt(width, compute.retiredComputeFirings) * compute.referenceCycleTicks;
+      llvm::APInt(width, compute.retiredComputeFirings) *
+      compute.referenceCycleTicks;
   if (capacity.getActiveBits() > 64 || firings.getActiveBits() > 64)
     return invalid("candidate compute occupancy exceeds the exact ratio domain");
-  auto occupancy = evaluation::ExactRatio::get(firings.getZExtValue(),
-                                               capacity.getZExtValue());
+  if (compute.launchedAccCores != 0 &&
+      (compute.referenceCycleTicks == 0 || compute.mappedComputeUnits == 0))
+    return invalid("measured candidate has no exact compute capacity");
+  if (compute.launchedAccCores == 0 && compute.retiredComputeFirings != 0)
+    return invalid("unlaunched computation carries compute firings");
+  auto occupancy = evaluation::ExactRatio::get(
+      firings.getZExtValue(), capacity.isZero() ? 1 : capacity.getZExtValue());
   if (!occupancy)
     return occupancy.takeError();
-  return ApplicationSystemWindowMeasurement{**window, *memoryUtilization,
-                                            {compute, *occupancy}};
+  return std::optional<ApplicationSystemWindowMeasurement>{
+      {*interval, acceleratedTicks, *memoryUtilization, {compute, *occupancy}}};
 }
 
 void writeRoot(llvm::json::OStream &json, llvm::StringRef name,
@@ -190,7 +130,9 @@ void writeRatio(llvm::json::OStream &json, llvm::StringRef name, evaluation::Exa
   });
 }
 
-void writeRun(llvm::json::OStream &json, const ApplicationSystemRunMeasurement &run) {
+void writeRun(llvm::json::OStream &json,
+              const ApplicationSystemRunMeasurement &run,
+              const ApplicationSystemWindowMeasurement *candidate = nullptr) {
   writeRoot(json, "request", run.request);
   writeRoot(json, "evidence", run.roots.evidence);
   writeRoot(json, "execution", run.roots.execution);
@@ -203,24 +145,32 @@ void writeRun(llvm::json::OStream &json, const ApplicationSystemRunMeasurement &
     json.attribute("occupied_ticks", run.memoryActivity.occupiedTicks);
     writeRatio(json, "utilization", run.memoryUtilization);
   });
-}
-
-void writeWindow(llvm::json::OStream &json,
-                 const ApplicationSystemWindowMeasurement &measured) {
-  json.attribute("first_start_tick", measured.window.firstStartTick);
-  json.attribute("last_completion_tick", measured.window.lastCompletionTick);
-  json.attribute("elapsed_ticks", measured.window.elapsedTicks());
-  json.attributeObject("shared_memory", [&] {
-    json.attribute("occupied_ticks", measured.window.occupiedTicks);
-    writeRatio(json, "utilization", measured.memoryUtilization);
-  });
-  json.attributeObject("compute", [&] {
-    const auto &inputs = measured.compute.inputs;
-    json.attribute("retired_compute_firings", inputs.retiredComputeFirings);
-    json.attribute("mapped_compute_units", inputs.mappedComputeUnits);
-    json.attribute("launched_acc_cores", inputs.launchedAccCores);
-    json.attribute("reference_cycle_ticks", inputs.referenceCycleTicks);
-    writeRatio(json, "occupancy", measured.compute.occupancy);
+  if (!run.computationInterval) {
+    json.attribute("computation_interval", nullptr);
+    return;
+  }
+  const auto &interval = *run.computationInterval;
+  json.attributeObject("computation_interval", [&] {
+    json.attribute("begin_tick", interval.beginTick);
+    json.attribute("end_tick", interval.endTick);
+    json.attribute("elapsed_ticks", interval.elapsedTicks());
+    json.attributeObject("shared_memory", [&] {
+      json.attribute("occupied_ticks", interval.occupiedTicks());
+      writeRatio(json, "utilization",
+                 llvm::cantFail(evaluation::ExactRatio::get(
+                     interval.occupiedTicks(), interval.elapsedTicks())));
+    });
+    if (!candidate)
+      return;
+    json.attribute("accelerated_ticks", candidate->acceleratedTicks);
+    json.attributeObject("compute", [&] {
+      const auto &inputs = candidate->compute.inputs;
+      json.attribute("retired_compute_firings", inputs.retiredComputeFirings);
+      json.attribute("mapped_compute_units", inputs.mappedComputeUnits);
+      json.attribute("launched_acc_cores", inputs.launchedAccCores);
+      json.attribute("reference_cycle_ticks", inputs.referenceCycleTicks);
+      writeRatio(json, "occupancy", candidate->compute.occupancy);
+    });
   });
 }
 
@@ -237,16 +187,20 @@ applicationSystemBottleneckSpelling(ApplicationSystemBottleneck bottleneck) {
     return "host_bound";
   case ApplicationSystemBottleneck::LatencyBound:
     return "latency_bound";
+  case ApplicationSystemBottleneck::Unmeasured:
+    return "unmeasured";
   }
   llvm_unreachable("closed System bottleneck classification");
 }
 
 ApplicationSystemBottleneck ApplicationSystemQor::bottleneck() const {
-  if (isSaturated(window_.memoryUtilization))
+  if (!window_)
+    return ApplicationSystemBottleneck::Unmeasured;
+  if (isSaturated(window_->memoryUtilization))
     return ApplicationSystemBottleneck::MemoryBandwidthBound;
-  if (isSaturated(window_.compute.occupancy))
+  if (isSaturated(window_->compute.occupancy))
     return ApplicationSystemBottleneck::ComputeBound;
-  if (compareToTarget(window_.window.elapsedTicks(), candidate_.elapsedTicks,
+  if (compareToTarget(window_->acceleratedTicks, window_->window.elapsedTicks(),
                       applicationHostBoundWindowNumerator,
                       applicationHostBoundWindowDenominator) < 0)
     return ApplicationSystemBottleneck::HostBound;
@@ -254,10 +208,14 @@ ApplicationSystemBottleneck ApplicationSystemQor::bottleneck() const {
 }
 
 ApplicationSystemQorStatus ApplicationSystemQor::status() const {
-  const bool saturated = isSaturated(window_.memoryUtilization) ||
-                         isSaturated(window_.compute.occupancy);
-  return candidate_.elapsedTicks < host_.elapsedTicks && saturated
-             ? ApplicationSystemQorStatus::Qualified : ApplicationSystemQorStatus::NotQualified;
+  if (!speedup_ || !window_)
+    return ApplicationSystemQorStatus::Unmeasured;
+  const bool saturated = isSaturated(window_->memoryUtilization) ||
+                         isSaturated(window_->compute.occupancy);
+  return speedup_->numerator() > speedup_->denominator() && saturated &&
+                 window_->compute.inputs.launchedAccCores != 0
+             ? ApplicationSystemQorStatus::Qualified
+             : ApplicationSystemQorStatus::NotQualified;
 }
 
 llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
@@ -279,36 +237,27 @@ llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
                                config, artifacts, blobs);
   if (!accelerated)
     return accelerated.takeError();
-  if (host->gem5Binding != accelerated->gem5Binding)
-    return invalid("pair members use different exact gem5 machines");
-  const auto &left = host->request;
-  const auto &right = accelerated->request;
-  const auto &leftModel = left.modelBinding();
-  const auto &rightModel = right.modelBinding();
-  if (leftModel.descriptorRef() != rightModel.descriptorRef() ||
-      leftModel.inputBindings() != rightModel.inputBindings() ||
-      leftModel.resolvedModelConfig().digest() != rightModel.resolvedModelConfig().digest() ||
-      left.baseConditions() != right.baseConditions() ||
-      left.metricRequests() != right.metricRequests() ||
-      left.replicateIndex() != right.replicateIndex())
-    return invalid("pair members use different complete-System observation conditions");
-  if (!host->execution.system()->progressObservations.rootLifecycle.empty())
-    return invalid("host-only pair member launched accelerator work");
-  if (!sim::haveExactlyEqualSystemFunctionalObservations(
-          host->execution.system()->functionalObservations,
-          accelerated->execution.system()->functionalObservations))
+  auto compared = detail::compareApplicationSystemRuns(*host, *accelerated);
+  if (!compared)
+    return compared.takeError();
+  if (!*compared)
     return invalid("complete System pair functional observations differ");
-  auto speedup = evaluation::ExactRatio::get(host->measurement.elapsedTicks,
-                                            accelerated->measurement.elapsedTicks);
-  if (!speedup)
-    return speedup.takeError();
+  std::optional<evaluation::ExactRatio> speedup;
+  if (host->measurement.computationInterval) {
+    auto ratio = evaluation::ExactRatio::get(
+        host->measurement.computationInterval->elapsedTicks(),
+        accelerated->measurement.computationInterval->elapsedTicks());
+    if (!ratio)
+      return ratio.takeError();
+    speedup = *ratio;
+  }
   auto window = measureCandidateWindow(accelerated->execution, candidateResolution,
                                        candidateCompute, artifacts, blobs);
   if (!window)
     return window.takeError();
-  return ApplicationSystemQor(manifest.reference(), host->gem5Binding,
-                              std::move(host->measurement), std::move(accelerated->measurement),
-                              std::move(*window), *speedup);
+  return ApplicationSystemQor(
+      manifest.reference(), host->gem5Binding, std::move(host->measurement),
+      std::move(accelerated->measurement), std::move(*window), speedup);
 }
 
 void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
@@ -319,13 +268,24 @@ void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
   writeRoot(json, "gem5_binding", qor.gem5Binding());
   json.attributeObject("host_only", [&] { writeRun(json, qor.hostOnly()); });
   json.attributeObject("candidate", [&] {
-    writeRun(json, qor.candidate());
-    json.attributeObject("accelerated_window",
-                         [&] { writeWindow(json, qor.candidateWindow()); });
+    writeRun(json, qor.candidate(),
+             qor.candidateWindow() ? &*qor.candidateWindow() : nullptr);
   });
-  writeRatio(json, "speedup", qor.speedup());
-  json.attribute("status", qor.status() == ApplicationSystemQorStatus::Qualified
-                               ? "qualified" : "not_qualified");
+  if (qor.speedup())
+    writeRatio(json, "speedup", *qor.speedup());
+  else
+    json.attribute("speedup", nullptr);
+  switch (qor.status()) {
+  case ApplicationSystemQorStatus::Qualified:
+    json.attribute("status", "qualified");
+    break;
+  case ApplicationSystemQorStatus::NotQualified:
+    json.attribute("status", "not_qualified");
+    break;
+  case ApplicationSystemQorStatus::Unmeasured:
+    json.attribute("status", "unmeasured");
+    break;
+  }
   json.attribute("bottleneck", applicationSystemBottleneckSpelling(qor.bottleneck()));
   json.attributeObject("target", [&] {
     json.attribute("strict_speedup", true);

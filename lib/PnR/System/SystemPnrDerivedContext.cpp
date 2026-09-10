@@ -205,6 +205,11 @@ std::uint64_t retainedSpatialCatalogBytes(
       catalog.size() * sizeof(loom::pnr::detail::SpatialCatalogEntry);
   for (const auto &entry : catalog) {
     bytes += entry.covers.size() * sizeof(::dataflow::GraphRef);
+    bytes += entry.resultHandoffs.capacity() *
+             sizeof(::loom::mapping::SpatialComputeResultHandoffView);
+    for (const auto &handoff : entry.resultHandoffs)
+      bytes += handoff.sinks.capacity() *
+               sizeof(::loom::mapping::SpatialResultHandoffSinkView);
     bytes += entry.graphProgress.size() *
              sizeof(loom::pnr::detail::SpatialCatalogGraphProgress);
     for (const auto &progress : entry.graphProgress)

@@ -180,8 +180,7 @@ void SpatialMoveTransaction::acceptAppliedRouteResources() noexcept {
 }
 
 llvm::Error SpatialMoveTransaction::applyProgressTraversalDelta(
-    PnrIndex logicalNet, PnrIndex traversal, PnrIndex removed,
-    PnrIndex added) {
+    PnrIndex logicalNet, PnrIndex traversal, PnrIndex removed, PnrIndex added) {
   if (traversal >= state_->problem_->routing().traversals().size())
     return candidateError("progress traversal is out of range");
   if (state_->problem_->progressIndex().traversalOwner(traversal) ==
@@ -283,7 +282,8 @@ SpatialMoveTransaction::restoreRoutes(SpatialMoveRouteSavepoint &&savepoint) {
     return candidateError("route savepoint lies after the current move");
   if (savepoint.decisionDeltaCount != scratch_->decisionDeltas_.size())
     return candidateError("route savepoint cannot span decision changes");
-  if (!scratch_->progressDependencyDeltas_.empty())
+  if (!scratch_->progressDependencyDeltas_.empty() ||
+      scratch_->previousComputeProgress_)
     return candidateError(
         "route savepoint cannot span a progress dependency projection");
 
@@ -315,8 +315,9 @@ SpatialMoveTransaction::restoreRoutes(SpatialMoveRouteSavepoint &&savepoint) {
   scratch_->touchedRoutes_.resize(savepoint.touchedRouteCount);
   for (std::size_t index = savepoint.touchedRouteCount; index != 0; --index) {
     const PnrIndex logicalNet = scratch_->touchedRoutes_[index - 1];
-    if (llvm::Error error = scratch_->routeTransactions_[logicalNet]->rollbackTo(
-            std::move(savepoint.routes[index - 1])))
+    if (llvm::Error error =
+            scratch_->routeTransactions_[logicalNet]->rollbackTo(
+                std::move(savepoint.routes[index - 1])))
       return error;
     scratch_->progressRecordedRouteDeltaCounts_[logicalNet] =
         savepoint.progressRecordedRouteDeltaCounts[index - 1];
@@ -327,15 +328,19 @@ SpatialMoveTransaction::restoreRoutes(SpatialMoveRouteSavepoint &&savepoint) {
 }
 
 llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
+  if (!scratch_->previousComputeProgress_)
+    scratch_->previousComputeProgress_ =
+        state_->progressState_.computeProgress();
+  if (llvm::Error error =
+          state_->progressState_.refreshComputeProgress(*state_))
+    return error;
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_) {
     const bool firstProjection =
         scratch_->progressDependencyJournalMarks_[logicalNet] !=
         scratch_->decisionEpoch_;
-    const RouteTreeState *progressRoute =
-        state_->routeTrees_[logicalNet].get();
+    const RouteTreeState *progressRoute = state_->routeTrees_[logicalNet].get();
     if (scratch_->routeTransactions_[logicalNet]) {
-      auto prepared =
-          scratch_->routeTransactions_[logicalNet]->preparedState();
+      auto prepared = scratch_->routeTransactions_[logicalNet]->preparedState();
       if (!prepared)
         return prepared.takeError();
       progressRoute = *prepared;
@@ -350,8 +355,8 @@ llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
           scratch_->decisionEpoch_;
       scratch_->progressDependencyDeltas_.push_back(
           {logicalNet,
-           state_->progressState_
-               .logicalNetRouteDependencyViolationCount(logicalNet),
+           state_->progressState_.logicalNetRouteDependencyViolationCount(
+               logicalNet),
            std::move(*oldCapacity)});
     }
     if (llvm::Error error =
@@ -368,6 +373,9 @@ llvm::Error SpatialMoveTransaction::synchronizeProgressProjection() {
 void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
   if (!scratch_)
     return;
+  if (scratch_->previousComputeProgress_)
+    state_->progressState_.restoreComputeProgress(
+        std::move(scratch_->previousComputeProgress_));
   for (const SpatialCandidateScratch::ProgressDependencyDelta &delta :
        llvm::reverse(scratch_->progressDependencyDeltas_)) {
     state_->progressState_.restoreLogicalNetRouteDependencyCount(
@@ -388,6 +396,7 @@ void SpatialMoveTransaction::rollbackProgressProjection() noexcept {
 }
 
 void SpatialMoveTransaction::acceptProgressProjection() noexcept {
+  scratch_->previousComputeProgress_.reset();
   for (PnrIndex logicalNet : scratch_->progressDirtyNets_)
     scratch_->progressDirtyNetMarks_[logicalNet] = 0;
   scratch_->progressDirtyNets_.clear();

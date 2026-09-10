@@ -706,27 +706,6 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
   auto canonicalActor = ::dataflow::encodeCanonicalActorSchemaProjection(actor);
   if (!canonicalActor)
     return canonicalActor.takeError();
-  ::dataflow::CanonicalActorSchemaProjection admissionActor = actor;
-  std::optional<ResolvedIndexWidth> admissionIndexWidth = resolvedIndexWidth;
-  const TypedAdmissionProviderId provider =
-      implementationFamily(family_).typedAdmissionProvider;
-  const bool routedSelector =
-      provider == TypedAdmissionProviderId::MuxTokenAdmission ||
-      provider == TypedAdmissionProviderId::DemuxTokenAdmission;
-  if (routedSelector && resolvedIndexWidth) {
-    auto represented = projectResolvedIndexTypes(
-        actor, getResolvedIndexBitWidth(*resolvedIndexWidth));
-    if (!represented)
-      return represented.takeError();
-    admissionActor = std::move(*represented);
-    admissionIndexWidth.reset();
-  }
-  if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
-          family_, params_, admissionActor, operandPorts, resultPorts,
-          physicalInputWidths_, physicalResultWidths_, admissionIndexWidth,
-          pointerLayout))
-    return std::move(error);
-
   ::dataflow::CanonicalActorSchemaProjection representedActor = actor;
   if (resolvedIndexWidth) {
     auto represented = projectResolvedIndexTypes(
@@ -735,6 +714,17 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
       return represented.takeError();
     representedActor = std::move(*represented);
   }
+  const TypedAdmissionProviderId provider =
+      implementationFamily(family_).typedAdmissionProvider;
+  const bool routedSelector =
+      provider == TypedAdmissionProviderId::MuxTokenAdmission ||
+      provider == TypedAdmissionProviderId::DemuxTokenAdmission;
+  const auto &admissionActor = routedSelector ? representedActor : actor;
+  if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
+          family_, params_, admissionActor, operandPorts, resultPorts,
+          physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth,
+          pointerLayout))
+    return std::move(error);
 
   auto projected = [&]() -> llvm::Expected<::loom::CanonicalSemanticBytes> {
     if (family_ == ImplementationFamilyId::TokenConstant)

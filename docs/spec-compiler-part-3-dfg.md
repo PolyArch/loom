@@ -356,7 +356,11 @@ The eight rules have these exact legality boundaries:
   removes the other named replicas. Replication consumes the complete source
   fanout and factoring consumes exactly the named replica group; no unlisted
   branch or replica is silently rewritten. A generic purity trait alone is
-  insufficient.
+  insufficient. Cardinality and retirement proofs recognize recursively
+  corresponding deterministic Compute results after replication. In
+  particular, a gate's nonempty-activation predicate may use replicated stream
+  bounds when their complete operation schemas and ordered operand sequences
+  correspond; equal widths or cardinalities alone do not establish this fact.
 * `ActivationPreservingConstantFold` replaces one foldable single-result
   Compute actor and its otherwise unused constant operands with one exact
   typed `dataflow.constant` only when all constants use the same control
@@ -381,7 +385,11 @@ The eight rules have these exact legality boundaries:
   supplies the complete collector set and those demux selectors. The original
   and cloned streams must each retain a causal close witness at graph return.
   Identical recurrence operands, step kind, and predicate establish ordered
-  phase cardinality, not interchangeable retirement evidence. This is an
+  phase cardinality, not interchangeable retirement evidence. For a nested
+  activation, the completion recurrence's feedback dependencies also identify
+  required initializers of the issue recurrence. Each initializer must be
+  proven to belong to that parent activation; the two carry systems remain
+  separate. This is an
   optional DSE candidate; ordinary lowering retains one stream, and runtime
   measurements determine whether the extra state improves the mapped pipeline.
 * `ElementwiseVectorDecompose` has exactly the operation, shape, mask,

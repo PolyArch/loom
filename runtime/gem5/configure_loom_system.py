@@ -466,7 +466,9 @@ def build_system(
     projection: dict, collect_performance: bool
 ) -> tuple[RiscvSystem, list[LoomSpatialEngineSession]]:
     memory = projection["memory"]
-    require_keys(memory, {"base", "size", "latency", "service_ticks_per_byte"}, "memory")
+    require_keys(
+        memory, {"base", "size", "latency", "service_ticks_per_byte"}, "memory"
+    )
     host = projection["host"]
     require_keys(
         host,
@@ -561,8 +563,10 @@ def build_system(
     if not isinstance(dispatch["targets"], list):
         raise ValueError("Thread Dispatch targets must be an array")
     if not dispatch["targets"] and (
-        logical_target_count != 0 or endpoint_target_offsets != [0]
-        or endpoint_dispatch_enabled != [0] or dispatch["root_event_control_path"]
+        logical_target_count != 0
+        or endpoint_target_offsets != [0]
+        or endpoint_dispatch_enabled != [0]
+        or dispatch["root_event_control_path"]
     ):
         raise ValueError("host-only Thread Dispatch has an active endpoint")
     for ordinal, target in enumerate(dispatch["targets"]):
@@ -660,23 +664,34 @@ def build_system(
     system.cpu = processors
 
     service_cost = memory["service_ticks_per_byte"]
-    if not isinstance(service_cost, int) or isinstance(service_cost, bool) or service_cost <= 0:
+    if (
+        not isinstance(service_cost, int)
+        or isinstance(service_cost, bool)
+        or service_cost <= 0
+    ):
         raise ValueError("shared System memory has no finite acceptance service cost")
     bandwidth = 1e12 / service_cost
-    system.memory = SimpleMemory(range=system.mem_ranges[0], latency=memory["latency"],
-                                 bandwidth=f"{bandwidth:.17g}B/s")
+    system.memory = SimpleMemory(
+        range=system.mem_ranges[0],
+        latency=memory["latency"],
+        bandwidth=f"{bandwidth:.17g}B/s",
+    )
     # This zero-delay monitor exposes the native accepted-request probe. Disable
     # its unrelated histograms; the sole maintained observer integrates service.
     system.memory_monitor = CommMonitor(
-        disable_burst_length_hists=True, disable_bandwidth_hists=True,
-        disable_latency_hists=True, disable_itt_dists=True,
-        disable_outstanding_hists=True, disable_transaction_hists=True,
+        disable_burst_length_hists=True,
+        disable_bandwidth_hists=True,
+        disable_latency_hists=True,
+        disable_itt_dists=True,
+        disable_outstanding_hists=True,
+        disable_transaction_hists=True,
         disable_addr_dists=True,
     )
     system.memory_monitor.cpu_side_port = system.membus.mem_side_ports
     system.memory_monitor.mem_side_port = system.memory.port
     system.memory_service = LoomMemoryServiceProbe(
-        manager=[system.memory_monitor], service_ticks_per_byte=service_cost,
+        manager=[system.memory_monitor],
+        service_ticks_per_byte=service_cost,
     )
 
     system.loom_thread_dispatch = LoomThreadDispatch(
@@ -697,7 +712,9 @@ def build_system(
         if bridge["engine_socket"]:
             engine_members.setdefault(bridge["engine_socket"], []).append(bridge)
     engine_sessions = {
-        socket: LoomSpatialEngineSession(engine_socket=socket, bridge_count=len(members))
+        socket: LoomSpatialEngineSession(
+            engine_socket=socket, bridge_count=len(members)
+        )
         for socket, members in engine_members.items()
     }
     sessions = list(engine_sessions.values())
@@ -763,8 +780,13 @@ def main() -> None:
         Root(full_system=True, system=system)
         m5.instantiate()
         memory_capacity = projection["memory"]
-        if system.memory.bandwidth.getValue() != memory_capacity["service_ticks_per_byte"]:
-            raise RuntimeError("native SimpleMemory bandwidth differs from its capacity contract")
+        if (
+            system.memory.bandwidth.getValue()
+            != memory_capacity["service_ticks_per_byte"]
+        ):
+            raise RuntimeError(
+                "native SimpleMemory bandwidth differs from its capacity contract"
+            )
         configuration_finished = time.monotonic_ns() if diagnostics else None
         entry_tick = int(m5.curTick())
         system.memory_service.beginWindow()
@@ -777,8 +799,7 @@ def main() -> None:
             remaining = max(0, deadline - int(m5.curTick()))
             event = m5.simulate(remaining)
             if not any(
-                session.isAdvanceExit(event.getCause())
-                for session in engine_sessions
+                session.isAdvanceExit(event.getCause()) for session in engine_sessions
             ):
                 break
             for session in engine_sessions:
@@ -804,8 +825,12 @@ def main() -> None:
         system.workload.writeMemoryObservations()
         memory_activity = {"occupied_ticks": int(system.memory_service.occupiedTicks())}
         result = {
-            "schema": "loom.gem5_system_attempt.2",
+            "schema": "loom.gem5_system_attempt.3",
             "memory_activity": memory_activity,
+            "computation_interval": [
+                int(value)
+                for value in system.loom_thread_dispatch.computationInterval()
+            ],
             "entry_tick": entry_tick,
             "exit_tick": int(m5.curTick()),
             "cause": event.getCause(),

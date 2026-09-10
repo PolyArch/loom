@@ -963,7 +963,7 @@ deriveFactsUncached(const EvaluationRequest &request,
           workload->identity()};
       runtimeDraft.runtimeStreams.resize(launchOp.getStreamInputs().size());
       auto runtime = sim::finalizeSimulationRuntimeInput(
-          runtimeDraft, *workload, dataflowView);
+          std::move(runtimeDraft), *workload, dataflowView);
       if (!runtime)
         return runtime.takeError();
       auto runtimeReference =

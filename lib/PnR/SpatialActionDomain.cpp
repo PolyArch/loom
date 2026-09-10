@@ -844,6 +844,12 @@ llvm::Error SpatialActionDomainScratch::emitTransportWitnessTail(
       return invalid("progress witness count overflows u64");
     ++progressWitnessCount;
   }
+  if (const auto witness = candidate.progress().computeProofDebtWitness()) {
+    if (llvm::Error error = appendWitness(
+            ResolvedPnrViolationKind::ProgressProofDebt, *witness))
+      return error;
+    ++progressWitnessCount;
+  }
   const auto noGoodClauses = preparedProblem_->constraints().resolvedNoGoods();
   for (PnrIndex clause = 0; clause < noGoodClauses.size(); ++clause) {
     if (!candidate.runtimeCounterexampleClauseViolated(clause))

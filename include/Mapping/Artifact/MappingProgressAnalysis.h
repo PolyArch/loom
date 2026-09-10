@@ -32,6 +32,7 @@ struct SystemMappingClosureProjection;
 class FrozenMappingProgressModel final {
 public:
   const ArtifactIdentity &dataflowIdentity() const { return dataflowIdentity_; }
+  std::size_t retainedStorageBytes() const;
 
 private:
   FrozenMappingProgressModel(
@@ -106,6 +107,12 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
 llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              MappingProgressProjectionView projection);
+
+/// Strict closure derives its event inventory from the complete projection;
+/// search may retain the frozen-model overload across candidate mutations.
+llvm::Expected<MappingProgressClosure> deriveMappingProgressClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const MappingProgressProjection &projection);
 
 llvm::StringRef
 mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason);

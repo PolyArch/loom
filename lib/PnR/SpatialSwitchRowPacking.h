@@ -145,9 +145,11 @@ public:
   llvm::ArrayRef<PnrIndex> conflictOffsets() const { return conflictOffsets_; }
   llvm::ArrayRef<PnrIndex> conflicts() const { return conflicts_; }
   llvm::ArrayRef<PnrIndex> conflicts(PnrIndex vertex) const;
+  /// Canonical vertex order, beginning with logical-net identity.
   llvm::ArrayRef<SpatialTagVertexRef> domainVertices(PnrIndex domain) const {
     return domainVertices_[domain];
   }
+  /// Canonical (domain, segment) order within this logical net.
   llvm::ArrayRef<SpatialTemporalSwitchSegmentDemand>
   switchDemands(PnrIndex logicalNet) const {
     return netSwitchDemands_[logicalNet];

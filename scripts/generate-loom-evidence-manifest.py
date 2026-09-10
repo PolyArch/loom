@@ -13,10 +13,13 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from loom_evidence_portfolio import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.loom_evidence_portfolio import (  # noqa: E402
     PAIR_DISPOSITION_SCHEMA,
     PAIR_EVIDENCE_SCHEMA,
     RUNTIME_BINDING_SCHEMA,
@@ -303,8 +306,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                     }
                     execution_matrix_observations.append(observation)
         if (
-            payload.get("schema")
-            == RUNTIME_BINDING_SCHEMA
+            payload.get("schema") == RUNTIME_BINDING_SCHEMA
             and payload.get("domain") == "application_runtime_manifest"
         ):
             application_runtime_manifest_bindings.append(payload)

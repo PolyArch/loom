@@ -62,6 +62,9 @@ firstSpatialTransportWitness(const SpatialCandidateState &candidate) {
   if (const auto owner = candidate.progress().firstCapacityProofDebtOwner())
     return SpatialTransportWitness{ResolvedPnrViolationKind::ProgressProofDebt,
                                    *owner};
+  if (const auto witness = candidate.progress().computeProofDebtWitness())
+    return SpatialTransportWitness{ResolvedPnrViolationKind::ProgressProofDebt,
+                                   *witness};
   if (const auto clause = candidate.firstRuntimeCounterexampleViolation())
     return SpatialTransportWitness{
         ResolvedPnrViolationKind::RuntimeCounterexampleViolation, *clause};
@@ -130,6 +133,8 @@ spatialTransportWitnessIsLive(const SpatialCandidateState &candidate,
   case ResolvedPnrViolationKind::HardProgressViolation:
     return repairError("hard progress witness has no transport encoding");
   case ResolvedPnrViolationKind::ProgressProofDebt:
+    if (witness.ordinal == problem.progressIndex().finiteBufferOwners().size())
+      return candidate.progress().isComputeProofDebtWitness(witness.ordinal);
     if (witness.ordinal >= problem.progressIndex().finiteBufferOwners().size())
       return repairError("capacity proof-debt witness is out of range");
     return candidate.progress().capacityProofDebtOwner(witness.ordinal) ||

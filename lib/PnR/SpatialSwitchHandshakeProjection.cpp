@@ -39,7 +39,6 @@ struct loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
   ::loom::fabric::FabricTemporalSwitchRouteRowMemberSpans rowSpans;
   std::vector<const ::loom::pnr::detail::SpatialTemporalSwitchSegmentDemand *>
       demands;
-  std::vector<PnrIndex> participatingNets;
   std::vector<std::pair<::loom::fabric::FabricOrdinal, PnrIndex>>
       inputTraversals;
   std::vector<::loom::fabric::FabricSwitchSelectedCrosspoint>
@@ -143,7 +142,6 @@ std::size_t loom::pnr::detail::SpatialSwitchHandshakeProjectionScratch::
       storage.rowSpans.demandOrdinals.capacity() * sizeof(std::uint64_t) +
       storage.demands.capacity() *
           sizeof(const SpatialTemporalSwitchSegmentDemand *) +
-      storage.participatingNets.capacity() * sizeof(PnrIndex) +
       storage.inputTraversals.capacity() *
           sizeof(std::pair<::loom::fabric::FabricOrdinal, PnrIndex>) +
       storage.residentCrosspoints.capacity() *
@@ -516,32 +514,31 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeDomainFragments(
     return invalid("Tag-assignment demand cache belongs to another problem");
   // Every demand in this domain belongs to a segment whose vertex the
   // interference projection lists for the same domain, so the domain's
-  // vertex inventory bounds the participating logical nets. Ascending net
-  // order preserves the canonical demand order of a full scan.
+  // vertex inventory bounds the participating logical nets. Both inventories
+  // are canonical: visit each net once and select only its contiguous demand
+  // slice for this domain instead of scanning every switch along its route.
   const auto vertices = assignments.interference.domainVertices(domain);
-  std::vector<PnrIndex> &participatingNets =
-      scratch.storage().participatingNets;
-  participatingNets.clear();
-  participatingNets.reserve(vertices.size());
-  for (const SpatialTagVertexRef &vertex : vertices)
-    participatingNets.push_back(vertex.logicalNet);
-  llvm::sort(participatingNets);
-  participatingNets.erase(
-      std::unique(participatingNets.begin(), participatingNets.end()),
-      participatingNets.end());
   std::vector<const SwitchDemand *> &demands = scratch.storage().demands;
   demands.clear();
   demands.reserve(vertices.size());
-  for (PnrIndex logicalNet : participatingNets) {
+  PnrIndex previousNet = getInvalidPnrIndex();
+  for (const SpatialTagVertexRef &vertex : vertices) {
+    const PnrIndex logicalNet = vertex.logicalNet;
     if (logicalNet >= assignments.nets.size())
       return invalid("Tag-assignment switch demand is inconsistent");
-    for (const SwitchDemand &demand :
-         assignments.interference.switchDemands(logicalNet)) {
-      if (demand.logicalNet != logicalNet ||
-          demand.domain >= matchDomains.size())
+    if (logicalNet == previousNet)
+      continue;
+    previousNet = logicalNet;
+    const auto netDemands = assignments.interference.switchDemands(logicalNet);
+    auto selected = llvm::lower_bound(
+        netDemands, domain, [](const SwitchDemand &demand, PnrIndex domain) {
+          return demand.domain < domain;
+        });
+    for (; selected != netDemands.end() && selected->domain == domain;
+         ++selected) {
+      if (selected->logicalNet != logicalNet)
         return invalid("Tag-assignment switch demand is inconsistent");
-      if (demand.domain == domain)
-        demands.push_back(&demand);
+      demands.push_back(&*selected);
     }
   }
   return projectDomainFragments(

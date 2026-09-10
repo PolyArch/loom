@@ -65,8 +65,12 @@ INSTRUCTION_LOAD_ADDRESS = 0x80100000
 MEMORY_BASE = 0x80000000
 MEMORY_SIZE = 0x04000000
 # The native model descriptor owns the exact memory service cost.
-_bandwidth_header = (REPOSITORY_ROOT / "include/Runtime/Gem5BuiltinModels.h").read_text()
-_bandwidth_match = re.search(r"gem5SimpleMemoryServiceTicksPerByte = (\d+)", _bandwidth_header)
+_bandwidth_header = (
+    REPOSITORY_ROOT / "include/Runtime/Gem5BuiltinModels.h"
+).read_text()
+_bandwidth_match = re.search(
+    r"gem5SimpleMemoryServiceTicksPerByte = (\d+)", _bandwidth_header
+)
 if _bandwidth_match is None:
     raise RuntimeError("SimpleMemory capacity definition is missing")
 MEMORY_SERVICE_TICKS_PER_BYTE = int(_bandwidth_match.group(1))
@@ -127,9 +131,19 @@ def spatial_execution_context_key(entity_id: int) -> str:
         + struct.pack(">Q", len(mapping_identity))
         + mapping_identity
     ).hex()
+
+
 EXPECTED_RESULT = b"loom-gem5-system-smoke"
 EXPECTED_LAUNCH = b"loom-spatial-launch-v1"
 INITIAL_SYSTEM_MEMORY = b"loommem0"
+
+_dispatch_header = (REPOSITORY_ROOT / "include/Runtime/Gem5DispatchABI.h").read_text()
+_computation_register = re.search(
+    r"gem5ThreadDispatchComputationEvent = (0x[0-9a-fA-F]+)", _dispatch_header
+)
+if _computation_register is None:
+    raise RuntimeError("Runtime owns no computation-event register")
+COMPUTATION_EVENT = int(_computation_register.group(1), 16)
 
 HOST_SOURCE = f"""
 .section .text,"ax",@progbits
@@ -162,6 +176,20 @@ loom_host_entry:
   ld t0, 24(s1)
   li t1, {EXPECTED_SYSTEM_MEMORY}
   sd t1, 0(t0)
+  fence iorw, iorw
+  sw zero, {COMPUTATION_EVENT}(s0)
+  li t0, {ROOT_THREAD_ENTITY}
+  sw t0, 40(s0)
+  sw zero, 44(s0)
+  sw zero, 52(s0)
+  sw zero, 56(s0)
+  fence iorw, iorw
+  sw zero, 48(s0)
+  lwu s5, 52(s0)
+  lwu t0, 56(s0)
+  slli t0, t0, 32
+  or s5, s5, t0
+  beqz s5, 3f
   li s4, 0
 4:
   bgeu s4, s3, 6f
@@ -178,18 +206,6 @@ loom_host_entry:
   addi s4, s4, 1
   j 4b
 6:
-  li t0, {ROOT_THREAD_ENTITY}
-  sw t0, 40(s0)
-  sw zero, 44(s0)
-  sw zero, 52(s0)
-  sw zero, 56(s0)
-  fence iorw, iorw
-  sw zero, 48(s0)
-  lwu s5, 52(s0)
-  lwu t0, 56(s0)
-  slli t0, t0, 32
-  or s5, s5, t0
-  beqz s5, 3f
   li s4, 0
 7:
   bgeu s4, s3, 5f
@@ -214,6 +230,8 @@ loom_host_entry:
   li t0, 1
   fence iorw, iorw
   sw t0, 48(s0)
+  fence iorw, iorw
+  sw t0, {COMPUTATION_EVENT}(s0)
   li t2, {EXTERNAL_VALUE_ADDRESS}
   ld t3, 0(t2)
   li t4, {EXPECTED_VALUE}
@@ -318,9 +336,7 @@ def serve_root_event_control(
                 ):
                     raise RuntimeError("root event control request is not canonical")
                 decision = (
-                    ROOT_EVENT_CONTINUE
-                    if action == 0
-                    else ROOT_EVENT_ACTIVATE_ENDPOINT
+                    ROOT_EVENT_CONTINUE if action == 0 else ROOT_EVENT_ACTIVATE_ENDPOINT
                 )
                 endpoint = 0 if action == 0 else 1
                 if action == 1 and process.poll() is not None:
@@ -347,7 +363,9 @@ def serve_root_event_control(
         server.close()
 
 
-def receive_advance(connection: socket.socket) -> tuple[int, int, tuple[int, int, int, bytes]]:
+def receive_advance(
+    connection: socket.socket,
+) -> tuple[int, int, tuple[int, int, int, bytes]]:
     magic, generation, tick, count = ADVANCE_HEADER.unpack(
         read_exact(connection, ADVANCE_HEADER.size)
     )
@@ -358,19 +376,29 @@ def receive_advance(connection: socket.socket) -> tuple[int, int, tuple[int, int
     )
     if magic != WIRE_MAGIC or payload_size > 1048576 - WIRE_HEADER.size:
         raise RuntimeError("bridge message has the wrong magic or length")
-    return generation, tick, (kind, ordinal, sequence, read_exact(connection, payload_size))
+    return (
+        generation,
+        tick,
+        (kind, ordinal, sequence, read_exact(connection, payload_size)),
+    )
 
 
 def send_advance(
-    connection: socket.socket, generation: int, tick: int,
+    connection: socket.socket,
+    generation: int,
+    tick: int,
     messages: list[tuple[int, int, int, bytes]],
 ) -> None:
     # Deliberately vary host computation time. Causal bridge ticks must depend
     # only on the input coordinate and the modeled action delay below.
     time.sleep(0.005 * (1 + generation % 3))
-    connection.sendall(ADVANCE_HEADER.pack(ADVANCE_MAGIC, generation, tick, len(messages)))
+    connection.sendall(
+        ADVANCE_HEADER.pack(ADVANCE_MAGIC, generation, tick, len(messages))
+    )
     for kind, ordinal, sequence, payload in messages:
-        connection.sendall(WIRE_HEADER.pack(WIRE_MAGIC, kind, ordinal, sequence, len(payload)))
+        connection.sendall(
+            WIRE_HEADER.pack(WIRE_MAGIC, kind, ordinal, sequence, len(payload))
+        )
         connection.sendall(payload)
 
 
@@ -429,21 +457,29 @@ def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
         or memory_snapshot_size != 0
         or runtime_input_size != 0
         or runtime_input_identity != bytes(32)
-        or invocation_size + memory_snapshot_size + runtime_input_size
-        + boundary_size
+        or invocation_size + memory_snapshot_size + runtime_input_size + boundary_size
         != len(payload) - INVOCATION_RESULT_HEADER.size
     ):
         raise RuntimeError("Spatial invocation result lengths are not canonical")
     invocation_end = INVOCATION_RESULT_HEADER.size + invocation_size
-    return payload[INVOCATION_RESULT_HEADER.size : invocation_end], payload[invocation_end:]
+    return payload[INVOCATION_RESULT_HEADER.size : invocation_end], payload[
+        invocation_end:
+    ]
 
 
-def require_memory_response(payload: bytes, request_id: int, expected_data: bytes) -> None:
+def require_memory_response(
+    payload: bytes, request_id: int, expected_data: bytes
+) -> None:
     if len(payload) < MEMORY_RESPONSE_HEADER.size:
         raise RuntimeError("bridge returned a truncated memory response")
     response_id, success, data_size = MEMORY_RESPONSE_HEADER.unpack_from(payload)
     data = payload[MEMORY_RESPONSE_HEADER.size :]
-    if response_id != request_id or success != 1 or data_size != len(data) or data != expected_data:
+    if (
+        response_id != request_id
+        or success != 1
+        or data_size != len(data)
+        or data != expected_data
+    ):
         raise RuntimeError("bridge returned a noncanonical memory response")
 
 
@@ -493,7 +529,9 @@ def run_engine(arguments: argparse.Namespace) -> int:
             last_tick = 0
             value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
             while len(completed) != len(entries):
-                generation, tick, (kind, ordinal, sequence, payload) = receive_advance(connection)
+                generation, tick, (kind, ordinal, sequence, payload) = receive_advance(
+                    connection
+                )
                 if generation != last_generation + 1 or tick < last_tick:
                     raise RuntimeError("engine received stale causal input identity")
                 last_generation, last_tick = generation, tick
@@ -502,17 +540,30 @@ def run_engine(arguments: argparse.Namespace) -> int:
                 messages = []
                 if kind == SPATIAL_LAUNCH:
                     launch, invocation = decode_spatial_launch_envelope(payload)
-                    if ordinal in active or launch != entries[ordinal][0].read_bytes() or invocation:
-                        raise RuntimeError("bridge launch differs from the expected payload")
+                    if (
+                        ordinal in active
+                        or launch != entries[ordinal][0].read_bytes()
+                        or invocation
+                    ):
+                        raise RuntimeError(
+                            "bridge launch differs from the expected payload"
+                        )
                     active[ordinal] = EngineInvocation(launch, invocation)
                     # The first bridge explicitly quiesces until its peer
                     # launches. One later advance wakes both physical bridges.
                     if len(active) == len(entries):
                         for target, state in sorted(active.items()):
                             state.boundary = EngineBoundary.MEMORY_WRITE
-                            write = MEMORY_REQUEST_HEADER.pack(
-                                MEMORY_WRITE, 7, 1, EXTERNAL_VALUE_ADDRESS, len(value)
-                            ) + value
+                            write = (
+                                MEMORY_REQUEST_HEADER.pack(
+                                    MEMORY_WRITE,
+                                    7,
+                                    1,
+                                    EXTERNAL_VALUE_ADDRESS,
+                                    len(value),
+                                )
+                                + value
+                            )
                             messages.append((MEMORY_REQUEST, target, sequence, write))
                 else:
                     state = active.get(ordinal)
@@ -520,7 +571,9 @@ def run_engine(arguments: argparse.Namespace) -> int:
                         raise RuntimeError("continuation has no active invocation")
                     if state.boundary == EngineBoundary.MEMORY_WRITE:
                         if kind != MEMORY_RESPONSE:
-                            raise RuntimeError("write boundary received the wrong response kind")
+                            raise RuntimeError(
+                                "write boundary received the wrong response kind"
+                            )
                         require_memory_response(payload, 1, b"")
                         state.boundary = EngineBoundary.MEMORY_READ
                         read = MEMORY_REQUEST_HEADER.pack(
@@ -529,14 +582,24 @@ def run_engine(arguments: argparse.Namespace) -> int:
                         messages.append((MEMORY_REQUEST, ordinal, sequence, read))
                     elif state.boundary == EngineBoundary.MEMORY_READ:
                         if kind != MEMORY_RESPONSE:
-                            raise RuntimeError("read boundary received the wrong response kind")
+                            raise RuntimeError(
+                                "read boundary received the wrong response kind"
+                            )
                         require_memory_response(payload, 2, value)
                         state.boundary = EngineBoundary.CHANNEL_COMMIT
                         state.completion_tick = tick + 13
-                        messages.append((CHANNEL_COMMIT, ordinal, sequence, struct.pack(">Q", 13)))
+                        messages.append(
+                            (CHANNEL_COMMIT, ordinal, sequence, struct.pack(">Q", 13))
+                        )
                     elif state.boundary == EngineBoundary.CHANNEL_COMMIT:
-                        if kind != CHANNEL_COMMITTED or payload or tick != state.completion_tick:
-                            raise RuntimeError("channel commit escaped its causal gem5 tick")
+                        if (
+                            kind != CHANNEL_COMMITTED
+                            or payload
+                            or tick != state.completion_tick
+                        ):
+                            raise RuntimeError(
+                                "channel commit escaped its causal gem5 tick"
+                            )
                         result = invocation_result(state.invocation, EXPECTED_RESULT)
                         completion = COMPLETION_HEADER.pack(0, 0, len(result)) + result
                         messages.append((COMPLETION, ordinal, sequence, completion))
@@ -544,17 +607,25 @@ def run_engine(arguments: argparse.Namespace) -> int:
                             json.dumps(
                                 {
                                     "bridge_ordinal": ordinal,
-                                    "launch_sha256": hashlib.sha256(state.launch).hexdigest(),
+                                    "launch_sha256": hashlib.sha256(
+                                        state.launch
+                                    ).hexdigest(),
                                     "memory_address": EXTERNAL_VALUE_ADDRESS,
                                     "memory_value": EXPECTED_VALUE,
                                     "sequence": sequence,
                                     "completion_tick": state.completion_tick,
-                                }, sort_keys=True, separators=(",", ":"),
-                            ) + "\n", encoding="utf-8",
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            + "\n",
+                            encoding="utf-8",
                         )
                         completed.add(ordinal)
                     else:
-                        raise RuntimeError("quiescent bridge received an unsolicited continuation")
+                        raise RuntimeError(
+                            "quiescent bridge received an unsolicited continuation"
+                        )
                 send_advance(connection, generation, tick, messages)
     finally:
         server.close()
@@ -655,15 +726,15 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         raise RuntimeError("clang is unavailable")
 
     TEST_RUN_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gem5-runtime-", dir=TEST_RUN_ROOT) as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="gem5-runtime-", dir=TEST_RUN_ROOT
+    ) as directory:
         root = pathlib.Path(directory)
         host_source = root / "host.S"
         instruction_source = root / "instruction.S"
         host_image = root / "host.elf"
         instruction_image = root / "instruction.elf"
-        launch_paths = [
-            root / f"spatial-launch-{ordinal}.bin" for ordinal in range(2)
-        ]
+        launch_paths = [root / f"spatial-launch-{ordinal}.bin" for ordinal in range(2)]
         memory_object_path = root / "system-memory.bin"
         memory_table_path = root / "system-memory-table.bin"
         memory_observation_path = root / "system-memory.result"
@@ -741,8 +812,12 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             "schema": "loom.gem5_system_projection.16",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
-            "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns",
-                       "service_ticks_per_byte": MEMORY_SERVICE_TICKS_PER_BYTE},
+            "memory": {
+                "base": MEMORY_BASE,
+                "size": MEMORY_SIZE,
+                "latency": "20ns",
+                "service_ticks_per_byte": MEMORY_SERVICE_TICKS_PER_BYTE,
+            },
             "host": {
                 "elf": str(host_image),
                 "cpu_id": 0,
@@ -915,7 +990,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             raise RuntimeError(f"root event controller failed: {control_errors[0]}")
 
         system_result = json.loads(system_result_path.read_text(encoding="utf-8"))
-        if system_result["schema"] != "loom.gem5_system_attempt.2":
+        if system_result["schema"] != "loom.gem5_system_attempt.3":
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
             retained_root = root.with_name(root.name + "-failed")
@@ -925,9 +1000,10 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 f"{system_result['cause']}; artifacts: {retained_root}"
             )
         lifecycle_bytes = root_lifecycle_path.read_bytes()
-        if not lifecycle_bytes.startswith(b"LRE3") or (
-            len(lifecycle_bytes) - 4
-        ) % ROOT_LIFECYCLE_RECORD.size:
+        if (
+            not lifecycle_bytes.startswith(b"LRE3")
+            or (len(lifecycle_bytes) - 4) % ROOT_LIFECYCLE_RECORD.size
+        ):
             raise RuntimeError("root lifecycle trace is not structurally canonical")
         lifecycle = [
             ROOT_LIFECYCLE_RECORD.unpack_from(lifecycle_bytes, offset)
@@ -950,6 +1026,24 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             or completion[5:8] != (2, ROOT_EVENT_ACTIVATE_ENDPOINT, 1)
         ):
             raise RuntimeError("root lifecycle trace disagrees with the Host boundary")
+        interval = system_result["computation_interval"]
+        if len(interval) != 4:
+            raise RuntimeError("source computation interval is absent")
+        begin_tick, end_tick, begin_busy, end_busy = interval
+        if not (
+            system_result["entry_tick"] < begin_tick < start[3]
+            and completion[3] < end_tick < system_result["exit_tick"]
+            and 0
+            <= begin_busy
+            <= start[8]
+            <= completion[8]
+            <= end_busy
+            <= system_result["memory_activity"]["occupied_ticks"]
+            and end_busy - begin_busy <= end_tick - begin_tick
+        ):
+            raise RuntimeError(
+                "computation interval lost native launch or memory activity"
+            )
         # Each record samples the one shared-memory service observer, so the
         # samples rise along the trace and stay within the full-program total.
         if (
@@ -970,9 +1064,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 controlled[5],
                 controlled[0],
             )
-            for trace, controlled in zip(
-                lifecycle, acknowledged_events, strict=True
-            )
+            for trace, controlled in zip(lifecycle, acknowledged_events, strict=True)
         ):
             raise RuntimeError("root lifecycle trace disagrees with its controller")
         completion_ticks = []
@@ -1002,8 +1094,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             if (
                 trace["bridge_ordinal"] != ordinal
                 or trace["completion_tick"] != completion_tick
-                or trace["launch_sha256"]
-                != hashlib.sha256(EXPECTED_LAUNCH).hexdigest()
+                or trace["launch_sha256"] != hashlib.sha256(EXPECTED_LAUNCH).hexdigest()
                 or trace["memory_value"] != EXPECTED_VALUE
             ):
                 raise RuntimeError("engine trace differs from its exact bridge entry")
@@ -1011,9 +1102,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         expected_observation = (
             b"LGM1"
             + struct.pack(">Q", 1)
-            + struct.pack(
-                ">QQ", SYSTEM_MEMORY_ADDRESS, len(expected_memory)
-            )
+            + struct.pack(">QQ", SYSTEM_MEMORY_ADDRESS, len(expected_memory))
             + expected_memory
         )
         if memory_observation_path.read_bytes() != expected_observation:

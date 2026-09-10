@@ -34,13 +34,18 @@ using namespace joint_reopen_detail;
 llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     llvm::ArrayRef<const JointDesignExplorationPlan *> plans,
     const JointDesignPolicy &policy, JointHardwareReopenRequest request,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    llvm::function_ref<llvm::Expected<bool>(const ArtifactRootReference &,
+                                          std::uint64_t)> admitsMapping) {
   if (llvm::Error error = registerProductionDseOwners())
     return std::move(error);
   if (request.journalRoot.empty())
     return invalid("hardware reopen requires a journal root");
   if (plans.empty())
     return invalid("hardware reopen requires at least one Mapping plan");
+  if (admitsMapping && request.stoppingPolicy !=
+                           JointDesignStoppingPolicy::BoundedQuality)
+    return invalid("final Mapping admission requires bounded-quality stopping");
   auto scheduler = SiteScheduler::create(std::move(request.siteCapacity));
   if (!scheduler)
     return scheduler.takeError();
@@ -1166,7 +1171,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           boundedQualitySearchIncomplete = true;
           JointDesignQualityProvenance provenance;
           if (quality.provenanceDomain ==
-              JointDesignQualityProvenanceDomain::ApplicationRuntime) {
+                  JointDesignQualityProvenanceDomain::ApplicationRuntime ||
+              quality.provenanceDomain == JointDesignQualityProvenanceDomain::
+                                              ApplicationSystemRuntime) {
             auto resourceCoreCost = deriveApplicationRuntimeResourceCoreCost(
                 alternative.execution, mapping, artifacts);
             if (!resourceCoreCost)
@@ -1344,8 +1351,34 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         CandidateSet::get(mapping::mappingArtifactSchema, candidates);
     if (!candidateSet)
       return candidateSet.takeError();
+    std::map<ArtifactRootReference, std::size_t,
+             decltype(&artifactRootReferenceLess)>
+        admittedOwners(&artifactRootReferenceLess);
+    std::vector<ArtifactRootReference> admittedCandidates;
+    for (const ArtifactRootReference &candidate : candidates) {
+      for (std::size_t ordinal = 0; ordinal != verifiedAlternatives.size();
+           ++ordinal) {
+        const VerifiedAlternative &alternative = verifiedAlternatives[ordinal];
+        if (!llvm::is_contained(mappingRoots(alternative.execution), candidate))
+          continue;
+        if (admitsMapping) {
+          auto admitted = admitsMapping(candidate, alternative.planOrdinal);
+          if (!admitted)
+            return admitted.takeError();
+          if (!*admitted)
+            continue;
+        }
+        admittedCandidates.push_back(candidate);
+        admittedOwners.emplace(candidate, ordinal);
+        break;
+      }
+    }
+    if (admittedCandidates.empty())
+      return finish(std::move(verifiedAlternatives.front().execution),
+                    std::nullopt, std::nullopt,
+                    JointDesignQualityDisposition::Complete, std::nullopt, true);
     auto pareto =
-        applyCandidateSelection(*candidateSet, candidates, objectives,
+        applyCandidateSelection(*candidateSet, admittedCandidates, objectives,
                                 ParetoSelection{quality.paretoDimensions},
                                 quality.objectiveProgram.get());
     if (!pareto)
@@ -1358,16 +1391,11 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return selected.takeError();
     if (selected->size() != 1)
       return invalid("bounded-quality selection did not produce one winner");
-    for (VerifiedAlternative &alternative : verifiedAlternatives) {
-      const std::vector<ArtifactRootReference> roots =
-          mappingRoots(alternative.execution);
-      if (llvm::is_contained(roots, selected->front()))
-        return finish(std::move(alternative.execution), alternative.planOrdinal,
-                      selected->front(),
-                      JointDesignQualityDisposition::Complete, std::nullopt,
-                      true);
-    }
-    return invalid("bounded-quality winner has no verified execution owner");
+    VerifiedAlternative &alternative =
+        verifiedAlternatives[admittedOwners.at(selected->front())];
+    return finish(std::move(alternative.execution), alternative.planOrdinal,
+                  selected->front(), JointDesignQualityDisposition::Complete,
+                  std::nullopt, true);
   }
   // Parents without actionable feedback, or withheld by the hardware budget,
   // still own a typed outcome even when no hardware attempt ran.

@@ -143,6 +143,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
                                   preferredRuntimeBindingDecisions);
   }
   if (candidate.progressProofDebtWitnessCount() != 0 &&
+      !candidate.progress().computeProofDebtWitness() &&
       candidate.hardProgressViolation() == 0 &&
       candidate.unroutedObligationCount() == 0 &&
       candidate.routeCapacityOveruse() == 0 &&
@@ -381,7 +382,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible)
     return repairResult(
         SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
-        *regionDecisionCount, solved->solverCalls);
+        *regionDecisionCount, solved->solverCalls, 0, {}, 0, 0,
+        solved->logicalSolverCalls);
   if (solved->kind != detail::CpSatCanonicalResultKind::Assignment)
     return repairResult(SpatialExactRepairResultKind::UnknownBudgetExhausted,
                         *regionDecisionCount, solved->solverCalls, 0,
@@ -392,7 +394,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   if (solved->assignment.size() != decisions_.size())
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, solved->solverCalls, 0,
-                        "canonical solver assignment has the wrong size");
+                        "canonical solver assignment has the wrong size", 0, 0,
+                        solved->logicalSolverCalls);
 
   actions_.clear();
   netIncluded_.assign(netIncluded_.size(), 0);
@@ -402,7 +405,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     if (selected < 0 || static_cast<std::size_t>(selected) >= choices.size())
       return repairResult(SpatialExactRepairResultKind::InternalError,
                           *regionDecisionCount, solved->solverCalls, 0,
-                          "canonical solver assignment escaped its domain");
+                          "canonical solver assignment escaped its domain", 0, 0,
+                          solved->logicalSolverCalls);
     const detail::SpatialComputeBindingChoice &choice = choices[selected];
     const SpatialComputeBindingSelection &current =
         candidate.computeBinding(decision);
@@ -428,19 +432,22 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   if (actions_.empty())
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, solved->solverCalls, 0,
-                        "exact repair produced an empty ActionBatch");
+                        "exact repair produced an empty ActionBatch", 0, 0,
+                        solved->logicalSolverCalls);
 
   if (llvm::Error error =
           actionExecutor_.prepare(candidate, workLedger_, executionControl_))
     return repairResult(SpatialExactRepairResultKind::InternalError,
                         *regionDecisionCount, solved->solverCalls,
-                        actions_.size(), llvm::toString(std::move(error)));
+                        actions_.size(), llvm::toString(std::move(error)), 0, 0,
+                        solved->logicalSolverCalls);
   const auto executedResult = [&](SpatialExactRepairResultKind kind,
                                   std::string detail = {}) {
     return repairResult(kind, *regionDecisionCount, solved->solverCalls,
                         actions_.size(), std::move(detail),
                         actionExecutor_.endpointExpansionCount(),
-                        actionExecutor_.negotiationIterationCount());
+                        actionExecutor_.negotiationIterationCount(),
+                        solved->logicalSolverCalls);
   };
   const std::uint64_t initialOveruse = candidate.atomicCapacityOveruse();
   auto probe = actionExecutor_.probeBatch(candidate, actions_);

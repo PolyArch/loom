@@ -1,5 +1,6 @@
 #include "Application/Build.h"
 #include "ApplicationRuntimeValidationInternal.h"
+#include "ApplicationSystemRuntimeEvidence.h"
 #include "QualityInternal.h"
 
 #include "Common/ArtifactStore.h"
@@ -399,7 +400,7 @@ detail::projectApplicationQualityRuntime(
     const dse::JointBoundedQualityPolicy &quality,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (execution.summary.qualityObjectiveDimensionLabels !=
-          quality.objectiveDimensionLabels)
+      quality.objectiveDimensionLabels)
     return invalid("application runtime projection has a foreign objective "
                    "domain");
   const auto matching =
@@ -491,12 +492,12 @@ detail::projectApplicationQualityRuntime(
   std::optional<std::uint64_t> resourceCoreCost =
       observation.provenance.resourceCoreCost;
   if (!observation.provenance.rawMeasures.empty()) {
-    dfgCycles =
-        std::get<ResolvedObjectiveInteger>(observation.provenance.rawMeasures[0])
-            .magnitude;
-    cgraCycles =
-        std::get<ResolvedObjectiveInteger>(observation.provenance.rawMeasures[1])
-            .magnitude;
+    dfgCycles = std::get<ResolvedObjectiveInteger>(
+                    observation.provenance.rawMeasures[0])
+                    .magnitude;
+    cgraCycles = std::get<ResolvedObjectiveInteger>(
+                     observation.provenance.rawMeasures[1])
+                     .magnitude;
   }
   for (const ArtifactRootReference &reference :
        observation.provenance.supportingEvidence) {
@@ -529,7 +530,8 @@ detail::projectApplicationQualityRuntime(
   }
   for (const ArtifactRootReference &reference :
        observation.provenance.verificationEvidence)
-    if (!llvm::is_contained(observation.provenance.supportingEvidence, reference))
+    if (!llvm::is_contained(observation.provenance.supportingEvidence,
+                            reference))
       return invalid("application runtime verification Evidence is outside "
                      "the acquired runtime Evidence");
   auto importedMapping = loom::mapping::importSystemMapping(mapping, artifacts);
@@ -545,12 +547,29 @@ detail::projectApplicationQualityRuntime(
       dse::JointDesignQualityRuntimeCompletion::Completed) {
     auto spatialMappings =
         importedMapping->view().executionBindings().spatialMappingImports();
+    const ApplicationSystemRuntimeEvidenceContext systemContext{
+        prepared.preMappingSourceProgram, prepared.preMappingWorkload,
+        prepared.preMappingRuntimeInput, mapping};
     auto evidenceJoin = resolveApplicationRuntimeEvidenceJoin(
         observation.provenance.supportingEvidence,
         observation.provenance.verificationEvidence, alternative.dataflow,
-        spatialMappings, (*software)->replayCases, artifacts, blobs);
+        spatialMappings, (*software)->replayCases, artifacts, blobs,
+        &systemContext);
     if (!evidenceJoin)
       return evidenceJoin.takeError();
+    if (quality.provenanceDomain ==
+        dse::JointDesignQualityProvenanceDomain::ApplicationSystemRuntime) {
+      const auto ticks =
+          std::get<ResolvedObjectiveInteger>(
+              observation.provenance
+                  .rawMeasures[dse::applicationSpatialRuntimeMeasureCount])
+              .magnitude;
+      if (evidenceJoin->systemComputationTicks != ticks)
+        return invalid(
+            "System computation measure differs from its exact Evidence pair");
+    } else if (evidenceJoin->systemComputationTicks) {
+      return invalid("Spatial runtime policy carries unowned System measures");
+    }
     if (!dfgCycles || !cgraCycles || *dfgCycles != evidenceJoin->dfgCycles ||
         *cgraCycles != evidenceJoin->cgraCycles)
       return invalid("application runtime measures disagree with their strict "
@@ -575,7 +594,8 @@ detail::projectApplicationQualityRuntime(
     return invalid("application operand feedback names a foreign Mapping");
   if (observation.provenance.spatialTransportFeedback &&
       observation.provenance.spatialTransportFeedback->parentMapping &&
-      *observation.provenance.spatialTransportFeedback->parentMapping != mapping)
+      *observation.provenance.spatialTransportFeedback->parentMapping !=
+          mapping)
     return invalid("application transport feedback names a foreign Mapping");
   return ApplicationRuntimeValidation{
       *runtimeDisposition,
@@ -594,8 +614,7 @@ llvm::Expected<ApplicationMappingRuntimeDisposition>
 detail::classifyApplicationQualityRuntime(
     const dse::JointBoundedQualityPolicy &quality,
     const dse::JointDesignQualityObservation &observation) {
-  if (quality.provenanceDomain !=
-      dse::JointDesignQualityProvenanceDomain::ApplicationRuntime)
+  if (!dse::isApplicationRuntimeQualityDomain(quality.provenanceDomain))
     return invalid("application runtime classification has a foreign quality "
                    "domain");
   if (llvm::Error error = dse::validateJointDesignQualityProvenanceDomain(
@@ -631,7 +650,8 @@ llvm::Expected<dse::JointBoundedQualityPolicy>
 makeApplicationBoundedQualityPolicy(
     const PreparedApplicationBuild &prepared,
     const dse::PlanExecutionPolicy &executionPolicy,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    std::optional<ApplicationSystemQualityContext> systemQuality) {
   std::shared_ptr<const evaluation::models::EdaPredictionModelWeight> fpaWeight;
   if (prepared.edaPredictionModelWeight) {
     auto imported = evaluation::models::importEdaPredictionModelWeight(
@@ -653,10 +673,17 @@ makeApplicationBoundedQualityPolicy(
   };
   catalogs.dimensions = {integerDimension(0), integerDimension(1),
                          integerDimension(2)};
+  const std::uint32_t runtimeMeasureCount =
+      systemQuality ? dse::applicationSystemRuntimeMeasureCount
+                    : dse::applicationSpatialRuntimeMeasureCount;
+  if (systemQuality)
+    catalogs.dimensions.push_back(
+        integerDimension(dse::applicationSpatialRuntimeMeasureCount));
   if (fpaWeight)
     for (const auto indexed : llvm::enumerate(applicationFpaMetrics)) {
       auto dimension = makeFpaDimension(
-          indexed.value(), static_cast<std::uint32_t>(indexed.index() + 3));
+          indexed.value(),
+          static_cast<std::uint32_t>(indexed.index() + runtimeMeasureCount));
       if (!dimension)
         return dimension.takeError();
       catalogs.dimensions.push_back(std::move(*dimension));
@@ -672,6 +699,11 @@ makeApplicationBoundedQualityPolicy(
   // Rank actual mapped execution ahead of the abstract parallel oracle.
   // DFG cycles remain a tie-breaker; they cannot veto a faster CGRA pipeline.
   std::swap(finalOrdering[0], finalOrdering[1]);
+  if (systemQuality)
+    std::rotate(
+        finalOrdering.begin(),
+        finalOrdering.begin() + dse::applicationSpatialRuntimeMeasureCount,
+        finalOrdering.begin() + dse::applicationSystemRuntimeMeasureCount);
   catalogs.totalOrderings = {{std::move(finalOrdering)}};
   auto program = dse::ObjectiveProgram::getCandidateMeasures(catalogs);
   if (!program)
@@ -684,7 +716,12 @@ makeApplicationBoundedQualityPolicy(
   result.objectiveDimensionLabels = {"dfg_cycles", "cgra_cycles",
                                      "acc_core_count"};
   result.provenanceDomain =
-      dse::JointDesignQualityProvenanceDomain::ApplicationRuntime;
+      systemQuality
+          ? dse::JointDesignQualityProvenanceDomain::ApplicationSystemRuntime
+          : dse::JointDesignQualityProvenanceDomain::ApplicationRuntime;
+  if (systemQuality)
+    result.objectiveDimensionLabels.push_back(
+        dse::applicationSystemComputationTicksLabel.str());
   if (fpaWeight)
     result.objectiveDimensionLabels.insert(
         result.objectiveDimensionLabels.end(),
@@ -693,10 +730,16 @@ makeApplicationBoundedQualityPolicy(
   result.paretoDimensions.resize(catalogs.dimensions.size());
   std::iota(result.paretoDimensions.begin(), result.paretoDimensions.end(), 0);
   result.finalTotalOrdering = 0;
-  result.acquire = [&prepared, executionPolicy, &artifacts, &blobs,
-                    sharedProgram,
-                    fpaWeight](const dse::JointDesignExecution &execution,
-                               std::uint64_t planOrdinal)
+  // Reuse only completed observations from this bounded invocation.
+  // Evidence owns its exact Request key.
+  auto completedSystemEvidence =
+      systemQuality
+          ? std::make_shared<std::vector<evaluation::EvaluationEvidence>>()
+          : nullptr;
+  result.acquire =
+      [&prepared, executionPolicy, &artifacts, &blobs, sharedProgram, fpaWeight,
+       systemQuality, completedSystemEvidence](
+          const dse::JointDesignExecution &execution, std::uint64_t planOrdinal)
       -> llvm::Expected<dse::JointDesignQualityAcquisition> {
     if (planOrdinal >= prepared.mappingAlternatives.size())
       return invalid("bounded-quality selected a foreign software plan");
@@ -720,6 +763,7 @@ makeApplicationBoundedQualityPolicy(
         std::unique(runtimeVerificationEvidence.begin(),
                     runtimeVerificationEvidence.end()),
         runtimeVerificationEvidence.end());
+    bool systemCompleted = !systemQuality.has_value();
     const auto runtimeProvenance =
         [&](std::vector<ResolvedObjectiveScalar> measures = {},
             dse::JointDesignCalibratedModelSupport modelSupport =
@@ -732,8 +776,9 @@ makeApplicationBoundedQualityPolicy(
               runtime->spatialOperandQueueFeedback,
               runtime->spatialTransportFeedback,
               runtime->resourceCoreCost,
-              runtime->disposition ==
-                      ApplicationMappingRuntimeDisposition::Completed
+              systemCompleted &&
+                      runtime->disposition ==
+                          ApplicationMappingRuntimeDisposition::Completed
                   ? dse::JointDesignQualityRuntimeCompletion::Completed
                   : dse::JointDesignQualityRuntimeCompletion::NotEstablished,
               modelSupport};
@@ -778,6 +823,30 @@ makeApplicationBoundedQualityPolicy(
         resolvedObjectiveInteger(*runtime->cgraCycles),
         resolvedObjectiveInteger(static_cast<std::uint64_t>(
             imported->system.view().accCoreOccurrences().size()))};
+    if (systemQuality) {
+      auto observed = detail::acquireApplicationSystemQuality(
+          prepared, *imported, *systemQuality,
+          prepared.mappingAlternatives[planOrdinal].plan.resolvedConfig,
+          artifacts, blobs, *completedSystemEvidence);
+      if (!observed)
+        return observed.takeError();
+      runtimeEvidence.insert(runtimeEvidence.end(), observed->evidence.begin(),
+                             observed->evidence.end());
+      llvm::sort(runtimeEvidence, artifactRootReferenceLess);
+      runtimeEvidence.erase(
+          std::unique(runtimeEvidence.begin(), runtimeEvidence.end()),
+          runtimeEvidence.end());
+      if (const auto *reason =
+              std::get_if<dse::JointDesignQualityIncompleteReason>(
+                  &observed->outcome))
+        return dse::JointDesignQualityAcquisition{
+            dse::IncompleteJointDesignQuality{
+                *reason, execution.summary.selectedMapping, std::nullopt,
+                runtimeProvenance()}};
+      systemCompleted = true;
+      measures.push_back(
+          resolvedObjectiveInteger(std::get<std::uint64_t>(observed->outcome)));
+    }
     std::optional<ArtifactRootReference> fpaEvidence;
     dse::JointDesignCalibratedModelSupport modelSupport =
         dse::JointDesignCalibratedModelSupport::NotEvaluated;

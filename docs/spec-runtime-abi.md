@@ -599,12 +599,15 @@ runtime baseline.
 Runtime may apply one owner-defined admission relation to both Thread Dispatch
 and Spatial Launch. Their launch and completion contracts remain distinct.
 
-For an imported Spatial endpoint event, runtime matches any member of the
+For an imported Spatial logical trigger, runtime matches any member of the
 Dataflow-derived rooted endpoint alternative set. One matched trigger performs
-one atomic acquisition. A causal release completes only after every original
-release point has observed any one member of its own alternative set. Runtime
-must not wait for every mutually exclusive actor transition and must not treat
-one alternative as a second acquisition.
+one atomic acquisition. Each logical causal-release point similarly matches
+any one member of its own alternative set. A physical compute-result handoff
+instead retains its rooted Spatial producer reference and completes after
+every branch accepts its first durable handoff or its unbuffered consumer
+accepts. All release points must complete. Runtime must not substitute the
+producer transition for that physical handoff, wait for every mutually
+exclusive transition, or treat one alternative as a second acquisition.
 
 For a CGRA actor action with causal release, owner work completion and physical
 claim retirement are distinct events. Grant or owner commit completes the
@@ -764,6 +767,34 @@ published only from that synchronous session; the CGRA cell runs uncontrolled
 and its lifecycle is cross-checked against the DFG cell. A graph the drive
 refuses runs the entry Deployment on both cells and records the typed refusal
 in the workspace manifest instead of activation evidence.
+
+### Source computation observation
+
+`Runtime/Computation.h` declares the nullary `void loom_computation_begin()`
+and `void loom_computation_end()` source boundaries. Their native definitions
+are compiler memory barriers. Application image construction replaces these
+bodies in both the host-only and selected host images with memory fences and
+Thread Dispatch computation-event MMIO writes. The selected Mapping does not
+own or move the source boundary. Begin is issued after inputs are coherent in
+shared memory; End follows the complete computation and coherent result writes.
+The contract does not imply physical DRAM cache writeback.
+
+The computation-event register at offset `0x40` accepts the typed
+`Gem5ComputationAction` values Begin and End. The device accepts at most one
+positive complete interval per program, rejects nested or repeated intervals,
+and refuses either boundary while a dispatch is queued, running, or finishing.
+It samples its existing shared-memory service observer at each boundary. The
+attempt result carries the begin/end native ticks and corresponding cumulative
+service samples; SimulationExecution is their persistent owner. No root control
+callback is sent for a computation observation, and host-only executions remain
+free of accelerator root lifecycle events.
+
+The root Start control event is acknowledged before the first point of that
+root can be submitted. Recording Start after submitting the point inventory
+would lose early execution and allow work before its root was admitted.
+Root Completion remains a control event after the runtime has retired and reset
+its dispatch records. Computation timing is independently delimited by the
+source; neither root control event substitutes for a computation boundary.
 
 Projection 12 requires the Thread Dispatch device to write one transient
 big-endian root-lifecycle stream:

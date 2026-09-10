@@ -10,9 +10,11 @@ import re
 import sys
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from loom_evidence_portfolio import (  # noqa: E402
-    FEASIBLE_DISPOSITIONS, PAIR_DECISION_SCHEMA, PAIR_DECISION_VERSION,
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.loom_evidence_portfolio import (  # noqa: E402
+    FEASIBLE_DISPOSITIONS,
+    PAIR_DECISION_SCHEMA,
+    PAIR_DECISION_VERSION,
 )
 
 
@@ -37,10 +39,7 @@ def artifact_reference(
         and isinstance(value.get("schema"), str)
         and (expected_schema is None or value["schema"] == expected_schema)
         and isinstance(value.get("schema_version"), str)
-        and (
-            expected_version is None
-            or value["schema_version"] == expected_version
-        )
+        and (expected_version is None or value["schema_version"] == expected_version)
         and isinstance(value.get("artifact"), str)
         and re.fullmatch(r"[0-9a-f]{64}", value["artifact"]) is not None
     )
@@ -136,9 +135,7 @@ def main() -> int:
                 or not isinstance(value.get("artifact"), str)
                 for value in values
             ) or len(set(keys)) != len(keys):
-                raise ValueError(
-                    f"visualization Mapping domain has invalid {field}"
-                )
+                raise ValueError(f"visualization Mapping domain has invalid {field}")
             flattened[field].update(keys)
     for field, values in flattened.items():
         if values != {canonical_key(value) for value in bundle[field]}:
@@ -177,8 +174,7 @@ def main() -> int:
         or not isinstance(verified_repairs, int)
         or isinstance(verified_repairs, bool)
         or not 0 <= verified_repairs <= repair_attempts
-        or (verified_repairs == repair_attempts)
-        != (repair_incomplete_reason is None)
+        or (verified_repairs == repair_attempts) != (repair_incomplete_reason is None)
         or (
             verified_repairs < repair_attempts
             and (
@@ -238,20 +234,16 @@ def main() -> int:
     if (
         selected_observation.get("mapping_disposition") != "verified"
         or selected_observation.get("runtime_disposition") != "completed"
-        or selected_mapping
-        not in selected_observation.get("system_mappings", [])
+        or selected_mapping not in selected_observation.get("system_mappings", [])
         or not isinstance(selected_observation.get("runtime_evidence"), list)
         or not selected_observation["runtime_evidence"]
         or not isinstance(selected_observation.get("oracle_evidence"), list)
         or not selected_observation["oracle_evidence"]
     ):
-        raise ValueError(
-            "selected Mapping lacks completed runtime and oracle Evidence"
-        )
+        raise ValueError("selected Mapping lacks completed runtime and oracle Evidence")
     pair_selected_system = pair.get("selected_system")
-    if (
-        not isinstance(pair_selected_system, str)
-        or not pair_selected_system.endswith(selected_system["artifact"])
+    if not isinstance(pair_selected_system, str) or not pair_selected_system.endswith(
+        selected_system["artifact"]
     ):
         raise ValueError("pair decision and bundle select different Systems")
     selected_domains = [
@@ -273,18 +265,18 @@ def main() -> int:
 
     repair_records = bundle.get("hardware_mutation_repair_records")
     selected_repair = bundle.get("selected_hardware_mutation_repair_record")
-    if not isinstance(repair_records, list) or any(
-        not isinstance(record, dict)
-        or not isinstance(record.get("artifact"), str)
-        for record in repair_records
-    ) or len({canonical_key(record) for record in repair_records}) != len(
-        repair_records
+    if (
+        not isinstance(repair_records, list)
+        or any(
+            not isinstance(record, dict) or not isinstance(record.get("artifact"), str)
+            for record in repair_records
+        )
+        or len({canonical_key(record) for record in repair_records})
+        != len(repair_records)
     ):
         raise ValueError("visualization bundle has no repair-record inventory")
     if pair["disposition"] == "hardware_dse_alternative":
-        observed_repair = selected_observation.get(
-            "hardware_mutation_repair_record"
-        )
+        observed_repair = selected_observation.get("hardware_mutation_repair_record")
         if observed_repair is None:
             if selected_repair is not None:
                 raise ValueError("selected repair record changed across projections")
@@ -310,8 +302,7 @@ def main() -> int:
             not isinstance(endpoint, dict)
             or not isinstance(endpoint.get("mapping"), dict)
             or not isinstance(endpoint.get("deployment"), dict)
-            or canonical_key(endpoint["mapping"])
-            not in selected_domain_mapping_keys
+            or canonical_key(endpoint["mapping"]) not in selected_domain_mapping_keys
         ):
             raise ValueError("resource-time endpoint is incomplete")
         key = canonical_key(endpoint)
@@ -339,9 +330,7 @@ def main() -> int:
         spectrum_class = scenario.get("spectrum_class")
         if not isinstance(spectrum_class, str):
             raise ValueError("resource-time scenario has no spectrum class")
-        if not isinstance(
-            scenario.get("analytic_schedule_makespan_picoseconds"), int
-        ):
+        if not isinstance(scenario.get("analytic_schedule_makespan_picoseconds"), int):
             raise ValueError("resource-time scenario has no analytic makespan")
         mappings = scenario.get("system_mappings")
         states = scenario.get("states")
@@ -458,10 +447,9 @@ def main() -> int:
             or child_spectrum.get("status") != "verified"
         ):
             raise ValueError("resource-time transition has no verified spectra")
-        if (
-            parent_spectrum.get("dataflow") != child_spectrum.get("dataflow")
-            or parent_spectrum.get("fabric") != child_spectrum.get("fabric")
-        ):
+        if parent_spectrum.get("dataflow") != child_spectrum.get(
+            "dataflow"
+        ) or parent_spectrum.get("fabric") != child_spectrum.get("fabric"):
             raise ValueError("resource-time endpoint spectra have different owners")
         if parent_endpoint.get("mapping") == entry_mapping:
             entry_parent_spectra.append(parent_spectrum)
@@ -475,8 +463,7 @@ def main() -> int:
                 raise ValueError("parent spectrum scenario has no state path")
             if (
                 arguments.expected_spectrum_class
-                and scenario.get("spectrum_class")
-                != arguments.expected_spectrum_class
+                and scenario.get("spectrum_class") != arguments.expected_spectrum_class
             ):
                 continue
             for before, after in zip(states, states[1:]):
@@ -563,9 +550,7 @@ def main() -> int:
                 or not isinstance(oracle_evidence, list)
                 or not oracle_evidence
                 or any(
-                    not artifact_reference(
-                        reference, "evaluation.evidence", "1.0"
-                    )
+                    not artifact_reference(reference, "evaluation.evidence", "1.0")
                     or canonical_key(reference) not in runtime_inventory_keys
                     for reference in runtime_evidence
                 )
@@ -594,13 +579,15 @@ def main() -> int:
             "cold_fallback",
         }:
             raise ValueError("resource-time repair has no typed disposition")
-        if repair.get("cold_dfg_cycles") is None and repair.get(
-            "cold_cgra_cycles"
-        ) is None:
+        if (
+            repair.get("cold_dfg_cycles") is None
+            and repair.get("cold_cgra_cycles") is None
+        ):
             raise ValueError("resource-time cold replay has no QoR")
-        if repair.get("incremental_dfg_cycles") is None and repair.get(
-            "incremental_cgra_cycles"
-        ) is None:
+        if (
+            repair.get("incremental_dfg_cycles") is None
+            and repair.get("incremental_cgra_cycles") is None
+        ):
             raise ValueError("resource-time incremental replay has no QoR")
         if (repair.get("cold_dfg_cycles") is None) != (
             repair.get("incremental_dfg_cycles") is None
@@ -626,8 +613,7 @@ def main() -> int:
     for scenario in scenarios:
         if (
             arguments.expected_spectrum_class
-            and scenario.get("spectrum_class")
-            != arguments.expected_spectrum_class
+            and scenario.get("spectrum_class") != arguments.expected_spectrum_class
         ):
             continue
         state_path: list[dict[str, Any]] = []

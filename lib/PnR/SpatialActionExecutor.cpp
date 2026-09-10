@@ -696,6 +696,16 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
   case ResolvedPnrViolationKind::HardProgressViolation:
     return executorError("hard progress witness has no transport encoding");
   case ResolvedPnrViolationKind::ProgressProofDebt: {
+    if (candidate_->progress().isComputeProofDebtWitness(action.witnessOrdinal)) {
+      const auto &ports = problem.ports();
+      const auto offsets = ports.computeRealizationDemandOffsets();
+      for (PnrIndex realization : candidate_->progress().computeProgress()->witnessRealizations)
+        for (PnrIndex demand : ports.computeRealizationDemands().slice(
+                 offsets[realization], offsets[realization + 1] - offsets[realization]))
+          if (llvm::Error error = markNet(ports.portDemands()[demand].logicalNet))
+            return error;
+      return llvm::Error::success();
+    }
     const PnrIndex owner = action.witnessOrdinal;
     if (llvm::Error error = candidate_->rebuildCapacityProofDebtWitness(
             owner, capacityProofDebtWitness_))

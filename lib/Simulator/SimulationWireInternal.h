@@ -345,16 +345,6 @@ validateSpatialRuntimeInput(const SpatialSimulationRuntimeInput &input,
                             const ResolvedLaunchContext &context,
                             const dataflow::CanonicalDataflowProgramView &view);
 
-// Derive the canonical runtime input from an author draft: validate every
-// table and assign each object its zero-based ordinal from the sorted
-// binding keys. Grouping is expressed only by sharing a draft object slot.
-llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
-    const SpatialSimulationRuntimeInputDraft &draft,
-    const SpatialSimulationWorkload &workload,
-    const ::loom::ArtifactIdentity &workloadIdentity,
-    const ResolvedLaunchContext &context,
-    const dataflow::CanonicalDataflowProgramView &view);
-
 llvm::Error
 validateSystemRuntimeInput(const SystemSimulationRuntimeInput &input,
                            const SystemSimulationWorkload &workload,
