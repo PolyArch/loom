@@ -10,6 +10,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
@@ -36,6 +37,69 @@ namespace loom::external_tool {
 
 char ExternalToolExecutionAdmissionStoppedError::ID = 0;
 char IncompleteExternalToolInvocationError::ID = 0;
+
+llvm::StringRef
+externalToolResultReusePolicySpelling(ExternalToolResultReusePolicy policy) {
+  switch (policy) {
+  case ExternalToolResultReusePolicy::AllowExactReuse:
+    return "allow_exact_reuse";
+  case ExternalToolResultReusePolicy::RequireFresh:
+    return "require_fresh";
+  }
+  llvm_unreachable("closed external-tool reuse policy");
+}
+
+llvm::StringRef externalToolResultCacheAvailabilitySpelling(
+    ExternalToolResultCacheAvailability availability) {
+  switch (availability) {
+  case ExternalToolResultCacheAvailability::Disabled:
+    return "disabled";
+  case ExternalToolResultCacheAvailability::Available:
+    return "available";
+  case ExternalToolResultCacheAvailability::Unavailable:
+    return "unavailable";
+  }
+  llvm_unreachable("closed external-tool cache availability");
+}
+
+llvm::StringRef
+externalToolResultCacheLookupSpelling(ExternalToolResultCacheLookup lookup) {
+  switch (lookup) {
+  case ExternalToolResultCacheLookup::NotAttempted:
+    return "not_attempted";
+  case ExternalToolResultCacheLookup::Hit:
+    return "hit";
+  case ExternalToolResultCacheLookup::Miss:
+    return "miss";
+  }
+  llvm_unreachable("closed external-tool cache lookup");
+}
+
+llvm::StringRef
+externalToolResultCacheDiscardSpelling(ExternalToolResultCacheDiscard discard) {
+  switch (discard) {
+  case ExternalToolResultCacheDiscard::NotAttempted:
+    return "not_attempted";
+  case ExternalToolResultCacheDiscard::Discarded:
+    return "discarded";
+  case ExternalToolResultCacheDiscard::Failed:
+    return "failed";
+  }
+  llvm_unreachable("closed external-tool cache discard");
+}
+
+llvm::StringRef externalToolResultCachePublicationSpelling(
+    ExternalToolResultCachePublication publication) {
+  switch (publication) {
+  case ExternalToolResultCachePublication::NotAttempted:
+    return "not_attempted";
+  case ExternalToolResultCachePublication::Published:
+    return "published";
+  case ExternalToolResultCachePublication::Failed:
+    return "failed";
+  }
+  llvm_unreachable("closed external-tool cache publication");
+}
 
 namespace {
 
