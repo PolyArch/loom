@@ -186,6 +186,19 @@ enum class ExternalToolResultReusePolicy {
   RequireFresh,
 };
 
+/// Canonical diagnostic spellings of the persistent-result cache disposition.
+/// These are display names for journals and diagnostics, not stored identity.
+llvm::StringRef
+externalToolResultReusePolicySpelling(ExternalToolResultReusePolicy policy);
+llvm::StringRef externalToolResultCacheAvailabilitySpelling(
+    ExternalToolResultCacheAvailability availability);
+llvm::StringRef
+externalToolResultCacheLookupSpelling(ExternalToolResultCacheLookup lookup);
+llvm::StringRef
+externalToolResultCacheDiscardSpelling(ExternalToolResultCacheDiscard discard);
+llvm::StringRef externalToolResultCachePublicationSpelling(
+    ExternalToolResultCachePublication publication);
+
 /// One launcher-observed command execution. Wall time is operational attempt
 /// state and never enters semantic identity or persistent result reuse.
 struct ExternalToolCommandExecutionObservation final {

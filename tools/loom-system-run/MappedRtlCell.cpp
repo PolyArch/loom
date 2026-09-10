@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactText.h"
 #include "Common/ExecutionControl.h"
+#include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Deployment/Package.h"
@@ -274,6 +275,45 @@ llvm::Expected<MappedRtlCellEvidence> loom::system_run::executeMappedRtlCell(
   if (!execution)
     return execution.takeError();
   executionStage.finish();
+  // The mapped-RTL provider invocation is the most expensive external tool
+  // run in the product chain, so its persistent-result cache disposition is
+  // always visible at summary verbosity rather than only inside the cache
+  // owner's own diagnostics.
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Summary,
+      loom::mapping_debug::Stage::Deployment,
+      loom::mapping_debug::Event::Statistics,
+      [&](llvm::json::Object &fields) {
+        fields["operation"] = "mapped_rtl_external_tool_disposition";
+        fields["exit_code"] = static_cast<std::int64_t>(execution->exitCode);
+        fields["reuse_policy"] =
+            loom::external_tool::externalToolResultReusePolicySpelling(
+                execution->reusePolicy);
+        fields["cache_availability"] =
+            loom::external_tool::externalToolResultCacheAvailabilitySpelling(
+                execution->cacheAvailability);
+        fields["cache_lookup"] =
+            loom::external_tool::externalToolResultCacheLookupSpelling(
+                execution->cacheLookup);
+        fields["cache_discard"] =
+            loom::external_tool::externalToolResultCacheDiscardSpelling(
+                execution->cacheDiscard);
+        fields["cache_publication"] =
+            loom::external_tool::externalToolResultCachePublicationSpelling(
+                execution->cachePublication);
+        fields["waited_for_cache_key_lock"] = execution->waitedForCacheKeyLock;
+        fields["invoked_external_tool"] = execution->invokedExternalTool;
+        llvm::json::Array commands;
+        for (const auto &command : execution->commandExecutions) {
+          commands.push_back(llvm::json::Object{
+              {"command_ordinal",
+               static_cast<std::int64_t>(command.commandOrdinal)},
+              {"wall_nanoseconds",
+               static_cast<std::int64_t>(command.wallNanoseconds)},
+              {"exit_code", static_cast<std::int64_t>(command.exitCode)}});
+        }
+        fields["commands"] = std::move(commands);
+      });
   if (execution->exitCode != 0)
     return invalid("spatial-rtl external invocation exited with status " +
                    llvm::Twine(execution->exitCode));
