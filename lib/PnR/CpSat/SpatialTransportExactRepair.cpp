@@ -1770,8 +1770,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                   candidate.atomicCapacityOveruse();
               fields["hard_transport_closed"] = globalTransportClosed;
               fields["regional_progress"] = regionalProgress;
+              fields["hard_progress_violation"] =
+                  candidate.hardProgressViolation();
               fields["progress_proof_debt"] =
                   candidate.progressProofDebtWitnessCount();
+              fields["initial_progress_proof_debt"] = initialProofDebt;
               const auto &compute = *candidate.progress().computeProgress();
               fields["compute_progress_proof_debt"] =
                   compute.objective.proofDebtWitnessCount;
