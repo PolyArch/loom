@@ -27,6 +27,7 @@ add_mlir_library(LoomPnR
   SpatialMemoryConstraintModel.cpp
   SpatialCanonicalSeed.cpp
   SpatialCandidateInitializer.cpp
+  SpatialCandidateInitializationPreference.cpp
   SpatialCandidateLocalTransferPreference.cpp
   SpatialCandidateOperandPairingPreference.cpp
   SpatialCandidateTopologyPreference.cpp
@@ -57,6 +58,7 @@ add_mlir_library(LoomPnR
   SpatialPhysicalTiming.cpp
   SpatialProgressAnalysis.cpp
   SpatialProgressIndex.cpp
+  SpatialComputeProgressIndex.cpp
   SpatialProgressState.cpp
   SpatialRecurrenceTiming.cpp
   SpatialPnrResourceIndex.cpp

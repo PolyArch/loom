@@ -1,3 +1,4 @@
+#include "../../../include/Runtime/Computation.h"
 #if defined(LOOM_APPLICATION_HOST_EXECUTION)
 #include <stdio.h>
 #endif
@@ -31,7 +32,9 @@ int main(void) {
     lhs[index] = index;
     rhs[index] = index * LOOM_VECADD_MULTIPLIER + LOOM_VECADD_BIAS;
   }
+  loom_computation_begin();
   vecadd_memory(lhs, rhs, result, VECTOR_LENGTH);
+  loom_computation_end();
   long long checksum = 0;
   for (int index = 0; index < VECTOR_LENGTH; ++index)
     if (result[index] !=

@@ -458,10 +458,18 @@ llvm::Expected<JointRuntimeWitnessRepair> executeJointRuntimeWitnessRepair(
 /// Executes bounded software/System pairs before consuming typed Mapping
 /// feedback. Builtin hardware growth is rematerialized from its exact recipe;
 /// Mapping and the final independent verifiers remain the legality authority.
+/// An optional final-selection predicate restricts the bounded-quality
+/// comparison domain after all measurements and hardware exploration. It sees
+/// the exact Mapping and its plan ordinal. The caller owns the admission
+/// policy and its provenance. Rejected candidates retain their complete
+/// observations. An empty admitted domain returns no selected Mapping, with
+/// quality completeness unchanged; the caller owns the admission evidence.
 llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     llvm::ArrayRef<const JointDesignExplorationPlan *> plans,
     const JointDesignPolicy &policy, JointHardwareReopenRequest request,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    llvm::function_ref<llvm::Expected<bool>(const ArtifactRootReference &,
+                                          std::uint64_t)> admitsMapping = {});
 
 } // namespace loom::dse
 

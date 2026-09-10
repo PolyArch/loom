@@ -330,7 +330,7 @@ Each Mapping observation names `runtime_mapping` only when its runtime fields
 were measured for that exact SystemMapping. The surrounding generated Mapping
 frontier cannot stand in for this identity.
 The successful envelope's repair-record inventory is derived from the same
-`loom.application.activation_decision` 3.0 owner projected by runtime manifest
+`loom.application.activation_decision` 4.0 owner projected by runtime manifest
 9.0. The strict activation decision is also the sole application replay and
 Evidence join owner. Its immutable object retains derived cycle totals,
 Request dependency roots, execution output roots, and the aggregate CGRA
@@ -417,6 +417,41 @@ overrides the central DSE ordering policy nor becomes runtime-measured
 Evidence. This immutable planning boundary has no final-application QoR
 completion field. Build success enables execution evidence acquisition.
 
+The product driver accepts `--loom-gem5-readiness=<path>` to pin the native
+System evaluator for bounded-quality Mapping selection. Each verified Mapping
+produces its executable Deployment without an activation decision; this image
+is executable before choosing a winner. The source HostOnly image and candidate
+run through the ordinary gem5 CGRA Evaluation provider under the enclosing
+Mapping deadline and the portfolio's unchanged simulated-work limit. Exact
+external-tool reuse remains owned by the invocation-bundle contract.
+Within one bounded-quality invocation, completed System Evidence is retained
+by its exact Evaluation Request identity. Repeated requests reuse that observed
+result and still pass the ordinary strict System Evidence join. This includes
+the common HostOnly request across different mappings of the same source and
+System. Only Evidence with a `Completed` outcome is retained; the ordinary
+quality join still rejects functional disagreement or an absent computation
+interval. The retained observations expire with the bounded invocation; they
+introduce no persistent lookup index or competing Request key.
+
+Native System quality retains the Spatial DFG, CGRA, and independent source
+comparison Evidence, and adds the complete host/candidate System Evidence pair.
+The System pair must use the same exact machine and observation conditions,
+execute activation inputs re-derived from the source invocation, and produce
+identical complete functional observations. The host-only image uses the same
+System and HostCore compiler target as the candidate. Failed, unsupported,
+unmeasured, or interrupted System execution produces typed incomplete quality;
+it cannot retain a positive Objective. Product-oracle qualification remains a
+separate publication obligation.
+
+`ApplicationSystemRuntime` quality appends `system_computation_ticks` to the
+Spatial runtime measures and ranks this measure first, followed by CGRA cycles,
+DFG cycles, and physical AccCore cost. Optional calibrated FPA measures follow
+the complete runtime prefix. `ApplicationRuntime` retains its Spatial-only
+measurement domain. The choice is explicit in the invocation, never inferred
+from ambient tool availability. Activation decision 4.0 admits the native
+Evidence pair and independently re-derives its candidate computation time;
+this derived value is not another serialized measurement authority.
+
 `qualifyApplicationSystemQor` owns the post-execution relation. It strictly joins
 the exact runtime manifest, host-only and mapped System executions, their
 completed Runtime Evidence, and each required passing product-oracle Evidence.
@@ -426,49 +461,59 @@ The exact Runtime values must equal the complete program tick windows. The
 result is derived from immutable owners, not stored as another Artifact or
 written back into the earlier pair decision.
 
-Accelerator resources are measured over the candidate's accelerated window: the
-gem5-tick interval from its first root Start lifecycle event through its last
-root Completion lifecycle event. Host gaps between launches stay inside that
-interval, so an idle accelerator is never hidden. The window's shared-memory
-acceptance service is the difference of the cumulative service samples the two
-bounding lifecycle events carry. A run that completes no launch has no window
-and therefore no accelerated resource claim; the host-only member is exactly
-such a run. Speedup remains the complete-program comparison, so shrinking the
-window cannot manufacture qualification.
+Performance qualification measures the useful computation explicitly delimited
+by the source's `loom_computation_begin()` and `loom_computation_end()` calls.
+The Runtime ABI owns these observations. Both the host-only and candidate
+images use the same source boundary, independent of which subregions DSE
+selects for acceleration. Input generation, warmup, and result verification
+remain outside it. All residual host computation, dispatch, communication,
+synchronization, and output publication between the boundaries remain charged.
+A workload has at most one computation interval; a batch encloses all its
+measured samples in that interval rather than summing favorable subintervals.
 
-Compute occupancy is the candidate's second, independent resource measurement.
-One retired compute firing occupies its bound compute unit for exactly one
-reference cycle. The numerator sums the retired firings of Compute-kind actors
-across every candidate Spatial invocation replayed standalone on the CGRA
-engine over its LaunchToTerminal window; the DFG replays are a correctness
-oracle, not the candidate. The denominator is the compute-cycle capacity the
-launched accelerators offered across the window: the mapped compute units times
-the launched AccCore count times the window's reference cycles. Mapped compute
-units are the distinct physical PE occurrences, spatial and temporal, that carry
-at least one compute realization in the selected SpatialMapping. Launched
-AccCores are the distinct AccCores that received at least one invocation. Window
-reference cycles are the window's gem5 ticks divided by the SpatialCore clock
-period, taken from that occurrence's Fabric clock-domain contract; no reference
-frequency is assumed.
+The interval begins with the input data visible in shared external memory and
+ends after the computation's output data is visible there. This is coherent
+System memory visibility, not a claim that dirty cache lines have reached
+physical DRAM. The same cache hierarchy and visibility contract apply to both
+members. No initializer or oracle is offloaded merely to improve a benchmark
+ratio. Full-program Runtime remains an exact separate diagnostic; it cannot
+substitute for an absent computation interval.
 
-The owner's `loom.application.system_qor_projection` version `2.0` reports exact
-roots, complete-program durations, native busy ticks, the candidate's
-accelerated window with both resource measurements, speedup, a derived
-`qualified` or `not_qualified` status, and a typed bottleneck classification.
-Qualification requires a strictly positive complete-program speedup joined with
-a saturated accelerator resource: strictly more than 90 percent window
-shared-memory service utilization, or strictly more than 90 percent window
-compute occupancy. The two branches are independent; either one suffices.
-`not_qualified` preserves both observed measurements. Capacity is fixed by the
-exact System model and the selected mapping and cannot be reduced to improve
-either utilization.
+Speedup is the host computation interval divided by the candidate computation
+interval. Shared-memory utilization is the difference of the native cumulative
+service samples at the computation boundaries divided by that same interval.
+There is one service observer. Idle cycles and necessary host work do not
+vanish from the denominator.
 
-The bottleneck classification explains the same measurements the status uses and
-is not a second gate. It is derived in a fixed order: `memory_bandwidth_bound`
-when the window's memory service exceeds the threshold, then `compute_bound`
-when the window's compute occupancy does, then `host_bound` when the window
-covers less than one tenth of the complete program, otherwise `latency_bound`.
-The DSE consumes this classification; it never overrides the status.
+Compute occupancy uses the retired Compute-kind actor firings of the standalone
+CGRA replay for each invocation that completed inside the candidate computation
+interval. DFG replays remain correctness oracles. The boundary device refuses
+unfinished accelerator invocations at either marker, so this membership selects
+whole invocations and excludes warmup. The denominator is the distinct mapped
+compute PE count times the distinct launched AccCore count times the interval's
+reference cycles. The SpatialCore clock-domain contract supplies the reference
+period; no frequency is assumed. An interval without accelerator launches has
+zero compute occupancy and cannot qualify as acceleration.
+
+The `loom.application.system_qor_projection` version `3.0` reports exact roots,
+full-program durations and memory activity, each member's optional computation
+interval, measured speedup, and the candidate's compute occupancy. Qualification
+requires strict computation speedup and strictly more than 90 percent shared
+memory service utilization or compute occupancy over that computation interval.
+Neither the threshold nor the machine capacity changes with the measurement
+boundary. Missing intervals produce null speedup and `unmeasured` status and
+bottleneck; portfolio qualification rejects them. A boundary present on only
+one pair member is an invalid comparison.
+
+Bottleneck classification is explanatory, not a second gate. It selects
+`memory_bandwidth_bound` for saturated memory service, then `compute_bound`
+for saturated compute occupancy. Otherwise it selects `host_bound` when the
+candidate's first-root-Start to last-root-Completion span, intersected with the
+computation interval, covers less than one tenth of the useful computation;
+otherwise it selects `latency_bound`. Initialization and verification outside
+the computation interval do not contribute to this classification. System
+outcomes are feedback inputs for DSE; successful Mapping alone establishes no
+measured performance benefit.
 
 The System driver always retains valid measured results, including regressions.
 The real-application verifier and portfolio qualification consume this

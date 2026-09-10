@@ -410,6 +410,12 @@ loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
 
 loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  // These fixtures exercise complete annealing work and rollback after a
+  // feasible state, independently of interactive preset early stopping.
+  resolved.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  resolved.dse.systemPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   resolved.dse.spatialPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,

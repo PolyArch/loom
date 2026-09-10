@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <fstream>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace gem5 {
@@ -26,6 +27,7 @@ public:
 
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
+  std::vector<std::uint64_t> computationInterval() const;
 
 private:
   enum class State : std::uint32_t {
@@ -69,6 +71,8 @@ private:
   Tick lastRootEventTick = 0;
   std::uint64_t lastRootEventDelta = 0;
   bool hasRootEvent = false;
+  std::optional<std::pair<Tick, std::uint64_t>> computationBegin;
+  std::vector<std::uint64_t> computationObservations;
   EventFunctionWrapper serviceEvent;
 
   void service();

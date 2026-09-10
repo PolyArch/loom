@@ -537,6 +537,25 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
           window->occupiedTicks == 2,
       "accelerated window does not span the first start to the last completion");
 
+  SystemSimulationExecution warmed = execution;
+  warmed.progressObservations.rootLifecycle = {{start, 7, {5, 0}, 1},
+                                               {completion, 7, {8, 0}, 3},
+                                               {start, 8, {12, 0}, 4},
+                                               {completion, 8, {16, 0}, 7}};
+  auto warmedExecution =
+      take(test, finalizeSimulationExecution(warmed, fixture.resolution,
+                                             artifacts, blobs));
+  const SystemComputationInterval computation{10, 20, 3, 8};
+  const auto measuredWindow = take(
+      test, projectSystemAcceleratedWindow(warmedExecution, fixture.resolution,
+                                           artifacts, blobs, &computation));
+  deployment::test::require(
+      test,
+      measuredWindow && measuredWindow->firstStartTick == 12 &&
+          measuredWindow->lastCompletionTick == 16 &&
+          measuredWindow->occupiedTicks == 3,
+      "warmup extended activity across the host gap before measured work");
+
   execution.progressObservations.rootLifecycle.clear();
   CanonicalSimulationExecution unlaunched =
       take(test, finalizeSimulationExecution(execution, fixture.resolution,

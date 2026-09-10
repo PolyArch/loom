@@ -1,6 +1,7 @@
 add_library(LoomRuntimePlatformBinding
   FabricModelPlatform.cpp
   Gem5BridgeABI.cpp
+  Gem5BuildReadiness.cpp
   Gem5BuiltinModels.cpp
   Gem5SimulationBinding.cpp
   Gem5SimulationBindingCodec.cpp
@@ -82,6 +83,8 @@ target_link_libraries(LoomRuntimeDeploymentLoader PUBLIC
 
 add_library(LoomGem5SystemExecution
   Gem5SystemExecution.cpp
+  Gem5SystemCase.cpp
+  Gem5SystemObservation.cpp
   Gem5SystemExecutionFacts.cpp
   Gem5SystemFactsSession.cpp
 )

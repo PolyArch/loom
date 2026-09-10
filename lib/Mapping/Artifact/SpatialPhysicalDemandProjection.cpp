@@ -1322,6 +1322,13 @@ classifySpatialAttachmentDurableProgressBoundary(
                ? SpatialDurableProgressBoundaryKind::BufferedFifo
                : SpatialDurableProgressBoundaryKind::None;
 
+  if (const auto *fifo =
+          std::get_if<::loom::fabric::FabricPeRegisterFifoPayload>(
+              &attachment.payload))
+    return fifo->role == ::loom::fabric::FabricRegisterFifoPathRole::Write
+               ? SpatialDurableProgressBoundaryKind::RegisterFifo
+               : SpatialDurableProgressBoundaryKind::None;
+
   const auto *selector =
       std::get_if<::loom::fabric::FabricPeSelectorPayload>(&attachment.payload);
   if (!selector || !fuPort ||

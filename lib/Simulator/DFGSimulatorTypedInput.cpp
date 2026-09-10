@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
@@ -402,7 +403,7 @@ llvm::Expected<CanonicalSimulationRuntimeInput> ExternalStreamInputState::captur
     draft.runtimeStreams[ordinal] = {std::move(*sequence),
                                      StreamTermination::ClosedAfterLast};
   }
-  return finalizeSimulationRuntimeInput(draft, workload, program);
+  return finalizeSimulationRuntimeInput(std::move(draft), workload, program);
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

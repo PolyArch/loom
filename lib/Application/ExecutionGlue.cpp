@@ -438,6 +438,32 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
                                builder.CreatePtrToInt(result, i64)});
   }
 
+  // Admit the root before any point can execute. This lifecycle also bounds
+  // native activity, so recording it after submission loses early completions.
+  llvm::Value *startDispatch = builder.CreateLoad(
+      llvm::Type::getInt64Ty(module.getContext()), &dispatchBase);
+  emitRootLifecycleEvent(builder, startDispatch, launch.root,
+                         llvm::ConstantInt::get(i64, 0),
+                         runtime::Gem5RootLifecycleAction::Start);
+  llvm::Value *startedRootOccurrence = loadMmio64Descriptor(
+      builder, startDispatch, runtime::gem5ThreadDispatchRootOccurrenceLow,
+      runtime::gem5ThreadDispatchRootOccurrenceHigh);
+  llvm::Value *startStatus = loadMmio32(
+      builder, startDispatch, runtime::gem5ThreadDispatchRootEventStatus);
+  builder.CreateStore(startedRootOccurrence, activeRootOccurrence);
+  llvm::BasicBlock *started =
+      llvm::BasicBlock::Create(module.getContext(), "started", helper);
+  llvm::Value *startAcknowledged = builder.CreateAnd(
+      builder.CreateICmpNE(startedRootOccurrence,
+                           llvm::ConstantInt::get(i64, 0)),
+      builder.CreateICmpEQ(
+          startStatus, llvm::ConstantInt::get(
+                           startStatus->getType(),
+                           static_cast<std::uint32_t>(
+                               runtime::Gem5RootEventStatus::Acknowledged))));
+  builder.CreateCondBr(startAcknowledged, started, failed);
+  builder.SetInsertPoint(started);
+
   for (const auto pointIndexed : llvm::enumerate(launch.points)) {
     const ApplicationSpatialInvocationPlan::Launch::Point &point =
         pointIndexed.value();
@@ -493,30 +519,6 @@ llvm::Expected<MaterializedRootDispatch> materializeRootDispatchHelpers(
     builder.CreateCondBr(accepted, next, failed);
     builder.SetInsertPoint(next);
   }
-  llvm::Value *startDispatch = builder.CreateLoad(
-      llvm::Type::getInt64Ty(module.getContext()), &dispatchBase);
-  emitRootLifecycleEvent(builder, startDispatch, launch.root,
-                         llvm::ConstantInt::get(i64, 0),
-                         runtime::Gem5RootLifecycleAction::Start);
-  llvm::Value *startedRootOccurrence = loadMmio64Descriptor(
-      builder, startDispatch, runtime::gem5ThreadDispatchRootOccurrenceLow,
-      runtime::gem5ThreadDispatchRootOccurrenceHigh);
-  llvm::Value *startStatus = loadMmio32(
-      builder, startDispatch, runtime::gem5ThreadDispatchRootEventStatus);
-  builder.CreateStore(startedRootOccurrence, activeRootOccurrence);
-  llvm::BasicBlock *started =
-      llvm::BasicBlock::Create(module.getContext(), "started", helper);
-  llvm::Value *startAcknowledged = builder.CreateAnd(
-      builder.CreateICmpNE(startedRootOccurrence,
-                           llvm::ConstantInt::get(i64, 0)),
-      builder.CreateICmpEQ(
-          startStatus,
-          llvm::ConstantInt::get(
-              startStatus->getType(),
-              static_cast<std::uint32_t>(
-                  runtime::Gem5RootEventStatus::Acknowledged))));
-  builder.CreateCondBr(startAcknowledged, started, failed);
-  builder.SetInsertPoint(started);
   builder.CreateRet(generation);
   builder.SetInsertPoint(failed);
   builder.CreateBr(failed);
@@ -892,6 +894,40 @@ void clearDispatchAttributes(llvm::CallBase &call) {
   call.removeFnAttr(llvm::Attribute::MustProgress);
   call.removeFnAttr(llvm::Attribute::NoSync);
   call.removeFnAttr(llvm::Attribute::WillReturn);
+}
+
+llvm::Error
+materializeComputationBoundaries(llvm::Module &module,
+                                 llvm::GlobalVariable &dispatchBase) {
+  const std::pair<llvm::StringRef, runtime::Gem5ComputationAction>
+      boundaries[] = {
+          {"loom_computation_begin", runtime::Gem5ComputationAction::Begin},
+          {"loom_computation_end", runtime::Gem5ComputationAction::End}};
+  for (const auto &[name, action] : boundaries) {
+    llvm::Function *function = module.getFunction(name);
+    if (!function)
+      continue;
+    if (function->isVarArg() || !function->arg_empty() ||
+        !function->getReturnType()->isVoidTy())
+      return invalid(
+          "computation boundary has an incompatible source signature");
+    function->deleteBody();
+    function->setLinkage(llvm::GlobalValue::InternalLinkage);
+    clearDispatchAttributes(*function);
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(module.getContext(), "entry", function));
+    emitFence(builder);
+    llvm::Value *dispatch =
+        builder.CreateLoad(dispatchBase.getValueType(), &dispatchBase);
+    storeMmio32(builder, dispatch, runtime::gem5ThreadDispatchComputationEvent,
+                static_cast<std::uint32_t>(action));
+    emitFence(builder);
+    builder.CreateRetVoid();
+    for (llvm::User *user : function->users())
+      if (auto *call = llvm::dyn_cast<llvm::CallBase>(user))
+        clearDispatchAttributes(*call);
+  }
+  return llvm::Error::success();
 }
 
 llvm::Expected<llvm::Function *>
@@ -1371,7 +1407,16 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostOnlyModule(
     const llvm::Module &finalLinkedModule,
     const ApplicationSourceInvocation &sourceInvocation) {
   auto module = llvm::CloneModule(finalLinkedModule);
-  if (llvm::Error error = addHostEntry(*module, sourceInvocation, nullptr, 0))
+  auto *dispatchBase = new llvm::GlobalVariable(
+      *module, llvm::Type::getInt64Ty(module->getContext()), false,
+      llvm::GlobalValue::InternalLinkage,
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(module->getContext()), 0),
+      "__loom_dispatch_base");
+  if (llvm::Error error =
+          materializeComputationBoundaries(*module, *dispatchBase))
+    return std::move(error);
+  if (llvm::Error error =
+          addHostEntry(*module, sourceInvocation, dispatchBase, 0))
     return std::move(error);
   if (llvm::Error error = linkFreestandingRuntime(*module))
     return std::move(error);
@@ -1562,6 +1607,9 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
     materializedSites.push_back({pending.path, *callable});
     ++helperOrdinal;
   }
+  if (llvm::Error error =
+          materializeComputationBoundaries(*module, *dispatchBase))
+    return std::move(error);
   if (llvm::Error error =
           addHostEntry(*module, sourceInvocation, dispatchBase, targetCount))
     return std::move(error);

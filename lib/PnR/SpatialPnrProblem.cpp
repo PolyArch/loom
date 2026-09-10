@@ -1,3 +1,4 @@
+#include "SpatialComputeProgressIndex.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/RoutingNegotiation.h"
 
@@ -352,6 +353,10 @@ public:
         *routing, *handshake);
     if (!capacity)
       return capacity.takeError();
+    auto computeProgress = detail::SpatialComputeProgressIndex::build(
+        dataflow, techMapping, fabric, *capacity, *resources, *transfers);
+    if (!computeProgress)
+      return computeProgress.takeError();
     auto recurrenceTiming = detail::SpatialRecurrenceTimingIndex::build(
         dataflow, techMapping, fabric, *realizations, *memory, *transfers,
         *handshake, (*schedulePressure)->analysis());
@@ -375,7 +380,7 @@ public:
     SpatialActiveProblemStatistics statistics =
         buildSpatialActiveProblemStatistics(
             *realizations, *memory, *transfers, *localTransfers, *ports,
-            *capacity, *activeRouting, *handshake,
+            *capacity, **computeProgress, *activeRouting, *handshake,
             detail::elapsedNanoseconds(activeProblemBegin));
 
     return FrozenSpatialPnrProblemHandle(new FrozenSpatialPnrProblem(
@@ -385,7 +390,7 @@ public:
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*localTransfers), std::move(*ports), resources,
         std::move(*capacity), routing, std::move(*activeRouting),
-        std::move(*handshake), progressIndex,
+        std::move(*handshake), progressIndex, std::move(*computeProgress),
         std::move(*schedulePressure),
         std::move(*recurrenceTiming), *progressBasis,
         std::move(*bindingRelations), std::move(*memoryConstraints),
@@ -546,6 +551,8 @@ public:
       for (const FrozenSpatialResourceUse &use :
            capacity.resourceUses().slice(envelope.useOffset, envelope.useCount))
         if (use.event != envelope.event ||
+            !rangeFits(use.releaseOffset, use.releaseCount,
+                       capacity.resourceReleaseEvents().size()) ||
             use.pattern >= resources.usePatterns().size())
           return invalid("resource-time use projection is inconsistent");
 

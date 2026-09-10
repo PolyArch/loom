@@ -411,10 +411,15 @@ SystemMappingClosureProjection =
 ```
 
 The projection occurrence-qualifies imported Spatial resource uses and rebases
-their event families into each graph-launch context through Dataflow's unique
-`RootedGraphEndpointEventProjection`. One Spatial trigger endpoint expands to
-alternative System event rows; one Spatial `AllOf` release remains an `AllOf`
-of per-point `AnyOf` alternative sets. The projection then composes complete
+their logical trigger events into each graph-launch context through Dataflow's
+unique `RootedGraphEndpointEventProjection`. One Spatial trigger endpoint
+expands to alternative System event rows. A compute-result release instead
+retains its exact rooted Spatial producer reference: producing a result does
+not complete its physical handoff. The selected Mapping derives each branch's
+first durable FIFO, register FIFO, or Temporal operand queue; an unbuffered
+branch requires its exact consumer's acceptance. Logical release points retain
+their per-point `AnyOf` alternatives, while physical result handoffs remain
+distinct members of the same `AllOf` conjunction. The projection composes complete
 cross-Spatial/System service paths and derives selected route dependencies,
 typed post-divergence boundary obligations, capacity, acquire, release, and
 wait-for closure. It has no ArtifactIdentity and is not a fourth Mapping
@@ -713,8 +718,18 @@ cycle, and feedback-input helpers do not create another proof authority.
 
 The strict System closure input remains owned by
 `SystemMappingClosureProjection.cpp`, physical durable-boundary and Temporal
-PE facts by `SpatialPhysicalDemandProjection.cpp`, Presburger cell
+PE facts by `SpatialPhysicalDemandProjection.cpp`, selected first-handoff
+destinations by `SpatialResultHandoffProjection.cpp`, rooted release projection
+by `SpatialResourceEventProjection.cpp`, Presburger cell
 intersection by `SystemPresburger.cpp`, and capacity inventories by the
 capacity verification owners. Both projection adapters feed the same closure
 kernel. The Spatial-named error prefix currently attached to System-path
 failures remains unchanged by this responsibility split.
+
+Standalone Spatial progress projects the selected compute capacity claims and
+result-handoff prerequisites into that same kernel. It has no fabricated System
+execution context. System progress qualifies the corresponding claims by their
+actual occurrence. An independent activation may remain pending while another
+activation holds a shared slot; a prerequisite is excluded only when it already
+precedes the holder's acquisition. A possible capacity cycle remains
+`ProofNotEstablished`, not proof that every execution order deadlocks.

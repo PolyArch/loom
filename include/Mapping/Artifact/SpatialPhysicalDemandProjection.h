@@ -1,9 +1,9 @@
 #ifndef LOOM_MAPPING_ARTIFACT_SPATIALPHYSICALDEMANDPROJECTION_H
 #define LOOM_MAPPING_ARTIFACT_SPATIALPHYSICALDEMANDPROJECTION_H
 
+#include "Common/ComponentViewDigest.h"
 #include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/IR/TemporalPeResourceContract.h"
-#include "Common/ComponentViewDigest.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
 #include "llvm/ADT/APInt.h"
@@ -199,6 +199,7 @@ enum class SpatialDurableProgressBoundaryKind : std::uint8_t {
   None,
   BufferedFifo,
   TemporalPeOperandQueue,
+  RegisterFifo,
 };
 
 struct SpatialDurableProgressBoundaryView final {
@@ -206,6 +207,35 @@ struct SpatialDurableProgressBoundaryView final {
       SpatialDurableProgressBoundaryKind::None;
   ::loom::fabric::FabricPhysicalTraversalRef attachment;
   std::optional<::fabric::LogicalOperandQueueKey> operandQueue;
+};
+
+/// The first durable destination of one result branch. Without a durable
+/// destination, releasing the result requires the exact consumer to accept it.
+struct SpatialResultHandoffSinkView final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  std::optional<SpatialDurableProgressBoundaryView> durableBoundary;
+};
+
+struct SpatialComputeResultHandoffView final {
+  ::dataflow::ActorTokenResultRef producer;
+  std::vector<SpatialResultHandoffSinkView> sinks;
+};
+
+/// A residual branch still needs a selected physical destination. Absence of
+/// this branch means an internal connection in the same Tech realization.
+struct SpatialResultResidualBranch final {
+  std::uint64_t logicalNetOrdinal = 0;
+  std::uint64_t sinkOrdinal = 0;
+};
+
+struct SpatialResultConnectionSinkView final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  std::optional<SpatialResultResidualBranch> residualBranch;
+};
+
+struct SpatialComputeResultConnectionsView final {
+  ::dataflow::ActorTokenResultRef producer;
+  std::vector<SpatialResultConnectionSinkView> sinks;
 };
 
 /// One physical Temporal PE operand queue selected by an ingress activation.
@@ -225,8 +255,7 @@ struct SpatialPeOperandQualifiedPairingKey final {
 
   friend bool operator==(const SpatialPeOperandQualifiedPairingKey &lhs,
                          const SpatialPeOperandQualifiedPairingKey &rhs) {
-    return lhs.context == rhs.context && lhs.fu == rhs.fu &&
-           lhs.tag == rhs.tag;
+    return lhs.context == rhs.context && lhs.fu == rhs.fu && lhs.tag == rhs.tag;
   }
 };
 
@@ -488,6 +517,26 @@ deriveSpatialSinkDurableProgressBoundary(
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
     const SpatialRouteTreeView &route, const SpatialRouteSinkView &sink);
+
+/// Rebuilds compute-result release destinations from the exact selected
+/// internal connections, routes, register FIFOs, and Temporal operand queues.
+/// Each branch stops at its first durable handoff; later consumer firing is
+/// not a prerequisite for that branch's producer result to become reusable.
+llvm::Expected<std::vector<SpatialComputeResultHandoffView>>
+deriveSpatialComputeResultHandoffs(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
+    llvm::ArrayRef<SpatialRouteTreeView> routes);
+
+/// Canonical logical connections before placement or routing. Unused results
+/// remain present with an empty sink set; physical durability is not inferred.
+llvm::Expected<std::vector<SpatialComputeResultConnectionsView>>
+deriveSpatialComputeResultConnections(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping);
 
 llvm::Expected<std::vector<SpatialPeOperandQueueMatchGroupView>>
 deriveSpatialPeOperandQueueMatchGroups(

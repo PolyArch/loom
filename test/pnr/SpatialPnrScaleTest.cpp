@@ -345,6 +345,8 @@ generateTechMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
 loom::pnr::ResolvedPnrConfigView scalePnrConfig() {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   auto &search = resolved.dse.spatialPnr.search;
+  search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   search.initializer.seedAttemptCount = 1;
   search.initializer.assignmentAttemptLimitPerSeed = UINT64_C(2000000);
   search.actionProposal = {1, 1, 0};

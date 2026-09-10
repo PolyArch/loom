@@ -1169,14 +1169,17 @@ trigger is a causal predecessor of its release. A pending group waits for
 active holders whose claims block its capacity. Ordinary contention between
 two pending groups is not hold-and-wait.
 
-The holder-to-pending edge uses the exact open activation interval. The two
-activation relation domains must have a nonempty Presburger intersection, and
-one compatible trigger alternative must be proven strictly after holder
-acquisition and strictly before causal release. Fabric applies release before
-acquisition at one event coordinate, so same-coordinate replacement and an
-event preceding holder acquisition cannot manufacture a physical wait cycle.
-Unordered alternatives do not establish a mandatory holder-to-pending wait
-and therefore do not create an edge.
+The holder-to-pending edge represents a possible wait during an open holding
+interval. The activation relation domains must have a nonempty Presburger
+intersection. A compatible pending trigger must strictly precede a causal
+release member, differ from holder acquisition, and not be proven to precede
+that acquisition. An independently enabled activation can still be pending
+after the holder acquires, so unordered acquisition alternatives can contribute
+to this possible-wait relation. They do not establish a mandatory deadlock.
+Fabric applies release before acquisition at one event coordinate;
+same-coordinate acquisition and release do not create a holding interval, and
+an event already preceding acquisition is not a pending prerequisite of that
+same occurrence.
 
 The proof returns `ProvenNoClosedWaitSet` only when the reconstructed wait-for
 graph is acyclic and every arbitration case has a sufficient Fabric progress

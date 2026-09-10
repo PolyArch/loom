@@ -2,6 +2,7 @@
 
 #include "Common/MappingDebugLog.h"
 #include "CpSatExactProtocol.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/MappingObjective.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialExactRepairInternal.h"
@@ -602,6 +603,13 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return repairResult(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0,
                         0, "hard progress witness has no transport encoding");
   case ResolvedPnrViolationKind::ProgressProofDebt: {
+    if (candidate.progress().isComputeProofDebtWitness(primaryWitnessOrdinal) &&
+        !candidate.progress().computeProgress()->witnessRealizations.empty()) {
+      for (PnrIndex realization : candidate.progress().computeProgress()->witnessRealizations)
+        if (llvm::Error error = addDecision(realization))
+          return std::move(error);
+      break;
+    }
     return repairResult(
         SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
         "capacity proof-debt repair requires an owner-local disjunctive "
@@ -1742,6 +1750,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           (globalTransportClosed || regionalProgress) &&
           !*primaryWitnessLive;
       if (!assignmentLegal) {
+        // The negotiated route selection failed acceptance; another route
+        // under these terminals may still close. Its search exclusion cannot
+        // contribute a proof that the fixed-boundary region is infeasible.
+        sawRoutingIncomplete = true;
         rejectAssignment = true;
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Decision,
@@ -1760,6 +1772,17 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
               fields["regional_progress"] = regionalProgress;
               fields["progress_proof_debt"] =
                   candidate.progressProofDebtWitnessCount();
+              const auto &compute = *candidate.progress().computeProgress();
+              fields["compute_progress_proof_debt"] =
+                  compute.objective.proofDebtWitnessCount;
+              fields["compute_progress_reason"] =
+                  mapping::mappingProgressClosureReasonSpelling(
+                      compute.closure.reason);
+              llvm::json::Array computeWitness;
+              for (PnrIndex realization : compute.witnessRealizations)
+                computeWitness.push_back(realization);
+              fields["compute_progress_realizations"] =
+                  std::move(computeWitness);
               fields["primary_witness_eliminated"] = !*primaryWitnessLive;
               fields["selected_rank_improved"] = selectedRankImproved;
               llvm::json::Array initialCodes;

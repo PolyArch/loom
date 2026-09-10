@@ -283,12 +283,21 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
                      "completion");
     return llvm::Error::success();
   case JointDesignQualityProvenanceDomain::ApplicationRuntime:
+  case JointDesignQualityProvenanceDomain::ApplicationSystemRuntime:
     break;
   }
-  if (policy.objectiveDimensionLabels.size() < 3 ||
+  const bool systemRuntime =
+      policy.provenanceDomain ==
+      JointDesignQualityProvenanceDomain::ApplicationSystemRuntime;
+  const auto runtimeMeasureCount = systemRuntime
+                                       ? applicationSystemRuntimeMeasureCount
+                                       : applicationSpatialRuntimeMeasureCount;
+  if (policy.objectiveDimensionLabels.size() < runtimeMeasureCount ||
       policy.objectiveDimensionLabels[0] != "dfg_cycles" ||
       policy.objectiveDimensionLabels[1] != "cgra_cycles" ||
-      policy.objectiveDimensionLabels[2] != "acc_core_count")
+      policy.objectiveDimensionLabels[2] != "acc_core_count" ||
+      (systemRuntime && policy.objectiveDimensionLabels[3] !=
+                            applicationSystemComputationTicksLabel))
     return invalid("ApplicationRuntime provenance has a foreign Objective "
                    "domain");
   if (!provenance.resourceCoreCost)
@@ -302,7 +311,7 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
                    "completed runtime owner");
   if (provenance.calibratedModelSupport ==
           JointDesignCalibratedModelSupport::OutOfDomain &&
-      provenance.rawMeasures.size() != 3)
+      provenance.rawMeasures.size() != runtimeMeasureCount)
     return invalid("ApplicationRuntime out-of-domain provenance did not "
                    "retain exactly its runtime measures");
   if (objectiveComplete && provenance.runtimeCompletion !=
@@ -311,7 +320,7 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
                    "runtime completion");
   if (provenance.runtimeCompletion ==
           JointDesignQualityRuntimeCompletion::Completed &&
-      provenance.rawMeasures.size() < 3)
+      provenance.rawMeasures.size() < runtimeMeasureCount)
     return invalid("completed ApplicationRuntime provenance lost its runtime "
                    "measures");
   if (provenance.runtimeCompletion ==
@@ -368,7 +377,7 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
       JointDesignQualityRuntimeCompletion::Completed)
     return invalid("ApplicationRuntime raw measures have no completed runtime "
                    "owner");
-  if (provenance.rawMeasures.size() < 3)
+  if (provenance.rawMeasures.size() < runtimeMeasureCount)
     return invalid("ApplicationRuntime provenance has incomplete raw "
                    "measures");
   const auto *dfg =
@@ -381,6 +390,13 @@ llvm::Error validateJointDesignQualityProvenanceDomain(
       cores->negative)
     return invalid("ApplicationRuntime provenance has invalid runtime raw "
                    "measures");
+  if (systemRuntime) {
+    const auto *ticks = std::get_if<ResolvedObjectiveInteger>(
+        &provenance.rawMeasures[applicationSpatialRuntimeMeasureCount]);
+    if (!ticks || ticks->negative || ticks->magnitude == 0)
+      return invalid(
+          "System runtime provenance has no positive computation time");
+  }
   if (*provenance.resourceCoreCost != cores->magnitude)
     return invalid("ApplicationRuntime resource count disagrees with its raw "
                    "measure");

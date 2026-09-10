@@ -1347,12 +1347,24 @@ InitializerRelationSolver::search(
 
   PnrIndex selected = getInvalidPnrIndex();
   PnrIndex selectedCount = getInvalidPnrIndex();
-  for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision)
+  bool selectedHasLivePreference = false;
+  // Resolve explicit preferences before unpreferred dependencies remove their
+  // values through propagation. This changes search order, not the domains.
+  for (PnrIndex decision = 0; decision < domainCounts_.size(); ++decision) {
+    const bool hasLivePreference =
+        !preferredChoices.empty() &&
+        preferredChoices[decision] != getInvalidPnrIndex() &&
+        choiceActive(decision, preferredChoices[decision]);
     if (domainCounts_[decision] > 1 &&
-        domainCounts_[decision] < selectedCount) {
+        (selected == getInvalidPnrIndex() ||
+         hasLivePreference > selectedHasLivePreference ||
+         (hasLivePreference == selectedHasLivePreference &&
+          domainCounts_[decision] < selectedCount))) {
       selected = decision;
       selectedCount = domainCounts_[decision];
+      selectedHasLivePreference = hasLivePreference;
     }
+  }
   if (selected == getInvalidPnrIndex()) {
     for (const InitializerRelationRecord &relation : model_->relations())
       if (!activeRelationSatisfied(relation))

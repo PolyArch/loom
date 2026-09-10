@@ -573,7 +573,7 @@ Every selected spatial programming unit still requires its exact
 The three children are versioned Deployment-local payloads, not independent
 Artifact families. They use the closed descriptors
 `loom.thread_dispatch_image 1.0`, `loom.spatial_launch_image 1.0`, and
-`loom.admission_image 1.0` inside Deployment canonical JSON. They have no
+`loom.admission_image 2.0` inside Deployment canonical JSON. They have no
 independent digest or identity; their complete canonical bytes are covered by
 the enclosing Deployment identity.
 
@@ -720,7 +720,11 @@ AdmissionPayload {
           fabric_intrinsic_release : true
           causal_release? {
             all_of[] {
-              alternatives[] : EventFamilyKey
+              event = alternatives[] : EventFamilyKey
+                    | spatial_result_handoff {
+                        graph_launch_ref : RootedGraphLaunchRef
+                        producer_ref : CanonicalGraphProducerEndpointRef
+                      }
               guaranteed_offset?
             }
           }
@@ -730,6 +734,14 @@ AdmissionPayload {
   }
 }
 ```
+
+Each release member contains exactly one of `alternatives` and
+`spatial_result_handoff`; `event` above denotes that choice, not a JSON field.
+A physical result handoff names an actor result in the exact SpatialMapping
+selected by its enclosing execution context. Its first durable destinations
+are rederived from that Mapping and Fabric, never copied into the image or
+replaced by the producing actor's logical transition. Version 2.0 preserves
+this distinction; version 1.0 images require fresh derivation.
 
 `PhysicalCapacityCellKey` is the structural tuple of the exact
 occurrence-qualified physical owner, owner-local state ordinal, and

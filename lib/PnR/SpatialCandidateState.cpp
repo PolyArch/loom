@@ -334,6 +334,7 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   progressDirtyNets_.reserve(netCount);
   progressDependencyJournalMarks_.assign(netCount, 0);
   progressDependencyDeltas_.clear();
+  previousComputeProgress_.reset();
   progressDependencyDeltas_.reserve(netCount);
   runtimeCounterexampleAffectedClauses_.clear();
   runtimeCounterexampleAffectedClauses_.reserve(noGoodClauseCount);
@@ -418,6 +419,8 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(runtimeCounterexampleAffectedClauses_) +
       retainedBytes(runtimeCounterexampleLiteralDeltas_) +
       retainedBytes(runtimeCounterexampleClauseDeltas_);
+  if (previousComputeProgress_)
+    bytes += previousComputeProgress_->retainedStorageBytes();
   for (const auto &fragments : newSwitchHandshakeDomainFragments_)
     bytes += retainedBytes(fragments);
   return bytes;
@@ -475,6 +478,7 @@ void SpatialCandidateScratch::resetTransaction() {
   progressDirtyNets_.clear();
   progressTraversalDeltas_.clear();
   progressDependencyDeltas_.clear();
+  previousComputeProgress_.reset();
   runtimeCounterexampleAffectedClauses_.clear();
   runtimeCounterexampleLiteralDeltas_.clear();
   runtimeCounterexampleClauseDeltas_.clear();

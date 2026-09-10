@@ -409,6 +409,8 @@ loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
   config.dse.objectiveCatalogs = availableSpatialObjectiveCatalogs();
   for (ResolvedPnrPolicyConfig *policy :
        {&config.dse.spatialPnr, &config.dse.systemPnr}) {
+    policy->search.completionGoal =
+        ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
     policy->temporaryViolations.admitted = {
         ResolvedPnrViolationKind::UnroutedObligation,
         ResolvedPnrViolationKind::CapacityOveruse,

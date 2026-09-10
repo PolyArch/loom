@@ -1,6 +1,7 @@
 #include "Application/ActivationDecision.h"
 #include "Application/BuildDiagnostics.h"
 #include "Application/DeploymentRuntime.h"
+#include "ApplicationMappingImage.h"
 #include "ApplicationRuntimeValidationInternal.h"
 #include "BuildInternal.h"
 #include "ExecutionGlue.h"
@@ -549,31 +550,24 @@ llvm::Expected<deployment::FinalizedDeployment> buildApplicationHostOnlyDeployme
       finalLinkedModule, artifacts, blobs);
 }
 
-llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
-    const PreparedApplicationBuild &prepared,
-    const ApplicationMappingExecution &mappingExecution,
-    const llvm::Module &finalLinkedModule, ApplicationDeploymentRequest request,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  ApplicationBuildOperationTimer timer(
-      ApplicationBuildOperation::DeploymentConstruction);
-  auto operationBegin = MonotonicClock::now();
-  auto imported =
-      detail::importApplicationMapping(mappingExecution.execution, artifacts);
-  emitElapsed(ApplicationBuildOperation::MappingImport, operationBegin);
-  if (!imported)
-    return imported.takeError();
-  auto software = detail::findPreparedSoftware(
-      prepared, imported->mapping.view().dataflowIdentity());
+llvm::Expected<detail::ApplicationMappingImage>
+detail::buildApplicationMappingImage(const PreparedApplicationBuild &prepared,
+                                     const ImportedApplicationMapping &imported,
+                                     const llvm::Module &finalLinkedModule,
+                                     ApplicationDeploymentRequest request,
+                                     const ArtifactStore &artifacts,
+                                     const BlobStore &blobs) {
+  auto software = findPreparedSoftware(
+      prepared, imported.mapping.view().dataflowIdentity());
   if (!software)
     return software.takeError();
-
   mlir::DialectRegistry registry = applicationDialectRegistry();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.loadAllAvailableDialects();
-  operationBegin = MonotonicClock::now();
+  auto operationBegin = MonotonicClock::now();
   hardware::PackedConfigurationABIDerivationStatistics derivationStatistics;
   auto abiDraft = hardware::derivePackedConfigurationABIDraft(
-      imported->system, context, {}, &derivationStatistics);
+      imported.system, context, {}, &derivationStatistics);
   if (!abiDraft)
     return abiDraft.takeError();
   hardware::emitPackedConfigurationABIDerivationStatistics(
@@ -592,7 +586,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       [&](const mapping::FinalizedSystemMapping &systemMapping)
       -> llvm::Expected<std::vector<deployment::DeploymentHardwareBinding>> {
     auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
-        imported->dataflow->view(), systemMapping.view().executionBindings());
+        imported.dataflow->view(), systemMapping.view().executionBindings());
     if (!subjects)
       return subjects.takeError();
     std::vector<deployment::DeploymentHardwareBinding> bindings;
@@ -611,7 +605,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     }
     return bindings;
   };
-  auto selectedHardwareBindings = deriveHardwareBindings(imported->mapping);
+  auto selectedHardwareBindings = deriveHardwareBindings(imported.mapping);
   if (!selectedHardwareBindings)
     return selectedHardwareBindings.takeError();
   emitElapsed(ApplicationBuildOperation::HardwareBindingDerivation,
@@ -619,7 +613,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
 
   operationBegin = MonotonicClock::now();
   auto targets = resolveSystemCompilerTargetBindings(
-      imported->system, request.compilerTargetPolicy, artifacts);
+      imported.system, request.compilerTargetPolicy, artifacts);
   emitElapsed(ApplicationBuildOperation::CompilerTargetResolution,
               operationBegin);
   if (!targets)
@@ -630,7 +624,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   const ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
-      imported->mapping.view().dataflowIdentity()};
+      imported.mapping.view().dataflowIdentity()};
   const auto &invocationPlan = (*software)->invocationPlan;
   std::vector<dataflow::RootThreadLaunchRef> invocationRoots;
   invocationRoots.reserve(invocationPlan->launches.size());
@@ -694,11 +688,11 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       [&](const mapping::FinalizedSystemMapping &systemMapping)
       -> llvm::Expected<std::vector<ArtifactRootReference>> {
     auto contexts = mapping::projectSystemExecutionContexts(
-        imported->dataflow->view(), systemMapping.view().executionBindings());
+        imported.dataflow->view(), systemMapping.view().executionBindings());
     if (!contexts)
       return contexts.takeError();
     auto roots = projectTargetGroupRoots(*contexts, *targets,
-                                         imported->system.reference().artifact);
+                                         imported.system.reference().artifact);
     if (!roots)
       return roots.takeError();
     std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
@@ -749,7 +743,7 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     }
     return result;
   };
-  auto selectedBinaries = buildInstructionBinaries(imported->mapping);
+  auto selectedBinaries = buildInstructionBinaries(imported.mapping);
   if (!selectedBinaries)
     return selectedBinaries.takeError();
   emitElapsed(ApplicationBuildOperation::InstructionBinaryFinalization,
@@ -757,11 +751,39 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
 
   operationBegin = MonotonicClock::now();
   auto deployment = deployment::buildDeploymentFromLinkedProgram(
-      {imported->mapping.reference(), *hostProgram, *selectedBinaries,
+      {imported.mapping.reference(), *hostProgram, *selectedBinaries,
        *selectedHardwareBindings},
       finalLinkedModule, artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
+  return ApplicationMappingImage{std::move(*abi), std::move(*deployment)};
+}
+
+llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
+    const PreparedApplicationBuild &prepared,
+    const ApplicationMappingExecution &mappingExecution,
+    const llvm::Module &finalLinkedModule, ApplicationDeploymentRequest request,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  ApplicationBuildOperationTimer timer(
+      ApplicationBuildOperation::DeploymentConstruction);
+  auto operationBegin = MonotonicClock::now();
+  auto imported =
+      detail::importApplicationMapping(mappingExecution.execution, artifacts);
+  emitElapsed(ApplicationBuildOperation::MappingImport, operationBegin);
+  if (!imported)
+    return imported.takeError();
+  auto software = detail::findPreparedSoftware(
+      prepared, imported->mapping.view().dataflowIdentity());
+  if (!software)
+    return software.takeError();
+
+  auto image = detail::buildApplicationMappingImage(
+      prepared, *imported, finalLinkedModule, request, artifacts, blobs);
+  if (!image)
+    return image.takeError();
+  auto *deployment = &image->deployment;
+  const auto *abi = &image->configurationAbi;
+  operationBegin = MonotonicClock::now();
   auto activationInputs = materializeApplicationActivationInputs(
       prepared.preMappingSourceProgram, prepared.preMappingWorkload,
       prepared.preMappingRuntimeInput, *deployment, artifacts,
@@ -894,25 +916,17 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
             imported->mapping.view().fabricIdentity())
       return invalid("resource-time endpoint Mapping changes its application "
                      "or immutable System");
-    auto bindings = deriveHardwareBindings(*mapping);
-    if (!bindings) {
-      reportEndpointIncomplete(mappingReference, bindings.takeError());
+    const detail::ImportedApplicationMapping endpointMapping{
+        std::move(*mapping), imported->dataflow, imported->system};
+    auto endpointImage = detail::buildApplicationMappingImage(
+        prepared, endpointMapping, finalLinkedModule, request, artifacts,
+        blobs);
+    if (!endpointImage) {
+      reportEndpointIncomplete(mappingReference, endpointImage.takeError());
       break;
     }
-    auto endpointBinaries = buildInstructionBinaries(*mapping);
-    if (!endpointBinaries) {
-      reportEndpointIncomplete(mappingReference, endpointBinaries.takeError());
-      break;
-    }
-    auto endpointDeployment = deployment::buildDeploymentFromLinkedProgram(
-        {mappingReference, *hostProgram, *endpointBinaries, *bindings},
-        finalLinkedModule, artifacts, blobs);
-    if (!endpointDeployment) {
-      reportEndpointIncomplete(mappingReference,
-                               endpointDeployment.takeError());
-      break;
-    }
-    endpoints.push_back({mappingReference, endpointDeployment->reference()});
+    endpoints.push_back(
+        {mappingReference, endpointImage->deployment.reference()});
   }
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
   std::vector<ApplicationResourceTimeTransitionEvidence>
@@ -1108,14 +1122,17 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return runtimeManifest.takeError();
   emitElapsed(ApplicationBuildOperation::DeclarativeDeploymentFinalization,
               operationBegin);
-  return ApplicationDeploymentArtifacts{abi->reference(),
-                                        abi->constructionStatistics(),
-                                        std::move(*selectedHardwareBindings),
-                                        std::move(*selectedBinaries),
-                                        std::move(resourceTimeTransitions),
-                                        std::move(resourceTimeSpectrum),
-                                        std::move(*runtimeManifest),
-                                        std::move(*deployment)};
+  return ApplicationDeploymentArtifacts{
+      abi->reference(),
+      abi->constructionStatistics(),
+      {deployment->deployment().hardwareBindings().begin(),
+       deployment->deployment().hardwareBindings().end()},
+      {deployment->deployment().instructionCoreBinaries().begin(),
+       deployment->deployment().instructionCoreBinaries().end()},
+      std::move(resourceTimeTransitions),
+      std::move(resourceTimeSpectrum),
+      std::move(*runtimeManifest),
+      std::move(*deployment)};
 }
 
 } // namespace loom::application

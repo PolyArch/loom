@@ -23,6 +23,7 @@ struct ObservedSpatialInvocation final {
   std::vector<std::uint8_t> memorySnapshot;
   loom::runtime::SpatialInvocationRuntimeInputSnapshot runtimeInput;
   std::vector<std::uint8_t> boundaryResult;
+  std::uint64_t completionTick = 0;
 };
 
 /// One Spatial invocation materialized from the System engines' observations.
@@ -42,6 +43,7 @@ struct SpatialInvocationCase final {
   ArtifactRootReference spatialMapping;
   sim::SpatialEngineBoundaryResult systemDfgBoundary;
   sim::SpatialEngineBoundaryResult systemCgraBoundary;
+  std::uint64_t systemCgraCompletionTick = 0;
 };
 
 /// Imports both engine observations, proves their effective invocation and

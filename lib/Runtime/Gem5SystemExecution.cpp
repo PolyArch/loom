@@ -31,6 +31,7 @@
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/Gem5BridgeWire.h"
+#include "Runtime/Gem5BuildReadiness.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/Gem5SpatialChannel.h"
@@ -164,46 +165,25 @@ verifyReadiness(const Gem5SystemFacts &facts,
   auto path = readinessPath(config, provider, tool);
   if (!path)
     return path.takeError();
-  auto contents = readFile(path->string());
-  if (!contents)
-    return contents.takeError();
-  auto value = llvm::json::parse(*contents);
-  if (!value)
-    return invalid("gem5 readiness stamp is not valid JSON");
-  const llvm::json::Object *object = value->getAsObject();
-  if (!object)
-    return invalid("gem5 readiness stamp is not an object");
-  const auto schema = object->getString("schema");
-  const auto bridgeAbi = object->getString("bridge_abi_identity");
-  const auto repository = object->getString("gem5_repository_identity");
-  const auto commit = object->getString("gem5_full_commit_identity");
-  const auto configuration = object->getString("build_configuration_digest");
-  const auto binary = object->getString("binary");
-  const auto binarySha = object->getString("binary_sha256");
-  const auto versionProbe = object->getString("version_probe");
-  if (!schema || !bridgeAbi || !repository || !commit || !configuration ||
-      !binary || !binarySha || !versionProbe)
-    return invalid("gem5 readiness stamp omits an identity field");
-  const Gem5BuildIdentity &expected = binding.binding().gem5BuildIdentity();
-  if (*schema != "loom.gem5_build_readiness.1" ||
-      *bridgeAbi != binding.binding().bridgeAbiIdentity() ||
-      *repository != expected.repositoryIdentity ||
-      *commit != expected.fullCommitIdentity ||
-      *configuration != expected.buildConfigurationDigest ||
-      *binarySha != expected.binaryFingerprint)
+  auto readiness = readGem5BuildReadiness(path->string());
+  if (!readiness)
+    return readiness.takeError();
+  if (!(readiness->identity == binding.binding().gem5BuildIdentity()) ||
+      readiness->bridgeAbiIdentity != binding.binding().bridgeAbiIdentity())
     return invalid("gem5 readiness identity differs from the exact binding");
   std::error_code error;
   const std::filesystem::path resolvedTool =
       std::filesystem::weakly_canonical(tool.executable, error);
   if (error)
     return invalid("cannot canonicalize the resolved gem5 executable");
-  const std::filesystem::path recordedBinary(binary->str());
-  const auto recordedVersion =
-      normalizeToolVersionOutput(*versionProbe, provider.versionProbe);
+  const std::filesystem::path recordedBinary(readiness->binary);
+  const auto recordedVersion = normalizeToolVersionOutput(
+      readiness->versionProbe, provider.versionProbe);
   if (recordedBinary != resolvedTool || !recordedVersion ||
       *recordedVersion != tool.version)
     return invalid("gem5 readiness does not describe the resolved executable");
-  auto fingerprint = parseExternalFileFingerprint(*binarySha);
+  auto fingerprint =
+      parseExternalFileFingerprint(readiness->identity.binaryFingerprint);
   if (!fingerprint)
     return fingerprint.takeError();
   auto observed = sessionExternalFileFingerprint(tool.executable);
@@ -219,7 +199,8 @@ verifyReadiness(const Gem5SystemFacts &facts,
             .bridge.maximumMessageBytes)
       return invalid("Deployment launch image exceeds a bridge message limit");
   }
-  return ReadinessIdentity{binarySha->str(), std::move(*fingerprint)};
+  return ReadinessIdentity{readiness->identity.binaryFingerprint,
+                           std::move(*fingerprint)};
 }
 
 std::vector<std::string>
@@ -643,137 +624,6 @@ classifyFailedAttempt(const FailedExternalToolInvocationAttempt &failed) {
     return terminalResult(ExecutionFailedEvidence{OutcomeReason::ToolFailure});
   }
   llvm_unreachable("closed invocation status");
-}
-
-struct Gem5AttemptResult final {
-  std::uint64_t entryTick = 0;
-  std::uint64_t exitTick = 0;
-  std::string cause;
-  sim::SystemMemoryActivity memoryActivity;
-};
-
-std::uint32_t readBigEndianU32(llvm::StringRef bytes, std::size_t offset) {
-  std::uint32_t value = 0;
-  for (std::size_t index = 0; index != 4; ++index)
-    value = (value << 8) | static_cast<unsigned char>(bytes[offset + index]);
-  return value;
-}
-
-std::uint64_t readBigEndianU64(llvm::StringRef bytes, std::size_t offset) {
-  std::uint64_t value = 0;
-  for (std::size_t index = 0; index != 8; ++index)
-    value = (value << 8) | static_cast<unsigned char>(bytes[offset + index]);
-  return value;
-}
-
-llvm::Expected<std::vector<sim::SystemRootLifecycleObservation>>
-parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
-  constexpr std::size_t headerBytes = 4;
-  constexpr std::size_t recordBytes = 64;
-  if (bytes.size() < headerBytes ||
-      readBigEndianU32(bytes, 0) != gem5RootLifecycleTraceMagic)
-    return invalid("gem5 root lifecycle result has the wrong header");
-  if ((bytes.size() - headerBytes) % recordBytes != 0)
-    return invalid("gem5 root lifecycle result has a partial record");
-  const std::size_t recordCount = (bytes.size() - headerBytes) / recordBytes;
-
-  std::vector<sim::SystemRootLifecycleObservation> observations;
-  observations.reserve(recordCount);
-  std::optional<bool> acknowledgedMode;
-  std::uint64_t lastAcknowledgementGeneration = 0;
-  std::uint64_t currentEndpoint = 0;
-  for (std::size_t offset = headerBytes; offset != bytes.size();
-       offset += recordBytes) {
-    const std::uint64_t entity = readBigEndianU64(bytes, offset);
-    const std::uint64_t occurrence = readBigEndianU64(bytes, offset + 8);
-    const std::uint32_t action = readBigEndianU32(bytes, offset + 16);
-    const std::uint64_t tick = readBigEndianU64(bytes, offset + 20);
-    const std::uint64_t delta = readBigEndianU64(bytes, offset + 28);
-    const std::uint64_t acknowledgementGeneration =
-        readBigEndianU64(bytes, offset + 36);
-    const std::uint32_t decision = readBigEndianU32(bytes, offset + 44);
-    const std::uint64_t endpoint = readBigEndianU64(bytes, offset + 48);
-    const std::uint64_t memoryOccupiedTicks = readBigEndianU64(bytes, offset + 56);
-    if (action >
-        static_cast<std::uint32_t>(Gem5RootLifecycleAction::Completion))
-      return invalid("gem5 root lifecycle result has an unknown action");
-    const bool acknowledged = acknowledgementGeneration != 0;
-    if (!acknowledgedMode)
-      acknowledgedMode = acknowledged;
-    if (*acknowledgedMode != acknowledged)
-      return invalid("gem5 root lifecycle result mixes control modes");
-    if (acknowledged &&
-        acknowledgementGeneration <= lastAcknowledgementGeneration)
-      return invalid(
-          "gem5 root lifecycle acknowledgements are not increasing");
-    if (decision >
-        static_cast<std::uint32_t>(Gem5RootEventControlDecision::Reject))
-      return invalid("gem5 root lifecycle control decision is invalid");
-    const auto controlDecision =
-        static_cast<Gem5RootEventControlDecision>(decision);
-    if (controlDecision == Gem5RootEventControlDecision::Reject ||
-        endpoint >= gem5MaximumStaticDispatchEntries)
-      return invalid("gem5 root lifecycle records a rejected endpoint");
-    if (action == static_cast<std::uint32_t>(
-                      Gem5RootLifecycleAction::Start)) {
-      if (controlDecision != Gem5RootEventControlDecision::Continue ||
-          endpoint != currentEndpoint)
-        return invalid("gem5 root start has a noncanonical control decision");
-    } else if (controlDecision == Gem5RootEventControlDecision::Stay) {
-      if (endpoint != currentEndpoint)
-        return invalid("gem5 root stay changes the active endpoint");
-    } else if (controlDecision ==
-               Gem5RootEventControlDecision::ActivateEndpoint) {
-      currentEndpoint = endpoint;
-    } else {
-      return invalid(
-          "gem5 root completion has a noncanonical control decision");
-    }
-    if (!acknowledged &&
-        (endpoint != 0 ||
-         (action == static_cast<std::uint32_t>(
-                        Gem5RootLifecycleAction::Start)
-              ? controlDecision != Gem5RootEventControlDecision::Continue
-              : controlDecision != Gem5RootEventControlDecision::Stay)))
-      return invalid("uncontrolled gem5 root lifecycle changed endpoint");
-    lastAcknowledgementGeneration = acknowledgementGeneration;
-    if (!facts.dataflow)
-      return invalid("host-only gem5 execution contains root lifecycle events");
-    const dataflow::RootThreadLaunchRef root{
-        facts.dataflow->artifact, dataflow::RootThreadLaunchId(entity)};
-    const dataflow::EventFamilyKey event =
-        action == static_cast<std::uint32_t>(Gem5RootLifecycleAction::Start)
-            ? dataflow::rootThreadStartEventFamily(root)
-            : dataflow::rootThreadCompletionEventFamily(root);
-    observations.push_back(
-        {event, occurrence, {tick, delta}, memoryOccupiedTicks});
-  }
-  return observations;
-}
-
-llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
-  auto value = llvm::json::parse(text);
-  if (!value)
-    return invalid("gem5 result is not valid JSON");
-  const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 5)
-    return invalid("gem5 result does not have the exact result shape");
-  const auto schema = object->getString("schema");
-  const auto entry = object->getInteger("entry_tick");
-  const auto exit = object->getInteger("exit_tick");
-  const auto cause = object->getString("cause");
-  if (!schema || *schema != "loom.gem5_system_attempt.2" || !entry || !exit ||
-      !cause || *entry < 0 || *exit < 0 || *entry > *exit)
-    return invalid("gem5 result fields are invalid");
-  const auto *activity = object->getObject("memory_activity");
-  if (!activity || activity->size() != 1)
-    return invalid("gem5 result has no exact native memory counter shape");
-  const auto occupied = activity->getInteger("occupied_ticks");
-  if (!occupied || *occupied < 0)
-    return invalid("gem5 native memory service counter is invalid");
-  return Gem5AttemptResult{static_cast<std::uint64_t>(*entry),
-                           static_cast<std::uint64_t>(*exit), cause->str(),
-                           {static_cast<std::uint64_t>(*occupied)}};
 }
 
 llvm::Expected<std::uint64_t>
@@ -1584,8 +1434,14 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
           : importExternalToolInvocationAttempt(prepared, expectation);
   if (!attempt)
     return attempt.takeError();
-  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
+  if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(
+          *attempt)) {
+    if (executionObservation &&
+        executionObservation->exitCode == externalToolExecutionStoppedExitCode)
+      return terminalResult(
+          CancelledOrTimeoutEvidence{OutcomeReason::ExternalCancellation});
     return llvm::make_error<IncompleteExternalToolInvocationError>();
+  }
   if (const auto *failed =
           std::get_if<FailedExternalToolInvocationAttempt>(&*attempt))
     return classifyFailedAttempt(*failed);
@@ -1892,7 +1748,8 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
        sim::SystemEventCoordinate{systemResult->exitTick, 0},
        {systemResult->exitTick, 0},
        std::move(*rootLifecycle)},
-      systemResult->memoryActivity};
+      systemResult->memoryActivity,
+      std::move(systemResult->computationInterval)};
   auto finalized =
       sim::finalizeSimulationExecution(execution, resolution, artifacts, blobs);
   if (!finalized)

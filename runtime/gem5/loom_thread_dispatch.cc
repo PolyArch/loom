@@ -372,6 +372,30 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
         record.state = State::Failed;
       }
     }
+  } else if (offset == gem5ThreadDispatchComputationEvent) {
+    // A boundary cannot cut an asynchronous invocation in half. Both source
+    // images observe the same complete computation, including host dispatch.
+    for (const DispatchRecord &record : records)
+      fatal_if(record.state == State::Queued ||
+                   record.state == State::Running ||
+                   record.state == State::Finishing,
+               "computation boundary has unfinished accelerator work");
+    if (value == static_cast<std::uint32_t>(Gem5ComputationAction::Begin)) {
+      fatal_if(computationBegin || !computationObservations.empty(),
+               "computation interval is nested or repeated");
+      computationBegin = std::pair{curTick(), memoryService->occupiedTicks()};
+    } else if (value ==
+               static_cast<std::uint32_t>(Gem5ComputationAction::End)) {
+      fatal_if(!computationBegin || computationBegin->first >= curTick(),
+               "computation end has no positive active interval");
+      computationObservations.insert(computationObservations.end(),
+                                     {computationBegin->first, curTick(),
+                                      computationBegin->second,
+                                      memoryService->occupiedTicks()});
+      computationBegin.reset();
+    } else {
+      fatal("unknown computation boundary action");
+    }
   } else if (offset == gem5ThreadDispatchTargetLow) {
     selectedTarget = (selectedTarget & 0xffffffff00000000ULL) | value;
     commandError = 0;
@@ -624,6 +648,11 @@ void LoomThreadDispatch::failSelected(std::uint32_t code) {
   }
   record->errorCode = code;
   record->state = State::Failed;
+}
+
+std::vector<std::uint64_t> LoomThreadDispatch::computationInterval() const {
+  fatal_if(computationBegin, "program exited inside a computation interval");
+  return computationObservations;
 }
 
 } // namespace gem5

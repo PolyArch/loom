@@ -36,7 +36,7 @@ namespace loom::sim {
 class PreparedSpatialExecutionContext;
 
 inline constexpr ArtifactSchemaDescriptor simulationExecutionSchema{
-    "loom.simulation_execution", SchemaVersion{4, 0}};
+    "loom.simulation_execution", SchemaVersion{5, 0}};
 
 struct RetiredExecution {};
 
@@ -214,6 +214,22 @@ struct SystemMemoryActivity final {
   std::uint64_t occupiedTicks = 0;
 };
 
+/// Source-declared useful computation with native samples of the same memory
+/// service counter used by the complete program. Preparation and validation
+/// stay outside this interval; all intervening host and accelerator work stays
+/// in.
+struct SystemComputationInterval final {
+  std::uint64_t beginTick = 0;
+  std::uint64_t endTick = 0;
+  std::uint64_t beginMemoryOccupiedTicks = 0;
+  std::uint64_t endMemoryOccupiedTicks = 0;
+
+  std::uint64_t elapsedTicks() const { return endTick - beginTick; }
+  std::uint64_t occupiedTicks() const {
+    return endMemoryOccupiedTicks - beginMemoryOccupiedTicks;
+  }
+};
+
 /// The Deployment-owned observation form selected by a System workload. The
 /// root wire remains untagged; request -> workload selects this form.
 struct SystemSimulationExecution {
@@ -222,6 +238,7 @@ struct SystemSimulationExecution {
   SystemFunctionalObservations functionalObservations;
   SystemProgressObservations progressObservations;
   std::optional<SystemMemoryActivity> memoryActivity;
+  std::optional<SystemComputationInterval> computationInterval;
 };
 
 using SimulationExecutionModel =

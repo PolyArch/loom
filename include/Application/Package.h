@@ -25,8 +25,6 @@ namespace loom::application {
 /// pairs, so a small multiple of the distinct root kinds suffices.
 inline constexpr std::size_t productDeploymentImportCacheEntries = 256;
 
-struct ApplicationDeploymentArtifacts;
-
 struct ApplicationPackageClosure final {
   std::vector<ArtifactRootReference> artifacts;
   std::vector<BlobDigest> blobs;
@@ -57,7 +55,8 @@ private:
 /// manifest and every dependency it names. The output remains a flat package
 /// so existing execution workspaces can import it without a second store.
 llvm::Error
-publishApplicationPackage(const ApplicationDeploymentArtifacts &application,
+publishApplicationPackage(const FinalizedApplicationRuntimeManifest &manifest,
+                          const deployment::FinalizedDeployment &deployment,
                           llvm::StringRef outputPath,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs);

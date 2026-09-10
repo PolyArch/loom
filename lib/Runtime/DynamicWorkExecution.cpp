@@ -585,8 +585,8 @@ DynamicWorkExecutionSession::executeRootCgra(
         sim::SpatialSimulationRuntimeInputDraft runtimeDraft{
             workload->identity()};
         runtimeDraft.runtimeValues = {{0, std::move(value)}};
-        auto runtimeInput =
-            sim::finalizeSimulationRuntimeInput(runtimeDraft, *workload, view);
+        auto runtimeInput = sim::finalizeSimulationRuntimeInput(
+            std::move(runtimeDraft), *workload, view);
         if (!runtimeInput)
           return runtimeInput.takeError();
 

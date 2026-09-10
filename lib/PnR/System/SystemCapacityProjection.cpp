@@ -305,7 +305,7 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
         return activation.takeError();
       patternsByTargetClass[targetClass].try_emplace(fabricRefKey(use.useSite),
                                                      use.useSite);
-      auto ownerGraph = ::loom::mapping::resolveSystemSpatialActivityEventGraph(
+      auto ownerGraph = ::loom::mapping::resolveSpatialActivityEventGraph(
           dataflow, use.activation.trigger.event);
       if (!ownerGraph)
         return ownerGraph.takeError();
@@ -322,19 +322,23 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
           return graphKey.takeError();
         if (!projectedLaunches.insert(*graphKey).second)
           continue;
-        auto triggers = ::loom::mapping::projectSystemSpatialActivityEvent(
+        auto triggers = ::loom::mapping::projectRootedSpatialActivityEvent(
             dataflow, decision.launch, use.activation.trigger.event);
         if (!triggers)
           return triggers.takeError();
-        auto releases = ::loom::mapping::projectSystemSpatialCausalRelease(
-            dataflow, decision.launch, use.activation.release);
+        auto releases = ::loom::mapping::projectRootedSpatialCausalRelease(
+            dataflow, decision.launch, use.activation.release,
+            entry.resultHandoffs);
         if (!releases)
           return releases.takeError();
         SystemCapacityModel::ImportedProgressUseProjection projected{
             use.useSite, *activation, std::move(*triggers), {}};
-        projected.causalRelease.reserve(releases->size());
-        for (const auto &release : *releases)
-          projected.causalRelease.push_back({release.alternatives});
+        auto prerequisites =
+            ::loom::mapping::projectMappingCausalReleasePrerequisites(
+                dataflow, *releases);
+        if (!prerequisites)
+          return prerequisites.takeError();
+        projected.causalRelease = std::move(*prerequisites);
         progressEvents.insert(progressEvents.end(),
                               projected.triggerAlternatives.begin(),
                               projected.triggerAlternatives.end());

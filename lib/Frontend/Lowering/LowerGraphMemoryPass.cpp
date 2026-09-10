@@ -26,6 +26,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -34,6 +35,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/FoldUtils.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -879,14 +881,24 @@ bool tryRewriteOne(::mlir::Operation *op, ::mlir::OpBuilder &builder,
         builder, loc, cmp.getCmp().getType(), builder.getI1Type(),
         builder.getNoneType(), mem, address, cmp.getCmp(), cmp.getVal(),
         ctx.ctrl, {}, contract);
+    // Both aggregate fields are overwritten below. The initial carrier uses
+    // the canonical poison source admitted by Dataflow publication.
     ::mlir::Value packed =
-        ::mlir::LLVM::UndefOp::create(builder, loc, cmp.getRes().getType());
+        ::mlir::ub::PoisonOp::create(builder, loc, cmp.getRes().getType());
     packed = ::mlir::LLVM::InsertValueOp::create(
         builder, loc, packed, lowered.getOld(), ::llvm::ArrayRef<int64_t>{0});
     packed = ::mlir::LLVM::InsertValueOp::create(builder, loc, packed,
                                                  lowered.getSuccess(),
                                                  ::llvm::ArrayRef<int64_t>{1});
     cmp.getRes().replaceAllUsesWith(packed);
+    // Resolve the projections introduced by aggregate packing at this owner.
+    // General arithmetic folding after memory lowering can erase poison
+    // dependencies established by checked address computation.
+    ::mlir::OperationFolder folder(ctx.graph.getContext());
+    for (::mlir::Operation *user :
+         ::llvm::make_early_inc_range(packed.getUsers()))
+      if (::llvm::isa<::mlir::LLVM::ExtractValueOp>(user))
+        (void)folder.tryToFold(user);
   }
   op->erase();
   return true;
@@ -1163,7 +1175,8 @@ struct LowerGraphMemoryPass
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
                     ::mlir::LLVM::LLVMDialect, ::mlir::memref::MemRefDialect,
-                    ::mlir::scf::SCFDialect, ::dataflow::DataflowDialect>();
+                    ::mlir::scf::SCFDialect, ::mlir::ub::UBDialect,
+                    ::dataflow::DataflowDialect>();
   }
 
   void runOnOperation() final {

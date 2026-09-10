@@ -146,6 +146,13 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
             dataflow, techView, *operandQueueGroups);
     if (!operandProgress)
       return operandProgress.takeError();
+    auto resultHandoffs = ::loom::mapping::deriveSpatialComputeResultHandoffs(
+        dataflow, techView, *spatialModule,
+        (*spatial)->view().computeBindings(),
+        (*spatial)->view().registerFifoTransfers(),
+        (*spatial)->view().routeTrees());
+    if (!resultHandoffs)
+      return resultHandoffs.takeError();
     std::vector<SpatialCatalogGraphProgress> graphProgress;
     std::vector<std::uint64_t> graphOperandIngressPressures;
     std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
@@ -184,6 +191,7 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
          std::vector<::dataflow::GraphRef>(techView.covers().begin(),
                                            techView.covers().end()),
          std::move(graphProgress),
+         std::move(*resultHandoffs),
          std::move(*pressures),
          std::move(graphOperandIngressPressures),
          std::move(graphRecurrenceDemands),

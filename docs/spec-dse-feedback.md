@@ -829,8 +829,8 @@ estimates can rank or promote a candidate, but only a sound necessary-condition
 failure can set an exact rejection disposition; unsupported, timeout, and
 `ProofNotEstablished` remain distinct.
 
-Search completion is a product of independent facts, not a synonym for “the
-current beam returned a candidate.” Invocation provenance serializes
+Search completion is a product of independent facts, not a synonym for "the
+current beam returned a candidate." Invocation provenance serializes
 `domainComplete`, `budgetComplete`, `providerComplete`, `evidenceComplete`,
 and `selectionComplete`. A timeout, interrupt, provider incompleteness,
 unknown dependency, heuristic truncation, or unsupported estimate keeps the
@@ -1437,7 +1437,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 4.0` dependency direction is therefore:
+`loom.simulation_execution 5.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1449,7 +1449,7 @@ as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
 summaries, and the mandatory narrow root-lifecycle progress sequence for
-System execution. `loom.simulation_execution 4.0` contains no general
+System execution. `loom.simulation_execution 5.0` contains no general
 diagnostic-trace field; diagnostic traces and waveforms remain attempt or
 scratch state. A simulator cannot replace them with paths, opaque bytes, or
 provider-private references in the Artifact. `SimulationExecution` contains no
@@ -3691,16 +3691,16 @@ generator), `instruction_capacity` (Temporal instruction-store resize), and
 same executor and record as the FU, memory, FIFO, operand-buffer, switch,
 SpatialCore, AccCore, transport, service, and combined families.
 Application mapping provenance supplies the canonical set of these record
-roots to `loom.application.activation_decision` 3.0, which is the durable
+roots to `loom.application.activation_decision` 4.0, which is the durable
 application owner of the exact evaluated set and nullable selected record.
-Runtime manifest 8.0 is a checked projection of that owner, and Application
+Runtime manifest 9.0 is a checked projection of that owner, and Application
 package closure carries the set and the complete parent/child System and
 SystemMapping closures. Removing the DSE journal or build store therefore
 cannot erase the mutation evidence selected or rejected while the pair was
 evaluated.
 
 The mutation record does not name a `FinalizedDeployment` or a
-`ResourceTimeTransition`. Runtime manifest 8.0 joins only the selected repair
+`ResourceTimeTransition`. Runtime manifest 9.0 joins only the selected repair
 record to its selected Mapping and Deployment. The current resource-time
 transition owner requires both endpoint SystemMappings to name the same
 immutable Fabric, so a parent-to-hardware-child transition is rejected rather
@@ -4271,6 +4271,18 @@ remaining bounded candidates. A successful application-level endpoint requires
 both the qualified SystemMapping scenario and completed functional/CGRA replay
 for the same candidate identity. A finite successful replay cannot replace the
 static recurrence proof.
+
+For bounded-quality selection, an explicit endpoint restricts the final
+Objective/Pareto comparison domain to exact Mapping/plan pairs admitted by the
+independent Spectrum verifier. This check follows the complete bounded
+measurement and hardware exploration: non-endpoint candidates still contribute
+their actual QoR and hardware-parent evidence. The selected execution must own
+the admitted Mapping and its plan, including when one Mapping appears under
+multiple schedule hints. If no candidate is admitted, no Mapping is selected;
+completed QoR observations remain complete and the caller retains the typed
+Spectrum outcomes. Choosing an unconstrained winner and retrying only later
+plans cannot implement this contract because it can discard an earlier
+verified endpoint.
 
 The same owner distinguishes three kinds of reuse. Exact memoization is a
 removable derived cache for a completely identical semantic input.

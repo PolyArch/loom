@@ -4,6 +4,7 @@
 #include "Application/Build.h"
 #include "Application/BuildDiagnostics.h"
 #include "ApplicationRuntimeValidationInternal.h"
+#include "ApplicationSystemRuntimeEvidence.h"
 #include "BuildInternal.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -749,11 +750,18 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
     if (!coldRuntimeMapping)
       return visualizationError("cold runtime Mapping import failed: " +
                                 llvm::toString(coldRuntimeMapping.takeError()));
+    const detail::ApplicationSystemRuntimeEvidenceContext coldSystemContext{
+        prepared.preMappingSourceProgram, prepared.preMappingWorkload,
+        prepared.preMappingRuntimeInput, *source->coldMapping};
+    const detail::ApplicationSystemRuntimeEvidenceContext
+        incrementalSystemContext{
+            prepared.preMappingSourceProgram, prepared.preMappingWorkload,
+            prepared.preMappingRuntimeInput, childMapping->reference()};
     auto coldRuntime = detail::resolveApplicationRuntimeEvidenceJoin(
         evidence.repair.coldRuntimeEvidence, evidence.repair.coldOracleEvidence,
         expectedDataflow,
         coldRuntimeMapping->view().executionBindings().spatialMappingImports(),
-        (*preparedSoftware)->replayCases, artifacts, blobs);
+        (*preparedSoftware)->replayCases, artifacts, blobs, &coldSystemContext);
     if (!coldRuntime)
       return visualizationError("cold runtime Evidence join failed: " +
                                 llvm::toString(coldRuntime.takeError()));
@@ -761,7 +769,8 @@ verifyResourceTimeEvidence(const ApplicationDeploymentArtifacts &application,
         evidence.repair.incrementalRuntimeEvidence,
         evidence.repair.incrementalOracleEvidence, expectedDataflow,
         childMapping->view().executionBindings().spatialMappingImports(),
-        (*preparedSoftware)->replayCases, artifacts, blobs);
+        (*preparedSoftware)->replayCases, artifacts, blobs,
+        &incrementalSystemContext);
     if (!incrementalRuntime)
       return visualizationError("incremental runtime Evidence join failed: " +
                                 llvm::toString(incrementalRuntime.takeError()));

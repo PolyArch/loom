@@ -519,8 +519,8 @@ struct CardinalityGraphIndex {
     }
   }
 
-  // Activation dependencies belong to the physical phase occurrence. Equal
-  // recurrence counts do not merge independent loops or their carry systems.
+  // Carry systems belong to the physical phase occurrence. Equal recurrence
+  // counts do not merge the state of independent loops.
   void collectCarries(mlir::Value phase,
                       llvm::SmallVectorImpl<dataflow::CarryOp> &result) const {
     for (const auto &entry : carriesByPhase)
@@ -531,9 +531,44 @@ struct CardinalityGraphIndex {
   void
   collectActivationInputs(mlir::Value phase,
                           llvm::SmallVectorImpl<mlir::Value> &result) const {
-    for (const auto &entry : activationInputsByPhase)
-      if (haveEquivalentCorrespondence(entry.first, phase))
-        result.append(entry.second);
+    // A completion recurrence may consume work driven by another occurrence
+    // of the same phase sequence. Follow its feedback dependencies to collect
+    // that occurrence's initializers too. The caller must prove every input
+    // belongs to the parent activation before assuming exact-one cardinality.
+    llvm::SmallVector<mlir::Value> phases{phase};
+    llvm::SmallVector<mlir::Value> dependencies;
+    llvm::DenseSet<mlir::Value> visitedPhases;
+    llvm::DenseSet<mlir::Value> visitedDependencies;
+    while (!phases.empty()) {
+      mlir::Value current = phases.pop_back_val();
+      if (!visitedPhases.insert(current).second)
+        continue;
+      for (const auto &entry : activationInputsByPhase)
+        if (haveEquivalentCorrespondence(entry.first, current))
+          result.append(entry.second);
+      for (const auto &entry : carriesByPhase)
+        if (haveEquivalentCorrespondence(entry.first, current))
+          for (dataflow::CarryOp carry : entry.second)
+            dependencies.push_back(carry.getCarry());
+      while (!dependencies.empty()) {
+        mlir::Value value = dependencies.pop_back_val();
+        if (!visitedDependencies.insert(value).second)
+          continue;
+        mlir::Operation *producer = value.getDefiningOp();
+        if (!producer)
+          continue;
+        mlir::Value sourcePhase = statefulCloseSignal(producer);
+        if (auto gate = llvm::dyn_cast<dataflow::GateOp>(producer))
+          sourcePhase = gate.getBeforeCond();
+        if (sourcePhase) {
+          if (haveEquivalentPhaseCardinality(sourcePhase, phase))
+            phases.push_back(sourcePhase);
+          continue;
+        }
+        dependencies.append(producer->getOperands().begin(),
+                            producer->getOperands().end());
+      }
+    }
   }
 
   void collectDemuxes(mlir::Value selector,

@@ -621,6 +621,14 @@ consumes this Fabric-owned classification; it cannot select one result,
 maintain a family table, invent an all-results event, or release the use from
 authoring order.
 
+Here `Produced` identifies the physical result-handoff site. The source actor
+transition makes a token available, while the selected first durable
+destinations or unbuffered consumers determine when its result-holding state
+can be reused. A rooted System closure preserves that Spatial source instead
+of collapsing its release into Dataflow's logical producer-transition
+alternatives. The ordinary Dataflow endpoint-event projection remains valid
+for logical activity and does not encode physical holding lifetime.
+
 A fixed-vector parallelize or serialize capability carrying the exact
 portable ordered-cardinality ResourceContract instead uses `Intrinsic`
 release. Its one ResourceUse still triggers on the selected

@@ -91,20 +91,23 @@ std::string findProductWorkspace(llvm::StringRef parent,
   return workspace;
 }
 
-void explicitResolvedConfigRemainsTheProductPolicyOwner() {
+void resolvedConfigRemainsTheProductPolicyOwner(bool explicitFile) {
   TemporaryDirectory directory;
   loom::ResolvedConfig config =
       take(loom::resolveConfigProfile("quick_explore"));
-  config.dse.spatialPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
-  config.dse.systemPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  if (explicitFile) {
+    config.dse.spatialPnr.search.completionGoal =
+        loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+    config.dse.systemPnr.search.completionGoal =
+        loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  }
 
   loom::ResolvedConfig rewritten = config;
-  rewritten.dse.spatialPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
-  rewritten.dse.systemPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  const auto otherGoal =
+      explicitFile ? loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate
+                   : loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  rewritten.dse.spatialPnr.search.completionGoal = otherGoal;
+  rewritten.dse.systemPnr.search.completionGoal = otherGoal;
   require(loom::resolvedConfigIdentity(config) !=
               loom::resolvedConfigIdentity(rewritten),
           "completion policy did not contribute to ResolvedConfig identity");
@@ -113,7 +116,7 @@ void explicitResolvedConfigRemainsTheProductPolicyOwner() {
   writeConfig(configPath, config);
   loom::application::ProductBuildOptions options;
   options.deploymentOutput = directory.child("deployment");
-  options.accelerationProfile = configPath;
+  options.accelerationProfile = explicitFile ? configPath : "quick_explore";
   auto invocation = take(
       loom::application::ProductBuildInvocation::create(std::move(options)));
 
@@ -126,7 +129,7 @@ void explicitResolvedConfigRemainsTheProductPolicyOwner() {
                          loom::resolvedConfigIdentity(config)));
   require(published.bytes() ==
               loom::canonicalResolvedConfigBytes(config).bytes(),
-          "product target changed the explicit ResolvedConfig bytes");
+          "product target changed the resolved policy bytes");
 
   const llvm::StringRef publishedText(
       reinterpret_cast<const char *>(published.bytes().data()),
@@ -134,10 +137,10 @@ void explicitResolvedConfigRemainsTheProductPolicyOwner() {
   const loom::ResolvedConfig adopted =
       take(loom::parseResolvedConfig(publishedText, "product target"));
   require(adopted.dse.spatialPnr.search.completionGoal ==
-                  loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork &&
+                  config.dse.spatialPnr.search.completionGoal &&
               adopted.dse.systemPnr.search.completionGoal ==
-                  loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork,
-          "product target replaced exhaustive PnR with a prefix search");
+                  config.dse.systemPnr.search.completionGoal,
+          "product target replaced the resolved PnR completion goal");
 
   auto hiddenRewrite = artifacts.get(loom::ResolvedConfig::artifactSchema,
                                      loom::resolvedConfigIdentity(rewritten));
@@ -151,6 +154,7 @@ void explicitResolvedConfigRemainsTheProductPolicyOwner() {
 } // namespace
 
 int main() {
-  explicitResolvedConfigRemainsTheProductPolicyOwner();
+  resolvedConfigRemainsTheProductPolicyOwner(true);
+  resolvedConfigRemainsTheProductPolicyOwner(false);
   return 0;
 }

@@ -1,20 +1,20 @@
 #include "Application/Package.h"
 
 #include "Application/ActivationDecision.h"
-#include "Application/Build.h"
 #include "Common/ArtifactStore.h"
-#include "Evaluation/ArtifactImportCache.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "DSE/HardwareMutationRepairRecord.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Deployment/Package.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Runtime/Gem5SimulationBinding.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -272,6 +272,19 @@ llvm::Expected<ApplicationPackageClosure> deriveApplicationPackageClosure(
   if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
                                            runtime.selectedSystem(), artifacts))
     return std::move(error);
+  for (const ArtifactRootReference &root : activationDependencies->artifacts) {
+    if (root.schemaIdentity != runtime::gem5SimulationBindingSchema.identity)
+      continue;
+    auto binding = runtime::importGem5SimulationBinding(root, artifacts);
+    if (!binding)
+      return binding.takeError();
+    for (const auto *dependency :
+         {&binding->binding().fabric(),
+          &binding->binding().interconnectImplementation()})
+      if (llvm::Error error = addFabricClosure(artifactRoots, expandedFabrics,
+                                               *dependency, artifacts))
+        return std::move(error);
+  }
   for (const ArtifactRootReference &reference :
        runtime.hardwareMutationRepairRecords()) {
     if (llvm::Error error = addArtifact(artifactRoots, reference, artifacts))
@@ -501,14 +514,15 @@ importApplicationPackage(llvm::StringRef packagePath) {
 }
 
 llvm::Error
-publishApplicationPackage(const ApplicationDeploymentArtifacts &application,
+publishApplicationPackage(const FinalizedApplicationRuntimeManifest &manifest,
+                          const deployment::FinalizedDeployment &deployment,
                           llvm::StringRef outputPath,
                           const ArtifactStore &artifacts,
                           const BlobStore &blobs) {
   if (outputPath.empty())
     return invalid("application package output path is empty");
-  auto closure = deriveApplicationPackageClosure(
-      application.runtimeManifest, application.deployment, artifacts, blobs);
+  auto closure =
+      deriveApplicationPackageClosure(manifest, deployment, artifacts, blobs);
   if (!closure)
     return closure.takeError();
 
@@ -544,13 +558,11 @@ publishApplicationPackage(const ApplicationDeploymentArtifacts &application,
                    error.message());
   if (llvm::Error error =
           writeText(childPath(staging, "root"),
-                    formatArtifactIdentityHex(
-                        application.deployment.reference().artifact)))
+                    formatArtifactIdentityHex(deployment.reference().artifact)))
     return error;
   if (llvm::Error error =
           writeText(childPath(staging, "application"),
-                    formatArtifactIdentityHex(
-                        application.runtimeManifest.reference().artifact)))
+                    formatArtifactIdentityHex(manifest.reference().artifact)))
     return error;
   for (const ArtifactRootReference &root : closure->artifacts) {
     auto bytes = artifacts.getStoredObject(root);

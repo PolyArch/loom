@@ -52,6 +52,8 @@ struct ProductBuildOptions final {
   std::string fpaArtifactStorePath;
   std::string fpaBlobStorePath;
   std::string fpaConditionsPath;
+  /// Pin the native gem5 build and rank bounded candidates by computation time.
+  std::string gem5ReadinessPath;
 };
 
 llvm::Expected<dse::JointDesignStoppingPolicy>

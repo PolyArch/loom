@@ -271,14 +271,16 @@ public:
             return values.takeError();
           candidates.push_back(std::move(*values));
         }
-        auto exact = exactColor(component, candidates, exactWork_);
-        if (!exact)
-          return exact.takeError();
-        if (*exact == ExactColoringResult::Solved)
-          solvedExactly = true;
-        if (componentCache)
-          componentCache->exactWorkLimited =
-              *exact == ExactColoringResult::WorkLimit;
+        if (!hasCliquePaletteDeficit(component, candidates)) {
+          auto exact = exactColor(component, candidates, exactWork_);
+          if (!exact)
+            return exact.takeError();
+          if (*exact == ExactColoringResult::Solved)
+            solvedExactly = true;
+          if (componentCache)
+            componentCache->exactWorkLimited =
+                *exact == ExactColoringResult::WorkLimit;
+        }
       }
       if (!solvedExactly)
         if (llvm::Error error = heuristicColor(component))
@@ -445,18 +447,17 @@ private:
     return result;
   }
 
-  bool isFree(PnrIndex vertex, const llvm::APInt &value) const {
-    return llvm::all_of(conflictVertices_[vertex], [&](PnrIndex neighbor) {
-      return !colored_[neighbor] || !result_.values[neighbor] ||
-             compareUnsigned(*result_.values[neighbor], value) != 0;
-    });
-  }
-
   std::uint64_t conflictCost(PnrIndex vertex, const llvm::APInt &value) const {
-    return llvm::count_if(conflictVertices_[vertex], [&](PnrIndex neighbor) {
-      return colored_[neighbor] && result_.values[neighbor] &&
-             compareUnsigned(*result_.values[neighbor], value) == 0;
-    });
+    const auto &counts = saturationValueCounts_[vertex];
+    const auto found = std::lower_bound(
+        counts.begin(), counts.end(), value,
+        [](const std::pair<llvm::APInt, PnrIndex> &entry,
+           const llvm::APInt &target) {
+          return compareUnsigned(entry.first, target) < 0;
+        });
+    return found != counts.end() && compareUnsigned(found->first, value) == 0
+               ? found->second
+               : 0;
   }
 
   llvm::Error assign(PnrIndex vertex, const std::optional<llvm::APInt> &value) {
@@ -524,29 +525,54 @@ private:
     return saturationValueCounts_[vertex].size();
   }
 
+  bool hasCliquePaletteDeficit(
+      llvm::ArrayRef<PnrIndex> component,
+      llvm::ArrayRef<std::vector<llvm::APInt>> candidates) const {
+    std::vector<llvm::APInt> palette;
+    for (const auto &values : candidates)
+      llvm::append_range(palette, values);
+    normalizeValues(palette);
+    if (palette.empty())
+      return true;
+    if (palette.size() >= component.size())
+      return false;
+
+    // A clique needs distinct values at every vertex. Its size exceeding
+    // even the whole component's palette proves this exact search impossible.
+    // Greedy clique construction may miss a deficit, but every retained edge
+    // is an actual conflict; shared match-domain membership is insufficient.
+    llvm::SmallVector<PnrIndex, 8> clique;
+    for (auto [local, first] : llvm::enumerate(component)) {
+      clique.assign(1, first);
+      for (PnrIndex vertex : component.drop_front(local + 1)) {
+        if (!llvm::all_of(clique, [&](PnrIndex member) {
+              return std::binary_search(conflictVertices_[vertex].begin(),
+                                        conflictVertices_[vertex].end(), member);
+            }))
+          continue;
+        clique.push_back(vertex);
+        if (clique.size() > palette.size())
+          return true;
+      }
+    }
+    return false;
+  }
+
   PnrIndex
   selectVertex(llvm::ArrayRef<PnrIndex> component,
                llvm::ArrayRef<std::vector<llvm::APInt>> candidates = {}) const {
     PnrIndex selected = getInvalidPnrIndex();
     std::size_t selectedSaturation = 0;
-    for (PnrIndex vertex : component) {
+    std::size_t selectedCandidateCount =
+        std::numeric_limits<std::size_t>::max();
+    for (auto [local, vertex] : llvm::enumerate(component)) {
       if (colored_[vertex])
         continue;
       const std::size_t currentSaturation = saturation(vertex);
       const std::size_t currentCandidateCount =
           candidates.empty()
               ? std::numeric_limits<std::size_t>::max()
-              : candidates[static_cast<std::size_t>(
-                               llvm::lower_bound(component, vertex) -
-                               component.begin())]
-                    .size();
-      const std::size_t selectedCandidateCount =
-          selected == getInvalidPnrIndex() || candidates.empty()
-              ? std::numeric_limits<std::size_t>::max()
-              : candidates[static_cast<std::size_t>(
-                               llvm::lower_bound(component, selected) -
-                               component.begin())]
-                    .size();
+              : candidates[local].size();
       if (selected == getInvalidPnrIndex() ||
           currentSaturation > selectedSaturation ||
           (currentSaturation == selectedSaturation &&
@@ -565,6 +591,7 @@ private:
            vertex < selected)) {
         selected = vertex;
         selectedSaturation = currentSaturation;
+        selectedCandidateCount = currentCandidateCount;
       }
     }
     return selected;
@@ -580,7 +607,7 @@ private:
     const std::size_t local = static_cast<std::size_t>(
         llvm::lower_bound(component, vertex) - component.begin());
     for (const llvm::APInt &value : candidates[local]) {
-      if (!isFree(vertex, value))
+      if (conflictCost(vertex, value) != 0)
         continue;
       if (work == exactColoringWorkLimit)
         return ExactColoringResult::WorkLimit;

@@ -25,6 +25,17 @@ and sole context. Simultaneous operation firings remain subject to the exact
 shared FU, operation, operand-buffer, register-FIFO, and boundary resource
 contracts; multiple active rows do not manufacture duplicate hardware.
 
+Temporal residency is an area-sharing mechanism for work whose serialization
+does not limit the application's required throughput, such as noncritical
+outer-loop or setup work. It is not a substitute for spatial capacity on a
+performance-critical streaming path. SpatialPnR evaluates graph and recurrence
+criticality before accepting routing savings from temporal placement;
+TechMapping must preserve the compatible spatial alternatives and SystemMapping
+must retain the resulting resource-time cost. This is an optimization policy,
+not a new Fabric legality restriction or an assumption that every temporal
+operation has the same initiation interval. Exact resource contracts still
+define the available concurrency.
+
 Both anonymous and named-template forms are accepted:
 
 ```mlir

@@ -2,6 +2,7 @@
 #define LOOM_RUNTIME_GEM5SYSTEMEXECUTION_H
 
 #include "Evaluation/ModelProvider.h"
+#include "Runtime/Gem5SimulationBinding.h"
 #include "Simulator/SimulationExecution.h"
 
 #include <cstddef>
@@ -191,6 +192,16 @@ struct Gem5SystemDiagnosticEvaluation final {
   std::vector<Gem5SpatialInvocationProjection> spatialInvocations;
   Gem5SystemAttemptProfile attemptProfile;
 };
+
+/// Derives the complete case closure from the executable Deployment, its
+/// workload and input roots, and the binding-owned Fabric dependencies.
+llvm::Expected<evaluation::CaseArtifactResolution>
+buildGem5SystemCaseResolution(const deployment::FinalizedDeployment &deployment,
+                              const FinalizedGem5SimulationBinding &binding,
+                              const ArtifactRootReference &workload,
+                              const ArtifactRootReference &runtimeInput,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs);
 
 /// Prepares the exact gem5 System invocation selected by model kind 17, 18,
 /// or 19. The model descriptor remains the sole engine selector.

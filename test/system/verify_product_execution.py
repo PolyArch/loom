@@ -11,9 +11,9 @@ import sys
 from typing import Any
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from loom_evidence_portfolio import (  # noqa: E402
+from scripts.loom_evidence_portfolio import (  # noqa: E402
     APPLICATION_OBJECTIVE_DIMENSIONS,
     RUNTIME_BINDING_SCHEMA,
     RUNTIME_BINDING_VERSION,
@@ -24,9 +24,9 @@ from loom_evidence_portfolio import (  # noqa: E402
     validate_resource_time_mapping_repair_transition,
     validate_portfolio_pair,
     validate_portfolio_product_execution,
-    validate_system_qor,
 )
 
+from scripts.loom_evidence_system_qor import validate_system_qor  # noqa: E402
 
 # The Fabric FIFO queue-discipline spellings of the product accelerator
 # profiles. The ADG builders apply the selected discipline only to FIFOs whose
@@ -123,7 +123,8 @@ def validate_identity_binding(
         value = binding.get(binding_field)
         require(
             isinstance(value, str) and value == decision.get(decision_field),
-            "application runtime manifest " + binding_field
+            "application runtime manifest "
+            + binding_field
             + " is not bound to the pair decision",
         )
     require(
@@ -141,7 +142,8 @@ def validate_identity_binding(
         decoded = decode_root_hex(binding.get(binding_field))
         require(
             decoded is not None and decoded == manifest.get(manifest_field),
-            "execution manifest " + manifest_field
+            "execution manifest "
+            + manifest_field
             + " is not bound to the application runtime manifest",
         )
     repair_records = binding.get("hardware_mutation_repair_records")
@@ -164,7 +166,10 @@ def validate_identity_binding(
             == decision.get("selected_schedule_hint_digest")
             and observation.get("runtime_mapping") == selected_mapping
         ]
-        require(len(selected_observations) == 1, "hardware alternative has no unique Mapping observation")
+        require(
+            len(selected_observations) == 1,
+            "hardware alternative has no unique Mapping observation",
+        )
         observed_repair = selected_observations[0].get(
             "hardware_mutation_repair_record"
         )
@@ -352,9 +357,7 @@ def validate_schedule_lineage(
                 continue
             matched_rows.append(row)
             break
-    expected_path = " -> ".join(
-        f"{kind}:{factor}" for kind, factor in required_edges
-    )
+    expected_path = " -> ".join(f"{kind}:{factor}" for kind, factor in required_edges)
     require(
         matched_rows,
         f"no selected compilation carries published Schedule path {expected_path}",
@@ -401,13 +404,13 @@ def validate_schedule_lineage(
 def parse_schedule_edge(value: str) -> tuple[str, int]:
     kind, separator, encoded_factor = value.partition(":")
     if not separator or not kind:
-        raise argparse.ArgumentTypeError(
-            "Schedule edge must use KIND:FACTOR spelling"
-        )
+        raise argparse.ArgumentTypeError("Schedule edge must use KIND:FACTOR spelling")
     try:
         factor = int(encoded_factor)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("Schedule edge factor is not an integer") from error
+        raise argparse.ArgumentTypeError(
+            "Schedule edge factor is not an integer"
+        ) from error
     if factor < 0:
         raise argparse.ArgumentTypeError("Schedule edge factor must be nonnegative")
     return kind, factor
@@ -553,7 +556,9 @@ def validate_mapping_work(
     }
     require(
         isinstance(baseline_values.get("host_only_runtime_picoseconds"), dict)
-        and isinstance(baseline_values["host_only_runtime_picoseconds"].get("value"), int)
+        and isinstance(
+            baseline_values["host_only_runtime_picoseconds"].get("value"), int
+        )
         and baseline_values["host_only_runtime_picoseconds"].get("evidence")
         == "analytic",
         "host-only baseline has no exact-source analytic picosecond observation",
@@ -617,10 +622,7 @@ def validate_mapping_work(
                 runtime_mapping = observation.get("runtime_mapping")
                 runtime_disposition = observation.get("runtime_disposition")
                 require(
-                    (
-                        runtime_disposition == "not_requested"
-                        and runtime_mapping is None
-                    )
+                    (runtime_disposition == "not_requested" and runtime_mapping is None)
                     or (
                         runtime_disposition != "not_requested"
                         and decode_root_hex(runtime_mapping) is not None
@@ -709,7 +711,8 @@ def validate_mapping_work(
         objective_vectors.append(selected_objective)
     for vector in objective_vectors:
         require(
-            isinstance(vector, list) and len(vector) == len(APPLICATION_OBJECTIVE_DIMENSIONS),
+            isinstance(vector, list)
+            and len(vector) == len(APPLICATION_OBJECTIVE_DIMENSIONS),
             "pair decision objective vector is not structurally complete",
         )
         for observation in vector:
@@ -723,6 +726,8 @@ def validate_mapping_work(
                     "unsupported objective dimension was encoded as zero",
                 )
     system_invocations = join.get("system_pnr_invocation_count")
+    system_dispatches = join.get("system_pnr_dispatch_count")
+    system_replays = join.get("system_pnr_journal_replay_count")
     verified_alternatives = join.get("verified_alternatives")
     transitions = join.get("application_incremental_mapping_transitions")
     require(
@@ -730,8 +735,11 @@ def validate_mapping_work(
         and system_invocations > 0
         and isinstance(verified_alternatives, int)
         and verified_alternatives > 0
-        and isinstance(join.get("system_pnr_dispatch_count"), int)
-        and join["system_pnr_dispatch_count"] >= system_invocations
+        and isinstance(system_dispatches, int)
+        and system_dispatches >= 0
+        and isinstance(system_replays, int)
+        and system_replays >= 0
+        and system_dispatches + system_replays == system_invocations
         and isinstance(transitions, list),
         "System invocation ledger disagrees with the application join",
     )
@@ -797,7 +805,7 @@ def validate_mapping_work(
         for side in ("cold", "incremental")
     )
     require(
-        len(system) == system_invocations
+        len(system) == system_dispatches
         and repair_system_invocations <= system_invocations,
         "System rows do not reconcile with aggregate and repair provider work",
     )
@@ -811,7 +819,7 @@ def validate_mapping_work(
     require(
         len(incremental_system_rows)
         == sum(
-            transition["incremental_provider_work"]["system_pnr_invocations"]
+            transition["incremental_provider_work"]["system_pnr_dispatches"]
             for transition in transitions
         )
         and all(
@@ -883,8 +891,7 @@ def validate_mapping_work(
                 # Exhaustive work: every prepared restart finalizes and may
                 # publish its own verified candidate.
                 require(
-                    isinstance(publications, int)
-                    and 0 <= publications <= seed_slots,
+                    isinstance(publications, int) and 0 <= publications <= seed_slots,
                     f"{name} search published more than its finalized restarts",
                 )
                 require(
@@ -899,7 +906,8 @@ def validate_mapping_work(
                 )
             else:
                 require(
-                    closure_status in {"semantic_limit_reached", "proof_not_established"},
+                    closure_status
+                    in {"semantic_limit_reached", "proof_not_established"},
                     f"{name} search has an unexpected bounded outcome",
                 )
                 if closure_status == "proof_not_established":
@@ -1111,6 +1119,64 @@ def is_artifact_identity(value: Any) -> bool:
     )
 
 
+def validate_native_system_quality(
+    pair: dict[str, Any], manifest: dict[str, Any]
+) -> None:
+    labels = pair.get("quality_objective_dimension_labels", [])
+    dimension = "system_computation_ticks"
+    if dimension not in labels:
+        return
+    ordinal = labels.index(dimension)
+    completed = []
+    for observation in pair.get("quality_observations", []):
+        if observation.get("incomplete_reason") is not None:
+            require(
+                not observation.get("objective_codes"),
+                "incomplete native candidate retained an Objective",
+            )
+            continue
+        measures = observation.get("provenance", {}).get("raw_measures", [])
+        require(len(measures) == len(labels), "native quality lost its raw measures")
+        ticks = measures[ordinal]
+        require(
+            ticks.get("kind") == "integer"
+            and ticks.get("negative") is False
+            and isinstance(ticks.get("magnitude"), int)
+            and ticks["magnitude"] > 0,
+            "native quality has no positive computation time",
+        )
+        completed.append((observation, ticks["magnitude"]))
+    selected_mapping = pair.get("pair_decision", {}).get("selected_system_mapping")
+    selected = [
+        (row, ticks)
+        for row, ticks in completed
+        if row.get("candidate") == selected_mapping
+    ]
+    require(len(selected) == 1, "native selection has no unique measured candidate")
+    row, ticks = selected[0]
+    require(
+        ticks == min(value for _, value in completed),
+        "native selection did not minimize measured System computation time",
+    )
+    qor = manifest.get("paired_system_execution", {})
+    replay_ticks = (
+        qor.get("candidate", {}).get("computation_interval", {}).get("elapsed_ticks")
+    )
+    require(
+        ticks == replay_ticks,
+        "selected computation time differs from the final independent System replay",
+    )
+    supporting = [
+        decode_root_hex(root)
+        for root in row.get("provenance", {}).get("supporting_evidence", [])
+    ]
+    for member in ("host_only", "candidate"):
+        require(
+            qor.get(member, {}).get("evidence") in supporting,
+            "final System replay is outside the selected native Evidence pair",
+        )
+
+
 def validate_reference(value: Any, context: str) -> None:
     require(isinstance(value, dict), f"{context} must be an artifact reference")
     require(
@@ -1142,10 +1208,14 @@ def validate_manifest(
     require_mapped_rtl: bool,
     expected_fifo_queue_discipline: str | None,
 ) -> None:
-    spatial_engines = {"dfg", "cgra", "rtl"} if require_mapped_rtl else {
-        "dfg",
-        "cgra",
-    }
+    spatial_engines = (
+        {"dfg", "cgra", "rtl"}
+        if require_mapped_rtl
+        else {
+            "dfg",
+            "cgra",
+        }
+    )
     require(
         manifest.get("schema") == "loom.execution_matrix_workspace.3.0",
         "execution workspace has the wrong schema",
@@ -1174,7 +1244,9 @@ def validate_manifest(
             "mapped_rtl_deployment" not in manifest,
             "non-RTL execution unexpectedly names a mapped RTL Deployment",
         )
-    qor_errors = validate_system_qor(manifest, require_target=portfolio_selection is not None)
+    qor_errors = validate_system_qor(
+        manifest, require_target=portfolio_selection is not None
+    )
     require(not qor_errors, f"post-execution System QoR is incomplete: {qor_errors}")
     expected_result = format(expected_i32 & 0xFFFFFFFF, "X")
     require(
@@ -1218,8 +1290,7 @@ def validate_manifest(
             "execution workspace has an invalid product profile",
         )
         require(
-            product_profile.get("entry_abi")
-            == "cached_inputs_profile_output_v1"
+            product_profile.get("entry_abi") == "cached_inputs_profile_output_v1"
             and product_profile.get("entry_symbol")
             == selected_product.get("entry_symbol")
             and product_profile.get("warmup_samples")
@@ -1422,7 +1493,11 @@ def validate_manifest(
         }
         reports: list[dict[str, Any]] = []
         for identity, workload in sorted(mapping_requests):
-            command = [mapping_inspector, str(manifest_path.parent / "objects"), identity]
+            command = [
+                mapping_inspector,
+                str(manifest_path.parent / "objects"),
+                identity,
+            ]
             if workload:
                 command.append(workload)
             completed = subprocess.run(
@@ -1447,8 +1522,14 @@ def validate_manifest(
             reports.append(report)
         if require_stream_pipeline:
             require(
-                any(report.get("invocation_stream_input_count", 0) > 0 for report in reports)
-                and any(report.get("invocation_stream_output_count", 0) > 0 for report in reports),
+                any(
+                    report.get("invocation_stream_input_count", 0) > 0
+                    for report in reports
+                )
+                and any(
+                    report.get("invocation_stream_output_count", 0) > 0
+                    for report in reports
+                ),
                 "executed Spatial invocations contain no stream producer/consumer pipeline",
             )
         if require_actor_multicast:
@@ -1683,6 +1764,7 @@ def main() -> None:
         )
         print(json.dumps({"schedule_lineage": lineage}, sort_keys=True))
     manifest = read_json(arguments.manifest)
+    validate_native_system_quality(pair_evidence, manifest)
     validate_manifest(
         manifest,
         arguments.manifest,
@@ -1725,9 +1807,7 @@ def main() -> None:
     if (
         isinstance(portfolio_selection, dict)
         and isinstance(portfolio_selection.get("build"), dict)
-        and isinstance(
-            portfolio_selection["build"].get("product_execution"), dict
-        )
+        and isinstance(portfolio_selection["build"].get("product_execution"), dict)
     ):
         runtime_manifest_bindings = [
             payload

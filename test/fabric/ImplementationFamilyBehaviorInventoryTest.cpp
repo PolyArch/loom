@@ -807,9 +807,21 @@ void routedTokensOwnObservablePhysicalLaneImages() {
                               {mlir::IndexType::get(&context),
                                mlir::IndexType::get(&context)}),
       ::dataflow::NoPayload{}};
-  take(test, indexDemux.projectSemanticValue(
-                 twoChoiceIndexDemux, fixedOperands, canonicalDemux,
-                 ResolvedIndexWidth::I64));
+  const auto indexDemuxKey =
+      take(test, indexDemux.projectSemanticValue(twoChoiceIndexDemux,
+                                                 fixedOperands, canonicalDemux,
+                                                 ResolvedIndexWidth::I64));
+  const ::dataflow::CanonicalActorSchemaProjection twoChoicePointerDemux{
+      OperationSchemaId::DataflowDemux,
+      mlir::FunctionType::get(&context, {i1, pointer}, {pointer, pointer}),
+      ::dataflow::NoPayload{}};
+  const auto pointerDemuxKey =
+      take(test, indexDemux.projectSemanticValue(
+                     twoChoicePointerDemux, fixedOperands, canonicalDemux,
+                     ResolvedIndexWidth::I64, &pointerLayout));
+  require(
+      test, pointerDemuxKey.bytes().equals(indexDemuxKey.bytes()),
+      "pointer routing did not preserve its represented physical lane image");
   auto redundantDemux =
       demux.projectSemanticValue(twoChoiceDemux, fixedOperands, {0, 2});
   require(test, !redundantDemux,

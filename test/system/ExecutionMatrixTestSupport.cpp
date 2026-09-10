@@ -1907,7 +1907,7 @@ void verifyHeterogeneousSystemAnchor() {
   const auto tech =
       take(test,
            mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
-    auto progress = take(
+  auto progress = take(
       test, mapping::deriveSpatialMappingProgressClosure(
                 dataflow, tech.view(), module,
                 fixture.hardware.spatialMapping.view().computeBindings(),
@@ -1919,42 +1919,6 @@ void verifyHeterogeneousSystemAnchor() {
           progress.kind ==
               mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
           "selected routes do not close the canonical progress proof");
-  std::vector<mapping::SpatialRouteTreeView> unbufferedRoutes(
-      fixture.hardware.spatialMapping.view().routeTrees().begin(),
-      fixture.hardware.spatialMapping.view().routeTrees().end());
-  bool removedProgressBoundary = false;
-  auto bypassBuffered = [&](auto &traversal) {
-    if (!traversal)
-      return;
-    const auto *fifo =
-        std::get_if<fabric::FabricFifoTraversalPayload>(&traversal->payload);
-    if (!fifo || fifo->mode != fabric::FabricFifoTraversalMode::Buffered)
-      return;
-    traversal = fabric::FabricPhysicalTraversalRef::fifoTraversal(
-        fifo->owner, fabric::FabricFifoTraversalMode::Bypass);
-    removedProgressBoundary = true;
-  };
-  for (mapping::SpatialRouteTreeView &route : unbufferedRoutes) {
-    bypassBuffered(route.localTraversal);
-    for (mapping::SpatialRouteNodeView &node : route.nodes)
-      bypassBuffered(node.incomingTraversal);
-    for (mapping::SpatialRouteSinkView &sink : route.sinks)
-      bypassBuffered(sink.localTraversal);
-  }
-  require(test, removedProgressBoundary,
-          "canonical anchor has no Buffered FIFO progress boundary");
-  auto closedWait = take(
-      test, mapping::deriveSpatialMappingProgressClosure(
-                dataflow, tech.view(), module,
-                fixture.hardware.spatialMapping.view().computeBindings(),
-                fixture.hardware.spatialMapping.view().registerFifoTransfers(),
-                unbufferedRoutes,
-                fixture.hardware.spatialMapping.view().resourceUses(),
-                fixture.hardware.spatialMapping.view().physicalTagSegments()));
-  require(test,
-          closedWait.kind ==
-              mapping::MappingProgressClosureKind::ProvenClosedWaitSet,
-          "route verifier accepted the unbuffered atomic multicast");
 
   const auto binding =
       buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,

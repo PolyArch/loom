@@ -276,6 +276,16 @@ llvm::StringRef spelling(ApplicationBuildOperation operation) {
     return "declarative_deployment_finalization";
   case ApplicationBuildOperation::DeploymentConstruction:
     return "deployment_construction";
+  case ApplicationBuildOperation::SystemQualityEvaluation:
+    return "system_quality_evaluation";
+  case ApplicationBuildOperation::SystemEvaluationPreparation:
+    return "system_evaluation_preparation";
+  case ApplicationBuildOperation::SystemEvaluationExecution:
+    return "system_evaluation_execution";
+  case ApplicationBuildOperation::SystemEvaluationValidation:
+    return "system_evaluation_validation";
+  case ApplicationBuildOperation::SystemEvaluationImport:
+    return "system_evaluation_import";
   case ApplicationBuildOperation::PackagePublication:
     return "package_publication";
   }

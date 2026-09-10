@@ -2,6 +2,7 @@
 #define LOOM_LIB_APPLICATION_QUALITYINTERNAL_H
 
 #include "Application/Build.h"
+#include "Evaluation/Evidence.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -15,6 +16,22 @@
 namespace loom::application::detail {
 
 struct ApplicationRuntimeValidation;
+struct ImportedApplicationMapping;
+
+struct ApplicationSystemQualityObservation final {
+  std::variant<std::uint64_t, dse::JointDesignQualityIncompleteReason> outcome =
+      dse::JointDesignQualityIncompleteReason::ProofNotEstablished;
+  std::vector<ArtifactRootReference> evidence;
+};
+
+llvm::Expected<ApplicationSystemQualityObservation>
+acquireApplicationSystemQuality(
+    const PreparedApplicationBuild &prepared,
+    const ImportedApplicationMapping &mapping,
+    const ApplicationSystemQualityContext &context,
+    const ResolvedConfig &config, const ArtifactStore &artifacts,
+    const BlobStore &blobs,
+    std::vector<evaluation::EvaluationEvidence> &completedSystemEvidence);
 
 std::optional<dse::JointBoundedQualityPolicy>
 rebaseApplicationBoundedQualityPolicy(

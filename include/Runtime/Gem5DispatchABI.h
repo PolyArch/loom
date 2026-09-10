@@ -11,6 +11,11 @@ enum class Gem5RootLifecycleAction : std::uint32_t {
   Completion = 1,
 };
 
+enum class Gem5ComputationAction : std::uint32_t {
+  Begin = 0,
+  End = 1,
+};
+
 enum class Gem5RootEventControlDecision : std::uint32_t {
   Continue = 0,
   Stay = 1,
@@ -41,6 +46,7 @@ inline constexpr std::uint64_t gem5ThreadDispatchRootEvent = 0x30;
 inline constexpr std::uint64_t gem5ThreadDispatchRootOccurrenceLow = 0x34;
 inline constexpr std::uint64_t gem5ThreadDispatchRootOccurrenceHigh = 0x38;
 inline constexpr std::uint64_t gem5ThreadDispatchRootEventStatus = 0x3c;
+inline constexpr std::uint64_t gem5ThreadDispatchComputationEvent = 0x40;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerSlotBase = 0x1000;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerSlotStride = 0x08;
 inline constexpr std::uint64_t gem5ThreadDispatchWorkerCompletion = 0x00;

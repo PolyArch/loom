@@ -30,7 +30,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationActivationDecisionSchema{
-    "loom.application.activation_decision", SchemaVersion{3, 0}};
+    "loom.application.activation_decision", SchemaVersion{4, 0}};
 
 enum class ApplicationActivationDecisionErrorReason : std::uint8_t {
   ForeignSchema,
@@ -89,6 +89,7 @@ struct ApplicationRuntimeEvidenceJoin final {
   std::vector<ArtifactRootReference> requestDependencies;
   std::vector<ArtifactRootReference> executionOutputs;
   bool allCgraExecutionsRetired = true;
+  std::optional<std::uint64_t> systemComputationTicks;
 };
 
 struct ApplicationActivationDecisionDraft final {

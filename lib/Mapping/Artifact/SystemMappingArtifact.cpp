@@ -257,11 +257,20 @@ retainedSystemMappingBytes(const FinalizedSystemMapping &mapping) {
         activation.capacityClaims.capacity() *
             sizeof(SystemCapacityClaimProjection) +
         activation.causalRelease.capacity() *
-            sizeof(SystemCausalReleasePointProjection);
-    for (const auto &release : activation.causalRelease)
+            sizeof(MappingCausalReleasePointProjection);
+    for (const auto &release : activation.causalRelease) {
+      if (const auto *events =
+              std::get_if<std::vector<::dataflow::EventFamilyKey>>(
+                  &release.event))
+        closureBytes += events->capacity() * sizeof(::dataflow::EventFamilyKey);
+      else
+        closureBytes +=
+            std::get<RootedSpatialResultHandoffProjection>(release.event)
+                .result.sinks.capacity() *
+            sizeof(SpatialResultHandoffSinkView);
       closureBytes +=
-          release.alternatives.capacity() * sizeof(::dataflow::EventFamilyKey) +
-          (release.guaranteedOffset ? release.guaranteedOffset->capacity() : 0);
+          release.guaranteedOffset ? release.guaranteedOffset->capacity() : 0;
+    }
   }
   return sizeof(mapping) + mapping.canonicalBytes().bytes().size() +
          view.executionBindings().spatialMappingImports().size() *
@@ -297,10 +306,18 @@ deterministicSystemMappingWork(const FinalizedSystemMapping &mapping) {
         activation.triggerAlternatives.size() + activation.parameters.size() +
         activation.sharingAssignments.size() +
         activation.capacityClaims.size() + activation.causalRelease.size();
-    for (const auto &release : activation.causalRelease)
+    for (const auto &release : activation.causalRelease) {
+      if (const auto *events =
+              std::get_if<std::vector<::dataflow::EventFamilyKey>>(
+                  &release.event))
+        closureWork += events->size();
+      else
+        closureWork +=
+            std::get<RootedSpatialResultHandoffProjection>(release.event)
+                .result.sinks.size();
       closureWork +=
-          release.alternatives.size() +
-          (release.guaranteedOffset ? release.guaranteedOffset->size() : 0);
+          release.guaranteedOffset ? release.guaranteedOffset->size() : 0;
+    }
   }
   return 1 + view.executionBindings().spatialMappingImports().size() +
          view.executionBindings().threadBindings().size() +

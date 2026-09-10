@@ -569,11 +569,17 @@ semanticWidth(sim::SpatialSimulationValueShape shape) {
 llvm::Expected<std::vector<llvm::APInt>>
 packSequence(const sim::CanonicalValueSequence &sequence,
              sim::SpatialSimulationValueShape shape) {
+  // importSpatialSimulationInputs has already validated pointer provenance
+  // and its canonical bits. The RTL memory image uses that same object-address
+  // projection; only the transport drops the semantic provenance metadata.
+  sim::CanonicalValueSequence transport = sequence;
+  for (sim::SemanticLane &lane : transport.lanes)
+    lane.pointerTarget.reset();
   std::vector<llvm::APInt> tokens;
   tokens.reserve(sequence.tokenCount);
   for (std::uint64_t ordinal = 0; ordinal != sequence.tokenCount; ++ordinal) {
     auto token =
-        sim::packDefinedSpatialSimulationToken(sequence, shape, ordinal);
+        sim::packDefinedSpatialSimulationToken(transport, shape, ordinal);
     if (!token)
       return token.takeError();
     tokens.push_back(std::move(*token));
@@ -661,19 +667,19 @@ llvm::Expected<std::optional<std::vector<RuntimeMemoryImage>>>
 projectRuntimeMemoryImages(const sim::SpatialSimulationRuntimeInput &runtime) {
   std::vector<RuntimeMemoryImage> images;
   images.reserve(runtime.memoryObjects.size());
-  std::uint64_t nextBase = 1;
-  for (const sim::RuntimeMemoryObject &object : runtime.memoryObjects) {
+  for (const auto &[ordinal, object] : llvm::enumerate(runtime.memoryObjects)) {
     if (object.initialBytes.empty())
       return invalid("runtime memory object is empty");
     if (llvm::any_of(object.initialBytes, [](const auto &byte) {
           return byte.state != sim::SemanticState::Defined;
         }))
       return std::optional<std::vector<RuntimeMemoryImage>>{};
-    if (object.initialBytes.size() >
-        std::numeric_limits<std::uint64_t>::max() - nextBase - 1)
-      return invalid("runtime memory address space overflows 64 bits");
-    images.push_back(RuntimeMemoryImage{nextBase, object.initialBytes});
-    nextBase += object.initialBytes.size() + 1;
+    auto base = sim::projectSimulationMemoryObjectBase(runtime.memoryObjects,
+                                                       ordinal, 64);
+    if (!base)
+      return base.takeError();
+    images.push_back(
+        RuntimeMemoryImage{base->getZExtValue(), object.initialBytes});
   }
   return std::optional<std::vector<RuntimeMemoryImage>>{std::move(images)};
 }

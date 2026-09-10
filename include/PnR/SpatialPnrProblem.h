@@ -36,6 +36,7 @@ class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
 class SpatialPnrProblemIdentity;
 class FrozenSpatialProgressIndex;
+class SpatialComputeProgressIndex;
 class SpatialRouteConstraintModel;
 class SpatialRecurrenceTimingIndex;
 class SpatialSchedulePressureIndex;
@@ -747,6 +748,8 @@ struct FrozenSpatialResourceEvent final {
 struct FrozenSpatialResourceUse final {
   PnrIndex event = 0;
   PnrIndex pattern = 0;
+  PnrIndex releaseOffset = 0;
+  PnrIndex releaseCount = 0;
 };
 
 struct FrozenSpatialResourceTimeSegment final {
@@ -785,6 +788,10 @@ public:
   llvm::ArrayRef<FrozenSpatialResourceUse> resourceUses() const {
     return uses_;
   }
+  llvm::ArrayRef<::loom::mapping::SpatialActivityEventRef>
+  resourceReleaseEvents() const {
+    return releaseEvents_;
+  }
   llvm::ArrayRef<FrozenSpatialResourceTimeEnvelope>
   resourceTimeEnvelopes() const {
     return envelopes_;
@@ -822,6 +829,7 @@ public:
 private:
   std::vector<FrozenSpatialResourceEvent> events_;
   std::vector<FrozenSpatialResourceUse> uses_;
+  std::vector<::loom::mapping::SpatialActivityEventRef> releaseEvents_;
   std::vector<FrozenSpatialResourceTimeEnvelope> envelopes_;
   std::vector<FrozenSpatialResourceTimeSegment> segments_;
   std::vector<PnrIndex> computeInstructionContextEnvelopeOffsets_;
@@ -1372,6 +1380,9 @@ public:
   const detail::FrozenSpatialProgressIndex &progressIndex() const {
     return *progressIndex_;
   }
+  const detail::SpatialComputeProgressIndex &computeProgressIndex() const {
+    return *computeProgressIndex_;
+  }
   const detail::SpatialSchedulePressureIndex &schedulePressure() const {
     return *schedulePressure_;
   }
@@ -1415,6 +1426,7 @@ private:
       FrozenSpatialActiveRoutingDomain activeRouting,
       FrozenSpatialHandshakeIndex handshake,
       std::shared_ptr<const detail::FrozenSpatialProgressIndex> progressIndex,
+      std::shared_ptr<const detail::SpatialComputeProgressIndex> computeProgressIndex,
       std::shared_ptr<const detail::SpatialSchedulePressureIndex>
           schedulePressure,
       std::shared_ptr<const detail::SpatialRecurrenceTimingIndex>
@@ -1444,6 +1456,7 @@ private:
         routing_(std::move(routing)), activeRouting_(std::move(activeRouting)),
         handshake_(std::move(handshake)),
         progressIndex_(std::move(progressIndex)),
+        computeProgressIndex_(std::move(computeProgressIndex)),
         schedulePressure_(std::move(schedulePressure)),
         recurrenceTiming_(std::move(recurrenceTiming)),
         progressBasis_(progressBasis),
@@ -1472,6 +1485,7 @@ private:
   FrozenSpatialActiveRoutingDomain activeRouting_;
   FrozenSpatialHandshakeIndex handshake_;
   std::shared_ptr<const detail::FrozenSpatialProgressIndex> progressIndex_;
+  std::shared_ptr<const detail::SpatialComputeProgressIndex> computeProgressIndex_;
   std::shared_ptr<const detail::SpatialSchedulePressureIndex> schedulePressure_;
   std::shared_ptr<const detail::SpatialRecurrenceTimingIndex> recurrenceTiming_;
   ::loom::mapping::MappingDataflowProgressBasis progressBasis_;

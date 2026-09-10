@@ -55,7 +55,7 @@ the FirstVerified invocation reports `SemanticLimitReached`, including when
 the successful restart is the final configured slot. Earlier proof debt does
 not replace the achieved stopping condition with `ProofNotEstablished`.
 
-Objective registry 3.3 separates proven closed waits, proof debt, and exact
+The Mapping objective registry separates proven closed waits, proof debt, and exact
 runtime counterexamples.
 `HardProgressViolation` is nonzero only for `ProvenClosedWaitSet`;
 `ProgressProofDebt` is nonzero only for `ProofNotEstablished`.
@@ -68,6 +68,16 @@ these dimensions before ordinary QoR. Final Spatial
 publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.
+
+Spatial search retains compute release events beside their frozen resource
+uses. Mapping owns the logical result connections, Fabric capacity claims and
+durable-boundary classification, and the shared progress kernel owns closure.
+The frozen compute projection interns all possible trigger and consumer events
+once. A candidate selects instruction contexts, route occupancy and durable
+result cuts; an unchanged selection reuses its closure without allocating.
+Transaction rollback restores the prior immutable projection, and cold
+verification rebuilds those inputs from the candidate. These caches do not
+introduce persistent proof labels or event semantics.
 
 `loom.mapping_constraints 1.3` is the provider's only persistent owner for a
 promoted runtime-counterexample legality rule. The feedback object itself is
@@ -294,6 +304,10 @@ independent slots continue.
 Initialization uses minimum-current-domain first and canonical typed-key
 tie-breaking. Attempt zero uses canonical value order. Later attempts use a
 without-replacement permutation from the restart's initializer stream.
+Preference-guided solves select unresolved decisions with a still-live
+preferred value before unpreferred decisions, using minimum-current-domain
+and canonical typed-key order within each group. This lets root preferences
+guide the dependent attachment choices that propagation derives from them.
 
 The hard root model contains:
 
@@ -306,7 +320,12 @@ The hard root model contains:
 * caller-authored domain, equality, and disjoint clauses.
 
 Topology, locality, Temporal scheduling, port spread, and RegFIFO reuse are
-soft value-order preferences only. They do not delete a hard-domain value. The
+soft search-order preferences only. They do not delete a hard-domain value. The
+initial compute preference orders resident-context load and reachability before
+static schedule pressure, then local transfers and route locality. Memory
+preferences likewise place static schedule pressure before route locality.
+Critical-path serialization cannot be traded for shorter routes at this stage;
+noncritical state may still favor Temporal placement. The
 root solver first closes compute and memory choices, then attachment choices,
 while preserving a legal external route fallback for every optional local
 transfer.
@@ -488,12 +507,23 @@ Incomplete solves include the final response's branch, conflict, and
 propagation counts and solution information. These retain the work reported
 by the solver before termination, including whether it performed branching.
 
+An exact canonical solve memo preserves its completed proof and logical solve
+work. Reuse is admitted only when that work fits the remaining call budget;
+it reports zero actual CP-SAT invocations. Both repair profiles propagate the
+logical count, and the restart consumes it across successive repairs when
+enforcing `max_solver_calls`. A successful cached repair therefore advances
+the same bounded search as a cold solve. The work ledger continues to record
+actual solver invocations, without charging a fictitious call for reuse.
+
 The result vocabulary is:
 
 ```text
 Repaired
 RegionInfeasibleUnderFixedBoundary
 UnknownBudgetExhausted
+TimedOut
+RoutingIncomplete
+ProofNotEstablished
 RegionTooLarge
 UnsupportedEncoding
 InternalError
@@ -522,6 +552,11 @@ Transport repair first tests the current exact assignment. Failed route probes
 add an invocation-local search no-good over the complete observed placement,
 attachment, and local versus external disposition tuple. This temporary
 exclusion is not a promoted runtime-counterexample clause. A fixed-terminal
+assignment whose negotiated route fails acceptance remains routing-incomplete:
+the rejected route does not prove that every route under its terminals fails.
+If these search exclusions exhaust the assignment domain, the result retains
+`RoutingIncomplete` (or the prior typed budget failure), never a region
+infeasibility proof. A fixed-terminal
 certificate excludes only assignments for which its separating capacity proof
 remains valid. Certificate growth is monotonic inside one invocation and
 cannot become persistent Mapping state. A successful probe that realizes its
@@ -533,6 +568,13 @@ compose independent regional improvements. A complete transport closure is
 legal even when its selected objective rank does not improve. Objective
 preference cannot turn that complete legal assignment into a hard no-good;
 the cold global closure and verifier remain the publication gates.
+
+A possible compute-capacity wait seeds the repair region with the compute
+realizations named by the shared closure witness. Their binding relations,
+attachments and incident routes enter the existing region closure. Every
+provisional assignment must remove the live compute witness under the same
+progress projection; a different binding alone is not evidence of progress.
+The existing solver-call and routing limits remain applicable.
 
 ### Final Spatial Closure
 
@@ -657,13 +699,13 @@ preset disables repair while retaining its other limits.
 
 ## Builtin Objective Closure
 
-The builtin catalog contains all five violations and all seven Mapping
-measures from objective registry 3.0. Its weighted levels in canonical catalog
-order are traversal, schedule, closure, timing, and search energy. The selected
-total ordering is:
+The builtin catalog consumes the violation and measure inventory owned by
+`spec-pnr.md` under `Objective Projection`. After selected-handshake legality,
+ordinary closure, progress proof debt, and the progress-repair guidance, the
+selected optimization ordering is:
 
 ```text
-closure -> timing -> schedule -> traversal
+static schedule pressure -> timing -> traversal -> shared operand ingress pressure
 ```
 
 Closure gives every violation equal weight. Timing gives every cycle,
@@ -672,6 +714,13 @@ energy gives violations weight `2^48`, schedule and non-transport timing
 measures weight `2^32`, and traversal plus transport bit-cycle demand weight
 `1`. Checked wide arithmetic rejects overflow. These weights guide search only;
 final legality still requires zero violations.
+
+Static schedule pressure precedes the mixed timing score because critical-path
+and recurrence placement must not be traded for lower transport bit volume.
+It is derived from Dataflow criticality and the selected PE schedule, including
+cross-schedule edges. Off-path temporal sharing remains available to save
+spatial capacity; there is no global temporal-PE ban. The System ordering
+consumes the same per-graph pressure of its selected SpatialMappings.
 
 ## Publication And Replay
 

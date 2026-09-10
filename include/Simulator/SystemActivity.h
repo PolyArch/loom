@@ -28,9 +28,13 @@ struct SystemAcceleratedWindow final {
 /// Absence means the execution completed no root launch, so it has no
 /// accelerated window: a host-only run and a run whose launches never retired
 /// are both unmeasured rather than fully utilized.
+/// When supplied, the source computation interval selects lifecycle events
+/// inside that interval; warmup cannot extend its measured activity span.
 llvm::Expected<std::optional<SystemAcceleratedWindow>>
-projectSystemAcceleratedWindow(const CanonicalSimulationExecution &execution,
-                              const evaluation::CaseArtifactResolution &resolution,
-                              const ArtifactStore &artifacts, const BlobStore &blobs);
+projectSystemAcceleratedWindow(
+    const CanonicalSimulationExecution &execution,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const SystemComputationInterval *computation = nullptr);
 }
 #endif

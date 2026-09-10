@@ -10,6 +10,9 @@ namespace loom::sim {
 namespace detail {
 llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execution,
                                         const SystemExecutionContext &context) {
+  if (!execution.memoryActivity && execution.computationInterval.has_value())
+    return invalid(
+        "System computation intervals require native memory activity");
   if (!execution.memoryActivity)
     return llvm::Error::success();
   const auto &progress = execution.progressObservations;
@@ -26,6 +29,19 @@ llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execut
     if (observation.memoryOccupiedTicks > execution.memoryActivity->occupiedTicks)
       return invalid("root lifecycle memory service sample exceeds the full "
                      "program service occupancy");
+  if (execution.computationInterval) {
+    const auto &interval = *execution.computationInterval;
+    if (interval.beginTick < progress.programEntryAccepted.gem5Tick ||
+        interval.beginTick >= interval.endTick ||
+        interval.endTick > progress.programExitVisible->gem5Tick ||
+        interval.beginMemoryOccupiedTicks > interval.endMemoryOccupiedTicks ||
+        interval.endMemoryOccupiedTicks >
+            execution.memoryActivity->occupiedTicks ||
+        interval.endMemoryOccupiedTicks - interval.beginMemoryOccupiedTicks >
+            interval.endTick - interval.beginTick)
+      return invalid("System computation interval is outside its native time "
+                     "or service domain");
+  }
   const auto kind = context.request->modelBinding().descriptorRef().modelKind();
   using evaluation::BuiltinEvaluationModel;
   using evaluation::builtinEvaluationModelKind;
@@ -86,9 +102,11 @@ projectSystemMemoryUtilization(const CanonicalSimulationExecution &execution,
 }
 
 llvm::Expected<std::optional<SystemAcceleratedWindow>>
-projectSystemAcceleratedWindow(const CanonicalSimulationExecution &execution,
-                              const evaluation::CaseArtifactResolution &resolution,
-                              const ArtifactStore &artifacts, const BlobStore &blobs) {
+projectSystemAcceleratedWindow(
+    const CanonicalSimulationExecution &execution,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const SystemComputationInterval *computation) {
   const auto *system = execution.system();
   if (!system)
     return detail::invalid("System accelerated window requires a System execution");
@@ -99,23 +117,29 @@ projectSystemAcceleratedWindow(const CanonicalSimulationExecution &execution,
                                                        artifacts, blobs);
   if (!context)
     return context.takeError();
-  // Lifecycle coordinates increase strictly and no completion precedes its
-  // start, so the first entry opens the window and the last completion closes it.
+  // Select events before deriving the span: intersecting a whole-program span
+  // would charge the gap after warmup and before the first measured launch.
+  const SystemRootLifecycleObservation *start = nullptr;
   const SystemRootLifecycleObservation *completion = nullptr;
   for (const SystemRootLifecycleObservation &observation : lifecycle) {
+    if (computation &&
+        (observation.coordinate.gem5Tick < computation->beginTick ||
+         observation.coordinate.gem5Tick > computation->endTick))
+      continue;
     auto root = context->dataflow->view().eventRootThreadLaunch(observation.event);
     if (!root)
       return root.takeError();
+    if (!start &&
+        observation.event == dataflow::rootThreadStartEventFamily(*root))
+      start = &observation;
     if (observation.event == dataflow::rootThreadCompletionEventFamily(*root))
       completion = &observation;
   }
-  if (!completion)
+  if (!start || !completion ||
+      completion->coordinate.gem5Tick < start->coordinate.gem5Tick)
     return std::optional<SystemAcceleratedWindow>{};
-  const SystemRootLifecycleObservation &start = lifecycle.front();
-  return std::optional<SystemAcceleratedWindow>{
-      SystemAcceleratedWindow{start.coordinate.gem5Tick,
-                              completion->coordinate.gem5Tick,
-                              completion->memoryOccupiedTicks -
-                                  start.memoryOccupiedTicks}};
+  return std::optional<SystemAcceleratedWindow>{SystemAcceleratedWindow{
+      start->coordinate.gem5Tick, completion->coordinate.gem5Tick,
+      completion->memoryOccupiedTicks - start->memoryOccupiedTicks}};
 }
 }

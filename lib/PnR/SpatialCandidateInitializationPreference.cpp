@@ -1,0 +1,1198 @@
+#include "SpatialCandidateInitializationPreference.h"
+
+#include "Common/MappingDebugLog.h"
+#include "InitializerRelationSolver.h"
+#include "SpatialBindingRelationModel.h"
+#include "SpatialCandidateLocalTransferPreference.h"
+#include "SpatialCandidateOperandPairingPreference.h"
+#include "SpatialCandidateTopologyPreference.h"
+#include "StaticSchedulePressure.h"
+
+#include "Fabric/Identity/FabricRefText.h"
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <optional>
+#include <system_error>
+#include <tuple>
+#include <utility>
+#include <variant>
+#include <vector>
+
+using namespace loom::pnr;
+using namespace loom::pnr::detail;
+
+llvm::Expected<PreferredRootAssignment>
+loom::pnr::detail::preferScheduleAwareRootPlacements(
+    const FrozenSpatialPnrProblem &problem, std::uint32_t attemptOrdinal,
+    detail::InitializerRelationSolver &solver,
+    detail::InitializerRelationSolveResult baseline,
+    std::uint64_t assignmentLimit) {
+  PreferredRootAssignment result;
+  result.choices = std::move(baseline.choices);
+  result.assignmentAttempts = baseline.assignmentAttempts;
+  const detail::SpatialBindingRelationModel &bindings =
+      problem.bindingRelations();
+  if (result.choices.size() != bindings.decisionCount() ||
+      result.assignmentAttempts > assignmentLimit)
+    return spatialInitializerError(
+        "root relation baseline has invalid accounting");
+
+  const auto emitPreference = [&] {
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Decision,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::ContextChoice,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "initializer_root_preference";
+          fields["attempt"] = attemptOrdinal;
+          fields["changed_compute_roots"] = result.changedComputeRoots;
+          fields["selected_temporal_compute_roots"] =
+              result.selectedTemporalComputeRoots;
+          fields["maximum_context_selections"] =
+              result.maximumContextSelections;
+          fields["maximum_compute_occurrence_selections"] =
+              result.maximumComputeOccurrenceSelections;
+          fields["distinct_compute_occurrences"] =
+              result.distinctComputeOccurrences;
+          fields["changed_memory_roots"] = result.changedMemoryRoots;
+          fields["selected_temporal_memory_roots"] =
+              result.selectedTemporalMemoryRoots;
+          fields["maximum_memory_selections"] = result.maximumMemorySelections;
+          fields["distinct_memory_occurrences"] =
+              result.distinctMemoryOccurrences;
+          fields["topology_scored_roots"] = result.topologyScoredRoots;
+          fields["topology_boundary_anchor_incidences"] =
+              result.topologyBoundaryAnchorIncidences;
+          fields["topology_hop_sum"] = result.topologyHopSum;
+          fields["topology_unreachable_selections"] =
+              result.topologyUnreachableSelections;
+          fields["topology_refined_compute_roots"] =
+              result.topologyRefinedComputeRoots;
+          fields["topology_refinement_hop_sum"] =
+              result.topologyRefinementHopSum;
+          fields["topology_refinement_unreachable_selections"] =
+              result.topologyRefinementUnreachableSelections;
+          fields["changed_port_attachments"] = result.changedPortAttachments;
+          fields["changed_graph_boundary_attachments"] =
+              result.changedGraphBoundaryAttachments;
+          fields["pairing_scored_port_attachments"] =
+              result.pairingScoredPortAttachments;
+          fields["preferred_shared_operand_ingress_pressure"] =
+              result.preferredSharedOperandIngressPressure;
+          fields["structurally_adjusted_root_preferences"] =
+              result.structurallyAdjustedRootPreferences;
+          fields["local_transfer_refined_compute_roots"] =
+              result.localTransferRefinedComputeRoots;
+          fields["maximum_endpoint_selections"] =
+              result.maximumEndpointSelections;
+          fields["assignment_attempts"] = result.assignmentAttempts;
+          fields["status"] = result.status;
+        });
+  };
+
+  using ContextKey =
+      std::pair<::loom::fabric::FabricEntityId, ::loom::fabric::FabricOrdinal>;
+  using OccurrenceKey = ::loom::fabric::FabricEntityId;
+  std::map<ContextKey, std::uint64_t> selectedCounts;
+  std::map<OccurrenceKey, std::uint64_t> selectedOccurrenceCounts;
+  std::vector<PnrIndex> fixedChoices(bindings.decisionCount(),
+                                     getInvalidPnrIndex());
+  const auto &realizations = problem.realizations();
+  const auto contexts = realizations.computeInstructionContexts();
+  auto topology = detail::SpatialCandidateTopologyPreference::create(problem);
+  if (!topology)
+    return topology.takeError();
+  auto localTransfers =
+      detail::SpatialCandidateLocalTransferPreference::create(problem);
+  if (!localTransfers)
+    return localTransfers.takeError();
+  std::vector<PnrIndex> selectedChoiceOrdinals(
+      bindings.computeDecisionCount() + bindings.memoryDecisionCount(),
+      getInvalidPnrIndex());
+  std::vector<PnrIndex> choicePlacementScratch;
+  std::vector<FrozenSpatialAttachmentOption> fixedOptionScratch;
+  const auto contextKey = [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<ContextKey> {
+    if (choice.instructionContext >= contexts.size())
+      return spatialInitializerError(
+          "compute preference resolved a foreign instruction context");
+    const auto &context = contexts[choice.instructionContext];
+    return ContextKey{context.pe.id(), context.ordinal};
+  };
+  const auto computePlacement =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<const FrozenSpatialComputePlacement *> {
+    if (choice.placement >= realizations.computePlacements().size())
+      return spatialInitializerError(
+          "compute preference resolved a foreign placement");
+    return &realizations.computePlacements()[choice.placement];
+  };
+  const auto computeSchedule =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<::fabric::Schedule> {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    return (*placement)->schedule;
+  };
+  // The scarce physical compute resource is the PE occurrence: every resident
+  // context inside one Temporal PE shares that PE's operand and result ports
+  // and the switch domain attached to them. Counting selections per resident
+  // context reports no pressure until a PE is completely full, which lets
+  // canonical enumeration order bind an entire graph to the first few PE
+  // occurrences of an arbitrarily large Fabric. Occurrence load prices the
+  // frozen-topology distance of every choice on that occurrence, so a locality
+  // preference degrades as the occurrence fills instead of collapsing onto it.
+  // Resident-context exclusivity remains the hard relation owned by the
+  // relation solver, and occurrence load remains a search preference that
+  // cannot prove infeasibility or remove a legal choice.
+  const auto countComputeOccurrence =
+      [&](const detail::SpatialComputeBindingChoice &choice) -> llvm::Error {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    std::uint64_t &count =
+        selectedOccurrenceCounts[(*placement)->parentPe.id()];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError("compute occurrence count overflows u64");
+    result.maximumComputeOccurrenceSelections =
+        std::max(result.maximumComputeOccurrenceSelections, ++count);
+    return llvm::Error::success();
+  };
+  const auto releaseComputeOccurrence =
+      [&](const detail::SpatialComputeBindingChoice &choice) -> llvm::Error {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    auto found = selectedOccurrenceCounts.find((*placement)->parentPe.id());
+    if (found == selectedOccurrenceCounts.end() || found->second == 0)
+      return spatialInitializerError(
+          "topology refinement lost its current compute occurrence");
+    --found->second;
+    return llvm::Error::success();
+  };
+  const auto computeOccurrenceLoad =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<std::uint64_t> {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    const auto found =
+        selectedOccurrenceCounts.find((*placement)->parentPe.id());
+    return found == selectedOccurrenceCounts.end() ? std::uint64_t{0}
+                                                   : found->second;
+  };
+  const auto pricedDistance =
+      [&](std::uint64_t distance,
+          std::uint64_t load) -> llvm::Expected<std::uint64_t> {
+    const std::uint64_t price = load + 1;
+    if (distance != 0 &&
+        price > std::numeric_limits<std::uint64_t>::max() / distance)
+      return spatialInitializerError("occurrence-priced distance exceeds u64");
+    return distance * price;
+  };
+  const auto preferenceOrigin = [&](PnrIndex baselineChoice) {
+    return attemptOrdinal == 0 ? PnrIndex{0} : baselineChoice;
+  };
+
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex baselineChoice = result.choices[realization];
+    if (choices.empty() || baselineChoice >= choices.size())
+      return spatialInitializerError(
+          "root relation baseline selected a foreign compute choice");
+
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!topologyScores)
+      return topologyScores.takeError();
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
+    if (topologyScores->activeIncidences != 0) {
+      if (result.topologyScoredRoots ==
+          std::numeric_limits<std::uint64_t>::max())
+        return spatialInitializerError(
+            "topology-scored root count exceeds u64");
+      ++result.topologyScoredRoots;
+    }
+    if (topologyScores->activeBoundaryAnchorIncidences >
+        std::numeric_limits<std::uint64_t>::max() -
+            result.topologyBoundaryAnchorIncidences)
+      return spatialInitializerError(
+          "topology boundary-anchor incidence total exceeds u64");
+    result.topologyBoundaryAnchorIncidences +=
+        topologyScores->activeBoundaryAnchorIncidences;
+
+    PnrIndex selected = baselineChoice;
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(), true,
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint8_t>::max(), choices.size());
+    std::uint64_t selectedDistance = std::numeric_limits<std::uint64_t>::max();
+    bool selectedUnreachable = true;
+    std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedOccurrenceLoad =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedSchedulePressure =
+        std::numeric_limits<std::uint64_t>::max();
+    bool selectedTemporal = false;
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
+    for (std::size_t rank = 0; rank != choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      auto key = contextKey(choices[local]);
+      if (!key)
+        return key.takeError();
+      const auto found = selectedCounts.find(*key);
+      const std::uint64_t count =
+          found == selectedCounts.end() ? 0 : found->second;
+      auto occurrenceLoad = computeOccurrenceLoad(choices[local]);
+      if (!occurrenceLoad)
+        return occurrenceLoad.takeError();
+      const bool unreachable = topologyScores->unreachable[local] != 0;
+      const std::uint64_t distance = topologyScores->distances[local];
+      auto locality = pricedDistance(distance, *occurrenceLoad);
+      if (!locality)
+        return locality.takeError();
+      auto schedule = computeSchedule(choices[local]);
+      if (!schedule)
+        return schedule.takeError();
+      const bool temporal = *schedule == ::fabric::Schedule::Temporal;
+      const std::uint64_t schedulePressure =
+          problem.schedulePressure().computePlacementContribution(
+              choices[local].placement);
+      // Once context capacity and reachability agree, a shorter route or a
+      // local transfer must not buy serialization of a critical actor.
+      const auto score = std::make_tuple(
+          count, unreachable, schedulePressure,
+          localTransferScores->unmatchedNets[local],
+          unreachable ? std::uint64_t{0} : *locality, *occurrenceLoad,
+          static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+        selectedCount = count;
+        selectedOccurrenceLoad = *occurrenceLoad;
+        selectedSchedulePressure = schedulePressure;
+        selectedDistance = distance;
+        selectedUnreachable = unreachable;
+        selectedTemporal = temporal;
+      }
+    }
+    fixedChoices[realization] = selected;
+    selectedChoiceOrdinals[realization] = selected;
+    auto key = contextKey(choices[selected]);
+    if (!key)
+      return key.takeError();
+    std::uint64_t &count = selectedCounts[*key];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError("compute preference count overflows u64");
+    result.maximumContextSelections =
+        std::max(result.maximumContextSelections, ++count);
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
+    result.changedComputeRoots += selected != baselineChoice;
+    result.selectedTemporalComputeRoots += selectedTemporal;
+    if (topologyScores->activeIncidences != 0) {
+      if (selectedUnreachable) {
+        if (result.topologyUnreachableSelections ==
+            std::numeric_limits<std::uint64_t>::max())
+          return spatialInitializerError(
+              "topology-unreachable selection count exceeds u64");
+        ++result.topologyUnreachableSelections;
+      } else {
+        if (selectedDistance >
+            std::numeric_limits<std::uint64_t>::max() - result.topologyHopSum)
+          return spatialInitializerError(
+              "topology preference hop sum exceeds u64");
+        result.topologyHopSum += selectedDistance;
+      }
+    }
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Detail,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::ContextChoice,
+        [&](llvm::json::Object &fields) {
+          const auto &context = contexts[choices[selected].instructionContext];
+          const auto &placement =
+              realizations.computePlacements()[choices[selected].placement];
+          fields["operation"] = "initializer_compute_root_choice";
+          fields["attempt"] = attemptOrdinal;
+          fields["realization"] = realization;
+          fields["baseline_choice"] = baselineChoice;
+          fields["selected_choice"] = selected;
+          fields["selected_count_before"] = selectedCount;
+          fields["selected_occurrence_load_before"] = selectedOccurrenceLoad;
+          fields["pe_ref"] = loom::fabric::printFabricRef(placement.parentPe);
+          fields["selected_static_schedule_pressure"] =
+              selectedSchedulePressure;
+          fields["selected_temporal"] = selectedTemporal;
+          fields["local_transfer_active_net_count"] =
+              localTransferScores->activeNets;
+          fields["selected_local_transfer_match_count"] =
+              localTransferScores->matchedNets[selected];
+          fields["selected_local_transfer_miss_count"] =
+              localTransferScores->unmatchedNets[selected];
+          fields["topology_incidence_count"] = topologyScores->activeIncidences;
+          fields["topology_boundary_anchor_incidence_count"] =
+              topologyScores->activeBoundaryAnchorIncidences;
+          fields["topology_reachable"] = !selectedUnreachable;
+          fields["topology_hops"] = selectedUnreachable ? 0 : selectedDistance;
+          fields["instruction_context_ref"] =
+              loom::fabric::printFabricRef(context);
+          fields["fu_ref"] = loom::fabric::printFabricRef(placement.fu);
+        });
+  }
+
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex current = fixedChoices[realization];
+    if (current >= choices.size())
+      return spatialInitializerError(
+          "topology refinement has a foreign compute choice");
+    auto currentKey = contextKey(choices[current]);
+    if (!currentKey)
+      return currentKey.takeError();
+    auto count = selectedCounts.find(*currentKey);
+    if (count == selectedCounts.end() || count->second == 0)
+      return spatialInitializerError(
+          "topology refinement lost its current instruction context");
+    --count->second;
+    if (llvm::Error error = releaseComputeOccurrence(choices[current]))
+      return std::move(error);
+
+    auto currentSchedule = computeSchedule(choices[current]);
+    if (!currentSchedule)
+      return currentSchedule.takeError();
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!topologyScores)
+      return topologyScores.takeError();
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
+    PnrIndex selected = current;
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(), true,
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
+    std::uint64_t selectedDistance = 0;
+    bool selectedUnreachable = false;
+    const PnrIndex origin = preferenceOrigin(current);
+    for (std::size_t rank = 0; rank != choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      auto schedule = computeSchedule(choices[local]);
+      if (!schedule)
+        return schedule.takeError();
+      if (*schedule != *currentSchedule)
+        continue;
+      auto key = contextKey(choices[local]);
+      if (!key)
+        return key.takeError();
+      const auto found = selectedCounts.find(*key);
+      const std::uint64_t selectedCount =
+          found == selectedCounts.end() ? 0 : found->second;
+      auto occurrenceLoad = computeOccurrenceLoad(choices[local]);
+      if (!occurrenceLoad)
+        return occurrenceLoad.takeError();
+      const bool unreachable = topologyScores->unreachable[local] != 0;
+      const std::uint64_t distance = topologyScores->distances[local];
+      auto locality = pricedDistance(distance, *occurrenceLoad);
+      if (!locality)
+        return locality.takeError();
+      const auto score = std::make_tuple(
+          localTransferScores->unmatchedNets[local], selectedCount, unreachable,
+          unreachable ? std::uint64_t{0} : *locality, *occurrenceLoad, rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+        selectedDistance = distance;
+        selectedUnreachable = unreachable;
+      }
+    }
+    fixedChoices[realization] = selected;
+    selectedChoiceOrdinals[realization] = selected;
+    auto selectedKey = contextKey(choices[selected]);
+    if (!selectedKey)
+      return selectedKey.takeError();
+    std::uint64_t &selectedCount = selectedCounts[*selectedKey];
+    if (selectedCount == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError("topology refinement count overflows u64");
+    ++selectedCount;
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
+    result.topologyRefinedComputeRoots += selected != current;
+    result.topologyRefinementUnreachableSelections += selectedUnreachable;
+    if (!selectedUnreachable) {
+      if (selectedDistance > std::numeric_limits<std::uint64_t>::max() -
+                                 result.topologyRefinementHopSum)
+        return spatialInitializerError(
+            "topology refinement hop sum exceeds u64");
+      result.topologyRefinementHopSum += selectedDistance;
+    }
+  }
+  result.changedComputeRoots = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization)
+    result.changedComputeRoots +=
+        fixedChoices[realization] != result.choices[realization];
+
+  const PnrIndex memoryOffset = bindings.computeDecisionCount();
+  using MemoryKey = ::loom::fabric::FabricEntityId;
+  std::map<MemoryKey, std::uint64_t> selectedMemoryCounts;
+  const auto memoryPlacement =
+      [&](const detail::SpatialMemoryBindingChoice &choice)
+      -> llvm::Expected<const FrozenSpatialMemoryPlacement *> {
+    if (choice.placement >= realizations.memoryPlacements().size())
+      return spatialInitializerError(
+          "memory preference resolved a foreign placement");
+    return &realizations.memoryPlacements()[choice.placement];
+  };
+  const auto countMemory =
+      [&](const FrozenSpatialMemoryPlacement &placement) -> llvm::Error {
+    std::uint64_t &count = selectedMemoryCounts[placement.memory.id()];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError("memory preference count overflows u64");
+    result.maximumMemorySelections =
+        std::max(result.maximumMemorySelections, ++count);
+    result.selectedTemporalMemoryRoots +=
+        placement.schedule == ::fabric::Schedule::Temporal;
+    return llvm::Error::success();
+  };
+
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    const auto choices = bindings.memoryChoices(memory);
+    const PnrIndex baselineChoice = result.choices[decision];
+    if (choices.empty() || baselineChoice >= choices.size())
+      return spatialInitializerError(
+          "root relation baseline selected a foreign memory choice");
+
+    choicePlacementScratch.clear();
+    for (const detail::SpatialMemoryBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        decision, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!topologyScores)
+      return topologyScores.takeError();
+
+    PnrIndex selected = baselineChoice;
+    auto selectedScore = std::make_tuple(
+        true, std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint8_t>::max(), choices.size());
+    std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedSchedulePressure =
+        std::numeric_limits<std::uint64_t>::max();
+    bool selectedTemporal = false;
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
+    for (std::size_t rank = 0; rank != choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      auto placement = memoryPlacement(choices[local]);
+      if (!placement)
+        return placement.takeError();
+      const auto found = selectedMemoryCounts.find((*placement)->memory.id());
+      const std::uint64_t count =
+          found == selectedMemoryCounts.end() ? 0 : found->second;
+      const bool temporal =
+          (*placement)->schedule == ::fabric::Schedule::Temporal;
+      const std::uint64_t schedulePressure =
+          problem.schedulePressure().memoryPlacementContribution(
+              choices[local].placement);
+      const bool unreachable = topologyScores->unreachable[local] != 0;
+      auto locality = pricedDistance(topologyScores->distances[local], count);
+      if (!locality)
+        return locality.takeError();
+      // A Spatial memory occurrence serves one static realization per
+      // operation port, so occurrence load prices this root's distance to its
+      // already placed neighbours exactly as it does for a compute root.
+      const auto score =
+          std::make_tuple(unreachable, schedulePressure,
+                          unreachable ? std::uint64_t{0} : *locality, count,
+                          static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+        selectedCount = count;
+        selectedSchedulePressure = schedulePressure;
+        selectedTemporal = temporal;
+      }
+    }
+    auto placement = memoryPlacement(choices[selected]);
+    if (!placement)
+      return placement.takeError();
+    fixedChoices[decision] = selected;
+    selectedChoiceOrdinals[decision] = selected;
+    result.changedMemoryRoots += selected != baselineChoice;
+    if (llvm::Error error = countMemory(**placement))
+      return std::move(error);
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Detail,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::ContextChoice,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "initializer_memory_root_choice";
+          fields["attempt"] = attemptOrdinal;
+          fields["realization"] = memory;
+          fields["baseline_choice"] = baselineChoice;
+          fields["selected_choice"] = selected;
+          fields["selected_count_before"] = selectedCount;
+          fields["selected_static_schedule_pressure"] =
+              selectedSchedulePressure;
+          fields["selected_temporal"] = selectedTemporal;
+          fields["memory_ref"] =
+              loom::fabric::printFabricRef((*placement)->memory);
+        });
+  }
+
+  std::vector<PnrIndex> structurallyFeasibleChoices = result.choices;
+  const bool proposedRootChange =
+      llvm::any_of(llvm::seq<PnrIndex>(0, bindings.realizationDecisionCount()),
+                   [&](PnrIndex decision) {
+                     return fixedChoices[decision] != result.choices[decision];
+                   });
+  if (proposedRootChange) {
+    const std::uint64_t remaining = assignmentLimit - result.assignmentAttempts;
+    if (remaining == 0) {
+      result.status = "root_preference_work_limit";
+      emitPreference();
+      return result;
+    }
+    auto feasible =
+        solver.solveCanonicalWithPreferredChoices(remaining, fixedChoices);
+    const std::uint64_t preferenceAttempts = solver.assignmentAttempts();
+    if (preferenceAttempts > remaining)
+      return spatialInitializerError(
+          "root preference exceeded its remaining assignment work");
+    result.assignmentAttempts += preferenceAttempts;
+    if (!feasible) {
+      bool workLimit = false;
+      llvm::Error unhandled = llvm::handleErrors(
+          feasible.takeError(),
+          [&](const InitializerRelationSolveFailure &failure) -> llvm::Error {
+            if (failure.kind() ==
+                InitializerRelationSolveFailureKind::WorkLimit) {
+              workLimit = true;
+              return llvm::Error::success();
+            }
+            std::string message;
+            llvm::raw_string_ostream stream(message);
+            failure.log(stream);
+            return llvm::make_error<InitializerRelationSolveFailure>(
+                failure.kind(), std::move(message));
+          });
+      if (unhandled)
+        return std::move(unhandled);
+      if (!workLimit)
+        return spatialInitializerError(
+            "soft root preferences failed without work exhaustion");
+      result.status = "root_preference_work_limit";
+      emitPreference();
+      return result;
+    }
+    structurallyFeasibleChoices = std::move(feasible->choices);
+  }
+
+  std::vector<PnrIndex> adjustedComputeRoots;
+  for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+       ++decision) {
+    const bool adjusted =
+        structurallyFeasibleChoices[decision] != fixedChoices[decision];
+    result.structurallyAdjustedRootPreferences += adjusted;
+    if (adjusted && decision < bindings.computeDecisionCount())
+      adjustedComputeRoots.push_back(decision);
+    fixedChoices[decision] = structurallyFeasibleChoices[decision];
+    selectedChoiceOrdinals[decision] = structurallyFeasibleChoices[decision];
+  }
+
+  // The relation solver falls back in canonical choice order when a preferred
+  // root is structurally infeasible, so an adjusted root lands on the first
+  // feasible FU of its PE regardless of the register-FIFO pairings its
+  // selected peers admit. With every peer now selected, move each adjusted
+  // compute root to the choice on the same PE occurrence and resident context
+  // that leaves the fewest local-transfer nets unmatched, and keep the move
+  // only when the relation solver accepts the complete assignment.
+  for (PnrIndex realization : adjustedComputeRoots) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex current = fixedChoices[realization];
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
+    auto currentPlacement = computePlacement(choices[current]);
+    if (!currentPlacement)
+      return currentPlacement.takeError();
+    auto currentKey = contextKey(choices[current]);
+    if (!currentKey)
+      return currentKey.takeError();
+    PnrIndex best = current;
+    bool accepted = false;
+    const auto emitRefinement = [&]() {
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Detail,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::ContextChoice,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "initializer_local_transfer_refinement";
+            fields["attempt"] = attemptOrdinal;
+            fields["realization"] = realization;
+            fields["adjusted_choice"] = current;
+            fields["adjusted_fu_ref"] =
+                loom::fabric::printFabricRef((*currentPlacement)->fu);
+            fields["instruction_context_ref"] = loom::fabric::printFabricRef(
+                contexts[choices[current].instructionContext]);
+            fields["refined_choice"] = best;
+            fields["refined_fu_ref"] = loom::fabric::printFabricRef(
+                realizations.computePlacements()[choices[best].placement].fu);
+            fields["local_transfer_active_net_count"] =
+                localTransferScores->activeNets;
+            fields["unmatched_local_transfer_nets_before"] =
+                localTransferScores->unmatchedNets[current];
+            fields["unmatched_local_transfer_nets_after"] =
+                localTransferScores->unmatchedNets[best];
+            fields["accepted"] = accepted;
+          });
+    };
+    if (localTransferScores->activeNets == 0 ||
+        localTransferScores->unmatchedNets[current] == 0) {
+      emitRefinement();
+      continue;
+    }
+    for (auto [local, choice] : llvm::enumerate(choices)) {
+      auto key = contextKey(choice);
+      if (!key)
+        return key.takeError();
+      if (*key != *currentKey)
+        continue;
+      auto placement = computePlacement(choice);
+      if (!placement)
+        return placement.takeError();
+      if ((*placement)->parentPe != (*currentPlacement)->parentPe)
+        continue;
+      if (localTransferScores->unmatchedNets[local] <
+          localTransferScores->unmatchedNets[best])
+        best = static_cast<PnrIndex>(local);
+    }
+    if (best == current) {
+      emitRefinement();
+      continue;
+    }
+    std::vector<PnrIndex> trial = fixedChoices;
+    trial[realization] = best;
+    auto feasible = solver.solveCanonicalWithFixedChoices(
+        assignmentLimit - result.assignmentAttempts, trial);
+    result.assignmentAttempts += solver.assignmentAttempts();
+    if (!feasible) {
+      llvm::Error unhandled = llvm::handleErrors(
+          feasible.takeError(), [](const InitializerRelationSolveFailure &) {});
+      if (unhandled)
+        return std::move(unhandled);
+      emitRefinement();
+      continue;
+    }
+    for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+         ++decision) {
+      fixedChoices[decision] = feasible->choices[decision];
+      selectedChoiceOrdinals[decision] = feasible->choices[decision];
+      structurallyFeasibleChoices[decision] = feasible->choices[decision];
+    }
+    accepted = true;
+    ++result.localTransferRefinedComputeRoots;
+    emitRefinement();
+  }
+  result.changedComputeRoots = 0;
+  result.changedMemoryRoots = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization)
+    result.changedComputeRoots +=
+        fixedChoices[realization] != result.choices[realization];
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    result.changedMemoryRoots +=
+        fixedChoices[decision] != result.choices[decision];
+  }
+
+  selectedCounts.clear();
+  selectedOccurrenceCounts.clear();
+  selectedMemoryCounts.clear();
+  result.selectedTemporalComputeRoots = 0;
+  result.maximumContextSelections = 0;
+  result.maximumComputeOccurrenceSelections = 0;
+  result.selectedTemporalMemoryRoots = 0;
+  result.maximumMemorySelections = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex selected = fixedChoices[realization];
+    auto key = contextKey(choices[selected]);
+    if (!key)
+      return key.takeError();
+    std::uint64_t &count = selectedCounts[*key];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError("compute preference count overflows u64");
+    result.maximumContextSelections =
+        std::max(result.maximumContextSelections, ++count);
+    auto schedule = computeSchedule(choices[selected]);
+    if (!schedule)
+      return schedule.takeError();
+    result.selectedTemporalComputeRoots +=
+        *schedule == ::fabric::Schedule::Temporal;
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
+  }
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    const auto choices = bindings.memoryChoices(memory);
+    auto placement = memoryPlacement(choices[fixedChoices[decision]]);
+    if (!placement)
+      return placement.takeError();
+    if (llvm::Error error = countMemory(**placement))
+      return std::move(error);
+  }
+
+  for (const auto &[occurrence, count] : selectedOccurrenceCounts) {
+    (void)occurrence;
+    result.distinctComputeOccurrences += count != 0;
+  }
+  result.distinctMemoryOccurrences = selectedMemoryCounts.size();
+
+  const auto &ports = problem.ports();
+  const auto attachmentOptions = ports.attachmentOptions();
+  const auto placementDomains = ports.placementDomains();
+  std::map<PnrIndex, std::uint64_t> endpointSelectionCounts;
+  std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t>
+      logicalNetEndpointSelectionCounts;
+  std::vector<PnrIndex> selectedAttachmentOptions(ports.portDemands().size(),
+                                                  getInvalidPnrIndex());
+  const auto countEndpoint = [&](PnrIndex option) -> llvm::Error {
+    if (option >= attachmentOptions.size())
+      return spatialInitializerError(
+          "attachment preference selected a foreign attachment option");
+    std::uint64_t &count =
+        endpointSelectionCounts[attachmentOptions[option].endpoint];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError(
+          "attachment preference count overflows u64");
+    result.maximumEndpointSelections =
+        std::max(result.maximumEndpointSelections, ++count);
+    return llvm::Error::success();
+  };
+  const auto countLogicalNetEndpoint = [&](PnrIndex logicalNet,
+                                           PnrIndex option) -> llvm::Error {
+    if (option >= attachmentOptions.size())
+      return spatialInitializerError(
+          "logical-net preference selected a foreign attachment option");
+    const auto key =
+        std::make_pair(logicalNet, attachmentOptions[option].endpoint);
+    std::uint64_t &count = logicalNetEndpointSelectionCounts[key];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return spatialInitializerError(
+          "logical-net endpoint preference count overflows u64");
+    ++count;
+    return llvm::Error::success();
+  };
+  const auto selectedPlacement =
+      [&](const FrozenSpatialPortDemand &demand) -> llvm::Expected<PnrIndex> {
+    if (demand.kind == FrozenSpatialPortDemandKind::Compute) {
+      if (demand.realization >= bindings.computeDecisionCount())
+        return spatialInitializerError(
+            "port preference names a foreign compute realization");
+      const PnrIndex selected = fixedChoices[demand.realization];
+      const auto choices = bindings.computeChoices(demand.realization);
+      if (selected >= choices.size())
+        return spatialInitializerError(
+            "port preference compute choice is out of range");
+      return choices[selected].placement;
+    }
+    if (demand.realization >= bindings.memoryDecisionCount())
+      return spatialInitializerError(
+          "port preference names a foreign memory realization");
+    const PnrIndex decision = memoryOffset + demand.realization;
+    const PnrIndex selected = fixedChoices[decision];
+    const auto choices = bindings.memoryChoices(demand.realization);
+    if (selected >= choices.size())
+      return spatialInitializerError(
+          "port preference memory choice is out of range");
+    return choices[selected].placement;
+  };
+
+  for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
+    const FrozenSpatialPortDemand &demandRecord = ports.portDemands()[demand];
+    const PnrIndex decision = bindings.portDecisionOffset() + demand;
+    const auto choices = bindings.portAttachmentChoices(demand);
+    const PnrIndex baselineChoice = result.choices[decision];
+    if (choices.empty() || baselineChoice >= choices.size())
+      return spatialInitializerError(
+          "port preference baseline choice is out of range");
+    auto placement = selectedPlacement(demandRecord);
+    if (!placement)
+      return placement.takeError();
+
+    PnrIndex selected = getInvalidPnrIndex();
+    auto selectedScore = std::make_tuple(
+        true, std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
+    for (std::size_t rank = 0; rank < choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      const PnrIndex option = choices[local];
+      if (option >= attachmentOptions.size())
+        return spatialInitializerError(
+            "port preference attachment choice is out of range");
+      const FrozenSpatialAttachmentOption &record = attachmentOptions[option];
+      if (record.ownerKind !=
+              FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+          record.owner >= placementDomains.size())
+        return spatialInitializerError(
+            "port preference attachment owner is malformed");
+      if (placementDomains[record.owner].placement != *placement)
+        continue;
+      const auto found = endpointSelectionCounts.find(record.endpoint);
+      const std::uint64_t count =
+          found == endpointSelectionCounts.end() ? 0 : found->second;
+      const auto netEndpoint = logicalNetEndpointSelectionCounts.find(
+          {demandRecord.logicalNet, record.endpoint});
+      const std::uint64_t netCount =
+          netEndpoint == logicalNetEndpointSelectionCounts.end()
+              ? 0
+              : netEndpoint->second;
+      auto pairingPressure = detail::scoreSpatialOperandPairingAttachment(
+          problem, demand, option, selectedAttachmentOptions);
+      if (!pairingPressure)
+        return pairingPressure.takeError();
+      const auto score = std::make_tuple(
+          netCount == 0, std::numeric_limits<std::uint64_t>::max() - netCount,
+          *pairingPressure, count, rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+      }
+    }
+    if (selected == getInvalidPnrIndex())
+      return spatialInitializerError(
+          "port preference selected placement has no attachment choice");
+    fixedChoices[decision] = selected;
+    selectedAttachmentOptions[demand] = choices[selected];
+    result.changedPortAttachments += selected != baselineChoice;
+    result.pairingScoredPortAttachments +=
+        !ports.operandPairingGroupsForDemand(demand).empty();
+    auto selectedPairingPressure = detail::scoreSpatialOperandPairingAttachment(
+        problem, demand, choices[selected], selectedAttachmentOptions);
+    if (!selectedPairingPressure)
+      return selectedPairingPressure.takeError();
+    if (*selectedPairingPressure >
+        std::numeric_limits<std::uint64_t>::max() -
+            result.preferredSharedOperandIngressPressure)
+      return spatialInitializerError(
+          "preferred shared operand ingress pressure exceeds u64");
+    result.preferredSharedOperandIngressPressure += *selectedPairingPressure;
+    if (llvm::Error error = countEndpoint(choices[selected]))
+      return std::move(error);
+    if (llvm::Error error =
+            countLogicalNetEndpoint(demandRecord.logicalNet, choices[selected]))
+      return std::move(error);
+  }
+
+  for (PnrIndex boundary = 0; boundary < bindings.graphBoundaryDecisionCount();
+       ++boundary) {
+    const PnrIndex decision = bindings.graphBoundaryDecisionOffset() + boundary;
+    const auto choices = bindings.graphBoundaryAttachmentChoices(boundary);
+    const PnrIndex baselineChoice = result.choices[decision];
+    if (choices.empty() || baselineChoice >= choices.size())
+      return spatialInitializerError(
+          "attachment preference graph-boundary baseline is out of range");
+    const FrozenSpatialGraphBoundary &boundaryRecord =
+        ports.graphBoundaries()[boundary];
+    if (boundaryRecord.logicalNet >= problem.transfers().logicalNets().size())
+      return spatialInitializerError(
+          "attachment preference graph boundary names a foreign logical net");
+
+    const auto selectedTerminalOption =
+        [&](FrozenSpatialTerminalBinding terminal) -> llvm::Expected<PnrIndex> {
+      PnrIndex terminalDecision = 0;
+      llvm::ArrayRef<PnrIndex> terminalChoices;
+      if (terminal.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
+        if (terminal.index >= bindings.portDecisionCount())
+          return spatialInitializerError(
+              "attachment preference names a foreign port terminal");
+        terminalDecision = bindings.portDecisionOffset() + terminal.index;
+        terminalChoices = bindings.portAttachmentChoices(terminal.index);
+      } else {
+        if (terminal.index >= bindings.graphBoundaryDecisionCount())
+          return spatialInitializerError(
+              "attachment preference names a foreign boundary terminal");
+        terminalDecision =
+            bindings.graphBoundaryDecisionOffset() + terminal.index;
+        terminalChoices =
+            bindings.graphBoundaryAttachmentChoices(terminal.index);
+      }
+      PnrIndex selected = fixedChoices[terminalDecision];
+      if (selected == getInvalidPnrIndex())
+        selected = result.choices[terminalDecision];
+      if (selected >= terminalChoices.size())
+        return spatialInitializerError(
+            "attachment preference terminal choice is out of range");
+      return terminalChoices[selected];
+    };
+
+    fixedOptionScratch.clear();
+    const auto &transfers = problem.transfers();
+    const auto sources = transfers.logicalNetSourceBindings();
+    const auto sinks = transfers.logicalNetSinkBindings();
+    const FrozenSpatialLogicalNet &net =
+        transfers.logicalNets()[boundaryRecord.logicalNet];
+    if (boundaryRecord.logicalNet >= sources.size() ||
+        net.sinkOffset > sinks.size() ||
+        net.sinkCount > sinks.size() - net.sinkOffset)
+      return spatialInitializerError(
+          "attachment preference logical-net terminals are malformed");
+    const FrozenSpatialTerminalBinding source =
+        sources[boundaryRecord.logicalNet];
+    const bool boundaryIsSource =
+        source.kind == FrozenSpatialTerminalBindingKind::GraphBoundary &&
+        source.index == boundary;
+    if (boundaryIsSource) {
+      for (FrozenSpatialTerminalBinding sink :
+           sinks.slice(net.sinkOffset, net.sinkCount)) {
+        auto option = selectedTerminalOption(sink);
+        if (!option)
+          return option.takeError();
+        if (*option >= attachmentOptions.size())
+          return spatialInitializerError(
+              "attachment preference sink option is out of range");
+        fixedOptionScratch.push_back(attachmentOptions[*option]);
+      }
+    } else {
+      bool foundBoundary = false;
+      for (FrozenSpatialTerminalBinding sink :
+           sinks.slice(net.sinkOffset, net.sinkCount))
+        foundBoundary |=
+            sink.kind == FrozenSpatialTerminalBindingKind::GraphBoundary &&
+            sink.index == boundary;
+      if (!foundBoundary)
+        return spatialInitializerError(
+            "attachment preference boundary is absent from its logical net");
+      auto option = selectedTerminalOption(source);
+      if (!option)
+        return option.takeError();
+      if (*option >= attachmentOptions.size())
+        return spatialInitializerError(
+            "attachment preference source option is out of range");
+      fixedOptionScratch.push_back(attachmentOptions[*option]);
+    }
+    if (fixedOptionScratch.empty())
+      return spatialInitializerError(
+          "attachment preference boundary has no opposite terminal");
+
+    std::vector<std::uint64_t> unreachableCounts(choices.size(), 0);
+    std::vector<std::uint64_t> distanceSums(choices.size(), 0);
+    constexpr std::uint32_t unreachable =
+        std::numeric_limits<std::uint32_t>::max();
+    for (const FrozenSpatialAttachmentOption &peer : fixedOptionScratch) {
+      auto hopDistances = topology->hopDistancesFrom(
+          llvm::ArrayRef(peer), boundaryRecord.payloadWidthBits,
+          !boundaryIsSource);
+      if (!hopDistances)
+        return hopDistances.takeError();
+      for (std::size_t local = 0; local < choices.size(); ++local) {
+        const PnrIndex option = choices[local];
+        if (option >= attachmentOptions.size() ||
+            attachmentOptions[option].endpoint >= hopDistances->size())
+          return spatialInitializerError(
+              "attachment preference boundary option is out of range");
+        const PnrIndex endpoint = attachmentOptions[option].endpoint;
+        const std::uint32_t distance = (*hopDistances)[endpoint];
+        if (distance == unreachable) {
+          ++unreachableCounts[local];
+          continue;
+        }
+        if (distance >
+            std::numeric_limits<std::uint64_t>::max() - distanceSums[local])
+          return spatialInitializerError(
+              "attachment preference boundary distance exceeds u64");
+        distanceSums[local] += distance;
+      }
+    }
+
+    PnrIndex selected = baselineChoice;
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
+    for (std::size_t rank = 0; rank < choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      const PnrIndex option = choices[local];
+      if (option >= attachmentOptions.size())
+        return spatialInitializerError(
+            "attachment preference graph-boundary choice is out of range");
+      const FrozenSpatialAttachmentOption &record = attachmentOptions[option];
+      if (record.ownerKind != FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
+          record.owner != boundary)
+        return spatialInitializerError(
+            "attachment preference graph-boundary owner is malformed");
+      const auto found = endpointSelectionCounts.find(record.endpoint);
+      const std::uint64_t count =
+          found == endpointSelectionCounts.end() ? 0 : found->second;
+      const auto score = std::make_tuple(unreachableCounts[local], count,
+                                         distanceSums[local], rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+      }
+    }
+    fixedChoices[decision] = selected;
+    result.changedGraphBoundaryAttachments += selected != baselineChoice;
+    if (llvm::Error error = countEndpoint(choices[selected]))
+      return std::move(error);
+  }
+
+  if (result.changedComputeRoots == 0 && result.changedMemoryRoots == 0 &&
+      result.changedPortAttachments == 0 &&
+      result.changedGraphBoundaryAttachments == 0) {
+    emitPreference();
+    return result;
+  }
+
+  const auto adoptFeasibleAssignment =
+      [&](std::vector<PnrIndex> choices,
+          llvm::StringRef status) -> llvm::Error {
+    if (choices.size() != result.choices.size())
+      return spatialInitializerError(
+          "preferred assignment has the wrong decision count");
+    result.changedComputeRoots = 0;
+    result.changedMemoryRoots = 0;
+    result.changedPortAttachments = 0;
+    result.changedGraphBoundaryAttachments = 0;
+    for (PnrIndex realization = 0;
+         realization < bindings.computeDecisionCount(); ++realization)
+      result.changedComputeRoots +=
+          choices[realization] != result.choices[realization];
+    for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount();
+         ++memory) {
+      const PnrIndex decision = memoryOffset + memory;
+      result.changedMemoryRoots +=
+          choices[decision] != result.choices[decision];
+    }
+    endpointSelectionCounts.clear();
+    result.maximumEndpointSelections = 0;
+    for (PnrIndex demand = 0; demand < bindings.portDecisionCount(); ++demand) {
+      const PnrIndex decision = bindings.portDecisionOffset() + demand;
+      result.changedPortAttachments +=
+          choices[decision] != result.choices[decision];
+      const auto domain = bindings.portAttachmentChoices(demand);
+      if (choices[decision] >= domain.size())
+        return spatialInitializerError(
+            "preferred PortDemand choice is outside its domain");
+      if (llvm::Error error = countEndpoint(domain[choices[decision]]))
+        return error;
+    }
+    for (PnrIndex boundary = 0;
+         boundary < bindings.graphBoundaryDecisionCount(); ++boundary) {
+      const PnrIndex decision =
+          bindings.graphBoundaryDecisionOffset() + boundary;
+      result.changedGraphBoundaryAttachments +=
+          choices[decision] != result.choices[decision];
+      const auto domain = bindings.graphBoundaryAttachmentChoices(boundary);
+      if (choices[decision] >= domain.size())
+        return spatialInitializerError(
+            "preferred graph-boundary choice is outside its domain");
+      if (llvm::Error error = countEndpoint(domain[choices[decision]]))
+        return error;
+    }
+    result.applied = result.changedComputeRoots != 0 ||
+                     result.changedMemoryRoots != 0 ||
+                     result.changedPortAttachments != 0 ||
+                     result.changedGraphBoundaryAttachments != 0;
+    result.choices = std::move(choices);
+    result.status = status;
+    return llvm::Error::success();
+  };
+
+  const std::uint64_t remaining = assignmentLimit - result.assignmentAttempts;
+  if (remaining == 0) {
+    if (llvm::Error error = adoptFeasibleAssignment(
+            structurallyFeasibleChoices, "attachment_preference_work_limit"))
+      return std::move(error);
+    emitPreference();
+    return result;
+  }
+
+  std::vector<PnrIndex> rootFixedChoices(bindings.decisionCount(),
+                                         getInvalidPnrIndex());
+  for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+       ++decision)
+    rootFixedChoices[decision] = structurallyFeasibleChoices[decision];
+  auto preferred = solver.solveCanonicalWithFixedAndPreferredChoices(
+      remaining, rootFixedChoices, fixedChoices);
+  const std::uint64_t preferenceAttempts = solver.assignmentAttempts();
+  if (preferenceAttempts > remaining)
+    return spatialInitializerError(
+        "attachment preference exceeded its remaining assignment work");
+  result.assignmentAttempts += preferenceAttempts;
+  if (!preferred) {
+    bool workLimit = false;
+    llvm::Error unhandled = llvm::handleErrors(
+        preferred.takeError(),
+        [&](const InitializerRelationSolveFailure &failure) -> llvm::Error {
+          if (failure.kind() ==
+              InitializerRelationSolveFailureKind::WorkLimit) {
+            workLimit = true;
+            return llvm::Error::success();
+          }
+          std::string message;
+          llvm::raw_string_ostream stream(message);
+          failure.log(stream);
+          return llvm::make_error<InitializerRelationSolveFailure>(
+              failure.kind(), std::move(message));
+        });
+    if (unhandled)
+      return std::move(unhandled);
+    if (!workLimit)
+      return spatialInitializerError(
+          "attachment preferences invalidated a feasible root assignment");
+    if (llvm::Error error = adoptFeasibleAssignment(
+            structurallyFeasibleChoices, "attachment_preference_work_limit"))
+      return std::move(error);
+    emitPreference();
+    return result;
+  }
+
+  if (llvm::Error error =
+          adoptFeasibleAssignment(std::move(preferred->choices), "applied"))
+    return std::move(error);
+  emitPreference();
+  return result;
+}

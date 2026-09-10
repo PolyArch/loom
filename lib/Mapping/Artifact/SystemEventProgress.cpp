@@ -390,6 +390,15 @@ systemDependentBranchHasDurableBoundary(const SystemTransferLegView &route,
 
 } // namespace
 
+std::size_t FrozenMappingProgressModel::retainedStorageBytes() const {
+  std::size_t bytes = reverseEdges_.capacity() * sizeof(reverseEdges_.front());
+  for (const auto &[key, ordinal] : eventOrdinals_)
+    bytes += sizeof(std::pair<const std::string, std::uint32_t>) + key.capacity();
+  for (const auto &edges : reverseEdges_)
+    bytes += edges.capacity() * sizeof(std::uint32_t);
+  return bytes;
+}
+
 llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::EventFamilyKey> activationEvents) {
@@ -638,10 +647,11 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
     for (const SystemCapacityClaimProjection &claim : activation.capacityClaims)
       projected.capacityClaims.push_back(
           {claim.capacityCellOrdinal, claim.amount});
-    projected.causalRelease.reserve(activation.causalRelease.size());
-    for (const SystemCausalReleasePointProjection &release :
-         activation.causalRelease)
-      projected.causalRelease.push_back({release.alternatives});
+    auto prerequisites = projectMappingCausalReleasePrerequisites(
+        dataflow, activation.causalRelease);
+    if (!prerequisites)
+      return prerequisites.takeError();
+    projected.causalRelease = std::move(*prerequisites);
     result.resourceActivations.push_back(std::move(projected));
   }
   return result;
@@ -654,9 +664,15 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   auto projection = projectSystemMappingProgress(dataflow, fabric, closure);
   if (!projection)
     return projection.takeError();
+  return deriveMappingProgressClosure(dataflow, *projection);
+}
+
+llvm::Expected<MappingProgressClosure> deriveMappingProgressClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const MappingProgressProjection &projection) {
   std::vector<::dataflow::EventFamilyKey> events;
   for (const MappingProgressActivationProjection &activation :
-       projection->resourceActivations) {
+       projection.resourceActivations) {
     events.insert(events.end(), activation.triggerAlternatives.begin(),
                   activation.triggerAlternatives.end());
     for (const MappingProgressCausalReleaseProjection &release :
@@ -667,7 +683,7 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   auto model = freezeMappingProgressModel(dataflow, events);
   if (!model)
     return model.takeError();
-  return deriveMappingProgressClosure(*model, *projection);
+  return deriveMappingProgressClosure(*model, projection);
 }
 
 llvm::Expected<MappingProgressClosure> qualifySystemMappingResourceTimeProgress(

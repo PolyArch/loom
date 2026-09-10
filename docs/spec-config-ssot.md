@@ -519,9 +519,16 @@ or the digest of the complete DSE view.
 The designated default profile is `balanced_explore`. Its initial PnR policy
 uses `PathFinder` with the `Multiplicative` price kernel, admits every closed
 Mapping violation kind only as a temporary search state, gives every admitted
-violation a positive SearchEnergy term, and orders closure before cycle and
-physical timing, static schedule pressure, and selected traversal claim.
+violation a positive SearchEnergy term, and orders closure before static
+schedule pressure, cycle and physical timing, and selected traversal claim.
 Spatial PnR enables bounded `CpSat` repair; System PnR explicitly disables it.
+`quick_explore` and `balanced_explore` select `FirstVerifiedCandidate` for both
+PnR providers so bounded outer application exploration can compare multiple
+verified software and hardware choices. The performance and implementation
+presets select `ExhaustConfiguredWork` for deeper per-Mapping refinement.
+Explicit file overrides retain their authored completion goals. Product
+construction publishes and executes this resolved policy unchanged; it does
+not reinterpret an omitted field or apply a second completion-goal default.
 The current PnR views contain no Evaluation, focused-closure, or route-guidance
 binding. All numeric values,
 including seeds, proposal weights, semantic work limits, cooling parameters,

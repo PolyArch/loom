@@ -6,6 +6,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressProjection.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -28,6 +29,7 @@ struct SpatialCatalogEntry final {
   std::uint64_t moduleDependencyOrdinal = 0;
   std::vector<::dataflow::GraphRef> covers;
   std::vector<SpatialCatalogGraphProgress> graphProgress;
+  std::vector<::loom::mapping::SpatialComputeResultHandoffView> resultHandoffs;
   std::vector<std::uint64_t> graphStaticSchedulePressures;
   std::vector<std::uint64_t> graphSharedOperandIngressPressures;
   std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>

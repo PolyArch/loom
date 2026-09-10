@@ -720,35 +720,6 @@ llvm::Expected<llvm::APInt> checkedAddressAdd(const llvm::APInt &lhs,
 }
 
 llvm::Expected<llvm::APInt>
-canonicalObjectBase(llvm::ArrayRef<RuntimeMemoryObject> objects,
-                    std::uint64_t objectOrdinal, const PointerLayout &layout) {
-  if (objectOrdinal >= objects.size())
-    return invalid("simulation runtime input: pointer object ordinal is out "
-                   "of range");
-
-  // Zero remains distinct from every object. One address after each finite
-  // object is reserved for its one-past pointer before the next base.
-  llvm::APInt base(layout.addressBits, 1);
-  for (std::uint64_t ordinal = 0; ordinal < objectOrdinal; ++ordinal) {
-    llvm::Expected<llvm::APInt> afterObject = checkedAddressAdd(
-        base, objects[ordinal].initialBytes.size(), "simulation runtime input");
-    if (!afterObject)
-      return afterObject.takeError();
-    llvm::Expected<llvm::APInt> next =
-        checkedAddressAdd(*afterObject, 1, "simulation runtime input");
-    if (!next)
-      return next.takeError();
-    base = std::move(*next);
-  }
-  llvm::Expected<llvm::APInt> onePast =
-      checkedAddressAdd(base, objects[objectOrdinal].initialBytes.size(),
-                        "simulation runtime input");
-  if (!onePast)
-    return onePast.takeError();
-  return base;
-}
-
-llvm::Expected<llvm::APInt>
 canonicalPointerRepresentation(llvm::ArrayRef<RuntimeMemoryObject> objects,
                                const PointerTarget &target,
                                const PointerLayout &layout) {
@@ -758,8 +729,8 @@ canonicalPointerRepresentation(llvm::ArrayRef<RuntimeMemoryObject> objects,
   if (target.byteOffset.getBitWidth() != layout.addressBits)
     return invalid("simulation runtime input: pointer byte-offset width does "
                    "not match A(AS)");
-  llvm::Expected<llvm::APInt> base =
-      canonicalObjectBase(objects, target.objectOrdinal, layout);
+  llvm::Expected<llvm::APInt> base = projectSimulationMemoryObjectBase(
+      objects, target.objectOrdinal, layout.addressBits);
   if (!base)
     return base.takeError();
   llvm::APInt low = *base + target.byteOffset;
@@ -975,6 +946,39 @@ deriveCanonicalObjectOrdinals(
 
 namespace loom::sim {
 
+llvm::Expected<llvm::APInt>
+projectSimulationMemoryObjectBase(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                                  std::uint64_t objectOrdinal,
+                                  unsigned addressBits) {
+  if (addressBits == 0)
+    return detail::invalid("simulation memory address width is zero");
+  if (objectOrdinal >= objects.size())
+    return detail::invalid(
+        "simulation runtime input: pointer object ordinal is out "
+        "of range");
+
+  // Zero remains distinct from every object. One address after each finite
+  // object is reserved for its one-past pointer before the next base.
+  llvm::APInt base(addressBits, 1);
+  for (std::uint64_t ordinal = 0; ordinal < objectOrdinal; ++ordinal) {
+    llvm::Expected<llvm::APInt> afterObject = detail::checkedAddressAdd(
+        base, objects[ordinal].initialBytes.size(), "simulation runtime input");
+    if (!afterObject)
+      return afterObject.takeError();
+    llvm::Expected<llvm::APInt> next =
+        detail::checkedAddressAdd(*afterObject, 1, "simulation runtime input");
+    if (!next)
+      return next.takeError();
+    base = std::move(*next);
+  }
+  llvm::Expected<llvm::APInt> onePast = detail::checkedAddressAdd(
+      base, objects[objectOrdinal].initialBytes.size(),
+      "simulation runtime input");
+  if (!onePast)
+    return onePast.takeError();
+  return base;
+}
+
 llvm::Expected<SpatialSimulationBoundaryShapes>
 projectSpatialSimulationBoundaryShapes(
     const dataflow::CanonicalDataflowProgramView &program,
@@ -1013,10 +1017,16 @@ packDefinedSpatialSimulationToken(const CanonicalValueSequence &sequence,
   for (std::uint64_t laneOrdinal = 0; laneOrdinal < shape.lanesPerToken;
        ++laneOrdinal) {
     const SemanticLane &lane = sequence.lanes[first + laneOrdinal];
-    if (lane.state != SemanticState::Defined || lane.pointerTarget ||
-        lane.bits.getBitWidth() != shape.laneBitWidth)
+    if (lane.state != SemanticState::Defined)
+      return detail::invalid("simulation transport requires a Defined lane");
+    if (lane.pointerTarget)
       return detail::invalid(
-          "RTL transport requires a Defined non-pointer lane");
+          "simulation transport requires pointer address resolution");
+    if (lane.bits.getBitWidth() != shape.laneBitWidth)
+      return detail::invalid(llvm::Twine("simulation transport lane width ") +
+                             llvm::Twine(lane.bits.getBitWidth()) +
+                             " differs from expected " +
+                             llvm::Twine(shape.laneBitWidth));
     packed.insertBits(lane.bits, laneOrdinal * shape.laneBitWidth);
   }
   return packed;

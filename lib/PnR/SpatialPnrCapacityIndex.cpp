@@ -152,14 +152,13 @@ deriveEnvelopeTiming(const FrozenSpatialResourceIndex &resources,
         resources.usePatterns()[patternOrdinal];
     if (pattern.minimumInitiationIntervalCycles == 0)
       return invalid("resource-time envelope has a zero initiation interval");
-    if (llvm::Error error = checkedAccumulate(
-            pattern.releaseLatencyCycles, result.releaseLatencyCycles,
-            "resource-time release latency"))
+    if (llvm::Error error = checkedAccumulate(pattern.releaseLatencyCycles,
+                                              result.releaseLatencyCycles,
+                                              "resource-time release latency"))
       return std::move(error);
-    result.minimumInitiationIntervalCycles =
-        std::max(result.minimumInitiationIntervalCycles,
-                 static_cast<std::uint64_t>(
-                     pattern.minimumInitiationIntervalCycles));
+    result.minimumInitiationIntervalCycles = std::max(
+        result.minimumInitiationIntervalCycles,
+        static_cast<std::uint64_t>(pattern.minimumInitiationIntervalCycles));
   }
   return result;
 }
@@ -335,8 +334,8 @@ public:
           PnrCapacityMeasure::Count, result.segments_.size() - *segmentOffset);
       if (!segmentCount)
         return segmentCount.takeError();
-      TimedPatternProjection projection{*segmentOffset, *segmentCount,
-                                        *overuse, *timing};
+      TimedPatternProjection projection{*segmentOffset, *segmentCount, *overuse,
+                                        *timing};
       timedPatternCache[pattern] = projection;
       return projection;
     };
@@ -407,7 +406,21 @@ public:
               if (!dense)
                 return dense.takeError();
               patterns.push_back(*dense);
-              result.uses_.push_back({*eventOrdinal, *dense});
+              const auto &release = (*requirements)[use].release;
+              auto releaseOffset = checkedIndex(
+                  "resource_uses", "resource_release_events",
+                  PnrCapacityMeasure::Offset, result.releaseEvents_.size());
+              if (!releaseOffset)
+                return releaseOffset.takeError();
+              auto releaseCount =
+                  checkedIndex("resource_uses", "resource_release_events",
+                               PnrCapacityMeasure::Count, release.size());
+              if (!releaseCount)
+                return releaseCount.takeError();
+              result.releaseEvents_.insert(result.releaseEvents_.end(),
+                                           release.begin(), release.end());
+              result.uses_.push_back(
+                  {*eventOrdinal, *dense, *releaseOffset, *releaseCount});
             }
             auto useCount =
                 checkedIndex("resource_time_envelopes", "resource_uses",
@@ -432,11 +445,10 @@ public:
                 result.segments_.size() - *segmentOffset);
             if (!segmentCount)
               return segmentCount.takeError();
-            result.envelopes_.push_back({*eventOrdinal, *useOffset, *useCount,
-                                         *segmentOffset, *segmentCount,
-                                         *overuse,
-                                         timing->releaseLatencyCycles,
-                                         timing->minimumInitiationIntervalCycles});
+            result.envelopes_.push_back(
+                {*eventOrdinal, *useOffset, *useCount, *segmentOffset,
+                 *segmentCount, *overuse, timing->releaseLatencyCycles,
+                 timing->minimumInitiationIntervalCycles});
             if (llvm::Error error =
                     checkedAccumulate(*overuse, placementOveruse,
                                       "compute atomic capacity overuse"))
@@ -523,12 +535,11 @@ public:
                          PnrCapacityMeasure::Index, result.envelopes_.size());
         if (!envelopeOrdinal)
           return envelopeOrdinal.takeError();
-        result.envelopes_.push_back({eventOrdinal, *useOffset, 1,
-                                     timing->segmentOffset,
-                                     timing->segmentCount, timing->overuse,
-                                     timing->timing.releaseLatencyCycles,
-                                     timing->timing
-                                         .minimumInitiationIntervalCycles});
+        result.envelopes_.push_back(
+            {eventOrdinal, *useOffset, 1, timing->segmentOffset,
+             timing->segmentCount, timing->overuse,
+             timing->timing.releaseLatencyCycles,
+             timing->timing.minimumInitiationIntervalCycles});
         result.memoryOperationPlanEnvelopes_[planOrdinal] = *envelopeOrdinal;
         result.memoryOperationPlanOveruse_[planOrdinal] = timing->overuse;
       }
@@ -613,12 +624,11 @@ public:
                            PnrCapacityMeasure::Index, result.envelopes_.size());
           if (!envelopeOrdinal)
             return envelopeOrdinal.takeError();
-          result.envelopes_.push_back({*eventOrdinal, *useOffset, 1,
-                                       timing->segmentOffset,
-                                       timing->segmentCount, timing->overuse,
-                                       timing->timing.releaseLatencyCycles,
-                                       timing->timing
-                                           .minimumInitiationIntervalCycles});
+          result.envelopes_.push_back(
+              {*eventOrdinal, *useOffset, 1, timing->segmentOffset,
+               timing->segmentCount, timing->overuse,
+               timing->timing.releaseLatencyCycles,
+               timing->timing.minimumInitiationIntervalCycles});
           result.memoryServicePatternEnvelopes_.push_back(
               {pattern, *envelopeOrdinal});
         }
@@ -653,9 +663,8 @@ public:
               envelope.releaseLatencyCycles, maximumReleaseLatency,
               "resource-time release-latency domain"))
         return std::move(error);
-      maximumInitiationInterval =
-          std::max(maximumInitiationInterval,
-                   envelope.minimumInitiationIntervalCycles);
+      maximumInitiationInterval = std::max(
+          maximumInitiationInterval, envelope.minimumInitiationIntervalCycles);
     }
     return result;
   }

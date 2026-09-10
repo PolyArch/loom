@@ -326,49 +326,54 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                 "physical_grant_delayed_count": 2,
                 "evaluation_evidence": reference(600 + ordinal, "evaluation.evidence"),
             }
-            profiles.append(
+            inputs = [
                 {
-                    "schema": cgra_qualification.CGRA_PROFILE_SCHEMA,
-                    "workload": operator.workload,
-                    "operator_id": operator.operator_id,
-                    "protocol_symbol": operator.protocol_symbol,
-                    "qualification_limit_nanoseconds": 45_000_000_000,
-                    "warmup_runs": 1,
-                    "measurement_runs": 3,
-                    "batch_peak_resident_bytes": 4096,
-                    "canonical_dataflow": reference(ordinal, "loom.canonical_dataflow"),
-                    "simulation_workload": reference(
-                        100 + ordinal, "loom.simulation_workload"
+                    "workload": reference(100 + ordinal, "loom.simulation_workload"),
+                    "runtime_input": reference(
+                        200 + ordinal + case * 1000, "loom.simulation_runtime_input"
                     ),
-                    "simulation_runtime_input": reference(
-                        200 + ordinal, "loom.simulation_runtime_input"
-                    ),
-                    "resolved_config": reference(300, "loom.config.resolved"),
-                    "fabric": reference(301, "loom.fabric"),
-                    "tech_mapping": reference(400 + ordinal),
-                    "tech_mapping_search": {
-                        "outcome": "incomplete",
-                        "incomplete_reason": "candidate_semantic_limit_reached",
-                        "infeasibility_proof": None,
-                        "candidates": [reference(400 + ordinal)],
-                        "work_units": [
-                            {"unit": unit, "planned": 1, "consumed": 1}
-                            for unit in (
-                                "match_row_attempt",
-                                "partial_cover_expansion",
-                                "candidate_evaluation",
-                                "publication_slot",
-                            )
-                        ],
-                    },
-                    "initial_spatial_mapping": reference(500 + ordinal),
-                    "spatial_mapping": reference(500 + ordinal),
-                    "spatial_pnr": {
-                        **work_ledger,
-                        "candidates": [reference(500 + ordinal)],
-                    },
-                    "spatial_candidate_screening": [
-                        {
+                }
+                for case in range(2 if operator.workload == "conv2d" else 1)
+            ]
+            profiles.append({
+                "schema": cgra_qualification.CGRA_PROFILE_SCHEMA,
+                "workload": operator.workload,
+                "operator_id": operator.operator_id,
+                "protocol_symbol": operator.protocol_symbol,
+                "qualification_limit_nanoseconds": 45_000_000_000,
+                "warmup_runs": 1,
+                "measurement_runs": 3,
+                "batch_peak_resident_bytes": 4096,
+                "canonical_dataflow": reference(ordinal, "loom.canonical_dataflow"),
+                "source_replay_cases": inputs,
+                "replay_case_occurrences": len(inputs),
+                "resolved_config": reference(300, "loom.config.resolved"),
+                "fabric": reference(301, "loom.fabric"),
+                "tech_mapping_search": {
+                    "outcome": "incomplete",
+                    "incomplete_reason": "candidate_semantic_limit_reached",
+                    "infeasibility_proof": None,
+                    "candidates": [reference(400 + ordinal)],
+                    "work_units": [
+                        {"unit": unit, "planned": 1, "consumed": 1}
+                        for unit in (
+                            "match_row_attempt", "partial_cover_expansion",
+                            "candidate_evaluation", "publication_slot",
+                        )
+                    ],
+                },
+                "spatial_pnr": {**work_ledger, "candidates": [reference(500 + ordinal)]},
+                "phase_ledger": [
+                    {"phase": "spatial_pnr", "wall_nanoseconds": 1,
+                     "process_cpu_nanoseconds": 1}
+                ],
+                "replay_cases": [
+                    {
+                        "input": source_input,
+                        "tech_mapping": reference(400 + ordinal),
+                        "initial_spatial_mapping": reference(500 + ordinal),
+                        "spatial_mapping": reference(500 + ordinal),
+                        "spatial_candidate_screening": [{
                             "spatial_mapping": reference(500 + ordinal),
                             "buffered_fifo_traversals": 1,
                             "bypass_fifo_traversals": 0,
@@ -379,20 +384,18 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                             "closed_wait_certificate_closed": None,
                             "closed_wait_proof_failure": None,
                             "operand_queue_shared_ingress_pressure": None,
-                        }
-                    ],
-                    "transport_repair": None,
-                    "phase_ledger": [
-                        {
-                            "phase": "setup",
-                            "wall_nanoseconds": 1,
-                            "process_cpu_nanoseconds": 1,
-                        }
-                    ],
-                    "warmup_evidence": reference(700 + ordinal, "evaluation.evidence"),
-                    "measurements": [dict(measurement) for _ in range(3)],
-                }
-            )
+                        }],
+                        "transport_repair": None,
+                        "phase_ledger": [
+                            {"phase": "candidate_screening", "wall_nanoseconds": 1,
+                             "process_cpu_nanoseconds": 1}
+                        ],
+                        "warmup_evidence": reference(700 + ordinal, "evaluation.evidence"),
+                        "measurements": [dict(measurement) for _ in range(3)],
+                    }
+                    for source_input in inputs
+                ],
+            })
         first_profile = profiles[0]
         incomplete_pnr = dict(first_profile["spatial_pnr"])
         incomplete_pnr["outcome"] = "incomplete"
@@ -406,6 +409,9 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             "workload": first_profile["workload"],
             "operator_id": first_profile["operator_id"],
             "protocol_symbol": first_profile["protocol_symbol"],
+            "canonical_dataflow": first_profile["canonical_dataflow"],
+            "source_replay_cases": first_profile["source_replay_cases"],
+            "replay_case_occurrences": first_profile["replay_case_occurrences"],
             "stage": "spatial_pnr",
             "resolved_config": first_profile["resolved_config"],
             "fabric": first_profile["fabric"],
@@ -486,6 +492,24 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles),
             500_000_000,
         )
+        multi_input = next(profile for profile in profiles if profile["workload"] == "conv2d")
+        omitted = multi_input["replay_cases"].pop()
+        with self.assertRaises(ValueError):
+            cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles)
+        multi_input["replay_cases"].append(omitted)
+        original_input = omitted["input"]
+        omitted["input"] = multi_input["replay_cases"][0]["input"]
+        with self.assertRaises(ValueError):
+            cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles)
+        omitted["input"] = original_input
+        for measurement in omitted["measurements"]:
+            measurement["reference_cycles"] = 60_000
+        self.assertEqual(
+            cgra_qualification.derive_cgra_spatial_budget_nanoseconds(profiles),
+            600_000_000,
+        )
+        for measurement in omitted["measurements"]:
+            measurement["reference_cycles"] = 50_000
         configuration = {
             "schema": cgra_qualification.CGRA_GATE_SCHEMA,
             "policy": {
@@ -509,16 +533,16 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             loaded = cgra_qualification.load_cgra_gate_configuration(path)
             self.assertEqual(loaded.spatial_absolute_budget_nanoseconds, 500_000_000)
             self.assertEqual(loaded.spatial_absolute_budget_seconds, 0.5)
-            repaired_profile = profiles[0]
+            repaired_case = profiles[0]["replay_cases"][0]
             repair_child = reference(900)
-            repaired_profile["spatial_mapping"] = repair_child
-            repaired_profile["transport_repair"] = {
+            repaired_case["spatial_mapping"] = repair_child
+            repaired_case["transport_repair"] = {
                 "parent_system_mapping": reference(901),
                 "pre_repair_evidence": reference(902, "evaluation.evidence"),
                 "termination": "retired",
                 "attempts": [
                     {
-                        "parent_spatial_mapping": repaired_profile[
+                        "parent_spatial_mapping": repaired_case[
                             "initial_spatial_mapping"
                         ],
                         "runtime_evidence": reference(902, "evaluation.evidence"),
@@ -535,29 +559,35 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             }
             path.write_text(json.dumps(configuration), encoding="ascii")
             cgra_qualification.load_cgra_gate_configuration(path)
-            repaired_profile["spatial_mapping"] = reference(904)
+            repaired_case["spatial_mapping"] = reference(904)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
                 cgra_qualification.load_cgra_gate_configuration(path)
-            repaired_profile["spatial_mapping"] = repair_child
-            repair_attempt = repaired_profile["transport_repair"]["attempts"][0]
+            repaired_case["spatial_mapping"] = repair_child
+            repair_attempt = repaired_case["transport_repair"]["attempts"][0]
             transport_outcome = {
                 "schema": cgra_qualification.CGRA_PROFILE_OUTCOME_SCHEMA,
-                "workload": repaired_profile["workload"],
-                "operator_id": repaired_profile["operator_id"],
-                "protocol_symbol": repaired_profile["protocol_symbol"],
+                "workload": first_profile["workload"],
+                "operator_id": first_profile["operator_id"],
+                "protocol_symbol": first_profile["protocol_symbol"],
+                "canonical_dataflow": first_profile["canonical_dataflow"],
+                "source_replay_cases": first_profile["source_replay_cases"],
+                "replay_case_occurrences": first_profile["replay_case_occurrences"],
                 "stage": "transport_repair",
-                "resolved_config": repaired_profile["resolved_config"],
-                "fabric": repaired_profile["fabric"],
-                "tech_mapping_search": repaired_profile["tech_mapping_search"],
-                "spatial_pnr": repaired_profile["spatial_pnr"],
-                "initial_spatial_mapping": repaired_profile["initial_spatial_mapping"],
-                "spatial_candidate_screening": repaired_profile[
+                "completed_replay_cases": [],
+                "failed_replay_case": repaired_case["input"],
+                "resolved_config": first_profile["resolved_config"],
+                "fabric": first_profile["fabric"],
+                "tech_mapping_search": first_profile["tech_mapping_search"],
+                "spatial_pnr": first_profile["spatial_pnr"],
+                "initial_spatial_mapping": repaired_case["initial_spatial_mapping"],
+                "spatial_candidate_screening": repaired_case[
                     "spatial_candidate_screening"
                 ],
-                "phase_ledger": repaired_profile["phase_ledger"],
+                "phase_ledger": first_profile["phase_ledger"],
+                "replay_case_phase_ledger": repaired_case["phase_ledger"],
                 "transport_repair": json.loads(
-                    json.dumps(repaired_profile["transport_repair"])
+                    json.dumps(repaired_case["transport_repair"])
                 ),
             }
             stopped_repair = transport_outcome["transport_repair"]
@@ -582,8 +612,8 @@ class PairedSimulationBudgetTest(unittest.TestCase):
                     "retired": True,
                 }
             )
-            repaired_profile["transport_repair"]["attempts"].append(next_attempt)
-            repaired_profile["spatial_mapping"] = next_attempt["child_spatial_mapping"]
+            repaired_case["transport_repair"]["attempts"].append(next_attempt)
+            repaired_case["spatial_mapping"] = next_attempt["child_spatial_mapping"]
             path.write_text(json.dumps(configuration), encoding="ascii")
             cgra_qualification.load_cgra_gate_configuration(path)
             next_attempt["runtime_evidence"] = reference(902, "evaluation.evidence")
@@ -591,29 +621,29 @@ class PairedSimulationBudgetTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cgra_qualification.load_cgra_gate_configuration(path)
             next_attempt["runtime_evidence"] = repair_attempt["child_evidence"]
-            next_attempt["parent_spatial_mapping"] = repaired_profile[
+            next_attempt["parent_spatial_mapping"] = repaired_case[
                 "initial_spatial_mapping"
             ]
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
                 cgra_qualification.load_cgra_gate_configuration(path)
-            repaired_profile["transport_repair"]["attempts"].pop()
+            repaired_case["transport_repair"]["attempts"].pop()
             repair_attempt["retired"] = True
-            repaired_profile["spatial_mapping"] = repair_child
+            repaired_case["spatial_mapping"] = repair_child
             repair_attempt["constraint_set"] = reference(903)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
                 cgra_qualification.load_cgra_gate_configuration(path)
-            repaired_profile["transport_repair"] = None
-            repaired_profile["spatial_mapping"] = repaired_profile[
+            repaired_case["transport_repair"] = None
+            repaired_case["spatial_mapping"] = repaired_case[
                 "initial_spatial_mapping"
             ]
-            canonical_dataflow = repaired_profile["canonical_dataflow"]
-            repaired_profile["canonical_dataflow"] = reference(905)
+            canonical_dataflow = first_profile["canonical_dataflow"]
+            first_profile["canonical_dataflow"] = reference(905)
             path.write_text(json.dumps(configuration), encoding="ascii")
             with self.assertRaises(ValueError):
                 cgra_qualification.load_cgra_gate_configuration(path)
-            repaired_profile["canonical_dataflow"] = canonical_dataflow
+            first_profile["canonical_dataflow"] = canonical_dataflow
             profile_pnr = profiles[0]["spatial_pnr"]
             assert isinstance(profile_pnr, dict)
             profile_pnr["completion_goal"] = "first_verified_candidate"

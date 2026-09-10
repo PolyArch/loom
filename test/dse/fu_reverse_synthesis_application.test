@@ -1,6 +1,7 @@
 # RUN: rm -rf %t && mkdir -p %t/artifacts %t/blobs %t/run
 # RUN: loom-config-test --resolved-json --loom-accel-profile=quick_explore \
 # RUN:   > %t/config.json
+# RUN: %python -c "import json, sys; p = sys.argv[1]; c = json.load(open(p)); c['dse']['spatial_pnr']['search_policy']['completion_goal'] = 'exhaust_configured_work'; c['dse']['system_pnr']['search_policy']['completion_goal'] = 'exhaust_configured_work'; json.dump(c, open(p, 'w'))" %t/config.json
 # RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
 # RUN:   --blob-store %t/blobs --run-root %t/run \
 # RUN:   --producer-build loom.test.fu_reverse_synthesis_application.v1 \

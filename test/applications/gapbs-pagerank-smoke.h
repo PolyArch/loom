@@ -1,6 +1,8 @@
 #ifndef LOOM_TEST_APPLICATIONS_GAPBS_PAGERANK_SMOKE_H
 #define LOOM_TEST_APPLICATIONS_GAPBS_PAGERANK_SMOKE_H
 
+#include "../../include/Runtime/Computation.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -196,8 +198,10 @@ __attribute__((noinline)) static int gapbsPagerankSmoke() {
   static constexpr NodeID inOffsets[nodeCount + 1] = {0, 2, 3, 6, 6};
   static constexpr NodeID inNeighbors[6] = {2, 3, 0, 0, 1, 3};
   Graph graph(nodeCount, outOffsets, outNeighbors, inOffsets, inNeighbors);
+  loom_computation_begin();
   pvector<float> scores =
       gapbs_pagerank_kernel(graph, LOOM_PAGERANK_ITERATIONS, 0.0, false);
+  loom_computation_end();
 #if LOOM_PAGERANK_ITERATIONS == 12
   constexpr float expected[nodeCount] = {0.380819827f, 0.199348420f,
                                          0.384732097f, 0.037499994f};

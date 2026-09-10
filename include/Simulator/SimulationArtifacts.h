@@ -343,6 +343,13 @@ struct RuntimeMemoryObject {
   std::vector<RuntimeMemoryPointer> pointerValues;
 };
 
+/// Canonical byte address shared by pointer codecs and execution transports.
+/// Zero and each object's one-past address remain distinct from object bases.
+llvm::Expected<llvm::APInt>
+projectSimulationMemoryObjectBase(llvm::ArrayRef<RuntimeMemoryObject> objects,
+                                  std::uint64_t objectOrdinal,
+                                  unsigned addressBits);
+
 struct RuntimeMemoryRootBinding {
   std::uint64_t objectOrdinal = 0; // derived, never author-selected
   std::uint64_t byteOffset = 0;
@@ -627,8 +634,7 @@ private:
 
   friend llvm::Expected<CanonicalSimulationRuntimeInput>
   finalizeSimulationRuntimeInput(
-      const SpatialSimulationRuntimeInputDraft &,
-      const CanonicalSimulationWorkload &,
+      SpatialSimulationRuntimeInputDraft, const CanonicalSimulationWorkload &,
       const dataflow::CanonicalDataflowProgramView &);
   friend llvm::Expected<CanonicalSimulationRuntimeInput>
   importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t>,
@@ -788,7 +794,7 @@ llvm::Expected<CanonicalSimulationWorkload> importSimulationWorkload(
 /// noncanonical objects and bindings. Overlap between root ranges bound to
 /// one object is legal aliasing.
 llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
-    const SpatialSimulationRuntimeInputDraft &draft,
+    SpatialSimulationRuntimeInputDraft draft,
     const CanonicalSimulationWorkload &workload,
     const dataflow::CanonicalDataflowProgramView &program);
 

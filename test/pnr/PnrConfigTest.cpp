@@ -143,12 +143,12 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
 
   loom::ResolvedConfig completionChange = base;
   completionChange.dse.spatialPnr.search.completionGoal =
-      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+      loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
   const loom::pnr::ResolvedPnrConfigView completionView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(completionChange));
   require(completionView.digest() != baseView.digest() &&
               completionView.policy().search.completionGoal ==
-                  loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate,
+                  loom::ResolvedPnrCompletionGoal::ExhaustConfiguredWork,
           "search completion goal did not enter the projected policy");
 
   loom::ResolvedConfig unselectedChange = base;
@@ -160,14 +160,17 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
        loom::resolvedObjectiveDecimal(1, 0), 0, UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
-  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 7,
+  constexpr std::uint32_t insertedLevel = 7;
+  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() +
+                                     insertedLevel,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings[0].weightedLevels = {1, 10, 0, 5, 6,
-                                                8, 3,  2, 4};
-  catalogs.totalOrderings[1].weightedLevels = {1, 10, 0, 5, 6,
-                                                9, 3,  2, 4};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 11;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 12;
+  for (auto &ordering : catalogs.totalOrderings)
+    for (auto &level : ordering.weightedLevels)
+      level += level >= insertedLevel;
+  for (auto *selection : {&unselectedChange.dse.spatialPnr.objectiveSelection,
+                          &unselectedChange.dse.systemPnr.objectiveSelection})
+    selection->selectedSearchEnergy +=
+        selection->selectedSearchEnergy >= insertedLevel;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));

@@ -1,3 +1,5 @@
+#include "../../../include/Runtime/Computation.h"
+
 namespace {
 
 constexpr unsigned kRows = 2;
@@ -32,7 +34,9 @@ matmul_kernel(const unsigned *a, const unsigned *b, unsigned *c,
 
 int main() {
   unsigned candidate[kRows * kCols] = {};
+  loom_computation_begin();
   matmul_kernel(kInputA, kInputB, candidate, kRows, kCols);
+  loom_computation_end();
   for (unsigned index = 0; index < kRows * kCols; ++index)
     if (candidate[index] != kExpected[index])
       return -1;

@@ -1,7 +1,9 @@
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Mapping/Artifact/SpatialResourceEventProjection.h"
 #include "MappingProgressInternal.h"
 
 #include "ConfiguredHardwareProjectionInternal.h"
+#include "ResourceCapacityVerification.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -1074,6 +1076,121 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     return basis.takeError();
   MappingProgressProjection result;
   result.basis = *basis;
+  std::vector<const SpatialResourceUseView *> computeUses;
+  std::vector<detail::ResourceCapacityPatternSource> patterns;
+  for (const auto &use : resourceUses) {
+    if (!std::holds_alternative<SpatialComputeResourceOwnerRef>(use.owner))
+      continue;
+    auto graph = resolveSpatialActivityEventGraph(dataflow,
+                                                  use.activation.trigger.event);
+    if (!graph)
+      return graph.takeError();
+    if (selectedGraphEntities.count(graph->entity.value()) == 0)
+      continue;
+    computeUses.push_back(&use);
+    patterns.push_back({0, use.useSite});
+  }
+  if (!computeUses.empty()) {
+    std::vector<std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+        selectedTraversals;
+    for (const auto &route : routes) {
+      auto graph = dataflow.graphOf(route.logicalNet);
+      if (!graph)
+        return graph.takeError();
+      if (selectedGraphEntities.count(graph->entity.value()) == 0)
+        continue;
+      selectedTraversals.emplace_back();
+      for (const auto &sink : route.sinks) {
+        auto branch = spatialRouteBranchTraversals(route, sink);
+        if (!branch)
+          return branch.takeError();
+        selectedTraversals.back().insert(selectedTraversals.back().end(),
+                                         branch->begin(), branch->end());
+      }
+    }
+    for (const auto &transfer : registerFifoTransfers) {
+      auto graph = dataflow.graphOf(transfer.logicalNet);
+      if (!graph)
+        return graph.takeError();
+      if (selectedGraphEntities.count(graph->entity.value()) != 0)
+        selectedTraversals.push_back(
+            {transfer.writeTraversal, transfer.readTraversal});
+    }
+    std::vector<detail::ResourceCapacityTraversalSource> traversals;
+    for (const auto &route : selectedTraversals)
+      for (const auto &traversal : route)
+        traversals.push_back({0, traversal});
+    const detail::ResourceCapacityNamespaceView capacityNamespace{
+        &fabric, detail::rootResourceCapacityQualifier(fabric)};
+    auto capacity = detail::freezeResourceCapacityIndex(
+        llvm::ArrayRef(capacityNamespace), patterns, traversals);
+    if (!capacity)
+      return capacity.takeError();
+    std::vector<detail::FrozenResourceCapacityRouteSelection> routeClaims;
+    for (const auto &route : selectedTraversals) {
+      routeClaims.emplace_back();
+      for (const auto &traversal : route) {
+        auto ordinal = capacity->traversalOrdinal(0, traversal);
+        if (!ordinal)
+          return ordinal.takeError();
+        routeClaims.back().traversalOrdinals.push_back(*ordinal);
+      }
+    }
+    auto baseline =
+        detail::deriveResourceCapacityBaselineOccupancy(*capacity, routeClaims);
+    if (!baseline)
+      return baseline.takeError();
+    for (const auto [ordinal, cell] : llvm::enumerate(capacity->cells()))
+      result.capacityCells.push_back({cell.capacity, (*baseline)[ordinal]});
+    auto handoffs = deriveSpatialComputeResultHandoffs(
+        dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
+        routes);
+    if (!handoffs)
+      return handoffs.takeError();
+    std::vector<::dataflow::RootedGraphLaunchRef> launches;
+    dataflow.forEachRootedGraphLaunch(
+        [&](auto launch) { launches.push_back(launch); });
+    for (const auto *use : computeUses) {
+      auto ownerGraph = resolveSpatialActivityEventGraph(
+          dataflow, use->activation.trigger.event);
+      if (!ownerGraph)
+        return ownerGraph.takeError();
+      auto ordinal = capacity->patternOrdinal(0, use->useSite);
+      if (!ordinal)
+        return ordinal.takeError();
+      const auto &pattern = capacity->patterns()[*ordinal];
+      for (const auto &launch : launches) {
+        auto graph = dataflow.resolve(launch);
+        if (!graph)
+          return graph.takeError();
+        if (*graph != *ownerGraph)
+          continue;
+        auto triggers = projectRootedSpatialActivityEvent(
+            dataflow, launch, use->activation.trigger.event);
+        if (!triggers)
+          return triggers.takeError();
+        auto release = projectRootedSpatialCausalRelease(
+            dataflow, launch, use->activation.release, *handoffs);
+        if (!release)
+          return release.takeError();
+        auto prerequisites =
+            projectMappingCausalReleasePrerequisites(dataflow, *release);
+        if (!prerequisites)
+          return prerequisites.takeError();
+        MappingProgressActivationProjection activation{
+            std::nullopt,
+            launch.rootThreadLaunch,
+            {SystemPresburgerCell{}},
+            std::move(*triggers),
+            {},
+            std::move(*prerequisites),
+            pattern.progressUse};
+        for (const auto &claim : pattern.claims)
+          activation.capacityClaims.push_back({claim.cell, claim.amount});
+        result.resourceActivations.push_back(std::move(activation));
+      }
+    }
+  }
   auto bufferDependencyEdges = projectSpatialBufferDependencyEdges(
       dataflow, techMapping, fabric, routes, resourceUses, physicalTagSegments,
       operandQueueGroups, selectedGraphs);
@@ -1225,10 +1342,7 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
       techMapping.covers());
   if (!projection)
     return projection.takeError();
-  auto model = freezeMappingProgressModel(dataflow, {});
-  if (!model)
-    return model.takeError();
-  return deriveMappingProgressClosure(*model, *projection);
+  return deriveMappingProgressClosure(dataflow, *projection);
 }
 
 } // namespace loom::mapping

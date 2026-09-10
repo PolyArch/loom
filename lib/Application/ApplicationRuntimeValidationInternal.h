@@ -21,6 +21,8 @@
 
 namespace loom::application::detail {
 
+struct ApplicationSystemRuntimeEvidenceContext;
+
 struct ImportedApplicationMapping final {
   mapping::FinalizedSystemMapping mapping;
   std::shared_ptr<const dataflow::CanonicalDataflowArtifact> dataflow;
@@ -73,7 +75,8 @@ resolveApplicationRuntimeEvidenceJoin(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappings,
     llvm::ArrayRef<sim::SourceBackedDfgReplayCaseReference> replayCases,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    const ApplicationSystemRuntimeEvidenceContext *systemContext = nullptr);
 
 } // namespace loom::application::detail
 

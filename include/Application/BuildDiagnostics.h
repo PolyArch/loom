@@ -32,6 +32,11 @@ enum class ApplicationBuildOperation : std::uint8_t {
   DeclarativeDeploymentFinalization,
   DeploymentConstruction,
   PackagePublication,
+  SystemQualityEvaluation,
+  SystemEvaluationPreparation,
+  SystemEvaluationExecution,
+  SystemEvaluationImport,
+  SystemEvaluationValidation,
 };
 
 struct ApplicationBuildOperationStatistics final {

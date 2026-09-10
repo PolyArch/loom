@@ -446,7 +446,19 @@ using JointHardwarePromotionQualityAcquirer =
 enum class JointDesignQualityProvenanceDomain : std::uint8_t {
   ObjectiveOnly,
   ApplicationRuntime,
+  ApplicationSystemRuntime,
 };
+
+constexpr bool
+isApplicationRuntimeQualityDomain(JointDesignQualityProvenanceDomain domain) {
+  return domain == JointDesignQualityProvenanceDomain::ApplicationRuntime ||
+         domain == JointDesignQualityProvenanceDomain::ApplicationSystemRuntime;
+}
+
+inline constexpr std::uint32_t applicationSpatialRuntimeMeasureCount = 3;
+inline constexpr std::uint32_t applicationSystemRuntimeMeasureCount = 4;
+inline constexpr llvm::StringLiteral applicationSystemComputationTicksLabel =
+    "system_computation_ticks";
 
 /// In-process, pre-Mapping objective used only to rank which bounded hardware
 /// parents may consume additional exact Mapping/PnR work. Candidate identity

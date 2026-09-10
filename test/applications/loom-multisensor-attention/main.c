@@ -1,3 +1,4 @@
+#include "../../../include/Runtime/Computation.h"
 #if !defined(LOOM_ATTENTION_PRODUCT_EXECUTION) || \
     defined(LOOM_APPLICATION_HOST_EXECUTION)
 #include <stdio.h>
@@ -189,7 +190,9 @@ int main(void) {
   float output[TOKEN_COUNT][FEATURE_LANE_COUNT];
   float statistics[STATISTIC_COUNT];
 
+  loom_computation_begin();
   loom_multisensor_attention(audio, imu, output, statistics);
+  loom_computation_end();
   const float combined = statistics[2] + 3.0f * statistics[0] +
                          7.0f * statistics[1] + 11.0f * statistics[3];
 #if LOOM_ATTENTION_INPUT_VARIANT == 1

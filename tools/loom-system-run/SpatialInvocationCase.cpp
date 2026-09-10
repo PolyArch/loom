@@ -383,7 +383,8 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
                                std::move(cgraCase->fabric),
                                std::move(selection->spatialMapping),
                                std::move(*dfgBoundary),
-                               std::move(*cgraBoundary)};
+                               std::move(*cgraBoundary),
+                               cgra.completionTick};
 }
 
 } // namespace loom::system_run

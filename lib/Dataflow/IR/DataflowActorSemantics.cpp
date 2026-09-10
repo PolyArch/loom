@@ -1765,8 +1765,10 @@ std::optional<bool> dataflow::semantics::gateClosesWhenSelected(
   auto predicate = selector.getDefiningOp<mlir::arith::CmpIOp>();
   if (!stream || gate.getBeforeCond() != stream.getPhase() || !predicate ||
       predicate.getPredicate() != stream.getPredicate() ||
-      predicate.getLhs() != stream.getInit() ||
-      predicate.getRhs() != stream.getLimit())
+      !dataflow::haveEquivalentDeterministicComputeCorrespondence(
+          predicate.getLhs(), stream.getInit()) ||
+      !dataflow::haveEquivalentDeterministicComputeCorrespondence(
+          predicate.getRhs(), stream.getLimit()))
     return std::nullopt;
   return lane == 1;
 }
