@@ -296,11 +296,21 @@ loom::pnr::projectSpatialFifoCapacitySuggestion(
     return std::move(error);
   const auto capacities =
       candidate.problem().progressIndex().ownerGuaranteedNetCapacities();
+  const auto disciplines =
+      candidate.problem().progressIndex().ownerQueueDisciplines();
   std::optional<PnrIndex> owner;
   std::uint64_t sufficient = 0;
   for (PnrIndex candidateOwner : owners) {
-    if (candidateOwner >= capacities.size())
+    if (candidateOwner >= capacities.size() ||
+        candidateOwner >= disciplines.size())
       return invalid("capacity feedback owner is out of range");
+    // Only a tag-selective queue guarantees one slot per reserved channel, so
+    // only its shortfall is a reservation the recipe can raise. A strict queue
+    // guarantees exclusive use to one net regardless of any reservation count;
+    // its shortfall has no channel proposal and must not be encoded as one.
+    if (disciplines[candidateOwner] !=
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+      continue;
     const std::uint64_t selected = capacities[candidateOwner];
     const std::uint64_t shortfall =
         candidate.progress().capacityShortfall(candidateOwner);
