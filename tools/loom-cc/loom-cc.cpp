@@ -396,13 +396,16 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       return parsed.takeError();
     mappingRepairCandidateLimit = *parsed;
   }
-  llvm::Expected<loom::dse::JointDesignStoppingPolicy> stoppingPolicy =
+  loom::dse::JointDesignStoppingPolicy stoppingPolicy =
       loom::application::defaultProductMappingStoppingPolicy;
-  if (!options.mappingStoppingPolicy.empty())
-    stoppingPolicy = loom::application::parseProductMappingStoppingPolicy(
-        options.mappingStoppingPolicy);
-  if (!stoppingPolicy)
-    return stoppingPolicy.takeError();
+  if (!options.mappingStoppingPolicy.empty()) {
+    auto parsedStoppingPolicy =
+        loom::application::parseProductMappingStoppingPolicy(
+            options.mappingStoppingPolicy);
+    if (!parsedStoppingPolicy)
+      return parsedStoppingPolicy.takeError();
+    stoppingPolicy = *parsedStoppingPolicy;
+  }
   auto spectrumEndpoint =
       loom::application::parseProductMappingSpectrumEndpoint(
           options.mappingSpectrumEndpoint.empty()
@@ -421,7 +424,7 @@ makeProductBuildOptions(const LoomDriverOptions &options) {
       wallTimeLimit,
       mappingReplayWavefrontLimit,
       mappingRepairCandidateLimit,
-      *stoppingPolicy,
+      stoppingPolicy,
       *spectrumEndpoint,
       options.portfolioManifestPath,
       options.portfolioRepositoryRoot,
