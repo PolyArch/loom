@@ -404,6 +404,12 @@ loom::ResolvedConfig qualificationConfig() {
   const auto &target = loom::adg::builtinLargeTarget;
   auto scale = target.scale;
   scale.temporalResidentContexts = 16;
+  // The shared search grows the child only from TechMapping compute-context
+  // Hall feedback, so the initial point must already carry the interconnect
+  // reservation the suite's Spatial routes need. Spatial PnR's own sufficient
+  // capacity proposal for matmul on this template is sixteen channels; with
+  // the public four, every seed exhausts the fast deadline without a route.
+  scale.interconnectFifoReservedChannels = 16;
   config.hardwareTarget = {target.templateIdentity.str(),
                            {target.schemaMajor, target.schemaMinor},
                            scale};

@@ -174,8 +174,12 @@ profile binds the current operator-gate digest and exact Dataflow, workload,
 runtime-input, Fabric, TechMapping, and SpatialMapping roots.
 
 The ten-row qualification starts from the public `builtinLargeTarget` with
-16 resident instruction contexts per Temporal PE and selects one shared
-hardware child for the complete source suite. That initial parameter point is
+16 resident instruction contexts per Temporal PE and 16 reserved interconnect
+FIFO channels, and selects one shared hardware child for the complete source
+suite. The shared search grows that child only from TechMapping compute-context
+Hall feedback, so the initial point carries the interconnect reservation the
+suite's Spatial routes need; Spatial PnR's sufficient-capacity proposal for
+matmul on this template is sixteen channels. That initial parameter point is
 owned by the published `ResolvedConfig`; exact child Fabric roots are produced
 by the ordinary Spatial microarchitecture generator. The qualification gathers
 TechMapping compute-context Hall feedback across every source case, projects
