@@ -1243,8 +1243,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
                             {"--peer-executable", executables[ordinal]});
     primaryCommand.insert(
         primaryCommand.end(),
-        {"--gem5", gem5Executable, "--gem5-output", "outputs/gem5",
-         "--gem5-config", kConfigurationScriptPath.str(), "--projection",
+        {"--gem5", gem5Executable, "--gem5-output",
+         kGem5OutputDirectoryPath.str(), "--gem5-config",
+         kConfigurationScriptPath.str(), "--projection",
          kProjectionPath.str(), "--system-result", kSystemResultPath.str()});
     if (diagnostics)
       primaryCommand.insert(
@@ -1331,8 +1332,9 @@ prepareGem5SystemInvocationImpl(const EvaluationRequest &request,
       {},
       {}};
   specification.commands = {{specification.tool.executable, "-d",
-                             "outputs/gem5", kConfigurationScriptPath.str(),
-                             "--projection", kProjectionPath.str(), "--result",
+                             kGem5OutputDirectoryPath.str(),
+                             kConfigurationScriptPath.str(), "--projection",
+                             kProjectionPath.str(), "--result",
                              kSystemResultPath.str()}};
   if (diagnostics)
     specification.commands.front().insert(

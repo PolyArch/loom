@@ -41,6 +41,10 @@ inline constexpr llvm::StringLiteral kRootLifecycleResultPath =
     "outputs/system-root-lifecycle.result";
 inline constexpr llvm::StringLiteral kGem5PerformanceProfilePath =
     "outputs/gem5-attempt-performance.json";
+/// gem5's own output directory (stats, config, and simulator logs) is
+/// operational scratch, not a declared result. It lives under work/ so the
+/// declared outputs closure stays exact and the attempt remains cacheable.
+inline constexpr llvm::StringLiteral kGem5OutputDirectoryPath = "work/gem5";
 inline constexpr llvm::StringLiteral kCgraEnginePerformanceProfilePath =
     "outputs/cgra-engine-performance.json";
 inline constexpr llvm::StringLiteral kProjectionPath =
