@@ -1,4 +1,6 @@
 #include "Simulator/SimulationInputCapture.h"
+
+#include "Common/IndexWidth.h"
 #include "Frontend/Analysis/MemoryAddressProjection.h"
 #include "Frontend/Analysis/StoredMemoryProvenance.h"
 
@@ -189,6 +191,19 @@ std::optional<std::int64_t> constantSigned(mlir::Value value) {
 
 llvm::Expected<std::uint64_t> fixedTypeByteCount(mlir::Operation *scope,
                                                  mlir::Type type) {
+  // `index` has no width of its own in the generic data layout, which reports
+  // the target pointer width for it. Loom owns the index width, and the graph
+  // value ABI publishes lanes at that width, so an `index` capture must be
+  // measured with the same owner or the wire byte count disagrees with the
+  // shape the graph declares.
+  if (llvm::isa<mlir::IndexType>(type)) {
+    auto width = getIndexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    if (*width == 0 || *width % 8 != 0)
+      return unsupported("index width has no whole-byte representation");
+    return *width / 8;
+  }
   llvm::TypeSize bytes = mlir::DataLayout::closest(scope).getTypeSize(type);
   if (bytes.isScalable() || bytes.getFixedValue() == 0)
     return unsupported("LLVM type has no fixed nonzero byte size");
