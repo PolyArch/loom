@@ -371,6 +371,16 @@ explainSpatialOwnershipSourceIndexNarrowingRejection(
     const StructuredProgramCandidateView &sourceView,
     const SpatialOwnershipScope &scope, unsigned canonicalIndexWidth);
 
+/// Reports whether the source scope already holds a memory access that only a
+/// stored pointer serves. A root-relative projection marks every selected
+/// access root-relative, and materialization refuses such an access instead of
+/// projecting its pointer service. Like the index-narrowing proof this is a
+/// ranking signal, not a candidate refusal: inlining or specialization can
+/// bind the pointer service in the private clone.
+llvm::Expected<bool> provesSpatialOwnershipSourceUnboundPointerService(
+    const StructuredProgramCandidateView &sourceView,
+    const SpatialOwnershipScope &scope);
+
 /// Clone one exact parent and materialize one point from the selected scope's
 /// typed decision domain without changing ownership. Candidate publication and
 /// independent execution oracles both consume this single implementation.

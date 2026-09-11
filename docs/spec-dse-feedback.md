@@ -796,11 +796,16 @@ representatives consume slots from the unchanged bound.
 
 Remaining slots are assigned in rounds over eligible scopes in frontier order,
 one remaining decision per scope per round. Within each scope, decisions whose
-source signed-index narrowing proof fails follow the other decisions, retaining
-canonical order within either group. The proof is a hint from the canonical
-Frontend address normalizer, evaluated once per exact parent/scope/width; it
-cannot prune a decision or supply its final disposition. Inlining and
-specialization may change the proof in the private materialization clone.
+source proofs report at least one failed admission hint follow the other
+decisions, retaining canonical order within either group. The hints form one
+closed set evaluated only on root-relative decisions, and each is owned by the
+Frontend proof that later rejects the private clone: the signed-index narrowing
+proof of the canonical address normalizer, evaluated once per exact
+parent/scope/width, and the unbound stored-pointer proof of the memory service
+boundary, evaluated once per exact parent/scope because a root-relative
+projection marks every selected access root-relative. A failed hint cannot
+prune a decision or supply its final disposition. Inlining and specialization
+may change either proof in the private materialization clone.
 Decisions outside a truncated prefix remain unattempted, not rejected. Before
 execution, retained attempts return to canonical work order. After exact child
 deduplication, publication applies the same admission protocol to the surviving

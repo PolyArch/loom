@@ -61,6 +61,48 @@ bool isDefinedInSelection(
   return argument && selected.contains(argument.getOwner()->getParentOp());
 }
 
+mlir::Value memoryServiceAccessAddress(mlir::Operation *operation) {
+  if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation))
+    return load.getAddr();
+  if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation))
+    return store.getAddr();
+  return {};
+}
+
+/// The pointer-typed subset of one selection's live-in boundary. Memory
+/// service resolution treats exactly these values as already proven bases.
+llvm::SmallPtrSet<mlir::Value, 8>
+deriveBoundaryPointers(llvm::ArrayRef<mlir::Value> liveIns) {
+  llvm::SmallPtrSet<mlir::Value, 8> boundaryPointers;
+  for (mlir::Value value : liveIns)
+    if (llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType()))
+      boundaryPointers.insert(value);
+  return boundaryPointers;
+}
+
+/// Every memory access in the selected body whose address flows through a
+/// loaded pointer service and resolves to no boundary pointer. This single
+/// rule owns both the source-view admission hint and the materialization-time
+/// memory service completion.
+llvm::SmallVector<mlir::Operation *, 4> collectUnboundPointerServiceAccesses(
+    llvm::ArrayRef<mlir::Operation *> selectedBody,
+    const llvm::SmallPtrSetImpl<mlir::Value> &boundaryPointers) {
+  llvm::SmallVector<mlir::Operation *, 4> unbound;
+  for (mlir::Operation *topLevel : selectedBody)
+    topLevel->walk([&](mlir::Operation *operation) {
+      mlir::Value address = memoryServiceAccessAddress(operation);
+      if (address &&
+          !lowering::resolveMemoryServiceBoundaryRoot(
+              address,
+              [&](mlir::Value value) {
+                return boundaryPointers.contains(value);
+              }) &&
+          lowering::usesLoadedPointerService(address))
+        unbound.push_back(operation);
+    });
+  return unbound;
+}
+
 llvm::SmallVector<mlir::Value, 8> deriveSelectionLiveIns(
     llvm::ArrayRef<mlir::Operation *> selectedBody,
     const llvm::SmallPtrSetImpl<mlir::Operation *> &selected) {
@@ -178,26 +220,10 @@ deriveCallableOwnershipBoundary(mlir::LLVM::LLVMFuncOp function) {
 std::optional<std::string>
 completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
                               std::vector<mlir::Value> &liveIns) {
-  llvm::SmallPtrSet<mlir::Value, 8> boundaryPointers;
-  for (mlir::Value value : liveIns)
-    if (llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType()))
-      boundaryPointers.insert(value);
-
-  llvm::SmallVector<mlir::Operation *> unbound;
-  for (mlir::Operation *topLevel : selectedBody)
-    topLevel->walk([&](mlir::Operation *operation) {
-      mlir::Value address;
-      if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation))
-        address = load.getAddr();
-      else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation))
-        address = store.getAddr();
-      if (address && !lowering::resolveMemoryServiceBoundaryRoot(
-                         address, [&](mlir::Value value) {
-                           return boundaryPointers.contains(value);
-                         }) &&
-          lowering::usesLoadedPointerService(address))
-        unbound.push_back(operation);
-    });
+  llvm::SmallPtrSet<mlir::Value, 8> boundaryPointers =
+      deriveBoundaryPointers(liveIns);
+  llvm::SmallVector<mlir::Operation *, 4> unbound =
+      collectUnboundPointerServiceAccesses(selectedBody, boundaryPointers);
   if (unbound.empty())
     return std::nullopt;
   for (mlir::Operation *operation : unbound)
@@ -213,10 +239,7 @@ completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
   analysis::StoredMemoryProvenance provenance(callable);
   mlir::DominanceInfo dominance(callable);
   for (mlir::Operation *operation : unbound) {
-    mlir::Value address =
-        llvm::isa<mlir::LLVM::LoadOp>(operation)
-            ? llvm::cast<mlir::LLVM::LoadOp>(operation).getAddr()
-            : llvm::cast<mlir::LLVM::StoreOp>(operation).getAddr();
+    mlir::Value address = memoryServiceAccessAddress(operation);
     auto projected = provenance.projectPointerTarget(address);
     if (auto refusal = std::get_if<analysis::StoredPointerRefusal>(&projected))
       return (llvm::Twine("unbound pointer service: ") +
@@ -237,19 +260,32 @@ completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
             analysis::storedPointerRefusalSpelling(*refusal))
         .str();
   const auto &bindings = std::get<lowering::PointerServiceBindings>(projected);
-  for (mlir::Operation *operation : unbound) {
-    mlir::Value address =
-        llvm::isa<mlir::LLVM::LoadOp>(operation)
-            ? llvm::cast<mlir::LLVM::LoadOp>(operation).getAddr()
-            : llvm::cast<mlir::LLVM::StoreOp>(operation).getAddr();
+  for (mlir::Operation *operation : unbound)
     if (!lowering::resolveMemoryServiceBoundaryRoot(
-            address,
+            memoryServiceAccessAddress(operation),
             [&](mlir::Value value) { return boundaryPointers.contains(value); },
             bindings))
       return "memory access has no proven pointer service at the selected "
              "Spatial boundary";
-  }
   return std::nullopt;
+}
+
+bool selectionHasUnboundPointerServiceAccess(mlir::Operation *selection) {
+  if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(selection)) {
+    CallableOwnershipBoundary boundary =
+        deriveCallableOwnershipBoundary(function);
+    CallableSpatialSlice slice = deriveCallableSpatialSlice(function, boundary);
+    return !collectUnboundPointerServiceAccesses(
+                slice.body, deriveBoundaryPointers(slice.liveIns))
+                .empty();
+  }
+  llvm::SmallVector<mlir::Operation *, 1> body{selection};
+  llvm::SmallPtrSet<mlir::Operation *, 32> selected;
+  selection->walk([&](mlir::Operation *nested) { selected.insert(nested); });
+  return !collectUnboundPointerServiceAccesses(
+              body,
+              deriveBoundaryPointers(deriveSelectionLiveIns(body, selected)))
+              .empty();
 }
 
 } // namespace loom::frontend::detail

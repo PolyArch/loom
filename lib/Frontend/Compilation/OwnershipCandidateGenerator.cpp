@@ -1690,6 +1690,17 @@ explainSpatialOwnershipSourceIndexNarrowingRejection(
                                                        canonicalIndexWidth);
 }
 
+llvm::Expected<bool> provesSpatialOwnershipSourceUnboundPointerService(
+    const StructuredProgramCandidateView &sourceView,
+    const SpatialOwnershipScope &scope) {
+  auto entity = sourceView.resolve(scope.selection);
+  if (!entity)
+    return entity.takeError();
+  if (!entity->operation)
+    return invalid("selected StructuredEntityRef is not an operation");
+  return detail::selectionHasUnboundPointerServiceAccess(entity->operation);
+}
+
 llvm::Expected<MaterializedStructuredOwnershipCandidate>
 materializeStructuredSpatialOwnershipDecision(
     const StructuredProgramCandidate &parent,

@@ -45,6 +45,14 @@ std::optional<std::string>
 completeMemoryServiceBoundary(llvm::ArrayRef<mlir::Operation *> selectedBody,
                               std::vector<mlir::Value> &liveIns);
 
+/// Whether this exact selection already holds a memory access that only a
+/// stored pointer serves. `completeMemoryServiceBoundary` binds such an access
+/// to a projected pointer service, except under a root-relative projection
+/// which marks every selected access root-relative and refuses it. Both the
+/// pre-materialization admission hint and the materialization check read the
+/// same unbound-access rule, so the hint cannot drift from the refusal.
+bool selectionHasUnboundPointerServiceAccess(mlir::Operation *selection);
+
 } // namespace loom::frontend::detail
 
 #endif // LOOM_LIB_FRONTEND_COMPILATION_STRUCTUREDOWNERSHIPANALYSIS_H
