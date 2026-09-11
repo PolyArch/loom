@@ -1,4 +1,5 @@
 #include "StructuredScheduleInternal.h"
+#include "Frontend/IR/LoomOps.h"
 
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -106,7 +107,8 @@ std::optional<std::uint64_t> localBoundaryArgument(mlir::Value value,
     auto result = llvm::dyn_cast<mlir::OpResult>(value);
     if (!result)
       return std::nullopt;
-    if (llvm::isa<mlir::memref::AssumeAlignmentOp>(result.getOwner())) {
+    if (llvm::isa<mlir::memref::AssumeAlignmentOp, loom::PointerViewOp>(
+            result.getOwner())) {
       value = result.getOwner()->getOperand(0);
       continue;
     }

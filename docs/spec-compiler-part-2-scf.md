@@ -282,6 +282,37 @@ selected candidate is non-finalizable. A scalable vector is never presented
 to the fixed-ranked Canonical Dataflow contract as though its runtime
 `vscale` were a constant.
 
+### Static Pointer Loop Promotion
+
+A Spatial region raised from a C pointer ABI addresses memory through
+`llvm.getelementptr` and `llvm.load`/`llvm.store`. The exact structured
+schedule analyses own only the memref form, so ownership finalization first
+promotes every top-level `scf.for` of the selected region whose accesses admit
+it. An access is promotable when it is a plain load or store through a
+single-use inbounds GEP with one dynamic integer index on a region pointer
+argument, and the GEP element size equals the accessed element size. Every
+accessed pointer must resolve, through the complete call-site provenance of
+the region's launch operands, to one static `llvm.mlir.global` array, and every
+pair of accessed roots must be proven distinct by the shared memory provenance
+proof. Loops with multiple blocks, foreign effects, mixed element types, an
+address form outside this shape, loop-carried values, or a non-integer
+induction variable are refused locally; the refusal is diagnostic only and the
+loop keeps its pointer form.
+
+The rewrite introduces one `loom.pointer_view` per root, which reinterprets
+the region's pointer argument as a static identity-layout `memref` with a
+declared byte alignment, then `memref.distinct_objects` over the views and
+`memref.assume_alignment` on each. The promoted globals' alignment is raised
+to the promotion alignment of sixteen bytes so that every admitted vector
+width up to that alignment has an alignment proof. The loop is retyped to an
+`index` induction variable with constant `index` bounds, the raised address
+arithmetic is retired, and any remaining integer reader of the induction
+variable reads it back through one cast. `loom.pointer_view` is a
+compiler-internal staging value: memory lowering replaces it with the imported
+memref view of the same pointer service root, the native oracle lowers it to
+the LLVM memref descriptor of its source pointer, and it never reaches a
+canonical `dataflow.graph`.
+
 ## StructuredProgramCandidate
 
 S0 and every transformed S1 through Sn belong to one immutable

@@ -150,4 +150,5 @@ mlir_target_link_libraries(LoomNativeSimulationOracle PUBLIC
   MLIRTargetLLVMIRExport
   MLIRUBToLLVM
   MLIRVectorToLLVM
+  MLIRVectorTransforms
 )

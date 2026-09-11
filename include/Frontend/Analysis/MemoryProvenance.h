@@ -1,7 +1,10 @@
 #ifndef LOOM_FRONTEND_ANALYSIS_MEMORYPROVENANCE_H
 #define LOOM_FRONTEND_ANALYSIS_MEMORYPROVENANCE_H
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Value.h"
+
+#include <optional>
 
 namespace loom::frontend::analysis {
 
@@ -24,6 +27,12 @@ mlir::Value projectMemoryRoot(mlir::Value value);
 /// Spatial and thread-launch boundaries; an indirect or escaping use rejects
 /// the proof.
 bool haveProvenDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs);
+
+/// Resolves the one static LLVM global that a memory root addresses at every
+/// exact call site, through the same closed direct-call domain the distinct
+/// roots proof walks. A root that is not the address of one global at every
+/// site, or that reaches an indirect or escaping use, returns no value.
+std::optional<mlir::LLVM::GlobalOp> resolveUniqueStaticGlobalRoot(mlir::Value value);
 
 } // namespace loom::frontend::analysis
 

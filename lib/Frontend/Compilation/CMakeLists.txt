@@ -9,6 +9,7 @@ add_library(LoomFrontendCompilation
   StructuredAddressIndexNarrowing.cpp
   StructuredCallSpecialization.cpp
   StructuredOwnershipAnalysis.cpp
+  StructuredPointerMemRefPromotion.cpp
   StructuredExecutionShape.cpp
   StructuredSpecialMathAccuracy.cpp
   StructuredMemoryChannelPromotion.cpp
