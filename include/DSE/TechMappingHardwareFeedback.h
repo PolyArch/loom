@@ -80,6 +80,11 @@ struct TechMappingComputeContextSpatialFuGrowth final {
   ChangeFuInventory decision;
   loom::fabric::FabricFuCapabilityTemplateRef capability;
   std::uint64_t addedContextCount = 0;
+  /// Operation resources the selected capability record activates. A composite
+  /// record activates more than one, so one selected realization binds several
+  /// actors of the demand instead of one. This is the one fact that
+  /// distinguishes a mined composite supply from a single-operation clone.
+  std::uint64_t activeOperationCount = 0;
 };
 
 struct TechMappingComputeContextJointGrowthPlan final {
@@ -104,19 +109,39 @@ struct TechMappingComputeContextJointGrowthPlan final {
   std::uint64_t spatialFuUnclosedDeficit = 0;
 };
 
+/// What a reopen chain's accumulated evidence asks of the compute-context
+/// supply. The three states are the chain's own, and the growth owner reads
+/// them rather than restating when a supply becomes worth its cost.
+enum class TechMappingComputeContextSupplyPreference : std::uint8_t {
+  /// The structurally local, atomic instruction-store closure has not yet been
+  /// shown to produce an unmappable child. The owner closes with Temporal
+  /// residency, except when a composite capability closes the relation: each
+  /// added context lets the cover admit one more single-actor realization,
+  /// while one composite occurrence removes several actors from the demand per
+  /// realization it covers, so no amount of Temporal residency replaces it.
+  TemporalInstructionStore,
+  /// The chain has already spent its one Spatial FU occurrence probe. That
+  /// supply rebuilds the Module and reopens every Mapping layer, so only the
+  /// Temporal closure remains for this chain.
+  TemporalInstructionStoreOnly,
+  /// A probe on the Temporal direction reached ordinary Mapping and published
+  /// no SystemMapping. Any admissible Spatial FU occurrence supply is now
+  /// worth its cost.
+  AnySupply,
+};
+
 /// Chooses the growth direction for one exact observed Hall relation and
 /// sizes the chosen direction.
 ///
-/// `preferTemporalInstructionStore` carries the reopen chain's evidence. It
-/// holds while the structurally local, atomic instruction-store closure has
-/// not yet been shown to produce an unmappable child, and the plan then closes
-/// the exact relation with minimum total new Temporal context capacity. A
-/// chain that withdraws the preference asks for the Spatial FU occurrence
-/// supply instead; the owner offers it only when one admissible Spatial PE
-/// makes the complete observed relation admissible, and otherwise falls back
-/// to the Temporal closure with the bound recording why. The returned
-/// parent-scoped PE resizes form one atomic kind-14 ResizeInstructionStores
-/// decision; they must not be rebound through intermediate child identities.
+/// The owner offers the Spatial FU occurrence supply only when one admissible
+/// Spatial PE makes the complete observed relation admissible, and otherwise
+/// falls back to the Temporal closure with the bound recording why. Under
+/// `TemporalInstructionStore` the Spatial search is confined to composite
+/// capabilities, so a Module that offers none pays only the structural
+/// enumeration. The Temporal closure minimizes total new context capacity, and
+/// its returned parent-scoped PE resizes form one atomic kind-14
+/// ResizeInstructionStores decision; they must not be rebound through
+/// intermediate child identities.
 ///
 /// A relation whose compatible contexts lie on no Temporal PE admits no
 /// instruction-store supply at all, and the owner then searches the Spatial
@@ -127,7 +152,8 @@ llvm::Expected<std::optional<TechMappingComputeContextJointGrowthPlan>>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module,
-    bool preferTemporalInstructionStore = true);
+    TechMappingComputeContextSupplyPreference preference =
+        TechMappingComputeContextSupplyPreference::TemporalInstructionStore);
 
 } // namespace loom::dse
 

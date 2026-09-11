@@ -129,7 +129,11 @@ tryHardwareFeedbackReopen(
   // owner offer the Spatial FU occurrence supply instead. That supply reopens
   // every Mapping layer and rebuilds the Module, so the chain admits exactly
   // one such probe: repeating it would multiply the invocation's mapping cost.
-  bool preferTemporalInstructionStore = true;
+  // A composite capability the owner takes without a withdrawal spends that
+  // same one probe, which is why a consumed probe narrows the preference to
+  // the Temporal closure alone rather than restoring the initial state.
+  TechMappingComputeContextSupplyPreference supplyPreference =
+      TechMappingComputeContextSupplyPreference::TemporalInstructionStore;
   bool spatialFuGrowthProbeConsumed = false;
   // Exactly one probe of a chain reserves a retreat share. Reserving again on
   // every later probe would shrink the window geometrically and spend the
@@ -170,7 +174,7 @@ tryHardwareFeedbackReopen(
             ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
                                                     *techObservation, artifacts)
             : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts,
-                                         preferTemporalInstructionStore);
+                                         supplyPreference);
     if (!growth)
       return growth.takeError();
     if (!*growth) {
@@ -195,7 +199,8 @@ tryHardwareFeedbackReopen(
         TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
     if (spatialFuGrowthProbe) {
       spatialFuGrowthProbeConsumed = true;
-      preferTemporalInstructionStore = true;
+      supplyPreference = TechMappingComputeContextSupplyPreference::
+          TemporalInstructionStoreOnly;
     }
     // A Temporal instruction-store closure child can cover its graphs at Tech
     // level and still exhaust route closure, and its own Spatial or System
@@ -237,9 +242,10 @@ tryHardwareFeedbackReopen(
     // the evidence that more Temporal residency does not close this relation.
     const auto withdrawTemporalInstructionStorePreference = [&]() {
       if (spatialFuGrowthProbe || spatialFuGrowthProbeConsumed ||
-          !preferTemporalInstructionStore)
+          supplyPreference != TechMappingComputeContextSupplyPreference::
+                                  TemporalInstructionStore)
         return;
-      preferTemporalInstructionStore = false;
+      supplyPreference = TechMappingComputeContextSupplyPreference::AnySupply;
       mapping_debug::emit(
           mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
           mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {

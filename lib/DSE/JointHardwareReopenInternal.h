@@ -214,14 +214,15 @@ llvm::Expected<std::optional<MappingHardwareFeedback>>
 selectMappingHardwareFeedback(const JointDesignExecution &execution,
                               const ArtifactStore &artifacts);
 
-/// `preferTemporalInstructionStore` carries the reopen chain's evidence about
-/// compute-context supply. See TechMappingHardwareFeedback.h. An absent result
-/// is the typed refusal that the observed feedback admits no growth at all.
+/// `preference` carries the reopen chain's evidence about compute-context
+/// supply. See TechMappingHardwareFeedback.h. An absent result is the typed
+/// refusal that the observed feedback admits no growth at all.
 llvm::Expected<std::optional<HardwareRecipeGrowth>>
-deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
-                           const MappingHardwareFeedback &feedback,
-                           const ArtifactStore &artifacts,
-                           bool preferTemporalInstructionStore = true);
+deriveHardwareRecipeGrowth(
+    const ResolvedConfig &baseConfig, const MappingHardwareFeedback &feedback,
+    const ArtifactStore &artifacts,
+    TechMappingComputeContextSupplyPreference preference =
+        TechMappingComputeContextSupplyPreference::TemporalInstructionStore);
 
 /// Proposes a deeper memory Operation Engine for a correct but latency-bound
 /// window. No Mapping observation reports memory-level parallelism, so this

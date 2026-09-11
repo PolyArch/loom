@@ -63,7 +63,27 @@ struct SpatialGrowthUnit final {
   /// units that add the same number of new values to the same demand groups
   /// reach the same matching.
   std::uint64_t freshValueCount = 0;
+  /// Operation resources the capability record activates. More than one is a
+  /// composite record: one realization of it binds several actors.
+  std::uint64_t activeOperationCount = 0;
 };
+
+/// Operation resources one capability record activates. A record also
+/// activates the mux and demux nodes its selected routing needs, and those are
+/// topology rather than compute supply, so only nodes that resolve to a
+/// concrete operation capability are counted.
+std::uint64_t
+activeOperationCount(const fabric::FabricArtifactView &module,
+                     fabric::FabricFuCapabilityTemplateRef capability) {
+  const auto inventory = module.fuCapabilityTemplates(capability.fu);
+  if (capability.ordinal >= inventory.size())
+    return 0;
+  std::uint64_t operations = 0;
+  for (const fabric::FabricFuTemplateNodeRef &node :
+       inventory[capability.ordinal].activeNodes)
+    operations += module.resolvedFabricOpCapability(node) != nullptr;
+  return operations;
+}
 
 bool spatialGrowthUnitLess(const SpatialGrowthUnit &lhs,
                            const SpatialGrowthUnit &rhs) {
@@ -327,10 +347,16 @@ struct SpatialFuOccurrenceGrowthStep final {
 /// structural enumeration and its bound are cheap and always available; the
 /// matchings only run when the caller is actually considering this direction,
 /// and then once per equivalence class of units rather than once per unit.
+/// `compositeOnly` restricts the closure search to capability records that
+/// activate more than one operation resource, which is the supply a caller
+/// that still prefers the Temporal direction will nevertheless take. The
+/// structural bound is always computed over the complete unit inventory, so
+/// the Temporal fallback reports the same bound either way.
 llvm::Expected<SpatialFuOccurrenceGrowthStep>
 projectSpatialFuOccurrenceGrowthStep(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
-    const fabric::FabricArtifactView &module, bool searchClosure) {
+    const fabric::FabricArtifactView &module, bool searchClosure,
+    bool compositeOnly) {
   struct CapabilityPrototype final {
     fabric::FabricFuOccurrenceRef fu;
     std::vector<std::vector<std::uint8_t>> parentSignature;
@@ -339,6 +365,7 @@ projectSpatialFuOccurrenceGrowthStep(
   struct CapabilityRecord final {
     fabric::FabricFuCapabilityTemplateRef capability;
     std::vector<std::uint8_t> key;
+    std::uint64_t operations = 0;
     std::vector<std::size_t> groups;
     std::vector<CapabilityPrototype> prototypes;
     std::set<std::vector<std::uint8_t>> hosts;
@@ -352,7 +379,11 @@ projectSpatialFuOccurrenceGrowthStep(
       const auto found =
           capabilityOrdinalByKey.emplace(key, capabilities.size());
       if (found.second)
-        capabilities.push_back({capability, std::move(key), {}, {}, {}});
+        capabilities.push_back({capability, std::move(key),
+                                activeOperationCount(module, capability),
+                                {},
+                                {},
+                                {}});
       capabilities[found.first->second].groups.push_back(indexed.index());
     }
 
@@ -428,7 +459,7 @@ projectSpatialFuOccurrenceGrowthStep(
       if (!prototype)
         continue;
       units.push_back({pe, prototype->fu, record.capability, peKey, record.key,
-                       {}, record.groups, 0});
+                       {}, record.groups, 0, record.operations});
       contextsByTarget.emplace(peKey, contexts);
     }
   }
@@ -560,6 +591,8 @@ projectSpatialFuOccurrenceGrowthStep(
   std::set<std::pair<std::vector<std::size_t>, std::uint64_t>> evaluatedClasses;
   const SpatialGrowthUnit *selected = nullptr;
   for (const SpatialGrowthUnit &unit : units) {
+    if (compositeOnly && unit.activeOperationCount < 2)
+      continue;
     if (llvm::none_of(unit.groups, [&](std::size_t group) {
           return witnessGroups[group] != 0;
         }))
@@ -587,7 +620,8 @@ projectSpatialFuOccurrenceGrowthStep(
   prototypes.push_back(selected->prototype);
   step.growth = TechMappingComputeContextSpatialFuGrowth{
       ChangeFuInventory{selected->target, std::move(prototypes)},
-      selected->capability, contextsByTarget.at(selected->targetKey)};
+      selected->capability, contextsByTarget.at(selected->targetKey),
+      selected->activeOperationCount};
   return step;
 }
 
@@ -625,7 +659,7 @@ llvm::Expected<std::optional<TechMappingComputeContextJointGrowthPlan>>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module,
-    bool preferTemporalInstructionStore) {
+    TechMappingComputeContextSupplyPreference preference) {
   if (module.rootKind() != fabric::FabricRootKind::Module)
     return invalid("hardware feedback target is not a Module");
   if (feedback.deficit() == 0)
@@ -647,8 +681,19 @@ projectTechMappingComputeContextJointGrowthPlan(
     return true;
   };
 
+  // A composite capability is searched even while the chain still prefers the
+  // Temporal supply: instruction-store growth answers a deficient relation one
+  // single-actor realization at a time, which is the stagnation the growth
+  // rule detects, while one composite occurrence removes several actors from
+  // the demand per realization it covers. A chain that already spent its one
+  // Spatial probe asks for neither.
+  const bool searchSpatial =
+      preference !=
+      TechMappingComputeContextSupplyPreference::TemporalInstructionStoreOnly;
   auto spatial = projectSpatialFuOccurrenceGrowthStep(
-      feedback, module, !preferTemporalInstructionStore);
+      feedback, module, searchSpatial,
+      /*compositeOnly=*/preference ==
+          TechMappingComputeContextSupplyPreference::TemporalInstructionStore);
   if (!spatial)
     return spatial.takeError();
   if (adoptSpatialStep(*spatial))
@@ -669,10 +714,10 @@ projectTechMappingComputeContextJointGrowthPlan(
 
   // The relation admits no Temporal context supply, so the preference has
   // nothing to prefer: the Spatial FU occurrence direction is the only
-  // compatible supply and the owner searches it even when the chain has not
-  // withdrawn the preference.
-  if (preferTemporalInstructionStore) {
-    auto only = projectSpatialFuOccurrenceGrowthStep(feedback, module, true);
+  // compatible supply and the owner searches it whatever the chain asked for.
+  if (preference != TechMappingComputeContextSupplyPreference::AnySupply) {
+    auto only = projectSpatialFuOccurrenceGrowthStep(
+        feedback, module, /*searchClosure=*/true, /*compositeOnly=*/false);
     if (!only)
       return only.takeError();
     if (adoptSpatialStep(*only))

@@ -880,10 +880,10 @@ selectMappingHardwareFeedback(const JointDesignExecution &execution,
 }
 
 llvm::Expected<std::optional<HardwareRecipeGrowth>>
-deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
-                           const MappingHardwareFeedback &feedback,
-                           const ArtifactStore &artifacts,
-                           bool preferTemporalInstructionStore) {
+deriveHardwareRecipeGrowth(
+    const ResolvedConfig &baseConfig, const MappingHardwareFeedback &feedback,
+    const ArtifactStore &artifacts,
+    TechMappingComputeContextSupplyPreference preference) {
   HardwareRecipeGrowth growth;
   growth.config = baseConfig;
   growth.resultingContexts =
@@ -898,8 +898,7 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
     if (!module)
       return module.takeError();
     auto plan = dse::projectTechMappingComputeContextJointGrowthPlan(
-        techObservation->feedback, module->view(),
-        preferTemporalInstructionStore);
+        techObservation->feedback, module->view(), preference);
     if (!plan)
       return plan.takeError();
     if (!*plan)
