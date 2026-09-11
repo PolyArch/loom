@@ -163,8 +163,8 @@
           "cached_inputs": [],
           "compiler_options": [
             "-DLOOM_LLAMA_INPUT_VARIANT=1",
-            "-DLOOM_LLAMA_KERNEL_WIDTH=512",
-            "-DLOOM_LLAMA_KERNEL_ROWS=128"
+            "-DLOOM_LLAMA_KERNEL_WIDTH=1024",
+            "-DLOOM_LLAMA_KERNEL_ROWS=64"
           ],
           "oracle": {
             "kind": "exact",
