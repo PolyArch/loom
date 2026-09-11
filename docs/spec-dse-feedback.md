@@ -3472,41 +3472,63 @@ instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
 
 The hardware reopen owner chooses between those two supplies with one policy,
-and the choice is a typed growth direction rather than an implicit
-consequence of the decision it emits. A Spatial-schedule PE holds one resident
-instruction per context and never rotates, so demand it hosts keeps its
-loop-carried dependences unserialized; a Temporal PE issues its residents in
-rotation, so every additional resident lengthens the initiation interval of
-every loop it hosts. The owner therefore prefers `spatial_fu_occurrence`
-growth: it gives one Spatial PE of the exact parent Module a clone of an
-existing FU occurrence of a deficient capability class, which makes that PE's
-resident contexts compatible with every demand group admitting that
-capability. Prototype selection is derivable from the exact parent Module. A
-prototype is admissible for a target only when the prototype's parent PE
-presents exactly the target's token inputs by ordinal and canonical type,
-which is the ADG Builder's own FU-inventory admission rule; ties take the
-canonically least prototype and the canonically least target. The owner takes
-the step only when it strictly increases the observed maximum matching, which
-it checks with the same all-different closure that produced the feedback.
+and the choice is a typed growth direction rather than an implicit consequence
+of the decision it emits. The two supplies are not interchangeable. A
+`ResizeInstructionStores` closure is atomic: one child closes the complete
+observed relation, and its typed impact rebases the parent Mapping layers. A
+`ChangeFuInventory` decision names one exact PE, changes that PE's internal
+structure, and reopens every Mapping layer of the affected cone; it can close
+a relation only when one PE's resident contexts already cover the whole
+deficit. A Hall closure child must be atomic, because a child that is still
+deficient covers no graph and its TechMapping publishes nothing. The owner
+therefore never approaches a relation one PE at a time.
 
-`ChangeFuInventory` names one exact PE, so one child Module gains one
-capability. The reopen chain therefore re-observes the Hall relation after
-each child and takes the next step, and the growth plan records how much
-supply the direction still has. Its typed bound is the resident-context supply
-of the exact parent Module's admissible Spatial PEs other than the one this
-step consumes, together with the part of the observed deficit that bound
-cannot reach. The bound is an upper estimate of remaining Spatial supply, so
-the unreached deficit is a lower estimate of the demand instruction stores
-must cover. The bound is zero exactly when no admissible Spatial PE strictly
-improves the observed relation. The policy proposes no PE beyond that
-inventory: in that exhausted case the direction becomes
-`temporal_instruction_store` and the owner
-closes the remaining relation with the minimum total new Temporal context
-capacity through the atomic `ResizeInstructionStores` decision the
-spatial-microarchitecture generator owns. Instruction
-stores thus remain the supply for exactly the demand no Spatial PE of that
-Module can host. Adding AccCores or mesh occurrences is a different typed
-owner and is not proposed here.
+The default direction is `temporal_instruction_store`. The owner offers
+`spatial_fu_occurrence` growth only after the reopen chain withdraws that
+preference, which it does when a probe on the instruction-store direction
+reaches ordinary Mapping and publishes no SystemMapping. A child whose Tech
+gate already covers no required graph ends the chain as before; the withdrawal
+records the stronger evidence that a mapped child could not be produced. That
+withdrawal is the typed alternative repair domain
+the stagnation rule below names: the relation has shown that more Temporal
+residency does not produce a Mapping, so the structurally different supply
+becomes worth its cost. A Spatial-schedule PE holds one resident instruction
+per context and never rotates, so demand it hosts keeps its loop-carried
+dependences unserialized.
+
+A withdrawn preference admits one decision that gives one Spatial PE of the
+exact parent Module a clone of an existing FU occurrence of a deficient
+capability class, making that PE's resident contexts compatible with every
+demand group admitting that capability. Prototype selection is derivable from
+the exact parent Module. A prototype is admissible for a target only when the
+prototype's parent PE presents exactly the target's token inputs by ordinal
+and canonical type, which is the ADG Builder's own FU-inventory admission
+rule; ties take the canonically least prototype and the canonically least
+target. The owner admits the decision only when that single change makes the
+complete observed relation admissible, which it checks with the same
+all-different closure that produced the feedback. Otherwise the direction
+stays `temporal_instruction_store` and the plan's bound records why. That
+typed bound is the resident-context supply of the exact parent Module's
+admissible Spatial PEs other than the one the plan selects, together with the
+part of the observed deficit that bound cannot reach. The bound is an upper
+estimate of the Spatial supply, so the unreached deficit is a lower estimate
+of the demand instruction stores must cover. The policy proposes no PE beyond
+that inventory; adding AccCores or mesh occurrences is a different typed owner
+and is not proposed here.
+
+A reopen chain admits at most one `spatial_fu_occurrence` probe. That supply
+rebuilds the Module and reopens every Mapping layer, so repeating it would
+multiply the invocation's mapping cost without the atomic closure the relation
+needs. The chain restores the instruction-store preference as soon as that one
+probe is taken.
+
+The spatial-microarchitecture generator remains the legality owner of the
+decision. A decision it refuses publishes no child Module; that is a typed
+refusal, not a malformed result. The reopen owner records it, spends no
+Mapping work on it, and retreats to the atomic instruction-store closure on
+the same parent rather than continuing with an empty child. A Spatial child
+whose TechMapping covers no required graph is the same kind of evidence and
+takes the same retreat.
 
 The chosen direction, the Spatial supply bound, and the unreached deficit are
 explicit in the reopen diagnostics. The typed growth record names the
@@ -3514,7 +3536,8 @@ operation `typed_spatial_fu_occurrence_growth` or
 `typed_resize_instruction_stores_growth`, and both it and
 `hardware_reopen_mapping_attempt` carry the direction spelling, the added FU
 occurrence and context counts, the Spatial context supply bound, and the
-unclosed deficit.
+unclosed deficit. The withdrawal, the refusal, and both retreats are their own
+typed records.
 
 The root-complete Spatial provider may return
 `loom.mapping.spatial_hardware_feedback.2.0`. Its closed alternatives are a

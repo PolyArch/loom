@@ -111,6 +111,14 @@ tryHardwareFeedbackReopen(
     std::optional<TechMappingComputeContextGrowthDirection> direction;
   };
   std::optional<HallProgressObservation> previousHallProgress;
+  // Compute-context supply evidence for this chain. The structurally local,
+  // atomic instruction-store closure is the first supply. A probe on it that
+  // publishes no Mapping withdraws the preference, which makes the growth
+  // owner offer the Spatial FU occurrence supply instead. That supply reopens
+  // every Mapping layer and rebuilds the Module, so the chain admits exactly
+  // one such probe: repeating it would multiply the invocation's mapping cost.
+  bool preferTemporalInstructionStore = true;
+  bool spatialFuGrowthProbeConsumed = false;
   const std::uint64_t candidateLimit =
       request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
               request.boundedQuality
@@ -139,9 +147,38 @@ tryHardwareFeedbackReopen(
          techObservation && techObservation->feedback.deficit() > 1)
             ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
                                                     *techObservation, artifacts)
-            : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts);
+            : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts,
+                                         preferTemporalInstructionStore);
     if (!growth)
       return growth.takeError();
+    const bool spatialFuGrowthProbe =
+        growth->computeContextGrowthDirection ==
+        TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
+    if (spatialFuGrowthProbe) {
+      spatialFuGrowthProbeConsumed = true;
+      preferTemporalInstructionStore = true;
+    }
+    // A probe that reached ordinary Mapping and published no SystemMapping is
+    // the evidence that more Temporal residency does not close this relation.
+    const auto withdrawTemporalInstructionStorePreference = [&]() {
+      if (spatialFuGrowthProbe || spatialFuGrowthProbeConsumed ||
+          !preferTemporalInstructionStore)
+        return;
+      preferTemporalInstructionStore = false;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "compute_context_supply_preference_withdrawn";
+            fields["candidate_ordinal"] = candidateOrdinal;
+            fields["withdrawn_direction"] =
+                techMappingComputeContextGrowthDirectionSpelling(
+                    TechMappingComputeContextGrowthDirection::
+                        TemporalInstructionStore);
+            fields["diagnostic"] =
+                "instruction-store growth published no Mapping; the Spatial FU "
+                "occurrence supply becomes the next typed alternative";
+          });
+    };
     if (techObservation) {
       const HallProgressObservation currentHallProgress{
           techObservation->feedback.deficit(),
@@ -193,33 +230,72 @@ tryHardwareFeedbackReopen(
                                    growth->addedContexts == 0 &&
                                    growth->addedGateways == 0;
     const bool typedModuleGrowth = techObservation != nullptr;
-    auto materialization =
-        [&]() -> llvm::Expected<HardwareRecipeMaterializationOutcome> {
-      if (!accCoreOnlyGrowth && !typedModuleGrowth)
-        return materializeHardwareRecipeGrowth(
+    using RefusableMaterialization =
+        std::optional<HardwareRecipeMaterializationOutcome>;
+    auto materialization = [&]() -> llvm::Expected<RefusableMaterialization> {
+      if (!accCoreOnlyGrowth && !typedModuleGrowth) {
+        auto recipe = materializeHardwareRecipeGrowth(
             std::move(*growth), evidence, request, scheduler, artifacts, blobs);
-      auto candidate = accCoreOnlyGrowth
-                           ? materializeTypedAccCoreGrowth(std::move(*growth),
-                                                           artifacts, blobs)
-                           : materializeTypedModuleSystemGrowth(
-                                 std::move(*growth),
-                                 currentPlan->frontier.systemFrontier.front(),
-                                 artifacts, blobs);
+        if (!recipe)
+          return recipe.takeError();
+        return RefusableMaterialization(std::move(*recipe));
+      }
+      if (accCoreOnlyGrowth) {
+        auto core =
+            materializeTypedAccCoreGrowth(std::move(*growth), artifacts, blobs);
+        if (!core)
+          return core.takeError();
+        return RefusableMaterialization(
+            HardwareRecipeMaterializationOutcome{std::move(*core)});
+      }
+      auto candidate = materializeTypedModuleSystemGrowth(
+          std::move(*growth), currentPlan->frontier.systemFrontier.front(),
+          artifacts, blobs);
       if (!candidate)
         return candidate.takeError();
-      return HardwareRecipeMaterializationOutcome{std::move(*candidate)};
+      if (!*candidate)
+        return RefusableMaterialization();
+      return RefusableMaterialization(
+          HardwareRecipeMaterializationOutcome{std::move(**candidate)});
     }();
     if (!materialization)
       return materialization.takeError();
+    if (!*materialization) {
+      ++accounting.hardwareRepairProbesRejected;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "hardware_repair_funnel";
+            fields["closure_status"] = "unsupported";
+            fields["reason"] = "typed_growth_decision_published_no_child";
+            fields["candidate_ordinal"] = candidateOrdinal;
+            fields["diagnostic"] =
+                "the ADG Builder refused the typed growth decision; no child "
+                "Module was published";
+            if (spatialFuGrowthProbe)
+              fields["retreat_direction"] =
+                  techMappingComputeContextGrowthDirectionSpelling(
+                      TechMappingComputeContextGrowthDirection::
+                          TemporalInstructionStore);
+          });
+      // A refused Spatial FU occurrence decision costs no Mapping work, so the
+      // chain retreats to the atomic instruction-store closure on the same
+      // parent instead of ending with an empty child.
+      if (spatialFuGrowthProbe)
+        continue;
+      break;
+    }
     if (const auto *incomplete =
             std::get_if<IncompleteHardwareRecipeMaterialization>(
-                &*materialization)) {
+                &**materialization)) {
       if (llvm::Error error =
               retainObservedInvocation(incomplete->constructionInvocation))
         return error;
       break;
     }
-    auto *system = &std::get<MaterializedHardwareCandidate>(*materialization);
+    auto *system =
+        &std::get<MaterializedHardwareCandidate>(**materialization);
     if (system->constructionInvocation)
       if (llvm::Error error =
               retainObservedInvocation(*system->constructionInvocation))
@@ -382,6 +458,25 @@ tryHardwareFeedbackReopen(
             return std::move(error);
           return std::optional<dse::JointDesignExecution>{
               std::move(gate->execution)};
+        }
+        // A Spatial FU occurrence child whose TechMapping covers nothing is
+        // evidence about that supply, not about the relation. Retreat to the
+        // atomic instruction-store closure on the same parent.
+        if (spatialFuGrowthProbe) {
+          mapping_debug::emit(
+              mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+              mapping_debug::Event::MappingFailure,
+              [&](llvm::json::Object &fields) {
+                fields["failure_scope"] = "hardware_repair_funnel";
+                fields["closure_status"] = "proof_not_established";
+                fields["reason"] = "spatial_fu_growth_child_covers_no_graph";
+                fields["candidate_ordinal"] = candidateOrdinal;
+                fields["retreat_direction"] =
+                    techMappingComputeContextGrowthDirectionSpelling(
+                        TechMappingComputeContextGrowthDirection::
+                            TemporalInstructionStore);
+              });
+          continue;
         }
         currentConfig = system->config;
         latestFailed = std::move(gate->execution);
@@ -659,6 +754,7 @@ tryHardwareFeedbackReopen(
         return std::move(error);
       return std::optional<dse::JointDesignExecution>{std::move(*execution)};
     }
+    withdrawTemporalInstructionStorePreference();
 
     currentConfig = std::move(system->config);
     latestFailed = std::move(*execution);

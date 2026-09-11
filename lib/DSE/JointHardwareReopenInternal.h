@@ -210,10 +210,13 @@ llvm::Expected<std::optional<MappingHardwareFeedback>>
 selectMappingHardwareFeedback(const JointDesignExecution &execution,
                               const ArtifactStore &artifacts);
 
+/// `preferTemporalInstructionStore` carries the reopen chain's evidence about
+/// compute-context supply. See TechMappingHardwareFeedback.h.
 llvm::Expected<HardwareRecipeGrowth>
 deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
                            const MappingHardwareFeedback &feedback,
-                           const ArtifactStore &artifacts);
+                           const ArtifactStore &artifacts,
+                           bool preferTemporalInstructionStore = true);
 
 llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig,
@@ -228,7 +231,11 @@ materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
                                 const ArtifactStore &artifacts,
                                 const BlobStore &blobs);
 
-llvm::Expected<MaterializedHardwareCandidate>
+/// Materializes one typed Module decision and rebinds it onto `parentSystem`.
+/// An absent result is the ADG Builder's typed refusal of that decision: the
+/// generator published no child, and the caller must retreat rather than treat
+/// the empty publication as a malformed result.
+llvm::Expected<std::optional<MaterializedHardwareCandidate>>
 materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
                                    const ArtifactRootReference &parentSystem,
                                    const ArtifactStore &artifacts,

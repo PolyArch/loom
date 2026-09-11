@@ -27,11 +27,14 @@ projectTechMappingComputeContextGrowthDomains(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module);
 
-/// The two typed supply sources a compute-context Hall deficit admits. A
+/// The two typed supply sources a compute-context Hall deficit admits.
+/// Temporal instruction-store growth closes the complete observed relation in
+/// one atomic decision and rebases the parent Mapping layers. Spatial FU
+/// occurrence growth keeps loop-carried work unserialized because a
 /// Spatial-schedule PE hosts one resident instruction per context and never
-/// rotates, so moving demand onto Spatial FU occurrences keeps loop-carried
-/// work unserialized. Temporal instruction stores remain the supply for
-/// demand that no Spatial PE of the exact parent Module can host.
+/// rotates, but it changes PE-internal structure, reopens every Mapping layer,
+/// and can only close a relation whose deficit one PE's resident contexts
+/// already cover.
 enum class TechMappingComputeContextGrowthDirection : std::uint8_t {
   SpatialFuOccurrence,
   TemporalInstructionStore,
@@ -40,11 +43,13 @@ enum class TechMappingComputeContextGrowthDirection : std::uint8_t {
 llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(
     TechMappingComputeContextGrowthDirection direction);
 
-/// One exact Spatial FU occurrence growth step. `decision` replaces the whole
-/// FU inventory of `decision.target` with its current occurrences plus one
-/// clone of an existing occurrence of `capability`. `addedContextCount` is the
-/// target's resident-context count, which is exactly the supply the step makes
-/// compatible with every demand group that admits that capability.
+/// One exact Spatial FU occurrence growth decision. It replaces the whole FU
+/// inventory of `decision.target` with its current occurrences plus one clone
+/// of an existing occurrence of `capability`, and it is admitted only when
+/// that single change makes the complete observed relation admissible.
+/// `addedContextCount` is the target's resident-context count, which is
+/// exactly the supply the decision makes compatible with every demand group
+/// that admits that capability.
 struct TechMappingComputeContextSpatialFuGrowth final {
   ChangeFuInventory decision;
   loom::fabric::FabricFuCapabilityTemplateRef capability;
@@ -57,34 +62,40 @@ struct TechMappingComputeContextJointGrowthPlan final {
   /// Temporal direction only: the atomic minimal instruction-store closure.
   std::vector<ResizeInstructionStore> decisions;
   std::uint64_t addedContextCount = 0;
-  /// Spatial direction only. The microarchitecture decision vocabulary
-  /// changes one PE's FU inventory per child Module, so the plan carries the
-  /// one step that most increases the observed matching; the reopen chain
-  /// re-observes the Hall relation and takes the next step.
+  /// Spatial direction only: the one decision that closes the complete
+  /// observed relation. The microarchitecture vocabulary changes one PE's FU
+  /// inventory per child Module, and a Hall closure child must be atomic, so
+  /// a relation no single admissible Spatial PE can close is left to the
+  /// Temporal direction instead of being approached one PE at a time.
   std::optional<TechMappingComputeContextSpatialFuGrowth> spatialFuGrowth;
   /// Structural bound of the Spatial direction: the resident contexts the
-  /// exact parent Module's admissible Spatial PEs could still make compatible
-  /// after this step, and the part of the observed deficit that bound cannot
-  /// reach. The bound is an upper estimate of remaining Spatial supply, so
-  /// the residual is a lower estimate of the demand instruction stores must
-  /// cover. It is zero exactly when no admissible Spatial PE improves the
-  /// observed relation, and the residual is then the complete deficit: that
-  /// is why the Temporal direction takes over.
+  /// exact parent Module's admissible Spatial PEs other than the one this
+  /// plan selects could still make compatible, and the part of the observed
+  /// deficit that bound cannot reach. The bound is an upper estimate of the
+  /// Spatial supply, so the residual is a lower estimate of the demand
+  /// instruction stores must cover.
   std::uint64_t spatialFuContextSupplyBound = 0;
   std::uint64_t spatialFuUnclosedDeficit = 0;
 };
 
 /// Chooses the growth direction for one exact observed Hall relation and
-/// sizes the chosen direction. The Spatial direction is preferred whenever an
-/// admissible Spatial FU occurrence strictly increases the observed maximum
-/// matching; otherwise the plan closes the exact relation with minimum total
-/// new Temporal context capacity. The returned parent-scoped PE resizes form
-/// one atomic kind-14 ResizeInstructionStores decision; they must not be
-/// rebound through intermediate child identities.
+/// sizes the chosen direction.
+///
+/// `preferTemporalInstructionStore` carries the reopen chain's evidence. It
+/// holds while the structurally local, atomic instruction-store closure has
+/// not yet been shown to produce an unmappable child, and the plan then closes
+/// the exact relation with minimum total new Temporal context capacity. A
+/// chain that withdraws the preference asks for the Spatial FU occurrence
+/// supply instead; the owner offers it only when one admissible Spatial PE
+/// makes the complete observed relation admissible, and otherwise falls back
+/// to the Temporal closure with the bound recording why. The returned
+/// parent-scoped PE resizes form one atomic kind-14 ResizeInstructionStores
+/// decision; they must not be rebound through intermediate child identities.
 llvm::Expected<TechMappingComputeContextJointGrowthPlan>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
-    const fabric::FabricArtifactView &module);
+    const fabric::FabricArtifactView &module,
+    bool preferTemporalInstructionStore = true);
 
 } // namespace loom::dse
 

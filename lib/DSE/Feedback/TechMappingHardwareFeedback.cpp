@@ -302,20 +302,24 @@ struct SpatialFuOccurrenceGrowthStep final {
   std::uint64_t contextSupplyBound = 0;
 };
 
-/// Chooses the one Spatial FU occurrence growth step that most increases the
-/// observed maximum matching, and reports how much resident-context supply the
-/// exact parent Module's remaining Spatial PE inventory could still add.
+/// Chooses the one Spatial FU occurrence decision that makes the complete
+/// observed relation admissible, and reports how much resident-context supply
+/// the exact parent Module's other admissible Spatial PEs hold.
 ///
-/// The microarchitecture decision vocabulary changes one PE's FU inventory per
-/// child Module, so this returns one step rather than a program: the reopen
-/// chain re-observes the Hall relation after each child and takes the next
-/// step. When no admissible target strictly improves the matching, the Spatial
-/// direction is exhausted for this relation and the caller closes the residual
-/// demand with Temporal instruction-store growth.
+/// The microarchitecture vocabulary changes one PE's FU inventory per child
+/// Module while a Hall closure child must be atomic, so a partial step would
+/// publish a child that is still deficient: its TechMapping covers nothing and
+/// the chain would have to repeat one PE at a time. This therefore admits only
+/// a single closing decision, and the caller keeps the atomic Temporal closure
+/// for every relation no one Spatial PE can close.
+///
+/// `searchClosure` selects whether the bipartite matchings run at all. The
+/// structural enumeration and its bound are cheap and always available; the
+/// matchings only run when the caller is actually considering this direction.
 llvm::Expected<SpatialFuOccurrenceGrowthStep>
 projectSpatialFuOccurrenceGrowthStep(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
-    const fabric::FabricArtifactView &module) {
+    const fabric::FabricArtifactView &module, bool searchClosure) {
   struct CapabilityPrototype final {
     fabric::FabricFuOccurrenceRef fu;
     std::vector<std::vector<std::uint8_t>> parentSignature;
@@ -417,11 +421,23 @@ projectSpatialFuOccurrenceGrowthStep(
       contextsByTarget.emplace(peKey, contexts);
     }
   }
-  // An exhausted Spatial direction reports no remaining supply, so the caller
-  // always sees the complete deficit as the demand instruction stores must
-  // cover. The bound is therefore established only after a step is selected.
-  if (units.empty())
+  const auto publishBound =
+      [&](const std::vector<std::uint8_t> *selectedTarget) -> llvm::Error {
+    for (const auto &target : contextsByTarget) {
+      if (selectedTarget && target.first == *selectedTarget)
+        continue;
+      if (target.second >
+          std::numeric_limits<std::uint64_t>::max() - step.contextSupplyBound)
+        return invalid("Spatial FU context supply bound overflows u64");
+      step.contextSupplyBound += target.second;
+    }
+    return llvm::Error::success();
+  };
+  if (units.empty() || !searchClosure) {
+    if (llvm::Error error = publishBound(nullptr))
+      return std::move(error);
     return step;
+  }
   llvm::sort(units, spatialGrowthUnitLess);
 
   for (const SpatialGrowthUnit &unit : units) {
@@ -506,8 +522,8 @@ projectSpatialFuOccurrenceGrowthStep(
 
   // A new edge can only enlarge a maximum matching when its demand side lies
   // on the alternating structure the Hall witness already reached, so a unit
-  // that touches no witness group cannot improve the relation. Skipping those
-  // units is exact, not heuristic, and keeps the step linear in the witness.
+  // that touches no witness group cannot close the relation. Skipping those
+  // units is exact, not heuristic, and keeps the search linear in the witness.
   std::vector<std::uint8_t> witnessGroups(groups.size(), 0);
   std::vector<std::size_t> groupOfDemand;
   groupOfDemand.reserve(static_cast<std::size_t>(demandCount));
@@ -521,7 +537,6 @@ projectSpatialFuOccurrenceGrowthStep(
   }
 
   const SpatialGrowthUnit *selected = nullptr;
-  std::uint64_t selectedMatching = base->maximumMatching;
   for (const SpatialGrowthUnit &unit : units) {
     if (llvm::none_of(unit.groups, [&](std::size_t group) {
           return witnessGroups[group] != 0;
@@ -530,22 +545,19 @@ projectSpatialFuOccurrenceGrowthStep(
     auto candidate = analyze(&unit);
     if (!candidate)
       return candidate.takeError();
-    if (candidate->maximumMatching <= selectedMatching)
+    if (!candidate->admissible())
       continue;
     selected = &unit;
-    selectedMatching = candidate->maximumMatching;
+    break;
   }
-  if (!selected)
+  if (!selected) {
+    if (llvm::Error error = publishBound(nullptr))
+      return std::move(error);
     return step;
-
-  for (const auto &target : contextsByTarget) {
-    if (target.first == selected->targetKey)
-      continue;
-    if (target.second >
-        std::numeric_limits<std::uint64_t>::max() - step.contextSupplyBound)
-      return invalid("Spatial FU context supply bound overflows u64");
-    step.contextSupplyBound += target.second;
   }
+
+  if (llvm::Error error = publishBound(&selected->targetKey))
+    return std::move(error);
   std::vector<fabric::FabricFuOccurrenceRef> prototypes =
       inventoryByPe.at(selected->targetKey);
   prototypes.push_back(selected->prototype);
@@ -571,13 +583,15 @@ llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(
 llvm::Expected<TechMappingComputeContextJointGrowthPlan>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
-    const fabric::FabricArtifactView &module) {
+    const fabric::FabricArtifactView &module,
+    bool preferTemporalInstructionStore) {
   if (module.rootKind() != fabric::FabricRootKind::Module)
     return invalid("hardware feedback target is not a Module");
   if (feedback.deficit() == 0)
     return invalid("compute-context feedback has no positive deficit");
 
-  auto spatial = projectSpatialFuOccurrenceGrowthStep(feedback, module);
+  auto spatial = projectSpatialFuOccurrenceGrowthStep(
+      feedback, module, !preferTemporalInstructionStore);
   if (!spatial)
     return spatial.takeError();
 

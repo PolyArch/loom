@@ -881,7 +881,8 @@ selectMappingHardwareFeedback(const JointDesignExecution &execution,
 llvm::Expected<HardwareRecipeGrowth>
 deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
                            const MappingHardwareFeedback &feedback,
-                           const ArtifactStore &artifacts) {
+                           const ArtifactStore &artifacts,
+                           bool preferTemporalInstructionStore) {
   HardwareRecipeGrowth growth;
   growth.config = baseConfig;
   growth.resultingContexts =
@@ -896,7 +897,8 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
     if (!module)
       return module.takeError();
     auto plan = dse::projectTechMappingComputeContextJointGrowthPlan(
-        techObservation->feedback, module->view());
+        techObservation->feedback, module->view(),
+        preferTemporalInstructionStore);
     if (!plan)
       return plan.takeError();
     growth.techModule = techObservation->module;
@@ -1225,7 +1227,7 @@ llvm::Expected<MaterializedModuleGrowth> materializeTypedModuleTopologyGrowth(
        lineage.ownerPayload}};
 }
 
-llvm::Expected<MaterializedModuleGrowth>
+llvm::Expected<std::optional<MaterializedModuleGrowth>>
 materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
                              const ArtifactStore &artifacts,
                              const BlobStore &blobs) {
@@ -1239,9 +1241,13 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
   if (!growth.techModule || decisionKinds != 1 || growth.addedContexts != 0 ||
       growth.addedGateways != 0 || growth.addedAccCores != 0)
     return invalid("typed Module growth received a mixed or empty change");
-  if (growth.topologyDecision)
-    return materializeTypedModuleTopologyGrowth(
+  if (growth.topologyDecision) {
+    auto topology = materializeTypedModuleTopologyGrowth(
         *growth.techModule, *growth.topologyDecision, artifacts, blobs);
+    if (!topology)
+      return topology.takeError();
+    return std::optional<MaterializedModuleGrowth>(std::move(*topology));
+  }
 
   std::vector<SpatialMicroarchitectureDecisionDomain> domains;
   if (growth.moduleDecision)
@@ -1285,7 +1291,16 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     return generated.takeError();
   const auto *completed =
       std::get_if<CompletedCandidateGeneratorResult>(&generated->outcome);
-  if (!completed || completed->outputBindings.size() != 1 ||
+  if (!completed)
+    return invalid("typed Module growth did not complete its generator");
+  // The ADG Builder is the legality owner: a decision it rejects publishes no
+  // child. That is a typed refusal the growth owner can retreat from, not a
+  // malformed generator result.
+  if (completed->outputBindings.size() == 1 &&
+      completed->outputBindings.front().artifacts.empty() &&
+      completed->lineageEdges.empty())
+    return std::optional<MaterializedModuleGrowth>();
+  if (completed->outputBindings.size() != 1 ||
       completed->outputBindings.front().artifacts.size() != 1 ||
       completed->lineageEdges.size() != 1)
     return invalid("typed Module growth did not publish one exact child");
@@ -1373,12 +1388,12 @@ materializeTypedModuleGrowth(const HardwareRecipeGrowth &growth,
     return child.takeError();
   if (child->view().rootKind() != fabric::FabricRootKind::Module)
     return invalid("typed Module growth published a non-Module child");
-  return MaterializedModuleGrowth{
+  return std::optional<MaterializedModuleGrowth>(MaterializedModuleGrowth{
       childReference,
       {{*growth.techModule, childReference}},
       std::move(impact),
       {spatialMicroarchitectureCandidateGeneratorKind, lineage.output,
-       lineage.parents, lineage.ownerPayload}};
+       lineage.parents, lineage.ownerPayload}});
 }
 
 using SystemEntityCorrespondence = fabric::FabricSystemEntityCorrespondence;
@@ -1440,7 +1455,7 @@ llvm::Error remapCurrentAccCores(
 
 } // namespace
 
-llvm::Expected<MaterializedHardwareCandidate>
+llvm::Expected<std::optional<MaterializedHardwareCandidate>>
 materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
                                    const ArtifactRootReference &parentSystem,
                                    const ArtifactStore &artifacts,
@@ -1453,9 +1468,12 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
   auto parentView = fabric::requireSystemRoot(parent->view());
   if (!parentView)
     return parentView.takeError();
-  auto module = materializeTypedModuleGrowth(growth, artifacts, blobs);
-  if (!module)
-    return module.takeError();
+  auto materialized = materializeTypedModuleGrowth(growth, artifacts, blobs);
+  if (!materialized)
+    return materialized.takeError();
+  if (!*materialized)
+    return std::optional<MaterializedHardwareCandidate>();
+  std::optional<MaterializedModuleGrowth> &module = *materialized;
   std::vector<HardwareMutationDecisionLineage> decisionLineage;
   decisionLineage.push_back(std::move(module->decisionLineage));
   auto parentModules = projectJointDesignTargetModules(parentSystem, artifacts);
@@ -1592,26 +1610,27 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
         fields["preserved_acc_core_correspondences"] =
             correspondence->accCores().size();
       });
-  return MaterializedHardwareCandidate{currentSystem,
-                                       std::move(growth.config),
-                                       std::move(*correspondence),
-                                       std::move(module->correspondence),
-                                       std::move(mappingImpact),
-                                       std::move(decisionLineage),
-                                       growth.resizedInstructionStoreCount,
-                                       growth.maximumInstructionStoreCapacity,
-                                       growth.addedContexts,
-                                       growth.resultingContexts,
-                                       growth.addedGateways,
-                                       growth.resultingGateways,
-                                       growth.addedAccCores,
-                                       growth.resultingAccCores,
-                                       growth.computeContextGrowthDirection,
-                                       growth.addedSpatialFuOccurrences,
-                                       growth.addedSpatialFuContexts,
-                                       growth.spatialFuContextSupplyBound,
-                                       growth.spatialFuUnclosedDeficit,
-                                       std::nullopt};
+  return std::optional<MaterializedHardwareCandidate>(
+      MaterializedHardwareCandidate{currentSystem,
+                                    std::move(growth.config),
+                                    std::move(*correspondence),
+                                    std::move(module->correspondence),
+                                    std::move(mappingImpact),
+                                    std::move(decisionLineage),
+                                    growth.resizedInstructionStoreCount,
+                                    growth.maximumInstructionStoreCapacity,
+                                    growth.addedContexts,
+                                    growth.resultingContexts,
+                                    growth.addedGateways,
+                                    growth.resultingGateways,
+                                    growth.addedAccCores,
+                                    growth.resultingAccCores,
+                                    growth.computeContextGrowthDirection,
+                                    growth.addedSpatialFuOccurrences,
+                                    growth.addedSpatialFuContexts,
+                                    growth.spatialFuContextSupplyBound,
+                                    growth.spatialFuUnclosedDeficit,
+                                    std::nullopt});
 }
 
 llvm::Expected<MaterializedHardwareCandidate>

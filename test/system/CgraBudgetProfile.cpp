@@ -541,17 +541,12 @@ llvm::json::Object selectQualificationHardware(
     auto growth =
         take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
             *pressure, module.view()));
-    require(growth.addedContextCount > 0,
+    // This profile never withdraws the instruction-store preference, so the
+    // Hall growth owner always names the atomic Temporal closure here.
+    require(growth.addedContextCount > 0 && !growth.decisions.empty(),
             "qualification hardware feedback made no progress");
-    // The Hall growth owner chooses between Spatial FU occurrence supply and
-    // Temporal instruction-store supply; this profile materializes whichever
-    // typed decision it names.
-    loom::dse::SpatialMicroarchitectureDecisionDomain domain =
+    const loom::dse::SpatialMicroarchitectureDecisionDomain domain =
         loom::dse::ResizeInstructionStoresDomain{growth.decisions};
-    if (growth.spatialFuGrowth)
-      domain = loom::dse::ChangeFuInventoryDomain{
-          growth.spatialFuGrowth->decision.target,
-          {growth.spatialFuGrowth->decision.prototypes}};
     auto growthConfig = take(
         loom::dse::resolveSpatialMicroarchitectureRewriteConfig({domain}, 1));
     auto growthBinding = take(
