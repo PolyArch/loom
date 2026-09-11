@@ -13,5 +13,8 @@ target_link_libraries(LoomHardwareConfiguration PUBLIC
   LoomCommon
   LoomFabricArtifact
   LoomFabricIdentity
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
   LLVMSupport
 )

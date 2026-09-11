@@ -392,8 +392,14 @@ SystemPlatformModel {
 
 Every SpatialCore reaches the shared memory through its Spatial memory access
 cache, so one request is one line fill and the miss-status entries bound the
-line fills in flight. The configuration payload is derived from the packed
-ConfigurationABI once per Fabric identity and memoized for the process.
+line fills in flight. `configuration_bytes_per_core` is the size of the binary
+configuration image: per-PE configuration fields, per-Switch routing fields,
+and memory tables, as the packed ConfigurationABI of the exact Fabric packs
+them. A Mapping selects the values those fields carry, never their width, so
+the size is a fact of the Fabric alone. The Hardware Configuration owner
+derives it once per Fabric identity and memoizes it for the process, and both
+this model and the gem5 Spatial Bridge's configuration transport read that one
+owner; neither keeps a constant of its own.
 
 The launch protocol operation counts follow the launch sequence owned by
 `docs/spec-runtime-abi.md`; the model identity pins them together with the
@@ -439,10 +445,14 @@ The largest term is the site's typed bottleneck: `Launch` when the fixed cost
 reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
 `MemoryLatency`. Whole-case Runtime is the serialized host residual
 (executable leaves outside Spatial ownership times the host cycles per leaf
-and the clock period) plus every launch site's duration under the widest
-useful allocation, plus the configuration load of the widest allocation any
-site uses: every configured AccCore streams its share of the packed
-configuration image concurrently before its first launch. The same per-site
+and the clock period) plus the estimate's two accelerated-window phases. The
+configuration residency term is `configuration(u)` for the widest allocation
+any site uses: every configured AccCore streams its share of the packed
+configuration image concurrently before its first launch. The invocation term
+is every launch site's duration under the widest useful allocation, which keeps
+the in-flight request chain above. These are the same two phases the measured
+System QoR projection reports, so an estimate and a measurement are compared
+phase by phase rather than only in total. The same per-site
 estimates feed the resource-time projection: a region whose every rooted
 launch site carries an estimate takes the sum of those durations as its
 speedup-curve point for each allocation and `configuration(u)` as the point's
@@ -1451,7 +1461,7 @@ and permanent wire slop. Raw material therefore remains owner-attempt or
 scratch state; this contract does not predefine a future bundle reference.
 
 The `evaluation.request.1.0`, `evaluation.evidence.1.0`, and
-`loom.simulation_execution 5.0` dependency direction is therefore:
+`loom.simulation_execution 6.0` dependency direction is therefore:
 
 ```text
 SimulationExecution -> EvaluationRequest
@@ -1463,7 +1473,7 @@ as a typed Artifact. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
 summaries, and the mandatory narrow root-lifecycle progress sequence for
-System execution. `loom.simulation_execution 5.0` contains no general
+System execution. `loom.simulation_execution 6.0` contains no general
 diagnostic-trace field; diagnostic traces and waveforms remain attempt or
 scratch state. A simulator cannot replace them with paths, opaque bytes, or
 provider-private references in the Artifact. `SimulationExecution` contains no

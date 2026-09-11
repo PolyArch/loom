@@ -351,8 +351,8 @@ llvm::Expected<ResourceTimeDataflowProjection> projectResourceTimeDataflow(
           duration = *sum;
         }
         auto configuration =
-            evaluation::models::estimateConfigurationLoadPicoseconds(*platform,
-                                                                     units);
+            evaluation::models::estimateConfigurationResidencyPicoseconds(
+                *platform, units);
         if (!configuration)
           return configuration.takeError();
         feature.speedupCurve.push_back({{units},

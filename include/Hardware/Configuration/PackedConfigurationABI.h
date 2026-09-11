@@ -48,6 +48,18 @@ llvm::Expected<ConfigurationABIDraft> derivePackedConfigurationABIDraft(
     llvm::ArrayRef<PackedConfigurationFieldEncodingOverride> overrides = {},
     PackedConfigurationABIDerivationStatistics *statistics = nullptr);
 
+/// Bytes of the binary configuration image one AccCore of `system` loads
+/// before its first launch. This is the sole owner of that size: every packed
+/// ConfigurationABI ProgrammingUnit payload of the exact Fabric -- per-PE
+/// configuration fields, per-Switch routing fields, and memory tables --
+/// rounded up to whole bytes and divided over the System's AccCores. The
+/// Mapping selects the values those fields carry, never their width, so the
+/// size is a fact of the Fabric alone. The derivation is deterministic and
+/// expensive, so it is performed once per Fabric identity and memoized for
+/// the process.
+llvm::Expected<std::uint64_t> packedConfigurationImageBytesPerAccCore(
+    const fabric::FinalizedFabricRoot &system);
+
 } // namespace loom::hardware
 
 #endif // LOOM_HARDWARE_CONFIGURATION_PACKEDCONFIGURATIONABI_H

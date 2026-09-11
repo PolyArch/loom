@@ -38,7 +38,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.16"
+CONFIG_SCHEMA = "loom.gem5_system_projection.17"
 PERFORMANCE_PROFILE_SCHEMA = "loom.gem5_system_performance_profile.6"
 STATISTICS_BEGIN = "---------- Begin Simulation Statistics ----------"
 STATISTICS_END = "---------- End Simulation Statistics   ----------"
@@ -141,6 +141,7 @@ def load_projection(path: pathlib.Path) -> dict:
             "dispatch",
             "processors",
             "bridges",
+            "configuration_transport",
             "maximum_ticks",
         },
         "gem5 system projection",
@@ -157,6 +158,18 @@ def load_projection(path: pathlib.Path) -> dict:
         raise ValueError("gem5 runtime images must be an array")
     if not isinstance(value["system_memory"], dict):
         raise ValueError("gem5 System memory projection must be an object")
+    if not isinstance(value["configuration_transport"], dict):
+        raise ValueError("gem5 configuration transport must be an object")
+    require_keys(
+        value["configuration_transport"],
+        {"aperture_address", "aperture_size", "image_bytes"},
+        "configuration transport",
+    )
+    if not all(
+        isinstance(field, int) and not isinstance(field, bool) and field >= 0
+        for field in value["configuration_transport"].values()
+    ):
+        raise ValueError("configuration transport fields must be nonnegative")
     return value
 
 
@@ -689,9 +702,24 @@ def build_system(
     )
     system.memory_monitor.cpu_side_port = system.membus.mem_side_ports
     system.memory_monitor.mem_side_port = system.memory.port
+    # Configuration transport occupies the memory but is launch overhead, not
+    # application data movement: the accelerated window charges it to the
+    # configuration residency phase instead of the service occupancy.
+    configuration_transport = projection["configuration_transport"]
+    configuration_ranges = (
+        [
+            AddrRange(
+                start=configuration_transport["aperture_address"],
+                size=configuration_transport["aperture_size"],
+            )
+        ]
+        if configuration_transport["aperture_size"]
+        else []
+    )
     system.memory_service = LoomMemoryServiceProbe(
         manager=[system.memory_monitor],
         service_ticks_per_byte=service_cost,
+        configuration_transport_ranges=configuration_ranges,
     )
 
     system.loom_thread_dispatch = LoomThreadDispatch(
@@ -728,6 +756,9 @@ def build_system(
             pio_latency=bridge["pio_latency"],
             session_ordinal=bridge["session_ordinal"],
             engine_session=engine_sessions.get(bridge["engine_socket"], NULL),
+            thread_dispatch=system.loom_thread_dispatch,
+            memory_service=system.memory_service,
+            configuration_image_bytes=configuration_transport["image_bytes"],
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
             collect_performance=collect_performance,
@@ -824,13 +855,23 @@ def main() -> None:
             )
         system.workload.writeMemoryObservations()
         memory_activity = {"occupied_ticks": int(system.memory_service.occupiedTicks())}
+        # Each launched Bridge reports its own two accelerated-window phases.
+        # The importer owns the aggregation rule, so nothing is combined here.
+        accelerated_phases = [
+            [int(value) for value in phases]
+            for phases in (
+                bridge.acceleratedPhases() for bridge in system.loom_bridges
+            )
+            if phases
+        ]
         result = {
-            "schema": "loom.gem5_system_attempt.3",
+            "schema": "loom.gem5_system_attempt.4",
             "memory_activity": memory_activity,
             "computation_interval": [
                 int(value)
                 for value in system.loom_thread_dispatch.computationInterval()
             ],
+            "accelerated_phases": accelerated_phases,
             "entry_tick": entry_tick,
             "exit_tick": int(m5.curTick()),
             "cause": event.getCause(),

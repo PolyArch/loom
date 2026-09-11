@@ -1,16 +1,27 @@
 #include "Hardware/Configuration/PackedConfigurationABI.h"
 
+#include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <type_traits>
@@ -420,6 +431,45 @@ llvm::Expected<ConfigurationABIDraft> derivePackedConfigurationABIDraft(
   }
   return ConfigurationABIDraft{systemRoot.reference(),
                                std::move(encodingRelations), std::move(units)};
+}
+
+llvm::Expected<std::uint64_t> packedConfigurationImageBytesPerAccCore(
+    const fabric::FinalizedFabricRoot &system) {
+  using MemoKey = std::array<std::uint8_t, ArtifactIdentity::byteSize>;
+  static std::mutex mutex;
+  static std::map<MemoKey, std::uint64_t> memo;
+  MemoKey key{};
+  const auto identity = system.reference().artifact.bytes();
+  std::copy(identity.begin(), identity.end(), key.begin());
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (auto found = memo.find(key); found != memo.end())
+      return found->second;
+  }
+  auto systemView = fabric::requireSystemRoot(system.view());
+  if (!systemView)
+    return systemView.takeError();
+  const std::uint64_t accCores = std::max<std::uint64_t>(
+      1, systemView->artifact().accCoreOccurrences().size());
+  mlir::DialectRegistry registry;
+  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                  mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadAllAvailableDialects();
+  auto draft = derivePackedConfigurationABIDraft(system, context);
+  if (!draft)
+    return draft.takeError();
+  std::uint64_t bits = 0;
+  for (const ProgrammingUnitDraft &unit : draft->programmingUnits) {
+    if (unit.payloadBitCount > std::numeric_limits<std::uint64_t>::max() - bits)
+      return invalid("packed configuration image exceeds the bit domain");
+    bits += unit.payloadBitCount;
+  }
+  const std::uint64_t bytes = (bits + 7) / 8;
+  const std::uint64_t perCore = (bytes + accCores - 1) / accCores;
+  std::lock_guard<std::mutex> lock(mutex);
+  memo.try_emplace(key, perCore);
+  return perCore;
 }
 
 } // namespace loom::hardware

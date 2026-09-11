@@ -1,18 +1,36 @@
 #include "SystemActivityInternal.h"
 #include "SimulationExecutionInternal.h"
 #include "Simulator/SystemActivity.h"
-#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Deployment/Deployment.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Runtime/Gem5BuiltinModels.h"
 
 namespace loom::sim {
 namespace detail {
+/// One accelerated phase stays inside the computation interval that selected
+/// it, measures a nonnegative service integral, and cannot consume more
+/// service than its own span.
+static llvm::Error
+validateAcceleratedPhase(const SystemAcceleratedPhase &phase,
+                         const SystemComputationInterval &interval) {
+  if (phase.beginTick < interval.beginTick || phase.endTick > interval.endTick ||
+      phase.beginTick > phase.endTick ||
+      phase.beginMemoryOccupiedTicks < interval.beginMemoryOccupiedTicks ||
+      phase.endMemoryOccupiedTicks > interval.endMemoryOccupiedTicks ||
+      phase.beginMemoryOccupiedTicks > phase.endMemoryOccupiedTicks ||
+      phase.occupiedTicks() > phase.elapsedTicks())
+    return invalid("System accelerated phase is outside its computation "
+                   "interval time or service domain");
+  return llvm::Error::success();
+}
+
 llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execution,
                                         const SystemExecutionContext &context) {
   if (!execution.memoryActivity && execution.computationInterval.has_value())
     return invalid(
         "System computation intervals require native memory activity");
+  if (execution.acceleratedPhases && !execution.computationInterval)
+    return invalid("System accelerated phases require a computation interval");
   if (!execution.memoryActivity)
     return llvm::Error::success();
   const auto &progress = execution.progressObservations;
@@ -41,6 +59,19 @@ llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execut
             interval.endTick - interval.beginTick)
       return invalid("System computation interval is outside its native time "
                      "or service domain");
+    if (execution.acceleratedPhases) {
+      const auto &phases = *execution.acceleratedPhases;
+      if (llvm::Error error =
+              validateAcceleratedPhase(phases.configurationResidency, interval))
+        return error;
+      if (llvm::Error error =
+              validateAcceleratedPhase(phases.invocation, interval))
+        return error;
+      if (phases.invocation.beginTick < phases.configurationResidency.beginTick ||
+          phases.invocation.endTick < phases.configurationResidency.endTick)
+        return invalid("System invocation phase precedes its configuration "
+                       "residency phase");
+    }
   }
   const auto kind = context.request->modelBinding().descriptorRef().modelKind();
   using evaluation::BuiltinEvaluationModel;
@@ -99,47 +130,5 @@ projectSystemMemoryUtilization(const CanonicalSimulationExecution &execution,
   if (!ratio)
     return ratio.takeError();
   return std::optional<evaluation::ExactRatio>{*ratio};
-}
-
-llvm::Expected<std::optional<SystemAcceleratedWindow>>
-projectSystemAcceleratedWindow(
-    const CanonicalSimulationExecution &execution,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &artifacts, const BlobStore &blobs,
-    const SystemComputationInterval *computation) {
-  const auto *system = execution.system();
-  if (!system)
-    return detail::invalid("System accelerated window requires a System execution");
-  const auto &lifecycle = system->progressObservations.rootLifecycle;
-  if (lifecycle.empty())
-    return std::optional<SystemAcceleratedWindow>{};
-  auto context = detail::resolveSystemExecutionContext(system->request, resolution,
-                                                       artifacts, blobs);
-  if (!context)
-    return context.takeError();
-  // Select events before deriving the span: intersecting a whole-program span
-  // would charge the gap after warmup and before the first measured launch.
-  const SystemRootLifecycleObservation *start = nullptr;
-  const SystemRootLifecycleObservation *completion = nullptr;
-  for (const SystemRootLifecycleObservation &observation : lifecycle) {
-    if (computation &&
-        (observation.coordinate.gem5Tick < computation->beginTick ||
-         observation.coordinate.gem5Tick > computation->endTick))
-      continue;
-    auto root = context->dataflow->view().eventRootThreadLaunch(observation.event);
-    if (!root)
-      return root.takeError();
-    if (!start &&
-        observation.event == dataflow::rootThreadStartEventFamily(*root))
-      start = &observation;
-    if (observation.event == dataflow::rootThreadCompletionEventFamily(*root))
-      completion = &observation;
-  }
-  if (!start || !completion ||
-      completion->coordinate.gem5Tick < start->coordinate.gem5Tick)
-    return std::optional<SystemAcceleratedWindow>{};
-  return std::optional<SystemAcceleratedWindow>{SystemAcceleratedWindow{
-      start->coordinate.gem5Tick, completion->coordinate.gem5Tick,
-      completion->memoryOccupiedTicks - start->memoryOccupiedTicks}};
 }
 }

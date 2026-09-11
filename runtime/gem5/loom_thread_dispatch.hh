@@ -28,6 +28,10 @@ public:
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
   std::vector<std::uint64_t> computationInterval() const;
+  /// Whether the source-declared computation interval is open right now. This
+  /// device owns that boundary, so every other observer of the measured
+  /// computation asks it rather than keeping a second copy.
+  bool computationOpen() const { return computationBegin.has_value(); }
 
 private:
   enum class State : std::uint32_t {

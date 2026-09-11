@@ -46,6 +46,15 @@ bool isSaturated(evaluation::ExactRatio value) {
                          applicationMinimumResourceUtilizationDenominator) > 0;
 }
 
+/// The accelerated window is explained by its invocation phase only while
+/// configuration residency stays strictly below the exclusive launch budget.
+bool isLaunchBound(evaluation::ExactRatio launchOverhead) {
+  return compareToTarget(launchOverhead.numerator(),
+                         launchOverhead.denominator(),
+                         applicationMaximumLaunchOverheadNumerator,
+                         applicationMaximumLaunchOverheadDenominator) >= 0;
+}
+
 llvm::Expected<detail::ImportedApplicationSystemRun>
 importRun(const FinalizedApplicationRuntimeManifest &manifest,
           const ApplicationSystemRunEvidence &roots,
@@ -85,28 +94,37 @@ importRun(const FinalizedApplicationRuntimeManifest &manifest,
   return run;
 }
 
-/// All useful host and accelerator work occupies the source-declared interval.
+/// All useful host and accelerator work occupies the source-declared interval,
+/// while saturation is measured over the invocation phase of the accelerated
+/// window inside it.
 llvm::Expected<std::optional<ApplicationSystemWindowMeasurement>>
 measureCandidateWindow(const sim::CanonicalSimulationExecution &execution,
-                       const evaluation::CaseArtifactResolution &resolution,
-                       const ApplicationSystemComputeInputs &compute,
-                       const ArtifactStore &artifacts, const BlobStore &blobs) {
+                       const ApplicationSystemComputeInputs &compute) {
   const auto &interval = execution.system()->computationInterval;
   if (!interval)
     return std::optional<ApplicationSystemWindowMeasurement>{};
-  const std::uint64_t elapsed = interval->elapsedTicks();
-  auto memoryUtilization =
-      evaluation::ExactRatio::get(interval->occupiedTicks(), elapsed);
+  const auto &phases = execution.system()->acceleratedPhases;
+  if ((compute.launchedAccCores != 0) != phases.has_value())
+    return invalid("measured candidate launches disagree with its accelerated "
+                   "window");
+  // An unaccelerated computation saturates nothing and carries no launch
+  // overhead: both ratios stay zero rather than dividing by an absent phase.
+  const std::uint64_t invocationTicks =
+      phases ? phases->invocation.elapsedTicks() : 0;
+  auto memoryUtilization = evaluation::ExactRatio::get(
+      phases ? phases->invocation.occupiedTicks() : 0,
+      invocationTicks == 0 ? 1 : invocationTicks);
   if (!memoryUtilization)
     return memoryUtilization.takeError();
-  auto accelerated = sim::projectSystemAcceleratedWindow(
-      execution, resolution, artifacts, blobs, &*interval);
-  if (!accelerated)
-    return accelerated.takeError();
-  const std::uint64_t acceleratedTicks =
-      *accelerated ? (*accelerated)->elapsedTicks() : 0;
+  const std::uint64_t acceleratedTicks = phases ? phases->elapsedTicks() : 0;
+  auto launchOverhead = evaluation::ExactRatio::get(
+      phases ? phases->configurationResidency.elapsedTicks() : 0,
+      acceleratedTicks == 0 ? 1 : acceleratedTicks);
+  if (!launchOverhead)
+    return launchOverhead.takeError();
   if (compute.launchedAccCores != 0 && compute.referenceCycleTicks == 0)
     return invalid("measured candidate has no exact reference cycle");
+  const std::uint64_t elapsed = invocationTicks;
   constexpr unsigned width = 128;
   ApplicationSystemComputeMeasurement measurement{compute, {}, zeroRatio(),
                                                   std::nullopt, zeroRatio()};
@@ -151,7 +169,8 @@ measureCandidateWindow(const sim::CanonicalSimulationExecution &execution,
     measurement.classes.push_back({cls, *occupancy, *placement});
   }
   return std::optional<ApplicationSystemWindowMeasurement>{
-      {*interval, acceleratedTicks, *memoryUtilization, std::move(measurement)}};
+      {*interval, phases, *launchOverhead, *memoryUtilization,
+       std::move(measurement)}};
 }
 
 void writeRoot(llvm::json::OStream &json, llvm::StringRef name,
@@ -163,6 +182,17 @@ void writeRatio(llvm::json::OStream &json, llvm::StringRef name, evaluation::Exa
   json.attributeObject(name, [&] {
     json.attribute("numerator", value.numerator());
     json.attribute("denominator", value.denominator());
+  });
+}
+
+/// An absent phase is the empty span at the start of the computation: a
+/// computation with no accelerator invocation has no accelerated window.
+void writePhase(llvm::json::OStream &json, llvm::StringRef name,
+                const sim::SystemAcceleratedPhase *phase) {
+  json.attributeObject(name, [&] {
+    json.attribute("begin_tick", phase ? phase->beginTick : 0);
+    json.attribute("end_tick", phase ? phase->endTick : 0);
+    json.attribute("elapsed_ticks", phase ? phase->elapsedTicks() : 0);
   });
 }
 
@@ -198,7 +228,22 @@ void writeRun(llvm::json::OStream &json,
     });
     if (!candidate)
       return;
-    json.attribute("accelerated_ticks", candidate->acceleratedTicks);
+    json.attributeObject("accelerated_window", [&] {
+      writePhase(json, "configuration_residency",
+                 candidate->phases ? &candidate->phases->configurationResidency
+                                   : nullptr);
+      writePhase(json, "invocation",
+                 candidate->phases ? &candidate->phases->invocation : nullptr);
+      json.attribute("elapsed_ticks", candidate->acceleratedTicks());
+      writeRatio(json, "launch_overhead", candidate->launchOverhead);
+      json.attributeObject("shared_memory", [&] {
+        json.attribute("occupied_ticks",
+                       candidate->phases
+                           ? candidate->phases->invocation.occupiedTicks()
+                           : 0);
+        writeRatio(json, "utilization", candidate->memoryUtilization);
+      });
+    });
     json.attributeObject("compute", [&] {
       const auto &compute = candidate->compute;
       json.attribute("launched_acc_cores", compute.inputs.launchedAccCores);
@@ -236,6 +281,8 @@ void writeRun(llvm::json::OStream &json,
 llvm::StringRef
 applicationSystemBottleneckSpelling(ApplicationSystemBottleneck bottleneck) {
   switch (bottleneck) {
+  case ApplicationSystemBottleneck::LaunchBound:
+    return "launch_bound";
   case ApplicationSystemBottleneck::MemoryBandwidthBound:
     return "memory_bandwidth_bound";
   case ApplicationSystemBottleneck::ComputeBound:
@@ -253,11 +300,14 @@ applicationSystemBottleneckSpelling(ApplicationSystemBottleneck bottleneck) {
 ApplicationSystemBottleneck ApplicationSystemQor::bottleneck() const {
   if (!window_)
     return ApplicationSystemBottleneck::Unmeasured;
+  if (isLaunchBound(window_->launchOverhead))
+    return ApplicationSystemBottleneck::LaunchBound;
   if (isSaturated(window_->memoryUtilization))
     return ApplicationSystemBottleneck::MemoryBandwidthBound;
   if (isSaturated(window_->compute.occupancy))
     return ApplicationSystemBottleneck::ComputeBound;
-  if (compareToTarget(window_->acceleratedTicks, window_->window.elapsedTicks(),
+  if (compareToTarget(window_->acceleratedTicks(),
+                      window_->window.elapsedTicks(),
                       applicationHostBoundWindowNumerator,
                       applicationHostBoundWindowDenominator) < 0)
     return ApplicationSystemBottleneck::HostBound;
@@ -270,7 +320,8 @@ ApplicationSystemQorStatus ApplicationSystemQor::status() const {
   const bool saturated = isSaturated(window_->memoryUtilization) ||
                          isSaturated(window_->compute.occupancy);
   return speedup_->numerator() > speedup_->denominator() && saturated &&
-                 window_->compute.inputs.launchedAccCores != 0
+                 window_->compute.inputs.launchedAccCores != 0 &&
+                 !isLaunchBound(window_->launchOverhead)
              ? ApplicationSystemQorStatus::Qualified
              : ApplicationSystemQorStatus::NotQualified;
 }
@@ -308,8 +359,8 @@ llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
       return ratio.takeError();
     speedup = *ratio;
   }
-  auto window = measureCandidateWindow(accelerated->execution, candidateResolution,
-                                       candidateCompute, artifacts, blobs);
+  auto window =
+      measureCandidateWindow(accelerated->execution, candidateCompute);
   if (!window)
     return window.takeError();
   return ApplicationSystemQor(
@@ -357,6 +408,10 @@ void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
     json.attributeObject("host_bound_window_fraction_exclusive", [&] {
       json.attribute("numerator", applicationHostBoundWindowNumerator);
       json.attribute("denominator", applicationHostBoundWindowDenominator);
+    });
+    json.attributeObject("maximum_launch_overhead_exclusive", [&] {
+      json.attribute("numerator", applicationMaximumLaunchOverheadNumerator);
+      json.attribute("denominator", applicationMaximumLaunchOverheadDenominator);
     });
   });
 }

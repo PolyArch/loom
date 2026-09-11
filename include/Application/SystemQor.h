@@ -17,7 +17,7 @@ namespace loom::application {
 inline constexpr llvm::StringLiteral applicationSystemQorProjectionSchema =
     "loom.application.system_qor_projection";
 inline constexpr llvm::StringLiteral applicationSystemQorProjectionVersion =
-    "4.0";
+    "5.0";
 
 /// Qualification compares the same source-declared computation on both images,
 /// from prepared shared-memory inputs through visible output completion. All
@@ -32,6 +32,16 @@ inline constexpr std::uint64_t applicationMinimumResourceUtilizationDenominator 
 inline constexpr std::uint64_t applicationHostBoundWindowNumerator = 1;
 inline constexpr std::uint64_t applicationHostBoundWindowDenominator = 10;
 
+/// Configuration residency and invocation are per-AccCore phases aggregated
+/// independently, so on an array whose cores are dispatched one at a time the
+/// residency phase also covers the dispatch of the later cores. The invocation
+/// phase must remain the majority of the accelerated window: above this the
+/// window measures how long the array took to configure rather than the
+/// computation that residency serves, and the invocation-phase saturation no
+/// longer explains the measured speedup.
+inline constexpr std::uint64_t applicationMaximumLaunchOverheadNumerator = 1;
+inline constexpr std::uint64_t applicationMaximumLaunchOverheadDenominator = 2;
+
 enum class ApplicationSystemQorStatus : std::uint8_t {
   Qualified,
   NotQualified,
@@ -39,10 +49,12 @@ enum class ApplicationSystemQorStatus : std::uint8_t {
 };
 
 /// Typed classification of the measured candidate window, derived in this
-/// order: a saturated memory service, then a saturated compute array, then a
-/// window too small to matter, otherwise unsaturated latency. It explains the
-/// same measurements the status uses and is not a second gate. DSE consumes it.
+/// order: an accelerated window dominated by configuration residency, then a
+/// saturated memory service, then a saturated compute array, then a window too
+/// small to matter, otherwise unsaturated latency. It explains the same
+/// measurements the status uses and is not a second gate. DSE consumes it.
 enum class ApplicationSystemBottleneck : std::uint8_t {
+  LaunchBound,
   MemoryBandwidthBound,
   ComputeBound,
   HostBound,
@@ -107,10 +119,10 @@ struct ApplicationSystemComputeInputs final {
 };
 
 /// Occupancy is the class's retired element firings divided by the element
-/// lanes the launched Fabrics could have issued for it across the window:
-/// peak issue lanes per cycle * launched AccCores * window reference cycles,
-/// where window reference cycles are the window's gem5 ticks divided by the
-/// SpatialCore clock period. Placement utilization is the class's bound
+/// lanes the launched Fabrics could have issued for it across the invocation
+/// phase: peak issue lanes per cycle * launched AccCores * phase reference
+/// cycles, where phase reference cycles are the phase's gem5 ticks divided by
+/// the SpatialCore clock period. Placement utilization is the class's bound
 /// realizations divided by its placement slots across the launched Fabrics.
 struct ApplicationSystemComputeClassMeasurement final {
   ApplicationSystemComputeClassInputs inputs;
@@ -130,13 +142,28 @@ struct ApplicationSystemComputeMeasurement final {
   evaluation::ExactRatio placementUtilization;
 };
 
-/// The candidate's source-declared computation interval and resource occupancy.
-/// Native root activity inside it explains the host-residual classification.
+/// The candidate's source-declared computation interval and the accelerated
+/// window inside it. Saturation is measured over the invocation phase alone:
+/// configuration residency moves the binary configuration image, which the
+/// service observer never counts as application data, and charging its ticks
+/// to the saturation denominator would credit a fat configuration image as
+/// memory appetite. `launchOverhead` is the residency phase over the whole
+/// accelerated window, and the accelerated window over the computation
+/// interval explains the host-residual classification.
 struct ApplicationSystemWindowMeasurement final {
   sim::SystemComputationInterval window;
-  std::uint64_t acceleratedTicks = 0;
+  /// Absent when the computation completed no accelerator invocation.
+  std::optional<sim::SystemAcceleratedPhases> phases;
+  evaluation::ExactRatio launchOverhead;
   evaluation::ExactRatio memoryUtilization;
   ApplicationSystemComputeMeasurement compute;
+
+  std::uint64_t acceleratedTicks() const {
+    return phases ? phases->elapsedTicks() : 0;
+  }
+  std::uint64_t invocationTicks() const {
+    return phases ? phases->invocation.elapsedTicks() : 0;
+  }
 };
 
 /// A validated post-execution relation, not another Artifact family or mutable

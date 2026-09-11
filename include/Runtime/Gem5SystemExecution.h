@@ -14,7 +14,7 @@
 namespace loom::runtime {
 
 inline constexpr char gem5SystemProjectionSchema[] =
-    "loom.gem5_system_projection.16";
+    "loom.gem5_system_projection.17";
 
 /// Semantic work limit handed to every Spatial engine session: DFG wavefront
 /// steps per invocation, or CGRA event frames an invocation may spend without

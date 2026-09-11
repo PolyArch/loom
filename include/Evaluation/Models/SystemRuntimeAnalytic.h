@@ -42,9 +42,9 @@ struct SystemPlatformModel final {
   /// Accelerator-side fixed cost of one activation: InstructionCore entry,
   /// bridge programming, and completion signalling, excluding the wire fetch.
   std::uint64_t launchFixedPicoseconds = 0;
-  /// Configuration payload one SpatialCore loads before its first launch:
-  /// the packed ConfigurationABI programming units of the System divided
-  /// over its AccCores.
+  /// Binary configuration image one SpatialCore loads before its first launch,
+  /// read from its sole owner `packedConfigurationImageBytesPerAccCore`. The
+  /// gem5 Spatial Bridge charges its configuration transport the same size.
   std::uint64_t configurationBytesPerCore = 0;
 
   friend bool operator==(const SystemPlatformModel &lhs,
@@ -67,8 +67,8 @@ struct SystemPlatformModel final {
 };
 
 /// Derives the platform model of one complete System root. The configuration
-/// payload comes from the packed ConfigurationABI of the exact Fabric, which
-/// is derived once per Fabric identity and memoized for the process.
+/// image size comes from the Hardware Configuration owner, which derives it
+/// once per Fabric identity and memoizes it for the process.
 llvm::Expected<SystemPlatformModel>
 projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot);
 
@@ -142,11 +142,13 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
                        const AnalyticLaunchEstimate &launch,
                        std::uint64_t accCores);
 
-/// Time to load the configuration payload into `accCores` SpatialCores that
-/// stream it concurrently through the shared memory service.
+/// The configuration residency phase of the accelerated window: the time
+/// `accCores` SpatialCores take to stream the binary configuration image
+/// concurrently through the shared memory service before their first launch.
+/// The invocation phase is the launch durations above.
 llvm::Expected<std::uint64_t>
-estimateConfigurationLoadPicoseconds(const SystemPlatformModel &platform,
-                                     std::uint64_t accCores);
+estimateConfigurationResidencyPicoseconds(const SystemPlatformModel &platform,
+                                          std::uint64_t accCores);
 
 /// Serialized-host residual: executable leaves outside Spatial ownership.
 llvm::Expected<std::uint64_t>

@@ -687,12 +687,18 @@ than individual instruction-level accesses, so the observed service interval
 measures the exact memory-side traffic the caches produce. It observes successful
 request acceptance, including atomic instructions and failed store-conditionals,
 under the fixed timing-CPU/DMA transport contract. The probe integrates the exact
-native service interval, rejects overlaps, and clips the final tail to the full
-program observation window. It does not measure payload-byte throughput or change
+native service interval of application data, rejects overlaps, and clips the
+final tail to the full program observation window. Accepted service inside the
+declared configuration transport aperture advances the overlap check but never
+the integral, because configuration transport is launch overhead the
+accelerated window charges to its configuration residency phase. The probe does
+not measure payload-byte throughput or change
 physical capacity. The custom gem5 build-readiness digest covers this observer.
 
 The current strict gem5 System projection schema is
-`loom.gem5_system_projection.16`. Every processor entry carries
+`loom.gem5_system_projection.17`. It carries one `configuration_transport`
+record naming the guest aperture that holds the staged launch image and the
+binary configuration image bytes one SpatialCore loads. Every processor entry carries
 `caches.instruction` and
 `caches.data`, every bridge entry carries one `cache`, and every such object
 records `capacity_bytes`, `line_bytes`, `associativity`, `hit_latency_cycles`,
@@ -823,7 +829,9 @@ samples its cumulative acceptance-service integral when it appends each record.
 The sample is an observation of the same maintained counter that reports
 full-program occupancy, not a second counter, and reading it changes no
 simulator state. Differencing two samples yields the exact service occupancy of
-the interval they bound, which is how the accelerated window is measured.
+the interval they bound. The device also owns the source-declared computation
+boundary, so every other observer of the measured computation asks it whether
+that interval is open rather than keeping a second copy.
 
 When control is enabled, each record is preceded by a fixed-size request and
 followed by an acknowledgement on the socket. The request carries the
@@ -1640,8 +1648,9 @@ completion slot rather than mutating one global dispatch state. That core
 receives the exact static launch descriptor and dynamic invocation descriptor
 in separate ABI registers. The zero-address, zero-size pair selects the static
 runtime-input form defined above; all other dispatches require both fields. The
-Spatial Bridge performs separate DMA reads and frames them only after the
-required reads complete. It then decodes the invocation's memory-object table
+Spatial Bridge charges the configuration transport described below, reads the
+dynamic invocation wire by DMA, and frames them only after the required reads
+complete. It then decodes the invocation's memory-object table
 and materializes their guest bytes functionally, so the framed envelope carries
 the immutable plane, the invocation wire, and that untimed snapshot. Mutable
 MMIO registers, target records, DMA scratch buffers, CPU state, socket state,
@@ -1658,6 +1667,32 @@ residency of that state and not a cache of mutable guest memory; the engine's
 byte comparison of the immutable plane against the Deployment projection
 remains the safety check, and a dynamic invocation descriptor is never
 retained.
+
+The staged `SpatialLaunchImage` is the functional transport of the immutable
+plane: a portable document whose encoded size is a serialization choice, not a
+hardware fact. Configuration residency therefore costs what the binary
+configuration image costs. The projection carries one configuration transport
+record for the System: the guest aperture holding the staged image and the
+image bytes one SpatialCore loads, which is the packed ConfigurationABI
+programming-unit payload of the exact Fabric divided over its AccCores, the
+same owner the System runtime analytic model uses. The Bridge materializes the
+immutable plane functionally and reads exactly the modeled image bytes from
+that aperture over the timed memory system, so the encoded document size never
+reaches the modeled memory and the Fabric's real configuration cost always
+does. The launch image reservation admits whichever of the two is larger. The
+shared memory service observer holds the same aperture and excludes its
+accepted service from application-data occupancy.
+
+Each Bridge observes its own contribution to the accelerated window as two
+phases: configuration residency from a launch request that must fetch an
+immutable plane to the tick that plane became resident, and invocation from the
+first invocation start to the last completion. Each phase edge samples the
+shared memory service observer. A Bridge records a transition only while the
+source-declared computation interval is open, so warmup launches never extend
+the measured window; a Bridge whose configuration was already resident when
+that interval began reports the empty residency span at the start of its
+invocation phase. `SimulationExecution` owns the rule that aggregates these
+per-AccCore phases into the window's two phases.
 
 Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows

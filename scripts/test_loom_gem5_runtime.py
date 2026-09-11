@@ -76,6 +76,9 @@ if _bandwidth_match is None:
 MEMORY_SERVICE_TICKS_PER_BYTE = int(_bandwidth_match.group(1))
 LAUNCH_ADDRESS = 0x82000000
 SECOND_LAUNCH_ADDRESS = 0x82004000
+# One guest page holds the first staged launch image; the memory service
+# observer excludes the configuration transport that reads it.
+CONFIGURATION_APERTURE_BYTES = 0x1000
 EXTERNAL_VALUE_ADDRESS = 0x82001000
 SYSTEM_MEMORY_ADDRESS = 0x82002000
 MEMORY_TABLE_ADDRESS = 0x82003000
@@ -809,7 +812,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             )
         engine_commands = [engine_command, []]
         projection = {
-            "schema": "loom.gem5_system_projection.16",
+            "schema": "loom.gem5_system_projection.17",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {
@@ -929,6 +932,11 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "maximum_message_bytes": 1048576,
                 },
             ],
+            "configuration_transport": {
+                "aperture_address": LAUNCH_ADDRESS,
+                "aperture_size": CONFIGURATION_APERTURE_BYTES,
+                "image_bytes": len(EXPECTED_LAUNCH),
+            },
             "maximum_ticks": 100000000,
         }
         projection_path.write_text(
@@ -990,7 +998,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             raise RuntimeError(f"root event controller failed: {control_errors[0]}")
 
         system_result = json.loads(system_result_path.read_text(encoding="utf-8"))
-        if system_result["schema"] != "loom.gem5_system_attempt.3":
+        if system_result["schema"] != "loom.gem5_system_attempt.4":
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
             retained_root = root.with_name(root.name + "-failed")
@@ -1044,6 +1052,29 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             raise RuntimeError(
                 "computation interval lost native launch or memory activity"
             )
+        # Every launched Bridge reports configuration residency then invocation,
+        # each inside the computation interval and each consuming no more
+        # service than its own span.
+        phases = system_result["accelerated_phases"]
+        if not phases:
+            raise RuntimeError("no Bridge reported an accelerated window")
+        for record in phases:
+            if len(record) != 8:
+                raise RuntimeError("accelerated phase record has the wrong shape")
+            residency, invocation = record[:4], record[4:]
+            for phase in (residency, invocation):
+                if not (
+                    begin_tick <= phase[0] <= phase[2] <= end_tick
+                    and begin_busy <= phase[1] <= phase[3] <= end_busy
+                    and phase[3] - phase[1] <= phase[2] - phase[0]
+                ):
+                    raise RuntimeError(
+                        "accelerated phase left its computation interval"
+                    )
+            if invocation[0] < residency[0] or invocation[2] < residency[2]:
+                raise RuntimeError(
+                    "invocation phase precedes its configuration residency"
+                )
         # Each record samples the one shared-memory service observer, so the
         # samples rise along the trace and stay within the full-program total.
         if (
