@@ -403,7 +403,8 @@ depth: the memory service's bandwidth-delay product, its delivered bytes per
 picosecond times the round trip, divided by the bytes one request carries.
 A window that keeps fewer requests in flight leaves the service idle for the
 rest of every round trip however wide the service is, so the model publishes
-this required depth next to the modelled one. `configuration_bytes_per_core` is the size of the binary
+this required depth next to the modelled one. `configuration_bytes_per_core`
+is the size of the binary
 configuration image: per-PE configuration fields, per-Switch routing fields,
 and memory tables, as the packed ConfigurationABI of the exact Fabric packs
 them. A Mapping selects the values those fields carry, never their width, so
@@ -430,7 +431,8 @@ the SpatialCore service boundary per iteration),
 each one request that occupies an outstanding slot), `memory_actors` (the
 graph's distinct memory actors; a memory actor holds up to its Operation
 Engine's issue depth requests in flight, retiring them in issue order), and
-`boundary_payload_bytes_per_activation` (the invocation wire). The memory round trip one outstanding slot waits for is the
+`boundary_payload_bytes_per_activation` (the invocation wire). The memory
+round trip one outstanding slot waits for is the
 service's bounded completion plus two bridge crossings from the pinned
 platform policy. The duration of a launch site under an allocation of `u`
 AccCores is:
@@ -461,7 +463,8 @@ site's typed bottleneck: `Launch` when the fixed cost
 reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
 `MemoryLatency`. A `MemoryLatency` site whose `in_flight` is below
 `required_in_flight_requests` is short of the service's bandwidth-delay
-product, and the hardware feedback owner reads exactly that comparison. Whole-case Runtime is the serialized host residual
+product, and the hardware feedback owner reads exactly that comparison.
+Whole-case Runtime is the serialized host residual
 (executable leaves outside Spatial ownership times the host cycles per leaf
 and the clock period) plus the estimate's two accelerated-window phases. The
 configuration residency term is `configuration(u)` for the widest allocation
@@ -3339,8 +3342,8 @@ All current builtin presets select `PortableProviderClosed`. The profile is a
 Fabric authoring fact, not a generator algorithm or an implementation-provider
 selector.
 
-No two of the 7.1, 7.2, and 7.3 views are interchangeable. Adoption validates the exact
-descriptor, fixed canonical payload, enum tag, digest, and re-encoding. There
+No two of the 7.1, 7.2, and 7.3 views are interchangeable. Adoption validates
+the exact descriptor, fixed canonical payload, enum tag, digest, and re-encoding. There
 is no read-time default or compatibility branch. An 8.0 authoring source is
 explicitly re-finalized as template 8.1 with `FullCatalog`, after which the
 7.3 view is re-projected from the new ResolvedConfig. Its generator binding,
@@ -3382,9 +3385,8 @@ one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
 `ChangeFifoBypassCapability`, `ChangeTemporalOperandBufferMode`, and
 `ResizeTemporalOperandBuffer`, `ResizeSwitchRouteTable`,
-`ChangeFifoQueueDiscipline`, and
-`ChangeMemoryOperationIssueDepth`. The referenced Fabric owners define every typed
-parameter domain. The generator cannot create an operation capability, memory
+`ChangeFifoQueueDiscipline`, and `ChangeMemoryOperationIssueDepth`. The
+referenced Fabric owners define every typed parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, queue discipline, or bypass meaning outside those
 domains. `ChangeFifoQueueDiscipline` selects StrictFifo or
 PerTagVirtualChannel for one exact FIFO occurrence. The ordinary FIFO verifier
