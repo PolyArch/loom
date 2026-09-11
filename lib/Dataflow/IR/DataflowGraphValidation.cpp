@@ -1,3 +1,4 @@
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 
 #include "DataflowGraphCausality.h"
@@ -10,6 +11,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -551,11 +553,12 @@ struct CardinalityGraphIndex {
       mlir::Value current = phases.pop_back_val();
       if (!visitedPhases.insert(current).second)
         continue;
-      // Another occurrence of the same phase sequence, such as the issue
-      // stream beside a completion stream, initializes its own captures in
-      // the same parent activation; the caller still proves each one.
+      // Initializers belong to the physical phase occurrence; sibling loops
+      // with equal bounds keep separate activations. Another occurrence of
+      // the same sequence, such as the issue stream beside a completion
+      // stream, is reached only through the feedback dependencies below.
       for (const auto &entry : activationInputsByPhase)
-        if (haveEquivalentPhaseCardinality(entry.first, current))
+        if (haveEquivalentCorrespondence(entry.first, current))
           result.append(entry.second);
       for (const auto &entry : carriesByPhase)
         if (haveEquivalentCorrespondence(entry.first, current))
@@ -571,11 +574,12 @@ struct CardinalityGraphIndex {
         mlir::Value sourcePhase = statefulCloseSignal(producer);
         if (auto gate = llvm::dyn_cast<dataflow::GateOp>(producer))
           sourcePhase = gate.getBeforeCond();
-        if (sourcePhase) {
-          if (haveEquivalentPhaseCardinality(sourcePhase, phase))
-            phases.push_back(sourcePhase);
+        if (sourcePhase && haveEquivalentPhaseCardinality(sourcePhase, phase)) {
+          phases.push_back(sourcePhase);
           continue;
         }
+        // A nested occurrence is driven by the enclosing occurrence's
+        // captures; walk through it to reach them.
         dependencies.append(producer->getOperands().begin(),
                             producer->getOperands().end());
       }
@@ -717,6 +721,11 @@ private:
       assumptionBuckets;
 };
 
+struct ExactOneFrontierEntry {
+  mlir::Value value;
+  std::string reason;
+};
+
 class GraphCardinalityAnalysis {
 public:
   GraphCardinalityAnalysis(
@@ -757,7 +766,318 @@ public:
     collectStreamCloseSignals(value, visited, signals);
   }
 
+  // Explains a refused exact-one proof: the innermost values whose own proof
+  // rule refused even though every operand proof that rule consults held.
+  void collectExactOneFrontier(
+      mlir::Value value,
+      llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    llvm::DenseSet<mlir::Value> visited;
+    collectExactOneFrontier(value, std::nullopt, visited, frontier);
+  }
+
 private:
+  using FrontierSelection = std::optional<std::pair<mlir::Value, unsigned>>;
+
+  void explainRefusedOneClosePhase(
+      mlir::Value phase, llvm::DenseSet<mlir::Value> &visited,
+      llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    if (auto stream = phase.getDefiningOp<dataflow::StreamOp>()) {
+      for (mlir::Value bound :
+           {stream.getInit(), stream.getLimit(), stream.getStep()})
+        collectExactOneFrontier(bound, std::nullopt, visited, frontier);
+      return;
+    }
+    if (auto gate = phase.getDefiningOp<dataflow::GateOp>()) {
+      if (!dataflow::semantics::gateAlwaysCloses(gate)) {
+        frontier.push_back({phase, "gate does not always close"});
+        return;
+      }
+      if (!isOneClosePhase(gate.getBeforeCond())) {
+        explainRefusedOneClosePhase(gate.getBeforeCond(), visited, frontier);
+        return;
+      }
+      explainRefusedPhaseAlignment(gate.getBeforeValue(), gate.getBeforeCond(),
+                                   /*truePhaseOnly=*/false, visited, frontier);
+      return;
+    }
+    explainRefusedPhaseAlignment({}, phase, /*truePhaseOnly=*/false, visited,
+                                 frontier);
+  }
+
+  // Explains why `value` (or, when null, the carry system alone) is not
+  // aligned to `phase`: first the carry system feedbacks, then the value.
+  void explainRefusedPhaseAlignment(
+      mlir::Value value, mlir::Value phase, bool truePhaseOnly,
+      llvm::DenseSet<mlir::Value> &visited,
+      llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    llvm::SmallVector<dataflow::CarryOp, 4> carries;
+    collectAlignedCarries(phase, carries);
+    for (dataflow::CarryOp carry : carries)
+      insertAlignedCarryAssumption(carry.getOutput());
+    bool systemAligned = true;
+    for (dataflow::CarryOp carry : carries) {
+      llvm::DenseSet<mlir::Value> alignmentVisited;
+      if (isAligned(carry.getCarry(), phase, carry.getOutput(),
+                    /*truePhaseOnly=*/true, alignmentVisited))
+        continue;
+      systemAligned = false;
+      frontier.push_back({carry.getOutput(),
+                          "carry feedback is not true-phase aligned"});
+      collectAlignmentFrontier(carry.getCarry(), phase, carry.getOutput(),
+                               /*truePhaseOnly=*/true, visited, frontier);
+    }
+    if (systemAligned && value)
+      collectAlignmentFrontier(value, phase, {}, truePhaseOnly, visited,
+                               frontier);
+    for (dataflow::CarryOp carry : carries)
+      eraseAlignedCarryAssumption(carry.getOutput());
+  }
+
+  void collectAlignmentFrontier(
+      mlir::Value value, mlir::Value phase, mlir::Value assumption,
+      bool truePhaseOnly, llvm::DenseSet<mlir::Value> &visited,
+      llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    auto aligned = [&](mlir::Value candidate, bool truePhase) {
+      llvm::DenseSet<mlir::Value> alignmentVisited;
+      return isAligned(candidate, phase, assumption, truePhase,
+                       alignmentVisited);
+    };
+    if (aligned(value, truePhaseOnly) || !visited.insert(value).second)
+      return;
+    std::string context = truePhaseOnly ? " (true-phase)" : " (phase)";
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *def = result ? result.getOwner() : nullptr;
+    if (!def) {
+      frontier.push_back({value, "graph input is not aligned" + context});
+      return;
+    }
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+      bool inputRefused = false;
+      for (mlir::Value input : sync.getInputs()) {
+        if (aligned(input, truePhaseOnly))
+          continue;
+        inputRefused = true;
+        collectAlignmentFrontier(input, phase, assumption, truePhaseOnly,
+                                 visited, frontier);
+      }
+      if (!inputRefused)
+        frontier.push_back({value, "sync has no aligned input" + context});
+      return;
+    }
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
+      if (truePhaseOnly ||
+          !haveEquivalentPhaseCardinality(carry.getCond(), phase)) {
+        frontier.push_back({value, "carry output is not aligned" + context});
+        return;
+      }
+      if (!isExactOne(carry.getInit())) {
+        collectExactOneFrontier(carry.getInit(), std::nullopt, visited,
+                                frontier);
+        return;
+      }
+      bool inserted = insertAlignedCarryAssumption(carry.getOutput());
+      collectAlignmentFrontier(carry.getCarry(), phase, carry.getOutput(),
+                               /*truePhaseOnly=*/true, visited, frontier);
+      if (inserted)
+        eraseAlignedCarryAssumption(carry.getOutput());
+      return;
+    }
+    if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
+      if (!truePhaseOnly ||
+          !haveEquivalentPhaseCardinality(gate.getBeforeCond(), phase)) {
+        frontier.push_back({value, "gate output is not aligned" + context});
+        return;
+      }
+      collectAlignmentFrontier(gate.getBeforeValue(), phase, assumption,
+                               /*truePhaseOnly=*/false, visited, frontier);
+      return;
+    }
+    if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def)) {
+      frontier.push_back(
+          {value, ("invariant: phase-equivalent=" +
+                   llvm::Twine(haveEquivalentPhaseCardinality(
+                       invariant.getCond(), phase)) +
+                   " init-exact-one=" + llvm::Twine(isExactOne(invariant.getInit())))
+                      .str() +
+                      context});
+      return;
+    }
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      if (result.getResultNumber() == 0) {
+        frontier.push_back(
+            {value, "nested close is not aligned to the parent phase" + context});
+        GraphCardinalityAnalysis activation(graph, sharedState,
+                                            causalDependencies);
+        if (!initializeNestedActivation(demux.getSel(), phase, assumption,
+                                        truePhaseOnly, activation)) {
+          frontier.push_back(
+              {demux.getSel(),
+               "nested activation inputs are not aligned exact-one" + context});
+          llvm::SmallVector<mlir::Value, 8> inputs;
+          if (auto stream = demux.getSel().getDefiningOp<dataflow::StreamOp>())
+            inputs.append({stream.getInit(), stream.getLimit(), stream.getStep()});
+          graphIndex->collectActivationInputs(demux.getSel(), inputs);
+          for (mlir::Value input : inputs) {
+            if (aligned(input, truePhaseOnly))
+              continue;
+            frontier.push_back(
+                {input, "nested activation input is not parent-aligned" +
+                            context});
+            collectAlignmentFrontier(input, phase, assumption, truePhaseOnly,
+                                     visited, frontier);
+          }
+          return;
+        }
+        llvm::DenseSet<mlir::Value> activationVisited;
+        activation.collectExactOneFrontier(value, std::nullopt,
+                                           activationVisited, frontier);
+        return;
+      }
+      if (truePhaseOnly && result.getResultNumber() == 1 &&
+          haveEquivalentPhaseCardinality(demux.getSel(), phase)) {
+        collectAlignmentFrontier(demux.getInput(), phase, assumption,
+                                 /*truePhaseOnly=*/false, visited, frontier);
+        return;
+      }
+      frontier.push_back({value, "demux lane is not aligned" + context});
+      return;
+    }
+    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
+      if (!aligned(mux.getSel(), truePhaseOnly)) {
+        collectAlignmentFrontier(mux.getSel(), phase, assumption,
+                                 truePhaseOnly, visited, frontier);
+        return;
+      }
+      for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
+        llvm::DenseSet<mlir::Value> laneVisited;
+        if (!availableWhenSelectedAndAligned(input, mux.getSel(), lane, phase,
+                                             assumption, truePhaseOnly,
+                                             laneVisited))
+          frontier.push_back(
+              {input, ("mux lane " + llvm::Twine(lane) +
+                       " input is not available-and-aligned when selected")
+                          .str() +
+                          context});
+      }
+      return;
+    }
+    if (!dataflow::isCanonicalDataflowActor(def) &&
+        !isSupportedMemoryView(def)) {
+      frontier.push_back({value, "stateful result is not aligned" + context});
+      return;
+    }
+    bool operandRefused = false;
+    for (mlir::Value operand : def->getOperands()) {
+      if (isMemoryCapabilityType(operand.getType()) ||
+          aligned(operand, truePhaseOnly) ||
+          (truePhaseOnly && aligned(operand, /*truePhase=*/false)))
+        continue;
+      operandRefused = true;
+      collectAlignmentFrontier(operand, phase, assumption,
+                               /*truePhaseOnly=*/false, visited, frontier);
+    }
+    if (!operandRefused)
+      frontier.push_back(
+          {value, "actor has no true-phase aligned operand" + context});
+  }
+
+  bool frontierPredicateHolds(mlir::Value value,
+                              const FrontierSelection &selection) {
+    return selection ? availableWhenSelected(value, selection->first,
+                                             selection->second)
+                     : isExactOne(value);
+  }
+
+  void collectExactOneFrontier(
+      mlir::Value value, const FrontierSelection &selection,
+      llvm::DenseSet<mlir::Value> &visited,
+      llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    if (frontierPredicateHolds(value, selection) ||
+        !visited.insert(value).second)
+      return;
+    std::string context =
+        selection ? (" (selected lane " + llvm::Twine(selection->second) + ")")
+                        .str()
+                  : std::string();
+    mlir::Operation *def = value.getDefiningOp();
+    if (!def) {
+      frontier.push_back({value, "stream-kind graph input" + context});
+      return;
+    }
+    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def); mux && !selection) {
+      if (!isExactOne(mux.getSel())) {
+        collectExactOneFrontier(mux.getSel(), std::nullopt, visited, frontier);
+        return;
+      }
+      for (auto [lane, input] : llvm::enumerate(mux.getInputs()))
+        if (!availableWhenSelected(input, mux.getSel(), lane))
+          collectExactOneFrontier(
+              input, std::make_pair(mux.getSel(), static_cast<unsigned>(lane)),
+              visited, frontier);
+      return;
+    }
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      unsigned lane = llvm::cast<mlir::OpResult>(value).getResultNumber();
+      if (selection && haveEquivalentSelectorCorrespondence(
+                           demux.getSel(), selection->first)) {
+        if (lane != selection->second)
+          frontier.push_back(
+              {value, "demux lane differs from the selected lane" + context});
+        else
+          collectExactOneFrontier(demux.getInput(), std::nullopt, visited,
+                                  frontier);
+        return;
+      }
+      bool oneClose = isOneClosePhase(demux.getSel());
+      bool aligned = isPhaseAligned(demux.getInput(), demux.getSel());
+      frontier.push_back(
+          {value, ("demux lane " + llvm::Twine(lane) + ": one-close selector=" +
+                   llvm::Twine(oneClose) + " phase-aligned input=" +
+                   llvm::Twine(aligned))
+                      .str() +
+                      context});
+      if (!oneClose)
+        explainRefusedOneClosePhase(demux.getSel(), visited, frontier);
+      else if (!aligned)
+        explainRefusedPhaseAlignment(demux.getInput(), demux.getSel(),
+                                     /*truePhaseOnly=*/false, visited,
+                                     frontier);
+      return;
+    }
+    bool operandRefused = false;
+    for (mlir::Value operand : def->getOperands()) {
+      if (frontierPredicateHolds(operand, selection))
+        continue;
+      operandRefused = true;
+      collectExactOneFrontier(operand, selection, visited, frontier);
+    }
+    if (operandRefused)
+      return;
+    if (selection) {
+      // Mirror isExactOneWhenSelected: explain the proof under the selected
+      // demux-lane assumptions.
+      GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
+      branch.inheritAssumptions(*this);
+      llvm::SmallVector<dataflow::DemuxOp, 4> demuxes;
+      graphIndex->collectDemuxes(selection->first, demuxes);
+      for (dataflow::DemuxOp demux : demuxes) {
+        if (selection->second >= demux.getOutputs().size() ||
+            !isExactOne(demux.getInput()))
+          continue;
+        branch.insertExactOneAssumption(demux.getOutputs()[selection->second]);
+      }
+      size_t before = frontier.size();
+      llvm::DenseSet<mlir::Value> branchVisited;
+      branch.collectExactOneFrontier(value, std::nullopt, branchVisited,
+                                     frontier);
+      if (frontier.size() == before)
+        frontier.push_back(
+            {value, "proof rule refused with available operands" + context});
+      return;
+    }
+    frontier.push_back({value, "proof rule refused with exact-one operands"});
+  }
+
   GraphCardinalityAnalysis(
       dataflow::GraphOp graph,
       std::shared_ptr<CardinalitySharedState> sharedState,
@@ -1836,21 +2156,56 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   dataflow::detail::GraphCausalDependencyCache causalDependencies;
   GraphCardinalityAnalysis cardinality(graph, causalDependencies);
   RetirementCoverage retirementCoverage(ret.getComplete());
+  auto explainRefusedExactOne = [&](llvm::StringRef role, size_t index,
+                                    mlir::Value value) {
+    if (!loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail))
+      return;
+    llvm::SmallVector<ExactOneFrontierEntry, 8> frontier;
+    cardinality.collectExactOneFrontier(value, frontier);
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Detail,
+        loom::mapping_debug::Stage::DataflowLowering,
+        loom::mapping_debug::Event::MappingFailure,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "graph_cardinality_frontier";
+          fields["graph"] = graph.getSymName();
+          fields["role"] = role;
+          fields["index"] = static_cast<int64_t>(index);
+          mlir::AsmState state(graph);
+          llvm::json::Array entries;
+          for (const ExactOneFrontierEntry &entry : frontier) {
+            std::string text;
+            llvm::raw_string_ostream stream(text);
+            entry.value.printAsOperand(stream, state);
+            if (mlir::Operation *def = entry.value.getDefiningOp()) {
+              stream << " = ";
+              def->print(stream, state);
+            }
+            entries.push_back(llvm::json::Object{
+                {"value", std::move(text)}, {"reason", entry.reason}});
+          }
+          fields["frontier"] = std::move(entries);
+        });
+  };
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
-    if (!cardinality.isExactOne(value))
+    if (!cardinality.isExactOne(value)) {
+      explainRefusedExactOne("value_output", index, value);
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
                         " value output #" + llvm::Twine(index) +
                         " is not statically exact-one");
+    }
   for (auto [index, stream] : llvm::enumerate(ret.getStreams()))
     if (!cardinality.hasProvenStreamCommit(stream))
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
                         " stream output #" + llvm::Twine(index) +
                         " has no statically proven close/commit");
   for (auto [index, witness] : llvm::enumerate(ret.getComplete()))
-    if (!cardinality.isExactOne(witness))
+    if (!cardinality.isExactOne(witness)) {
+      explainRefusedExactOne("completion_witness", index, witness);
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
                         " completion witness #" + llvm::Twine(index) +
                         " is not statically one-shot");
+    }
 
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
     if (!isCovered(causalDependencies, value, ret.getComplete()))
