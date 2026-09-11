@@ -157,6 +157,10 @@ bool isCompilerOwnedControlUse(::mlir::OpOperand &use) {
     return &use == &fence.getCtrlMutable();
   if (auto constant = ::llvm::dyn_cast<::dataflow::ConstantOp>(owner))
     return &use == &constant.getCtrlMutable();
+  // Exact vector transfers never observe their padding; the access lowering
+  // drops it, so the value is not a capture the loop has to carry.
+  if (auto read = ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(owner))
+    return &use == &read.getPaddingMutable();
   return false;
 }
 
@@ -627,6 +631,11 @@ private:
         value = view.getViewSource();
         continue;
       }
+      if (auto distinct = ::llvm::dyn_cast<::mlir::memref::DistinctObjectsOp>(def)) {
+        value = distinct.getOperand(
+            ::llvm::cast<::mlir::OpResult>(value).getResultNumber());
+        continue;
+      }
       return std::nullopt;
     }
     return std::nullopt;
@@ -654,6 +663,11 @@ private:
         return true;
       if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
         value = view.getViewSource();
+        continue;
+      }
+      if (auto distinct = ::llvm::dyn_cast<::mlir::memref::DistinctObjectsOp>(def)) {
+        value = distinct.getOperand(
+            ::llvm::cast<::mlir::OpResult>(value).getResultNumber());
         continue;
       }
       if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {
@@ -1348,7 +1362,14 @@ private:
     partitionsByAccess.try_emplace(lowered, std::move(membership));
     read.getResult().replaceAllUsesWith(lowered.getData());
     updateReadFrontiers(lowered, lowered.getDone(), memory);
+    ::mlir::Operation *padding = read.getPadding().getDefiningOp();
     read.erase();
+    // The padding value only names out-of-bounds lanes, which the exact
+    // transfer never touches; a producer that served nothing else is not a
+    // graph actor.
+    if (padding && padding->use_empty() &&
+        ::mlir::isMemoryEffectFree(padding))
+      padding->erase();
   }
 
   void lowerVectorWrite(::mlir::vector::TransferWriteOp write,
@@ -1674,9 +1695,48 @@ private:
     ::llvm::SmallVector<::mlir::Value, 4> readExits(partitionCount);
     ::llvm::DenseMap<::mlir::Value, ::mlir::Value> iterationStarts;
     iterationStarts.try_emplace(execution, executionBody);
+    // An independent loop only has to know when every iteration's accesses
+    // have completed. Pairing each completion with the body stream's phase
+    // would let one carry throttle the whole loop to the memory round trip,
+    // so the completions are counted by their own stream: it advances at the
+    // pace completions arrive while the body stream keeps issuing iterations.
+    std::optional<::dataflow::CarryOp> completionCarry;
+    ::mlir::Value completionExit;
+    if (independent && touched.any()) {
+      setInsertionPoint(loc);
+      auto completionStream = ::dataflow::StreamOp::create(
+          builder, loc, streamType, builder.getI1Type(), lower, upper, step,
+          *stepKind, *predicate);
+      ::llvm::SmallVector<::mlir::Value, 8> incoming;
+      for (int partition = touched.find_first(); partition >= 0;
+           partition = touched.find_next(partition)) {
+        incoming.push_back(memory[partition].write);
+        incoming.push_back(memory[partition].read);
+      }
+      ::mlir::Value initial = joinEvents(incoming, loc);
+      setInsertionPoint(loc);
+      completionCarry = ::dataflow::CarryOp::create(
+          builder, loc, builder.getNoneType(), completionStream.getPhase(),
+          initial, initial);
+      completionExit =
+          demux(completionStream.getPhase(), completionCarry->getOutput(), loc)
+              .first;
+    }
     for (int partition = touched.find_first(); partition >= 0;
          partition = touched.find_next(partition)) {
       setInsertionPoint(loc);
+      if (independent) {
+        auto initial = iterationStarts.try_emplace(memory[partition].read);
+        if (initial.second) {
+          auto ready = ::dataflow::InvariantOp::create(
+              builder, loc, builder.getNoneType(), phase, memory[partition].read);
+          initial.first->second = demux(phase, ready.getOutput(), loc).second;
+        }
+        // Iterations retain their incoming memory precondition and publish
+        // all completion summaries, but do not wait for each other's accesses.
+        bodyMemory[partition] = {initial.first->second, initial.first->second};
+        continue;
+      }
       auto writeCarry = ::dataflow::CarryOp::create(
           builder, loc, builder.getNoneType(), phase, memory[partition].write,
           memory[partition].write);
@@ -1690,17 +1750,6 @@ private:
       writeExits[partition] = writeExit;
       readExits[partition] = readExit;
       bodyMemory[partition] = {writeBody, readBody};
-      if (independent) {
-        auto initial = iterationStarts.try_emplace(memory[partition].read);
-        if (initial.second) {
-          auto ready = ::dataflow::InvariantOp::create(
-              builder, loc, builder.getNoneType(), phase, memory[partition].read);
-          initial.first->second = demux(phase, ready.getOutput(), loc).second;
-        }
-        // Iterations retain their incoming memory precondition and publish
-        // all completion summaries, but do not wait for each other's accesses.
-        bodyMemory[partition] = {initial.first->second, initial.first->second};
-      }
     }
 
     MemoryState iterationMemory = bodyMemory;
@@ -1726,8 +1775,22 @@ private:
       finishCarry(valueCarries[i], yield.getOperand(i), builder);
 
     MemoryState output = memory;
+    if (completionCarry) {
+      ::llvm::SmallVector<::mlir::Value, 8> completions;
+      for (int partition = touched.find_first(); partition >= 0;
+           partition = touched.find_next(partition)) {
+        completions.push_back(bodyResult.memory[partition].write);
+        completions.push_back(bodyResult.memory[partition].read);
+      }
+      finishCarry(*completionCarry, joinEvents(completions, loc), builder);
+      for (int partition = touched.find_first(); partition >= 0;
+           partition = touched.find_next(partition))
+        output[partition] = {completionExit, completionExit};
+    }
     for (int partition = touched.find_first(); partition >= 0;
          partition = touched.find_next(partition)) {
+      if (!writeCarries[partition])
+        continue;
       finishCarry(*writeCarries[partition],
                   bodyResult.memory[partition].write, builder);
       finishCarry(*readCarries[partition],

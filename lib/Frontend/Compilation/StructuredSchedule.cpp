@@ -26,6 +26,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/IR/Builders.h"
@@ -698,6 +699,26 @@ applyVectorize(mlir::affine::AffineForOp loop,
   if (!replacement || replacement.getStepAsInt() !=
                           static_cast<std::int64_t>(coordinate.shape.front()))
     return detail::invalidStructuredSchedule("Affine vectorizer did not materialize the selected shape");
+  // The affine vectorizer pads its transfers with poison. Exact transfers
+  // never observe padding and a tail mask must observe zero, so the schedule
+  // owns one zero padding constant instead of a poison value that the graph
+  // lowering would have to carry through the loop.
+  llvm::SmallVector<mlir::Operation *, 4> poisonPaddings;
+  replacement.walk([&](mlir::vector::TransferReadOp read) {
+    mlir::Operation *padding = read.getPadding().getDefiningOp();
+    if (llvm::isa_and_nonnull<mlir::ub::PoisonOp>(padding) &&
+        !llvm::is_contained(poisonPaddings, padding))
+      poisonPaddings.push_back(padding);
+  });
+  for (mlir::Operation *padding : poisonPaddings) {
+    mlir::OpBuilder builder(padding);
+    mlir::Type type = padding->getResult(0).getType();
+    mlir::Value zero = mlir::arith::ConstantOp::create(
+        builder, padding->getLoc(), type,
+        llvm::cast<mlir::TypedAttr>(builder.getZeroAttr(type)));
+    padding->getResult(0).replaceAllUsesWith(zero);
+    padding->erase();
+  }
   return replacement;
 }
 

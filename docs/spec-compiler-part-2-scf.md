@@ -1625,9 +1625,17 @@ effects retain the preceding iteration's frontier.
 When the shared iteration-independence analysis proves a loop's accesses
 independent before memory normalization, each body iteration instead inherits
 its partition's pre-loop read frontier. No preceding body completion gates
-those accesses. The existing memory carries still consume every iteration's
-completion and preserve their initial frontiers before exposing the loop exit.
-Unproven or dependent loops keep their cross-iteration ordering.
+those accesses. The loop exit still requires every iteration's completion, but
+that count is not paired with the body stream: pairing a completion with the
+phase that also issues the next iteration would let one carry hold the issue
+stream back by the memory round trip. The lowering therefore emits a second
+`dataflow.stream` with the same recurrence operands, joins every touched
+partition's completion frontier into one event per iteration, and consumes
+those events through one carry and demux under the completion stream. Its
+false lane is the exit frontier of every touched partition; for an empty loop
+it is the joined pre-loop frontier. The two streams have equal ordered phase
+cardinality but separate close witnesses. Unproven or dependent loops keep
+their cross-iteration ordering.
 Tiling may add
 coordinates, while fusion, linearization, vectorization, and interchange may
 remove or reparameterize them; no equality with source loop depth is required.

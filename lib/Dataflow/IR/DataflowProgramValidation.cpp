@@ -1,5 +1,8 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowThreadCompletion.h"
+#include "Common/MappingDebugLog.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -582,6 +585,19 @@ llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
     if (error)
       return mlir::WalkResult::interrupt();
     error = validateFinalizedGraph(graph);
+    if (error && loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail))
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Detail,
+          loom::mapping_debug::Stage::DataflowLowering,
+          loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "finalized_graph_validation_failure";
+            fields["graph"] = graph.getSymName();
+            std::string text;
+            llvm::raw_string_ostream stream(text);
+            graph.print(stream);
+            fields["graph_ir"] = std::move(text);
+          });
     return error ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
   });
   return error;
