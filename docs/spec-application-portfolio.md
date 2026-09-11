@@ -497,8 +497,12 @@ launched Fabrics could have issued for the class across the interval: the sum
 over every FU operation node that admits the class under the TechMapping's own
 admission rule of that node's result lanes, times the distinct launched AccCore
 count, times the interval's reference cycles. Every FU node is counted once per
-class it admits, whether or not any Mapping used it; a Temporal PE's FU issues
-once per cycle however many resident instruction contexts share it. The
+class it admits, whether or not any Mapping used it. Where no single node of an
+FU admits the class, each capability template of that FU the TechMapping
+realized an actor of the class with (a fused or composite template) issues the
+class once per cycle on every occurrence of the FU, with the result lanes of
+its first active operation node. A Temporal PE's FU issues once per cycle
+however many resident instruction contexts share it. The
 SpatialCore clock-domain contract supplies the reference period; no frequency
 is assumed. The candidate's compute occupancy is the largest class occupancy,
 and that class is reported as the binding class. An interval without
@@ -507,8 +511,8 @@ acceleration.
 
 Placement utilization is reported beside occupancy and never gated: per class,
 the bound compute realizations over the class's placement slots, where a
-Spatial PE offers one slot per admitting FU node and a Temporal PE offers one
-slot per resident instruction context. A full Temporal instruction table
+Spatial PE offers one slot per admitting FU node or realized template and a
+Temporal PE offers one slot per resident instruction context. A full Temporal instruction table
 serializes its work and is not a goal; the metric explains a mapping, it does
 not score one.
 
