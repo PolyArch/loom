@@ -102,7 +102,84 @@ bool cancelled(const ResourceTimeSpectrumFunnelResult &result) {
              ResourceTimeSpectrumIncompleteReason::CancelledOrTimeout;
 }
 
+llvm::Error
+validatePartitionIntent(llvm::ArrayRef<pnr::SystemBindingPartitionIntent>
+                            partitions,
+                        const ArtifactRootReference &dataflowReference) {
+  if (partitions.empty())
+    return invalid("resource-time Mapping selection has no partition intent");
+  for (const pnr::SystemBindingPartitionIntent &partition : partitions) {
+    if (partition.root.artifact != dataflowReference.artifact)
+      return invalid("resource-time partition intent has a foreign Dataflow "
+                     "owner");
+    if (partition.partitionCount == 0)
+      return invalid("resource-time partition intent has no resource");
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
+
+llvm::Expected<ResourceTimePartitionEligibility>
+projectResourceTimePartitionEligibility(
+    const JointDesignExecution &execution,
+    const ArtifactRootReference &dataflowReference,
+    const ArtifactRootReference &fabricReference,
+    llvm::ArrayRef<pnr::SystemBindingPartitionIntent> partitions,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> reopenedRoots,
+    const mapping::SystemMappingView *requiredParentMapping,
+    const ArtifactStore &artifacts) {
+  if (llvm::Error error =
+          validatePartitionIntent(partitions, dataflowReference))
+    return std::move(error);
+  auto dataflowArtifact =
+      ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  const auto &dataflow = dataflowArtifact->view();
+
+  ResourceTimePartitionEligibility result;
+  for (const ArtifactRootReference &reference : mappingRoots(execution)) {
+    auto imported = mapping::importSystemMapping(reference, artifacts);
+    if (!imported)
+      return imported.takeError();
+    if (imported->view().dataflowIdentity() != dataflowReference.artifact)
+      return invalid("resource-time Mapping selection found a foreign "
+                     "Dataflow owner");
+    if (imported->view().fabricIdentity() != fabricReference.artifact)
+      return invalid("resource-time Mapping selection found a foreign "
+                     "Fabric owner");
+    auto contexts = mapping::projectSystemExecutionContexts(
+        dataflow, imported->view().executionBindings());
+    if (!contexts)
+      return contexts.takeError();
+    bool matches = true;
+    for (const pnr::SystemBindingPartitionIntent &partition : partitions) {
+      auto resources =
+          pnr::projectResourceTimeMappingResources(*contexts, partition.root);
+      if (!resources)
+        return resources.takeError();
+      if (resources->size() != partition.partitionCount) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches)
+      continue;
+    ++result.partitionMatchingCandidates;
+    if (requiredParentMapping) {
+      auto preserved = pnr::preservesSystemMappingMigrationCone(
+          *requiredParentMapping, imported->view(), reopenedRoots, artifacts);
+      if (!preserved)
+        return preserved.takeError();
+      if (!*preserved)
+        continue;
+    }
+    ++result.preservationMatchingCandidates;
+    result.eligibleMappings.push_back(reference);
+  }
+  return result;
+}
 
 llvm::Expected<ResourceTimePartitionMappingSelection>
 selectResourceTimePartitionMapping(
@@ -117,26 +194,19 @@ selectResourceTimePartitionMapping(
     JointResourceTimeMappingRepairSide side,
     JointResourceTimeMappingVerifier mappingVerifier,
     const ArtifactStore &artifacts) {
-  if (partitions.empty())
-    return invalid("resource-time Mapping selection has no partition intent");
-  for (const pnr::SystemBindingPartitionIntent &partition : partitions) {
-    if (partition.root.artifact != dataflowReference.artifact)
-      return invalid("resource-time partition intent has a foreign Dataflow "
-                     "owner");
-    if (partition.partitionCount == 0)
-      return invalid("resource-time partition intent has no resource");
-  }
-  auto dataflowArtifact =
-      ::dataflow::importCanonicalDataflow(dataflowReference, artifacts);
-  if (!dataflowArtifact)
-    return dataflowArtifact.takeError();
-  const auto &dataflow = dataflowArtifact->view();
-
+  auto eligibility = projectResourceTimePartitionEligibility(
+      execution, dataflowReference, fabricReference, partitions, reopenedRoots,
+      requiredParentMapping, artifacts);
+  if (!eligibility)
+    return eligibility.takeError();
   const std::vector<ArtifactRootReference> mappings = mappingRoots(execution);
-  std::uint64_t partitionMatchingCandidates = 0;
-  std::uint64_t preservationMatchingCandidates = 0;
+  const std::uint64_t partitionMatchingCandidates =
+      eligibility->partitionMatchingCandidates;
+  const std::uint64_t preservationMatchingCandidates =
+      eligibility->preservationMatchingCandidates;
   std::uint64_t acceptedCandidates = 0;
-  std::vector<ArtifactRootReference> eligibleMappings;
+  std::vector<ArtifactRootReference> eligibleMappings =
+      std::move(eligibility->eligibleMappings);
   const std::optional<PreMappingSpectrumClass> requestedClass =
       spectrumClassForEndpoint(spectrumEndpoint);
   const auto emitSelection =
@@ -173,45 +243,6 @@ selectResourceTimePartitionMapping(
                            : llvm::json::Value(nullptr);
             });
       };
-  for (const ArtifactRootReference &reference : mappings) {
-    auto imported = mapping::importSystemMapping(reference, artifacts);
-    if (!imported)
-      return imported.takeError();
-    if (imported->view().dataflowIdentity() != dataflowReference.artifact)
-      return invalid("resource-time Mapping selection found a foreign "
-                     "Dataflow owner");
-    if (imported->view().fabricIdentity() != fabricReference.artifact)
-      return invalid("resource-time Mapping selection found a foreign "
-                     "Fabric owner");
-    auto contexts = mapping::projectSystemExecutionContexts(
-        dataflow, imported->view().executionBindings());
-    if (!contexts)
-      return contexts.takeError();
-    bool matches = true;
-    for (const pnr::SystemBindingPartitionIntent &partition : partitions) {
-      auto resources =
-          pnr::projectResourceTimeMappingResources(*contexts, partition.root);
-      if (!resources)
-        return resources.takeError();
-      if (resources->size() != partition.partitionCount) {
-        matches = false;
-        break;
-      }
-    }
-    if (!matches)
-      continue;
-    ++partitionMatchingCandidates;
-    if (requiredParentMapping) {
-      auto preserved = pnr::preservesSystemMappingMigrationCone(
-          *requiredParentMapping, imported->view(), reopenedRoots, artifacts);
-      if (!preserved)
-        return preserved.takeError();
-      if (!*preserved)
-        continue;
-    }
-    ++preservationMatchingCandidates;
-    eligibleMappings.push_back(reference);
-  }
   std::vector<DsePlanIncompleteReason> executionIncompleteReasons(
       prerequisiteIncompleteReasons.begin(),
       prerequisiteIncompleteReasons.end());

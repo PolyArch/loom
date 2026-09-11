@@ -3755,6 +3755,19 @@ summary without changing the independently valid selected parent disposition
 or claiming Deployment-level transition closure. Ordinary first-verified
 product Mapping outside this adjacent-state repair is unchanged.
 
+The eligible frontier is not a by-product of selection. One owner projects it
+for every adjacent repair from the generated Mappings, the exact partition
+intent, and, on the preserve-first side, the cone-external preservation proof;
+it imports Mappings and compares partitions and runs no schedule verifier.
+Only verifying and selecting one eligible Mapping is gated on the
+first-verified policy. A transition therefore always records which generated
+Mappings were eligible, and it reports a selected Mapping on a side only when
+that side's own eligible frontier admits it. The ordinary joint search may
+leave a different Mapping in the execution summary; that Mapping was not
+chosen against this partition intent and is not the transition's selection.
+The two records cannot disagree, and a consumer may read the selected Mapping,
+the eligible frontier, and the Spectrum outcome as one proof.
+
 Selection requires the provider plan for that side and every lower-stage
 prerequisite to complete. An incomplete plan publishes its exact typed reason,
 does not invoke the schedule verifier, and cannot select a Mapping from a
