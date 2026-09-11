@@ -63,15 +63,25 @@ LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
       ADD_STAT(clockFailureCount, statistics::units::Count::get(),
                "Host performance clock samples that failed"),
       ADD_STAT(staticLaunchFetchCount, statistics::units::Count::get(),
-               "Immutable Spatial launch images fetched from guest memory"),
-      ADD_STAT(launchTick, statistics::units::Tick::get(),
-               "Tick of the most recent launch request"),
-      ADD_STAT(staticLaunchReadyTick, statistics::units::Tick::get(),
-               "Tick at which the immutable Spatial launch image was resident"),
-      ADD_STAT(invocationStartTick, statistics::units::Tick::get(),
-               "Tick at which the most recent invocation started executing"),
-      ADD_STAT(completionTick, statistics::units::Tick::get(),
-               "Tick of the most recent invocation completion") {}
+               "Immutable Spatial launch images fetched from guest memory") {}
+
+void LoomSpatialBridge::PhaseObservation::openAt(std::uint64_t tick,
+                                                 std::uint64_t occupied) {
+  if (observed)
+    return;
+  observed = true;
+  beginTick = tick;
+  beginOccupiedTicks = occupied;
+  endTick = tick;
+  endOccupiedTicks = occupied;
+}
+
+void LoomSpatialBridge::PhaseObservation::closeAt(std::uint64_t tick,
+                                                  std::uint64_t occupied) {
+  panic_if(!observed, "Spatial accelerated phase closed before it opened");
+  endTick = tick;
+  endOccupiedTicks = occupied;
+}
 
 LoomSpatialBridge::MemoryTransaction::MemoryTransaction(
     LoomSpatialBridge &bridge,
@@ -98,14 +108,18 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       pioAddress(params.pio_addr), pioSize(params.pio_size),
       pioDelay(params.pio_latency),
       bridgeSessionOrdinal(params.session_ordinal),
-      engineSession(params.engine_session), resultPath(params.result_path),
+      engineSession(params.engine_session),
+      threadDispatch(params.thread_dispatch),
+      memoryService(params.memory_service),
+      configurationImageBytes(params.configuration_image_bytes),
+      resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
       collectPerformance(params.collect_performance),
       launchEvent(
           [this] { runAccounted([this] { fetchStaticLaunch(); }); },
           name() + ".launch"),
       staticLaunchCompletionEvent(
-          [this] { runAccounted([this] { fetchInvocation(); }); },
+          [this] { runAccounted([this] { completeConfigurationTransport(); }); },
           name() + ".static_launch_completion"),
       invocationCompletionEvent(
           [this] { runAccounted([this] { startLaunch(); }); },
@@ -118,6 +132,11 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
           name() + ".channel_commit") {
   if (engineSession)
     engineSession->registerBridge(bridgeSessionOrdinal, *this);
+  panic_if(!threadDispatch || !memoryService,
+           "LoomSpatialBridge has no computation boundary or service observer");
+  panic_if(configurationImageBytes >
+               static_cast<std::uint64_t>(std::numeric_limits<int>::max()),
+           "LoomSpatialBridge configuration image exceeds the DMA size domain");
   panic_if(resultPath.empty(), "LoomSpatialBridge result path is empty");
   panic_if(maximumMessageBytes < loom::runtime::gem5BridgeWireHeaderBytes,
            "LoomSpatialBridge message limit is too small");
@@ -261,16 +280,42 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
   return pioDelay;
 }
 
+bool LoomSpatialBridge::measuring() const {
+  return threadDispatch->computationOpen();
+}
+
+std::uint64_t LoomSpatialBridge::serviceOccupancy() const {
+  return memoryService->occupiedTicks();
+}
+
+std::vector<std::uint64_t> LoomSpatialBridge::acceleratedPhases() const {
+  if (!invocationPhase.observed)
+    return {};
+  // A Bridge whose configuration was already resident when the measured
+  // computation began establishes no residency inside the window, so its
+  // residency phase is the empty span at the start of its invocation phase.
+  const PhaseObservation residency =
+      configurationResidencyPhase.observed
+          ? configurationResidencyPhase
+          : PhaseObservation{true, invocationPhase.beginTick,
+                             invocationPhase.beginOccupiedTicks,
+                             invocationPhase.beginTick,
+                             invocationPhase.beginOccupiedTicks};
+  return {residency.beginTick,        residency.beginOccupiedTicks,
+          residency.endTick,          residency.endOccupiedTicks,
+          invocationPhase.beginTick,  invocationPhase.beginOccupiedTicks,
+          invocationPhase.endTick,    invocationPhase.endOccupiedTicks};
+}
+
 void LoomSpatialBridge::fetchStaticLaunch() {
-  performanceStatistics.launchTick = curTick();
   if (activeStaticLaunchSize == 0 ||
       activeStaticLaunchSize > maximumMessageBytes) {
     fail(18, "active static launch descriptor is invalid");
     return;
   }
   // The immutable plane is loaded once per configuration residency. A launch
-  // naming the resident descriptor reuses those bytes; the engine still
-  // compares them against its Deployment projection.
+  // naming the resident descriptor reuses those bytes and costs no residency;
+  // the engine still compares them against its Deployment projection.
   if (activeStaticLaunchAddress == residentStaticLaunchAddress &&
       activeStaticLaunchSize == residentStaticLaunchSize &&
       staticLaunchPayload.size() == activeStaticLaunchSize) {
@@ -280,13 +325,32 @@ void LoomSpatialBridge::fetchStaticLaunch() {
   ++performanceStatistics.staticLaunchFetchCount;
   residentStaticLaunchAddress = activeStaticLaunchAddress;
   residentStaticLaunchSize = activeStaticLaunchSize;
+  if (measuring())
+    configurationResidencyPhase.openAt(curTick(), serviceOccupancy());
+  // The staged launch image is the functional transport of the immutable
+  // plane: a portable document whose size is an encoding choice, not a
+  // hardware fact. Configuration residency costs what the Fabric-derived
+  // binary configuration image costs, so exactly those bytes cross the modeled
+  // memory system while the plane itself is materialized functionally.
   staticLaunchPayload.assign(activeStaticLaunchSize, 0);
-  dmaRead(activeStaticLaunchAddress, static_cast<int>(activeStaticLaunchSize),
-          &staticLaunchCompletionEvent, staticLaunchPayload.data());
+  sys->physProxy.readBlob(activeStaticLaunchAddress,
+                          staticLaunchPayload.data(), activeStaticLaunchSize);
+  if (configurationImageBytes == 0) {
+    completeConfigurationTransport();
+    return;
+  }
+  configurationTransportBuffer.assign(configurationImageBytes, 0);
+  dmaRead(activeStaticLaunchAddress, static_cast<int>(configurationImageBytes),
+          &staticLaunchCompletionEvent, configurationTransportBuffer.data());
+}
+
+void LoomSpatialBridge::completeConfigurationTransport() {
+  if (measuring() && configurationResidencyPhase.observed)
+    configurationResidencyPhase.closeAt(curTick(), serviceOccupancy());
+  fetchInvocation();
 }
 
 void LoomSpatialBridge::fetchInvocation() {
-  performanceStatistics.staticLaunchReadyTick = curTick();
   invocationPayload.assign(activeInvocationSize, 0);
   if (activeInvocationSize == 0) {
     startLaunch();
@@ -339,7 +403,8 @@ void LoomSpatialBridge::finishEngineWait() {
 }
 
 void LoomSpatialBridge::startLaunch() {
-  performanceStatistics.invocationStartTick = curTick();
+  if (measuring())
+    invocationPhase.openAt(curTick(), serviceOccupancy());
   memorySnapshotPayload.clear();
   if (!invocationPayload.empty()) {
     loom::runtime::SpatialInvocationWire wire;
@@ -567,7 +632,8 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
 
 void LoomSpatialBridge::completeInvocation() {
   lastCompletionTick = curTick();
-  performanceStatistics.completionTick = curTick();
+  if (measuring() && invocationPhase.observed)
+    invocationPhase.closeAt(curTick(), serviceOccupancy());
   const ResultPublication publication = publishResults();
   if (publication != ResultPublication::Published) {
     switch (publication) {

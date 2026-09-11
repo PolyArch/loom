@@ -7,6 +7,8 @@
 #include "base/stats/units.hh"
 #include "dev/dma_device.hh"
 #include "params/LoomSpatialBridge.hh"
+#include "runtime/gem5/loom_memory_service_probe.hh"
+#include "runtime/gem5/loom_thread_dispatch.hh"
 #include "sim/eventq.hh"
 
 #include <chrono>
@@ -30,6 +32,13 @@ public:
   AddrRangeList getAddrRanges() const override;
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
+
+  /// This Bridge's contribution to the accelerated window, flattened for the
+  /// configuration script: configuration residency then invocation, each as
+  /// begin tick, begin service occupancy, end tick, end service occupancy. An
+  /// empty vector means this Bridge launched nothing inside the measured
+  /// computation, so it contributes no phase.
+  std::vector<std::uint64_t> acceleratedPhases() const;
 
 private:
   friend class LoomSpatialEngineSession;
@@ -59,14 +68,21 @@ private:
     statistics::Scalar invocationCount;
     statistics::Scalar clockFailureCount;
     statistics::Scalar staticLaunchFetchCount;
-    /// Ticks of the most recent lifecycle transitions: the timeline of one
-    /// Spatial invocation from launch through the immutable plane fetch, the
-    /// dynamic invocation fetch, and completion.
-    statistics::Scalar launchTick;
-    statistics::Scalar staticLaunchReadyTick;
-    statistics::Scalar invocationStartTick;
-    statistics::Scalar completionTick;
   } performanceStatistics;
+
+  /// One phase of this Bridge's accelerated window: the ticks it spans and the
+  /// shared-memory service integral sampled at each end, so differencing the
+  /// samples measures the service the phase consumed.
+  struct PhaseObservation final {
+    bool observed = false;
+    std::uint64_t beginTick = 0;
+    std::uint64_t beginOccupiedTicks = 0;
+    std::uint64_t endTick = 0;
+    std::uint64_t endOccupiedTicks = 0;
+
+    void openAt(std::uint64_t tick, std::uint64_t occupied);
+    void closeAt(std::uint64_t tick, std::uint64_t occupied);
+  };
 
   struct CallbackAccounting final {
     std::uint64_t started = 0;
@@ -92,9 +108,18 @@ private:
   const Tick pioDelay;
   const std::uint64_t bridgeSessionOrdinal;
   LoomSpatialEngineSession *engineSession;
+  LoomThreadDispatch *const threadDispatch;
+  LoomMemoryServiceProbe *const memoryService;
+  /// Bytes of the Fabric-derived binary configuration image this SpatialCore
+  /// loads. The launch image the guest stages is the functional transport of
+  /// the immutable plane; this is what the modeled memory system carries.
+  const std::uint64_t configurationImageBytes;
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;
   const bool collectPerformance;
+
+  PhaseObservation configurationResidencyPhase;
+  PhaseObservation invocationPhase;
 
   State state = State::Idle;
   std::uint32_t errorCode = 0;
@@ -108,6 +133,10 @@ private:
   std::uint64_t activeInvocationAddress = 0;
   std::uint32_t activeInvocationSize = 0;
   std::uint64_t lastCompletionTick = 0;
+  /// Scratch of the timed configuration-image transfer. Its bytes are never
+  /// read: the modeled memory system carries exactly this many bytes while the
+  /// immutable plane itself arrives through the staged launch image.
+  std::vector<std::uint8_t> configurationTransportBuffer;
   std::vector<std::uint8_t> staticLaunchPayload;
   /// The descriptor of the immutable plane currently resident in
   /// staticLaunchPayload. A Start naming the same descriptor reuses it.
@@ -140,8 +169,14 @@ private:
   }
   void startEngineWait();
   void finishEngineWait();
+  /// Whether the source-declared computation interval the Thread Dispatch
+  /// device owns is open, which is when phase transitions are observed.
+  bool measuring() const;
+  /// The shared-memory service integral sampled now.
+  std::uint64_t serviceOccupancy() const;
   ResultPublication publishResults();
   void fetchStaticLaunch();
+  void completeConfigurationTransport();
   void fetchInvocation();
   void startLaunch();
   void acceptBoundary(const loom::runtime::Gem5BridgeMessage &message,

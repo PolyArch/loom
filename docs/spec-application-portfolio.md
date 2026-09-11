@@ -480,10 +480,27 @@ ratio. Full-program Runtime remains an exact separate diagnostic; it cannot
 substitute for an absent computation interval.
 
 Speedup is the host computation interval divided by the candidate computation
-interval. Shared-memory utilization is the difference of the native cumulative
-service samples at the computation boundaries divided by that same interval.
+interval. Each member also reports the difference of the native cumulative
+service samples at its computation boundaries divided by that same interval.
 There is one service observer. Idle cycles and necessary host work do not
 vanish from the denominator.
+
+Inside the candidate computation interval lies the accelerated window, split
+into the two phases `SimulationExecution` observes: configuration residency and
+invocation. Saturation is measured over the invocation phase alone. The
+residency phase streams the binary configuration image, which the service
+observer never counts as application data; charging its ticks to the saturation
+denominator would credit a fat configuration image as memory appetite instead of
+naming it launch overhead. Shared-memory utilization for qualification is
+therefore the difference of the service samples at the invocation phase
+boundaries divided by that phase, and an unaccelerated computation saturates
+nothing.
+
+Launch overhead is the configuration residency phase divided by the whole
+accelerated window. Because the two phases aggregate their per-AccCore spans
+independently, on an array whose cores are dispatched one at a time the
+residency phase also covers the dispatch of the later cores; that is the launch
+overhead of the array, and the two fractions do not partition the window.
 
 Compute occupancy is measured against the candidate's speed of light on its
 hardware, by operation class. A class is one operation schema at one element
@@ -493,10 +510,10 @@ candidate computation interval, each firing weighted by the actor's vector lane
 count. DFG replays remain correctness oracles. The boundary device refuses
 unfinished accelerator invocations at either marker, so this membership selects
 whole invocations and excludes warmup. Its bound is the element lanes the
-launched Fabrics could have issued for the class across the interval: the sum
-over every FU operation node that admits the class under the TechMapping's own
-admission rule of that node's result lanes, times the distinct launched AccCore
-count, times the interval's reference cycles. Every FU node is counted once per
+launched Fabrics could have issued for the class across the invocation phase:
+the sum over every FU operation node that admits the class under the
+TechMapping's own admission rule of that node's result lanes, times the distinct
+launched AccCore count, times the phase's reference cycles. Every FU node is counted once per
 class it admits, whether or not any Mapping used it. Where no single node of an
 FU admits the class, each capability template of that FU the TechMapping
 realized an actor of the class with (a fused or composite template) issues the
@@ -516,22 +533,30 @@ Temporal PE offers one slot per resident instruction context. A full Temporal in
 serializes its work and is not a goal; the metric explains a mapping, it does
 not score one.
 
-The `loom.application.system_qor_projection` version `4.0` reports exact roots,
+The `loom.application.system_qor_projection` version `5.0` reports exact roots,
 full-program durations and memory activity, each member's optional computation
-interval, measured speedup, the candidate's per-class compute occupancy and
-placement utilization, and its binding class. Qualification
-requires strict computation speedup and strictly more than 90 percent shared
-memory service utilization or compute occupancy over that computation interval.
-Neither the threshold nor the machine capacity changes with the measurement
-boundary. Missing intervals produce null speedup and `unmeasured` status and
-bottleneck; portfolio qualification rejects them. A boundary present on only
-one pair member is an invalid comparison.
+interval, measured speedup, the candidate's `accelerated_window` with both phase
+spans, its launch overhead and invocation-phase service utilization, and its
+per-class compute occupancy, placement utilization, and binding class.
+Qualification requires strict computation speedup, strictly more than 90 percent
+shared memory service utilization or compute occupancy over the invocation
+phase, and a launch overhead strictly below one half. Neither the thresholds nor
+the machine capacity changes with the measurement boundary. Missing intervals
+produce null speedup and `unmeasured` status and bottleneck; portfolio
+qualification rejects them. A boundary present on only one pair member is an
+invalid comparison.
+
+The launch budget is exclusive like the other window targets: the invocation
+phase must remain the majority of the accelerated window. Above that the window
+measures how long the array took to configure rather than the computation that
+residency serves, so the invocation-phase saturation no longer explains the
+measured speedup.
 
 Bottleneck classification is explanatory, not a second gate. It selects
+`launch_bound` when configuration residency reaches the launch budget, then
 `memory_bandwidth_bound` for saturated memory service, then `compute_bound`
 for saturated compute occupancy. Otherwise it selects `host_bound` when the
-candidate's first-root-Start to last-root-Completion span, intersected with the
-computation interval, covers less than one tenth of the useful computation;
+accelerated window covers less than one tenth of the useful computation;
 otherwise it selects `latency_bound`. Initialization and verification outside
 the computation interval do not contribute to this classification. System
 outcomes are feedback inputs for DSE; successful Mapping alone establishes no

@@ -22,6 +22,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/SystemServiceBindingProjection.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/ExecutableElf.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
@@ -1396,13 +1397,24 @@ deriveFactsUncached(const EvaluationRequest &request,
       return address.takeError();
   }
   // Identical bytes are one image: every dispatch target of a rooted launch
-  // shares one staged copy and therefore one guest address.
+  // shares one staged copy and therefore one guest address. The staged image
+  // is the functional transport of the immutable plane, so the reservation
+  // also admits the Fabric-derived binary configuration image the Bridge
+  // charges the modeled memory system for.
   std::uint64_t launchAddress = 0;
+  Gem5ConfigurationTransport configurationTransport;
   if (!pendingLaunches.empty()) {
-    auto address = placeRuntimeImage(kSpatialLaunchPath, launchBytes.size());
+    auto imageBytes =
+        hardware::packedConfigurationImageBytesPerAccCore(*fabricRoot);
+    if (!imageBytes)
+      return imageBytes.takeError();
+    auto address = placeRuntimeImage(
+        kSpatialLaunchPath,
+        std::max<std::uint64_t>(launchBytes.size(), *imageBytes));
     if (!address)
       return address.takeError();
     launchAddress = *address;
+    configurationTransport = {*address, cursor - *address, *imageBytes};
   }
 
   if (engine == Gem5SystemEngine::Rtl) {
@@ -1732,6 +1744,7 @@ deriveFactsUncached(const EvaluationRequest &request,
                       dispatchAddress,
                       stackBase,
                       kGem5StackBytes,
+                      configurationTransport,
                       *memory,
                       systemRuntime.maximumSimulatedTicks,
                       std::move(artifactDependencies),

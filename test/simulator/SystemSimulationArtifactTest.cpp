@@ -11,7 +11,6 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
-#include "Simulator/SystemActivity.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
@@ -526,46 +525,6 @@ void systemExecutionRetainsTerminalAndTickSemantics() {
                       finalizeSimulationExecution(malformed, fixture.resolution,
                                                   artifacts, blobs),
                       "not owned by a root thread launch");
-
-  const std::optional<SystemAcceleratedWindow> window = take(
-      test, projectSystemAcceleratedWindow(retired, fixture.resolution,
-                                           artifacts, blobs));
-  deployment::test::require(
-      test,
-      window && window->firstStartTick == 5 &&
-          window->lastCompletionTick == 8 && window->elapsedTicks() == 3 &&
-          window->occupiedTicks == 2,
-      "accelerated window does not span the first start to the last completion");
-
-  SystemSimulationExecution warmed = execution;
-  warmed.progressObservations.rootLifecycle = {{start, 7, {5, 0}, 1},
-                                               {completion, 7, {8, 0}, 3},
-                                               {start, 8, {12, 0}, 4},
-                                               {completion, 8, {16, 0}, 7}};
-  auto warmedExecution =
-      take(test, finalizeSimulationExecution(warmed, fixture.resolution,
-                                             artifacts, blobs));
-  const SystemComputationInterval computation{10, 20, 3, 8};
-  const auto measuredWindow = take(
-      test, projectSystemAcceleratedWindow(warmedExecution, fixture.resolution,
-                                           artifacts, blobs, &computation));
-  deployment::test::require(
-      test,
-      measuredWindow && measuredWindow->firstStartTick == 12 &&
-          measuredWindow->lastCompletionTick == 16 &&
-          measuredWindow->occupiedTicks == 3,
-      "warmup extended activity across the host gap before measured work");
-
-  execution.progressObservations.rootLifecycle.clear();
-  CanonicalSimulationExecution unlaunched =
-      take(test, finalizeSimulationExecution(execution, fixture.resolution,
-                                             artifacts, blobs));
-  deployment::test::require(
-      test,
-      !take(test, projectSystemAcceleratedWindow(unlaunched, fixture.resolution,
-                                                 artifacts, blobs)),
-      "an execution with no launch reported an accelerated window");
-  execution.progressObservations.rootLifecycle = validLifecycle;
 
   execution.terminal = StoppedByLimitExecution{};
   execution.progressObservations.programExitVisible.reset();

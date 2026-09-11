@@ -163,6 +163,18 @@ struct Gem5SpatialBridgeSession final {
   std::vector<std::size_t> launchOrdinals;
 };
 
+/// The modeled cost of establishing configuration residency on one AccCore.
+/// The staged SpatialLaunchImage is the functional transport of the immutable
+/// plane; `imageBytes` is the Fabric-derived binary configuration image the
+/// modeled memory system actually carries, and the aperture is the guest range
+/// that transfer reads, which the shared memory service observer excludes from
+/// its application-data occupancy.
+struct Gem5ConfigurationTransport final {
+  std::uint64_t apertureAddress = 0;
+  std::uint64_t apertureBytes = 0;
+  std::uint64_t imageBytes = 0;
+};
+
 struct Gem5SystemFacts final {
   Gem5SystemEngine engine;
   ArtifactRootReference deployment;
@@ -186,6 +198,7 @@ struct Gem5SystemFacts final {
   std::uint64_t dispatchAddress = 0;
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;
+  Gem5ConfigurationTransport configurationTransport;
   Gem5SimpleMemoryParameters memory;
   std::optional<std::uint64_t> maximumSimulatedTicks;
   std::vector<ArtifactRootReference> artifactDependencies;
@@ -203,6 +216,7 @@ struct Gem5AttemptResult final {
   std::string cause;
   sim::SystemMemoryActivity memoryActivity;
   std::optional<sim::SystemComputationInterval> computationInterval;
+  std::optional<sim::SystemAcceleratedPhases> acceleratedPhases;
 };
 
 llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text);

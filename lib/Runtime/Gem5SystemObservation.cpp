@@ -3,6 +3,10 @@
 #include "Dataflow/IR/DataflowEventDerivation.h"
 #include "llvm/Support/JSON.h"
 
+#include <algorithm>
+#include <array>
+#include <optional>
+
 namespace loom::runtime::gem5_system {
 namespace {
 
@@ -105,18 +109,73 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
   return observations;
 }
 
+namespace {
+
+/// Aggregates the per-AccCore accelerated phases into the window's two phases
+/// by earliest phase start and latest phase end. The service samples rise with
+/// their ticks, so taking the extremes of each independently still pairs each
+/// bound with the sample observed there.
+llvm::Expected<std::optional<sim::SystemAcceleratedPhases>>
+parseAcceleratedPhases(const llvm::json::Array &cores) {
+  constexpr std::size_t fieldsPerPhase = 4;
+  constexpr std::size_t fieldsPerCore = 2 * fieldsPerPhase;
+  std::optional<sim::SystemAcceleratedPhases> window;
+  for (const llvm::json::Value &entry : cores) {
+    const llvm::json::Array *fields = entry.getAsArray();
+    if (!fields || fields->size() != fieldsPerCore)
+      return invalid("gem5 accelerated phase record has the wrong shape");
+    std::array<std::uint64_t, fieldsPerCore> values{};
+    for (std::size_t index = 0; index != fieldsPerCore; ++index) {
+      auto field = (*fields)[index].getAsInteger();
+      if (!field || *field < 0)
+        return invalid("gem5 accelerated phase field is not a nonnegative "
+                       "integer");
+      values[index] = static_cast<std::uint64_t>(*field);
+    }
+    sim::SystemAcceleratedPhases core;
+    sim::SystemAcceleratedPhase *phases[] = {&core.configurationResidency,
+                                             &core.invocation};
+    for (std::size_t phase = 0; phase != 2; ++phase) {
+      const std::size_t base = phase * fieldsPerPhase;
+      *phases[phase] = {values[base], values[base + 2], values[base + 1],
+                        values[base + 3]};
+    }
+    if (!window) {
+      window = core;
+      continue;
+    }
+    sim::SystemAcceleratedPhase *aggregate[] = {
+        &window->configurationResidency, &window->invocation};
+    for (std::size_t phase = 0; phase != 2; ++phase) {
+      aggregate[phase]->beginTick =
+          std::min(aggregate[phase]->beginTick, phases[phase]->beginTick);
+      aggregate[phase]->beginMemoryOccupiedTicks =
+          std::min(aggregate[phase]->beginMemoryOccupiedTicks,
+                   phases[phase]->beginMemoryOccupiedTicks);
+      aggregate[phase]->endTick =
+          std::max(aggregate[phase]->endTick, phases[phase]->endTick);
+      aggregate[phase]->endMemoryOccupiedTicks =
+          std::max(aggregate[phase]->endMemoryOccupiedTicks,
+                   phases[phase]->endMemoryOccupiedTicks);
+    }
+  }
+  return window;
+}
+
+} // namespace
+
 llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
   auto value = llvm::json::parse(text);
   if (!value)
     return invalid("gem5 result is not valid JSON");
   const llvm::json::Object *object = value->getAsObject();
-  if (!object || object->size() != 6)
+  if (!object || object->size() != 7)
     return invalid("gem5 result does not have the exact result shape");
   const auto schema = object->getString("schema");
   const auto entry = object->getInteger("entry_tick");
   const auto exit = object->getInteger("exit_tick");
   const auto cause = object->getString("cause");
-  if (!schema || *schema != "loom.gem5_system_attempt.3" || !entry || !exit ||
+  if (!schema || *schema != "loom.gem5_system_attempt.4" || !entry || !exit ||
       !cause || *entry < 0 || *exit < 0 || *entry > *exit)
     return invalid("gem5 result fields are invalid");
   const auto *activity = object->getObject("memory_activity");
@@ -143,11 +202,20 @@ llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
     }
     computation = interval;
   }
+  const auto *phaseRecords = object->getArray("accelerated_phases");
+  if (!phaseRecords)
+    return invalid("gem5 accelerated phase array is malformed");
+  auto phases = parseAcceleratedPhases(*phaseRecords);
+  if (!phases)
+    return phases.takeError();
+  if (*phases && !computation)
+    return invalid("gem5 accelerated phases have no computation interval");
   return Gem5AttemptResult{static_cast<std::uint64_t>(*entry),
                            static_cast<std::uint64_t>(*exit),
                            cause->str(),
                            {static_cast<std::uint64_t>(*occupied)},
-                           std::move(computation)};
+                           std::move(computation),
+                           std::move(*phases)};
 }
 
 } // namespace loom::runtime::gem5_system

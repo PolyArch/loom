@@ -513,6 +513,12 @@ renderProjection(const Gem5SystemFacts &facts,
         });
       }
     });
+    json.attributeObject("configuration_transport", [&] {
+      json.attribute("aperture_address",
+                     facts.configurationTransport.apertureAddress);
+      json.attribute("aperture_size", facts.configurationTransport.apertureBytes);
+      json.attribute("image_bytes", facts.configurationTransport.imageBytes);
+    });
     json.attribute("maximum_ticks", facts.maximumSimulatedTicks.value_or(
                                          kMaximumGem5Ticks));
   });
@@ -1751,7 +1757,8 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
        {systemResult->exitTick, 0},
        std::move(*rootLifecycle)},
       systemResult->memoryActivity,
-      std::move(systemResult->computationInterval)};
+      std::move(systemResult->computationInterval),
+      std::move(systemResult->acceleratedPhases)};
   auto finalized =
       sim::finalizeSimulationExecution(execution, resolution, artifacts, blobs);
   if (!finalized)

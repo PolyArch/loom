@@ -1,24 +1,14 @@
 #include "Evaluation/Models/SystemRuntimeAnalytic.h"
 
-#include "Dataflow/IR/DataflowDialect.h"
-#include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/MemoryConsistencyContract.h"
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Runtime/Gem5SimulationBinding.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/MLIRContext.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <algorithm>
-#include <array>
 #include <limits>
-#include <map>
-#include <mutex>
 #include <variant>
 
 namespace loom::evaluation::models {
@@ -88,46 +78,6 @@ clockPeriodPicoseconds(const fabric::FabricSystemRootView &system,
   if (period == 0)
     return invalid("service clock period is below one picosecond");
   return period;
-}
-
-/// Configuration payload bytes per AccCore, memoized by the immutable Fabric
-/// identity because the packed ConfigurationABI derivation is expensive and
-/// deterministic.
-llvm::Expected<std::uint64_t>
-configurationBytesPerCore(const fabric::FinalizedFabricRoot &fabricRoot,
-                          std::uint64_t accCoreCount) {
-  using Key = std::array<std::uint8_t, ArtifactIdentity::byteSize>;
-  static std::mutex mutex;
-  static std::map<Key, std::uint64_t> memo;
-  Key key{};
-  const auto bytes = fabricRoot.reference().artifact.bytes();
-  std::copy(bytes.begin(), bytes.end(), key.begin());
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (auto found = memo.find(key); found != memo.end())
-      return found->second;
-  }
-  mlir::DialectRegistry registry;
-  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
-                  mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
-  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
-  context.loadAllAvailableDialects();
-  auto draft = hardware::derivePackedConfigurationABIDraft(fabricRoot, context);
-  if (!draft)
-    return draft.takeError();
-  std::uint64_t bits = 0;
-  for (const hardware::ProgrammingUnitDraft &unit : draft->programmingUnits) {
-    auto sum = checkedAdd(bits, unit.payloadBitCount, "configuration bits");
-    if (!sum)
-      return sum.takeError();
-    bits = *sum;
-  }
-  const std::uint64_t perCore =
-      ceilDiv(ceilDiv(bits, 8), std::max<std::uint64_t>(1, accCoreCount));
-  std::lock_guard<std::mutex> lock(mutex);
-  memo.try_emplace(key, perCore);
-  return perCore;
 }
 
 } // namespace
@@ -301,7 +251,7 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
     return fixed.takeError();
   platform.launchFixedPicoseconds = *fixed;
   auto configuration =
-      configurationBytesPerCore(fabricRoot, platform.accCoreCount);
+      hardware::packedConfigurationImageBytesPerAccCore(fabricRoot);
   if (!configuration)
     return configuration.takeError();
   platform.configurationBytesPerCore = *configuration;
@@ -309,8 +259,8 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
 }
 
 llvm::Expected<std::uint64_t>
-estimateConfigurationLoadPicoseconds(const SystemPlatformModel &platform,
-                                     std::uint64_t accCores) {
+estimateConfigurationResidencyPicoseconds(const SystemPlatformModel &platform,
+                                          std::uint64_t accCores) {
   if (accCores == 0 || platform.configurationBytesPerCore == 0)
     return std::uint64_t{0};
   if (platform.accCoreOutstandingRequests == 0 ||

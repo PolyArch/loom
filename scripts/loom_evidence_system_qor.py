@@ -36,6 +36,7 @@ def _system_qor_target(prefix: str) -> Fraction:
 
 _UTILIZATION_TARGET = _system_qor_target("applicationMinimumResourceUtilization")
 _HOST_BOUND_TARGET = _system_qor_target("applicationHostBoundWindow")
+_LAUNCH_OVERHEAD_TARGET = _system_qor_target("applicationMaximumLaunchOverhead")
 
 
 def _ratio(value: Any, expected: Fraction) -> bool:
@@ -148,6 +149,10 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
             "numerator": _HOST_BOUND_TARGET.numerator,
             "denominator": _HOST_BOUND_TARGET.denominator,
         },
+        "maximum_launch_overhead_exclusive": {
+            "numerator": _LAUNCH_OVERHEAD_TARGET.numerator,
+            "denominator": _LAUNCH_OVERHEAD_TARGET.denominator,
+        },
     }:
         errors.append("system_qor_target_mismatch")
     host_interval = qor["host_only"]["computation_interval"]
@@ -172,28 +177,29 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
     )
     if host is None or branches is None:
         return errors
-    memory_branch, compute_branch, window_ticks = branches
+    memory_branch, compute_branch, window_ticks, accelerated, overhead = branches
     speedup = Fraction(host[1], window_ticks)
     if not _ratio(qor["speedup"], speedup):
         errors.append("system_qor_speedup_mismatch")
     launched = candidate_interval["compute"]["launched_acc_cores"] != 0
+    launch_bound = overhead >= _LAUNCH_OVERHEAD_TARGET
     qualifies = (
         speedup > 1
         and launched
+        and not launch_bound
         and (
             memory_branch > _UTILIZATION_TARGET or compute_branch > _UTILIZATION_TARGET
         )
     )
     if qor["status"] != ("qualified" if qualifies else "not_qualified"):
         errors.append("system_qor_status_mismatch")
-    if memory_branch > _UTILIZATION_TARGET:
+    if launch_bound:
+        bottleneck = "launch_bound"
+    elif memory_branch > _UTILIZATION_TARGET:
         bottleneck = "memory_bandwidth_bound"
     elif compute_branch > _UTILIZATION_TARGET:
         bottleneck = "compute_bound"
-    elif (
-        Fraction(candidate_interval["accelerated_ticks"], window_ticks)
-        < _HOST_BOUND_TARGET
-    ):
+    elif Fraction(accelerated, window_ticks) < _HOST_BOUND_TARGET:
         bottleneck = "host_bound"
     else:
         bottleneck = "latency_bound"
@@ -209,7 +215,7 @@ def _validate_system_qor_interval(
 ) -> tuple[Fraction, int] | None:
     fields = {"begin_tick", "end_tick", "elapsed_ticks", "shared_memory"}
     if candidate:
-        fields |= {"accelerated_ticks", "compute"}
+        fields |= {"accelerated_window", "compute"}
     if not isinstance(window, dict) or set(window) != fields:
         errors.append("system_qor_computation_shape_invalid")
         return None
@@ -241,18 +247,85 @@ def _validate_system_qor_interval(
     return memory_branch, span
 
 
+def _validate_system_qor_phase(
+    phase: Any, errors: list[str]
+) -> tuple[int, int, int] | None:
+    if not isinstance(phase, dict) or set(phase) != {
+        "begin_tick",
+        "end_tick",
+        "elapsed_ticks",
+    }:
+        errors.append("system_qor_accelerated_phase_shape_invalid")
+        return None
+    begin = _integer(phase["begin_tick"])
+    end = _integer(phase["end_tick"])
+    span = _integer(phase["elapsed_ticks"])
+    if (
+        begin is None
+        or end is None
+        or span is None
+        or begin < 0
+        or end < begin
+        or end - begin != span
+    ):
+        errors.append("system_qor_accelerated_phase_invalid")
+        return None
+    return begin, end, span
+
+
 def _validate_system_qor_window(
     window: Any, program_ticks: int, errors: list[str]
-) -> tuple[Fraction, Fraction, int] | None:
-    """Recompute occupancy over the same source-declared computation interval."""
+) -> tuple[Fraction, Fraction, int, int, Fraction] | None:
+    """Recompute saturation over the invocation phase of the accelerated window.
+
+    Configuration residency moves the binary configuration image, which the
+    service observer never counts as application data, so charging its ticks to
+    the saturation denominator would credit a fat configuration image as memory
+    appetite. It is reported as the launch overhead of the whole window instead.
+    """
     measured = _validate_system_qor_interval(window, program_ticks, True, errors)
     if measured is None:
         return None
-    memory_branch, span = measured
-    accelerated = _integer(window["accelerated_ticks"])
-    if accelerated is None or accelerated < 0 or accelerated > span:
-        errors.append("system_qor_accelerated_interval_invalid")
+    _, span = measured
+    accelerated_window = window["accelerated_window"]
+    if not isinstance(accelerated_window, dict) or set(accelerated_window) != {
+        "configuration_residency",
+        "invocation",
+        "elapsed_ticks",
+        "launch_overhead",
+        "shared_memory",
+    }:
+        errors.append("system_qor_accelerated_window_shape_invalid")
         return None
+    residency = _validate_system_qor_phase(
+        accelerated_window["configuration_residency"], errors
+    )
+    invocation = _validate_system_qor_phase(accelerated_window["invocation"], errors)
+    accelerated = _integer(accelerated_window["elapsed_ticks"])
+    if residency is None or invocation is None or accelerated is None:
+        return None
+    if (
+        invocation[0] < residency[0]
+        or invocation[1] < residency[1]
+        or invocation[1] - residency[0] != accelerated
+        or accelerated > span
+    ):
+        errors.append("system_qor_accelerated_window_invalid")
+        return None
+    memory = accelerated_window["shared_memory"]
+    if not isinstance(memory, dict) or set(memory) != {"occupied_ticks", "utilization"}:
+        errors.append("system_qor_accelerated_window_shape_invalid")
+        return None
+    busy = _integer(memory["occupied_ticks"])
+    if busy is None or busy < 0 or busy > invocation[2]:
+        errors.append("system_qor_accelerated_window_occupancy_invalid")
+        return None
+    memory_branch = Fraction(busy, invocation[2]) if invocation[2] else Fraction(0)
+    if not _ratio(memory["utilization"], memory_branch):
+        errors.append("system_qor_accelerated_window_utilization_mismatch")
+    overhead = Fraction(residency[2], accelerated) if accelerated else Fraction(0)
+    if not _ratio(accelerated_window["launch_overhead"], overhead):
+        errors.append("system_qor_launch_overhead_mismatch")
     compute = window["compute"]
     if not isinstance(compute, dict) or set(compute) != {
         "launched_acc_cores",
@@ -278,8 +351,8 @@ def _validate_system_qor_window(
         errors.append("system_qor_candidate_compute_invalid")
         return None
     # Each class is measured against its own speed of light: the element lanes
-    # every launched Fabric could have issued for it across the window. A
-    # Temporal PE's FU issues once per cycle; its resident contexts are
+    # every launched Fabric could have issued for it across the invocation
+    # phase. A Temporal PE's FU issues once per cycle; its resident contexts are
     # placement slots, which explain a mapping and never gate it.
     compute_branch = Fraction(0)
     placement = Fraction(0)
@@ -323,7 +396,7 @@ def _validate_system_qor_window(
             errors.append("system_qor_candidate_compute_class_invalid")
             return None
         seen.add((schema, bits))
-        capacity = span * peak * cores
+        capacity = invocation[2] * peak * cores
         occupancy = Fraction(firings * period, capacity) if capacity else Fraction(0)
         if not _ratio(entry["occupancy"], occupancy):
             errors.append("system_qor_candidate_compute_occupancy_mismatch")
@@ -341,4 +414,6 @@ def _validate_system_qor_window(
         errors.append("system_qor_candidate_binding_class_mismatch")
     if not _ratio(compute["placement_utilization"], placement):
         errors.append("system_qor_candidate_placement_utilization_mismatch")
-    return memory_branch, compute_branch, span
+    if (cores != 0) != (accelerated != 0):
+        errors.append("system_qor_accelerated_window_launch_mismatch")
+    return memory_branch, compute_branch, span, accelerated, overhead

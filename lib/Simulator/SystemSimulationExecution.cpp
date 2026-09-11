@@ -665,6 +665,17 @@ encodeExecution(const SystemSimulationExecution &execution,
     writer.u64(interval.beginMemoryOccupiedTicks);
     writer.u64(interval.endMemoryOccupiedTicks);
   }
+  writer.u32(execution.acceleratedPhases ? 1 : 0);
+  if (execution.acceleratedPhases) {
+    for (const SystemAcceleratedPhase &phase :
+         {execution.acceleratedPhases->configurationResidency,
+          execution.acceleratedPhases->invocation}) {
+      writer.u64(phase.beginTick);
+      writer.u64(phase.endTick);
+      writer.u64(phase.beginMemoryOccupiedTicks);
+      writer.u64(phase.endMemoryOccupiedTicks);
+    }
+  }
   std::vector<std::uint8_t> tail = writer.take();
   bytes.insert(bytes.end(), tail.begin(), tail.end());
   return bytes;
@@ -729,12 +740,35 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
     interval =
         SystemComputationInterval{*begin, *end, *beginOccupied, *endOccupied};
   }
+  auto phasesTag = reader.u32();
+  if (!phasesTag)
+    return phasesTag.takeError();
+  std::optional<SystemAcceleratedPhases> phases;
+  if (*phasesTag > 1)
+    return detail::invalid(
+        "simulation execution: unknown accelerated phase tag");
+  if (*phasesTag == 1) {
+    SystemAcceleratedPhases observed;
+    for (SystemAcceleratedPhase *phase :
+         {&observed.configurationResidency, &observed.invocation}) {
+      for (std::uint64_t *field :
+           {&phase->beginTick, &phase->endTick,
+            &phase->beginMemoryOccupiedTicks, &phase->endMemoryOccupiedTicks}) {
+        auto value = reader.u64();
+        if (!value)
+          return value.takeError();
+        *field = *value;
+      }
+    }
+    phases = observed;
+  }
   if (!reader.atEnd())
     return detail::invalid("simulation execution: trailing bytes");
   SystemSimulationExecution execution{
       requestPrefix->reference,  std::move(*terminal),
       std::move(*functional),    std::move(*progress),
-      std::move(memoryActivity), std::move(interval)};
+      std::move(memoryActivity), std::move(interval),
+      std::move(phases)};
   if (llvm::Error error = validateExecution(execution, *context))
     return std::move(error);
   auto canonical = encodeExecution(execution, *context);

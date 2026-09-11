@@ -12,7 +12,7 @@ The fixed schema descriptors are:
 ```text
 loom.simulation_workload      1.1
 loom.simulation_runtime_input 3.0
-loom.simulation_execution     5.0
+loom.simulation_execution     6.0
 ```
 
 Each family has one typed C++ model and one canonical serializer/parser.
@@ -552,7 +552,7 @@ request_ref
 
 The root field order, terminal record, Spatial and System functional and
 progress observations, and activity summaries are closed below. Together they
-define the complete `loom.simulation_execution 5.0` wire. The invocation-local
+define the complete `loom.simulation_execution 6.0` wire. The invocation-local
 typed Spatial diagnostic algebra defined below has no field in that Artifact
 root; the narrow System root-lifecycle progress sequence is a distinct
 mandatory observation.
@@ -911,7 +911,7 @@ or gem5 event priority. Evaluation derives metrics through the exact model.
 The root lifecycle is not a general gem5 event trace and does not admit raw
 provider records or diagnostic events. Raw gem5 traces remain attempt or
 scratch material. DFG and CGRA diagnostic traces use the current typed Spatial
-event algebra below only outside `loom.simulation_execution 5.0` identity.
+event algebra below only outside `loom.simulation_execution 6.0` identity.
 
 ## Activity Summaries
 
@@ -1052,8 +1052,15 @@ occupied-service integral after progress observations. Spatial activity encoding
 is unchanged.
 
 System memory activity is the native single-memory acceptance-service busy time
-from `ProgramEntryAccepted` through `ProgramExitVisible`. It covers requests from
-every HostCore, InstructionCore, and bridge DMA producer. The fixed timing-mode
+from `ProgramEntryAccepted` through `ProgramExitVisible`. It covers
+application-data requests from every HostCore, InstructionCore, and bridge DMA
+producer. It excludes configuration transport: the observer holds the guest
+apertures that carry the binary configuration image and never adds their
+accepted service to the integral, because streaming a configuration image is
+launch overhead the accelerated window charges to its configuration residency
+phase rather than data appetite the saturation branches divide by. That
+service still occupies the memory, so acceptance overlap remains detectable.
+The fixed timing-mode
 platform places a zero-delay CommMonitor immediately before SimpleMemory. Its
 native `PktRequest` probe fires only after downstream acceptance, preserving
 packet command and size before the response mutates them. The maintained
@@ -1077,13 +1084,9 @@ two granularities: the full-program total and the per-event samples. There is no
 second counter and no derived rate.
 
 `projectSystemMemoryUtilization` divides occupied ticks by the complete program
-window. `projectSystemAcceleratedWindow` instead reports the accelerated window:
-the first observed root Start tick, the last observed root Completion tick, and
-the difference of their service samples. Host gaps between launches stay inside
-that interval. The window is absent when the execution completed no root launch,
-so a host-only run is unmeasured rather than fully utilized; the Application
-owner additionally refuses a window that spans no tick, because no occupancy
-ratio exists over it. The bound SimpleMemory contract retains its existing finite capacity:
+window. The accelerated window and its two phases are observed by the Spatial
+Bridges instead and stored beside the computation interval, described below.
+The bound SimpleMemory contract retains its existing finite capacity:
 one accepted byte consumes 73 ticks after native conversion of the default
 12.8 GiB/s rate at a fixed 1ps global tick. Configuration verifies the effective
 native rate. Neither idle devices nor unused time disappear from either
@@ -1105,8 +1108,38 @@ unmeasured and never aliases the full-program or root-lifecycle interval.
 Application speedup and resource qualification consume this interval; the
 existing full-program and root-lifecycle projections remain diagnostics.
 
+### System Accelerated Phases
+
+System execution then carries an optional `accelerated_phases`. After the
+computation interval, its wire is a u32 presence tag followed, when present, by
+two phase records, each four u64 values: begin tick, end tick, cumulative memory
+occupied ticks at begin, and cumulative memory occupied ticks at end. The first
+record is configuration residency, the second is invocation.
+
+Each AccCore passes through both phases: configuration residency runs from its
+launch request to the tick its immutable plane became resident, and invocation
+runs from its invocation start to its completion. A Bridge whose configuration
+was already resident when the computation began establishes no residency inside
+the window, so its residency phase is the empty span at the start of its
+invocation phase. The window aggregates the per-AccCore phases by earliest phase
+start and latest phase end, taken independently for each phase; service samples
+rise with their ticks, so each aggregated bound still carries the sample
+observed there. On an array whose cores are dispatched one at a time the two
+phases overlap, so their spans are not a partition of the window. The
+accelerated window runs from the residency start to the invocation end.
+
+Only lifecycle transitions inside the open computation interval are observed,
+so warmup launches never extend the measured window. A computation boundary
+cannot cut an unfinished invocation, so every observed phase belongs entirely to
+the measured computation. Each phase is contained in the computation interval in
+both time and service, its service samples are monotone, and no phase consumes
+more service than its own span. The invocation phase never begins or ends before
+the residency phase. Presence requires a computation interval. Absence means the
+computation completed no accelerator invocation, so it has no accelerated
+window, and a host-only run is unmeasured rather than fully utilized.
+
 This specification is the semantic owner contract consumed by
-`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 5.0` root,
+`ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 6.0` root,
 publisher, and importer are current owners, but Evaluation consumption also
 requires an activity-summary adopter, ordinal resolver, same-Request validator,
 and exact source-to-target lineage adapter. Until that adapter is registered,
@@ -1149,7 +1182,7 @@ progress anchors, normalized metrics, or findings.
 
 ## Invocation-Local Spatial Diagnostic Trace
 
-`loom.simulation_execution 5.0` contains no general diagnostic-trace field.
+`loom.simulation_execution 6.0` contains no general diagnostic-trace field.
 Its mandatory narrow System root-lifecycle progress sequence is not a
 `SpatialDiagnosticTrace` and cannot carry the event algebra below. The current
 Spatial diagnostic trace is an invocation-local `SpatialDiagnosticTrace`: it
@@ -1586,7 +1619,7 @@ signals.
 Diagnostic-trace anchors cover the three capture levels, seven event variants,
 typed occurrence references, nonempty canonically ordered frames, strictly
 increasing coordinates, duplicate-key rejection, and capture
-noninterference. Persistent `loom.simulation_execution 5.0` import admits only
+noninterference. Persistent `loom.simulation_execution 6.0` import admits only
 the narrow System root-lifecycle progress field and rejects any general trace,
 manifest, chunk, coverage, path, or opaque diagnostic field.
 

@@ -226,6 +226,17 @@ configuration. Transport framing, addresses, write beats, and the mechanism
 that commits staging state are HardwareImplementation details derived from
 this contract; they are not additional ABI fields.
 
+The size of the binary configuration image one AccCore loads therefore has one
+owner: the sum of the `payload_bit_count` of every packed ConfigurationABI
+Programming Unit of the exact Fabric, rounded up to whole bytes and divided
+over that Fabric's AccCores. A Mapping selects the values those per-PE
+configuration, per-Switch routing, and memory-table fields carry, never their
+width, so the size is a fact of the Fabric alone. The derivation is
+deterministic and expensive, so it runs once per Fabric identity and is
+memoized. The System runtime analytic model and the gem5 Spatial Bridge's
+configuration transport both read this one derivation; neither keeps a
+constant of its own.
+
 One implementation transport may serve several Programming Units. Its address
 layout is a removable mechanical projection, not another Artifact or an ABI
 field:

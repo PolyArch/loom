@@ -652,6 +652,7 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
     return runtime.takeError();
   const std::uint64_t hostResidualPicoseconds = *runtime;
   std::uint64_t configuredCores = 0;
+  std::uint64_t invocationPicoseconds = 0;
   llvm::json::Array launchRecords;
   for (const AnalyticLaunchEstimate &launch : launches) {
     auto duration =
@@ -660,6 +661,9 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
       return duration.takeError();
     if (llvm::Error error = accumulateScaled(*runtime, duration->picoseconds, 1,
                                              "launch Runtime"))
+      return std::move(error);
+    if (llvm::Error error = accumulateScaled(
+            invocationPicoseconds, duration->picoseconds, 1, "invocation phase"))
       return std::move(error);
     configuredCores = std::max(
         configuredCores, std::min(platform.accCoreCount, launch.activations));
@@ -699,19 +703,27 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
     }
   }
   auto configuration =
-      estimateConfigurationLoadPicoseconds(platform, configuredCores);
+      estimateConfigurationResidencyPicoseconds(platform, configuredCores);
   if (!configuration)
     return configuration.takeError();
-  if (llvm::Error error =
-          accumulateScaled(*runtime, *configuration, 1, "configuration load"))
+  if (llvm::Error error = accumulateScaled(*runtime, *configuration, 1,
+                                           "configuration residency phase"))
     return std::move(error);
+  // The estimate carries the same two accelerated-window phases the measured
+  // System QoR projection reports: configuration residency streams the
+  // Fabric-derived binary configuration image into every configured AccCore,
+  // and the invocation phase runs the launch sites over that residency.
   mapping_debug::emit(
       mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "analytic_runtime_estimate";
         fields["instruction_leaves"] = instructionLeaves;
         fields["host_residual_ps"] = hostResidualPicoseconds;
-        fields["configuration_ps"] = *configuration;
+        fields["configuration_residency_ps"] = *configuration;
+        fields["invocation_ps"] = invocationPicoseconds;
+        fields["configuration_image_bytes_per_core"] =
+            platform.configurationBytesPerCore;
+        fields["configured_acc_cores"] = configuredCores;
         fields["runtime_ps"] = *runtime;
         fields["acc_core_count"] = platform.accCoreCount;
         fields["memory_latency_ps"] = platform.memoryLatencyPicoseconds;
