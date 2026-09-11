@@ -20,6 +20,7 @@
 # RUN:   --portfolio-application=gapbs-pagerank \
 # RUN:   --portfolio-input=validation-scale-eda \
 # RUN:   --portfolio-inventory=%t.inventory.json \
+# RUN:   --evaluation-tier=qualified \
 # RUN:   --spatial-invocations=1 --minimum-unique-acc-cores=1 \
 # RUN:   --required-dataflow-text=dataflow.carry \
 # RUN:   --required-dataflow-text=dataflow.store \

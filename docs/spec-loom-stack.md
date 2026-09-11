@@ -520,10 +520,10 @@ invocation beside the `dfg` and `cgra` runs; it does not select another
 workspace schema. The required `paired_system_execution` section is the
 Application owner's `loom.application.system_qor_projection` 5.0. It records the
 host-only and mapped candidate Request/Evidence/Execution roots, exact runtime
-manifest and gem5 binding, complete program tick durations, native shared memory
-acceptance-service busy ticks, each image's source-declared computation
-interval, and the candidate's accelerated window with its configuration
-residency and invocation phases. Both
+manifest and gem5 binding, the evaluation tier that runtime manifest declares,
+complete program tick durations, native shared memory acceptance-service busy
+ticks, each image's source-declared computation interval, and the candidate's
+accelerated window with its configuration residency and invocation phases. Both
 execution paths retain all physical CPUs and bridges. Qualification imports and
 joins both Runtime and product oracle Evidence, matches full output
 observations, and derives speedup plus both computation resource occupancies.
@@ -531,11 +531,14 @@ The shared source boundaries enclose prepared coherent shared-memory inputs
 through visible result writes, including dispatch and intervening host work but
 excluding data generation, warmup, and verification. They do not imply physical
 DRAM cache writeback. Missing boundaries produce an unmeasured result. The
-real-application gate requires strict computation speedup joined with either
+real-application gate applies to a `qualified` evaluation tier and requires
+strict computation speedup joined with either
 more than 90 percent invocation-phase memory service utilization or more than 90 percent compute
 occupancy, where one retired compute firing occupies its bound compute unit for
 one reference cycle, and a configuration residency below half of the
-accelerated window. The projection also publishes a typed bottleneck
+accelerated window. A `functional` tier publishes the same measurements under
+a `functional` status without that saturation gate; the Application portfolio
+contract owns which rows declare which tier. The projection also publishes a typed bottleneck
 classification of that window: launch bound when residency reaches that budget,
 memory bandwidth bound, compute bound, host bound
 when the accelerated window covers under one tenth of

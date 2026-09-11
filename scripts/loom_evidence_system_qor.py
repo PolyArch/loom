@@ -38,6 +38,13 @@ _UTILIZATION_TARGET = _system_qor_target("applicationMinimumResourceUtilization"
 _HOST_BOUND_TARGET = _system_qor_target("applicationHostBoundWindow")
 _LAUNCH_OVERHEAD_TARGET = _system_qor_target("applicationMaximumLaunchOverhead")
 
+# Evaluation-tier spellings are owned by EvaluationTier in
+# include/Application/Manifest.h. Only a qualified row carries the saturation
+# target; a functional row publishes the same measurements without it.
+FUNCTIONAL_TIER = "functional"
+QUALIFIED_TIER = "qualified"
+EVALUATION_TIERS = (FUNCTIONAL_TIER, QUALIFIED_TIER)
+
 
 def _ratio(value: Any, expected: Fraction) -> bool:
     return value == {
@@ -46,12 +53,21 @@ def _ratio(value: Any, expected: Fraction) -> bool:
     }
 
 
-def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list[str]:
-    """Validate the Application owner's post-execution projection and root joins."""
+def validate_system_qor(
+    workspace: dict[str, Any], declared_tier: str | None
+) -> list[str]:
+    """Validate the Application owner's post-execution projection and root joins.
+
+    `declared_tier` is the Application manifest's own evaluation tier for the
+    selected row, or None when no portfolio row was selected. The projection
+    carries the tier its Deployment was built with; the manifest owner only
+    cross-checks it and never supplies a competing target.
+    """
     qor = workspace.get("paired_system_execution")
     if not isinstance(qor, dict) or set(qor) != {
         "schema",
         "version",
+        "evaluation_tier",
         "application_runtime_manifest",
         "gem5_binding",
         "host_only",
@@ -65,6 +81,11 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
     errors: list[str] = []
     if qor["schema"] != SYSTEM_QOR_SCHEMA or qor["version"] != SYSTEM_QOR_VERSION:
         errors.append("system_qor_schema_invalid")
+    tier = qor["evaluation_tier"]
+    if tier not in EVALUATION_TIERS:
+        return errors + ["system_qor_evaluation_tier_invalid"]
+    if declared_tier is not None and tier != declared_tier:
+        errors.append("system_qor_evaluation_tier_mismatch")
     for field in ("application_runtime_manifest", "gem5_binding"):
         if _root_reference(qor[field]) is None or qor[field] != workspace.get(field):
             errors.append(f"system_qor_{field}_mismatch")
@@ -166,7 +187,7 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
             or qor["bottleneck"] != "unmeasured"
         ):
             errors.append("system_qor_unmeasured_projection_invalid")
-        if require_target:
+        if declared_tier is not None:
             errors.append("system_qor_computation_unmeasured")
         return errors
     host = _validate_system_qor_interval(
@@ -191,7 +212,12 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
             memory_branch > _UTILIZATION_TARGET or compute_branch > _UTILIZATION_TARGET
         )
     )
-    if qor["status"] != ("qualified" if qualifies else "not_qualified"):
+    expected_status = (
+        FUNCTIONAL_TIER
+        if tier == FUNCTIONAL_TIER
+        else ("qualified" if qualifies else "not_qualified")
+    )
+    if qor["status"] != expected_status:
         errors.append("system_qor_status_mismatch")
     if launch_bound:
         bottleneck = "launch_bound"
@@ -205,7 +231,7 @@ def validate_system_qor(workspace: dict[str, Any], require_target: bool) -> list
         bottleneck = "latency_bound"
     if qor["bottleneck"] != bottleneck:
         errors.append("system_qor_bottleneck_mismatch")
-    if require_target and not qualifies:
+    if tier == QUALIFIED_TIER and not qualifies:
         errors.append("system_qor_performance_target_not_met")
     return errors
 

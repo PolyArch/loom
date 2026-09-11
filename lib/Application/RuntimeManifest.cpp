@@ -977,6 +977,7 @@ std::string serializeDraft(const ApplicationRuntimeManifestDraft &draft) {
     json.attribute(
         "schema_version",
         formatSchemaVersion(applicationRuntimeManifestSchema.version));
+    json.attribute("evaluation_tier", toString(draft.evaluationTier));
     writeRoot(json, "source_program", draft.sourceProgram);
     writeRoot(json, "fabric", draft.fabric);
     writeRoot(json, "workload", draft.workload);
@@ -1035,6 +1036,7 @@ parseDraft(llvm::StringRef text) {
           rejectUnknownFields(*root,
                               {"schema",
                                "schema_version",
+                               "evaluation_tier",
                                "source_program",
                                "fabric",
                                "workload",
@@ -1077,6 +1079,14 @@ parseDraft(llvm::StringRef text) {
       *version != applicationRuntimeManifestSchema.version)
     return reject(ApplicationRuntimeManifestErrorReason::ForeignSchema,
                   "unsupported Application runtime manifest schema");
+  auto tierSpelling =
+      requireString(*root, "evaluation_tier", "runtime manifest");
+  if (!tierSpelling)
+    return tierSpelling.takeError();
+  auto evaluationTier = parseEvaluationTier(*tierSpelling);
+  if (!evaluationTier)
+    return malformed("runtime manifest evaluation tier is invalid: " +
+                     llvm::toString(evaluationTier.takeError()));
   auto source = parseRoot(*root, "source_program", "runtime manifest");
   if (!source)
     return source.takeError();
@@ -1208,6 +1218,7 @@ parseDraft(llvm::StringRef text) {
     graph = std::move(*parsed);
   }
   return ApplicationRuntimeManifestDraft{
+      *evaluationTier,
       std::move(*source),
       std::move(*fabric),
       std::move(*workload),

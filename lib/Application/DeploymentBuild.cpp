@@ -288,7 +288,9 @@ llvm::Expected<FinalizedApplicationRuntimeManifest> finalizeRuntimeManifest(
     return finalizedActivationDecision.takeError();
 
   auto manifest = ApplicationRuntimeManifest::get(
-      {*pair.sourceProgram,
+      {prepared.portfolioInput ? prepared.portfolioInput->input.evaluationTier
+                               : EvaluationTier::Functional,
+       *pair.sourceProgram,
        *pair.fabric,
        *pair.workload,
        *pair.runtimeInput,

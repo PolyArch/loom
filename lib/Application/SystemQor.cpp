@@ -317,6 +317,8 @@ ApplicationSystemBottleneck ApplicationSystemQor::bottleneck() const {
 ApplicationSystemQorStatus ApplicationSystemQor::status() const {
   if (!speedup_ || !window_)
     return ApplicationSystemQorStatus::Unmeasured;
+  if (tier_ == EvaluationTier::Functional)
+    return ApplicationSystemQorStatus::Functional;
   const bool saturated = isSaturated(window_->memoryUtilization) ||
                          isSaturated(window_->compute.occupancy);
   return speedup_->numerator() > speedup_->denominator() && saturated &&
@@ -364,14 +366,16 @@ llvm::Expected<ApplicationSystemQor> qualifyApplicationSystemQor(
   if (!window)
     return window.takeError();
   return ApplicationSystemQor(
-      manifest.reference(), host->gem5Binding, std::move(host->measurement),
-      std::move(accelerated->measurement), std::move(*window), speedup);
+      manifest.reference(), runtime.evaluationTier(), host->gem5Binding,
+      std::move(host->measurement), std::move(accelerated->measurement),
+      std::move(*window), speedup);
 }
 
 void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
                                        const ApplicationSystemQor &qor) {
   json.attribute("schema", applicationSystemQorProjectionSchema);
   json.attribute("version", applicationSystemQorProjectionVersion);
+  json.attribute("evaluation_tier", toString(qor.evaluationTier()));
   writeRoot(json, "application_runtime_manifest", qor.runtimeManifest());
   writeRoot(json, "gem5_binding", qor.gem5Binding());
   json.attributeObject("host_only", [&] { writeRun(json, qor.hostOnly()); });
@@ -389,6 +393,9 @@ void writeApplicationSystemQorJsonFields(llvm::json::OStream &json,
     break;
   case ApplicationSystemQorStatus::NotQualified:
     json.attribute("status", "not_qualified");
+    break;
+  case ApplicationSystemQorStatus::Functional:
+    json.attribute("status", "functional");
     break;
   case ApplicationSystemQorStatus::Unmeasured:
     json.attribute("status", "unmeasured");

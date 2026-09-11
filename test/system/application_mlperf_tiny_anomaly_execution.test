@@ -20,4 +20,5 @@
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --portfolio-application=mlperf-tiny-anomaly-detection \
 # RUN:   --portfolio-input=smoke --portfolio-inventory=%t.inventory.json \
+# RUN:   --evaluation-tier=functional \
 # RUN:   --spatial-invocations=1 --minimum-unique-acc-cores=1

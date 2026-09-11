@@ -48,12 +48,15 @@ and compares each with the same independently sealed source output.
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime-owned manifest or public manual-launch
 schema. The Application layer does publish the incompatible
-`loom.application.runtime_manifest 9.0` activation closure. It references one
+`loom.application.runtime_manifest 10.0` activation closure. It references one
 strictly imported StructuredProgram source workload/runtime pair, the exact
 source-backed Spatial replay cases, one completed pair decision, the selected
 SystemMapping and Deployment, completed runtime/oracle Evidence, the exact
-Deployment-owned System workload/runtime pair, and an optional finite verified
-resource-time transition graph. Version 6.0 admits the `copied` logical-memory
+Deployment-owned System workload/runtime pair, the declared evaluation tier of
+the Application manifest row the Deployment was built from, and an optional
+finite verified resource-time transition graph. Version 10.0 adds that tier,
+which the System driver's qualification status consumes; it is an incompatible
+extension of 9.0. Version 6.0 admits the `copied` logical-memory
 migration disposition and retains its provider-derived nonzero cost; this is
 an incompatible extension of 5.0. The canonical set of durable
 `loom.dse.hardware_mutation_repair_record` roots produced while the pair was
@@ -401,7 +404,7 @@ uses graph order as policy.
 
 The joined event sequence may be published as
 `loom.application.resource_time_execution_trace` version 4.0. Version 4.0
-requires an exact `loom.application.runtime_manifest 9.0` root and is
+requires an exact `loom.application.runtime_manifest 10.0` root and is
 incompatible with 1.0 rather than reinterpreting its accepted manifest
 dependency. The trace names
 its exact Application runtime manifest, retains the root event occurrence and

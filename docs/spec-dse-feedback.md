@@ -319,7 +319,7 @@ constructed roots use registry-3.2 refs.
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
 | 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.1`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
-| 13 | `application_product_oracle` | `0: loom.application.runtime_manifest 9.0`, `1: System SimulationExecution` | both forbidden; the execution Request must use the manifest's exact activation workload and runtime input |
+| 13 | `application_product_oracle` | `0: loom.application.runtime_manifest 10.0`, `1: System SimulationExecution` | both forbidden; the execution Request must use the manifest's exact activation workload and runtime input |
 
 The matching initial model descriptors are:
 

@@ -33,15 +33,29 @@ enum class ExecutionSelection : std::uint8_t {
   ScaleEda,
 };
 
+/// The evaluation target one input row declares. It is the single owner of the
+/// question "does this row carry the System QoR saturation gate?"; no consumer
+/// re-derives it from an input or execution-selection name.
+///
+/// `Functional` requires a published Mapping, an execution output matching the
+/// product oracle, and complete diagnostics. Its measurements are published
+/// exactly as measured and no saturation target applies, because an input
+/// sized below the System's fixed launch cost cannot reach one by
+/// construction. `Qualified` additionally requires the full System QoR target.
+enum class EvaluationTier : std::uint8_t { Functional, Qualified };
+
 llvm::StringRef toString(SourceKind kind);
 llvm::StringRef toString(LanguageMode mode);
 llvm::StringRef toString(OracleKind kind);
 llvm::StringRef toString(OracleEncoding encoding);
 llvm::StringRef toString(OracleCoverage coverage);
 llvm::StringRef toString(ExecutionSelection selection);
+llvm::StringRef toString(EvaluationTier tier);
 
 llvm::Expected<ExecutionSelection>
 parseExecutionSelection(llvm::StringRef spelling);
+
+llvm::Expected<EvaluationTier> parseEvaluationTier(llvm::StringRef spelling);
 
 struct SourceSelection final {
   SourceKind kind;
@@ -94,6 +108,7 @@ struct WorkloadExecutionProfile final {
 
 struct WorkloadInputSelection final {
   std::string name;
+  EvaluationTier evaluationTier;
   std::string workload;
   std::string runtimeInput;
   std::vector<std::string> cachedInputs;
@@ -132,7 +147,7 @@ class ApplicationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.application_portfolio";
-  static constexpr llvm::StringLiteral schemaVersion = "4.0";
+  static constexpr llvm::StringLiteral schemaVersion = "5.0";
 
   llvm::ArrayRef<ApplicationDefinition> applications() const {
     return applications_;
@@ -153,6 +168,14 @@ parseApplicationManifest(llvm::StringRef jsonText);
 
 llvm::Expected<ApplicationManifest>
 loadApplicationManifest(llvm::StringRef path);
+
+/// The derived tier/input inventory projection published by
+/// `writeApplicationManifestInventoryJson`. It is a mechanical view of the
+/// manifest above, never an independent contract.
+inline constexpr llvm::StringLiteral applicationPortfolioInventorySchema =
+    "loom.application_portfolio_inventory";
+inline constexpr llvm::StringLiteral applicationPortfolioInventoryVersion =
+    "3.0";
 
 /// Deterministic JSON projection shared by host and inventory reports.
 llvm::json::Object
