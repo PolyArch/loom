@@ -754,6 +754,92 @@ module attributes {llvm.data_layout = "e-p:64:64"} {
   }
 }
 
+// The bound of a loop that selects a descriptor slot keeps its value domain
+// across an invocation boundary, so a scope that materialization moved behind
+// an explicit boundary proves the same slot set its source proved. A bound
+// with no domain of its own falls back to the containment window and reaches a
+// slot that a neighbouring field write makes partial.
+void boundaryCrossingIndexDomain() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                      mlir::scf::SCFDialect>();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {llvm.data_layout = "e-p:64:64"} {
+  llvm.func @pick(%slots: !llvm.ptr, %limit: i64) {
+    %zero = arith.constant 0 : i64
+    %step = arith.constant 1 : i64
+    scf.for %k = %zero to %limit step %step : i64 {
+      %source = llvm.getelementptr inbounds|nuw %slots[%k] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+      %stored = llvm.load %source : !llvm.ptr -> !llvm.ptr
+      %element = llvm.load %stored : !llvm.ptr -> i8
+    }
+    llvm.return
+  }
+  llvm.func @root(%bytes: !llvm.ptr, %chosen: i64, %opaque: i64) {
+    %one = arith.constant 1 : i64
+    %zero = arith.constant 0 : i64
+    %step = arith.constant 1 : i64
+    %extent = arith.constant 32 : i64
+    %viewOffset = arith.constant 64 : i64
+    %edgeOffset = arith.constant 24 : i64
+    %three = arith.constant 3 : i64
+    %clear = arith.constant 0 : i8
+    %marker = arith.constant 7 : i32
+    %slots = llvm.alloca %one x !llvm.array<32 x i8> : (i64) -> !llvm.ptr
+    scf.for %byte = %zero to %extent step %step : i64 {
+      %fill = llvm.getelementptr inbounds %slots[%byte] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %clear, %fill : i8, !llvm.ptr
+    }
+    %origin = llvm.getelementptr inbounds %bytes[%viewOffset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %target = llvm.getelementptr inbounds|nuw %slots[%chosen] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    llvm.store %origin, %target : !llvm.ptr, !llvm.ptr
+    %edge = llvm.getelementptr inbounds %slots[%edgeOffset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    llvm.store %marker, %edge : i32, !llvm.ptr
+    llvm.call @pick(%slots, BOUND) : (!llvm.ptr, i64) -> ()
+    llvm.return
+  }
+}
+)mlir";
+  for (llvm::StringRef bound : {"%three", "%opaque"}) {
+    std::string text = source.str();
+    const std::size_t position = text.find("BOUND");
+    if (position == std::string::npos)
+      fail("boundary index fixture lost its loop bound");
+    text.replace(position, std::strlen("BOUND"), bound.str());
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    if (!module)
+      fail("cannot parse boundary crossing index provenance");
+    auto callable = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("root");
+    auto callee = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("pick");
+    if (!callable || !callee)
+      fail("boundary index fixture lost a callable");
+    mlir::LLVM::LoadOp read;
+    callee.walk([&](mlir::LLVM::LoadOp operation) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(
+              operation.getResult().getType()))
+        read = operation;
+    });
+    if (!read)
+      fail("boundary index fixture lost its pointer read");
+    loom::frontend::analysis::StoredMemoryProvenance provenance(callable);
+    auto outcome = provenance.projectPointerTarget(read.getResult());
+    if (bound == "%three") {
+      auto *target =
+          std::get_if<loom::frontend::analysis::StoredPointerTarget>(&outcome);
+      if (!target ||
+          target->root != callable.getBody().front().getArgument(0) ||
+          !target->mayBeNull)
+        fail("a bound crossing an invocation boundary lost its value domain");
+    } else {
+      auto *refusal =
+          std::get_if<loom::frontend::analysis::StoredPointerRefusal>(&outcome);
+      if (!refusal || *refusal != loom::frontend::analysis::
+                                      StoredPointerRefusal::PartialPointerWrite)
+        fail("an unbounded loop bound admitted a slot it cannot reach");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -764,6 +850,7 @@ int main() {
   dynamicSlotPointerProvenance();
   guardedSlotIndexProvenance();
   overwrittenNarrowFieldStore();
+  boundaryCrossingIndexDomain();
   pointerServiceBoundary();
   exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";

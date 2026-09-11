@@ -1847,7 +1847,13 @@ proven cannot by itself make a representation partial.
 
 The proven non-null object base must dominate the selected scope and become
 an explicit live-in when not already present. Preflight and Graph lowering
-consume the same boundary service relation. Only pairs of explicit boundary
+consume the same boundary service relation, so that relation must survive the
+materialization that moves a selected scope behind an explicit boundary. An
+entry argument of a selected region or of an owned invocation denotes its
+actual, and the proof crosses those boundaries for an integer value exactly as
+it crosses them for an address. A scope therefore keeps the index domains,
+loop bounds and guards its source proved, and the second reading of the
+relation cannot be weaker than the first. Only pairs of explicit boundary
 values survive the mechanical ownership and publication clones; source
 analyses end before those rewrites and are rebuilt from the next phase's
 immutable input when needed. No stored descriptor schema, runtime observation,

@@ -1,5 +1,4 @@
 #include "Frontend/Analysis/StoredMemoryProvenance.h"
-#include "Common/MappingDebugLog.h"
 #include "Common/PointerLayout.h"
 
 #include "Dataflow/IR/DataflowOps.h"
@@ -642,6 +641,36 @@ private:
     return result;
   }
 
+  /// Value domain of one boundary argument. A selected region and an owned
+  /// invocation denote their entry arguments by explicit actuals, and the
+  /// address projection crosses both, so an integer index crosses the same
+  /// boundaries and a materialized scope keeps the domains its source proved.
+  std::optional<std::set<int64_t>>
+  boundaryScalarDomain(mlir::BlockArgument argument) {
+    mlir::Operation *owner = argument.getOwner()->getParentOp();
+    if (auto spatial = llvm::dyn_cast_or_null<::loom::SpatialRegionOp>(owner)) {
+      if (argument.getArgNumber() >= spatial->getNumOperands())
+        return std::nullopt;
+      return scalarDomain(spatial->getOperand(argument.getArgNumber()));
+    }
+    std::optional<std::set<int64_t>> crossed;
+    for (const auto &frame : frames_) {
+      if (!frame->caller || frame->entry() != argument.getOwner())
+        continue;
+      if (argument.getArgNumber() >= frame->actuals().size())
+        return std::nullopt;
+      auto incoming = scalarDomain(frame->actuals()[argument.getArgNumber()]);
+      if (!incoming)
+        return std::nullopt;
+      if (!crossed)
+        crossed.emplace();
+      crossed->insert(incoming->begin(), incoming->end());
+      if (crossed->size() > maximumStaticValues)
+        return std::nullopt;
+    }
+    return crossed;
+  }
+
   std::optional<std::set<int64_t>> deriveScalarDomain(mlir::Value value) {
     auto scalar = evaluate(value, Path());
     if (scalar && scalar->isSignedIntN(64))
@@ -686,7 +715,7 @@ private:
       if (auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(
               induction.getOwner()->getParentOp()))
         return whileDomain(loop, induction);
-      return std::nullopt;
+      return boundaryScalarDomain(induction);
     }
     auto operation = value.getDefiningOp();
     if (!operation || operation->getNumRegions() ||
@@ -1599,31 +1628,27 @@ private:
                             int64_t offset, const WriteEffect *effect = nullptr,
                             const WritePositions *positions = nullptr,
                             int64_t writeOffset = 0) {
-    mapping_debug::emit(
-        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
-        mapping_debug::Event::DerivedContext,
-        [&](llvm::json::Object &fields) {
-          fields["context_kind"] = "stored_pointer_slot_refusal";
-          fields["refusal"] = storedPointerRefusalSpelling(reason);
-          fields["root"] = describeValue(query.root);
-          fields["query_byte_offset"] = offset;
-          fields["query_bytes"] = query.bytes;
-          if (!effect)
-            return;
-          fields["write_bytes"] = effect->destination.bytes;
-          mlir::LLVM::StoreOp write = effect->operation;
-          fields["write_value"] = describeValue(write.getValue());
-          fields["write_kind"] = effect->kind == WriteKind::Zero   ? "zero"
-                                 : effect->kind == WriteKind::Copy ? "copy"
-                                                                   : "scalar";
-          if (!positions)
-            return;
-          fields["write_byte_offset"] = writeOffset;
-          fields["write_position_count"] = uint64_t(positions->starts.size());
-          fields["write_position_lowest"] = positions->lowest;
-          fields["write_position_end"] = positions->highestEnd;
-          fields["write_exhaustive"] = positions->exhaustive;
-        });
+    ByteRangeRefusal record;
+    record.reason = storedPointerRefusalSpelling(reason);
+    record.root = query.root;
+    record.queryByteOffset = offset;
+    record.queryByteCount = query.bytes;
+    if (effect) {
+      mlir::LLVM::StoreOp write = effect->operation;
+      record.writeValue = write.getValue();
+      record.writeKind = effect->kind == WriteKind::Zero   ? "zero"
+                         : effect->kind == WriteKind::Copy ? "copy"
+                                                           : "scalar";
+      record.writeByteCount = effect->destination.bytes;
+    }
+    if (positions) {
+      record.writeByteOffset = writeOffset;
+      record.writePositionCount = positions->starts.size();
+      record.writePositionLowest = positions->lowest;
+      record.writePositionEnd = positions->highestEnd;
+      record.writeExhaustive = positions->exhaustive;
+    }
+    reportByteRangeRefusal(record);
     return refuse(reason);
   }
 
