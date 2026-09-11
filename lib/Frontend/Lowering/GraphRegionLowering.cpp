@@ -1564,8 +1564,15 @@ private:
         partitionCount);
     ::llvm::SmallVector<::mlir::Value, 4> writeExits(partitionCount);
     ::llvm::SmallVector<::mlir::Value, 4> readExits(partitionCount);
-    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> iterationStarts;
-    iterationStarts.try_emplace(execution, executionBody);
+    // One replay per distinct incoming read frontier, shared by every
+    // partition that enters the loop on that frontier. The memory precondition
+    // is its own token system and gets its own replay even when the incoming
+    // frontier happens to be the same event as the incoming execution
+    // permission: an actor that carried both roles would put the execution
+    // recurrence on the completion recurrence's alignment path, and the
+    // iteration would inherit a source-sequential permission instead of the
+    // partition's pre-loop read frontier.
+    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> iterationPreconditions;
     // An independent loop only has to know when every iteration's accesses
     // have completed. Pairing each completion with the body stream's phase
     // would let one carry throttle the whole loop to the memory round trip,
@@ -1597,7 +1604,8 @@ private:
          partition = touched.find_next(partition)) {
       setInsertionPoint(loc);
       if (independent) {
-        auto initial = iterationStarts.try_emplace(memory[partition].read);
+        auto initial =
+            iterationPreconditions.try_emplace(memory[partition].read);
         if (initial.second) {
           auto ready = ::dataflow::InvariantOp::create(
               builder, loc, builder.getNoneType(), phase, memory[partition].read);
