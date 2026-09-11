@@ -19,6 +19,7 @@
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --portfolio-application=vecadd-memory --portfolio-input=validation-scale-eda \
 # RUN:   --portfolio-inventory=%t.inventory.json \
+# RUN:   --evaluation-tier=qualified \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-memory-engine \
 # RUN:   --required-dataflow-text=dataflow.load \
