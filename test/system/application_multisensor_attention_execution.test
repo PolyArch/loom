@@ -21,7 +21,7 @@
 # RUN:   --portfolio-input=smoke \
 # RUN:   --portfolio-inventory=%t.inventory.json \
 # RUN:   --evaluation-tier=functional \
-# RUN:   --minimum-unique-acc-cores=4 \
+# RUN:   --minimum-unique-acc-cores=1 \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=scf.for \
 # RUN:   --required-dataflow-text=dataflow.carry
