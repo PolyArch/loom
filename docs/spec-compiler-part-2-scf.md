@@ -1800,6 +1800,10 @@ from zero to that extent minus the access width, which fixes the remaining
 index once every other term is exact. At most one index of one address may use
 containment, because containment constrains the total offset rather than any
 single term; a second unproven index keeps the unknown-integer-domain refusal.
+An indexing step that carries no-unsigned-wrap computes a non-negative byte
+offset, so when that whole offset is one positively scaled index the index is
+non-negative; that lower bound replaces the one the index expression does not
+supply and removes the offsets below the step's own base from the domain.
 
 The finite value set of an index may also come from the structured branches
 that enclose the access or the store that produced it. Each taken region
@@ -1819,19 +1823,27 @@ the branch compares as well as to the narrower value it was derived from.
 
 A query joins the payloads of every write whose domain may overlap it, so an
 over-approximate query domain can only add possible origins and can never
-select a narrower one; a write that may overlap only part of a pointer-sized
-query remains a partial-representation refusal. Definite initialization is
-proven separately, by covering rather than by overlap. A write credits
-initialization of a queried byte range only when its own domain is exact and
-one completed execution performs the write at every offset of that domain,
-which holds for a single static offset and for the induction variables of the
-statically counted loops that complete before the read. A counted loop that
-stores one constant value at its own access width, the expanded form of a
-value-initializing fill, is one contiguous write of the range it fills, and a
-zero fill yields the same possibly-null payload as a stored null. A write
-whose offset is chosen at runtime therefore still contributes its payload but
-never covers a byte, so a descriptor slot that no fill initializes keeps the
+select a narrower one. Definite initialization is proven separately, by
+covering rather than by overlap. A write credits initialization of a queried
+byte range only when its own domain is exact and one completed execution
+performs the write at every offset of that domain, which holds for a single
+static offset and for the induction variables of the statically counted loops
+that complete before the read. A counted loop that stores one constant value
+at its own access width, the expanded form of a value-initializing fill, is
+one contiguous write of the range it fills, and a zero fill yields the same
+possibly-null payload as a stored null. A store of a runtime value at a
+runtime offset is not such a fill, so it still contributes its payload but
+never covers a byte, and a descriptor slot that no fill initializes keeps the
 incomplete-initialization refusal.
+
+A write that may overlap only part of a pointer-sized query is a
+partial-representation refusal while the queried bytes have no proven last
+writer. When one write covers the whole queried range at a position that one
+completed execution always performs, and no effect between that write and the
+read may touch the range, the range holds exactly that write's payload and
+every earlier write of it is dead. That is the same reaching-memory relation a
+fixed backing view uses, so a write whose position is only bounded rather than
+proven cannot by itself make a representation partial.
 
 The proven non-null object base must dominate the selected scope and become
 an explicit live-in when not already present. Preflight and Graph lowering

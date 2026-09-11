@@ -389,6 +389,8 @@ resolveLinearMemoryAddressImpl(
     auto dynamicIndices = gep.getDynamicIndices();
     if (rawIndices.empty())
       return std::nullopt;
+    const std::int64_t enteringByteOffset = constantByteOffset;
+    const std::size_t enteringTermCount = result.terms.size();
     std::size_t dynamicOrdinal = 0;
     mlir::Type indexedType = gep.getElemType();
     for (auto [position, rawIndex] : llvm::enumerate(rawIndices)) {
@@ -480,6 +482,14 @@ resolveLinearMemoryAddressImpl(
     }
     if (dynamicOrdinal != dynamicIndices.size())
       return std::nullopt;
+    // A no-unsigned-wrap step computes a non-negative byte offset. When that
+    // whole offset is one positively scaled index, the index is non-negative.
+    if (mlir::LLVM::bitEnumContainsAny(gep.getNoWrapFlags(),
+                                       mlir::LLVM::GEPNoWrapFlags::nuw) &&
+        constantByteOffset == enteringByteOffset &&
+        result.terms.size() == enteringTermCount + 1 &&
+        result.terms.back().byteStride > 0)
+      result.terms.back().nonNegative = true;
   }
 
   const bool elementAligned =

@@ -31,6 +31,9 @@ resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
 struct LinearByteTerm {
   mlir::Value index;
   std::int64_t byteStride = 1;
+  /// A no-unsigned-wrap step whose whole computed offset is this one scaled
+  /// index proves the index itself non-negative.
+  bool nonNegative = false;
 };
 
 struct LinearElementTerm {
