@@ -145,6 +145,7 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
       continue;
 
     std::optional<llvm::APInt> upperValue;
+    bool unsignedComparison = false;
     if (mlir::IntegerAttr upper = integerConstant(upperBound)) {
       if (upper.getType() != integer)
         continue;
@@ -152,15 +153,28 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
       if (!lowerValue.slt(*upperValue) ||
           !((*upperValue - lowerValue).srem(stepValue).isZero()))
         continue;
-    } else if (!lowerValue.isZero() || !stepValue.isOne() ||
-               !enclosingBranchProvesPositive(loop, upperBound)) {
-      continue;
+    } else {
+      if (!lowerValue.isZero() || !stepValue.isOne())
+        continue;
+      // A no-wrap contract on the unit update makes a wrapping induction
+      // poison at the latch, so a defined execution lands on the bound
+      // exactly: signed under nsw, unsigned under nuw.
+      const bool signedNoWrap = mlir::arith::bitEnumContainsAny(
+          update.getOverflowFlags(), mlir::arith::IntegerOverflowFlags::nsw);
+      const bool unsignedNoWrap = mlir::arith::bitEnumContainsAny(
+          update.getOverflowFlags(), mlir::arith::IntegerOverflowFlags::nuw);
+      if (enclosingBranchProvesPositive(loop, upperBound) || signedNoWrap)
+        unsignedComparison = false;
+      else if (unsignedNoWrap)
+        unsignedComparison = true;
+      else
+        continue;
     }
 
     ExactPostTestedCountedLoopProjection candidate{
         loop,       lane,     loop.getInits()[lane],
         upperBound, step,     lowerValue,
-        upperValue, stepValue};
+        upperValue, stepValue, unsignedComparison};
     if (projection)
       return std::nullopt;
     projection = std::move(candidate);

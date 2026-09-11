@@ -86,13 +86,17 @@ shared exact counted-loop projection. The projection accepts either a constant
 nonnegative lower bound, positive constant step, and greater constant upper
 bound reached exactly without wrapping, or the narrower dynamic shape with
 zero lower bound, unit positive step, and an upper bound proven strictly
-positive by an enclosing true branch. Both require a `next != upper` latch and
-an empty after-region that returns every state lane by ordinal identity. Their
-body domain is therefore exactly `lower, lower + step, ..., upper - step`, and
-the failed condition publishes `upper` as the induction result. Address-width
-reasoning consumes only the constant-domain member of this same projection.
-Unproved dynamic bounds, non-landing steps, wrapping domains, reordered
-feedback, or after-region effects remain `scf.while`.
+positive by an enclosing true branch or by the unit update's no-wrap
+contract. A wrapping `nsw` or `nuw` update is poison at the latch, so a
+defined execution lands on the bound exactly; `nsw` or the enclosing branch
+yields a signed `scf.for`, and `nuw` alone yields an unsigned one. Both
+require a `next != upper` latch and an empty after-region that returns every
+state lane by ordinal identity. Their body domain is therefore exactly
+`lower, lower + step, ..., upper - step`, and the failed condition publishes
+`upper` as the induction result. Address-width reasoning consumes only the
+constant-domain member of this same projection. Unproved dynamic bounds,
+non-landing steps, wrapping domains, reordered feedback, or after-region
+effects remain `scf.while`.
 
 The lift-owned exit scaffold may publish a `scf.while` result through a value
 defined outside and dominating the loop. Mechanical raising projects that

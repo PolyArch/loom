@@ -83,7 +83,8 @@ func.func @guarded_dynamic_uplifts(%n: i32, %other: i32) {
   return
 }
 
-// Without a dominating positivity proof, zero makes the post-tested source
+// Without a dominating positivity proof or a no-wrap contract on the unit
+// update, zero makes the post-tested source
 // execute through wrap while scf.for would execute no iterations.
 
 // CHECK-LABEL: func.func @unguarded_dynamic_kept
@@ -93,7 +94,7 @@ func.func @unguarded_dynamic_kept(%upper: i64) {
   %c0 = arith.constant 0 : i64
   %c1 = arith.constant 1 : i64
   %result = scf.while (%iv = %c0) : (i64) -> i64 {
-    %next_iv = arith.addi %iv, %c1 overflow<nsw, nuw> : i64
+    %next_iv = arith.addi %iv, %c1 : i64
     %more = arith.cmpi ne, %next_iv, %upper : i64
     scf.condition(%more) %next_iv : i64
   } do {

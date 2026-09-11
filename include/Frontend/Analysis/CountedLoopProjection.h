@@ -23,13 +23,20 @@ struct ExactPostTestedCountedLoopProjection final {
   std::optional<llvm::APInt> lowerBoundValue;
   std::optional<llvm::APInt> upperBoundValue;
   std::optional<llvm::APInt> stepValue;
+  /// The domain is exact only under unsigned comparison: the induction
+  /// update carries a no-unsigned-wrap contract without a signed one or an
+  /// enclosing positive proof, so the counted form must compare unsigned.
+  bool unsignedComparison = false;
 };
 
 /// Projects the closed post-tested shape emitted for a finite latch-tested
 /// counted loop. A dynamic upper bound is accepted only for the zero-based,
 /// unit-step shape when an enclosing true branch proves that bound strictly
-/// positive. Unknown, wrapping, non-landing, side-effecting after-region, or
-/// non-ordinal feedback shapes return no projection.
+/// positive, or when the induction update's no-wrap contract proves the
+/// landing sequence: a wrapping update would be poison at the latch, so a
+/// defined execution reaches the bound exactly, signed under `nsw` and
+/// unsigned under `nuw`. Unknown, wrapping, non-landing, side-effecting
+/// after-region, or non-ordinal feedback shapes return no projection.
 std::optional<ExactPostTestedCountedLoopProjection>
 projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop);
 

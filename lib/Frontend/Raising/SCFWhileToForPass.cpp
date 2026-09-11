@@ -25,10 +25,12 @@
 // comparison. The shared ExactPostTestedCountedLoopProjection accepts a closed
 // finite subset: either an exactly landing constant domain, or a zero-based
 // unit-step domain whose dynamic upper bound is proven strictly positive by an
-// enclosing true branch. Both require `next != upper` and ordinal identity
-// feedback through an otherwise empty after-region. That proof makes the body
-// domain and every exit result exact, so this pass can mechanically build
-// scf.for. Every other post-tested shape stays scf.while.
+// enclosing true branch or whose unit update carries a no-wrap contract. Both
+// require `next != upper` and ordinal identity feedback through an otherwise
+// empty after-region. That proof makes the body domain and every exit result
+// exact, so this pass can mechanically build scf.for, comparing unsigned when
+// only the unsigned contract holds. Every other post-tested shape stays
+// scf.while.
 
 #include "Frontend/Analysis/CountedLoopProjection.h"
 #include "Frontend/Raising/Passes.h"
@@ -131,7 +133,8 @@ struct UpliftExactPostTestedCountedWhileToFor
               nextState.push_back(mapping.lookupOrDefault(
                   loop.getConditionOp().getArgs()[lane]));
           ::mlir::scf::YieldOp::create(builder, location, nextState);
-        });
+        },
+        projection->unsignedComparison);
     ::mlir::Attribute annotation = loop->getAttr(loopAnnotationName);
     ::mlir::Attribute candidate = loop->getAttr(candidateLoopHintName);
     carryLoopAnnotation(annotation, counted);
