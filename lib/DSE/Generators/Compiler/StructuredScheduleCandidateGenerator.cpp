@@ -503,13 +503,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     return systemRoot.takeError();
   const std::uint64_t accCoreCount =
       std::max<std::size_t>(1, systemRoot->artifact().accCoreOccurrences().size());
-  // The outstanding requests the shared memory service grants one AccCore;
-  // the same platform projection the analytic runtime model reads.
+  // The outstanding requests the shared memory service grants one AccCore and
+  // the firings one memory actor's Operation Engine may hold outstanding; the
+  // same platform projection the analytic runtime model reads. One actor
+  // already offers its engine's depth, so replication only has to cover the
+  // requests that depth leaves unfilled.
   std::uint64_t memoryOutstandingRequests = 1;
+  std::uint64_t memoryOperationIssueDepth = 1;
   if (auto platform =
           evaluation::models::projectSystemPlatformModel(*exactFabric)) {
     memoryOutstandingRequests =
         std::max<std::uint64_t>(1, platform->accCoreOutstandingRequests);
+    memoryOperationIssueDepth =
+        std::max<std::uint64_t>(1, platform->memoryOperationIssueDepth);
   } else {
     // A Fabric without a shared memory service grants no overlap; the
     // smallest admitted unroll then stands in.
@@ -967,10 +973,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                               ? 1
                               : 0;
         });
+        const std::uint64_t actorRequests =
+            memoryActors * memoryOperationIssueDepth;
         const std::uint64_t neededCopies =
-            memoryActors == 0
+            actorRequests == 0
                 ? 1
-                : (memoryOutstandingRequests + memoryActors - 1) / memoryActors;
+                : (memoryOutstandingRequests + actorRequests - 1) /
+                      actorRequests;
         const std::uint64_t factor = proposal.decision().factor;
         const bool fills = factor >= neededCopies;
         if (!widest) {
