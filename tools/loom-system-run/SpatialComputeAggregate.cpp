@@ -3,9 +3,12 @@
 #include "SystemRunError.h"
 
 #include "Common/IndexWidth.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Artifact/FabricSystemContracts.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -24,6 +27,7 @@
 #include <set>
 #include <tuple>
 #include <variant>
+#include <vector>
 
 namespace loom::system_run {
 namespace {
@@ -48,6 +52,10 @@ struct ComputeClassAccumulator {
   unsigned indexBitWidth = 0;
   /// Lane count of the actor most recently classified into this class.
   std::uint64_t lanes = 1;
+  /// Canonical bytes of every FU capability template the TechMapping realized
+  /// an actor of this class with. They admit the class where no single FU
+  /// operation node admits its representative, such as a fused template.
+  std::set<std::vector<std::uint8_t>> realizedCapabilityTemplates;
 };
 
 struct ActorElementShape {
@@ -192,6 +200,8 @@ llvm::Error accumulateBoundRealizations(
       if (!cls)
         return cls.takeError();
       ++(*cls)->boundRealizations;
+      (*cls)->realizedCapabilityTemplates.insert(
+          fabric::canonicalFabricBytes(realization->second->capabilityTemplate));
     }
   }
   return llvm::Error::success();
@@ -219,11 +229,55 @@ std::uint64_t capabilityResultLanes(
   return 1;
 }
 
+/// Issue lanes one FU occurrence offers a class: every operation node that
+/// admits the class representative under the TechMapping's own admission
+/// rule, or, when no single node admits it, one issue per capability template
+/// the TechMapping realized the class with (a fused or composite template).
+/// Returns the lanes and the number of issuing nodes or templates.
+std::pair<std::uint64_t, std::uint64_t>
+occurrenceClassIssue(const fabric::FabricArtifactView &fabric,
+                     fabric::FabricFuTemplateRef definition,
+                     const ComputeClassKey &key,
+                     const ComputeClassAccumulator &accumulator) {
+  std::uint64_t lanes = 0;
+  std::uint64_t issuers = 0;
+  for (const fabric::ResolvedFabricOpCapabilityView &capability :
+       fabric.resolvedFabricOpCapabilities(definition)) {
+    if (llvm::Error rejected = capability.admit(*accumulator.representative,
+                                                accumulator.indexBitWidth)) {
+      llvm::consumeError(std::move(rejected));
+      continue;
+    }
+    lanes += capabilityResultLanes(capability, key.elementBits);
+    ++issuers;
+  }
+  if (issuers != 0)
+    return {lanes, issuers};
+  for (auto [ordinal, record] :
+       llvm::enumerate(fabric.fuCapabilityTemplates(definition))) {
+    if (!accumulator.realizedCapabilityTemplates.count(
+            fabric::canonicalFabricBytes(fabric::FabricFuCapabilityTemplateRef{
+                definition, static_cast<fabric::FabricOrdinal>(ordinal)})))
+      continue;
+    std::uint64_t templateLanes = 1;
+    for (const fabric::FabricFuTemplateNodeRef &node : record.activeNodes) {
+      if (node.node != fabric::FabricFuNodeKind::Op)
+        continue;
+      if (const auto *capability = fabric.resolvedFabricOpCapability(node)) {
+        templateLanes = capabilityResultLanes(*capability, key.elementBits);
+        break;
+      }
+    }
+    lanes += templateLanes;
+    ++issuers;
+  }
+  return {lanes, issuers};
+}
+
 /// The speed-of-light inventory of one Fabric for every observed class: each
-/// FU operation node is counted once per class it admits under the
-/// TechMapping's own admission rule. A Temporal PE issues once per cycle
-/// however many resident instruction contexts share its FU; those contexts
-/// are its placement slots.
+/// FU occurrence is counted once per issuing node or realized template. A
+/// Temporal PE issues once per cycle however many resident instruction
+/// contexts share its FU; those contexts are its placement slots.
 llvm::Expected<std::map<ComputeClassKey, ComputeClassCapacity>>
 fabricComputeCapacity(
     const fabric::FabricArtifactView &fabric,
@@ -239,33 +293,28 @@ fabricComputeCapacity(
     auto schedule = fabric.peSchedule(*pe);
     if (!schedule)
       return invalid("candidate Fabric PE has no schedule");
-    std::uint64_t slotsPerNode = 1;
+    std::uint64_t slotsPerIssuer = 1;
     if (*schedule == ::fabric::Schedule::Temporal) {
-      slotsPerNode = fabric.peResidentContextCount(*pe);
-      if (slotsPerNode == 0)
+      slotsPerIssuer = fabric.peResidentContextCount(*pe);
+      if (slotsPerIssuer == 0)
         return invalid("candidate Temporal PE has no resident context");
     }
-    for (const fabric::ResolvedFabricOpCapabilityView &capability :
-         fabric.resolvedFabricOpCapabilities(*definition)) {
-      for (auto &[key, entry] : capacity) {
-        const ComputeClassAccumulator &accumulator = classes.at(key);
-        if (!accumulator.representative)
-          continue;
-        if (llvm::Error rejected = capability.admit(
-                *accumulator.representative, accumulator.indexBitWidth)) {
-          llvm::consumeError(std::move(rejected));
-          continue;
-        }
-        const std::uint64_t lanes =
-            capabilityResultLanes(capability, key.elementBits);
-        if (lanes > std::numeric_limits<std::uint64_t>::max() -
-                        entry.peakIssueLanesPerCycle ||
-            slotsPerNode > std::numeric_limits<std::uint64_t>::max() -
-                               entry.placementSlots)
-          return invalid("candidate Fabric compute capacity overflows");
-        entry.peakIssueLanesPerCycle += lanes;
-        entry.placementSlots += slotsPerNode;
-      }
+    for (auto &[key, entry] : capacity) {
+      const ComputeClassAccumulator &accumulator = classes.at(key);
+      if (!accumulator.representative)
+        continue;
+      const auto [lanes, issuers] =
+          occurrenceClassIssue(fabric, *definition, key, accumulator);
+      if (issuers == 0)
+        continue;
+      if (lanes > std::numeric_limits<std::uint64_t>::max() -
+                      entry.peakIssueLanesPerCycle ||
+          issuers > std::numeric_limits<std::uint64_t>::max() / slotsPerIssuer ||
+          issuers * slotsPerIssuer >
+              std::numeric_limits<std::uint64_t>::max() - entry.placementSlots)
+        return invalid("candidate Fabric compute capacity overflows");
+      entry.peakIssueLanesPerCycle += lanes;
+      entry.placementSlots += issuers * slotsPerIssuer;
     }
   }
   return capacity;
@@ -397,6 +446,21 @@ aggregateSpatialComputeInputs(
   inputs.classes.reserve(classes.size());
   for (const auto &[key, accumulator] : classes) {
     const ComputeClassCapacity &bound = capacity[key];
+    if (accumulator.retiredElementFirings != 0 &&
+        bound.peakIssueLanesPerCycle == 0)
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Summary,
+          loom::mapping_debug::Stage::Deployment,
+          loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["operation"] = "compute_class_without_admitting_fu";
+            fields["schema"] = ::dataflow::operationSchemaSpelling(key.schema);
+            fields["element_bits"] = static_cast<int64_t>(key.elementBits);
+            fields["retired_element_firings"] =
+                static_cast<int64_t>(accumulator.retiredElementFirings);
+            fields["realized_capability_templates"] = static_cast<int64_t>(
+                accumulator.realizedCapabilityTemplates.size());
+          });
     inputs.classes.push_back({key.schema, key.elementBits,
                               accumulator.retiredElementFirings,
                               bound.peakIssueLanesPerCycle,
