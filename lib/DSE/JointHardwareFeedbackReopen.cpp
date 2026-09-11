@@ -114,10 +114,12 @@ tryHardwareFeedbackReopen(
   };
   if (llvm::Error error = retainObservedExecution(failedExecution))
     return error;
+  // The relation half of the continuation proof is owned by the Hall feedback
+  // owner and shared with the qualification search; the chain adds only which
+  // supply it offered, because a changed supply kind is progress it has not
+  // measured yet.
   struct HallProgressObservation final {
-    std::uint64_t deficit = 0;
-    std::uint64_t demand = 0;
-    std::uint64_t contexts = 0;
+    TechMappingComputeContextHallProgress progress;
     std::optional<TechMappingComputeContextGrowthDirection> direction;
   };
   std::optional<HallProgressObservation> previousHallProgress;
@@ -247,9 +249,8 @@ tryHardwareFeedbackReopen(
     };
     if (techObservation) {
       const HallProgressObservation currentHallProgress{
-          techObservation->feedback.deficit(),
-          techObservation->feedback.hallDemandCount(),
-          techObservation->feedback.hallContextValueCount(),
+          observeTechMappingComputeContextHallProgress(
+              techObservation->feedback),
           (*growth)->computeContextGrowthDirection};
       // Equal demand and context growth under an unchanged deficit means the
       // previous probe bought nothing. That is only a funnel boundary while
@@ -258,11 +259,8 @@ tryHardwareFeedbackReopen(
       // funnel has not measured yet.
       if (previousHallProgress &&
           currentHallProgress.direction == previousHallProgress->direction &&
-          currentHallProgress.deficit == previousHallProgress->deficit &&
-          currentHallProgress.demand > previousHallProgress->demand &&
-          currentHallProgress.contexts > previousHallProgress->contexts &&
-          currentHallProgress.demand - previousHallProgress->demand ==
-              currentHallProgress.contexts - previousHallProgress->contexts) {
+          techMappingComputeContextHallGrowthStagnates(
+              previousHallProgress->progress, currentHallProgress.progress)) {
         mapping_debug::emit(
             mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
             mapping_debug::Event::MappingFailure,
@@ -274,11 +272,15 @@ tryHardwareFeedbackReopen(
                   "typed context growth increased observed demand and "
                   "context supply equally; no alternate repair owner is "
                   "admitted";
-              fields["previous_hall_demand"] = previousHallProgress->demand;
-              fields["previous_hall_contexts"] = previousHallProgress->contexts;
-              fields["current_hall_demand"] = currentHallProgress.demand;
-              fields["current_hall_contexts"] = currentHallProgress.contexts;
-              fields["hall_deficit"] = currentHallProgress.deficit;
+              fields["previous_hall_demand"] =
+                  previousHallProgress->progress.demand;
+              fields["previous_hall_contexts"] =
+                  previousHallProgress->progress.contexts;
+              fields["current_hall_demand"] =
+                  currentHallProgress.progress.demand;
+              fields["current_hall_contexts"] =
+                  currentHallProgress.progress.contexts;
+              fields["hall_deficit"] = currentHallProgress.progress.deficit;
               if (currentHallProgress.direction)
                 fields["compute_context_growth_direction"] =
                     techMappingComputeContextGrowthDirectionSpelling(

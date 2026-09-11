@@ -248,6 +248,26 @@ retained as a second value.
 The Python qualification owner is `test/cgra_qualification.py`; the paired
 runner imports its published budget and gate resolution. Profile schema
 identities are derived from the named constants in `CgraBudgetProfile.cpp`.
+
+The shared hardware search that precedes the profiles grows one Module until
+every representative source maps. It runs under the `fast` tier and reserves
+the smallest tier for stopping, writing and exiting, so its own search deadline
+is strictly inside the tier its wrapper kills on; a search that expires reports
+its rounds and `ready` false instead of being terminated without evidence. A
+round the deadline cuts short carries no decision and is discarded rather than
+published as a partial source suite.
+
+The search grows compute-context supply from the same typed Hall feedback the
+hardware reopen chain consumes, and it consults the same owner for whether that
+growth is a continuation proof. The closure is atomic: it always closes the
+complete observed deficit. A relation that reappears with the same deficit
+while its demand and its context supply both grew by that amount has spent the
+new contexts on new demand, because every added context let the cover admit one
+more realization. The search then stops with the typed
+`hall_repair_stagnation` reason and reports `ready` false on the last admitted
+Fabric, rather than spending the remaining tier on rounds whose deficit cannot
+fall. A stopped search is a typed incomplete qualification outcome and
+publishes no gate, exactly like a timeout or an unmapped source.
 Transport repair records the production CEGAR termination and each local
 transition's parent Mapping, triggering runtime Evidence, accumulated
 constraints, child Mapping and child runtime Evidence. Consecutive transitions

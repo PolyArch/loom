@@ -593,6 +593,23 @@ projectSpatialFuOccurrenceGrowthStep(
 
 } // namespace
 
+TechMappingComputeContextHallProgress
+observeTechMappingComputeContextHallProgress(
+    const mapping::TechMappingComputeContextHallDeficit &feedback) {
+  return {feedback.deficit(), feedback.hallDemandCount(),
+          feedback.hallContextValueCount()};
+}
+
+bool techMappingComputeContextHallGrowthStagnates(
+    const TechMappingComputeContextHallProgress &previous,
+    const TechMappingComputeContextHallProgress &current) {
+  return current.deficit == previous.deficit &&
+         current.demand > previous.demand &&
+         current.contexts > previous.contexts &&
+         current.demand - previous.demand ==
+             current.contexts - previous.contexts;
+}
+
 llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(
     TechMappingComputeContextGrowthDirection direction) {
   switch (direction) {
