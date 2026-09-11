@@ -161,7 +161,7 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
        loom::resolvedObjectiveDecimal(1, 0), 0, UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
-  constexpr std::uint32_t insertedLevel = 7;
+  constexpr std::uint32_t insertedLevel = 8;
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() +
                                      insertedLevel,
                                  {{{unselectedDimension, 1}}});

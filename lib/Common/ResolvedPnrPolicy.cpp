@@ -439,15 +439,27 @@ validateResolvedObjectiveCatalogs(const ResolvedObjectiveCatalogs &catalogs) {
     if (commonDivisor != 1)
       return invalid("weighted objective level weights are not reduced");
   }
-  if (!std::is_sorted(catalogs.weightedLevels.begin(),
-                      catalogs.weightedLevels.end(), weightedLevelLess) ||
-      std::adjacent_find(
-          catalogs.weightedLevels.begin(), catalogs.weightedLevels.end(),
-          [](const ResolvedWeightedObjectiveLevel &a,
-             const ResolvedWeightedObjectiveLevel &b) {
-            return !weightedLevelLess(a, b) && !weightedLevelLess(b, a);
-          }) != catalogs.weightedLevels.end())
-    return invalid("weighted objective levels are not canonical and unique");
+  for (std::size_t index = 1; index < catalogs.weightedLevels.size(); ++index) {
+    const ResolvedWeightedObjectiveLevel &previous =
+        catalogs.weightedLevels[index - 1];
+    const ResolvedWeightedObjectiveLevel &current =
+        catalogs.weightedLevels[index];
+    if (weightedLevelLess(previous, current))
+      continue;
+    const auto describe = [](const ResolvedWeightedObjectiveLevel &level) {
+      return (llvm::Twine(level.terms.size()) + " terms from dimension " +
+              llvm::Twine(level.terms.front().dimension))
+          .str();
+    };
+    const std::string detail =
+        (llvm::Twine("weighted objective levels are not canonical and "
+                     "unique: level ") +
+         llvm::Twine(index - 1) + " (" + describe(previous) +
+         ") does not precede level " + llvm::Twine(index) + " (" +
+         describe(current) + ")")
+            .str();
+    return invalid(detail.c_str());
+  }
 
   for (const ResolvedTotalOrdering &ordering : catalogs.totalOrderings) {
     if (ordering.weightedLevels.empty())
