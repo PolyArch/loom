@@ -37,6 +37,17 @@
 #include <vector>
 
 namespace loom::frontend::analysis {
+namespace {
+
+/// An inline assembly with an empty template executes no instruction, so it
+/// cannot write memory; its clobbers constrain the compiler only. The
+/// computation-interval markers are such barriers.
+bool isInstructionFreeInlineAsm(mlir::Operation *operation) {
+  auto assembly = llvm::dyn_cast<mlir::LLVM::InlineAsmOp>(operation);
+  return assembly && assembly.getAsmString().empty();
+}
+
+} // namespace
 
 class StoredMemoryProvenance::Impl final {
   static constexpr std::size_t maximumStaticValues = 4096;
@@ -142,7 +153,8 @@ public:
                       mlir::LLVM::AllocaOp, mlir::LLVM::LifetimeStartOp,
                       mlir::LLVM::LifetimeEndOp>(operation) ||
             operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>() ||
-            mlir::isMemoryEffectFree(operation))
+            mlir::isMemoryEffectFree(operation) ||
+            isInstructionFreeInlineAsm(operation))
           return;
         if (!openWriteDomain_)
           openWriteDomain_ = StoredPointerRefusal::UnsupportedMemoryEffect;
