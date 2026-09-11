@@ -31,8 +31,11 @@ enum {
   LLAMA2C_KERNEL_ROWS = LOOM_LLAMA_KERNEL_ROWS,
 };
 
-_Static_assert(LLAMA2C_KERNEL_WIDTH >= 4 && LLAMA2C_KERNEL_WIDTH % 2 == 0,
-               "the kernel width carries an even matmul selector pair");
+/* The input values below repeat with period four, so a width that is a
+   multiple of four keeps each row's two selected elements in different
+   residue classes and every expected product nonzero. */
+_Static_assert(LLAMA2C_KERNEL_WIDTH >= 4 && LLAMA2C_KERNEL_WIDTH % 4 == 0,
+               "the kernel width must be a positive multiple of four");
 _Static_assert(LLAMA2C_KERNEL_ROWS >= 2, "matmul needs at least two rows");
 
 __attribute__((noinline)) void rmsnorm(float *output, float *values,
@@ -53,13 +56,16 @@ static float llama2cAccumulationSlack(void) {
 
 /* The matmul weight selects one positive and one negated input element per
    row, so every row's exact product is a single float32 subtraction of two
-   input elements: every other product is an exact zero and adds nothing. */
+   input elements: every other product is an exact zero and adds nothing. The
+   two selectors differ for every row because their distance `2 * row + 1` is
+   odd and the width is even, and they select different values because that
+   distance is never a multiple of the value period. */
 static int llama2cPositiveSelector(int row) {
   return row % LLAMA2C_KERNEL_WIDTH;
 }
 
 static int llama2cNegativeSelector(int row) {
-  return (row + LLAMA2C_KERNEL_WIDTH / 2) % LLAMA2C_KERNEL_WIDTH;
+  return (row * 3 + 1) % LLAMA2C_KERNEL_WIDTH;
 }
 
 static float llama2cValues[LLAMA2C_KERNEL_WIDTH];

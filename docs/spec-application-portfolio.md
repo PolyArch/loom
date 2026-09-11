@@ -192,9 +192,8 @@ mapped. Qualified rows therefore select an extent whose host computation
 interval is at least fifty times that fixed cost while staying inside the
 simulation budget. That ratio is a sizing rule for whoever adds or rescales a
 row, not another gate: the measured target below has no overhead term and
-admits no exception. Smoke rows keep the smallest extent that
-still exercises the whole path and carry the `functional` tier for exactly that
-reason. Input extent is selected through input-specific compiler options and a
+admits no exception. Smoke rows keep the smallest extent that still exercises
+the whole path and carry the `functional` tier for exactly that reason. Input extent is selected through input-specific compiler options and a
 deterministic generator inside the runner, never by tracking large input files.
 
 The current manifest binds all five applications to real bounded `smoke` and

@@ -31,10 +31,8 @@
 using NodeID = int32_t;
 
 /* One deterministic generated graph shared by every input. Out-degrees cycle
-   through one, two, and three edges so the pull-direction gather stays
-   irregular and some nodes keep an empty in-neighborhood. Both strides are odd
-   and therefore coprime with the power-of-two node counts this portfolio
-   selects, so one node's out-neighbours stay distinct. */
+   through one, two, and three edges and both strides scatter the targets, so
+   the pull-direction gather stays irregular in both degree and address. */
 enum : NodeID {
   PAGERANK_NODE_COUNT = LOOM_PAGERANK_NODE_COUNT,
   PAGERANK_MAXIMUM_DEGREE = 3,
@@ -43,8 +41,12 @@ enum : NodeID {
   PAGERANK_EDGE_CAPACITY = PAGERANK_NODE_COUNT * PAGERANK_MAXIMUM_DEGREE,
 };
 
-static_assert(PAGERANK_NODE_COUNT >= PAGERANK_MAXIMUM_DEGREE,
-              "every generated out-neighborhood must fit in the node domain");
+/* Both strides are odd, so a power-of-two node count is coprime with them and
+   one node's generated out-neighbours stay distinct. */
+static_assert(PAGERANK_NODE_COUNT >= PAGERANK_MAXIMUM_DEGREE &&
+                  (PAGERANK_NODE_COUNT & (PAGERANK_NODE_COUNT - 1)) == 0,
+              "the node count must be a power of two of at least the maximum "
+              "out-degree");
 
 namespace std {
 
