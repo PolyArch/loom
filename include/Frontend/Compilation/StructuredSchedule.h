@@ -40,6 +40,10 @@ enum class StructuredVectorAliasPolicy : std::uint32_t {
 
 inline constexpr std::uint64_t maximumCanonicalStructuredScheduleFactor = 64;
 
+/// The exact static trip count of an SCF or Affine loop, if it has one.
+std::optional<std::uint64_t>
+structuredLoopStaticTripCount(mlir::Operation *loop);
+
 struct StructuredVectorScheduleCoordinate final {
   std::vector<std::uint64_t> shape;
   StructuredVectorTailPolicy tailPolicy = StructuredVectorTailPolicy::Exact;

@@ -65,7 +65,9 @@ bool admitsDecisionFactor(StructuredScheduleDecisionKind kind,
   case StructuredScheduleDecisionKind::Vectorize:
     return factor == 0;
   case StructuredScheduleDecisionKind::PolyhedralSchedule:
-    return factor == 0 || canonicalFactor;
+    // A tile factor is canonical by its size or by its tile count; the
+    // exact domain is re-enumerated from the trip count on replay.
+    return factor == 0 || factor >= 2;
   }
   return false;
 }

@@ -831,9 +831,11 @@ requires homogeneous SCF or Affine loops and inner bounds that remain
 invariant at the exchanged scope.
 
 Polyhedral tiling is the same decision with a factor. The tile factors of a
-general SCoP follow the SCF tile rule: the sorted proper divisors of the root
-loop's exact static trip count within the canonical range; a root without a
-static trip count has no polyhedral tile coordinate. For each factor the
+general SCoP are the sorted proper divisors of the root loop's exact static
+trip count whose tile size or whose tile count lies within the canonical
+range, so a loop may be strip-mined into a canonical number of tiles as well
+as into canonical tile sizes; a root without a static trip count has no
+polyhedral tile coordinate. For each factor the
 provider tiles every band that no other band encloses by that size on every
 member, keeping tile coordinates unscaled and point coordinates unshifted, so
 a one-member band is strip-mined, a wider band is rectangularly tiled, and

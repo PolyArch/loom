@@ -738,10 +738,19 @@ module attributes {dlti.dl_spec = #layout} {
   if (unrollDomain.inspectedDecisionCoordinates >
       4 * loom::frontend::maximumCanonicalStructuredScheduleFactor)
     fail("one loop exceeded the canonical bounded schedule domain");
-  for (const auto &proposal : unrollDomain.proposals)
-    if (proposal.decision().factor >
-        loom::frontend::maximumCanonicalStructuredScheduleFactor)
+  for (const auto &proposal : unrollDomain.proposals) {
+    const auto &decision = proposal.decision();
+    const bool canonicalTileCount =
+        decision.kind ==
+            loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule &&
+        decision.factor != 0 && 1024 % decision.factor == 0 &&
+        1024 / decision.factor <=
+            loom::frontend::maximumCanonicalStructuredScheduleFactor;
+    if (decision.factor >
+            loom::frontend::maximumCanonicalStructuredScheduleFactor &&
+        !canonicalTileCount)
       fail("static trip count escaped the canonical schedule-factor bound");
+  }
   const std::uint64_t admittedCapacity =
       operationCapacity(unroll, fabric, "kernel");
   std::size_t maximumReplication = 0;
