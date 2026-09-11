@@ -1786,6 +1786,37 @@ pointer representations, and distinct non-null origins remain typed refusals.
 A possible null payload is preserved as pointer data. An all-null value does
 not provide a memory-service origin.
 
+That proof admits an address whose byte offset depends on a runtime index.
+Every address denotes a byte domain: a small union of strided byte-offset
+intervals that always contains every offset a defined execution can reach. An
+index with a proven finite value set expands exactly, so a fully static
+address remains one single offset and its geometry is unchanged. One remaining
+index is bounded instead of enumerated. It is bounded by whichever of these
+holds: the interval and stride of a counted loop whose bounds are themselves
+bounded, an unsigned widening from a narrower integer, or an inferred constant
+integer range. It is bounded further by containment: a defined access reached
+from a fixed allocation through in-bounds indexing lies in the byte interval
+from zero to that extent minus the access width, which fixes the remaining
+index once every other term is exact. At most one index of one address may use
+containment, because containment constrains the total offset rather than any
+single term; a second unproven index keeps the unknown-integer-domain refusal.
+
+A query joins the payloads of every write whose domain may overlap it, so an
+over-approximate query domain can only add possible origins and can never
+select a narrower one; a write that may overlap only part of a pointer-sized
+query remains a partial-representation refusal. Definite initialization is
+proven separately, by covering rather than by overlap. A write credits
+initialization of a queried byte range only when its own domain is exact and
+one completed execution performs the write at every offset of that domain,
+which holds for a single static offset and for the induction variables of the
+statically counted loops that complete before the read. A counted loop that
+stores one constant value at its own access width, the expanded form of a
+value-initializing fill, is one contiguous write of the range it fills, and a
+zero fill yields the same possibly-null payload as a stored null. A write
+whose offset is chosen at runtime therefore still contributes its payload but
+never covers a byte, so a descriptor slot that no fill initializes keeps the
+incomplete-initialization refusal.
+
 The proven non-null object base must dominate the selected scope and become
 an explicit live-in when not already present. Preflight and Graph lowering
 consume the same boundary service relation. Only pairs of explicit boundary

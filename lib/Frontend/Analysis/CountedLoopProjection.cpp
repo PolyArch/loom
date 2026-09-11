@@ -182,4 +182,31 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
   return projection;
 }
 
+std::optional<UnitStrideCountedLoop>
+projectUnitStrideCountedLoop(mlir::Operation *operation,
+                             ConstantIntegerValue constantValue) {
+  if (auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(operation)) {
+    auto lower = constantValue(loop.getLowerBound()),
+         upper = constantValue(loop.getUpperBound()),
+         step = constantValue(loop.getStep());
+    if (!lower || !lower->isZero() || !step || !step->isOne() || !upper ||
+        !upper->isStrictlyPositive() || !upper->isSignedIntN(64))
+      return std::nullopt;
+    return UnitStrideCountedLoop{
+        llvm::cast<mlir::BlockArgument>(loop.getInductionVar()),
+        upper->getZExtValue()};
+  }
+  auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(operation);
+  auto projection = projectExactPostTestedCountedLoop(loop);
+  if (!projection || loop.getInits().size() != 1 ||
+      !projection->lowerBoundValue || !projection->lowerBoundValue->isZero() ||
+      !projection->stepValue || !projection->stepValue->isOne() ||
+      !projection->upperBoundValue ||
+      !projection->upperBoundValue->isSignedIntN(64))
+    return std::nullopt;
+  return UnitStrideCountedLoop{
+      loop.getBeforeBody()->getArgument(projection->inductionLane),
+      projection->upperBoundValue->getZExtValue()};
+}
+
 } // namespace loom::frontend::analysis
