@@ -188,13 +188,24 @@ tryHardwareFeedbackReopen(
       spatialFuGrowthProbeConsumed = true;
       preferTemporalInstructionStore = true;
     }
-    // A Hall closure child can cover its graphs at Tech level and still
-    // exhaust route closure, and its own Spatial or System feedback is then
-    // the next typed alternative. A closure probe that consumed the whole
-    // parent slice leaves that alternative untried, so it runs under a share
-    // of the remaining window and the retreat probe keeps the rest. The
-    // invocation deadline is unchanged; only this probe's local slice moves.
-    const bool reserveRetreatShare = techObservation != nullptr &&
+    // A Temporal instruction-store closure child can cover its graphs at Tech
+    // level and still exhaust route closure, and its own Spatial or System
+    // feedback is then the next typed alternative. A closure probe that
+    // consumed the whole parent slice leaves that alternative untried, so it
+    // runs under a share of the remaining window and the retreat probe keeps
+    // the rest. The invocation deadline is unchanged; only this probe's local
+    // slice moves.
+    //
+    // The Spatial FU occurrence direction holds no share. It is taken only
+    // when one decision closes the complete relation, and the owner offers it
+    // either after instruction-store growth already failed or because the
+    // relation admits no Temporal supply at all. In both cases there is no
+    // cheaper alternative left to hold budget for, so starving it would only
+    // lose the one supply the relation has.
+    const bool temporalClosureProbe =
+        (*growth)->computeContextGrowthDirection ==
+        TechMappingComputeContextGrowthDirection::TemporalInstructionStore;
+    const bool reserveRetreatShare = temporalClosureProbe &&
                                      !retreatShareReserved &&
                                      candidateOrdinal + 1 != candidateLimit;
     if (reserveRetreatShare)
