@@ -1320,10 +1320,14 @@ exploreStructuredCompilationToPreMapping(
                               alternative.seedKinds,
                               std::nullopt});
     }
+    // Only this selection hands out Mapping slots, so the host-only baseline
+    // is applied here. The per-coordinate beam above keeps its regressions:
+    // a parent that regresses on its own may still expand into an improving
+    // schedule or memory-communication child.
     auto ranked = selectPreMappingFrontier(
         rankedInputs, options.ownership.selection.k,
         options.frontier.diversityCandidateCount,
-        options.frontier.spectrumEndpoint);
+        options.frontier.spectrumEndpoint, sourceHostOnlyRuntimePicoseconds);
     if (!ranked)
       return ranked.takeError();
     if (ranked->preferenceOrder.size() !=

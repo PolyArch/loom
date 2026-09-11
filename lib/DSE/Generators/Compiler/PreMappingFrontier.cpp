@@ -1,5 +1,6 @@
 #include "DSE/PreMappingFrontier.h"
 
+#include "Common/MappingDebugLog.h"
 #include "DSE/Objective.h"
 #include "DSE/Promotion.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -516,11 +517,52 @@ llvm::Error validatePreMappingWorkAccounting(
 llvm::Expected<PreMappingFrontierSelection> selectPreMappingFrontier(
     llvm::ArrayRef<PreMappingFrontierCandidate> candidates,
     std::uint64_t maximumRetained, std::uint64_t diversityCandidateCount,
-    PreMappingSpectrumEndpoint endpoint) {
+    PreMappingSpectrumEndpoint endpoint,
+    std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds) {
   if (candidates.empty())
     return PreMappingFrontierSelection{};
   if (maximumRetained == 0 || diversityCandidateCount == 0)
     return invalid("frontier selection bounds must be positive");
+
+  // A candidate whose analytic estimate does not beat the host-only baseline
+  // of the same source cannot improve the Application. Retaining it spends
+  // one Mapping slot, and that slot's share of the Mapping wall time, on a
+  // modeled regression while a candidate that covers the computation is
+  // cancelled for want of the same budget. Only a known non-improving
+  // estimate is demoted: an unsupported estimate is not a regression proof,
+  // and when every candidate regresses the whole set stays admissible so the
+  // invocation still reports its best available plan. A requested spectrum
+  // endpoint selects a labelled representative rather than an improvement and
+  // keeps the complete set.
+  std::vector<PreMappingFrontierCandidate> improvingCandidates;
+  if (sourceHostOnlyRuntimePicoseconds &&
+      endpoint == PreMappingSpectrumEndpoint::Automatic)
+    for (const PreMappingFrontierCandidate &candidate : candidates)
+      if (!candidate.estimatedRuntimePicoseconds ||
+          *candidate.estimatedRuntimePicoseconds <
+              *sourceHostOnlyRuntimePicoseconds)
+        improvingCandidates.push_back(candidate);
+  const bool demotesRegressions =
+      !improvingCandidates.empty() &&
+      improvingCandidates.size() != candidates.size();
+  llvm::ArrayRef<PreMappingFrontierCandidate> admitted =
+      demotesRegressions
+          ? llvm::ArrayRef<PreMappingFrontierCandidate>(improvingCandidates)
+          : candidates;
+  if (sourceHostOnlyRuntimePicoseconds &&
+      endpoint == PreMappingSpectrumEndpoint::Automatic)
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "pre_mapping_regression_admission";
+          fields["source_host_only_runtime_ps"] =
+              *sourceHostOnlyRuntimePicoseconds;
+          fields["candidate_count"] = candidates.size();
+          fields["admitted_candidate_count"] = admitted.size();
+          fields["modeled_regression_count"] =
+              candidates.size() - improvingCandidates.size();
+          fields["modeled_regressions_admitted"] = !demotesRegressions;
+        });
 
   // A final Structured Artifact can be reached through several planning
   // coordinates. The Artifact is the downstream identity, while the
@@ -544,7 +586,7 @@ llvm::Expected<PreMappingFrontierSelection> selectPreMappingFrontier(
   std::map<ArtifactRootReference, const PreMappingFrontierCandidate *,
            decltype(&artifactRootReferenceLess)>
       unique(&artifactRootReferenceLess);
-  for (const PreMappingFrontierCandidate &candidate : candidates) {
+  for (const PreMappingFrontierCandidate &candidate : admitted) {
     auto [entry, inserted] = unique.emplace(candidate.candidate, &candidate);
     if (!inserted && representativeLess(candidate, *entry->second))
       entry->second = &candidate;
@@ -678,7 +720,7 @@ llvm::Expected<PreMappingFrontierSelection> selectPreMappingFrontier(
   const auto endpointCandidate = [&]()
       -> const PreMappingFrontierCandidate * {
     const PreMappingFrontierCandidate *best = nullptr;
-    for (const PreMappingFrontierCandidate &candidate : candidates) {
+    for (const PreMappingFrontierCandidate &candidate : admitted) {
       bool matches = false;
       switch (endpoint) {
       case PreMappingSpectrumEndpoint::Automatic:
