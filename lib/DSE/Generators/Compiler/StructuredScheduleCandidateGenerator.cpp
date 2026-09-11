@@ -403,7 +403,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                   fields["decision_kind"] =
                       frontend::structuredScheduleDecisionKindSpelling(
                           decision.kind);
-                  fields["factor"] = decision.factor;
+                  fields["factor"] = decision.vector ? decision.vector->shape.front() : decision.factor;
                   fields["rejection_kind_ordinal"] =
                       static_cast<std::uint64_t>(error.kind());
                   fields["diagnostic"] = error.message();
@@ -461,7 +461,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           fields["operation"] = "structured_schedule_candidate";
           fields["decision_kind"] =
               frontend::structuredScheduleDecisionKindSpelling(decision.kind);
-          fields["factor"] = decision.factor;
+          fields["factor"] = decision.vector ? decision.vector->shape.front() : decision.factor;
           fields["loop_ordinal"] = decision.loop.ordinal;
           fields["parent"] =
               formatArtifactIdentityHex(parentReference.artifact);
@@ -540,11 +540,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             StructuredScheduleGenerationIntent::RequireLogicalThreadDomain &&
         !trackedSpatialRegion)
       continue;
-    const std::optional<frontend::StructuredEntityRef> schedulingScope =
-        config->generationIntent() ==
-                StructuredScheduleGenerationIntent::RequireLogicalThreadDomain
-            ? trackedSpatialRegion
-            : std::nullopt;
+    // Schedule decisions transform the owned Spatial carrier. Loops outside
+    // the tracked region never reach the fabric, so enumerating them only
+    // spends the materialization budget on proposals that cannot close.
+    const std::optional<frontend::StructuredEntityRef> &schedulingScope =
+        trackedSpatialRegion;
     auto decisions = frontend::enumerateStructuredScheduleDecisions(
         *parent, *exactFabric, config->scopeExpansionLimit(), schedulingScope);
     if (!decisions)
