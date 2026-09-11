@@ -494,11 +494,19 @@ bool haveEquivalentPhaseCardinality(mlir::Value lhs, mlir::Value rhs) {
     return true;
   auto lhsStream = lhs.getDefiningOp<dataflow::StreamOp>();
   auto rhsStream = rhs.getDefiningOp<dataflow::StreamOp>();
+  // Recurrence operands correspond when they are the same value or the same
+  // deterministic computation of corresponding values, so a duplicated pure
+  // producer feeding two identical streams keeps their phase sequences equal.
   return lhsStream && rhsStream && lhs == lhsStream.getPhase() &&
          rhs == rhsStream.getPhase() &&
          lhsStream.getStepKind() == rhsStream.getStepKind() &&
          lhsStream.getPredicate() == rhsStream.getPredicate() &&
-         llvm::equal(lhsStream->getOperands(), rhsStream->getOperands());
+         llvm::all_of(llvm::zip_equal(lhsStream->getOperands(),
+                                      rhsStream->getOperands()),
+                      [](auto operands) {
+                        return haveEquivalentCorrespondence(
+                            std::get<0>(operands), std::get<1>(operands));
+                      });
 }
 
 struct CardinalityGraphIndex {
@@ -543,8 +551,11 @@ struct CardinalityGraphIndex {
       mlir::Value current = phases.pop_back_val();
       if (!visitedPhases.insert(current).second)
         continue;
+      // Another occurrence of the same phase sequence, such as the issue
+      // stream beside a completion stream, initializes its own captures in
+      // the same parent activation; the caller still proves each one.
       for (const auto &entry : activationInputsByPhase)
-        if (haveEquivalentCorrespondence(entry.first, current))
+        if (haveEquivalentPhaseCardinality(entry.first, current))
           result.append(entry.second);
       for (const auto &entry : carriesByPhase)
         if (haveEquivalentCorrespondence(entry.first, current))

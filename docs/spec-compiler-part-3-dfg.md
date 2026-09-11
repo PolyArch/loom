@@ -389,9 +389,10 @@ The eight rules have these exact legality boundaries:
   activation, the completion recurrence's feedback dependencies also identify
   required initializers of the issue recurrence. Each initializer must be
   proven to belong to that parent activation; the two carry systems remain
-  separate. This is an
-  optional DSE candidate; ordinary lowering retains one stream, and runtime
-  measurements determine whether the extra state improves the mapped pipeline.
+  separate. Ordinary lowering already separates the completion stream of a
+  loop whose iterations are proven independent, so this candidate applies only
+  to a stream that still owns both roles; runtime measurements determine
+  whether the extra state improves the mapped pipeline.
 * `ElementwiseVectorDecompose` has exactly the operation, shape, mask,
   poison, activation, and construction contract defined by its linked owner.
   It decomposes an already selected semantic vector actor; it does not revisit
