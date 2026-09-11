@@ -49,6 +49,7 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   ProviderScheduleBudgetExhausted = 26,
   PolyhedralMaterializationUnavailable = 27,
   PhysicalLayoutProofNotEstablished = 28,
+  UnsignedIterationDomain = 29,
 };
 
 /// Whether a local refusal closes one explicitly excluded source form or

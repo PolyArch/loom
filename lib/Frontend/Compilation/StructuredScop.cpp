@@ -1218,9 +1218,13 @@ analyzeRaisedPointerScop(
     const llvm::DenseMap<mlir::Value, StructuredEntityRef>
         &sourceValueReferences,
     llvm::ArrayRef<std::uint64_t> tileFactors) {
+  // An unsigned comparison domain has no proven signed index projection, so it
+  // is refused by its own spelling rather than as an uncounted domain shape.
+  if (loop.getUnsignedCmp())
+    return refusePolyhedral(loopReference,
+                            StructuredScopRefusalKind::UnsignedIterationDomain);
   if (structure.loops.size() != 1 || structure.maximumLoopDepth != 1 ||
-      structure.imperfectNest || !loop.getInitArgs().empty() ||
-      loop.getUnsignedCmp())
+      structure.imperfectNest || !loop.getInitArgs().empty())
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
   auto inductionType =
