@@ -1,4 +1,5 @@
 #include "Frontend/Analysis/StoredMemoryProvenance.h"
+#include "Common/MappingDebugLog.h"
 #include "Common/PointerLayout.h"
 
 #include "Dataflow/IR/DataflowOps.h"
@@ -6,6 +7,7 @@
 #include "Frontend/Analysis/CountedLoopProjection.h"
 #include "Frontend/Analysis/MemoryAddressProjection.h"
 #include "Frontend/Analysis/MemoryProvenance.h"
+#include "Frontend/Analysis/ScalarGuardDomain.h"
 #include "Frontend/IR/LoomOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -26,8 +28,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <set>
@@ -565,161 +565,27 @@ private:
     return path;
   }
 
-  struct GuardDomain final {
-    mlir::Value value;
-    std::set<int64_t> values;
-  };
-
-  void addGuardDomain(mlir::Value value, std::set<int64_t> values,
-                      std::vector<GuardDomain> &domains) {
-    value = forwarded(value, Path());
-    if (auto extend = value.getDefiningOp<mlir::arith::ExtUIOp>()) {
-      unsigned width = extend.getIn().getType().getIntOrFloatBitWidth();
-      bool fits = width < 63;
-      for (int64_t item : values)
-        fits &=
-            item >= 0 && uint64_t(item) < (uint64_t(1) << std::min(width, 63u));
-      if (fits) {
-        addGuardDomain(extend.getIn(), std::move(values), domains);
-        return;
-      }
-    }
-    // Invert constant addition in the actual bit-vector width. This handles
-    // Clang's unsigned interval test (x - lower) < width without losing wrap.
-    if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
-      auto lhs = evaluate(add.getLhs(), Path()),
-           rhs = evaluate(add.getRhs(), Path());
-      mlir::Value input;
-      std::optional<llvm::APInt> constant;
-      if (lhs) {
-        input = add.getRhs();
-        constant = lhs;
-      } else if (rhs) {
-        input = add.getLhs();
-        constant = rhs;
-      }
-      if (constant) {
-        std::set<int64_t> inverted;
-        for (int64_t item : values) {
-          llvm::APInt candidate(constant->getBitWidth(), item);
-          candidate -= *constant;
-          if (!candidate.isSignedIntN(64))
-            return;
-          inverted.insert(candidate.getSExtValue());
-        }
-        addGuardDomain(input, std::move(inverted), domains);
-        return;
-      }
-    }
-    for (auto &domain : domains)
-      if (domain.value == value) {
-        std::set<int64_t> intersection;
-        std::set_intersection(values.begin(), values.end(),
-                              domain.values.begin(), domain.values.end(),
-                              std::inserter(intersection, intersection.end()));
-        domain.values = std::move(intersection);
-        return;
-      }
-    domains.push_back({value, std::move(values)});
-  }
-
-  void projectBooleanGuard(
-      mlir::Value value, bool truth, std::vector<GuardDomain> &domains,
-      llvm::DenseSet<std::pair<mlir::Value, unsigned>> &seen,
-      const std::function<std::optional<std::set<int64_t>>(mlir::Value)>
-          &range = {},
-      mlir::Value interested = {}) {
-    if (!seen.insert({value, truth}).second)
-      return;
-    if (auto conjunction = value.getDefiningOp<mlir::arith::AndIOp>();
-        conjunction && truth) {
-      projectBooleanGuard(conjunction.getLhs(), true, domains, seen, range,
-                          interested);
-      projectBooleanGuard(conjunction.getRhs(), true, domains, seen, range,
-                          interested);
-    }
-    if (auto disjunction = value.getDefiningOp<mlir::arith::OrIOp>();
-        disjunction && !truth) {
-      projectBooleanGuard(disjunction.getLhs(), false, domains, seen, range,
-                          interested);
-      projectBooleanGuard(disjunction.getRhs(), false, domains, seen, range,
-                          interested);
-    }
-    if (auto select = value.getDefiningOp<mlir::arith::SelectOp>()) {
-      auto yes = evaluate(select.getTrueValue(), Path()),
-           no = evaluate(select.getFalseValue(), Path());
-      if (no && no->getBitWidth() == 1 && no->isZero() == truth) {
-        projectBooleanGuard(select.getCondition(), true, domains, seen, range,
-                            interested);
-        projectBooleanGuard(select.getTrueValue(), truth, domains, seen, range,
-                            interested);
-      }
-      if (yes && yes->getBitWidth() == 1 && yes->isZero() == truth) {
-        projectBooleanGuard(select.getCondition(), false, domains, seen, range,
-                            interested);
-        projectBooleanGuard(select.getFalseValue(), truth, domains, seen, range,
-                            interested);
-      }
-    }
-    auto compare = value.getDefiningOp<mlir::arith::CmpIOp>();
-    if (!compare)
-      return;
-    using P = mlir::arith::CmpIPredicate;
-    auto lhs = evaluate(compare.getLhs(), Path()),
-         rhs = evaluate(compare.getRhs(), Path());
-    if ((compare.getPredicate() == P::eq && truth) ||
-        (compare.getPredicate() == P::ne && !truth)) {
-      if (rhs && rhs->isSignedIntN(64))
-        addGuardDomain(compare.getLhs(), {rhs->getSExtValue()}, domains);
-      else if (lhs && lhs->isSignedIntN(64))
-        addGuardDomain(compare.getRhs(), {lhs->getSExtValue()}, domains);
-    }
-    mlir::Value bounded;
-    std::optional<llvm::APInt> upper;
-    mlir::Value upperValue;
-    if (compare.getPredicate() == P::ult && truth) {
-      bounded = compare.getLhs();
-      upper = rhs;
-      upperValue = compare.getRhs();
-    } else if (compare.getPredicate() == P::ugt && truth) {
-      bounded = compare.getRhs();
-      upper = lhs;
-      upperValue = compare.getLhs();
-    }
-    if (bounded && !upper && range) {
-      std::vector<GuardDomain> source, target;
-      addGuardDomain(bounded, {0}, source);
-      if (interested)
-        addGuardDomain(interested, {0}, target);
-      if (!interested || (!source.empty() && !target.empty() &&
-                          source.front().value == target.front().value)) {
-        auto candidates = range(upperValue);
-        if (candidates && !candidates->empty() && *candidates->begin() >= 0)
-          upper = llvm::APInt(upperValue.getType().getIntOrFloatBitWidth(),
-                              *candidates->rbegin());
-      }
-    }
-    if (bounded && upper && upper->ult(maximumStaticValues + 1)) {
-      std::set<int64_t> values;
-      for (uint64_t item = 0; item < upper->getZExtValue(); ++item)
-        values.insert(item);
-      addGuardDomain(bounded, std::move(values), domains);
-    }
-  }
-
-  std::vector<GuardDomain> enclosingGuardDomains(
+  std::vector<GuardedValueDomain> enclosingGuardDomains(
       mlir::Operation *operation,
-      const std::function<std::optional<std::set<int64_t>>(mlir::Value)>
-          &range = {},
+      llvm::function_ref<std::optional<std::set<int64_t>>(mlir::Value)> range =
+          {},
       mlir::Value interested = {}) {
     Path path = enclosingPath(operation);
-    std::vector<GuardDomain> domains;
-    llvm::DenseSet<std::pair<mlir::Value, unsigned>> seen;
+    llvm::SmallVector<std::pair<mlir::Value, bool>> taken;
     for (const auto &[value, constant] : path.constants)
       if (constant.getBitWidth() == 1)
-        projectBooleanGuard(value, !constant.isZero(), domains, seen, range,
-                            interested);
-    return domains;
+        taken.emplace_back(value, !constant.isZero());
+    // The context holds function references, so both callables must outlive
+    // the projection call.
+    const auto constantValue = [&](mlir::Value value) {
+      return evaluate(value, Path());
+    };
+    const auto canonicalValue = [&](mlir::Value value) {
+      return forwarded(value, Path());
+    };
+    ScalarGuardContext context{constantValue, canonicalValue, range,
+                               maximumStaticValues};
+    return projectGuardedValueDomains(taken, context, interested);
   }
 
   bool dependsOn(mlir::Value value, mlir::Value target,
@@ -757,7 +623,7 @@ private:
       auto guarded = enclosingGuardDomains(
           anchor, [&](mlir::Value bound) { return scalarDomain(bound); },
           value);
-      for (const GuardDomain &domain : guarded)
+      for (const GuardedValueDomain &domain : guarded)
         if (domain.value == forwarded(value, Path()))
           return domain.values;
     }
@@ -784,7 +650,7 @@ private:
       auto guarded = enclosingGuardDomains(
           definition, [&](mlir::Value bound) { return scalarDomain(bound); },
           value);
-      for (const GuardDomain &domain : guarded)
+      for (const GuardedValueDomain &domain : guarded)
         if (domain.value == forwarded(value, Path()))
           return domain.values;
     }
@@ -889,7 +755,7 @@ private:
     llvm::DenseSet<mlir::Value> visited;
     llvm::SmallVector<mlir::Value> pending{condition.getCondition(),
                                            condition.getArgs()[lane]};
-    llvm::SmallVector<GuardDomain> memoryInvariants;
+    llvm::SmallVector<GuardedValueDomain> memoryInvariants;
     while (!pending.empty()) {
       mlir::Value value = forwarded(pending.pop_back_val(), Path());
       if (!visited.insert(value).second || evaluate(value, Path()))
@@ -927,7 +793,7 @@ private:
       }
     }
     Path guardedPath = enclosingPath(loop);
-    for (const GuardDomain &domain : memoryInvariants) {
+    for (const GuardedValueDomain &domain : memoryInvariants) {
       if (domain.values.empty())
         return std::set<int64_t>{};
       if (invariantPaths.size() * domain.values.size() > maximumStaticValues)
@@ -948,7 +814,7 @@ private:
         }
       invariantPaths = std::move(expanded);
     }
-    for (const GuardDomain &domain : enclosingGuardDomains(loop)) {
+    for (const GuardedValueDomain &domain : enclosingGuardDomains(loop)) {
       llvm::DenseSet<mlir::Value> dependencies;
       if (!dependsOn(condition.getCondition(), domain.value, dependencies) &&
           !dependsOn(condition.getArgs()[lane], domain.value, dependencies))
@@ -1724,6 +1590,43 @@ private:
     return result;
   }
 
+  /// Refuses one queried byte range and records which write refused it. The
+  /// record is the only evidence that separates a genuinely partial stored
+  /// representation from an over-approximated write position, so it stays
+  /// available behind the detail verbosity rather than being removed with the
+  /// investigation that needed it.
+  std::nullopt_t refuseSlot(StoredPointerRefusal reason, const Address &query,
+                            int64_t offset, const WriteEffect *effect = nullptr,
+                            const WritePositions *positions = nullptr,
+                            int64_t writeOffset = 0) {
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext,
+        [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "stored_pointer_slot_refusal";
+          fields["refusal"] = storedPointerRefusalSpelling(reason);
+          fields["root"] = describeValue(query.root);
+          fields["query_byte_offset"] = offset;
+          fields["query_bytes"] = query.bytes;
+          if (!effect)
+            return;
+          fields["write_bytes"] = effect->destination.bytes;
+          mlir::LLVM::StoreOp write = effect->operation;
+          fields["write_value"] = describeValue(write.getValue());
+          fields["write_kind"] = effect->kind == WriteKind::Zero   ? "zero"
+                                 : effect->kind == WriteKind::Copy ? "copy"
+                                                                   : "scalar";
+          if (!positions)
+            return;
+          fields["write_byte_offset"] = writeOffset;
+          fields["write_position_count"] = uint64_t(positions->starts.size());
+          fields["write_position_lowest"] = positions->lowest;
+          fields["write_position_end"] = positions->highestEnd;
+          fields["write_exhaustive"] = positions->exhaustive;
+        });
+    return refuse(reason);
+  }
+
   std::optional<std::vector<Payload>> slotSources(const Address &query,
                                                   int64_t offset,
                                                   mlir::Operation *point,
@@ -1736,30 +1639,36 @@ private:
     for (std::size_t ordinal = 0; ordinal != effects_.size(); ++ordinal) {
       const auto &possible = effects_[ordinal];
       if (!possible)
-        return refuse(StoredPointerRefusal::UnsupportedMemoryEffect);
+        return refuseSlot(StoredPointerRefusal::UnsupportedMemoryEffect, query,
+                          offset);
       const WriteEffect &effect = *possible;
       auto write = effect.operation;
       if (distinctFrameRoots(query, effect.destination))
         continue;
       if (!sameFrameRoot(query, effect.destination))
-        return refuse(StoredPointerRefusal::UnknownAlias);
+        return refuseSlot(StoredPointerRefusal::UnknownAlias, query, offset,
+                          &effect);
       const WritePositions *positions = writePositions(ordinal, effect);
       if (!positions)
-        return refuse(StoredPointerRefusal::UnknownIntegerDomain);
+        return refuseSlot(StoredPointerRefusal::UnknownIntegerDomain, query,
+                          offset, &effect);
       if (positions->starts.empty())
-        return refuse(StoredPointerRefusal::OutOfBoundsAccess);
+        return refuseSlot(StoredPointerRefusal::OutOfBoundsAccess, query,
+                          offset, &effect, positions);
       if (queryEnd <= positions->lowest || positions->highestEnd <= offset)
         continue;
       for (int64_t begin : positions->starts) {
         if (!withinAllocation(effect.destination, begin))
-          return refuse(StoredPointerRefusal::OutOfBoundsAccess);
+          return refuseSlot(StoredPointerRefusal::OutOfBoundsAccess, query,
+                            offset, &effect, positions, begin);
         int64_t end;
         if (llvm::AddOverflow(begin, int64_t(effect.destination.bytes), end))
           return refuse(StoredPointerRefusal::UnknownByteAddress);
         if (queryEnd <= begin || end <= offset)
           continue;
         if (begin > offset || end < queryEnd)
-          return refuse(StoredPointerRefusal::PartialPointerWrite);
+          return refuseSlot(StoredPointerRefusal::PartialPointerWrite, query,
+                            offset, &effect, positions, begin);
         if (effect.kind == WriteKind::Zero) {
           result.push_back({PayloadKind::Zero, {}, effect.frame, write});
         } else if (effect.kind == WriteKind::Copy) {
@@ -1775,7 +1684,8 @@ private:
           result.push_back(
               {PayloadKind::Value, write.getValue(), effect.frame, write});
         } else {
-          return refuse(StoredPointerRefusal::PartialPointerWrite);
+          return refuseSlot(StoredPointerRefusal::PartialPointerWrite, query,
+                            offset, &effect, positions, begin);
         }
         // A write whose position is chosen at runtime contributes its payload
         // but covers no byte, because no execution is known to perform it at
@@ -1785,7 +1695,8 @@ private:
       }
     }
     if (!mustInitialized)
-      return refuse(StoredPointerRefusal::IncompleteInitialization);
+      return refuseSlot(StoredPointerRefusal::IncompleteInitialization, query,
+                        offset);
     return result;
   }
 

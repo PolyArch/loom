@@ -11,8 +11,13 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <string>
 
 namespace loom::frontend::analysis {
+
+/// One-line diagnostic spelling of an SSA value, shared by the stored-memory
+/// proof and the address domains it derives.
+std::string describeValue(mlir::Value value);
 
 /// One arithmetic progression of byte offsets: `first`, `first + stride`, ...,
 /// up to and including `last`. A single offset has `first == last`.

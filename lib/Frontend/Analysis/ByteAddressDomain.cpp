@@ -235,22 +235,6 @@ openIndexContribution(const LinearByteTerm &term,
   return contribution;
 }
 
-std::string valueText(mlir::Value value) {
-  if (!value)
-    return "<none>";
-  std::string text;
-  llvm::raw_string_ostream output(text);
-  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
-    value.printAsOperand(output, mlir::OpPrintingFlags());
-    output << " in ";
-    argument.getOwner()->getParentOp()->print(
-        output, mlir::OpPrintingFlags().skipRegions());
-  } else {
-    value.print(output, mlir::OpPrintingFlags().skipRegions());
-  }
-  return text;
-}
-
 void reportUnknownDomain(const AddressByteDomainRequest &request,
                          FiniteIndexValues finiteIndexValues) {
   mapping_debug::emit(
@@ -258,7 +242,7 @@ void reportUnknownDomain(const AddressByteDomainRequest &request,
       mapping_debug::Event::DerivedContext,
       [&](llvm::json::Object &fields) {
         fields["context_kind"] = "stored_pointer_address_domain";
-        fields["root"] = valueText(request.root);
+        fields["root"] = describeValue(request.root);
         fields["byte_bias"] = request.byteBias;
         fields["access_bytes"] = request.accessByteCount;
         fields["in_bounds_of_allocation"] = request.inBoundsOfAllocation;
@@ -271,7 +255,7 @@ void reportUnknownDomain(const AddressByteDomainRequest &request,
           const IndexValueBounds bounds =
               projectIndexBounds(term.index, finiteIndexValues, 0);
           llvm::json::Object entry;
-          entry["index"] = valueText(term.index);
+          entry["index"] = describeValue(term.index);
           entry["byte_stride"] = term.byteStride;
           entry["index_domain_known"] = values.has_value();
           if (values)
@@ -291,6 +275,22 @@ void reportUnknownDomain(const AddressByteDomainRequest &request,
 }
 
 } // namespace
+
+std::string describeValue(mlir::Value value) {
+  if (!value)
+    return "<none>";
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+    value.printAsOperand(output, mlir::OpPrintingFlags());
+    output << " in ";
+    argument.getOwner()->getParentOp()->print(
+        output, mlir::OpPrintingFlags().skipRegions());
+  } else {
+    value.print(output, mlir::OpPrintingFlags().skipRegions());
+  }
+  return text;
+}
 
 std::uint64_t ByteOffsetProgression::count() const {
   if (last < first || stride <= 0)
