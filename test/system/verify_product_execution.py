@@ -433,18 +433,48 @@ def validate_mapping_work(
     ]
     hardware_reopen = bool(reopen_attempts)
     if hardware_reopen:
-        require(
-            any(
+        # The reopen chain is a bounded feedback search with four typed
+        # terminal outcomes (docs/spec-dse-feedback.md, "Hardware reopen is a
+        # bounded feedback chain"): a verified SystemMapping on a distinct
+        # child System, an exhausted probe bound, no supported typed feedback
+        # left, or cancellation. A published child must be distinct from its
+        # parent; a chain that publishes none must have declared its work
+        # exhausted while the invocation still selected a verified Mapping.
+        published_children = [
+            row
+            for row in reopen_attempts
+            if row.get("system_mapping_count", 0) > 0
+        ]
+        for row in published_children:
+            require(
                 all(
                     is_artifact_identity(row.get(field))
                     for field in ("parent_system", "system")
                 )
-                and row["system"] != row["parent_system"]
-                and row.get("system_mapping_count", 0) > 0
-                for row in reopen_attempts
-            ),
-            "hardware reopen published no verified Mapping on a distinct child System",
-        )
+                and row["system"] != row["parent_system"],
+                "hardware reopen published a child Mapping on the parent System",
+            )
+        if not published_children:
+            stopping = [
+                payload
+                for payload in matching_payloads(
+                    events, stage="system_pnr", event="derived_context"
+                )
+                if payload.get("context_kind") == "joint_design_stopping"
+            ]
+            require(
+                stopping
+                and stopping[-1].get("declared_work_exhausted") is True
+                and isinstance(stopping[-1].get("verified_alternatives"), int)
+                and stopping[-1]["verified_alternatives"] >= 1
+                and stopping[-1].get("selected_mapping") is not None
+                and isinstance(
+                    stopping[-1].get("hardware_repair_probes_consumed"), int
+                )
+                and stopping[-1]["hardware_repair_probes_consumed"] >= 1,
+                "hardware reopen published no child Mapping and did not end in a "
+                "typed exhausted state with a verified selected Mapping",
+            )
     tech_rows = [
         payload
         for payload in matching_payloads(
