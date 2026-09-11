@@ -311,10 +311,9 @@ plain accesses or create a persistent loop-order object.
 Each ring uses `dataflow.carry` under the loop selector. A matching
 `dataflow.demux` sends true-lane values into the body and the false-lane value
 to loop exit. Captured non-memory values are replayed with
-`dataflow.invariant` and projected with the same selector-matched
-`dataflow.demux`; the template and its token counts are owned by the
-`scf.for` section of `docs/spec-compiler-part-3-dfg.md`. Memref capabilities
-are not replayed.
+`dataflow.invariant` and projected into body phase with `dataflow.gate`; the
+template and its token counts are owned by the `scf.for` section of
+`docs/spec-compiler-part-3-dfg.md`. Memref capabilities are not replayed.
 
 Execution permission and the memory components are distinct token systems.
 They may carry the same event at loop entry, but each keeps its own replay or

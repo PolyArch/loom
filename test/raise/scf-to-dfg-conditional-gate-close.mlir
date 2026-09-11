@@ -6,19 +6,16 @@
 // RUN:   --arg 0=0 --arg 1=7 --memref 2=0,0 --output %t.bypass.json
 
 // The loop runs only on the else lane of the guard, so the capture close has
-// to retire under the enclosing selection as well as under the loop. The
-// close is the false lane of the capture's own projection and carries one
-// token per activation, zero-trip included, so the loop exit joins it with no
-// empty-loop selection of its own.
+// to retire under the enclosing selection as well as under the loop's own
+// empty-loop selection.
 // CHECK-LABEL: dataflow.graph private @conditional_gate_close
-// CHECK-NOT: dataflow.gate
 // CHECK: %[[EMPTY:.*]] = arith.cmpi eq,
-// CHECK: %[[VALUE_RAW:.*]] = dataflow.invariant %{{.*}} : i32
-// CHECK: %[[VALUE_LANES:.*]]:2 = dataflow.demux %{{.*}}, %[[VALUE_RAW]] : (i1, i32) -> (i32, i32)
-// CHECK-NOT: dataflow.gate
-// CHECK: dataflow.store {{.*}} %[[VALUE_LANES]]#1
-// CHECK: %[[LOOP_COMPLETE:.*]]:2 = dataflow.sync %{{.*}}, %[[VALUE_LANES]]#0 : (none, i32) -> (none, i32)
-// CHECK: dataflow.mux %[[EMPTY]], %[[LOOP_COMPLETE]]#0, {{.*}} : (i1, none, none) -> none
+// CHECK: %[[GATE_PHASE:.*]], %[[BODY_VALUE:.*]] = dataflow.gate
+// CHECK: %[[GATE_CLOSE:.*]]:2 = dataflow.demux %[[GATE_PHASE]], %[[BODY_VALUE]] : (i1, i32) -> (i32, i32)
+// CHECK: dataflow.store {{.*}} %[[BODY_VALUE]]
+// CHECK: %[[ACTIVE_COMPLETE:.*]]:2 = dataflow.sync {{.*}}, %[[GATE_CLOSE]]#0 : (none, i32) -> (none, i32)
+// CHECK: %[[LOOP_COMPLETE:.*]] = dataflow.mux {{.*}}, {{.*}}, %[[ACTIVE_COMPLETE]]#0 : (i1, none, none) -> none
+// CHECK: dataflow.mux %[[EMPTY]], %[[LOOP_COMPLETE]], {{.*}} : (i1, none, none) -> none
 // CHECK: dataflow.graph.return
 
 dataflow.graph private @conditional_gate_close(

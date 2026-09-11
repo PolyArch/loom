@@ -1625,24 +1625,23 @@ stateful consumer, but it has no paired IV or body execution.
 
 The stream IV already has body cardinality and enters body arithmetic and
 memory directly. Parent-domain captured values from `invariant` have
-`N + 1` tokens. Recurrence values, captured values, and memory-frontier
-components alike are projected with one selector-matched `dataflow.demux`:
-the true lane carries the `N` body tokens and the false lane carries the
-single exit or close token. Loop results, memory-frontier exits, and capture
-close events all consume that false lane. A counted loop's phase always
-publishes its closing false token, so a capture close event exists for a
-zero-trip activation too and the loop exit joins every close
-unconditionally, rather than selecting between an empty and a non-empty
-exit.
-
-`dataflow.gate` projects a captured value only where the selector may never
-open at all. That is the `scf.while` after region: a condition that is false
-on its first decision pairs no token with the region, so the gate opens on the
-first true decision and its close event exists exactly when the region
-executed at least once. A counted loop never has that case.
-
-A true body-local condition means the current body execution is not the
+`N + 1` tokens and are projected through `dataflow.gate` before body use.
+Recurrence values that also need a false-lane exit use selector-matched
+`dataflow.demux`; loop results and memory-frontier exits consume that false
+lane. A true body-local condition means the current body execution is not the
 last execution; a false body-local condition means it is the last execution.
+
+A replay followed by a selector-matched `dataflow.demux` produces the same
+body and close token sequences as `invariant` followed by `gate`, but it is
+not the canonical shape. The gate is one actor that consumes the selector once
+for both the body normalization and the close; the split form is two actors
+that each consume the selector, and it adds the replay-to-projection edge.
+That is one more actor and two more routes per captured value. Mapping closes
+a small Fabric through bounded route repair, so the two forms are not
+interchangeable for placement and routing even though they are token
+equivalent. A captured value's close event therefore exists only when the gate
+opened at least once, and a counted loop's exit selects between the empty and
+the non-empty case on its own nonempty predicate.
 
 Different regions of one source loop may therefore have different phase
 streams. The loop-level phase decides whether the source loop continues
@@ -2046,13 +2045,13 @@ This translation uses one loop selector from
 `dataflow.stream` and independent `carry -> demux` rings for execution,
 iter_args, and each touched `W_P/R_P` component. True lanes enter the
 recursively lowered body; false lanes are loop exits. Captured non-memref
-values use `invariant` followed by the same selector-matched `demux`: the
-true lane is the body value and the false lane is the capture close event
-that the loop exit joins.
+values use `invariant` followed by true-lane projection through
+`dataflow.gate`, whose close event the loop exit joins on the non-empty side
+of its nonempty predicate.
 
 The body feeds every ring independently. Zero trip produces only the false
 selector token, so init execution, values, and frontier components transfer
-unchanged, and every capture close is that one false-lane token. Read-only
+unchanged and no gate opens, so there is no capture close to join. Read-only
 state does not create RAR order; write feedback preserves RAW, WAR, and WAW
 across source-sequential iterations.
 
