@@ -5,6 +5,7 @@
 #include "PnR/SpatialCanonicalSeed.h"
 
 #include "SpatialLocalTransferIndex.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -386,6 +387,10 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
   const auto &localTransfers = problem.localTransfers();
   const std::size_t logicalNetCount = problem.transfers().logicalNets().size();
   std::uint64_t consideredNets = 0;
+  std::uint64_t pairedNets = 0;
+  std::uint64_t emptyDomainNets = 0;
+  std::uint64_t routeConstrainedNets = 0;
+  std::uint64_t noAlternativeNets = 0;
   std::uint64_t probes = 0;
   std::uint64_t adopted = 0;
   std::uint64_t relocated = 0;
@@ -400,6 +405,15 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
           fields["status"] = status;
           fields["admitted_option_count"] = localTransfers.options().size();
           fields["candidate_nets"] = consideredNets;
+          // Why the remaining nets are not candidates. A net already paired,
+          // with an empty frozen domain, or whose enumeration returns nothing
+          // never reaches the objective, so an absent local transfer is a
+          // domain or placement fact rather than a ranking decision.
+          // `route_constrained_nets` refines `no_alternative_nets`.
+          fields["paired_nets"] = pairedNets;
+          fields["empty_domain_nets"] = emptyDomainNets;
+          fields["route_constrained_nets"] = routeConstrainedNets;
+          fields["no_alternative_nets"] = noAlternativeNets;
           fields["probes"] = probes;
           fields["adopted"] = adopted;
           fields["relocated"] = relocated;
@@ -439,9 +453,16 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
       break;
     for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount && !interrupted;
          ++logicalNet) {
-      if (candidate.usesRegisterFifo(logicalNet) ||
-          localTransfers.domains()[logicalNet].optionCount == 0)
+      if (candidate.usesRegisterFifo(logicalNet)) {
+        pairedNets += relocationsAdmitted;
         continue;
+      }
+      if (localTransfers.domains()[logicalNet].optionCount == 0) {
+        emptyDomainNets += relocationsAdmitted;
+        continue;
+      }
+      if (problem.routeConstraints().netHasConstraints(logicalNet))
+        routeConstrainedNets += relocationsAdmitted;
       if (llvm::Error error = detail::enumerateSpatialLocalTransferAdoptions(
               problem, candidate.computeBindingSelections(),
               candidate.registerFifoTransferSelections(), logicalNet,
@@ -450,8 +471,10 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
                   : llvm::ArrayRef<SpatialRealizationBindingAction>(),
               adoptionAlternatives_))
         return error;
-      if (adoptionAlternatives_.empty())
+      if (adoptionAlternatives_.empty()) {
+        noAlternativeNets += relocationsAdmitted;
         continue;
+      }
       consideredNets += relocationsAdmitted;
       for (const SpatialLocalTransferAdoption &adoption :
            adoptionAlternatives_) {
