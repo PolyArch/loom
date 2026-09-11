@@ -108,6 +108,7 @@ tryHardwareFeedbackReopen(
     std::uint64_t deficit = 0;
     std::uint64_t demand = 0;
     std::uint64_t contexts = 0;
+    std::optional<TechMappingComputeContextGrowthDirection> direction;
   };
   std::optional<HallProgressObservation> previousHallProgress;
   const std::uint64_t candidateLimit =
@@ -129,12 +130,31 @@ tryHardwareFeedbackReopen(
         std::get_if<TechHardwareFeedbackObservation>(&**feedback);
     const auto *systemObservation =
         std::get_if<SystemHardwareFeedbackObservation>(&**feedback);
+    // The growth owner chooses the supply direction from the exact observed
+    // relation, so the direction is derived before the funnel decides whether
+    // this observation repeats the previous one.
+    llvm::Expected<HardwareRecipeGrowth> growth =
+        (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
+         parentHasNoMappingFrontier && candidateOrdinal == 0 &&
+         techObservation && techObservation->feedback.deficit() > 1)
+            ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
+                                                    *techObservation, artifacts)
+            : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts);
+    if (!growth)
+      return growth.takeError();
     if (techObservation) {
       const HallProgressObservation currentHallProgress{
           techObservation->feedback.deficit(),
           techObservation->feedback.hallDemandCount(),
-          techObservation->feedback.hallContextValueCount()};
+          techObservation->feedback.hallContextValueCount(),
+          growth->computeContextGrowthDirection};
+      // Equal demand and context growth under an unchanged deficit means the
+      // previous probe bought nothing. That is only a funnel boundary while
+      // the owner keeps offering the same kind of supply: a changed growth
+      // direction offers the relation a structurally different supply the
+      // funnel has not measured yet.
       if (previousHallProgress &&
+          currentHallProgress.direction == previousHallProgress->direction &&
           currentHallProgress.deficit == previousHallProgress->deficit &&
           currentHallProgress.demand > previousHallProgress->demand &&
           currentHallProgress.contexts > previousHallProgress->contexts &&
@@ -156,6 +176,10 @@ tryHardwareFeedbackReopen(
               fields["current_hall_demand"] = currentHallProgress.demand;
               fields["current_hall_contexts"] = currentHallProgress.contexts;
               fields["hall_deficit"] = currentHallProgress.deficit;
+              if (currentHallProgress.direction)
+                fields["compute_context_growth_direction"] =
+                    techMappingComputeContextGrowthDirectionSpelling(
+                        *currentHallProgress.direction);
             });
         break;
       }
@@ -165,16 +189,6 @@ tryHardwareFeedbackReopen(
     }
     ++accounting.hardwareRepairProbesPlanned;
     ++accounting.hardwareRepairProbesReserved;
-
-    llvm::Expected<HardwareRecipeGrowth> growth =
-        (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
-         parentHasNoMappingFrontier && candidateOrdinal == 0 &&
-         techObservation && techObservation->feedback.deficit() > 1)
-            ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
-                                                    *techObservation, artifacts)
-            : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts);
-    if (!growth)
-      return growth.takeError();
     const bool accCoreOnlyGrowth = growth->addedAccCores != 0 &&
                                    growth->addedContexts == 0 &&
                                    growth->addedGateways == 0;
@@ -616,6 +630,17 @@ tryHardwareFeedbackReopen(
           fields["added_acc_cores"] =
               system->resultingAccCores - parentAccCores;
           fields["acc_core_count"] = system->resultingAccCores;
+          if (system->computeContextGrowthDirection)
+            fields["compute_context_growth_direction"] =
+                techMappingComputeContextGrowthDirectionSpelling(
+                    *system->computeContextGrowthDirection);
+          fields["added_spatial_fu_occurrences"] =
+              system->addedSpatialFuOccurrences;
+          fields["added_spatial_fu_contexts"] = system->addedSpatialFuContexts;
+          fields["spatial_fu_context_supply_bound"] =
+              system->spatialFuContextSupplyBound;
+          fields["spatial_fu_unclosed_deficit"] =
+              system->spatialFuUnclosedDeficit;
           fields["system"] =
               formatArtifactIdentityHex(system->reference.artifact);
           fields["parent_system"] = formatArtifactIdentityHex(

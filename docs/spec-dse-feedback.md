@@ -3470,6 +3470,52 @@ rebuilt from the exact Fabric through the same physical-demand projection used
 by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
+
+The hardware reopen owner chooses between those two supplies with one policy,
+and the choice is a typed growth direction rather than an implicit
+consequence of the decision it emits. A Spatial-schedule PE holds one resident
+instruction per context and never rotates, so demand it hosts keeps its
+loop-carried dependences unserialized; a Temporal PE issues its residents in
+rotation, so every additional resident lengthens the initiation interval of
+every loop it hosts. The owner therefore prefers `spatial_fu_occurrence`
+growth: it gives one Spatial PE of the exact parent Module a clone of an
+existing FU occurrence of a deficient capability class, which makes that PE's
+resident contexts compatible with every demand group admitting that
+capability. Prototype selection is derivable from the exact parent Module. A
+prototype is admissible for a target only when the prototype's parent PE
+presents exactly the target's token inputs by ordinal and canonical type,
+which is the ADG Builder's own FU-inventory admission rule; ties take the
+canonically least prototype and the canonically least target. The owner takes
+the step only when it strictly increases the observed maximum matching, which
+it checks with the same all-different closure that produced the feedback.
+
+`ChangeFuInventory` names one exact PE, so one child Module gains one
+capability. The reopen chain therefore re-observes the Hall relation after
+each child and takes the next step, and the growth plan records how much
+supply the direction still has. Its typed bound is the resident-context supply
+of the exact parent Module's admissible Spatial PEs other than the one this
+step consumes, together with the part of the observed deficit that bound
+cannot reach. The bound is an upper estimate of remaining Spatial supply, so
+the unreached deficit is a lower estimate of the demand instruction stores
+must cover. The bound is zero exactly when no admissible Spatial PE strictly
+improves the observed relation. The policy proposes no PE beyond that
+inventory: in that exhausted case the direction becomes
+`temporal_instruction_store` and the owner
+closes the remaining relation with the minimum total new Temporal context
+capacity through the atomic `ResizeInstructionStores` decision the
+spatial-microarchitecture generator owns. Instruction
+stores thus remain the supply for exactly the demand no Spatial PE of that
+Module can host. Adding AccCores or mesh occurrences is a different typed
+owner and is not proposed here.
+
+The chosen direction, the Spatial supply bound, and the unreached deficit are
+explicit in the reopen diagnostics. The typed growth record names the
+operation `typed_spatial_fu_occurrence_growth` or
+`typed_resize_instruction_stores_growth`, and both it and
+`hardware_reopen_mapping_attempt` carry the direction spelling, the added FU
+occurrence and context counts, the Spatial context supply bound, and the
+unclosed deficit.
+
 The root-complete Spatial provider may return
 `loom.mapping.spatial_hardware_feedback.2.0`. Its closed alternatives are a
 graph-boundary capacity proposal and a FIFO channel-reservation proposal. Both
@@ -3840,7 +3886,12 @@ a valid continuation proof for another child. The owner emits
 `ProofNotEstablished(hall_repair_stagnation)` and records the untried
 alternative repair domain; it does not spend the remaining probe budget or
 call Spatial/System PnR again. This is a search-boundary diagnosis, not a
-claim that the application or Fabric is infeasible.
+claim that the application or Fabric is infeasible. The rule applies only
+while the owner keeps offering the same typed growth direction. A direction
+that changed between the two compared observations offers the relation a
+structurally different supply the funnel has not measured, so it is progress;
+the stagnation record names the direction it stopped on. The growth direction
+is therefore derived before the funnel compares two observations.
 The controller has no deficit-size threshold or Application-specific reopen
 heuristic. Switch, memory, FIFO, topology, and other System resources remain
 unchanged unless a later typed Mapping witness and its hardware owner define a
