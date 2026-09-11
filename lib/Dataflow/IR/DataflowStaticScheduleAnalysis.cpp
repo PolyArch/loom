@@ -86,6 +86,7 @@ struct WorkingGraph final {
 
 struct AnalysisBuilder final {
   StaticScheduleAnalysis result;
+  std::vector<bool> streamActors;
   std::vector<llvm::SmallVector<
       semantics::InitializedFeedbackInputDescriptor, 3>>
       initializedFeedbackInputs;
@@ -113,6 +114,38 @@ struct AnalysisBuilder final {
       if (source == localActor.end() || sink == localActor.end())
         return invalid("graph edge escapes its owning graph");
       adjacency[source->second].push_back(sink->second);
+    }
+
+    // Iteration-driven work: everything a stream's per-iteration tokens
+    // reach. Phase inputs of carries and invariants are initialized feedback
+    // for the recurrence analysis but still arrive once per iteration, so
+    // this walk follows every edge. Loop-exit lanes are reached as well;
+    // charging them as iteration work only overstates a one-shot dispatch.
+    {
+      std::vector<std::vector<std::size_t>> everyEdge(actorCount);
+      for (std::size_t edgeOrdinal : graph.edges) {
+        const WorkingEdge &edge = edges[edgeOrdinal];
+        everyEdge[localActor.at(edge.source)].push_back(
+            localActor.at(edge.sink));
+      }
+      std::vector<bool> reached(actorCount, false);
+      std::vector<std::size_t> frontier;
+      for (std::size_t local = 0; local < actorCount; ++local)
+        if (streamActors[graph.actors[local]]) {
+          reached[local] = true;
+          frontier.push_back(local);
+        }
+      while (!frontier.empty()) {
+        const std::size_t actor = frontier.back();
+        frontier.pop_back();
+        for (std::size_t sink : everyEdge[actor])
+          if (!reached[sink]) {
+            reached[sink] = true;
+            frontier.push_back(sink);
+          }
+      }
+      for (std::size_t local = 0; local < actorCount; ++local)
+        result.actors_[graph.actors[local]].iterationDriven = reached[local];
     }
 
     std::vector<std::size_t> discovery(actorCount,
@@ -404,7 +437,8 @@ deriveStaticScheduleAnalysis(const CanonicalDataflowProgramView &dataflow,
     if (!feedbackInputs)
       return feedbackInputs.takeError();
     builder.result.actors_.push_back(
-        {actor.ref, actor.graph, 0, 0, isTemporalStateCarrier(schema)});
+        {actor.ref, actor.graph, 0, 0, isTemporalStateCarrier(schema), false});
+    builder.streamActors.push_back(schema == OperationSchemaId::DataflowStream);
     builder.initializedFeedbackInputs.push_back(std::move(*feedbackInputs));
     builder.graphs[graph->second].actors.push_back(ordinal);
   }
