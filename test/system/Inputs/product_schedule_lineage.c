@@ -1,8 +1,10 @@
 // One exact static loop with two independent statements over distinct
 // caller-owned arrays. The product funnel enumerates Structured schedule
 // decisions for it, and the selected compilation's schedule lineage joins the
-// Mapping evidence recorded against that exact program.
-enum { lineage_extent = 8 };
+// Mapping evidence recorded against that exact program. The extent is large
+// enough that the parallel schedule pays for its per-core configuration
+// residency, so the selected compilation carries the parallel lineage.
+enum { lineage_extent = 8192 };
 
 __attribute__((noinline)) static void
 schedule_lineage(const int *first, const int *second, int *sum, int *scaled) {
@@ -12,14 +14,21 @@ schedule_lineage(const int *first, const int *second, int *sum, int *scaled) {
   }
 }
 
+static int first[lineage_extent];
+static int second[lineage_extent];
+static int sum[lineage_extent];
+static int scaled[lineage_extent];
+
 int main(void) {
-  int first[lineage_extent] = {1, 2, 3, 4, 5, 6, 7, 8};
-  int second[lineage_extent] = {10, 20, 30, 40, 50, 60, 70, 80};
-  int sum[lineage_extent] = {0};
-  int scaled[lineage_extent] = {0};
+  for (int index = 0; index < lineage_extent; ++index) {
+    first[index] = index + 1;
+    second[index] = 10 * (index + 1);
+  }
   schedule_lineage(first, second, sum, scaled);
-  int checksum = 0;
+  long checksum = 0;
   for (int index = 0; index < lineage_extent; ++index)
     checksum += sum[index] + scaled[index];
-  return checksum != 504;
+  // Each element contributes (1 + 10 + 3) * (index + 1).
+  const long expected = 14L * lineage_extent * (lineage_extent + 1) / 2;
+  return checksum != expected;
 }
