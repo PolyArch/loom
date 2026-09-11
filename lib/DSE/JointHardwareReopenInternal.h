@@ -6,6 +6,7 @@
 #include "DSE/JointHardwareReopen.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/SiteScheduler.h"
+#include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
 #include "Mapping/Artifact/SystemMappingHardwareDemand.h"
@@ -64,6 +65,14 @@ struct HardwareRecipeGrowth final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  /// The compute-context growth direction the Hall feedback owner chose, and
+  /// its Spatial bound. Present only for a Tech compute-context observation.
+  std::optional<TechMappingComputeContextGrowthDirection>
+      computeContextGrowthDirection;
+  std::uint64_t addedSpatialFuOccurrences = 0;
+  std::uint64_t addedSpatialFuContexts = 0;
+  std::uint64_t spatialFuContextSupplyBound = 0;
+  std::uint64_t spatialFuUnclosedDeficit = 0;
   bool uniformContextGrowth = false;
 };
 
@@ -83,6 +92,12 @@ struct MaterializedHardwareCandidate final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  std::optional<TechMappingComputeContextGrowthDirection>
+      computeContextGrowthDirection;
+  std::uint64_t addedSpatialFuOccurrences = 0;
+  std::uint64_t addedSpatialFuContexts = 0;
+  std::uint64_t spatialFuContextSupplyBound = 0;
+  std::uint64_t spatialFuUnclosedDeficit = 0;
   std::optional<JointDesignInvocationManifestReference> constructionInvocation;
 };
 

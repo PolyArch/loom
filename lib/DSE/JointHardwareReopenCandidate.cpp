@@ -899,18 +899,37 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
         techObservation->feedback, module->view());
     if (!plan)
       return plan.takeError();
-    for (const dse::ResizeInstructionStore &decision : plan->decisions) {
-      const std::uint64_t currentCapacity =
-          module->view().peResidentContextCount(decision.target);
-      if (decision.instructionCapacity <= currentCapacity)
-        return invalid("joint Module growth contains a non-growth decision");
-      growth.maximumInstructionStoreCapacity =
-          std::max(growth.maximumInstructionStoreCapacity,
-                   static_cast<std::uint64_t>(decision.instructionCapacity));
-    }
     growth.techModule = techObservation->module;
-    growth.instructionStoreResizes = plan->decisions;
-    growth.resizedInstructionStoreCount = plan->decisions.size();
+    growth.computeContextGrowthDirection = plan->direction;
+    growth.spatialFuContextSupplyBound = plan->spatialFuContextSupplyBound;
+    growth.spatialFuUnclosedDeficit = plan->spatialFuUnclosedDeficit;
+    switch (plan->direction) {
+    case dse::TechMappingComputeContextGrowthDirection::SpatialFuOccurrence: {
+      if (!plan->spatialFuGrowth)
+        return invalid("Spatial FU growth direction has no typed decision");
+      const dse::TechMappingComputeContextSpatialFuGrowth &spatial =
+          *plan->spatialFuGrowth;
+      growth.moduleDecision = dse::ChangeFuInventoryDomain{
+          spatial.decision.target, {spatial.decision.prototypes}};
+      growth.addedSpatialFuOccurrences = 1;
+      growth.addedSpatialFuContexts = spatial.addedContextCount;
+      break;
+    }
+    case dse::TechMappingComputeContextGrowthDirection::
+        TemporalInstructionStore:
+      for (const dse::ResizeInstructionStore &decision : plan->decisions) {
+        const std::uint64_t currentCapacity =
+            module->view().peResidentContextCount(decision.target);
+        if (decision.instructionCapacity <= currentCapacity)
+          return invalid("joint Module growth contains a non-growth decision");
+        growth.maximumInstructionStoreCapacity =
+            std::max(growth.maximumInstructionStoreCapacity,
+                     static_cast<std::uint64_t>(decision.instructionCapacity));
+      }
+      growth.instructionStoreResizes = plan->decisions;
+      growth.resizedInstructionStoreCount = plan->decisions.size();
+      break;
+    }
   } else if (const auto *spatialObservation =
                  std::get_if<mapping::SpatialMappingHardwareFeedback>(
                      &feedback)) {
@@ -992,6 +1011,8 @@ llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
   HardwareRecipeGrowth growth;
   growth.config = baseConfig;
   growth.techModule = observation.module;
+  growth.computeContextGrowthDirection =
+      dse::TechMappingComputeContextGrowthDirection::TemporalInstructionStore;
   const std::uint64_t baseContexts =
       baseConfig.hardwareTarget.parameters.temporalResidentContexts;
   if (observation.feedback.deficit() >
@@ -1105,6 +1126,11 @@ materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
                                     growth.resultingGateways,
                                     growth.addedAccCores,
                                     growth.resultingAccCores,
+                                    growth.computeContextGrowthDirection,
+                                    growth.addedSpatialFuOccurrences,
+                                    growth.addedSpatialFuContexts,
+                                    growth.spatialFuContextSupplyBound,
+                                    growth.spatialFuUnclosedDeficit,
                                     std::move(execution->invocationManifest)}};
 }
 
@@ -1534,14 +1560,29 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        const bool spatialFuGrowth =
+            growth.computeContextGrowthDirection ==
+            TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
         fields["operation"] =
-            growth.moduleDecision || growth.topologyDecision
+            spatialFuGrowth ? "typed_spatial_fu_occurrence_growth"
+            : growth.moduleDecision || growth.topologyDecision
                 ? "typed_module_hardware_mutation"
             : !growth.instructionStoreResizes.empty()
                 ? "typed_resize_instruction_stores_growth"
             : growth.operandBufferModeChange || growth.operandBufferResize
                 ? "typed_temporal_operand_buffer_growth"
                 : "typed_spatial_fifo_growth";
+        if (growth.computeContextGrowthDirection)
+          fields["compute_context_growth_direction"] =
+              techMappingComputeContextGrowthDirectionSpelling(
+                  *growth.computeContextGrowthDirection);
+        fields["added_spatial_fu_occurrences"] =
+            growth.addedSpatialFuOccurrences;
+        fields["added_spatial_fu_contexts"] = growth.addedSpatialFuContexts;
+        fields["spatial_fu_context_supply_bound"] =
+            growth.spatialFuContextSupplyBound;
+        fields["spatial_fu_unclosed_deficit"] =
+            growth.spatialFuUnclosedDeficit;
         fields["resized_instruction_store_count"] =
             growth.resizedInstructionStoreCount;
         fields["maximum_instruction_store_capacity"] =
@@ -1565,6 +1606,11 @@ materializeTypedModuleSystemGrowth(HardwareRecipeGrowth growth,
                                        growth.resultingGateways,
                                        growth.addedAccCores,
                                        growth.resultingAccCores,
+                                       growth.computeContextGrowthDirection,
+                                       growth.addedSpatialFuOccurrences,
+                                       growth.addedSpatialFuContexts,
+                                       growth.spatialFuContextSupplyBound,
+                                       growth.spatialFuUnclosedDeficit,
                                        std::nullopt};
 }
 
@@ -1677,6 +1723,11 @@ materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                                        growth.resultingGateways,
                                        growth.addedAccCores,
                                        growth.resultingAccCores,
+                                       growth.computeContextGrowthDirection,
+                                       growth.addedSpatialFuOccurrences,
+                                       growth.addedSpatialFuContexts,
+                                       growth.spatialFuContextSupplyBound,
+                                       growth.spatialFuUnclosedDeficit,
                                        std::nullopt};
 }
 
