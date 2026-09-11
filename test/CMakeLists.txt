@@ -121,6 +121,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-operation-schema-test
   loom-dataflow-service-schema-test
   loom-dse-candidate-generator-test
+  loom-dse-composite-fu-mining-test
   loom-dse-model-parameter-training-test
   loom-dse-ground-truth-campaign-integration-test
   loom-dse-fpa-ground-truth-collection-test

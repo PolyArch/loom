@@ -178,6 +178,172 @@ configured-memory relation or temporal-PE register-file realization. Without
 one of those typed relations, the edge remains an external transfer
 obligation; physical co-location never absorbs it.
 
+## Mined Composite FU Templates
+
+The sections above define synthesis for an explicitly chosen input set. This
+section defines how Hardware DSE chooses that set from software it already
+compiles, so that the hardware subgraph is the common subgraph of the software
+subgraphs and one Fabric realization covers several actors.
+
+### Mining Input Set
+
+The mining input `S` is the set of canonical Dataflow graphs of the selected
+candidates of one application portfolio, or of the candidates of one
+application. Graphs enter by canonical entity order. A foreign graph reference,
+a duplicate graph, and an empty set are typed rejections. Mining reads only the
+canonical token-plane producer/consumer relation and each actor's registered
+operation-schema projection; it never reads Fabric, Mapping, or evaluation
+state.
+
+### Common Subgraph Relation
+
+A mined shape is a connected induced subgraph of one graph's token-plane actor
+relation.
+
+* A node is one actor typed by its registered operation schema and its exact
+  ordered operand and result types. Exact attribute payloads, including
+  constants, predicates, and overflow flags, are not part of the node type;
+  they remain owned by the software graphs and are supplied by legal bindings.
+* An occurrence is a set of actors of one graph. The relation induced on that
+  set is the shape's internal edge set: every token edge whose producer and
+  consumer both lie in the set is internal, and a shape never omits one. An
+  omitted internal edge would be an external transfer between two actors of one
+  FU, which the Edge Realization Boundary does not admit without a second typed
+  relation.
+* An operand whose producer lies outside the occurrence is one FU input port. A
+  result with at least one consumer outside the occurrence, including a graph
+  egress terminal, is one FU output port. A result consumed both inside and
+  outside keeps its output port, because direct SSA multi-use is real broadcast.
+* An actor carrying a memory-capability operand or result is outside the token
+  relation and is not an admitted node.
+* Parameterized closure: a node's `op_list` is the observed schema set at that
+  position, which this relation makes a singleton because node identity already
+  includes the schema. The miner does not choose implementation families. The
+  canonical capability derivation is the single owner of which family implements
+  a set of actors, and a miner that guessed one would become a second owner of
+  Fabric admission. Merging two schemas of one family onto one resource is
+  therefore a property of synthesis over the actor set it is given, exactly as
+  the Capability Construction rules already state, and never a mining decision.
+  No mined candidate needs an FU-local selector or carries a mutually exclusive
+  datapath, so the rank below needs no selector term.
+
+The boundary profile is part of candidate identity, so every occurrence of one
+candidate presents the same ordered FU boundary.
+
+### Candidate Identity And Determinism
+
+A candidate's identity is the canonical code of its node types, internal edges,
+and ordered boundary ports. The code is the least one over the labelings that
+place a connected prefix, so when several nodes are interchangeable at a
+labeling step the search takes the least completion, and identity never depends
+on actor identity, on graph order, or on the order in which growth reached the
+shape. Two occurrences in different graphs therefore reach the same candidate
+exactly when their induced shapes and boundaries agree. Interchangeable nodes
+may bind different actors of different occurrences, which is a relabeling of one
+shape and changes no port, no edge, and no capability.
+
+Graphs are visited in canonical entity order, a candidate's occurrences are
+reported in graph and actor order with each occurrence's actors in node order,
+and candidates are reported in rank order with the canonical code as the final
+tie-break. Enumeration is bounded in both the shapes and the embeddings it
+retains; exhausting either bound is a typed mining failure and never a silently
+truncated result.
+
+### Size Bound
+
+A mined candidate has at least two and at most `maximumActorCount` nodes, at
+most `maximumBoundaryPortCount` boundary ports, and occurrences in at least
+`minimumGraphSupport` members of `S`. The bounds are properties of the mining
+request, not of the Fabric relation: they keep enumeration finite and keep a
+template's FU boundary within what a PE can present.
+
+Graph support is the prune that makes level-wise growth exact. Removing a
+non-cut node from every occurrence of a shape yields a smaller shape present in
+at least the same graphs, so support never increases with size and a shape whose
+support is below the bound can have no admissible extension. The boundary-port
+bound is not monotone, because adding a node can internalize an edge; a
+candidate over that bound is therefore still extended and only withheld from the
+ranked result.
+
+### Rank
+
+```text
+coveredActorCount = actors of a greedy disjoint packing of the occurrences,
+                    taken in canonical occurrence order
+graphCount        = number of graphs of S holding at least one occurrence
+score = coveredActorCount * graphCount
+        - boundaryPortCost * boundaryPortCount
+```
+
+Coverage counts a packing rather than the union of the embeddings because two
+embeddings that share an actor cannot both be realized: the union would let a
+narrow shape with many overlapping embeddings outrank the wider shape that
+actually absorbs the same actors. The packing is greedy and canonical, and it
+is a ranking statistic over mined embeddings only; the Fabric coverage witness
+remains its own owner and is never derived from it.
+
+`coveredActorCount * graphCount` is the coverage of actors across `S` weighted
+by how many members of `S` the template serves, so a template shared by the
+portfolio outranks one that is hot in a single graph. The boundary-port term
+prices the FU boundary, which is what a PE must present and route. The order is
+score descending, then covered actors descending, then node count descending,
+then boundary ports ascending, then canonical code ascending; it is total.
+
+### Entering The Fabric Capability Domain
+
+For one candidate, `Synthesize` receives the exact actor sets of its
+occurrences and applies the rules above unchanged. Each node becomes one
+`fabric.op` whose implementation family is the least registered family that
+owns the node's schemas and whose canonical capability derivation admits every
+occurrence's actor projection at that node, whose `hw_params` is the least
+envelope that derivation returns for that actor set, and whose `op_list` is the
+node's observed schema set. The node resources are
+wired in the induced topology inside one `fabric.fu`, and the FU exposes exactly
+the candidate's ordered boundary ports. Synthesis publishes one
+`FabricFuCapabilityTemplateRecord` whose active nodes are all node resources and
+whose active edges are the internal edges together with the boundary
+correspondence. TechMapping's cover search consumes that record like any other
+record; because it is composite, one selected realization binds `nodeCount`
+actors instead of one.
+
+Mining is family-agnostic, while synthesis is bounded by the canonical
+capability derivation. A candidate whose node family has no inverse policy is
+rejected with the existing typed capability-derivation reason. This keeps one
+owner for admissible hardware and does not weaken the mined relation. A mined
+shape whose internal relation contains a cycle is a loop recurrence; its FU
+needs an explicit backedge, and the current synthesis profile rejects it with
+the existing typed topology reason rather than authoring one implicitly.
+
+Coverage uses the existing witness owner without change: one witness per
+occurrence, carrying the selected capability template and the exact ordered
+actor, operation-port, and FU-boundary correspondence, checked by the same
+realization-closure verifier TechMapping uses. Mining introduces no second cover
+algorithm and publishes no Mapping artifact.
+
+### Composite Supply For A Compute-Context Hall Deficit
+
+A compute-context Hall deficit names demand groups and the capability templates
+that admit them. When the templates admitting the deficient groups include a
+composite record, and one admissible Spatial PE can gain an occurrence of it,
+that occurrence is the supply the deficit prefers. One added Temporal context
+lets the cover admit one more single-actor realization, so a relation whose
+demand grows with its supply never closes; one composite occurrence instead
+removes `nodeCount` actors from the demand per realization it covers. The
+decision remains the existing FU-inventory change against the exact parent
+Module, and the closure remains atomic: a single decision must make the complete
+observed relation admissible. `docs/spec-dse-feedback.md` owns the direction
+policy, its bound, and its diagnostics.
+
+A mined template reaches a Module by being authored into it, not by a mutation.
+Every hardware mutation resolves its prototype against the exact parent Module,
+so the mutation vocabulary redistributes authored variety and never invents an
+FU kind; a decision payload that carried a whole FU structure would make the
+rewrite-config codec a second owner of Fabric capability. The one ADG Builder
+materialization of a mined template therefore places its FU while a Module is
+built, exactly as the builtin FU catalog places its own composite units, and the
+ordinary FU-inventory decision then redistributes that occurrence to the PEs a
+Hall deficit names.
+
 ## Mapping And Finalization Boundary
 
 Synthesis creates hardware capability, not a workload configuration.
@@ -276,6 +442,9 @@ Anchor tests should cover only:
   enumeration nor persisted function variants are required; and
 * rejection of one incomplete binding whose edge would otherwise disappear
   through co-location; and
+* one mining case over two graphs sharing one multiply-accumulate shape, which
+  pins the ranked candidate's covered actor set and its ordered FU boundary, and
+  the synthesis of that mined candidate back to its exact input actors; and
 * the bounded rooted add/sub-plus-sync workflow through SpatialMapping,
   SystemMapping, portable RTL, Deployment, and independent journal/artifact
   replay, paired with a rootless typed rejection.

@@ -716,6 +716,8 @@ fuReverseSynthesisFailureSpelling(FuReverseSynthesisFailure failure) {
     return "mapping_internal";
   case FuReverseSynthesisFailure::CoverageNotEstablished:
     return "coverage_not_established";
+  case FuReverseSynthesisFailure::MiningBoundExhausted:
+    return "mining_bound_exhausted";
   }
   llvm_unreachable("closed reverse synthesis failure");
 }
