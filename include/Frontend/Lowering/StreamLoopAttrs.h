@@ -32,9 +32,15 @@ inferStreamStepKind(::mlir::scf::ForOp loop) {
   return kind.getValue();
 }
 
+/// Without an explicit configuration the loop's own comparison domain decides
+/// the stream predicate: an unsigned loop compares unsigned, and a signed loop
+/// with a negative constant step counts down.
 inline ::mlir::arith::CmpIPredicate
-inferStreamPredicateFromStep(::mlir::Value step) {
-  if (auto constOp = step.getDefiningOp<::mlir::arith::ConstantOp>()) {
+inferStreamPredicateFromDomain(::mlir::scf::ForOp loop) {
+  if (loop.getUnsignedCmp())
+    return ::mlir::arith::CmpIPredicate::ult;
+  if (auto constOp =
+          loop.getStep().getDefiningOp<::mlir::arith::ConstantOp>()) {
     if (auto intAttr =
             ::llvm::dyn_cast<::mlir::IntegerAttr>(constOp.getValue())) {
       if (intAttr.getValue().isNegative())
@@ -48,22 +54,11 @@ inline ::mlir::FailureOr<::mlir::arith::CmpIPredicate>
 inferStreamPredicate(::mlir::scf::ForOp loop) {
   auto attr = loop->getAttr(streamPredicateAttrName());
   if (!attr)
-    return inferStreamPredicateFromStep(loop.getStep());
+    return inferStreamPredicateFromDomain(loop);
   auto predicate = ::llvm::dyn_cast<::mlir::arith::CmpIPredicateAttr>(attr);
   if (!predicate)
     return ::mlir::failure();
   return predicate.getValue();
-}
-
-inline void setStreamLoopConfiguration(::mlir::OpBuilder &builder,
-                                       ::mlir::scf::ForOp loop,
-                                       ::dataflow::StreamStepKind stepKind,
-                                       ::mlir::arith::CmpIPredicate predicate) {
-  loop->setAttr(streamStepKindAttrName(), ::dataflow::StreamStepKindAttr::get(
-                                              builder.getContext(), stepKind));
-  loop->setAttr(
-      streamPredicateAttrName(),
-      ::mlir::arith::CmpIPredicateAttr::get(builder.getContext(), predicate));
 }
 
 } // namespace lowering
