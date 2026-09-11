@@ -1,2 +1,3 @@
+pagerank nodes: 2048
 pagerank iterations: 16
-pagerank sum: 1.000479
+pagerank sum: 1.000018

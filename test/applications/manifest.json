@@ -42,7 +42,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-smoke.txt",
-            "sha256": "fcf4113d9c66cc069292e5d3ff141a833a54cd14c09ab6becd9f60d368797140",
+            "sha256": "2d7b839e40d0d0211e4e664efe9a5062c8df21ca5a6e4d59219d1cf3ad2049a0",
             "encoding": "utf8"
           },
           "profile": {
@@ -65,7 +65,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-validation.txt",
-            "sha256": "17572435430a0b0d10454888fe189db7ce973ea148b0ab192294ad92114f77e8",
+            "sha256": "8b408943931e561d345fb465c252539f72a0b6c137bf12118e7452c34c40cc91",
             "encoding": "utf8"
           },
           "profile": {
@@ -88,7 +88,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-scale.txt",
-            "sha256": "87c5d132c2727a34fb29294c4ad0bcd29626de76f60271cd3a460bea8edcb775",
+            "sha256": "73e3ae70b63bf158c592dc2e6357d4c4f91cab2a6764c9a415141ed6d7028d3c",
             "encoding": "utf8"
           },
           "profile": {
@@ -227,7 +227,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt",
-            "sha256": "60391957debac81ddb4eb56c0513123407d919ab323b3548b212ad4e9b06ba75",
+            "sha256": "26d2d587076315a2fc763fc1aca9ccaf4e5a2f396aeb0b8df714140f51e946f4",
             "encoding": "utf8"
           },
           "profile": {
@@ -250,7 +250,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-validation.txt",
-            "sha256": "67f9c43ad0cb02ac7aab2b14cc65ccfe5d40274a23e3d94c0fea939563b033be",
+            "sha256": "3dfc48951479c980d40d2b587fd251fa5d236e1444324dae1894be909e7cefd1",
             "encoding": "utf8"
           },
           "profile": {
@@ -273,7 +273,7 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-scale.txt",
-            "sha256": "ba7966ded9eb67158f6c63e6a740a91e48f8a686c1544c923a79c241b139c97b",
+            "sha256": "ed962a0f66d4d6b3afc945e5bf3d689ffd15b01f470d3556a9eee630a8ccc44b",
             "encoding": "utf8"
           },
           "profile": {
