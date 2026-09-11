@@ -123,7 +123,12 @@ struct TemporalInstructionStoreClosure final {
 /// context capacity. This is the supply of last resort: it lengthens every
 /// hosted loop's initiation interval because a Temporal PE issues its
 /// residents in rotation.
-llvm::Expected<TemporalInstructionStoreClosure>
+///
+/// An absent result means the observed relation admits no Temporal context
+/// supply at all, because no compatible context of any demand group lies on a
+/// Temporal PE. That is an ordinary Hall relation over capability classes the
+/// Module only realizes spatially, not a malformed observation.
+llvm::Expected<std::optional<TemporalInstructionStoreClosure>>
 projectTemporalInstructionStoreClosure(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module) {
@@ -158,7 +163,7 @@ projectTemporalInstructionStoreClosure(
   for (const auto indexed : llvm::enumerate(pes))
     peOrdinalByKey.emplace(indexed.value().key, indexed.index());
   if (pes.empty())
-    return invalid("Hall feedback has no compatible Temporal PE");
+    return std::optional<TemporalInstructionStoreClosure>();
 
   std::map<std::vector<std::uint8_t>, std::size_t> contextOrdinalByKey;
   for (const auto &group : feedback.groups())
@@ -294,7 +299,7 @@ projectTemporalInstructionStoreClosure(
   if (closure.decisions.empty() ||
       closure.addedContextCount != feedback.deficit())
     return invalid("joint context growth is not the minimal Hall closure");
-  return closure;
+  return std::optional<TemporalInstructionStoreClosure>(std::move(closure));
 }
 
 struct SpatialFuOccurrenceGrowthStep final {
@@ -580,7 +585,7 @@ llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(
   llvm_unreachable("unknown compute-context growth direction");
 }
 
-llvm::Expected<TechMappingComputeContextJointGrowthPlan>
+llvm::Expected<std::optional<TechMappingComputeContextJointGrowthPlan>>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module,
@@ -590,33 +595,55 @@ projectTechMappingComputeContextJointGrowthPlan(
   if (feedback.deficit() == 0)
     return invalid("compute-context feedback has no positive deficit");
 
+  TechMappingComputeContextJointGrowthPlan plan;
+  const auto adoptSpatialStep = [&](SpatialFuOccurrenceGrowthStep &step) {
+    plan.spatialFuContextSupplyBound = step.contextSupplyBound;
+    plan.spatialFuUnclosedDeficit =
+        feedback.deficit() > step.contextSupplyBound
+            ? feedback.deficit() - step.contextSupplyBound
+            : 0;
+    if (!step.growth)
+      return false;
+    plan.direction =
+        TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
+    plan.addedContextCount = step.growth->addedContextCount;
+    plan.spatialFuGrowth = std::move(step.growth);
+    return true;
+  };
+
   auto spatial = projectSpatialFuOccurrenceGrowthStep(
       feedback, module, !preferTemporalInstructionStore);
   if (!spatial)
     return spatial.takeError();
-
-  TechMappingComputeContextJointGrowthPlan plan;
-  plan.spatialFuContextSupplyBound = spatial->contextSupplyBound;
-  plan.spatialFuUnclosedDeficit =
-      feedback.deficit() > spatial->contextSupplyBound
-          ? feedback.deficit() - spatial->contextSupplyBound
-          : 0;
-  if (spatial->growth) {
-    plan.direction =
-        TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
-    plan.addedContextCount = spatial->growth->addedContextCount;
-    plan.spatialFuGrowth = std::move(spatial->growth);
-    return plan;
-  }
+  if (adoptSpatialStep(*spatial))
+    return std::optional<TechMappingComputeContextJointGrowthPlan>(
+        std::move(plan));
 
   auto temporal = projectTemporalInstructionStoreClosure(feedback, module);
   if (!temporal)
     return temporal.takeError();
-  plan.direction =
-      TechMappingComputeContextGrowthDirection::TemporalInstructionStore;
-  plan.decisions = std::move(temporal->decisions);
-  plan.addedContextCount = temporal->addedContextCount;
-  return plan;
+  if (*temporal) {
+    plan.direction =
+        TechMappingComputeContextGrowthDirection::TemporalInstructionStore;
+    plan.decisions = std::move((*temporal)->decisions);
+    plan.addedContextCount = (*temporal)->addedContextCount;
+    return std::optional<TechMappingComputeContextJointGrowthPlan>(
+        std::move(plan));
+  }
+
+  // The relation admits no Temporal context supply, so the preference has
+  // nothing to prefer: the Spatial FU occurrence direction is the only
+  // compatible supply and the owner searches it even when the chain has not
+  // withdrawn the preference.
+  if (preferTemporalInstructionStore) {
+    auto only = projectSpatialFuOccurrenceGrowthStep(feedback, module, true);
+    if (!only)
+      return only.takeError();
+    if (adoptSpatialStep(*only))
+      return std::optional<TechMappingComputeContextJointGrowthPlan>(
+          std::move(plan));
+  }
+  return std::optional<TechMappingComputeContextJointGrowthPlan>();
 }
 
 } // namespace loom::dse

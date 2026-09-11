@@ -538,9 +538,13 @@ llvm::json::Object selectQualificationHardware(
       rounds.push_back(std::move(round));
       break;
     }
-    auto growth =
+    auto growthPlan =
         take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
             *pressure, module.view()));
+    require(growthPlan.has_value(),
+            "qualification hardware feedback admits no growth");
+    const loom::dse::TechMappingComputeContextJointGrowthPlan &growth =
+        *growthPlan;
     // This profile never withdraws the instruction-store preference, so the
     // Hall growth owner always names the atomic Temporal closure here.
     require(growth.addedContextCount > 0 && !growth.decisions.empty(),

@@ -91,7 +91,13 @@ struct TechMappingComputeContextJointGrowthPlan final {
 /// to the Temporal closure with the bound recording why. The returned
 /// parent-scoped PE resizes form one atomic kind-14 ResizeInstructionStores
 /// decision; they must not be rebound through intermediate child identities.
-llvm::Expected<TechMappingComputeContextJointGrowthPlan>
+///
+/// A relation whose compatible contexts lie on no Temporal PE admits no
+/// instruction-store supply at all, and the owner then searches the Spatial
+/// direction whatever the preference. An absent result is the typed refusal
+/// that neither direction has supply for this relation; it is an ordinary
+/// observation the caller retreats from, not a malformed feedback.
+llvm::Expected<std::optional<TechMappingComputeContextJointGrowthPlan>>
 projectTechMappingComputeContextJointGrowthPlan(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module,

@@ -3522,6 +3522,15 @@ multiply the invocation's mapping cost without the atomic closure the relation
 needs. The chain restores the instruction-store preference as soon as that one
 probe is taken.
 
+A relation whose compatible contexts lie on no Temporal PE admits no
+instruction-store supply at all, because every capability class it names is
+realized only spatially. The preference then has nothing to prefer, and the
+owner searches the Spatial direction whatever the chain asked for. When
+neither direction has supply the owner reports that, and the chain records the
+refusal and stops offering this observation; it never fails the invocation.
+An observed Hall relation is an ordinary feedback object, and no shape of it
+is a malformed input.
+
 The spatial-microarchitecture generator remains the legality owner of the
 decision. A decision it refuses publishes no child Module; that is a typed
 refusal, not a malformed result. The reopen owner records it, spends no
@@ -3961,17 +3970,29 @@ Cancellation or expiration of the invocation deadline still stops execution.
 An expired per-parent slice remains typed incomplete but may retain actionable
 owner feedback while the invocation still has time for another candidate.
 
-Inside one promoted parent, a compute-context Hall closure probe reserves one
-share of the remaining parent slice for a retreat. A closure child can cover
-every required graph at Tech level and still exhaust route closure, and it then
+Inside one promoted parent, a compute-context Hall closure probe reserves a
+retreat share of the remaining parent slice. A closure child can cover every
+required graph at Tech level and still exhaust route closure, and it then
 publishes its own Spatial or System feedback: the shortfall of the exact
 resource its Mapping ran out of. That feedback is the next typed alternative,
-so the closure probe must not consume the whole slice and leave it untried. A
-probe stopped by its own reserved share is not an expired invocation deadline;
-the chain records the share expiry, retreats to the child's feedback, and
-spends the remaining share on it. The invocation deadline and the probe budget
-are unchanged, and a probe stopped by the invocation deadline still ends the
-chain as an incomplete result.
+so the closure probe must not consume the whole slice and leave it untried.
+
+The two are not equal claims, so they do not take equal shares. A Hall deficit
+reports only that a cover was not admitted, so closing it is speculative and
+its child must be mapped cold. A transport proposal reports the exact resource
+a Mapping ran out of after reaching transport, so repairing it is the
+evidenced cheap repair. The closure probe therefore takes the minority share
+and the retreat keeps the majority, which is the same order the promotion uses
+when both claims exist on different parents.
+
+Exactly one probe of a chain reserves a retreat share. Reserving again on
+every later probe would shrink the window geometrically and spend the parent
+slice on probes too small to finish, so every probe after the reservation
+receives the whole remaining slice. A probe stopped by its own reserved share
+is not an expired invocation deadline; the chain records the share expiry,
+retreats to the child's feedback, and spends the remaining slice on it. The
+invocation deadline and the probe budget are unchanged, and a probe stopped by
+the invocation deadline still ends the chain as an incomplete result.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing
