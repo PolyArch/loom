@@ -3985,6 +3985,24 @@ evidenced cheap repair. The closure probe therefore takes the minority share
 and the retreat keeps the majority, which is the same order the promotion uses
 when both claims exist on different parents.
 
+Only the Temporal instruction-store closure reserves that share. The Spatial
+FU occurrence direction is offered either after instruction-store growth has
+already failed or because the relation admits no Temporal supply at all, so in
+both cases it is the only supply the relation still has and there is no
+cheaper alternative to hold budget for. It receives the whole slice.
+
+An interconnect FIFO reservation growth is not free of the relation it
+repairs. The builtin recipe admits a reservation only up to the Temporal
+resident-context count, so raising the guaranteed channels raises that count,
+which makes every Temporal PE hold more residents and puts more logical nets
+on the same shared pool. The next observation of the same occurrence then
+proposes one more channel. A proposal is therefore minimal for the contention
+it observed, and a chain that keeps applying proposals observed on its own
+grown children is chasing contention it created. That is a property of the
+uniform builtin recipe, not of the proposal owner, and a per-occurrence
+reservation decision would be the way to repair one pool without moving the
+Fabric's residency.
+
 Exactly one probe of a chain reserves a retreat share. Reserving again on
 every later probe would shrink the window geometrically and spend the parent
 slice on probes too small to finish, so every probe after the reservation
