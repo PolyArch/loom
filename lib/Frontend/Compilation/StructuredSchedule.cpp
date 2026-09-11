@@ -51,6 +51,19 @@
 #include <vector>
 
 namespace loom::frontend {
+
+std::optional<std::uint64_t>
+structuredLoopStaticTripCount(mlir::Operation *loop) {
+  if (auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(loop)) {
+    std::optional<llvm::APInt> count = scfLoop.getStaticTripCount();
+    if (!count || count->getActiveBits() > 64)
+      return std::nullopt;
+    return count->getZExtValue();
+  }
+  if (auto affineLoop = llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(loop))
+    return mlir::affine::getConstantTripCount(affineLoop);
+  return std::nullopt;
+}
 char StructuredScheduleProposalRefusal::ID = 0;
 
 std::string StructuredScheduleProposalRefusal::message() const {
@@ -77,15 +90,6 @@ std::optional<std::uint64_t> staticTripCount(mlir::scf::ForOp loop) {
   return count->getZExtValue();
 }
 
-std::optional<std::uint64_t>
-structuredLoopStaticTripCount(mlir::Operation *loop) {
-  if (auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(loop))
-    return staticTripCount(scfLoop);
-  if (auto affineLoop = llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(loop))
-    return mlir::affine::getConstantTripCount(affineLoop);
-  return std::nullopt;
-}
-
 std::vector<std::uint64_t> canonicalProperDivisors(std::uint64_t value) {
   std::vector<std::uint64_t> factors;
   if (value <= 2)
@@ -95,6 +99,26 @@ std::vector<std::uint64_t> canonicalProperDivisors(std::uint64_t value) {
   for (std::uint64_t factor = 2; factor <= maximumFactor; ++factor)
     if (value % factor == 0)
       factors.push_back(factor);
+  return factors;
+}
+
+/// Polyhedral tile factors: the proper divisors whose tile size or whose
+/// tile count is a canonical factor. A tile that spans a canonical fraction
+/// of the trip count is what lets a strip-mined loop spread across a
+/// canonical number of AccCores instead of paying one launch per few points.
+std::vector<std::uint64_t> canonicalTileFactors(std::uint64_t value) {
+  std::vector<std::uint64_t> factors = canonicalProperDivisors(value);
+  if (value <= 2)
+    return factors;
+  for (std::uint64_t count = maximumCanonicalStructuredScheduleFactor;
+       count >= 2; --count) {
+    if (value % count != 0)
+      continue;
+    const std::uint64_t factor = value / count;
+    if (factor >= 2 && factor < value && !llvm::is_contained(factors, factor))
+      factors.push_back(factor);
+  }
+  llvm::sort(factors);
   return factors;
 }
 
@@ -1126,7 +1150,7 @@ enumerateStructuredScheduleDecisions(
     const auto appendGeneralScop = [&]() -> llvm::Expected<bool> {
       // Polyhedral tile factors follow the SCF tile rule: the sorted proper
       // divisors of the root loop's exact static trip count.
-      const std::vector<std::uint64_t> tileFactors = canonicalProperDivisors(
+      const std::vector<std::uint64_t> tileFactors = canonicalTileFactors(
           structuredLoopStaticTripCount(entity.operation).value_or(0));
       auto polyhedral = analyzeStructuredPolyhedralScop(
           parent, entity.reference, tileFactors);
@@ -1259,11 +1283,14 @@ enumerateStructuredScheduleDecisions(
         }
         for (StructuredScopRefusalKind refusal : coordinateRefusals)
           refusals.push_back({entity.reference, refusal});
-        if (!admitted) {
-          auto generalAdmitted = appendGeneralScop();
-          if (!generalAdmitted)
-            return generalAdmitted.takeError();
-        }
+        // An admitted vector coordinate does not retire the polyhedral
+        // proposals: a strip-mined tile that parallelizes across AccCores is
+        // the only schedule that lets more than one core's memory requests
+        // overlap, and the two decisions compose in either order.
+        (void)admitted;
+        auto generalAdmitted = appendGeneralScop();
+        if (!generalAdmitted)
+          return generalAdmitted.takeError();
       }
     }
     if (affineLoop)
