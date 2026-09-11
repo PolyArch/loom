@@ -398,7 +398,8 @@ every expanded Operation Engine declares a depth that enters Fabric identity;
 one is the serialized engine, not an absent value. The 11.6 to 11.7 transition
 is explicit authoring-source re-resolution: the owner adds the parameter,
 changes the target descriptor to 8.3, and resolves new ResolvedConfig,
-Fabric-template component-view, and Fabric identities. Ordinary parsing does not accept an 11.6 profile as current or
+Fabric-template component-view, and Fabric identities. Ordinary parsing does
+not accept an 11.6 profile as current or
 insert the missing parameter.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.

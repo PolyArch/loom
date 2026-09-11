@@ -146,7 +146,7 @@ buildInternalMemoryEdgeFabric(ArtifactStore &store,
                           8, ::fabric::serializedMemoryOperationIssueDepth,
                           {memoryPort(true), memoryPort(false)})
                     : MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, 
+                          ::fabric::serializedMemoryOperationIssueDepth,
                           {memoryPort(true), memoryPort(false)});
   auto spec = take(MemorySpec::create(
       memoryInputs, memoryOutputs, {0}, {}, std::move(engine), std::nullopt,

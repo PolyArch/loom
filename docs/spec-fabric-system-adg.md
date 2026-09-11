@@ -767,7 +767,8 @@ Spatial bridge likewise validates its AccCore
 `SpatialMemoryAccessRealization`. Gem5 owns the dynamic cache and coherence
 microstate, but never the declared cache geometry, hit latency, or
 outstanding-miss capacity, and never the Operation Engine issue depth that
-decides how many firings the SpatialCore offers the bridge. The system-simulator descriptor references the
+decides how many firings the SpatialCore offers the bridge. The
+system-simulator descriptor references the
 shared system-simulation case signature with ordered `deployment` and
 `system_model` roles; an ordinary `EvaluationRequest` binds their exact
 subjects. Exact workload and runtime data use

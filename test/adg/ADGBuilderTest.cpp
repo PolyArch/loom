@@ -878,7 +878,8 @@ void typedMemoryFormsFinalize() {
                     MemorySpec::create(
                         {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
                         MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+                            ::fabric::serializedMemoryOperationIssueDepth,
+                            {loadPortDeclaration()}),
                         std::nullopt,
                         operationConnectivity(test, managerMemoryTarget(0))))));
   if (llvm::Error error = spatial.close(outputs.values()))
@@ -939,7 +940,8 @@ void typedMemoryFormsFinalize() {
             take(test, MemorySpec::create(
                            {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
                            MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+                               ::fabric::serializedMemoryOperationIssueDepth,
+                               {loadPortDeclaration()}),
                            std::nullopt,
                            base == 6 ? operationConnectivityWithInternalEdge(
                                            test, managerMemoryTarget(0))

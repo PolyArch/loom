@@ -929,7 +929,8 @@ buildMemoryInternalRelation(llvm::StringRef test,
       return MemorySpec::create(
           {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
           MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}), std::nullopt,
+              ::fabric::serializedMemoryOperationIssueDepth,
+              {loadPortDeclaration()}), std::nullopt,
           take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
     }
     if (relation == MemoryInternalRelation::SubordinateDispatch) {
@@ -950,7 +951,8 @@ buildMemoryInternalRelation(llvm::StringRef test,
       return MemorySpec::create(
           {bits32, bits0}, {bits32, bits0}, {}, {},
           MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+              ::fabric::serializedMemoryOperationIssueDepth,
+              {loadPortDeclaration()}),
           std::move(localService),
           take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
     }
@@ -979,7 +981,8 @@ buildMemoryInternalRelation(llvm::StringRef test,
         {memory32, bits32, bits0, bits32, bits0},
         {bits32, bits0, bits32, bits0}, {0}, {},
         MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {std::move(first), std::move(second)}),
+            ::fabric::serializedMemoryOperationIssueDepth,
+            {std::move(first), std::move(second)}),
         std::move(localService),
         take(test, MemoryConnectivitySpec::create(std::move(connectivity))));
   }();
@@ -1115,7 +1118,8 @@ void memoryConnectionsRemainWithinOneSymbolicDomain() {
                  MemorySpec::create(
                      {memory32, bits32, bits0}, {memory32, bits32, bits0}, {0},
                      {0}, MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+                              ::fabric::serializedMemoryOperationIssueDepth,
+                              {loadPortDeclaration()}),
                      std::nullopt, memoryConnectivity(test, true)))));
     auto requester = take(
         test,
@@ -1125,7 +1129,8 @@ void memoryConnectionsRemainWithinOneSymbolicDomain() {
             take(test, MemorySpec::create(
                            {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
                            MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+                               ::fabric::serializedMemoryOperationIssueDepth,
+                               {loadPortDeclaration()}),
                            std::nullopt, memoryConnectivity(test, false)))));
     auto secondRequester = take(
         test,
@@ -1135,7 +1140,8 @@ void memoryConnectionsRemainWithinOneSymbolicDomain() {
             take(test, MemorySpec::create(
                            {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
                            MemoryEngineSpec::spatial(
-                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
+                               ::fabric::serializedMemoryOperationIssueDepth,
+                               {loadPortDeclaration()}),
                            std::nullopt, memoryConnectivity(test, false)))));
 
     const ModuleDomainSlotHandle firstClock =
