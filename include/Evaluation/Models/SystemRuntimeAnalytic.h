@@ -27,6 +27,9 @@ struct SystemPlatformModel final {
   std::uint64_t memoryLatencyPicoseconds = 0;
   /// Acceptance service cost of one byte at the shared memory service.
   std::uint64_t memoryServicePicosecondsPerByte = 0;
+  /// Acceptance service cost of one operation at the shared memory service:
+  /// its rate window divided by the operations it admits per window.
+  std::uint64_t memoryServicePicosecondsPerOperation = 0;
   /// Line fills one SpatialCore may keep outstanding at the shared memory:
   /// the miss-status entries of its access cache, capped by the endpoint.
   std::uint64_t accCoreOutstandingRequests = 0;
@@ -53,6 +56,8 @@ struct SystemPlatformModel final {
            lhs.memoryLatencyPicoseconds == rhs.memoryLatencyPicoseconds &&
            lhs.memoryServicePicosecondsPerByte ==
                rhs.memoryServicePicosecondsPerByte &&
+           lhs.memoryServicePicosecondsPerOperation ==
+               rhs.memoryServicePicosecondsPerOperation &&
            lhs.accCoreOutstandingRequests == rhs.accCoreOutstandingRequests &&
            lhs.accCoreRequestBytes == rhs.accCoreRequestBytes &&
            lhs.launchDispatchPicoseconds == rhs.launchDispatchPicoseconds &&
@@ -77,6 +82,9 @@ struct AnalyticLaunchEstimate final {
   std::uint64_t computeCyclesPerActivation = 0;
   /// Bytes one activation moves through the shared memory service.
   std::uint64_t externalMemoryBytesPerActivation = 0;
+  /// Memory actor firings one activation submits to the shared memory
+  /// service; each is one request that occupies an outstanding slot.
+  std::uint64_t memoryTransactionsPerActivation = 0;
   /// Bytes one activation's invocation wire carries across the bridge.
   std::uint64_t boundaryPayloadBytesPerActivation = 0;
 
@@ -86,6 +94,8 @@ struct AnalyticLaunchEstimate final {
            lhs.computeCyclesPerActivation == rhs.computeCyclesPerActivation &&
            lhs.externalMemoryBytesPerActivation ==
                rhs.externalMemoryBytesPerActivation &&
+           lhs.memoryTransactionsPerActivation ==
+               rhs.memoryTransactionsPerActivation &&
            lhs.boundaryPayloadBytesPerActivation ==
                rhs.boundaryPayloadBytesPerActivation;
   }
@@ -108,6 +118,12 @@ llvm::StringRef toString(AnalyticLaunchBottleneck bottleneck);
 struct AnalyticLaunchDuration final {
   std::uint64_t picoseconds = 0;
   AnalyticLaunchBottleneck bottleneck = AnalyticLaunchBottleneck::Launch;
+  /// The competing per-activation terms behind the bound, for diagnostics.
+  std::uint64_t computePicoseconds = 0;
+  std::uint64_t bandwidthPicoseconds = 0;
+  std::uint64_t latencyChainPicoseconds = 0;
+  std::uint64_t fixedPicoseconds = 0;
+  std::uint64_t dispatchPicoseconds = 0;
 };
 
 /// Roofline duration of every activation of one launch site spread over

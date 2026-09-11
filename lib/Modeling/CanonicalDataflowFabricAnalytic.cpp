@@ -99,7 +99,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "canonical_dataflow_fabric_low_confidence",
-    "loom.canonical_dataflow_fabric.low_confidence.v4",
+    "loom.canonical_dataflow_fabric.low_confidence.v5",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -171,6 +171,7 @@ estimateMetrics(const dataflow::CanonicalDataflowArtifact &program,
                         (*graph)->recurrenceLength)) +
         (*graph)->criticalPathLength;
     estimate.externalMemoryBytesPerActivation = (*graph)->externalMemoryBytes;
+    estimate.memoryTransactionsPerActivation = (*graph)->memoryTransactions;
     estimate.boundaryPayloadBytesPerActivation =
         (*graph)->boundaryPayloadBytes;
     launches.push_back(std::move(estimate));

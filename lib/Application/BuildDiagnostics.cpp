@@ -873,6 +873,8 @@ void emitApplicationPlanningDiagnostics(
                 launch.computeCyclesPerActivation;
             row["external_memory_bytes_per_activation"] =
                 launch.externalMemoryBytesPerActivation;
+            row["memory_transactions_per_activation"] =
+                launch.memoryTransactionsPerActivation;
             row["boundary_payload_bytes_per_activation"] =
                 launch.boundaryPayloadBytesPerActivation;
             launches.push_back(std::move(row));

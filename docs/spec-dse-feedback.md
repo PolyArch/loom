@@ -407,16 +407,21 @@ Structured block profile), `compute_cycles_per_activation` (the iterations one
 activation performs times the larger of the resource-bound initiation interval
 and the recurrence length, plus the graph critical path),
 `external_memory_bytes_per_activation` (bytes every memory actor moves across
-the SpatialCore service boundary per iteration), and
-`boundary_payload_bytes_per_activation` (the invocation wire). The duration of
-a launch site under an allocation of `u` AccCores is:
+the SpatialCore service boundary per iteration),
+`memory_transactions_per_activation` (memory actor firings per iteration,
+each one request that occupies an outstanding slot), and
+`boundary_payload_bytes_per_activation` (the invocation wire). The memory
+round trip one outstanding slot waits for is the service's bounded completion
+plus two bridge crossings from the pinned platform policy. The duration of a
+launch site under an allocation of `u` AccCores is:
 
 ```text
 cores            = max(1, min(u, activations))
 per_core         = ceil(activations / cores)
 compute          = compute_cycles * clock_period
-bandwidth        = bytes * service_ps_per_byte * cores
-latency_chain    = ceil(ceil(bytes / request_bytes) / outstanding) * memory_latency
+bandwidth        = max(bytes * service_ps_per_byte,
+                       transactions * service_ps_per_operation) * cores
+latency_chain    = ceil(transactions / outstanding) * memory_latency
 point            = max(compute, bandwidth, latency_chain)
 wire             = memory_latency + boundary_bytes * service_ps_per_byte
 duration         = activations * launch_dispatch
