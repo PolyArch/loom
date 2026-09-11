@@ -1801,6 +1801,22 @@ index once every other term is exact. At most one index of one address may use
 containment, because containment constrains the total offset rather than any
 single term; a second unproven index keeps the unknown-integer-domain refusal.
 
+The finite value set of an index may also come from the structured branches
+that enclose the access or the store that produced it. Each taken region
+proves its condition, and a condition decomposes through conjunction,
+disjunction of the refuted edge, a one-bit exclusive or against all ones, and
+the select form Clang emits for short-circuit evaluation. Only an unsigned
+comparison contributes a value set, on either edge: the taken edge of `ult`,
+`ule`, `ugt`, and `uge` bounds one operand, and the refuted edge bounds the
+other, which is the shape an early-exit range check leaves behind. Unsigned
+ordering supplies the lower bound of zero that makes the set finite, so a
+signed comparison contributes nothing. The bound itself may be a value whose
+own finite set is proven, in which case its largest value is used. A guard
+carries through a zero extension that loses no value and through a constant
+addition inverted in its own bit-vector width, and the admitted set is
+recorded for every value on that chain, so the guard applies to the expression
+the branch compares as well as to the narrower value it was derived from.
+
 A query joins the payloads of every write whose domain may overlap it, so an
 over-approximate query domain can only add possible origins and can never
 select a narrower one; a write that may overlap only part of a pointer-sized

@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -555,6 +556,96 @@ module attributes {llvm.data_layout = "e-p:64:64"} {
   }
 }
 
+// The range check that guards a stored descriptor index keeps the selected
+// slot exact, so a neighbouring field write cannot make the representation
+// partial. The check appears on the refuted edge of an unsigned comparison
+// over the widened index, which is the shape an early-exit validation leaves.
+// A signed comparison proves no lower bound and therefore admits nothing.
+void guardedSlotIndexProvenance() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                      mlir::scf::SCFDialect>();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {llvm.data_layout = "e-p:64:64"} {
+  llvm.func @guarded(%bytes: !llvm.ptr, %raw: i32, %count: i64) {
+    %one = arith.constant 1 : i64
+    %zero = arith.constant 0 : i64
+    %step = arith.constant 1 : i64
+    %extent = arith.constant 32 : i64
+    %offset = arith.constant 64 : i64
+    %edgeOffset = arith.constant 24 : i64
+    %limit = arith.constant 3 : i64
+    %clear = arith.constant 0 : i8
+    %none = arith.constant 0 : i32
+    %marker = arith.constant 7 : i32
+    %slots = llvm.alloca %one x !llvm.array<32 x i8> : (i64) -> !llvm.ptr
+    %chosen = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    llvm.store %none, %chosen : i32, !llvm.ptr
+    scf.for %index = %zero to %extent step %step : i64 {
+      %fill = llvm.getelementptr inbounds %slots[%index] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %clear, %fill : i8, !llvm.ptr
+    }
+    %wide = arith.extui %raw : i32 to i64
+    %over = arith.cmpi PREDICATE, %wide, %limit : i64
+    scf.if %over {
+    } else {
+      llvm.store %raw, %chosen : i32, !llvm.ptr
+    }
+    %origin = llvm.getelementptr inbounds %bytes[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %target = llvm.getelementptr inbounds %slots[%wide] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    llvm.store %origin, %target : !llvm.ptr, !llvm.ptr
+    %edge = llvm.getelementptr inbounds %slots[%edgeOffset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    llvm.store %marker, %edge : i32, !llvm.ptr
+    %picked = llvm.load %chosen : !llvm.ptr -> i32
+    %selected = arith.extui %picked : i32 to i64
+    %source = llvm.getelementptr inbounds %slots[%selected] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    scf.for %lane = %zero to %count step %step : i64 {
+      %weights = llvm.load %source : !llvm.ptr -> !llvm.ptr
+      %element = llvm.load %weights : !llvm.ptr -> i8
+    }
+    llvm.return
+  }
+}
+)mlir";
+  for (llvm::StringRef predicate : {"uge", "sge"}) {
+    std::string text = source.str();
+    const std::size_t position = text.find("PREDICATE");
+    if (position == std::string::npos)
+      fail("guarded slot fixture lost its comparison predicate");
+    text.replace(position, std::strlen("PREDICATE"), predicate.str());
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    if (!module)
+      fail("cannot parse guarded descriptor slot provenance");
+    auto callable = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("guarded");
+    if (!callable)
+      fail("guarded descriptor slot fixture lost its callable");
+    mlir::LLVM::LoadOp read;
+    callable.walk([&](mlir::LLVM::LoadOp operation) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(
+              operation.getResult().getType()))
+        read = operation;
+    });
+    if (!read)
+      fail("guarded descriptor slot fixture lost its pointer read");
+    loom::frontend::analysis::StoredMemoryProvenance provenance(callable);
+    auto outcome = provenance.projectPointerTarget(read.getResult());
+    if (predicate == "uge") {
+      auto *target =
+          std::get_if<loom::frontend::analysis::StoredPointerTarget>(&outcome);
+      if (!target ||
+          target->root != callable.getBody().front().getArgument(0) ||
+          !target->mayBeNull)
+        fail("a refuted unsigned range check did not bound the slot index");
+    } else {
+      auto *refusal =
+          std::get_if<loom::frontend::analysis::StoredPointerRefusal>(&outcome);
+      if (!refusal || *refusal != loom::frontend::analysis::
+                                      StoredPointerRefusal::PartialPointerWrite)
+        fail("a signed range check admitted an unbounded slot index");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -563,6 +654,7 @@ int main() {
     fail("cannot initialize the native target");
   byteFillPointerRepresentation();
   dynamicSlotPointerProvenance();
+  guardedSlotIndexProvenance();
   pointerServiceBoundary();
   exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";

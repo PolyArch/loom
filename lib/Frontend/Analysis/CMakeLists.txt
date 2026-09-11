@@ -5,6 +5,7 @@ add_mlir_library(LoomFrontendAnalysis
   MemoryAddressProjection.cpp
   PointerLoopProjection.cpp
   MemoryProvenance.cpp
+  ScalarGuardDomain.cpp
   StoredMemoryProvenance.cpp
   StructuredProtocolDependencies.cpp
 
