@@ -324,8 +324,9 @@ soft search-order preferences only. They do not delete a hard-domain value. The
 initial compute preference orders resident-context load and reachability before
 static schedule pressure, then local transfers and route locality. Memory
 preferences likewise place static schedule pressure before route locality.
-Critical-path serialization cannot be traded for shorter routes at this stage;
-noncritical state may still favor Temporal placement. The
+Critical-path serialization and iteration-driven dispatch cannot be traded for
+shorter routes at this stage; one-shot state may still favor Temporal
+placement. The
 root solver first closes compute and memory choices, then attachment choices,
 while preserving a legal external route fallback for every optional local
 transfer.
@@ -718,7 +719,14 @@ final legality still requires zero violations.
 Static schedule pressure precedes the mixed timing score because critical-path
 and recurrence placement must not be traded for lower transport bit volume.
 It is derived from Dataflow criticality and the selected PE schedule, including
-cross-schedule edges. Off-path temporal sharing remains available to save
+cross-schedule edges. A Temporal placement charges the actor's critical-path
+and recurrence lengths plus one dispatch slot when the actor is
+iteration-driven, that is, reachable along forward edges from a stream's
+per-iteration outputs: a Temporal PE issues its resident actors in rotation, so
+every hot actor it hosts lengthens the loop's initiation interval. A Spatial
+placement charges one unit for a loop-scoped state carrier that is not
+iteration-driven, since that state could have lived in a Temporal context.
+Off-path temporal sharing of one-shot work therefore remains available to save
 spatial capacity; there is no global temporal-PE ban. The System ordering
 consumes the same per-graph pressure of its selected SpatialMappings.
 

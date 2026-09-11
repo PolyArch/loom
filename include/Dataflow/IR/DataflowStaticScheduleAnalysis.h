@@ -17,6 +17,10 @@ struct StaticActorCriticality final {
   std::uint64_t graphCriticalLength = 0;
   std::uint64_t recurrenceCriticalLength = 0;
   bool temporalStateCarrier = false;
+  /// The actor consumes, directly or through forward edges, a token that a
+  /// stream emits once per iteration, so it fires once per iteration of that
+  /// loop; a Temporal PE spends one dispatch slot per iteration on it.
+  bool iterationDriven = false;
 };
 
 struct StaticActorEdgeCriticality final {

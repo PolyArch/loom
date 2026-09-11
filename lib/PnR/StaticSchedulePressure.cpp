@@ -52,13 +52,23 @@ ActorKey actorKey(::dataflow::ActorRef actor) { return actor.entity.value(); }
 
 GraphKey graphKey(::dataflow::GraphRef graph) { return graph.entity.value(); }
 
+/// Spatial placement charges loop-scoped state that could have lived in a
+/// Temporal context. Temporal placement charges critical-path and recurrence
+/// serialization, and one dispatch slot per iteration for iteration-driven
+/// work: a Temporal PE issues its resident actors in rotation, so every hot
+/// actor it hosts lengthens the loop's initiation interval.
 llvm::Expected<std::uint64_t>
 actorPlacementContribution(const StaticActorCriticality &actor,
                            ::fabric::Schedule schedule) {
   if (schedule == ::fabric::Schedule::Spatial)
-    return actor.temporalStateCarrier ? 1 : 0;
-  return checkedSum(actor.graphCriticalLength, actor.recurrenceCriticalLength,
-                    "actor Temporal pressure");
+    return actor.temporalStateCarrier && !actor.iterationDriven ? 1 : 0;
+  auto critical =
+      checkedSum(actor.graphCriticalLength, actor.recurrenceCriticalLength,
+                 "actor Temporal pressure");
+  if (!critical)
+    return critical.takeError();
+  return checkedSum(*critical, actor.iterationDriven ? 1 : 0,
+                    "actor Temporal dispatch pressure");
 }
 
 PnrIndex flatRoot(PnrIndex computeRootCount, bool memory, PnrIndex ordinal) {

@@ -125,6 +125,44 @@ module {
               analysis.recurrenceTopologies().front().postInitializationAcyclic,
           "carry feedback removal did not expose the canonical DAG");
 
+  require(!invariant->iterationDriven && !carry->iterationDriven &&
+              !demux->iterationDriven,
+          "graph-input-driven actors must not count as iteration work");
+
+  auto streamed = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @streamed(%start: none, %lower: i32, %upper: i32,
+                                   %step: i32) -> ()
+      attributes {input_segments = array<i32: 3, 0, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %once = dataflow.invariant %phase, %start : none
+    %iv, %phase = dataflow.stream %lower, %upper, %step step add while slt : i32
+    %lanes:2 = dataflow.demux %phase, %once : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams() memories()
+        complete(%lanes#0 : none)
+  }
+}
+)mlir",
+                                                          &context);
+  if (!streamed)
+    fail("cannot parse stream fixture");
+  auto streamedArtifact =
+      take(dataflow::finalizeCanonicalDataflow(*streamed));
+  const auto &streamedView = streamedArtifact.view();
+  const std::array<dataflow::GraphRef, 1> streamedCovers = {
+      streamedView.graphs().front().ref};
+  const auto streamedAnalysis = take(
+      loom::pnr::detail::deriveStaticScheduleAnalysis(streamedView,
+                                                      streamedCovers));
+  for (const auto &actor : streamedAnalysis.actors()) {
+    const auto resolved = take(streamedView.resolve(actor.actor));
+    if (!actor.iterationDriven)
+      llvm::errs() << "not iteration-driven: " << resolved.op->getName()
+                   << "\n";
+    require(actor.iterationDriven,
+            "every actor fed by a stream must count as iteration work");
+  }
+
   llvm::outs() << "static schedule pressure test passed\n";
   return EXIT_SUCCESS;
 }
