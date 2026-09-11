@@ -122,14 +122,14 @@ projectJointSoftwareCoverage(const JointDesignExplorationPlan &plan,
 bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 
 /// Slices the remaining dispatch window fairly across the untried plans or
-/// evidenced hardware parents. `reserveTerminalQorShare` withholds one equal
-/// share for terminal application QoR acquisition; that share is meaningful
-/// only once a verified Mapping exists, because QoR acquisition has nothing
-/// to measure before then.
+/// evidenced hardware parents. `reservedTerminalShares` withholds one equal
+/// share per verified Mapping awaiting terminal application QoR acquisition,
+/// because that acquisition measures every verified alternative; before any
+/// Mapping is verified there is nothing to measure and no share is withheld.
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        bool reserveTerminalQorShare);
+                        std::uint64_t reservedTerminalShares);
 
 std::size_t mappingCount(const JointDesignExecution &execution);
 

@@ -94,7 +94,7 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy) {
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        bool reserveTerminalQorShare) {
+                        std::uint64_t reservedTerminalShares) {
   if (remainingPlanCount == 0)
     return invalid("remaining-plan time slice has no remaining plan");
   const auto globalDeadline = base.dispatchNotAfterUnixNanoseconds();
@@ -111,18 +111,19 @@ fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
         base.workerCount(), base.inProcessClaim(), base.externalSite(),
         base.resourceBindings(), base.maximumDispatches(), *globalDeadline);
   const std::uint64_t remaining = *globalDeadline - now;
-  // Reserve one equal share for terminal application QoR acquisition. Each
-  // untried Mapping plan or evidenced hardware parent receives a fair share
-  // of the rest. A difficult software finalist cannot consume the invocation
-  // before an actionable hardware repair. The global deadline is unchanged.
-  // The terminal share is withheld only once a verified Mapping exists.
-  // Before then QoR acquisition has nothing to measure, and holding an equal
-  // share back shortens every plan slice for no observable work.
+  // Reserve one equal share per verified Mapping for terminal application QoR
+  // acquisition, which measures every verified alternative. Each untried
+  // Mapping plan or evidenced hardware parent receives a fair share of the
+  // rest. A difficult software finalist cannot consume the invocation before
+  // an actionable hardware repair. The global deadline is unchanged. Before
+  // any Mapping is verified QoR acquisition has nothing to measure, and
+  // holding shares back would shorten every plan slice for no observable
+  // work.
   const std::uint64_t divisor =
-      !reserveTerminalQorShare ||
-              remainingPlanCount == std::numeric_limits<std::uint64_t>::max()
-          ? remainingPlanCount
-          : remainingPlanCount + 1;
+      reservedTerminalShares >
+              std::numeric_limits<std::uint64_t>::max() - remainingPlanCount
+          ? std::numeric_limits<std::uint64_t>::max()
+          : remainingPlanCount + reservedTerminalShares;
   const std::uint64_t slice = std::max<std::uint64_t>(1, remaining / divisor);
   const std::uint64_t localDeadline =
       slice > *globalDeadline - now ? *globalDeadline : now + slice;

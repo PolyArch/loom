@@ -578,7 +578,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       saturatingAdd(remainingPlans, actionableHardwareParents);
       auto fair = fairRemainingPlanPolicy(request.executionPolicy,
                                           remainingPlans,
-                                          verifiedMappingCount != 0);
+                                          verifiedMappingCount);
       if (!fair)
         return fair.takeError();
       planExecutionPolicy.emplace(std::move(*fair));
@@ -903,7 +903,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     auto feedbackExecutionPolicy = fairRemainingPlanPolicy(
         request.executionPolicy,
         hardwareFeedbackFrontier.size() - indexedAttempt.index(),
-        verifiedMappingCount != 0);
+        verifiedMappingCount);
     if (!feedbackExecutionPolicy)
       return feedbackExecutionPolicy.takeError();
     std::optional<ArtifactRootReference> promotedParentSystem;
@@ -1086,11 +1086,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         promotedParentSystem =
             plans[parentPlanOrdinal]->frontier.systemFrontier.front();
       }
-      // Spectrum parents are verified alternatives, so terminal QoR
-      // acquisition always has a Mapping to measure here.
       auto spectrumPolicy = fairRemainingPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal,
-          /*reserveTerminalQorShare=*/true);
+          verifiedMappingCount);
       if (!spectrumPolicy)
         return spectrumPolicy.takeError();
       auto spectrum = exploreFinalizedMappingHardwareSpectrum(
