@@ -49,6 +49,8 @@ LOOM_MAPPING_MEASURE(ProgressCapacityShortfall, 8,
                      "ProgressCapacityShortfall")
 LOOM_MAPPING_MEASURE(ProgressRouteAnchorCount, 9,
                      "ProgressRouteAnchorCount")
+LOOM_MAPPING_MEASURE(RecurrenceTemporalBindingPressure, 10,
+                     "RecurrenceTemporalBindingPressure")
 
 #undef LOOM_MAPPING_MEASURE
 #undef LOOM_MAPPING_VIOLATION

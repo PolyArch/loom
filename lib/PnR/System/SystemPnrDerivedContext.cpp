@@ -217,6 +217,8 @@ std::uint64_t retainedSpatialCatalogBytes(
           progress.routeObligations.size() *
           sizeof(::loom::mapping::MappingRouteProgressObligationProjection);
     bytes += entry.graphStaticSchedulePressures.size() * sizeof(std::uint64_t);
+    bytes += entry.graphRecurrenceTemporalBindingPressures.size() *
+             sizeof(std::uint64_t);
     bytes +=
         entry.graphSharedOperandIngressPressures.size() * sizeof(std::uint64_t);
     bytes +=

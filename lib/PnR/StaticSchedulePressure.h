@@ -44,6 +44,17 @@ public:
 
   std::uint64_t computePlacementContribution(PnrIndex placement) const;
   std::uint64_t memoryPlacementContribution(PnrIndex placement) const;
+  /// Recurrence-critical work the placement serializes because its occurrence
+  /// issues resident instructions in rotation. A Spatial-schedule placement
+  /// contributes zero; a Temporal-schedule placement contributes the summed
+  /// `recurrenceCriticalLength` of the actors it hosts. This is the same
+  /// analysis fact the schedule-pressure contribution already charges, kept
+  /// separately so a total ordering can rank recurrence serialization on its
+  /// own level without a second criticality owner.
+  std::uint64_t
+  computePlacementRecurrenceTemporalBinding(PnrIndex placement) const;
+  std::uint64_t
+  memoryPlacementRecurrenceTemporalBinding(PnrIndex placement) const;
   std::uint64_t
   edgeWeight(const ::dataflow::ActorTokenResultRef &producer,
              const ::dataflow::ActorTokenOperandRef &consumer) const {
@@ -59,6 +70,8 @@ private:
   StaticScheduleAnalysis analysis_;
   std::vector<std::uint64_t> computePlacementContributions_;
   std::vector<std::uint64_t> memoryPlacementContributions_;
+  std::vector<std::uint64_t> computePlacementRecurrenceTemporalBindings_;
+  std::vector<std::uint64_t> memoryPlacementRecurrenceTemporalBindings_;
   std::vector<SpatialSchedulePressureEdge> edges_;
   std::vector<PnrIndex> incidenceOffsets_;
   std::vector<PnrIndex> incidenceEdges_;
@@ -77,7 +90,28 @@ llvm::Expected<std::uint64_t> projectStaticSchedulePressureAfterMemoryChange(
     const SpatialCandidateState &candidate, PnrIndex realization,
     PnrIndex placement);
 
-llvm::Expected<std::vector<std::uint64_t>> projectStaticSchedulePressureByGraph(
+llvm::Expected<std::uint64_t> measureRecurrenceTemporalBindingPressure(
+    const SpatialCandidateState &candidate);
+
+llvm::Expected<std::uint64_t>
+projectRecurrenceTemporalBindingPressureAfterComputeChange(
+    const SpatialCandidateState &candidate, PnrIndex realization,
+    PnrIndex placement);
+
+llvm::Expected<std::uint64_t>
+projectRecurrenceTemporalBindingPressureAfterMemoryChange(
+    const SpatialCandidateState &candidate, PnrIndex realization,
+    PnrIndex placement);
+
+/// Per-covered-graph partition of the two placement-derived measures owned by
+/// this index. Both vectors are indexed by the TechMapping cover ordinal.
+struct GraphSchedulePressureProjection final {
+  std::vector<std::uint64_t> staticSchedulePressure;
+  std::vector<std::uint64_t> recurrenceTemporalBindingPressure;
+};
+
+llvm::Expected<GraphSchedulePressureProjection>
+projectStaticSchedulePressureByGraph(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,

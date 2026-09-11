@@ -220,7 +220,7 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 10}};
+          ResolvedPnrObjectiveSelection{0, 11}};
 }
 
 ResolvedPnrPolicyConfig
@@ -228,7 +228,7 @@ resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset) {
   ResolvedPnrPolicyConfig policy = resolvedBuiltinSpatialPnrPolicy(preset);
   policy.search.exactRepair =
       ResolvedPnrExactRepairPolicy{ResolvedPnrExactRepairKind::Disabled, 0, 0};
-  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 11};
+  policy.objectiveSelection = ResolvedPnrObjectiveSelection{1, 12};
   return policy;
 }
 
@@ -254,6 +254,7 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel closure;
   ResolvedWeightedObjectiveLevel traversal;
   ResolvedWeightedObjectiveLevel schedule;
+  ResolvedWeightedObjectiveLevel recurrenceBinding;
   ResolvedWeightedObjectiveLevel spatialTiming;
   ResolvedWeightedObjectiveLevel timing;
   ResolvedWeightedObjectiveLevel spatialEnergy;
@@ -287,14 +288,21 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   schedule.terms.push_back({scheduleDimension, 1});
   spatialEnergy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
   energy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
+  // RecurrenceTemporalBindingPressure is the last measure ordinal, so it also
+  // bounds the mixed timing sweep below. Its weighted terms are appended after
+  // that sweep to keep every level's terms in increasing dimension order.
+  const std::uint32_t recurrenceBindingDimension =
+      resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          BuiltinMappingMeasureKind::RecurrenceTemporalBindingPressure);
+  recurrenceBinding.terms.push_back({recurrenceBindingDimension, 1});
   const std::uint32_t timingBegin = scheduleDimension + 1;
   const std::uint32_t operandPairingDimension =
       resolvedPnrViolationKindCount +
       static_cast<std::uint32_t>(
           BuiltinMappingMeasureKind::SharedOperandIngressPressure);
   for (std::uint32_t dimension = timingBegin;
-       dimension != resolvedPnrViolationKindCount + mappingMeasureKindCount;
-       ++dimension) {
+       dimension != recurrenceBindingDimension; ++dimension) {
     const bool recurrence =
         dimension == resolvedPnrViolationKindCount +
                          static_cast<std::uint32_t>(
@@ -327,6 +335,9 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
         {dimension, transport || pairing ? UINT64_C(1)
                                          : UINT64_C(4294967296)});
   }
+  spatialEnergy.terms.push_back(
+      {recurrenceBindingDimension, UINT64_C(4294967296)});
+  energy.terms.push_back({recurrenceBindingDimension, UINT64_C(4294967296)});
   operandPairing.terms.push_back({operandPairingDimension, 1});
   progressCapacity.terms.push_back(
       {resolvedPnrViolationKindCount +
@@ -339,19 +350,22 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
                BuiltinMappingMeasureKind::ProgressRouteAnchorCount),
        1});
   catalogs.weightedLevels = {
-      std::move(progressDebt),   std::move(selectedHandshake),
-      std::move(traversal),      std::move(schedule),
-      std::move(operandPairing),
-      std::move(progressCapacity), std::move(progressAnchors),
-      std::move(spatialTiming),  std::move(timing),
-      std::move(closure),        std::move(spatialEnergy),
+      std::move(progressDebt),     std::move(selectedHandshake),
+      std::move(traversal),        std::move(schedule),
+      std::move(operandPairing),   std::move(progressCapacity),
+      std::move(progressAnchors),  std::move(recurrenceBinding),
+      std::move(spatialTiming),    std::move(timing),
+      std::move(closure),          std::move(spatialEnergy),
       std::move(energy)};
   catalogs.totalOrderings = {
       // Critical-path and recurrence placement precede the mixed timing and
       // transport score. A shorter route must not buy temporal serialization
       // of critical work; off-path temporal sharing remains an area option.
-      {{1, 9, 0, 5, 6, 3, 7, 2, 4}},
-      {{1, 9, 0, 5, 6, 3, 8, 2, 4}}};
+      // RecurrenceTemporalBindingPressure ranks directly after schedule
+      // pressure because it is a structural binding fact that needs no
+      // per-candidate timing proof.
+      {{1, 10, 0, 5, 6, 3, 7, 8, 2, 4}},
+      {{1, 10, 0, 5, 6, 3, 7, 9, 2, 4}}};
   return catalogs;
 }
 

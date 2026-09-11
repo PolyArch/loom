@@ -65,6 +65,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       initialUnroutedObligationCount_(state_->unroutedObligationCount_),
       initialAtomicCapacityOveruse_(state_->atomicCapacityOveruse_),
       initialStaticSchedulePressure_(state_->staticSchedulePressure_),
+      initialRecurrenceTemporalBindingPressure_(
+          state_->recurrenceTemporalBindingPressure_),
       initialWorstRouteArrivalDelayQuanta_(
           state_->worstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
@@ -94,6 +96,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
       initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_),
       initialStaticSchedulePressure_(other.initialStaticSchedulePressure_),
+      initialRecurrenceTemporalBindingPressure_(
+          other.initialRecurrenceTemporalBindingPressure_),
       initialWorstRouteArrivalDelayQuanta_(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
@@ -709,6 +713,11 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
           *state_, realization, placement);
   if (!schedulePressure)
     return schedulePressure.takeError();
+  auto recurrenceBinding =
+      detail::projectRecurrenceTemporalBindingPressureAfterComputeChange(
+          *state_, realization, placement);
+  if (!recurrenceBinding)
+    return recurrenceBinding.takeError();
 
   if (old.placement != placement) {
     for (PnrIndex logicalNet = 0;
@@ -762,6 +771,7 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
   state_->computeBindings_[realization] = {placement, instructionContext};
   state_->bindingRelationChoices_[realization] = *relationChoice;
   state_->staticSchedulePressure_ = *schedulePressure;
+  state_->recurrenceTemporalBindingPressure_ = *recurrenceBinding;
   return llvm::Error::success();
 }
 
@@ -788,6 +798,11 @@ llvm::Error SpatialMoveTransaction::setMemoryBinding(PnrIndex realization,
           *state_, realization, placement);
   if (!schedulePressure)
     return schedulePressure.takeError();
+  auto recurrenceBinding =
+      detail::projectRecurrenceTemporalBindingPressureAfterMemoryChange(
+          *state_, realization, placement);
+  if (!recurrenceBinding)
+    return recurrenceBinding.takeError();
   recordMemory(realization);
   markMemory(realization);
   state_->memoryBindings_[realization].placement = placement;
@@ -795,6 +810,7 @@ llvm::Error SpatialMoveTransaction::setMemoryBinding(PnrIndex realization,
                                       .computeDecisionCount() +
                                   realization] = *relationChoice;
   state_->staticSchedulePressure_ = *schedulePressure;
+  state_->recurrenceTemporalBindingPressure_ = *recurrenceBinding;
   return llvm::Error::success();
 }
 
@@ -1766,6 +1782,8 @@ void SpatialMoveTransaction::rollback() noexcept {
   state_->unroutedObligationCount_ = initialUnroutedObligationCount_;
   state_->atomicCapacityOveruse_ = initialAtomicCapacityOveruse_;
   state_->staticSchedulePressure_ = initialStaticSchedulePressure_;
+  state_->recurrenceTemporalBindingPressure_ =
+      initialRecurrenceTemporalBindingPressure_;
   for (auto [ordinal, logicalNet] :
        llvm::enumerate(scratch_->physicalTimingChangedNets_)) {
     state_->logicalNetWorstArrivalDelayQuanta_[logicalNet] =

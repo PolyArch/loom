@@ -47,6 +47,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<PnrIndex> graphChoiceCatalogOrdinals,
     std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
     std::vector<std::uint64_t> graphChoiceSharedOperandIngressPressures,
+    std::vector<std::uint64_t> graphChoiceRecurrenceTemporalBindingPressures,
     std::vector<
         std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
         graphChoiceRecurrenceDemands,
@@ -97,6 +98,8 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
           std::move(graphChoiceStaticSchedulePressures)),
       graphChoiceSharedOperandIngressPressures_(
           std::move(graphChoiceSharedOperandIngressPressures)),
+      graphChoiceRecurrenceTemporalBindingPressures_(
+          std::move(graphChoiceRecurrenceTemporalBindingPressures)),
       graphChoiceRecurrenceDemands_(std::move(graphChoiceRecurrenceDemands)),
       graphThreadOverlapOffsets_(std::move(graphThreadOverlapOffsets)),
       graphThreadOverlaps_(std::move(graphThreadOverlaps)),
@@ -148,6 +151,15 @@ FrozenSystemPnrProblem::graphChoiceSharedOperandIngressPressures(
   assert(decision < graphDecisions_.size());
   const auto &record = graphDecisions_[decision];
   return llvm::ArrayRef(graphChoiceSharedOperandIngressPressures_)
+      .slice(record.choiceOffset, record.choiceCount);
+}
+
+llvm::ArrayRef<std::uint64_t>
+FrozenSystemPnrProblem::graphChoiceRecurrenceTemporalBindingPressures(
+    PnrIndex decision) const {
+  assert(decision < graphDecisions_.size());
+  const auto &record = graphDecisions_[decision];
+  return llvm::ArrayRef(graphChoiceRecurrenceTemporalBindingPressures_)
       .slice(record.choiceOffset, record.choiceCount);
 }
 

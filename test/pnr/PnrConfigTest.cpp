@@ -6,6 +6,7 @@
 #include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -238,7 +239,7 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 3 && registry.schemaMinor == 4,
+              registry.schemaMajor == 3 && registry.schemaMinor == 5,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
@@ -281,11 +282,12 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
   }
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
-  require(measures.size() == 10 &&
+  require(measures.size() == 11 &&
               measures.front().kind ==
                   loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim &&
               measures.back().kind ==
-                  loom::pnr::MappingMeasureKind::ProgressRouteAnchorCount,
+                  loom::pnr::MappingMeasureKind::
+                      RecurrenceTemporalBindingPressure,
           "Mapping measure registry does not own the closed catalog");
 
   const loom::ResolvedConfig config = loom::defaultResolvedConfig();
@@ -314,7 +316,14 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       catalogs.weightedLevels[selectedOrdering.front()];
   const auto &ordinaryClosureLevel =
       catalogs.weightedLevels[selectedOrdering[1]];
-  require(catalogs.weightedLevels.size() == 12 &&
+  const std::uint32_t recurrenceBindingDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::RecurrenceTemporalBindingPressure);
+  const auto &scheduleLevel = catalogs.weightedLevels[selectedOrdering[5]];
+  const auto &recurrenceBindingLevel =
+      catalogs.weightedLevels[selectedOrdering[6]];
+  require(catalogs.weightedLevels.size() == 13 &&
               catalogs.weightedLevels[4].terms.size() == 1 &&
               catalogs.weightedLevels[4].terms.front().dimension ==
                   pressureDimension &&
@@ -331,7 +340,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
               llvm::equal(llvm::ArrayRef<std::uint32_t>(
                               catalogs.totalOrderings[0].weightedLevels)
                               .take_front(4),
-                          std::array<std::uint32_t, 4>{1, 9, 0, 5}) &&
+                          std::array<std::uint32_t, 4>{1, 10, 0, 5}) &&
               catalogs.totalOrderings[0].weightedLevels.back() == 4 &&
               catalogs.totalOrderings[1].weightedLevels.back() == 4 &&
               handshakeLevel.terms.size() == 1 &&
@@ -342,6 +351,38 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
                             }),
           "selected-handshake priority and Mapping objective levels are not "
           "explicit");
+  // Temporal serialization of loop-carried work must outrank the traversal
+  // claim, so a shorter route can never buy a Temporal recurrence binding.
+  const std::uint32_t scheduleDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::StaticSchedulePressure);
+  require(scheduleLevel.terms.size() == 1 &&
+              scheduleLevel.terms.front().dimension == scheduleDimension &&
+              recurrenceBindingLevel.terms.size() == 1 &&
+              recurrenceBindingLevel.terms.front().dimension ==
+                  recurrenceBindingDimension,
+          "recurrence temporal binding pressure does not rank between schedule "
+          "pressure and traversal claim");
+  const std::uint32_t traversalDimension =
+      loom::resolvedPnrViolationKindCount +
+      static_cast<std::uint32_t>(
+          loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim);
+  for (const loom::ResolvedTotalOrdering &ordering : catalogs.totalOrderings) {
+    const auto levels = llvm::ArrayRef<std::uint32_t>(ordering.weightedLevels);
+    const auto rankOf = [&](std::uint32_t dimension) {
+      return llvm::find_if(levels, [&](std::uint32_t level) {
+        const auto &terms = catalogs.weightedLevels[level].terms;
+        return terms.size() == 1 && terms.front().dimension == dimension;
+      });
+    };
+    const auto recurrenceRank = rankOf(recurrenceBindingDimension);
+    const auto traversalRank = rankOf(traversalDimension);
+    require(recurrenceRank != levels.end() &&
+                traversalRank != levels.end() && recurrenceRank < traversalRank,
+            "a builtin total ordering ranks traversal claim before recurrence "
+            "temporal binding pressure");
+  }
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
@@ -359,7 +400,7 @@ void resolvedConfigUsesTheIndependentViolationCatalog() {
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &energy = config.dse.objectiveCatalogs.weightedLevels[7];
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[8];
   energy.terms[0].weight = UINT64_MAX;
   energy.terms[1].weight = UINT64_MAX - 1;
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),

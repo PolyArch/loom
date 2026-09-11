@@ -27,7 +27,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 3, 4};
+    "loom.mapping.pnr.objective", 3, 5};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -123,19 +123,25 @@ systemSpatialPhysicalMeasure(const FrozenSystemPnrProblem &problem,
   return result;
 }
 
-llvm::Expected<std::uint64_t> systemSpatialSharedOperandIngressPressure(
-    const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> graphChoices) {
+using GraphChoiceMeasureValues =
+    llvm::ArrayRef<std::uint64_t> (FrozenSystemPnrProblem::*)(PnrIndex) const;
+
+/// Sums one graph-partitioned Spatial measure over the selected graph
+/// executions. System freeze publishes each such measure as a per-choice
+/// vector, so the projection differs only in which vector it reads.
+llvm::Expected<std::uint64_t>
+systemGraphChoiceSum(const FrozenSystemPnrProblem &problem,
+                     llvm::ArrayRef<PnrIndex> graphChoices,
+                     GraphChoiceMeasureValues values, llvm::StringRef subject) {
   if (graphChoices.size() != problem.graphDecisions().size())
-    return objectiveError("System graph choice pressure is incomplete");
+    return objectiveError(subject + " is incomplete");
   std::uint64_t total = 0;
   for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
-    const auto pressures =
-        problem.graphChoiceSharedOperandIngressPressures(decision);
-    if (graphChoices[decision] >= pressures.size())
-      return objectiveError("System graph choice pressure is out of range");
-    if (llvm::Error error = checkedAdd(total, pressures[graphChoices[decision]],
-                                       "System SharedOperandIngressPressure"))
+    const auto choices = (problem.*values)(decision);
+    if (graphChoices[decision] >= choices.size())
+      return objectiveError(subject + " is out of range");
+    if (llvm::Error error =
+            checkedAdd(total, choices[graphChoices[decision]], subject))
       return std::move(error);
   }
   return total;
@@ -305,6 +311,8 @@ loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
     return candidate.progressCapacityShortfall();
   case MappingMeasureKind::ProgressRouteAnchorCount:
     return candidate.progressRouteAnchorCount();
+  case MappingMeasureKind::RecurrenceTemporalBindingPressure:
+    return candidate.recurrenceTemporalBindingPressure();
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -342,21 +350,11 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
         candidate.problem().routingTopology(),
         {candidate.serviceRoutes(), candidate.serviceRouteNodes(),
          candidate.serviceRouteSinks()});
-  case MappingMeasureKind::StaticSchedulePressure: {
-    std::uint64_t total = 0;
-    for (PnrIndex decision = 0;
-         decision < candidate.problem().graphDecisions().size(); ++decision) {
-      const auto pressures =
-          candidate.problem().graphChoiceStaticSchedulePressures(decision);
-      const PnrIndex choice = candidate.graphChoice(decision);
-      if (choice >= pressures.size())
-        return objectiveError("System graph choice pressure is out of range");
-      if (llvm::Error error = checkedAdd(total, pressures[choice],
-                                         "System StaticSchedulePressure"))
-        return std::move(error);
-    }
-    return total;
-  }
+  case MappingMeasureKind::StaticSchedulePressure:
+    return systemGraphChoiceSum(
+        candidate.problem(), candidate.graphChoices(),
+        &FrozenSystemPnrProblem::graphChoiceStaticSchedulePressures,
+        "System StaticSchedulePressure");
   case MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles:
     return recurrenceMinimumInitiationInterval(candidate.recurrenceTiming(), 0);
   case MappingMeasureKind::ResourceMinimumInitiationIntervalCycles:
@@ -367,10 +365,11 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
   case MappingMeasureKind::TotalRouteNegativeSlackQuanta:
     return systemSpatialPhysicalMeasure(candidate.problem(),
                                         candidate.graphChoices(), kind);
-  case MappingMeasureKind::SharedOperandIngressPressure: {
-    return systemSpatialSharedOperandIngressPressure(candidate.problem(),
-                                                     candidate.graphChoices());
-  }
+  case MappingMeasureKind::SharedOperandIngressPressure:
+    return systemGraphChoiceSum(
+        candidate.problem(), candidate.graphChoices(),
+        &FrozenSystemPnrProblem::graphChoiceSharedOperandIngressPressures,
+        "System SharedOperandIngressPressure");
   case MappingMeasureKind::ProgressCapacityShortfall:
     return ::loom::mapping::projectMappingProgressObjective(
                candidate.progressClosure())
@@ -379,6 +378,11 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
     return ::loom::mapping::projectMappingProgressObjective(
                candidate.progressClosure())
         .routeAnchorCount;
+  case MappingMeasureKind::RecurrenceTemporalBindingPressure:
+    return systemGraphChoiceSum(
+        candidate.problem(), candidate.graphChoices(),
+        &FrozenSystemPnrProblem::graphChoiceRecurrenceTemporalBindingPressures,
+        "System RecurrenceTemporalBindingPressure");
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -510,6 +514,9 @@ MappingObjectiveProgram::evaluateSpatialProjection(
     case MappingMeasureKind::ProgressRouteAnchorCount:
       measures[ordinal] = projection.progressRouteAnchorCount;
       break;
+    case MappingMeasureKind::RecurrenceTemporalBindingPressure:
+      measures[ordinal] = candidate.recurrenceTemporalBindingPressure();
+      break;
     }
   }
   dse::ObjectiveVector result = program_.makeVector();
@@ -580,18 +587,13 @@ MappingObjectiveProgram::evaluateSystemProjection(
       measures[ordinal] = totalSelectedTraversalClaim;
       break;
     case MappingMeasureKind::StaticSchedulePressure: {
-      if (graphChoices.size() != problem.graphDecisions().size())
-        return objectiveError("System graph choice pressure is incomplete");
-      for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
-        const auto pressures =
-            problem.graphChoiceStaticSchedulePressures(decision);
-        if (graphChoices[decision] >= pressures.size())
-          return objectiveError("System graph choice pressure is out of range");
-        if (llvm::Error error =
-                checkedAdd(measures[ordinal], pressures[graphChoices[decision]],
-                           "System StaticSchedulePressure"))
-          return std::move(error);
-      }
+      auto pressure = systemGraphChoiceSum(
+          problem, graphChoices,
+          &FrozenSystemPnrProblem::graphChoiceStaticSchedulePressures,
+          "System StaticSchedulePressure");
+      if (!pressure)
+        return pressure.takeError();
+      measures[ordinal] = *pressure;
       break;
     }
     case MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles: {
@@ -617,8 +619,10 @@ MappingObjectiveProgram::evaluateSystemProjection(
       break;
     }
     case MappingMeasureKind::SharedOperandIngressPressure: {
-      auto pressure =
-          systemSpatialSharedOperandIngressPressure(problem, graphChoices);
+      auto pressure = systemGraphChoiceSum(
+          problem, graphChoices,
+          &FrozenSystemPnrProblem::graphChoiceSharedOperandIngressPressures,
+          "System SharedOperandIngressPressure");
       if (!pressure)
         return pressure.takeError();
       measures[ordinal] = *pressure;
@@ -634,6 +638,17 @@ MappingObjectiveProgram::evaluateSystemProjection(
           ::loom::mapping::projectMappingProgressObjective(progressClosure)
               .routeAnchorCount;
       break;
+    case MappingMeasureKind::RecurrenceTemporalBindingPressure: {
+      auto pressure = systemGraphChoiceSum(
+          problem, graphChoices,
+          &FrozenSystemPnrProblem::
+              graphChoiceRecurrenceTemporalBindingPressures,
+          "System RecurrenceTemporalBindingPressure");
+      if (!pressure)
+        return pressure.takeError();
+      measures[ordinal] = *pressure;
+      break;
+    }
     }
   }
   dse::ObjectiveVector result = program_.makeVector();
