@@ -377,6 +377,9 @@ public:
   std::uint64_t staticSchedulePressure() const {
     return staticSchedulePressure_;
   }
+  std::uint64_t recurrenceTemporalBindingPressure() const {
+    return recurrenceTemporalBindingPressure_;
+  }
   std::uint64_t sharedOperandIngressPressure() const {
     return sharedOperandIngressPressure_;
   }
@@ -707,6 +710,7 @@ private:
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;
+  std::uint64_t recurrenceTemporalBindingPressure_ = 0;
   std::uint64_t sharedOperandIngressPressure_ = 0;
   std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta_;
   std::vector<std::uint64_t> logicalNetNegativeSlackQuanta_;
@@ -881,6 +885,7 @@ private:
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialAtomicCapacityOveruse_ = 0;
   std::uint64_t initialStaticSchedulePressure_ = 0;
+  std::uint64_t initialRecurrenceTemporalBindingPressure_ = 0;
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
   std::uint64_t initialRuntimeCounterexampleViolation_ = 0;

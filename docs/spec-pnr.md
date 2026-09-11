@@ -1200,14 +1200,14 @@ legality.
 
 ## Objective Projection
 
-The Mapping objective registry is `loom.mapping.pnr.objective 3.4`. It owns
+The Mapping objective registry is `loom.mapping.pnr.objective 3.5`. It owns
 eight violation sources: the five structural/hard sources above,
 `ProgressProofDebt`, which is nonzero exactly for a selected
 `ProofNotEstablished` activity witness, and
 `RuntimeCounterexampleViolation`, which counts persisted no-good clauses whose
 exact literals all still hold, plus `SelectedHandshakeViolation`, which is one
 exactly when the selected Fabric handshake graph is cyclic. It also owns these
-ten nonnegative
+eleven nonnegative
 measures in stable
 ordinal order:
 
@@ -1223,6 +1223,7 @@ ordinal order:
 | 7 | `SharedOperandIngressPressure` |
 | 8 | `ProgressCapacityShortfall` |
 | 9 | `ProgressRouteAnchorCount` |
+| 10 | `RecurrenceTemporalBindingPressure` |
 
 `HardProgressViolation` is derived only from `ProvenClosedWaitSet`.
 `ProgressProofDebt` is derived only from `ProofNotEstablished`; it remains a
@@ -1297,6 +1298,21 @@ value with the exact graph-choice ordinal. It sums selected graph executions;
 it does not charge an inactive graph merely because the same SpatialMapping
 artifact covers it.
 
+`RecurrenceTemporalBindingPressure` is the sum, over selected compute and
+memory realization placements whose Fabric occurrence has a Temporal schedule,
+of the `recurrenceCriticalLength` the static schedule analysis owns for each
+actor the placement hosts. A Temporal occurrence issues its resident
+instructions in rotation, so binding loop-carried work there serializes the
+recurrence against every other resident of that occurrence. The measure is a
+structural property of the selected bindings: it reuses the criticality the
+schedule-pressure index already derives, needs no recurrence timing proof, and
+is therefore complete for every admitted candidate, including one whose
+provider service plan leaves recurrence latency unestablished. It is
+ranking-only. Zero pressure is not a throughput proof and nonzero pressure is
+not an infeasibility proof. System freeze partitions the measure by covered
+graph exactly as it partitions static schedule pressure and sums the selected
+graph executions.
+
 `RecurrenceMinimumInitiationIntervalCycles` and
 `ResourceMinimumInitiationIntervalCycles` derive from selected Fabric
 UsePatterns, recurrence constraints, service plans, resource timing, and route
@@ -1341,10 +1357,17 @@ otherwise identical ordering and energy with recurrence included. A custom
 Spatial policy may select recurrence only when every admitted candidate has a
 complete local timing owner; an external manager dispatch then terminates as
 `ProofNotEstablished` rather than receiving a provisional latency.
+`RecurrenceTemporalBindingPressure` carries the recurrence concern that the
+Spatial ordering can always evaluate, because it reads selected bindings
+rather than an established latency. Both builtin policies select it.
 
 Both builtin total orderings place hard closure first, followed by proof-debt
-witness count, capacity shortfall, and route-anchor count, before timing,
-static schedule, traversal, and `SharedOperandIngressPressure`. Search energy
+witness count, capacity shortfall, and route-anchor count, then static
+schedule pressure, `RecurrenceTemporalBindingPressure`, timing, traversal, and
+`SharedOperandIngressPressure`. `RecurrenceTemporalBindingPressure` owns its
+own level directly after static schedule pressure and strictly before the
+traversal claim, so a shorter route can never buy the Temporal placement of an
+actor on a loop-carried recurrence. Search energy
 contains the same visible dimensions; PathFinder and annealing may not add an
 unprojected activity penalty. `SharedOperandIngressPressure` remains the last
 tie-break level and cannot override route, capacity, timing, or activity

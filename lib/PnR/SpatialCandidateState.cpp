@@ -711,6 +711,11 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!schedulePressure)
     return schedulePressure.takeError();
   candidate->staticSchedulePressure_ = *schedulePressure;
+  auto recurrenceBinding =
+      detail::measureRecurrenceTemporalBindingPressure(*candidate);
+  if (!recurrenceBinding)
+    return recurrenceBinding.takeError();
+  candidate->recurrenceTemporalBindingPressure_ = *recurrenceBinding;
   auto recurrenceTiming =
       detail::projectSpatialRecurrenceTiming(*candidate, routePointers);
   if (!recurrenceTiming)
@@ -1861,6 +1866,13 @@ llvm::Error SpatialCandidateState::verify() const {
   if (staticSchedulePressure_ != *expectedSchedulePressure)
     return candidateError(
         "static schedule pressure diverges from selected bindings");
+  auto expectedRecurrenceBinding =
+      detail::measureRecurrenceTemporalBindingPressure(*this);
+  if (!expectedRecurrenceBinding)
+    return expectedRecurrenceBinding.takeError();
+  if (recurrenceTemporalBindingPressure_ != *expectedRecurrenceBinding)
+    return candidateError("recurrence temporal binding pressure diverges from "
+                          "selected bindings");
   auto expectedOperandIngressPressure =
       detail::measureSpatialOperandIngressPressure(*problem_, portAttachments_,
                                                    registerFifoTransfers_);

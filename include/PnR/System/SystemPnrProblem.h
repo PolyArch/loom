@@ -263,6 +263,8 @@ public:
   graphChoiceStaticSchedulePressures(PnrIndex decision) const;
   llvm::ArrayRef<std::uint64_t>
   graphChoiceSharedOperandIngressPressures(PnrIndex decision) const;
+  llvm::ArrayRef<std::uint64_t>
+  graphChoiceRecurrenceTemporalBindingPressures(PnrIndex decision) const;
   const std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand> &
   graphChoiceRecurrenceDemand(PnrIndex decision, PnrIndex choice) const;
   llvm::ArrayRef<PnrIndex> graphThreadOverlaps(PnrIndex decision) const;
@@ -304,6 +306,7 @@ private:
       std::vector<PnrIndex> graphChoiceCatalogOrdinals,
       std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
       std::vector<std::uint64_t> graphChoiceSharedOperandIngressPressures,
+      std::vector<std::uint64_t> graphChoiceRecurrenceTemporalBindingPressures,
       std::vector<
           std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
           graphChoiceRecurrenceDemands,
@@ -358,6 +361,7 @@ private:
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
   std::vector<std::uint64_t> graphChoiceStaticSchedulePressures_;
   std::vector<std::uint64_t> graphChoiceSharedOperandIngressPressures_;
+  std::vector<std::uint64_t> graphChoiceRecurrenceTemporalBindingPressures_;
   std::vector<
       std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
       graphChoiceRecurrenceDemands_;

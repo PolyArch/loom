@@ -71,6 +71,19 @@ actorPlacementContribution(const StaticActorCriticality &actor,
                     "actor Temporal dispatch pressure");
 }
 
+/// Recurrence-critical work one actor serializes when its occurrence issues
+/// resident instructions in rotation. Spatial placement contributes zero; the
+/// actor then advances its loop-carried dependence without waiting for the
+/// occurrence's other residents. This reuses the criticality the schedule
+/// analysis already owns and needs no timing proof.
+std::uint64_t
+actorRecurrenceTemporalBinding(const StaticActorCriticality &actor,
+                               ::fabric::Schedule schedule) {
+  return schedule == ::fabric::Schedule::Temporal
+             ? actor.recurrenceCriticalLength
+             : 0;
+}
+
 PnrIndex flatRoot(PnrIndex computeRootCount, bool memory, PnrIndex ordinal) {
   return memory ? computeRootCount + ordinal : ordinal;
 }
@@ -95,6 +108,15 @@ selectedRootSchedule(const SpatialCandidateState &candidate, PnrIndex root,
   if (placement >= problem.realizations().memoryPlacements().size())
     return invalid("selected memory placement is out of range");
   return problem.realizations().memoryPlacements()[placement].schedule;
+}
+
+llvm::Expected<std::uint64_t>
+replaceRecurrenceTemporalBinding(std::uint64_t total, std::uint64_t oldValue,
+                                 std::uint64_t newValue) {
+  if (oldValue > total)
+    return invalid("actor recurrence temporal binding exceeds its total");
+  return checkedSum(total - oldValue, newValue,
+                    "recurrence temporal binding pressure");
 }
 
 llvm::Expected<std::uint64_t>
@@ -193,12 +215,15 @@ detail::SpatialSchedulePressureIndex::build(
 
   result->computePlacementContributions_.reserve(
       realizations.computePlacements().size());
+  result->computePlacementRecurrenceTemporalBindings_.reserve(
+      realizations.computePlacements().size());
   for (const auto &placement : realizations.computePlacements()) {
     if (placement.realization >= realizations.computeRealizations().size())
       return invalid("compute placement has a foreign realization");
     const auto &realization =
         realizations.computeRealizations()[placement.realization];
     std::uint64_t contribution = 0;
+    std::uint64_t recurrence = 0;
     for (const ::dataflow::ActorRef actor : realizations.computeActors().slice(
              realization.actorOffset, realization.actorCount)) {
       const StaticActorCriticality *criticality =
@@ -211,10 +236,18 @@ detail::SpatialSchedulePressureIndex::build(
       if (llvm::Error error =
               addTo(contribution, *value, "compute placement pressure"))
         return std::move(error);
+      if (llvm::Error error = addTo(
+              recurrence,
+              actorRecurrenceTemporalBinding(*criticality, placement.schedule),
+              "compute placement recurrence temporal binding"))
+        return std::move(error);
     }
     result->computePlacementContributions_.push_back(contribution);
+    result->computePlacementRecurrenceTemporalBindings_.push_back(recurrence);
   }
   result->memoryPlacementContributions_.reserve(
+      realizations.memoryPlacements().size());
+  result->memoryPlacementRecurrenceTemporalBindings_.reserve(
       realizations.memoryPlacements().size());
   for (const auto &placement : realizations.memoryPlacements()) {
     if (placement.realization >= realizations.memoryRealizations().size())
@@ -222,6 +255,7 @@ detail::SpatialSchedulePressureIndex::build(
     const auto &realization =
         realizations.memoryRealizations()[placement.realization];
     std::uint64_t contribution = 0;
+    std::uint64_t recurrence = 0;
     for (const auto &actor : realizations.memoryActors().slice(
              realization.actorOffset, realization.actorCount)) {
       const StaticActorCriticality *criticality =
@@ -234,8 +268,14 @@ detail::SpatialSchedulePressureIndex::build(
       if (llvm::Error error =
               addTo(contribution, *value, "memory placement pressure"))
         return std::move(error);
+      if (llvm::Error error = addTo(
+              recurrence,
+              actorRecurrenceTemporalBinding(*criticality, placement.schedule),
+              "memory placement recurrence temporal binding"))
+        return std::move(error);
     }
     result->memoryPlacementContributions_.push_back(contribution);
+    result->memoryPlacementRecurrenceTemporalBindings_.push_back(recurrence);
   }
 
   std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t> edgeWeights;
@@ -290,6 +330,18 @@ detail::SpatialSchedulePressureIndex::computePlacementContribution(
 std::uint64_t detail::SpatialSchedulePressureIndex::memoryPlacementContribution(
     PnrIndex placement) const {
   return memoryPlacementContributions_.at(placement);
+}
+
+std::uint64_t
+detail::SpatialSchedulePressureIndex::computePlacementRecurrenceTemporalBinding(
+    PnrIndex placement) const {
+  return computePlacementRecurrenceTemporalBindings_.at(placement);
+}
+
+std::uint64_t
+detail::SpatialSchedulePressureIndex::memoryPlacementRecurrenceTemporalBinding(
+    PnrIndex placement) const {
+  return memoryPlacementRecurrenceTemporalBindings_.at(placement);
 }
 
 llvm::ArrayRef<PnrIndex>
@@ -356,7 +408,59 @@ loom::pnr::detail::projectStaticSchedulePressureAfterMemoryChange(
                                 placement, true);
 }
 
-llvm::Expected<std::vector<std::uint64_t>>
+llvm::Expected<std::uint64_t>
+loom::pnr::detail::measureRecurrenceTemporalBindingPressure(
+    const SpatialCandidateState &candidate) {
+  const auto &index = candidate.problem().schedulePressure();
+  std::uint64_t result = 0;
+  for (PnrIndex root = 0; root < index.computeRootCount(); ++root)
+    if (llvm::Error error =
+            addTo(result,
+                  index.computePlacementRecurrenceTemporalBinding(
+                      candidate.computeBinding(root).placement),
+                  "recurrence temporal binding pressure"))
+      return std::move(error);
+  for (PnrIndex root = index.computeRootCount(); root < index.rootCount();
+       ++root)
+    if (llvm::Error error =
+            addTo(result,
+                  index.memoryPlacementRecurrenceTemporalBinding(
+                      candidate.memoryBinding(root - index.computeRootCount())
+                          .placement),
+                  "recurrence temporal binding pressure"))
+      return std::move(error);
+  return result;
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::detail::projectRecurrenceTemporalBindingPressureAfterComputeChange(
+    const SpatialCandidateState &candidate, PnrIndex realization,
+    PnrIndex placement) {
+  const auto &index = candidate.problem().schedulePressure();
+  if (realization >= index.computeRootCount())
+    return invalid("changed compute realization is out of range");
+  return replaceRecurrenceTemporalBinding(
+      candidate.recurrenceTemporalBindingPressure(),
+      index.computePlacementRecurrenceTemporalBinding(
+          candidate.computeBinding(realization).placement),
+      index.computePlacementRecurrenceTemporalBinding(placement));
+}
+
+llvm::Expected<std::uint64_t>
+loom::pnr::detail::projectRecurrenceTemporalBindingPressureAfterMemoryChange(
+    const SpatialCandidateState &candidate, PnrIndex realization,
+    PnrIndex placement) {
+  const auto &index = candidate.problem().schedulePressure();
+  if (index.computeRootCount() + realization >= index.rootCount())
+    return invalid("changed memory realization is out of range");
+  return replaceRecurrenceTemporalBinding(
+      candidate.recurrenceTemporalBindingPressure(),
+      index.memoryPlacementRecurrenceTemporalBinding(
+          candidate.memoryBinding(realization).placement),
+      index.memoryPlacementRecurrenceTemporalBinding(placement));
+}
+
+llvm::Expected<detail::GraphSchedulePressureProjection>
 loom::pnr::detail::projectStaticSchedulePressureByGraph(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
@@ -373,7 +477,10 @@ loom::pnr::detail::projectStaticSchedulePressureByGraph(
   for (const auto &[ordinal, graph] : llvm::enumerate(techMapping.covers()))
     if (!graphOrdinals.emplace(graphKey(graph), ordinal).second)
       return invalid("TechMapping cover inventory contains a duplicate");
-  std::vector<std::uint64_t> result(techMapping.covers().size(), 0);
+  GraphSchedulePressureProjection result;
+  result.staticSchedulePressure.assign(techMapping.covers().size(), 0);
+  result.recurrenceTemporalBindingPressure.assign(techMapping.covers().size(),
+                                                  0);
 
   std::map<std::uint64_t, std::size_t> computeOrdinals;
   for (const auto &[ordinal, realization] :
@@ -443,12 +550,18 @@ loom::pnr::detail::projectStaticSchedulePressureByGraph(
     const auto graph = graphOrdinals.find(graphKey(actor.graph));
     if (root == rootByActor.end() || graph == graphOrdinals.end())
       return invalid("analyzed actor has no Mapping root or graph");
-    auto contribution =
-        actorPlacementContribution(actor, scheduleOf(root->second));
+    const ::fabric::Schedule schedule = scheduleOf(root->second);
+    auto contribution = actorPlacementContribution(actor, schedule);
     if (!contribution)
       return contribution.takeError();
-    if (llvm::Error error = addTo(result[graph->second], *contribution,
-                                  "graph static schedule pressure"))
+    if (llvm::Error error =
+            addTo(result.staticSchedulePressure[graph->second], *contribution,
+                  "graph static schedule pressure"))
+      return std::move(error);
+    if (llvm::Error error =
+            addTo(result.recurrenceTemporalBindingPressure[graph->second],
+                  actorRecurrenceTemporalBinding(actor, schedule),
+                  "graph recurrence temporal binding pressure"))
       return std::move(error);
   }
   for (const StaticActorEdgeCriticality &edge : analysis->edges()) {
@@ -464,8 +577,9 @@ loom::pnr::detail::projectStaticSchedulePressureByGraph(
         source->second.ordinal == sink->second.ordinal)
       continue;
     if (scheduleOf(source->second) != scheduleOf(sink->second))
-      if (llvm::Error error = addTo(result[graph->second], edge.weight,
-                                    "graph static schedule pressure"))
+      if (llvm::Error error =
+              addTo(result.staticSchedulePressure[graph->second], edge.weight,
+                    "graph static schedule pressure"))
         return std::move(error);
   }
   return result;

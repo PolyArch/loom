@@ -13,13 +13,13 @@ digests; this document introduces no new persistent schema:
 Spatial:
   loom.spatial_pnr.config.15.14
   loom.spatial_pnr.freeze.2.26
-  loom.mapping.pnr.objective 3.4
+  loom.mapping.pnr.objective 3.5
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
   loom.system_pnr.config.8.6
   loom.system_pnr_search_domain.4.0
-  loom.mapping.pnr.objective 3.4
+  loom.mapping.pnr.objective 3.5
   exact selected SpatialMapping references
 ```
 
@@ -64,7 +64,20 @@ persisted runtime no-good still holds. It is a hard violation and is never in
 the temporary-violation policy. `ProgressCapacityShortfall` and
 `ProgressRouteAnchorCount` refine the progress ordering without becoming
 legality owners. Spatial and System config descriptors 15.5 and 8.4 select
-these dimensions before ordinary QoR. Final Spatial
+these dimensions before ordinary QoR.
+Both builtin total orderings then rank static schedule pressure, its own
+`RecurrenceTemporalBindingPressure` level, the provider-specific timing level,
+the traversal claim, and `SharedOperandIngressPressure`. Placing recurrence
+temporal binding before the traversal claim is a deliberate provider policy:
+the builtin Spatial ordering must never trade the spatial placement of a
+loop-carried recurrence for a shorter route, because a Temporal occurrence
+issues its residents in rotation and serializes that recurrence. The Spatial
+ordering can rank this concern where it cannot rank
+`RecurrenceMinimumInitiationIntervalCycles`, because the binding pressure is a
+structural fact of the selected placements and needs no recurrence timing
+proof. Both builtin search energies include it with the same weight class as
+static schedule pressure, so annealing sees the same gradient the ordering
+ranks. Final Spatial
 publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.

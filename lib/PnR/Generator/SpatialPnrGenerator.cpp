@@ -617,6 +617,8 @@ public:
         candidate.hasTransportClosureViolation();
     fields["atomic_capacity_overuse"] = candidate.atomicCapacityOveruse();
     fields["static_schedule_pressure"] = candidate.staticSchedulePressure();
+    fields["recurrence_temporal_binding_pressure"] =
+        candidate.recurrenceTemporalBindingPressure();
     fields["route_capacity_overuse"] = candidate.routeCapacityOveruse();
     fields["tag_unassigned"] = candidate.tagUnassignedCount();
     fields["tag_conflicts"] = candidate.tagConflictCount();

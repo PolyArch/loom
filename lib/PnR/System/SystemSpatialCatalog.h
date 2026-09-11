@@ -31,6 +31,7 @@ struct SpatialCatalogEntry final {
   std::vector<SpatialCatalogGraphProgress> graphProgress;
   std::vector<::loom::mapping::SpatialComputeResultHandoffView> resultHandoffs;
   std::vector<std::uint64_t> graphStaticSchedulePressures;
+  std::vector<std::uint64_t> graphRecurrenceTemporalBindingPressures;
   std::vector<std::uint64_t> graphSharedOperandIngressPressures;
   std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
       graphRecurrenceDemands;
