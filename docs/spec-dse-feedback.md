@@ -3299,8 +3299,8 @@ owner; the workflow does not duplicate executable or runtime-platform
 selection.
 
 The current spatial-microarchitecture configuration descriptor is
-`loom.spatial_microarchitecture_rewrite.config.2.3`; the candidate-decision
-descriptor is `loom.spatial_microarchitecture_candidate_decision.3.2`, and the
+`loom.spatial_microarchitecture_rewrite.config.2.4`; the candidate-decision
+descriptor is `loom.spatial_microarchitecture_candidate_decision.3.3`, and the
 provider identity is `loom.spatial_microarchitecture_rewrite.generator.v4`.
 Config 2.1 appends the two Temporal operand-buffer decisions below without
 renumbering 2.0 decision tags. Decision 3.0 additionally carries the complete
@@ -3308,7 +3308,10 @@ finalizer-produced parent-to-child Module occurrence correspondence, so a
 consumer never guesses a child occurrence from a parent dense ordinal. Config
 2.2 and decision 3.1 append the typed switch route-table capacity decision.
 Config 2.3 and decision 3.2 append `ChangeFifoQueueDiscipline` without
-renumbering any prior decision tag.
+renumbering any prior decision tag. Config 2.4 and decision 3.3 append
+`ChangeMemoryOperationIssueDepth` as the last decision tag, again without
+renumbering; its body is the exact memory occurrence reference followed by
+the positive `u64be` issue depth.
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
 fixes the portable operation-provider catalog. It consumes exactly one

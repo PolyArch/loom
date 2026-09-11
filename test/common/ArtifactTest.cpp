@@ -709,7 +709,7 @@ void resolvedConfigUsesArtifactFinalization() {
               llvm::StringRef("loom.config.resolved"),
           "ResolvedConfig schema identity changed");
   require(__func__,
-          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 5},
+          ResolvedConfig::artifactSchema.version == SchemaVersion{11, 7},
           "ResolvedConfig schema version changed");
 
   const ResolvedConfig config = defaultResolvedConfig();
@@ -727,7 +727,7 @@ void resolvedConfigUsesArtifactFinalization() {
   require(__func__,
           resolvedConfigIdentity(config) !=
               finalizeArtifactIdentity(legacySchema, bytes),
-          "ResolvedConfig 11.4 and 11.5 identities became interchangeable");
+          "ResolvedConfig 11.4 and 11.7 identities became interchangeable");
 
   ResolvedConfig changed = config;
   ++changed.dse.structuredOwnership.scopeExpansionLimit;
