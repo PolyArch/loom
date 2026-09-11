@@ -55,13 +55,13 @@
 // EXPAND-LABEL: dataflow.graph private @empty_graph
 // EXPAND-NEXT: dataflow.graph.return %arg0 : none
 
-// A rank-zero copy moves the scalar at address zero without a stream.
+// A rank-zero copy moves the scalar at address zero without a stream; the
+// load and store share the one canonical address constant.
 
 // EXPAND-LABEL: dataflow.graph private @scalar_graph
-// EXPAND: %[[SCALAR_LOAD_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
-// EXPAND: %[[SCALAR_DATA:.*]], %[[SCALAR_DONE:.*]] = dataflow.load %arg1[%[[SCALAR_LOAD_ADDR]]] %arg0 : memref<f32>
-// EXPAND: %[[SCALAR_STORE_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
-// EXPAND: dataflow.store %arg2[%[[SCALAR_STORE_ADDR]]] %[[SCALAR_DATA]] %[[SCALAR_DONE]] : memref<f32>
+// EXPAND: %[[SCALAR_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+// EXPAND: %[[SCALAR_DATA:.*]], %[[SCALAR_DONE:.*]] = dataflow.load %arg1[%[[SCALAR_ADDR]]] %arg0 : memref<f32>
+// EXPAND: dataflow.store %arg2[%[[SCALAR_ADDR]]] %[[SCALAR_DATA]] %[[SCALAR_DONE]] : memref<f32>
 
 // The closest enclosing data layout owns the index width, so the declared four
 // bit index governs admissibility even though the process default is wider.
