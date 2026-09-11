@@ -25,6 +25,13 @@
 #include <vector>
 
 namespace loom::dse::joint_reopen_detail {
+namespace {
+
+/// A Hall closure probe and the retreat that consumes the child's own feedback
+/// each receive one share of the remaining parent slice.
+constexpr std::uint64_t retreatShareDivisor = 2;
+
+} // namespace
 
 llvm::Expected<std::optional<dse::JointDesignExecution>>
 tryHardwareFeedbackReopen(
@@ -158,6 +165,28 @@ tryHardwareFeedbackReopen(
       spatialFuGrowthProbeConsumed = true;
       preferTemporalInstructionStore = true;
     }
+    // A Hall closure child can cover its graphs at Tech level and still
+    // exhaust route closure, and its own Spatial or System feedback is then
+    // the next typed alternative. A closure probe that consumed the whole
+    // parent slice leaves that alternative untried, so it runs under a share
+    // of the remaining window and the retreat probe keeps the rest. The
+    // invocation deadline is unchanged; only this probe's local slice moves.
+    const bool reserveRetreatShare =
+        techObservation != nullptr && candidateOrdinal + 1 != candidateLimit;
+    auto probeExecutionPolicy =
+        reserveRetreatShare
+            ? fairRemainingPlanPolicy(effectiveExecutionPolicy,
+                                      retreatShareDivisor, 0)
+            : llvm::Expected<PlanExecutionPolicy>(effectiveExecutionPolicy);
+    if (!probeExecutionPolicy)
+      return probeExecutionPolicy.takeError();
+    // A probe stopped by its own reserved share has not exhausted the parent
+    // slice, so the chain retreats to the next feedback alternative instead of
+    // ending with that incomplete execution.
+    const auto reservedShareExpired = [&]() {
+      return reserveRetreatShare &&
+             !dispatchDeadlineReached(effectiveExecutionPolicy);
+    };
     // A probe that reached ordinary Mapping and published no SystemMapping is
     // the evidence that more Temporal residency does not close this relation.
     const auto withdrawTemporalInstructionStorePreference = [&]() {
@@ -413,7 +442,7 @@ tryHardwareFeedbackReopen(
     if (typedModuleGrowth) {
       const auto gateStart = std::chrono::steady_clock::now();
       auto gate = executeTechGate(*reopenPlan, evidence, request, scheduler,
-                                  artifacts, blobs, effectiveExecutionPolicy);
+                                  artifacts, blobs, *probeExecutionPolicy);
       const std::uint64_t gateNanoseconds = static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - gateStart)
@@ -453,7 +482,8 @@ tryHardwareFeedbackReopen(
         ++accounting.hardwareRepairProbesConsumed;
         if (const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(
                 &gate->execution.planExecution);
-            incomplete && incomplete->executionStopped()) {
+            incomplete && incomplete->executionStopped() &&
+            !reservedShareExpired()) {
           if (llvm::Error error = attachSupportingInvocations(gate->execution))
             return std::move(error);
           return std::optional<dse::JointDesignExecution>{
@@ -646,7 +676,7 @@ tryHardwareFeedbackReopen(
     const auto pnrStart = std::chrono::steady_clock::now();
     auto execution =
         executeJointPlan(*reopenPlan, evidence, request, scheduler, artifacts,
-                         blobs, &effectiveExecutionPolicy);
+                         blobs, &*probeExecutionPolicy);
     const std::uint64_t pnrNanoseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - pnrStart)
@@ -750,9 +780,20 @@ tryHardwareFeedbackReopen(
     if (const auto *incomplete =
             std::get_if<IncompleteDsePlanExecution>(&execution->planExecution);
         incomplete && incomplete->executionStopped()) {
-      if (llvm::Error error = attachSupportingInvocations(*execution))
-        return std::move(error);
-      return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+      if (!reservedShareExpired()) {
+        if (llvm::Error error = attachSupportingInvocations(*execution))
+          return std::move(error);
+        return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+      }
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "hardware_repair_probe_share_expired";
+            fields["candidate_ordinal"] = candidateOrdinal;
+            fields["diagnostic"] =
+                "the Hall closure probe consumed its reserved share; the "
+                "chain retreats to the child's own feedback alternative";
+          });
     }
     withdrawTemporalInstructionStorePreference();
 
