@@ -825,8 +825,15 @@ already expanded scopes. Deterministic rounds preserve this distinction without
 another search budget, workload-specific preference, or alternate frontier.
 
 Source index-width proof is a cheap admission hint owned by the same Frontend
-normalizer that later checks the private clone. It must not become an early
-rejection: inlining and specialization can refine source values. Closed address
+normalizer that later checks the private clone. The unbound stored-pointer
+proof is the second such hint, owned by the same memory service boundary that
+refuses a root-relative access through a stored pointer; predicting that
+refusal is what lets a scope's pointer-addressed decision be attempted inside
+a truncated budget instead of after it. Sharing the owner, rather than
+restating the rule in the admission policy, is what keeps a hint from becoming
+a second authority that drifts from the refusal it predicts. Neither hint may
+become an early rejection: inlining and specialization can refine source
+values. Closed address
 representatives retain semantic alternatives; rounds then prevent one scope's
 variants from starving others. The same selector handles publication so a
 candidate admitted through that policy is not lost to an unrelated canonical

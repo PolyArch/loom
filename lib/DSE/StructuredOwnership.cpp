@@ -16,7 +16,9 @@
 #include "llvm/Support/Threading.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -35,10 +37,48 @@ llvm::Error invalid(const llvm::Twine &message) {
                                      message);
 }
 
+/// Source-view proofs that predict a materialization rejection for one
+/// root-relative decision. A failed proof only ranks that decision behind the
+/// scope's other decisions: the private clone can change the proof through
+/// inlining or specialization before materialization.
+enum class OwnershipAdmissionHint : std::uint8_t {
+  SourceIndexNarrowingRejected = 0,
+  SourceUnboundPointerService = 1,
+};
+
+constexpr std::array<OwnershipAdmissionHint, 2>
+    ownershipAdmissionHintDomain = {
+        OwnershipAdmissionHint::SourceIndexNarrowingRejected,
+        OwnershipAdmissionHint::SourceUnboundPointerService};
+
+llvm::StringRef admissionHintField(OwnershipAdmissionHint hint) {
+  switch (hint) {
+  case OwnershipAdmissionHint::SourceIndexNarrowingRejected:
+    return "source_index_narrowing_hint_failed";
+  case OwnershipAdmissionHint::SourceUnboundPointerService:
+    return "source_unbound_pointer_service_hint_failed";
+  }
+  llvm_unreachable("unknown ownership admission hint");
+}
+
+class OwnershipAdmissionHints final {
+public:
+  void record(OwnershipAdmissionHint hint) {
+    failed_.set(static_cast<std::size_t>(hint));
+  }
+  bool failed(OwnershipAdmissionHint hint) const {
+    return failed_.test(static_cast<std::size_t>(hint));
+  }
+  bool anyFailed() const { return failed_.any(); }
+
+private:
+  std::bitset<ownershipAdmissionHintDomain.size()> failed_;
+};
+
 struct OwnershipWorkItem final {
   frontend::SpatialOwnershipScope scope;
   frontend::SpatialOwnershipDecisionPoint decision;
-  bool sourceIndexNarrowingRejected = false;
+  OwnershipAdmissionHints admissionHints;
 };
 
 enum class AddressProjectionClass : std::uint8_t {
@@ -123,10 +163,10 @@ selectOwnershipWorkItems(llvm::ArrayRef<OwnershipWorkItem> workItems,
   }
   std::queue<std::pair<std::size_t, std::size_t>> nextDecisions;
   for (auto [scope, decisions] : llvm::enumerate(scopeDecisions)) {
-    std::stable_partition(
-        decisions.begin(), decisions.end(), [&](std::size_t index) {
-          return !workItems[index].sourceIndexNarrowingRejected;
-        });
+    std::stable_partition(decisions.begin(), decisions.end(),
+                          [&](std::size_t index) {
+                            return !workItems[index].admissionHints.anyFailed();
+                          });
     nextDecisions.emplace(scope, 0);
   }
   while (!nextDecisions.empty() && selectedIndices.size() != limit) {
@@ -430,22 +470,44 @@ generateStructuredOwnershipCandidatesImpl(
     auto sourceView = parent.view();
     if (!sourceView)
       return sourceView.takeError();
-    std::map<std::pair<std::uint64_t, unsigned>, bool> sourceProofs;
+    std::map<std::pair<std::uint64_t, unsigned>, bool> indexNarrowingProofs;
+    std::map<std::uint64_t, bool> pointerServiceProofs;
     for (OwnershipWorkItem &item : workItems) {
       auto width = item.decision.rootRelativeIndexWidth();
       if (!width)
         continue;
-      const auto key = std::make_pair(item.scope.selection.ordinal, *width);
-      auto known = sourceProofs.find(key);
-      if (known == sourceProofs.end()) {
+      const std::uint64_t scopeOrdinal = item.scope.selection.ordinal;
+      const auto narrowingKey = std::make_pair(scopeOrdinal, *width);
+      auto narrowing = indexNarrowingProofs.find(narrowingKey);
+      if (narrowing == indexNarrowingProofs.end()) {
         auto rejection =
             frontend::explainSpatialOwnershipSourceIndexNarrowingRejection(
                 *sourceView, item.scope, *width);
         if (!rejection)
           return rejection.takeError();
-        known = sourceProofs.emplace(key, rejection->has_value()).first;
+        narrowing =
+            indexNarrowingProofs.emplace(narrowingKey, rejection->has_value())
+                .first;
       }
-      item.sourceIndexNarrowingRejected = known->second;
+      if (narrowing->second)
+        item.admissionHints.record(
+            OwnershipAdmissionHint::SourceIndexNarrowingRejected);
+      // A root-relative projection marks every selected access root-relative,
+      // so one unbound stored-pointer access refuses the whole decision. The
+      // proof is width-independent and therefore held once per scope.
+      auto pointerService = pointerServiceProofs.find(scopeOrdinal);
+      if (pointerService == pointerServiceProofs.end()) {
+        auto unbound =
+            frontend::provesSpatialOwnershipSourceUnboundPointerService(
+                *sourceView, item.scope);
+        if (!unbound)
+          return unbound.takeError();
+        pointerService =
+            pointerServiceProofs.emplace(scopeOrdinal, *unbound).first;
+      }
+      if (pointerService->second)
+        item.admissionHints.record(
+            OwnershipAdmissionHint::SourceUnboundPointerService);
     }
   }
   bool candidateDomainTruncated = false;
@@ -624,8 +686,9 @@ generateStructuredOwnershipCandidatesImpl(
           attempt["scope_ordinal"] = workItems[index].scope.selection.ordinal;
           attempt["address_projection_ordinal"] =
               static_cast<unsigned>(addressClass(workItems[index].decision));
-          attempt["source_index_narrowing_hint_failed"] =
-              workItems[index].sourceIndexNarrowingRejected;
+          for (OwnershipAdmissionHint hint : ownershipAdmissionHintDomain)
+            attempt[admissionHintField(hint)] =
+                workItems[index].admissionHints.failed(hint);
           const OwnershipAttemptResult &result = *results[index].attempt;
           if (const auto *materialized =
                   std::get_if<MaterializedOwnershipWorkItem>(&result)) {
