@@ -53,7 +53,7 @@
 namespace {
 
 constexpr llvm::StringLiteral kHardwareSearchSchema =
-    "loom.cgra_qualification_hardware_search.2";
+    "loom.cgra_qualification_hardware_search.3";
 
 constexpr llvm::StringLiteral kProfileSchema = "loom.cgra_budget_profile.7";
 constexpr llvm::StringLiteral kProfileOutcomeSchema =
@@ -505,11 +505,22 @@ llvm::json::Object selectQualificationHardware(
     fail(llvm::toString(std::move(error)));
   llvm::json::Array rounds;
   bool ready = false;
+  std::optional<loom::dse::TechMappingComputeContextHallProgress>
+      previousProgress;
+  llvm::StringRef stopReason;
   for (;;) {
     llvm::json::Array evaluations;
     std::optional<loom::mapping::TechMappingComputeContextHallDeficit> pressure;
     ready = true;
+    bool roundComplete = true;
     for (const auto &source : sources) {
+      // The deadline is observed between sources as well as inside a generator
+      // invocation, so a round that expires stops at the next source instead
+      // of dispatching the rest of the suite.
+      if (control.stopRequested()) {
+        roundComplete = false;
+        break;
+      }
       auto inputs =
           take(loom::dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
               {source.source.dataflow}, module.reference()));
@@ -538,6 +549,10 @@ llvm::json::Object selectQualificationHardware(
                 *result.ownerFeedback, module.view())));
       evaluations.push_back(std::move(evaluation));
     }
+    // A round the deadline cut short carries no decision and would publish a
+    // partial source suite, so it is discarded rather than recorded.
+    if (!roundComplete)
+      break;
     llvm::json::Object round{{"fabric", referenceJson(module.reference())},
                              {"evaluations", std::move(evaluations)},
                              {"hardware_growth", nullptr}};
@@ -545,6 +560,20 @@ llvm::json::Object selectQualificationHardware(
       rounds.push_back(std::move(round));
       break;
     }
+    // Context growth that the cover immediately spends on new demand is not a
+    // continuation proof. The Hall feedback owner decides that, and this search
+    // stops on its verdict instead of spending the remaining budget on rounds
+    // whose deficit cannot fall.
+    const auto progress =
+        loom::dse::observeTechMappingComputeContextHallProgress(*pressure);
+    if (previousProgress &&
+        loom::dse::techMappingComputeContextHallGrowthStagnates(
+            *previousProgress, progress)) {
+      stopReason = "hall_repair_stagnation";
+      rounds.push_back(std::move(round));
+      break;
+    }
+    previousProgress = progress;
     auto growthPlan =
         take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
             *pressure, module.view()));
@@ -594,7 +623,10 @@ llvm::json::Object selectQualificationHardware(
       {"resolved_config", referenceJson(configReference)},
       {"initial_fabric", referenceJson(initialFabric)},
       {"fabric", referenceJson(module.reference())},
-      {"ready", ready && !control.stopRequested()},
+      {"ready", ready && !control.stopRequested() && stopReason.empty()},
+      {"stop_reason", stopReason.empty()
+                          ? llvm::json::Value(nullptr)
+                          : llvm::json::Value(stopReason)},
       {"deadline_ns", static_cast<std::uint64_t>(
                           std::chrono::duration_cast<std::chrono::nanoseconds>(
                               kSpatialPnrQualificationLimit)

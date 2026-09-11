@@ -27,6 +27,32 @@ projectTechMappingComputeContextGrowthDomains(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module);
 
+/// One observation of a compute-context Hall relation, reduced to what a
+/// continuation proof needs: how far the relation is from admissible, how much
+/// demand it carries, and how much context supply answers that demand.
+struct TechMappingComputeContextHallProgress final {
+  std::uint64_t deficit = 0;
+  std::uint64_t demand = 0;
+  std::uint64_t contexts = 0;
+};
+
+TechMappingComputeContextHallProgress
+observeTechMappingComputeContextHallProgress(
+    const mapping::TechMappingComputeContextHallDeficit &feedback);
+
+/// Whether the growth applied between the two observations bought nothing.
+/// The closure is atomic and always closes the complete observed deficit, so
+/// a relation that reappears with the same deficit while its demand and its
+/// context supply both grew by that same amount has spent the new contexts on
+/// new demand: every added context let the cover admit one more realization.
+/// Another child of the same kind cannot close such a relation, so this is the
+/// one owner that decides a context-growth sequence is not a continuation
+/// proof. Both the hardware reopen chain and the qualification search consult
+/// it; neither restates the rule.
+bool techMappingComputeContextHallGrowthStagnates(
+    const TechMappingComputeContextHallProgress &previous,
+    const TechMappingComputeContextHallProgress &current);
+
 /// The two typed supply sources a compute-context Hall deficit admits.
 /// Temporal instruction-store growth closes the complete observed relation in
 /// one atomic decision and rebases the parent Mapping layers. Spatial FU

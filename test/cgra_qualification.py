@@ -650,7 +650,8 @@ def validate_cgra_hardware_search(value: object) -> bool:
     """Validate the shared hardware search before any workload is profiled."""
     fields = {
         "schema", "resolved_config", "initial_fabric", "fabric", "ready",
-        "deadline_ns", "deadline_overrun_ns", "rounds", "phase_ledger",
+        "stop_reason", "deadline_ns", "deadline_overrun_ns", "rounds",
+        "phase_ledger",
     }
     if not isinstance(value, Mapping) or set(value) != fields:
         raise ValueError("CGRA hardware search has the wrong shape")
@@ -664,11 +665,22 @@ def validate_cgra_hardware_search(value: object) -> bool:
     )
     _validate_artifact_reference(value["fabric"], "selected Fabric", _FABRIC_SCHEMA)
     deadline = _nonnegative_integer(value["deadline_ns"], "hardware deadline", positive=True)
-    if deadline != timeout_seconds(Tier.FAST) * 1_000_000_000:
+    # The tool runs under the FAST tier and reserves the smallest tier for
+    # stopping, writing and exiting, so its own search deadline is strictly
+    # inside the tier the wrapper kills on.
+    expected_deadline = (
+        timeout_seconds(Tier.FAST) - timeout_seconds(Tier.ULTRAFAST)
+    ) * 1_000_000_000
+    if deadline != expected_deadline:
         raise ValueError("CGRA hardware search has a foreign deadline")
     overrun = _nonnegative_integer(value["deadline_overrun_ns"], "hardware overrun")
     if type(value["ready"]) is not bool or (value["ready"] and overrun):
         raise ValueError("CGRA hardware search has invalid readiness")
+    stop_reason = value["stop_reason"]
+    if stop_reason is not None and stop_reason != "hall_repair_stagnation":
+        raise ValueError("CGRA hardware search has an unknown stop reason")
+    if stop_reason is not None and value["ready"]:
+        raise ValueError("CGRA hardware search is ready under a stop reason")
     rounds = value["rounds"]
     if not isinstance(rounds, list) or not rounds:
         raise ValueError("CGRA hardware search has no rounds")
