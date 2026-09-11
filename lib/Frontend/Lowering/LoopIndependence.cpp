@@ -12,6 +12,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -996,12 +997,49 @@ bool hasExactPartitionedPointMemoryGeometry(::mlir::Operation *outer,
                                             ::mlir::scf::ForOp pointLoop) {
   ::llvm::SmallVector<::loom::lowering::ExactPointerPointAccess, 8> accesses;
   bool rejected = false;
+  // A rank-one memref access indexed by the point coordinate owns one
+  // element-wide byte partition at that coordinate, exactly like a direct
+  // inbounds GEP; a vector transfer owns the lane-group partition.
+  const auto projectMemrefPointAccess =
+      [&](::mlir::Operation *operation)
+      -> std::optional<::loom::lowering::ExactPointerPointAccess> {
+    auto geometry = memrefAccessGeometry(operation);
+    if (!geometry || geometry->indices.size() != 1)
+      return std::nullopt;
+    bool isVolatile = false;
+    ::mlir::Value memory = getStorePointer(operation, isVolatile);
+    const bool writes = static_cast<bool>(memory);
+    if (!memory)
+      memory = getLoadPointer(operation, isVolatile);
+    if (!memory || isVolatile)
+      return std::nullopt;
+    auto type = ::llvm::dyn_cast<::mlir::MemRefType>(memory.getType());
+    if (!type || type.getRank() != 1 || !type.getElementType().isIntOrFloat() ||
+        !::loom::lowering::isSameSignedMemoryCoordinate(
+            geometry->indices.front(), pointLoop.getInductionVar(), outer))
+      return std::nullopt;
+    const std::uint64_t elementBytes =
+        ::mlir::DataLayout::closest(operation).getTypeSize(
+            type.getElementType());
+    if (elementBytes == 0 || geometry->lanes <= 0)
+      return std::nullopt;
+    return ::loom::lowering::ExactPointerPointAccess{
+        operation, loom::frontend::analysis::projectMemoryRoot(memory),
+        ::mlir::LLVM::GEPOp{}, writes,
+        elementBytes * static_cast<std::uint64_t>(geometry->lanes)};
+  };
   auto walked = loom::frontend::analysis::forEachOwnedOperation(
       pointLoop.getRegion(), [&](::mlir::Operation *operation) {
-        if (::mlir::isa<::mlir::memref::LoadOp, ::mlir::memref::StoreOp>(
-                operation)) {
-          rejected = true;
-          return ::mlir::WalkResult::interrupt();
+        if (::mlir::isa<::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
+                        ::mlir::vector::TransferReadOp,
+                        ::mlir::vector::TransferWriteOp>(operation)) {
+          auto access = projectMemrefPointAccess(operation);
+          if (!access) {
+            rejected = true;
+            return ::mlir::WalkResult::interrupt();
+          }
+          accesses.push_back(*access);
+          return ::mlir::WalkResult::advance();
         }
         if (!::mlir::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp>(
                 operation))
