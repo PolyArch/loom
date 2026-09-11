@@ -553,8 +553,12 @@ FabricMemoryEngineTemplateRecord {
 }
 ```
 
-`engine_contract` is the exact `Spatial` or
-`Temporal { resident_context_count }` contract. `token_endpoint_types` is the
+`engine_contract` is the exact engine contract: its `Spatial` or
+`Temporal { resident_context_count }` residency and its positive
+`operation_issue_depth`, the firings one bound memory actor may hold
+outstanding before the oldest retires. Its canonical bytes are the residency
+followed by the depth, so two engines that differ only in depth are distinct
+templates. `token_endpoint_types` is the
 canonical ordered Operation Engine token interface. `operation_ports` is the
 canonical ordered sequence of complete `MemoryOperationPortRecord` values,
 including capability alternatives, ResourceContracts, and operation-pattern

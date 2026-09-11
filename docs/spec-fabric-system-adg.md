@@ -584,6 +584,20 @@ Cache, proxy, address translation, hashing, sharding, replication, and
 coherence are typed service transforms. They are not inferred from hierarchy,
 endpoint names, or the presence of both manager and subordinate ports.
 
+Three independent owners bound how many memory requests one SpatialCore keeps
+in flight, and no consumer may substitute one for another. The requester side
+is the `fabric.mem` Operation Engine's `operation_issue_depth` owned by
+[Fabric Memory](spec-fabric-mem.md#operation-engine): the firings one bound
+memory actor may hold outstanding, retiring in issue order. The AccCore's
+`SpatialMemoryAccessRealization` owns the outstanding-miss capacity of the
+access cache those firings traverse. The bound System service endpoint's
+`CanonicalServiceCapability` owns the outstanding capacity of the provider.
+The requests one graph can have in flight are therefore bounded by its memory
+actors times the engine depth, by the cache's miss-status entries, and by the
+service's outstanding guarantee; the smallest of the three is the binding
+constraint. Execution models, the analytic runtime model, and the gem5
+binding all derive that product and none of them chooses a depth of its own.
+
 SpatialMapping binds graph-local memory operations to a local service or an
 explicit boundary proxy. SystemMapping extends only proxy obligations to a
 system provider. Runtime supplies invocation-specific allocations,
@@ -752,7 +766,8 @@ Compiler Target Binding used by its target-specific binary. Each modeled
 Spatial bridge likewise validates its AccCore
 `SpatialMemoryAccessRealization`. Gem5 owns the dynamic cache and coherence
 microstate, but never the declared cache geometry, hit latency, or
-outstanding-miss capacity. The system-simulator descriptor references the
+outstanding-miss capacity, and never the Operation Engine issue depth that
+decides how many firings the SpatialCore offers the bridge. The system-simulator descriptor references the
 shared system-simulation case signature with ordered `deployment` and
 `system_model` roles; an ordinary `EvaluationRequest` binds their exact
 subjects. Exact workload and runtime data use

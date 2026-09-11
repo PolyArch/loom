@@ -89,15 +89,16 @@ instance selected by SpatialMapping and owns the independently selectable
 Local Memory Service, manager and subordinate endpoints, dispatch domains,
 topological attachments, and dynamic resource instances.
 
-The template projection contains the exact engine schedule and resident
-capacity, canonical token endpoint types, complete ordered operation-port
-records, and the sorted unique engine-internal token-connection relation. It
+The template projection contains the exact engine schedule, resident capacity,
+and operation issue depth, canonical token endpoint types, complete ordered
+operation-port records, and the sorted unique engine-internal
+token-connection relation. It
 does not contain service or dispatch state. Equal projections deduplicate even
 when the occurrences have different names, locations, Local Memory Services,
 manager endpoints, or surrounding topology. A difference in operation-port
 capability, resource contract, operation-pattern semantics, token endpoint
-type, schedule, resident capacity, or internal connection produces a distinct
-template.
+type, schedule, resident capacity, operation issue depth, or internal
+connection produces a distinct template.
 
 Fabric does not enumerate configured `{load}`, `{store}`, or
 `{load, store}` semantic modes. TechMapping selects template-relative ports,
@@ -1016,13 +1017,29 @@ must bound `K` to a physically realizable value compatible with its declared
 ingress match domains.
 
 The Operation Engine owns this fact through one typed resident-context
-contract:
+contract, and owns its issue depth in the same contract:
 
 ```text
-MemoryEngineContract =
-    Spatial
-  | Temporal { resident_context_count: positive uint64 }
+MemoryEngineContract = {
+  residency:
+      Spatial
+    | Temporal { resident_context_count: positive uint64 }
+  operation_issue_depth: positive uint64
+}
 ```
+
+`operation_issue_depth` is the number of firings one bound memory actor may
+hold outstanding before the oldest of them retires; retirement stays in issue
+order. Depth one is the serialized engine, which admits a next firing only
+after its predecessor retires. A deeper engine is the Operation Engine's own
+memory-level parallelism: it is neither an access cache's outstanding-miss
+capacity nor a service endpoint's outstanding guarantee, and those two still
+bound how many of the engine's requests the path in front of it serves. The
+depth is a hardware fact of the exact occurrence, so it enters the template
+projection and Fabric identity; the canonical attribute text elides it exactly
+when it is one. Resident contexts and issue depth are independent: a resident
+context is a Temporal operation-table row, while the issue depth bounds the
+firings of one bound actor whatever its schedule.
 
 A Spatial engine has no resident-context field. For a Temporal engine every
 operation port owns the structural context-reference range `[0, K)`, so
