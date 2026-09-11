@@ -3932,7 +3932,13 @@ failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates first prioritize the
 deepest admitted Mapping boundary, with a routed FIFO proposal ahead of a
 Spatial boundary-capacity proposal, then exact accelerated root, graph, and
-actor coverage. Hardware parents also receive a fair share of the remaining
+actor coverage. Ordering by admitted boundary is what places a System or
+Spatial proposal ahead of a compute-context Hall deficit: a candidate whose
+Mapping already reached transport reports a shortfall of the exact resource it
+ran out of, while a Hall deficit only reports that a cover was not admitted.
+Coverage decides only among candidates at the same boundary, so a large plan
+with a Hall deficit never displaces a smaller plan that carries a transport
+proposal. Hardware parents also receive a fair share of the remaining
 invocation time. Only the declared prefix is promoted. Any remaining
 budget may expand verified parents in analytic order. A repairable failure of
 an earlier software candidate cannot therefore grow hardware ahead of a later
@@ -3941,6 +3947,18 @@ exact failure is not hidden by an unrelated small verified candidate.
 Cancellation or expiration of the invocation deadline still stops execution.
 An expired per-parent slice remains typed incomplete but may retain actionable
 owner feedback while the invocation still has time for another candidate.
+
+Inside one promoted parent, a compute-context Hall closure probe reserves one
+share of the remaining parent slice for a retreat. A closure child can cover
+every required graph at Tech level and still exhaust route closure, and it then
+publishes its own Spatial or System feedback: the shortfall of the exact
+resource its Mapping ran out of. That feedback is the next typed alternative,
+so the closure probe must not consume the whole slice and leave it untried. A
+probe stopped by its own reserved share is not an expired invocation deadline;
+the chain records the share expiry, retreats to the child's feedback, and
+spends the remaining share on it. The invocation deadline and the probe budget
+are unchanged, and a probe stopped by the invocation deadline still ends the
+chain as an incomplete result.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing
