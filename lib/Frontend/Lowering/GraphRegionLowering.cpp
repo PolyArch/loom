@@ -789,47 +789,25 @@ private:
     return {gate.getAfterCond(), gate.getAfterValue(), close.getOutputs()[0]};
   }
 
-  // Replay one parent-domain value once per token of `phase`. The replay has
-  // `N + 1` tokens for `N` body tokens; the projection decides how the extra
-  // token becomes the close event.
-  ::mlir::Value replayCapture(::mlir::Value capture, ::mlir::Value phase,
-                              ::mlir::Location loc) {
-    setInsertionPoint(loc);
-    return ::dataflow::InvariantOp::create(builder, loc, capture.getType(),
-                                           phase, capture)
-        .getOutput();
-  }
-
-  // A loop-level phase stream always publishes its closing false token, even
-  // for a zero-trip activation. One demux on that phase therefore does all the
-  // work: it splits the replay's `N + 1` tokens into the `N` body tokens and
-  // the single close token that retires the replay. No separate gate, and no
-  // zero-trip selection, is part of this shape.
+  // `dataflow.invariant` replays the parent value once per selector token, and
+  // `dataflow.gate` is the one actor that both normalizes that replay to body
+  // cardinality and publishes the close event. Splitting the pair into a
+  // selector-matched `dataflow.demux` would be token-equivalent, but it costs
+  // one more actor and two more routes per captured value: the gate consumes
+  // the selector once for both roles, while a separate replay and projection
+  // each consume it and add the replay-to-projection edge. Mapping closes
+  // small fabrics through bounded route repair, so that difference decides
+  // whether a captured value can be placed at all.
   ::llvm::SmallVector<::mlir::Value, 4>
-  projectPhaseCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
-                       ::mlir::Value phase, ::mlir::Location loc) {
+  projectForCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
+                     ::mlir::Value phase, ::mlir::Location loc) {
     ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
     for (::mlir::Value capture : captures) {
-      auto [close, body] =
-          demux(phase, replayCapture(capture, phase, loc), loc);
-      replaceUsesInside(capture, body, region);
-      closeEvents.push_back(close);
-    }
-    return closeEvents;
-  }
-
-  // A selector that only decides whether a region runs again pairs no token
-  // with an activation that never runs the region. The gate absorbs that case:
-  // it opens on the first true decision, so its close event exists exactly
-  // when the region executed at least once, which is the cardinality the
-  // enclosing selection already carries.
-  ::llvm::SmallVector<::mlir::Value, 4>
-  projectSelectorCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
-                          ::mlir::Value selector, ::mlir::Location loc) {
-    ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
-    for (::mlir::Value capture : captures) {
-      GatedValue gated = gateTrueLane(
-          selector, replayCapture(capture, selector, loc), loc);
+      setInsertionPoint(loc);
+      ::mlir::Value raw = ::dataflow::InvariantOp::create(
+                              builder, loc, capture.getType(), phase, capture)
+                              .getOutput();
+      GatedValue gated = gateTrueLane(phase, raw, loc);
       replaceUsesInside(capture, gated.value, region);
       closeEvents.push_back(gated.close);
     }
@@ -1529,7 +1507,7 @@ private:
     }
     replaceUsesInside(forOp.getInductionVar(), bodyIv, forOp.getRegion());
     ::llvm::SmallVector<::mlir::Value, 4> captureCloses =
-        projectPhaseCaptures(forOp.getRegion(), captures, phase, loc);
+        projectForCaptures(forOp.getRegion(), captures, phase, loc);
     if (auto uses = streamRepeatUsers.find(forOp);
         uses != streamRepeatUsers.end()) {
       setInsertionPoint(loc);
@@ -1679,12 +1657,16 @@ private:
     for (unsigned i = 0; i < forOp.getNumResults(); ++i)
       forOp.getResult(i).replaceAllUsesWith(valueExits[i]);
     if (!captureCloses.empty()) {
-      // Every capture close carries exactly one token per activation, so the
-      // loop exit joins them unconditionally. A zero-trip activation is not a
-      // separate case here: its phase stream is the single closing false token
-      // that produced those close events.
-      captureCloses.insert(captureCloses.begin(), executionExit);
-      executionExit = joinEvents(captureCloses, loc);
+      // A gate that never opened publishes no close event, so a zero-trip
+      // activation has no capture close to join. The loop exit selects between
+      // the two cases on the loop's own nonempty predicate.
+      setInsertionPoint(loc);
+      ::mlir::Value nonEmpty =
+          ::mlir::arith::CmpIOp::create(builder, loc, *predicate, lower, upper);
+      auto [emptyExit, activeExit] = demux(nonEmpty, executionExit, loc);
+      captureCloses.insert(captureCloses.begin(), activeExit);
+      executionExit =
+          mux(nonEmpty, emptyExit, joinEvents(captureCloses, loc), loc);
     }
     forOp.erase();
     return {executionExit, std::move(output)};
@@ -1788,8 +1770,7 @@ private:
                         after, whileOp.getAfter());
     }
     ::llvm::SmallVector<::mlir::Value, 4> afterCaptureCloses =
-        projectSelectorCaptures(whileOp.getAfter(), afterCaptures, selector,
-                                loc);
+        projectForCaptures(whileOp.getAfter(), afterCaptures, selector, loc);
     closeEvents.append(afterCaptureCloses);
 
     RegionResult afterResult = lowerBlock(

@@ -107,16 +107,15 @@ dataflow.graph private @frontier_if_values(
 // CHECK: %[[EXEC_RAW:.*]] = dataflow.invariant %[[PHASE]], %arg0 : none
 // CHECK: %[[EXEC_LANES:.*]]:2 = dataflow.demux %[[PHASE]], %[[EXEC_RAW]] : (i1, none) -> (none, none)
 // CHECK: %[[VALUE_RAW:.*]] = dataflow.invariant %[[PHASE]], %arg5 : i32
-// CHECK: %[[VALUE_LANES:.*]]:2 = dataflow.demux %[[PHASE]], %[[VALUE_RAW]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[BODY_PHASE:.*]], %[[BODY_VALUE:.*]] = dataflow.gate %[[PHASE]], %[[VALUE_RAW]] : i32
 // CHECK: %[[W_RAW:.*]] = dataflow.carry %[[PHASE]], %arg0,
 // CHECK: %[[R_RAW:.*]] = dataflow.carry %[[PHASE]], %arg0,
 // CHECK: %[[W_LANES:.*]]:2 = dataflow.demux %[[PHASE]], %[[W_RAW]] : (i1, none) -> (none, none)
 // CHECK: %[[R_LANES:.*]]:2 = dataflow.demux %[[PHASE]], %[[R_RAW]] : (i1, none) -> (none, none)
 // CHECK: dataflow.load %arg6[{{.*}}]
-// CHECK: %[[STORE_DONE:.*]] = dataflow.store %arg6[{{.*}}] %[[VALUE_LANES]]#1
+// CHECK: %[[STORE_DONE:.*]] = dataflow.store %arg6[{{.*}}] %[[BODY_VALUE]]
 // CHECK: dataflow.load %arg6[%arg4]
 // CHECK-NOT: scf.for
-// CHECK-NOT: dataflow.gate
 dataflow.graph private @frontier_for(
     %start: none, %lb: i64, %ub: i64, %step: i64,
     %after_index: index, %value: i32,
@@ -139,16 +138,19 @@ dataflow.graph private @frontier_for(
 // CHECK: %[[ZERO_VALUE_RAW:.*]] = dataflow.invariant %[[ZERO_PHASE]], %arg4 : i32
 // CHECK: %[[ZERO_VALUE_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_VALUE_RAW]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[ZERO_INDEX_RAW:.*]] = dataflow.invariant %[[ZERO_PHASE]], %arg3 : index
-// CHECK: %[[ZERO_INDEX_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_INDEX_RAW]] : (i1, index) -> (index, index)
+// CHECK: %[[ZERO_BODY_PHASE:.*]], %[[ZERO_BODY_VALUE:.*]] = dataflow.gate %[[ZERO_PHASE]], %[[ZERO_INDEX_RAW]] : index
+// CHECK: %[[ZERO_BODY_CLOSE:.*]]:2 = dataflow.demux %[[ZERO_BODY_PHASE]], %[[ZERO_BODY_VALUE]] : (i1, index) -> (index, index)
 // CHECK: %[[ZERO_W_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg0,
 // CHECK: %[[ZERO_R_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg0,
 // CHECK: %[[ZERO_W_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_W_RAW]] : (i1, none) -> (none, none)
 // CHECK: %[[ZERO_R_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_R_RAW]] : (i1, none) -> (none, none)
-// The capture close carries one token per activation, zero-trip included, so
-// the loop exit joins it without an empty-loop selection.
-// CHECK-NOT: arith.cmpi
-// CHECK: %[[ZERO_EXEC_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_EXEC_LANES]]#0, %[[ZERO_INDEX_LANES]]#0 : (none, index) -> (none, index)
-// CHECK: %[[ZERO_AFTER_CTRL:.*]]:2 = dataflow.sync %[[ZERO_EXEC_RETIRE]]#0, %[[ZERO_W_LANES]]#0 : (none, none) -> (none, none)
+// A zero-trip activation opens no gate, so it publishes no capture close and
+// the loop exit selects the empty lane instead of joining one.
+// CHECK: %[[ZERO_NONEMPTY:.*]] = arith.cmpi slt, %arg1, %arg1
+// CHECK: %[[ZERO_COMPLETION_LANES:.*]]:2 = dataflow.demux %[[ZERO_NONEMPTY]], %[[ZERO_EXEC_LANES]]#0 : (i1, none) -> (none, none)
+// CHECK: %[[ZERO_ACTIVE_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_COMPLETION_LANES]]#1, %[[ZERO_BODY_CLOSE]]#0 : (none, index) -> (none, index)
+// CHECK: %[[ZERO_EXEC_RETIRE:.*]] = dataflow.mux %[[ZERO_NONEMPTY]], %[[ZERO_COMPLETION_LANES]]#0, %[[ZERO_ACTIVE_RETIRE]]#0 : (i1, none, none) -> none
+// CHECK: %[[ZERO_AFTER_CTRL:.*]]:2 = dataflow.sync %[[ZERO_EXEC_RETIRE]], %[[ZERO_W_LANES]]#0 : (none, none) -> (none, none)
 // CHECK: %{{.*}}, %[[ZERO_LOAD_DONE:.*]] = dataflow.load %arg5[%arg3] %[[ZERO_AFTER_CTRL]]#0 : memref<?xi32>
 // CHECK: %[[ZERO_MEMORY_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_R_LANES]]#0, %[[ZERO_LOAD_DONE]] : (none, none) -> (none, none)
 // CHECK: %[[ZERO_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_MEMORY_RETIRE]]#0, %[[ZERO_VALUE_LANES]]#0 : (none, i32) -> (none, i32)

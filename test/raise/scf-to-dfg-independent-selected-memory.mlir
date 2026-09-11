@@ -17,9 +17,9 @@
 // CHECK-LABEL: dataflow.graph private @independent_selected_memory
 // CHECK: %{{.*}}, %[[PHASE:.*]] = dataflow.stream
 // CHECK: %[[GUARD_RAW:.*]] = dataflow.invariant %[[PHASE]], %arg3 : i1
-// CHECK: %[[GUARD:.*]]:2 = dataflow.demux %[[PHASE]], %[[GUARD_RAW]] : (i1, i1) -> (i1, i1)
-// CHECK: %[[LANE_EXECUTION:.*]]:2 = dataflow.demux %[[GUARD]]#1, %{{.*}} : (i1, none) -> (none, none)
-// CHECK: %[[LANE_MEMORY:.*]]:2 = dataflow.demux %[[GUARD]]#1, %{{.*}} : (i1, none) -> (none, none)
+// CHECK: %{{.*}}, %[[GUARD:.*]] = dataflow.gate %[[PHASE]], %[[GUARD_RAW]] : i1
+// CHECK: %[[LANE_EXECUTION:.*]]:2 = dataflow.demux %[[GUARD]], %{{.*}} : (i1, none) -> (none, none)
+// CHECK: %[[LANE_MEMORY:.*]]:2 = dataflow.demux %[[GUARD]], %{{.*}} : (i1, none) -> (none, none)
 // CHECK: dataflow.graph.return
 
 dataflow.graph private @independent_selected_memory(
