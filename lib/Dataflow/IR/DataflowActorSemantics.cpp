@@ -200,21 +200,10 @@ mlir::Value getActivationSource(mlir::Value value,
     return constant.getCtrl();
   if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def))
     return value == gate.getAfterValue() ? gate.getBeforeCond() : mlir::Value{};
-  if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-    // The body lane of a phase demux over an invariant of the same phase
-    // replays the captured value once per true phase token, exactly like a
-    // gate's after value; the phase is its activation.
-    auto invariant = demux.getInput().getDefiningOp<dataflow::InvariantOp>();
-    const bool bodyLane = demux.getOutputs().size() == 2 &&
-                          llvm::cast<mlir::OpResult>(value).getResultNumber() == 1;
-    return bodyLane && invariant && invariant.getCond() == demux.getSel()
-               ? demux.getSel()
-               : mlir::Value{};
-  }
   if (llvm::isa<mlir::arith::ConstantOp>(def))
     return {};
   if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp, dataflow::InvariantOp,
-                dataflow::GateOp, dataflow::ParallelizeOp,
+                dataflow::GateOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
                 dataflow::SerializeOp, dataflow::UnpackOp>(def))
     return {};
   if (!dataflow::isCanonicalDataflowActor(def))
