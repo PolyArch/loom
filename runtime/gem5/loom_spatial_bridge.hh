@@ -59,6 +59,13 @@ private:
     statistics::Scalar invocationCount;
     statistics::Scalar clockFailureCount;
     statistics::Scalar staticLaunchFetchCount;
+    /// Ticks of the most recent lifecycle transitions: the timeline of one
+    /// Spatial invocation from launch through the immutable plane fetch, the
+    /// dynamic invocation fetch, and completion.
+    statistics::Scalar launchTick;
+    statistics::Scalar staticLaunchReadyTick;
+    statistics::Scalar invocationStartTick;
+    statistics::Scalar completionTick;
   } performanceStatistics;
 
   struct CallbackAccounting final {
