@@ -509,71 +509,34 @@ void computeContextFeedbackReconstructsAlternativeSupply(
   }
   auto joint = take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
       adopted, module.view()));
-  require(joint.addedContextCount != 0,
-          "joint Hall growth added no compute-context supply");
-  require((joint.spatialFuUnclosedDeficit == 0) ==
-              (joint.spatialFuContextSupplyBound >= adopted.deficit()),
-          "Spatial FU supply bound disagrees with its unclosed deficit");
-  loom::dse::SpatialMicroarchitectureDecisionDomain jointDomain =
-      loom::dse::ResizeInstructionStoresDomain{joint.decisions};
-  std::uint64_t expectedContextGrowth = 0;
-  std::uint64_t expectedFuGrowth = 0;
-  switch (joint.direction) {
-  case loom::dse::TechMappingComputeContextGrowthDirection::
-      SpatialFuOccurrence: {
-    require(joint.spatialFuGrowth && joint.decisions.empty(),
-            "Spatial FU growth direction carries a Temporal closure");
-    const loom::dse::ChangeFuInventory &inventory =
-        joint.spatialFuGrowth->decision;
-    require(module.view().peSchedule(inventory.target) ==
-                ::fabric::Schedule::Spatial,
-            "Spatial FU growth targeted a non-Spatial PE");
-    std::uint64_t targetInventory = 0;
-    bool targetHostsCapability = false;
-    for (const auto fu : module.view().fuOccurrences()) {
-      if (module.view().parentPeOf(fu) != inventory.target)
-        continue;
-      ++targetInventory;
-      targetHostsCapability |= module.view().fuTemplateOf(fu) ==
-                               joint.spatialFuGrowth->capability.fu;
-    }
-    require(!targetHostsCapability && targetInventory != 0 &&
-                inventory.prototypes.size() == targetInventory + 1 &&
-                module.view().fuTemplateOf(inventory.prototypes.back()) ==
-                    joint.spatialFuGrowth->capability.fu,
-            "Spatial FU growth did not add exactly the deficient capability "
-            "to a PE that lacked it");
-    require(joint.addedContextCount ==
-                module.view().peResidentContextCount(inventory.target),
-            "Spatial FU growth misreported the contexts it makes compatible");
-    jointDomain = loom::dse::ChangeFuInventoryDomain{inventory.target,
-                                                    {inventory.prototypes}};
-    expectedFuGrowth = 1;
-    break;
+  // A chain that has not yet seen instruction-store growth fail keeps the
+  // structurally local, atomic closure: the Spatial supply reopens every
+  // Mapping layer and is offered only once that evidence exists.
+  require(joint.direction == loom::dse::
+                                 TechMappingComputeContextGrowthDirection::
+                                     TemporalInstructionStore &&
+              !joint.spatialFuGrowth,
+          "the default Hall growth preference is not the atomic "
+          "instruction-store closure");
+  require(!joint.decisions.empty() &&
+              joint.addedContextCount == adopted.deficit(),
+          "Temporal instruction-store growth did not close the exact minimum "
+          "deficit");
+  std::uint64_t jointGrowth = 0;
+  for (const loom::dse::ResizeInstructionStore &decision : joint.decisions) {
+    const std::uint64_t current =
+        module.view().peResidentContextCount(decision.target);
+    require(decision.instructionCapacity > current,
+            "joint Hall growth contains a non-growth decision");
+    jointGrowth += decision.instructionCapacity - current;
   }
-  case loom::dse::TechMappingComputeContextGrowthDirection::
-      TemporalInstructionStore: {
-    require(!joint.spatialFuGrowth && !joint.decisions.empty() &&
-                joint.addedContextCount == adopted.deficit(),
-            "Temporal instruction-store growth did not close the exact "
-            "minimum deficit");
-    std::uint64_t jointGrowth = 0;
-    for (const loom::dse::ResizeInstructionStore &decision : joint.decisions) {
-      const std::uint64_t current =
-          module.view().peResidentContextCount(decision.target);
-      require(decision.instructionCapacity > current,
-              "joint Hall growth contains a non-growth decision");
-      jointGrowth += decision.instructionCapacity - current;
-    }
-    require(jointGrowth == adopted.deficit(),
-            "joint Hall growth overprovisioned the observed relation");
-    expectedContextGrowth = adopted.deficit();
-    break;
-  }
-  }
+  require(jointGrowth == adopted.deficit(),
+          "joint Hall growth overprovisioned the observed relation");
   auto jointConfig =
       take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
-          {jointDomain}, 1));
+          {loom::dse::SpatialMicroarchitectureDecisionDomain{
+              loom::dse::ResizeInstructionStoresDomain{joint.decisions}}},
+          1));
   auto jointInputs =
       take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
           {module.reference()}));
@@ -588,22 +551,11 @@ void computeContextFeedbackReconstructsAlternativeSupply(
           "joint Hall growth did not publish one typed Module child");
   auto jointLineage = take(loom::dse::adoptSpatialMicroarchitectureDecision(
       jointCompleted.lineageEdges.front().ownerPayload));
-  if (joint.spatialFuGrowth) {
-    const auto *jointDecision =
-        std::get_if<loom::dse::ChangeFuInventory>(&jointLineage.decision);
-    const loom::dse::ChangeFuInventory &requested =
-        joint.spatialFuGrowth->decision;
-    require(jointDecision && jointDecision->target == requested.target &&
-                jointDecision->prototypes.size() ==
-                    requested.prototypes.size(),
-            "Spatial FU growth lineage lost its typed inventory change");
-  } else {
-    const auto *jointDecision =
-        std::get_if<loom::dse::ResizeInstructionStores>(&jointLineage.decision);
-    require(jointDecision &&
-                jointDecision->stores.size() == joint.decisions.size(),
-            "joint Hall growth lineage lost its atomic resize set");
-  }
+  const auto *jointDecision =
+      std::get_if<loom::dse::ResizeInstructionStores>(&jointLineage.decision);
+  require(jointDecision &&
+              jointDecision->stores.size() == joint.decisions.size(),
+          "joint Hall growth lineage lost its atomic resize set");
   auto jointModule = take(loom::fabric::importEntireFabricRoot(
       jointCompleted.outputBindings.front().artifacts.front(), fixture.store));
   std::uint64_t parentContexts = 0;
@@ -612,10 +564,10 @@ void computeContextFeedbackReconstructsAlternativeSupply(
     parentContexts += module.view().peResidentContextCount(pe);
   for (const auto pe : jointModule.view().peOccurrences())
     childContexts += jointModule.view().peResidentContextCount(pe);
-  require(childContexts == parentContexts + expectedContextGrowth,
+  require(childContexts == parentContexts + adopted.deficit(),
           "joint Hall growth child changed the requested total capacity");
   require(jointModule.view().fuOccurrences().size() ==
-              module.view().fuOccurrences().size() + expectedFuGrowth,
+              module.view().fuOccurrences().size(),
           "joint Hall growth child changed the requested FU inventory");
   auto growthConfig =
       take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
@@ -633,6 +585,81 @@ void computeContextFeedbackReconstructsAlternativeSupply(
   require(completed(growth).lineageEdges.size() ==
               completed(growth).outputBindings.front().artifacts.size(),
           "Hall feedback growth child lost typed decision lineage");
+
+  // A chain whose instruction-store probe published no Mapping withdraws the
+  // preference. The owner then offers the Spatial FU occurrence supply, but
+  // only through one decision that closes the complete observed relation.
+  auto retreat =
+      take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
+          adopted, module.view(), false));
+  if (retreat.direction ==
+      loom::dse::TechMappingComputeContextGrowthDirection::
+          SpatialFuOccurrence) {
+    require(retreat.spatialFuGrowth && retreat.decisions.empty(),
+            "Spatial FU growth direction carries a Temporal closure");
+    const loom::dse::ChangeFuInventory &inventory =
+        retreat.spatialFuGrowth->decision;
+    require(module.view().peSchedule(inventory.target) ==
+                ::fabric::Schedule::Spatial,
+            "Spatial FU growth targeted a non-Spatial PE");
+    std::uint64_t targetInventory = 0;
+    bool targetHostsCapability = false;
+    for (const auto fu : module.view().fuOccurrences()) {
+      if (module.view().parentPeOf(fu) != inventory.target)
+        continue;
+      ++targetInventory;
+      targetHostsCapability |= module.view().fuTemplateOf(fu) ==
+                               retreat.spatialFuGrowth->capability.fu;
+    }
+    require(!targetHostsCapability && targetInventory != 0 &&
+                inventory.prototypes.size() == targetInventory + 1 &&
+                module.view().fuTemplateOf(inventory.prototypes.back()) ==
+                    retreat.spatialFuGrowth->capability.fu,
+            "Spatial FU growth did not add exactly the deficient capability "
+            "to a PE that lacked it");
+    require(retreat.addedContextCount ==
+                module.view().peResidentContextCount(inventory.target),
+            "Spatial FU growth misreported the contexts it makes compatible");
+    auto retreatConfig =
+        take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
+            {loom::dse::SpatialMicroarchitectureDecisionDomain{
+                loom::dse::ChangeFuInventoryDomain{inventory.target,
+                                                   {inventory.prototypes}}}},
+            1));
+    auto retreatBinding = take(
+        loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+            retreatConfig));
+    auto retreatInputs =
+        take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+            {module.reference()}));
+    auto retreatResult = take(loom::dse::invokeCandidateGenerator(
+        retreatInputs, retreatBinding, fixture.store, fixture.blobs));
+    const auto &retreatCompleted = completed(retreatResult);
+    // The Builder is the legality owner. A refused decision publishes no
+    // child, which the reopen owner treats as a typed retreat rather than a
+    // malformed result, so both publications are admissible here.
+    if (retreatCompleted.outputBindings.front().artifacts.size() == 1) {
+      auto retreatModule = take(loom::fabric::importEntireFabricRoot(
+          retreatCompleted.outputBindings.front().artifacts.front(),
+          fixture.store));
+      std::uint64_t retreatContexts = 0;
+      for (const auto pe : retreatModule.view().peOccurrences())
+        retreatContexts += retreatModule.view().peResidentContextCount(pe);
+      require(retreatContexts == parentContexts &&
+                  retreatModule.view().fuOccurrences().size() ==
+                      module.view().fuOccurrences().size() + 1,
+              "Spatial FU growth child changed resident capacity instead of "
+              "capability");
+    } else {
+      require(retreatCompleted.outputBindings.front().artifacts.empty() &&
+                  retreatCompleted.lineageEdges.empty(),
+              "refused Spatial FU growth published a partial result");
+    }
+  } else {
+    require(!retreat.spatialFuGrowth && !retreat.decisions.empty(),
+            "withdrawn preference produced neither a closing Spatial decision "
+            "nor a Temporal closure");
+  }
 
   bytes.push_back(0);
   requireError(loom::mapping::adoptTechMappingComputeContextHallFeedback(

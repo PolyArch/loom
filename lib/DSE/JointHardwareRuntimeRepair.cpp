@@ -1004,10 +1004,13 @@ materializeJointModuleGrowthChild(HardwareRecipeGrowth growth,
   if (llvm::Error error = registerProductionDseOwners())
     return std::move(error);
   growth.config.dse.planNodes.clear();
-  auto materialized = materializeTypedModuleSystemGrowth(
+  auto published = materializeTypedModuleSystemGrowth(
       std::move(growth), parentSystem, artifacts, blobs);
-  if (!materialized)
-    return materialized.takeError();
+  if (!published)
+    return published.takeError();
+  if (!*published)
+    return invalid("Module mutation decision published no child");
+  std::optional<MaterializedHardwareCandidate> &materialized = *published;
   if (!materialized->mappingImpact ||
       !materialized->executionBindingCorrespondence)
     return invalid("Module mutation child lost typed lineage");
@@ -1670,11 +1673,14 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
     else
       growth.operandBufferResize =
           std::get<ResizeTemporalOperandBuffer>(decisions[ordinal]);
-    auto child = materializeTypedModuleSystemGrowth(
+    auto published = materializeTypedModuleSystemGrowth(
         std::move(growth), parentPlan.pairOutputs.front().pair.system,
         artifacts, blobs);
-    if (!child)
-      return child.takeError();
+    if (!published)
+      return published.takeError();
+    if (!*published)
+      return invalid("operand-buffer decision published no child");
+    std::optional<MaterializedHardwareCandidate> &child = *published;
     const ArtifactRootReference childReference = child->reference;
     JointHardwareReopenRequest childRequest = request;
     llvm::SmallString<256> childJournal(request.journalRoot);
