@@ -775,6 +775,17 @@ public:
     collectExactOneFrontier(value, std::nullopt, visited, frontier);
   }
 
+  // Proves one close phase for a close signal; a refused proof is explained
+  // by its frontier.
+  bool proveOneClosePhase(mlir::Value phase,
+                          llvm::SmallVectorImpl<ExactOneFrontierEntry> &frontier) {
+    if (isOneClosePhase(phase))
+      return true;
+    llvm::DenseSet<mlir::Value> visited;
+    explainRefusedOneClosePhase(phase, visited, frontier);
+    return false;
+  }
+
 private:
   using FrontierSelection = std::optional<std::pair<mlir::Value, unsigned>>;
 
@@ -2187,6 +2198,54 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
           fields["frontier"] = std::move(entries);
         });
   };
+  // A stream output commits through its close signals; the refused proof is
+  // explained by the frontier of every close signal that is not one close
+  // phase, or by the absence of any close signal.
+  auto explainRefusedStreamCommit = [&](size_t index, mlir::Value stream) {
+    if (!loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail))
+      return;
+    llvm::SmallVector<mlir::Value, 2> closeSignals;
+    cardinality.collectStreamCloseSignals(stream, closeSignals);
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Detail,
+        loom::mapping_debug::Stage::DataflowLowering,
+        loom::mapping_debug::Event::MappingFailure,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "graph_stream_commit_frontier";
+          fields["graph"] = graph.getSymName();
+          fields["index"] = static_cast<int64_t>(index);
+          mlir::AsmState state(graph);
+          llvm::json::Array signals;
+          for (mlir::Value signal : closeSignals) {
+            std::string text;
+            llvm::raw_string_ostream textStream(text);
+            signal.printAsOperand(textStream, state);
+            if (mlir::Operation *def = signal.getDefiningOp()) {
+              textStream << " = ";
+              def->print(textStream, state);
+            }
+            llvm::SmallVector<ExactOneFrontierEntry, 8> frontier;
+            const bool proven = cardinality.proveOneClosePhase(signal, frontier);
+            llvm::json::Array entries;
+            for (const ExactOneFrontierEntry &entry : frontier) {
+              std::string entryText;
+              llvm::raw_string_ostream entryStream(entryText);
+              entry.value.printAsOperand(entryStream, state);
+              if (mlir::Operation *def = entry.value.getDefiningOp()) {
+                entryStream << " = ";
+                def->print(entryStream, state);
+              }
+              entries.push_back(llvm::json::Object{
+                  {"value", std::move(entryText)}, {"reason", entry.reason}});
+            }
+            signals.push_back(llvm::json::Object{
+                {"signal", std::move(text)},
+                {"one_close_phase", proven},
+                {"frontier", std::move(entries)}});
+          }
+          fields["close_signals"] = std::move(signals);
+        });
+  };
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
     if (!cardinality.isExactOne(value)) {
       explainRefusedExactOne("value_output", index, value);
@@ -2195,10 +2254,12 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
                         " is not statically exact-one");
     }
   for (auto [index, stream] : llvm::enumerate(ret.getStreams()))
-    if (!cardinality.hasProvenStreamCommit(stream))
+    if (!cardinality.hasProvenStreamCommit(stream)) {
+      explainRefusedStreamCommit(index, stream);
       return graphError(llvm::Twine("graph @") + graph.getSymName() +
                         " stream output #" + llvm::Twine(index) +
                         " has no statically proven close/commit");
+    }
   for (auto [index, witness] : llvm::enumerate(ret.getComplete()))
     if (!cardinality.isExactOne(witness)) {
       explainRefusedExactOne("completion_witness", index, witness);
