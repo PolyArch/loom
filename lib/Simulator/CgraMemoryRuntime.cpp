@@ -319,6 +319,9 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
         return invalid("CGRA memory activation has an inactive output role");
     }
 
+    if (actor.operationIssueDepth == 0)
+      return invalid("CGRA memory binding declares no Operation Engine issue "
+                     "depth");
     const std::uint64_t bindingOrdinal = bindings.size();
     bindingBySemanticActor[semanticPosition->second] = bindingOrdinal;
     bindings.push_back({semanticPosition->second, &semantic, &actor,
@@ -520,10 +523,10 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
   ActorBinding &binding = bindings_[bindingOrdinal];
   state_->currentActorPlan = binding.semantic;
   llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
-  consumeMemoryIssueInputs(*firing.ready, *binding.semantic->memory, *state_);
-  firing.issueCommitted = true;
   if (binding.pendingIssueCommits == 0)
     return invalid("CGRA memory issue commit has no admitted firing");
+  consumeMemoryIssueInputs(*firing.ready, *binding.semantic->memory, *state_);
+  firing.issueCommitted = true;
   --binding.pendingIssueCommits;
   frame.actorEvents.push_back(
       {CgraActorLifecycleKind::Committed, binding.semanticActorOrdinal,
@@ -545,6 +548,9 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
   if (firing.activeChildCount == 0)
     if (llvm::Error error = linearize(firingSlot, frame))
       return error;
+  // Admission re-enters the ordinary ready projection, which owns the current
+  // actor plan for each candidate it probes.
+  state_->currentActorPlan = nullptr;
   return admitNextFiring(bindingOrdinal, coordinate);
 }
 

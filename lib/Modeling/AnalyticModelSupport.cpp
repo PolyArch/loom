@@ -59,6 +59,10 @@ struct EntityCost final {
   std::uint64_t delayPicoseconds;
 };
 
+/// Leakage the model charges one square micrometer of derived silicon. The
+/// per-entity constant table below states its own leakage directly.
+constexpr std::uint64_t kLeakageAreaDivisor = 20;
+
 llvm::Error accumulateScaled(std::uint64_t &total, std::uint64_t value,
                              std::uint64_t count, llvm::StringRef context) {
   const std::optional<std::uint64_t> product =
@@ -226,7 +230,8 @@ operationCost(const fabric::ResolvedFabricOpCapabilityView &capability) {
   if (llvm::Error error =
           accumulateScaled(delay, widthWords, 15, "operation width delay"))
     return std::move(error);
-  return EntityCost{area, std::max<std::uint64_t>(1, area / 20), delay};
+  return EntityCost{
+      area, std::max<std::uint64_t>(1, area / kLeakageAreaDivisor), delay};
 }
 
 llvm::Error addEntityCost(PhysicalEstimate &estimate, EntityCost cost,
@@ -251,7 +256,6 @@ llvm::Error addEntityCost(PhysicalEstimate &estimate, EntityCost cost,
 /// `operation_issue_depth` firings outstanding buys that many records; the
 /// serialized engine's single record is already inside the occurrence cost.
 constexpr std::uint64_t kMemoryIssueQueueRecordByteArea = 4;
-constexpr std::uint64_t kLeakageAreaDivisor = 20;
 
 /// Cost of the extra issue-queue entries one memory occurrence declares. The
 /// request record is the engine's input token endpoints: address, data, mask,

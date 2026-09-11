@@ -267,6 +267,8 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
                                    "memory request service");
   if (!requestService)
     return requestService.takeError();
+  if (*requestService == 0)
+    return invalid("platform model has no SpatialCore memory request shape");
   platform.requiredInFlightRequests = std::max<std::uint64_t>(
       1, ceilDiv(platform.memoryLatencyPicoseconds, *requestService));
   auto leafPicoseconds = checkedMul(platform.hostCyclesPerInstructionLeaf,

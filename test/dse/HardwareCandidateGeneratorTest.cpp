@@ -1113,6 +1113,13 @@ void hardwareImpactMatrix(const loom::fabric::FinalizedFabricRoot &system,
                         loom::dse::HardwareMutationLocality::GlobalReopen,
                         loom::dse::HardwareMappingImpactKind::Reopen,
                         loom::dse::HardwareMappingImpactKind::Reopen);
+    requireModuleImpact(
+        loom::dse::ChangeMemoryOperationIssueDepth{
+            memory, module.view().memoryOperationIssueDepth(memory) + 1},
+        loom::dse::HardwareMutationFamily::SpatialMemory,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Rebase);
   }
   if (!module.view().fifoOccurrences().empty()) {
     const auto fifo = module.view().fifoOccurrences().front();

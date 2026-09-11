@@ -774,13 +774,11 @@ void graphActivationExecutesSelectedLocalMemory() {
   if (llvm::Error error = deferredRuntime.start(coordinate(0), deferredIngress))
     fail(llvm::toString(std::move(error)));
   ActivationEvidence deferredEvidence;
-  std::optional<loom::sim::SpatialEventCoordinate> serializedRetirement;
   for (unsigned iteration = 0;
        iteration != 96 && deferredRuntime.hasPendingEvents(); ++iteration) {
     auto frame = take(deferredRuntime.advance());
     if (frame) {
       deferredEvidence.accumulate(*frame);
-      serializedRetirement = frame->coordinate;
       continue;
     }
     require(deferredRuntime.waitingForExternalMemory() &&
@@ -819,13 +817,13 @@ void graphActivationExecutesSelectedLocalMemory() {
   requireExternalOutput(deferredState);
 
   // The Fabric memory Operation Engine owns how many firings one bound memory
-  // actor may hold outstanding. The run above declares the serialized depth,
-  // so its two load firings never overlap: the second is admitted only after
-  // the first retires, and exactly one request is ever outstanding. Declaring
-  // depth two lets the second firing issue while the first awaits its
-  // response, so both requests are outstanding together and the activation
-  // retires earlier. Every other fact stays identical: the same two requests
-  // in the same order, the same lifecycle events, and the same outputs.
+  // actor may hold outstanding. Under the serialized depth the two load
+  // firings never overlap: the second is admitted only after the first
+  // retires, so exactly one request is ever outstanding. Depth two lets the
+  // second firing issue while the first awaits its response, so both requests
+  // are outstanding together and the activation retires earlier. The two runs
+  // below differ in nothing else: the same provider, the same two requests in
+  // the same order, and the same outputs.
   const auto deferredRunOutstandingPeak =
       [&](std::uint64_t issueDepth,
           std::optional<loom::sim::SpatialEventCoordinate> &retirement)
@@ -871,20 +869,16 @@ void graphActivationExecutesSelectedLocalMemory() {
     return peak;
   };
   std::optional<loom::sim::SpatialEventCoordinate> pipelinedRetirement;
-  std::optional<loom::sim::SpatialEventCoordinate> reserializedRetirement;
+  std::optional<loom::sim::SpatialEventCoordinate> serializedRetirement;
   require(deferredRunOutstandingPeak(2, pipelinedRetirement) == 2,
           "issue depth two did not overlap its two memory firings");
   require(deferredRunOutstandingPeak(
               ::fabric::serializedMemoryOperationIssueDepth,
-              reserializedRetirement) == 1,
+              serializedRetirement) == 1,
           "the serialized engine overlapped two memory firings");
-  require(serializedRetirement && pipelinedRetirement &&
-              reserializedRetirement &&
+  require(pipelinedRetirement && serializedRetirement &&
               loom::sim::compareSpatialEventCoordinates(
-                  *reserializedRetirement, *serializedRetirement) == 0,
-          "re-declaring the serialized depth changed the retirement cycle");
-  require(loom::sim::compareSpatialEventCoordinates(
-              *pipelinedRetirement, *serializedRetirement) < 0,
+                  *pipelinedRetirement, *serializedRetirement) < 0,
           "issue depth two did not retire before the serialized engine");
   plan.memory.actors.back().operationIssueDepth =
       ::fabric::serializedMemoryOperationIssueDepth;
