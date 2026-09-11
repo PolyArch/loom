@@ -80,6 +80,32 @@ clockPeriodPicoseconds(const fabric::FabricSystemRootView &system,
   return period;
 }
 
+/// Smallest Operation Engine issue depth of one AccCore's SpatialCore. The
+/// engines live in the imported Module artifact; the System root only selects
+/// it, so the depth stays owned by the exact `fabric.mem` occurrence.
+llvm::Expected<std::uint64_t>
+memoryOperationIssueDepth(const fabric::FabricSystemRootView &system,
+                          fabric::AccCoreOccurrenceRef core) {
+  const std::optional<fabric::FabricImportedModuleTargetRef> target =
+      system.spatialCoreTarget(core);
+  if (!target ||
+      target->dependencyOrdinal >= system.artifact().importedModules().size())
+    return invalid("AccCore selects no imported SpatialCore Module");
+  const fabric::FabricArtifactView &module =
+      system.artifact().importedModules()[target->dependencyOrdinal];
+  std::uint64_t depth = 0;
+  for (const fabric::FabricMemoryOccurrenceRef memory :
+       module.memoryOccurrences()) {
+    const std::uint64_t declared = module.memoryOperationIssueDepth(memory);
+    if (declared == 0)
+      continue;
+    depth = depth == 0 ? declared : std::min(depth, declared);
+  }
+  if (depth == 0)
+    return invalid("SpatialCore Module declares no memory Operation Engine");
+  return depth;
+}
+
 } // namespace
 
 llvm::StringRef toString(AnalyticLaunchBottleneck bottleneck) {
@@ -178,6 +204,7 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
   platform.accCoreRequestBytes = 0;
   platform.accCoreOutstandingRequests =
       std::max<std::uint64_t>(1, rate.maxOutstanding());
+  platform.memoryOperationIssueDepth = 0;
   for (const auto core : system.artifact().accCoreOccurrences()) {
     const auto *access = system.spatialMemoryAccess(core);
     if (!access)
@@ -191,6 +218,17 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
         std::min<std::uint64_t>(platform.accCoreOutstandingRequests,
                                 std::max<std::uint32_t>(
                                     1, access->cache().missStatusEntries()));
+    // The Fabric memory Operation Engine of the SpatialCore owns how many
+    // firings one bound memory actor may hold outstanding. It is the third
+    // independent bound on request concurrency, next to the access cache and
+    // the service endpoint, and the most constrained engine bounds the model.
+    auto issueDepth = memoryOperationIssueDepth(system, core);
+    if (!issueDepth)
+      return issueDepth.takeError();
+    platform.memoryOperationIssueDepth =
+        platform.memoryOperationIssueDepth == 0
+            ? *issueDepth
+            : std::min(platform.memoryOperationIssueDepth, *issueDepth);
   }
   if (const auto *bounded =
           std::get_if<::fabric::BoundedCompletion>(&rate.progress())) {
@@ -220,6 +258,17 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
   if (!roundTrip)
     return roundTrip.takeError();
   platform.memoryLatencyPicoseconds = *roundTrip;
+  // Speed of light: the service delivers one request's bytes every
+  // `memoryServicePicosecondsPerByte * accCoreRequestBytes`, so covering one
+  // round trip needs that many requests in flight. Below it the service idles
+  // however many bytes it could have moved.
+  auto requestService = checkedMul(platform.memoryServicePicosecondsPerByte,
+                                   platform.accCoreRequestBytes,
+                                   "memory request service");
+  if (!requestService)
+    return requestService.takeError();
+  platform.requiredInFlightRequests = std::max<std::uint64_t>(
+      1, ceilDiv(platform.memoryLatencyPicoseconds, *requestService));
   auto leafPicoseconds = checkedMul(platform.hostCyclesPerInstructionLeaf,
                                     *period, "instruction leaf period");
   if (!leafPicoseconds)
@@ -328,12 +377,17 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
                               "shared memory service");
   if (!bandwidth)
     return bandwidth.takeError();
-  // Each transaction holds one outstanding slot for the request round trip,
-  // and each memory actor holds at most one request in flight, so the
-  // overlap is bounded by the smaller of the two.
+  // Each transaction holds one outstanding slot for the request round trip;
+  // the graph offers at most one request per memory actor per engine issue
+  // depth, so the overlap is bounded by the smaller of the two.
+  auto actorRequests =
+      checkedMul(std::max<std::uint64_t>(1, launch.memoryActors),
+                 std::max<std::uint64_t>(1, platform.memoryOperationIssueDepth),
+                 "memory actor request concurrency");
+  if (!actorRequests)
+    return actorRequests.takeError();
   const std::uint64_t inFlight = std::max<std::uint64_t>(
-      1, std::min(platform.accCoreOutstandingRequests,
-                  std::max<std::uint64_t>(1, launch.memoryActors)));
+      1, std::min(platform.accCoreOutstandingRequests, *actorRequests));
   auto chain = checkedMul(
       ceilDiv(launch.memoryTransactionsPerActivation, inFlight),
       platform.memoryLatencyPicoseconds, "memory request chain");
@@ -341,6 +395,7 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
     return chain.takeError();
 
   AnalyticLaunchDuration result;
+  result.inFlightRequests = inFlight;
   result.computePicoseconds = *compute;
   result.bandwidthPicoseconds = *bandwidth;
   result.latencyChainPicoseconds = *chain;

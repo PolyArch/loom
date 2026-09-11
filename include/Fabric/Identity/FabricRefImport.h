@@ -45,6 +45,9 @@ using MemoryCapabilityAlternativeView =
 struct FabricMemoryEngineTemplateRecord {
   ::fabric::Schedule schedule;
   std::optional<std::uint64_t> residentContextCount;
+  /// Firings one bound memory actor may hold outstanding before the oldest
+  /// retires. Retirement stays in issue order; one is the serialized engine.
+  std::uint64_t operationIssueDepth;
   std::vector<::fabric::MemoryTransportEndpointDescriptor> tokenEndpoints;
   std::vector<::fabric::MemoryOperationPortRecord> operationPorts;
   std::vector<::fabric::MemoryInternalConnectionDeclaration>
@@ -639,6 +642,10 @@ public:
   memorySchedule(FabricMemoryOccurrenceRef memory) const;
   std::uint64_t
   memoryResidentContextCount(FabricMemoryOccurrenceRef memory) const;
+  /// Firings one memory actor bound to this occurrence may hold outstanding.
+  /// A storage-only occurrence has no Operation Engine and no issue depth.
+  std::uint64_t
+  memoryOperationIssueDepth(FabricMemoryOccurrenceRef memory) const;
   const ::fabric::MemoryConnectivityContractRecord *
   memoryConnectivity(FabricMemoryOccurrenceRef memory) const;
 

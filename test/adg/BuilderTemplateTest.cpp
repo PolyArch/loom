@@ -447,7 +447,8 @@ buildIndependentNonModuleTemplateOracle(llvm::StringRef test,
       &context, mlir::DenseI8ArrayAttr::get(&context, signedConnectivityBytes));
   auto memoryEngine = ::fabric::MemoryEngineAttr::get(
       &context, ::fabric::Schedule::Temporal,
-      ::fabric::MemoryResidentContextsAttr::get(&context, 4));
+      ::fabric::MemoryResidentContextsAttr::get(&context, 4),
+      ::fabric::serializedMemoryOperationIssueDepth);
   const auto emptyOrdinals =
       mlir::DenseI32ArrayAttr::get(&context, llvm::ArrayRef<std::int32_t>{});
   auto memoryContract = ::fabric::MemoryContractAttr::get(

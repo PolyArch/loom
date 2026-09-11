@@ -143,8 +143,10 @@ buildInternalMemoryEdgeFabric(ArtifactStore &store,
   connectivity.internalConnections = {{8, 6}};
   auto engine = schedule == ::fabric::Schedule::Temporal
                     ? MemoryEngineSpec::temporal(
-                          8, {memoryPort(true), memoryPort(false)})
+                          8, ::fabric::serializedMemoryOperationIssueDepth,
+                          {memoryPort(true), memoryPort(false)})
                     : MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, 
                           {memoryPort(true), memoryPort(false)});
   auto spec = take(MemorySpec::create(
       memoryInputs, memoryOutputs, {0}, {}, std::move(engine), std::nullopt,

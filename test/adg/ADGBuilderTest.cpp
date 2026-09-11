@@ -877,7 +877,8 @@ void typedMemoryFormsFinalize() {
                take(test,
                     MemorySpec::create(
                         {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
-                        MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                        MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
                         std::nullopt,
                         operationConnectivity(test, managerMemoryTarget(0))))));
   if (llvm::Error error = spatial.close(outputs.values()))
@@ -896,7 +897,9 @@ void typedMemoryFormsFinalize() {
           {take(test, temporal.input(0)), take(test, temporal.input(1))},
           take(test, MemorySpec::create(
                          {tagged32, tagged0}, {tagged32, tagged0}, {}, {},
-                         MemoryEngineSpec::temporal(4, {loadPortDeclaration()}),
+                         MemoryEngineSpec::temporal(
+                             4, ::fabric::serializedMemoryOperationIssueDepth,
+                             {loadPortDeclaration()}),
                          take(test, LocalMemoryServiceSpec::create(
                                         4096, localMemoryContract(
                                                   test, localContractContext))),
@@ -935,7 +938,8 @@ void typedMemoryFormsFinalize() {
              take(test, duplicates.input(base + 2))},
             take(test, MemorySpec::create(
                            {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
-                           MemoryEngineSpec::spatial({loadPortDeclaration()}),
+                           MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}),
                            std::nullopt,
                            base == 6 ? operationConnectivityWithInternalEdge(
                                            test, managerMemoryTarget(0))
@@ -1454,7 +1458,9 @@ void nonModuleTemplatesMatchDirectAuthoring() {
         test,
         MemorySpec::create(
             {tagged32, tagged0}, {tagged32, tagged0}, {}, {},
-            MemoryEngineSpec::temporal(4, {loadPortDeclaration()}),
+            MemoryEngineSpec::temporal(
+                4, ::fabric::serializedMemoryOperationIssueDepth,
+                {loadPortDeclaration()}),
             take(test, LocalMemoryServiceSpec::create(
                            4096, localMemoryContract(test, contractContext))),
             operationConnectivity(test, localMemoryTarget())));

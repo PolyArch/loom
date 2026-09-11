@@ -39,6 +39,7 @@
 // JSON-DAG: "hit_latency_cycles": 1
 // JSON-DAG: "in_order_miss_status_entries": 4
 // JSON-DAG: "out_of_order_miss_status_entries": 8
+// JSON-DAG: "memory_operation_issue_depth": 1
 // JSON-DAG: "dse"
 // JSON-DAG: "structured_ownership"
 // JSON-DAG: "scope_expansion_limit": 64

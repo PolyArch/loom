@@ -642,6 +642,7 @@ namespace {
 llvm::Expected<MemorySpec>
 makeMemoryEngine(MemoryInterfaceParameters interface,
                  std::optional<TemporalMemoryParameters> temporal,
+                 std::uint64_t operationIssueDepth,
                  std::optional<std::uint64_t> localCapacityBytes,
                  bool managerEndpoint, CatalogMemoryDomain domain,
                  LocalMemoryPortVariant portVariant) {
@@ -798,10 +799,11 @@ makeMemoryEngine(MemoryInterfaceParameters interface,
 
   std::optional<MemoryEngineSpec> engine;
   if (residentContexts)
-    engine = MemoryEngineSpec::temporal(*residentContexts,
+    engine = MemoryEngineSpec::temporal(*residentContexts, operationIssueDepth,
                                         std::move(operationPorts));
   else
-    engine = MemoryEngineSpec::spatial(std::move(operationPorts));
+    engine = MemoryEngineSpec::spatial(operationIssueDepth,
+                                       std::move(operationPorts));
   return MemorySpec::create(std::move(inputs), std::move(outputs),
                             std::move(managerOrdinals), {}, std::move(engine),
                             std::move(service), std::move(*connectivity));
@@ -812,13 +814,15 @@ llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
                                            LocalMemoryPortVariant variant) {
   return makeMemoryEngine(
       std::move(parameters.interface), std::move(parameters.temporal),
-      parameters.capacityBytes, parameters.managerEndpoint, domain, variant);
+      parameters.operationIssueDepth, parameters.capacityBytes,
+      parameters.managerEndpoint, domain, variant);
 }
 
 llvm::Expected<MemorySpec> makeManagerMemory(ManagerMemoryParameters parameters,
                                              CatalogMemoryDomain domain) {
   return makeMemoryEngine(std::move(parameters.interface),
-                          std::move(parameters.temporal), std::nullopt, true,
+                          std::move(parameters.temporal),
+                          parameters.operationIssueDepth, std::nullopt, true,
                           domain, LocalMemoryPortVariant::SharedElementVector);
 }
 

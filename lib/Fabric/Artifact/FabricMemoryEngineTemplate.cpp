@@ -110,7 +110,10 @@ deriveFabricMemoryEngineTemplate(::fabric::MemOp memory) {
     residentContextCount = contexts.getCount();
 
   FabricMemoryEngineTemplateRecord record{
-      engine.getSchedule(), residentContextCount, std::move(*endpoints),
+      engine.getSchedule(),
+      residentContextCount,
+      engine.getOperationIssueDepth(),
+      std::move(*endpoints),
       std::move(*operationPorts),
       std::vector<::fabric::MemoryInternalConnectionDeclaration>(
           connectivity->internalConnections().begin(),
@@ -121,6 +124,7 @@ deriveFabricMemoryEngineTemplate(::fabric::MemOp memory) {
   appendU32(canonicalBytes, record.residentContextCount.has_value());
   if (record.residentContextCount)
     appendU64(canonicalBytes, *record.residentContextCount);
+  appendU64(canonicalBytes, record.operationIssueDepth);
 
   if (llvm::Error error = appendCount(
           canonicalBytes, record.tokenEndpoints.size(), "token endpoints"))

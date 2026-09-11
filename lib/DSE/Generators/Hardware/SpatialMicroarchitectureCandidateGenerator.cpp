@@ -20,7 +20,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.spatial_microarchitecture_rewrite.config.2.3";
+    "loom.spatial_microarchitecture_rewrite.config.2.4";
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
     {CandidateGeneratorInputSlotRef(0), "fabric_module_parent",
@@ -98,6 +98,18 @@ validateDecisionAgainstParent(const SpatialMicroarchitectureDecision &decision,
               value.entriesPerAllocationUnit)
             return invalid("operand-buffer resize is a no-op");
           return llvm::Error::success();
+        } else if constexpr (std::is_same_v<
+                                 Value, ChangeMemoryOperationIssueDepth>) {
+          if (value.issueDepth == 0)
+            return invalid("memory operation issue depth must be positive");
+          const std::uint64_t current =
+              parent.memoryOperationIssueDepth(value.target);
+          if (current == 0)
+            return invalid(
+                "issue-depth change requires a memory Operation Engine");
+          if (current == value.issueDepth)
+            return invalid("memory operation issue-depth change is a no-op");
+          return llvm::Error::success();
         } else if constexpr (std::is_same_v<Value, ResizeSwitchRouteTable>) {
           if (value.entries == 0)
             return invalid("switch route-table capacity must be positive");
@@ -157,6 +169,10 @@ llvm::Error applyDecision(loom::adg::SpatialCoreBuilder &builder,
         else if constexpr (std::is_same_v<Value, ChangeMemoryOperationTable>)
           return builder.replaceMemoryOperationTable(value.target,
                                                      value.prototype);
+        else if constexpr (std::is_same_v<Value,
+                                          ChangeMemoryOperationIssueDepth>)
+          return builder.changeMemoryOperationIssueDepth(value.target,
+                                                         value.issueDepth);
         else if constexpr (std::is_same_v<Value, ResizeFifo>)
           return builder.resizeFifo(value.target, value.depth);
         else if constexpr (std::is_same_v<Value,

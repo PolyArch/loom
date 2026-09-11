@@ -79,7 +79,7 @@ namespace {
 constexpr llvm::StringLiteral topologySchema =
     "loom.spatial_topology_candidate_decision.1.0";
 constexpr llvm::StringLiteral microarchitectureSchema =
-    "loom.spatial_microarchitecture_candidate_decision.3.2";
+    "loom.spatial_microarchitecture_candidate_decision.3.3";
 constexpr llvm::StringLiteral systemSchema =
     "loom.system_composition_candidate_decision.3.1";
 
@@ -360,6 +360,9 @@ void writeMicroarchitectureBody(
                           value.prototypes));
           } else if constexpr (std::is_same_v<Value, ResizeMemory>) {
             writer.u64(value.capacityBytes);
+          } else if constexpr (std::is_same_v<
+                                   Value, ChangeMemoryOperationIssueDepth>) {
+            writer.u64(value.issueDepth);
           } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
             writer.u32(value.depth);
           } else if constexpr (std::is_same_v<Value,
@@ -555,6 +558,18 @@ readMicroarchitectureBody(Reader &reader) {
       return invalid("FIFO queue discipline is outside its closed domain");
     return SpatialMicroarchitectureDecision(
         ChangeFifoQueueDiscipline{*target, *value});
+  }
+  case 14: {
+    auto target = reader.ref<loom::fabric::FabricMemoryOccurrenceRef>();
+    if (!target)
+      return target.takeError();
+    auto depth = reader.u64();
+    if (!depth)
+      return depth.takeError();
+    if (*depth == 0)
+      return invalid("memory operation issue depth must be positive");
+    return SpatialMicroarchitectureDecision(
+        ChangeMemoryOperationIssueDepth{*target, *depth});
   }
   default:
     return invalid("unknown Spatial microarchitecture decision tag");
@@ -1171,6 +1186,9 @@ expandSpatialMicroarchitectureDecisionDomains(
             return validateInstructionStoreResizes(value.stores);
           else if constexpr (std::is_same_v<Value, ResizeMemoryDomain>)
             return requireValues(value.capacitiesBytes, "microarchitecture");
+          else if constexpr (std::is_same_v<
+                                 Value, ChangeMemoryOperationIssueDepthDomain>)
+            return requireValues(value.depths, "microarchitecture");
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             return requireValues(value.depths, "microarchitecture");
           else if constexpr (std::is_same_v<Value,
@@ -1226,6 +1244,11 @@ expandSpatialMicroarchitectureDecisionDomains(
             for (auto prototype : value.prototypes)
               decisions.push_back(
                   ChangeMemoryOperationTable{value.target, prototype});
+          else if constexpr (std::is_same_v<
+                                 Value, ChangeMemoryOperationIssueDepthDomain>)
+            for (auto depth : value.depths)
+              decisions.push_back(
+                  ChangeMemoryOperationIssueDepth{value.target, depth});
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
             for (auto depth : value.depths)
               decisions.push_back(ResizeFifo{value.target, depth});
@@ -1687,10 +1710,14 @@ HardwareImpactProjection projectHardwareImpact(
           }
         } else if constexpr (std::is_same_v<Decision, ResizeInstructionStore> ||
                              std::is_same_v<Decision, ResizeMemory> ||
+                             std::is_same_v<Decision,
+                                            ChangeMemoryOperationIssueDepth> ||
                              std::is_same_v<Decision, ResizeFifo>) {
           if constexpr (std::is_same_v<Decision, ResizeInstructionStore>)
             impact.family = HardwareMutationFamily::InstructionCapacity;
-          else if constexpr (std::is_same_v<Decision, ResizeMemory>)
+          else if constexpr (std::is_same_v<Decision, ResizeMemory> ||
+                             std::is_same_v<Decision,
+                                            ChangeMemoryOperationIssueDepth>)
             impact.family = HardwareMutationFamily::SpatialMemory;
           else
             impact.family = HardwareMutationFamily::SpatialFifo;

@@ -319,11 +319,18 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
       if (!transaction)
         return transaction.takeError();
 
+      const std::uint64_t issueDepth =
+          fabric.memoryOperationIssueDepth(engine.occurrence);
+      if (issueDepth == 0)
+        return invalid("CGRA memory occurrence declares no Operation Engine "
+                       "issue depth");
+
       CgraMemoryActorPlan actor{actorRef,
                                 projection->graph,
                                 engine.occurrence,
                                 placement,
                                 capability,
+                                issueDepth,
                                 *operationAction,
                                 result.rootedUses.size(),
                                 0,

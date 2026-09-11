@@ -116,6 +116,15 @@ struct ChangeMemoryOperationTable final {
   loom::fabric::FabricMemoryOccurrenceRef prototype;
 };
 
+/// Firings one memory actor bound to this occurrence may hold outstanding
+/// before the oldest retires. It buys memory-level parallelism with issue
+/// queue entries; the access cache and the service endpoint still bound the
+/// line fills the SpatialCore can keep in flight.
+struct ChangeMemoryOperationIssueDepth final {
+  loom::fabric::FabricMemoryOccurrenceRef target;
+  std::uint64_t issueDepth = 0;
+};
+
 struct ResizeFifo final {
   loom::fabric::FabricFifoOccurrenceRef target;
   std::uint32_t depth = 0;
@@ -149,7 +158,8 @@ using SpatialMicroarchitectureDecision =
                  ResizeMemory, ChangeMemoryOperationTable, ResizeFifo,
                  ChangeFifoBypassCapability, ResizeInstructionStores,
                  ChangeTemporalOperandBufferMode, ResizeTemporalOperandBuffer,
-                 ResizeSwitchRouteTable, ChangeFifoQueueDiscipline>;
+                 ResizeSwitchRouteTable, ChangeFifoQueueDiscipline,
+                 ChangeMemoryOperationIssueDepth>;
 
 struct ChangePeKindDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
@@ -195,6 +205,11 @@ struct ChangeMemoryOperationTableDomain final {
   std::vector<loom::fabric::FabricMemoryOccurrenceRef> prototypes;
 };
 
+struct ChangeMemoryOperationIssueDepthDomain final {
+  loom::fabric::FabricMemoryOccurrenceRef target;
+  std::vector<std::uint64_t> depths;
+};
+
 struct ResizeFifoDomain final {
   loom::fabric::FabricFifoOccurrenceRef target;
   std::vector<std::uint32_t> depths;
@@ -226,7 +241,8 @@ using SpatialMicroarchitectureDecisionDomain = std::variant<
     ResizeMemoryDomain, ChangeMemoryOperationTableDomain, ResizeFifoDomain,
     ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain,
     ChangeTemporalOperandBufferModeDomain, ResizeTemporalOperandBufferDomain,
-    ResizeSwitchRouteTableDomain, ChangeFifoQueueDisciplineDomain>;
+    ResizeSwitchRouteTableDomain, ChangeFifoQueueDisciplineDomain,
+    ChangeMemoryOperationIssueDepthDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;

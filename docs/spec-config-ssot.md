@@ -118,11 +118,11 @@ resolved identity. `FullCatalog` remains the explicit relation that preserves
 the version 8.0 elementary-math capabilities.
 
 The hardware template projection uses
-`loom.fabric_template_generator.config.7.2`. Its canonical view includes the
+`loom.fabric_template_generator.config.7.3`. Its canonical view includes the
 exact template descriptor and complete `BuiltinTargetScale`, including the
-special-math profile. A 7.2 adopter rejects a 7.1 view; regeneration projects
-the current view from the exact ResolvedConfig rather than inserting a
-compatibility value into old bytes.
+special-math profile and the memory operation issue depth. A 7.3 adopter
+rejects a 7.2 view; regeneration projects the current view from the exact
+ResolvedConfig rather than inserting a compatibility value into old bytes.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
 an explicitly selected builtin target. Import and Fabric finalization produce
@@ -175,7 +175,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 11.6`. Version 2.0 was an
+The current schema is `loom.config.resolved 11.7`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -386,6 +386,19 @@ adds the record, changes the target descriptor to 8.2, and resolves new
 ResolvedConfig, Fabric-template component-view, and Fabric identities.
 Ordinary parsing does not accept an 11.5 profile as current or insert the
 missing record.
+
+Version 11.7 adds the required
+`hardware_target.parameters.memory_operation_issue_depth`. It is the number of
+firings one memory actor bound to any Operation Engine of the target may hold
+outstanding before the oldest retires, and its exact Fabric meaning is owned
+by the memory Operation Engine contract in
+[Fabric Memory](spec-fabric-mem.md#operation-engine). It is required because
+every expanded Operation Engine declares a depth that enters Fabric identity;
+one is the serialized engine, not an absent value. The 11.6 to 11.7 transition
+is explicit authoring-source re-resolution: the owner adds the parameter and
+resolves new ResolvedConfig, Fabric-template component-view, and Fabric
+identities. Ordinary parsing does not accept an 11.6 profile as current or
+insert the missing parameter.
 
 ResolvedConfig does not promote runtime feedback or duplicate its provenance.
 Feedback remains invocation-local until the Mapping owner verifies replayed

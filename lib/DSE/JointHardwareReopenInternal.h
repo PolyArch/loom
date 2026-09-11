@@ -65,6 +65,10 @@ struct HardwareRecipeGrowth final {
   std::uint64_t resultingGateways = 0;
   std::uint64_t addedAccCores = 0;
   std::uint64_t resultingAccCores = 0;
+  /// Firings one memory actor may hold outstanding after this growth, and how
+  /// many the latency-bound window added to reach it.
+  std::uint64_t addedMemoryIssueDepth = 0;
+  std::uint64_t resultingMemoryIssueDepth = 0;
   /// The compute-context growth direction the Hall feedback owner chose, and
   /// its Spatial bound. Present only for a Tech compute-context observation.
   std::optional<TechMappingComputeContextGrowthDirection>
@@ -218,6 +222,18 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
                            const MappingHardwareFeedback &feedback,
                            const ArtifactStore &artifacts,
                            bool preferTemporalInstructionStore = true);
+
+/// Proposes a deeper memory Operation Engine for a correct but latency-bound
+/// window. No Mapping observation reports memory-level parallelism, so this
+/// owner reads the analytic platform model of the exact parent System: when a
+/// memory actor's engine offers fewer requests in flight than the memory
+/// service's bandwidth-delay product, and the access cache and the service
+/// endpoint would serve more, the engine's issue depth is the binding
+/// constraint. An absent result means the window is not engine-bound.
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
+deriveMemoryIssueDepthRecipeGrowth(const ResolvedConfig &baseConfig,
+                                   const ArtifactRootReference &parentSystem,
+                                   const ArtifactStore &artifacts);
 
 llvm::Expected<std::optional<HardwareRecipeGrowth>>
 deriveUniformTechHardwareRecipeGrowth(

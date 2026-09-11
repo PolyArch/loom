@@ -273,7 +273,8 @@ void topologyQualityExposesScheduleMismatchAndCapabilityConcentration() {
       test,
       MemorySpec::create(
           {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
-          MemoryEngineSpec::spatial({loadPortDeclaration()}), std::nullopt,
+          MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration()}), std::nullopt,
           take(test, MemoryConnectivitySpec::create(
                          std::move(memoryConnectivity)))));
   auto memoryOutputs = take(test, module.addMemory(

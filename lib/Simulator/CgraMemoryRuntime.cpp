@@ -322,7 +322,8 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
     const std::uint64_t bindingOrdinal = bindings.size();
     bindingBySemanticActor[semanticPosition->second] = bindingOrdinal;
     bindings.push_back({semanticPosition->second, &semantic, &actor,
-                        selectedUse, std::move(results), 0, false, 0});
+                        selectedUse, std::move(results), 0,
+                        actor.operationIssueDepth, {}, 0});
   }
 
   for (auto [ordinal, connection] :
@@ -400,8 +401,8 @@ CgraMemoryRuntime::allocateFiring(std::uint64_t bindingOrdinal,
   firing.ready.emplace(std::move(ready));
   firing.storeData = std::move(storeData);
   firing.activeChildCount = *childCount;
-  binding.retirementPending = true;
-  binding.activeOccurrenceOrdinal = firing.actorOccurrenceOrdinal;
+  binding.outstandingOccurrences.push_back(firing.actorOccurrenceOrdinal);
+  ++binding.pendingIssueCommits;
   ++activeActorCount_;
   state_->plainMemoryCandidates.reset(binding.semanticActorOrdinal);
   return slot;
@@ -431,10 +432,15 @@ llvm::Expected<CgraPhysicalLifecycleEvent> CgraMemoryRuntime::requestAction(
   return std::move(*requested);
 }
 
+bool CgraMemoryRuntime::admitsFiring(const ActorBinding &binding) {
+  return binding.pendingIssueCommits == 0 &&
+         binding.outstandingOccurrences.size() < binding.operationIssueDepth;
+}
+
 llvm::Error
 CgraMemoryRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   for (const ActorBinding &binding : bindings_)
-    if (binding.retirementPending ||
+    if (!admitsFiring(binding) ||
         (transport_ &&
          !transport_->actorSourcesAvailable(binding.semanticActorOrdinal)))
       state_->plainMemoryCandidates.reset(binding.semanticActorOrdinal);
@@ -446,7 +452,7 @@ CgraMemoryRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
   for (std::uint64_t bindingOrdinal = 0; bindingOrdinal != bindings_.size();
        ++bindingOrdinal) {
     ActorBinding &binding = bindings_[bindingOrdinal];
-    if (binding.retirementPending)
+    if (!admitsFiring(binding))
       continue;
     auto admitted =
         state_->admittedPlainMemoryActions.find(binding.semantic->operation);
@@ -498,7 +504,7 @@ llvm::Error CgraMemoryRuntime::acceptReadyCandidates(
   for (int ordinal = semanticCandidates.find_first(); ordinal >= 0;
        ordinal = semanticCandidates.find_next(ordinal))
     if (ownsActor(ordinal) &&
-        !bindings_[bindingBySemanticActor_[ordinal]].retirementPending)
+        admitsFiring(bindings_[bindingBySemanticActor_[ordinal]]))
       state_->plainMemoryCandidates.set(ordinal);
   return scheduleReady(std::move(coordinate));
 }
@@ -510,11 +516,15 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
   Firing &firing = firings_[firingSlot];
   if (!firing.active || firing.issueCommitted || !firing.ready)
     return invalid("CGRA memory issue names an invalid firing");
-  ActorBinding &binding = bindings_[firing.bindingOrdinal];
+  const std::uint64_t bindingOrdinal = firing.bindingOrdinal;
+  ActorBinding &binding = bindings_[bindingOrdinal];
   state_->currentActorPlan = binding.semantic;
   llvm::scope_exit resetPlan([&] { state_->currentActorPlan = nullptr; });
   consumeMemoryIssueInputs(*firing.ready, *binding.semantic->memory, *state_);
   firing.issueCommitted = true;
+  if (binding.pendingIssueCommits == 0)
+    return invalid("CGRA memory issue commit has no admitted firing");
+  --binding.pendingIssueCommits;
   frame.actorEvents.push_back(
       {CgraActorLifecycleKind::Committed, binding.semanticActorOrdinal,
        firing.actorOccurrenceOrdinal, 0,
@@ -533,8 +543,26 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
     }
   }
   if (firing.activeChildCount == 0)
-    return linearize(firingSlot, frame);
-  return llvm::Error::success();
+    if (llvm::Error error = linearize(firingSlot, frame))
+      return error;
+  return admitNextFiring(bindingOrdinal, coordinate);
+}
+
+llvm::Error
+CgraMemoryRuntime::admitNextFiring(std::uint64_t bindingOrdinal,
+                                   const SpatialEventCoordinate &coordinate) {
+  ActorBinding &binding = bindings_[bindingOrdinal];
+  if (!admitsFiring(binding))
+    return llvm::Error::success();
+  // This firing released the binding's operand slot while it is still
+  // outstanding, so the engine may issue its next firing without waiting for
+  // a response. A serialized engine never reaches this point with a free
+  // issue-depth slot.
+  state_->plainMemoryCandidates.set(binding.semanticActorOrdinal);
+  auto next = nextSpatialDelta(coordinate);
+  if (!next)
+    return next.takeError();
+  return scheduleReady(std::move(*next));
 }
 
 llvm::Expected<CgraPhysicalTraceBinding>
@@ -1027,10 +1055,10 @@ llvm::Error CgraMemoryRuntime::retireActor(std::uint64_t semanticActorOrdinal,
     return invalid("CGRA memory retirement names an unknown semantic actor");
   ActorBinding &binding =
       bindings_[bindingBySemanticActor_[semanticActorOrdinal]];
-  if (!binding.retirementPending ||
-      binding.activeOccurrenceOrdinal != occurrenceOrdinal)
+  if (binding.outstandingOccurrences.empty() ||
+      binding.outstandingOccurrences.front() != occurrenceOrdinal)
     return invalid("CGRA memory retirement disagrees with its active firing");
-  binding.retirementPending = false;
+  binding.outstandingOccurrences.pop_front();
   if (activeActorCount_ == 0)
     return invalid("CGRA active memory actor count underflow");
   --activeActorCount_;

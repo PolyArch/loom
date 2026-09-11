@@ -432,7 +432,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return memoryInterface.takeError();
 
   auto spatialMemory = makeVariant64LocalMemory(
-      {scale.memoryCapacityBytes, *memoryInterface, std::nullopt, true},
+      {scale.memoryCapacityBytes, *memoryInterface, std::nullopt, true,
+       scale.memoryOperationIssueDepth},
       scale.localMemoryPortVariant);
   if (!spatialMemory)
     return spatialMemory.takeError();
@@ -440,7 +441,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       {scale.memoryCapacityBytes, *memoryInterface,
        TemporalMemoryParameters{temporalTagWidth,
                                 scale.temporalResidentContexts},
-       true},
+       true, scale.memoryOperationIssueDepth},
       scale.localMemoryPortVariant);
   if (!temporalMemory)
     return temporalMemory.takeError();

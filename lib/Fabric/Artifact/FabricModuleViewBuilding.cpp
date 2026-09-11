@@ -161,6 +161,7 @@ llvm::Error populateFabricMemoryView(::fabric::MemOp memory,
   FabricMemoryEngineTemplateRecord &engine = (**derived).record;
   entity.memorySchedule = engine.schedule;
   entity.memoryResidentContextCount = engine.residentContextCount;
+  entity.memoryOperationIssueDepth = engine.operationIssueDepth;
   entity.owner.inventoryCounts[static_cast<std::size_t>(
       FabricInventoryKind::MemoryOperationPort)] = engine.operationPorts.size();
   entity.memoryOperationPorts.reserve(engine.operationPorts.size());

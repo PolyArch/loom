@@ -45,3 +45,4 @@ hardware_target:
       hit_latency_cycles: 1
       in_order_miss_status_entries: 4
       out_of_order_miss_status_entries: 8
+    memory_operation_issue_depth: 1
