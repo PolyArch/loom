@@ -63,8 +63,15 @@ constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
 constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
+// The qualification wrapper runs this tool under the Fast tier and kills the
+// process group when that tier expires. A search deadline equal to the tier
+// therefore never stops the tool in time to serialize its report: the wrapper
+// wins the race and the run leaves an empty stdout with no evidence of where
+// the time went. Reserve the smallest tier for stopping, writing and exiting,
+// so an unconverged search reports `ready: false` and its rounds instead.
 constexpr auto kSpatialPnrQualificationLimit =
-    loom::timeout::duration(loom::timeout::Tier::Fast);
+    loom::timeout::duration(loom::timeout::Tier::Fast) -
+    loom::timeout::duration(loom::timeout::Tier::UltraFast);
 constexpr auto kTransportRepairQualificationLimit =
     loom::timeout::duration(loom::timeout::Tier::Long);
 constexpr std::uint64_t kTransportRepairMaximumIterations = 8;

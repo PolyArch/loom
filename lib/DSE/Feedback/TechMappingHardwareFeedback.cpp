@@ -58,6 +58,11 @@ struct SpatialGrowthUnit final {
   std::vector<std::uint8_t> capabilityKey;
   std::vector<std::size_t> contextValues;
   std::vector<std::size_t> groups;
+  /// Context values the unit adds that the observed relation does not already
+  /// hold. A maximum matching counts values, not their identities, so two
+  /// units that add the same number of new values to the same demand groups
+  /// reach the same matching.
+  std::uint64_t freshValueCount = 0;
 };
 
 bool spatialGrowthUnitLess(const SpatialGrowthUnit &lhs,
@@ -320,7 +325,8 @@ struct SpatialFuOccurrenceGrowthStep final {
 ///
 /// `searchClosure` selects whether the bipartite matchings run at all. The
 /// structural enumeration and its bound are cheap and always available; the
-/// matchings only run when the caller is actually considering this direction.
+/// matchings only run when the caller is actually considering this direction,
+/// and then once per equivalence class of units rather than once per unit.
 llvm::Expected<SpatialFuOccurrenceGrowthStep>
 projectSpatialFuOccurrenceGrowthStep(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
@@ -422,7 +428,7 @@ projectSpatialFuOccurrenceGrowthStep(
       if (!prototype)
         continue;
       units.push_back({pe, prototype->fu, record.capability, peKey, record.key,
-                       {}, record.groups});
+                       {}, record.groups, 0});
       contextsByTarget.emplace(peKey, contexts);
     }
   }
@@ -445,13 +451,17 @@ projectSpatialFuOccurrenceGrowthStep(
   }
   llvm::sort(units, spatialGrowthUnitLess);
 
-  for (const SpatialGrowthUnit &unit : units) {
+  std::set<std::vector<std::uint8_t>> baseContextKeys;
+  for (const auto &entry : contextOrdinalByKey)
+    baseContextKeys.insert(entry.first);
+  for (SpatialGrowthUnit &unit : units) {
     const std::uint64_t contexts = module.peResidentContextCount(unit.target);
-    for (std::uint64_t ordinal = 0; ordinal != contexts; ++ordinal)
-      contextOrdinalByKey.emplace(
-          fabric::canonicalFabricBytes(
-              fabric::InstructionContextRef{unit.target, ordinal}),
-          0);
+    for (std::uint64_t ordinal = 0; ordinal != contexts; ++ordinal) {
+      std::vector<std::uint8_t> key = fabric::canonicalFabricBytes(
+          fabric::InstructionContextRef{unit.target, ordinal});
+      unit.freshValueCount += baseContextKeys.count(key) == 0;
+      contextOrdinalByKey.emplace(std::move(key), 0);
+    }
   }
   std::size_t nextValue = 0;
   for (auto &entry : contextOrdinalByKey)
@@ -541,11 +551,20 @@ projectSpatialFuOccurrenceGrowthStep(
     witnessGroups[groupOfDemand[static_cast<std::size_t>(demand)]] = 1;
   }
 
+  // Units that add the same number of new values to the same demand groups
+  // are interchangeable for the matching, so one representative decides the
+  // whole class. Units are in canonical order, so the representative is the
+  // canonically least member and the selected decision is unchanged; only the
+  // number of matchings drops from one per admissible PE and capability to one
+  // per class.
+  std::set<std::pair<std::vector<std::size_t>, std::uint64_t>> evaluatedClasses;
   const SpatialGrowthUnit *selected = nullptr;
   for (const SpatialGrowthUnit &unit : units) {
     if (llvm::none_of(unit.groups, [&](std::size_t group) {
           return witnessGroups[group] != 0;
         }))
+      continue;
+    if (!evaluatedClasses.emplace(unit.groups, unit.freshValueCount).second)
       continue;
     auto candidate = analyze(&unit);
     if (!candidate)
