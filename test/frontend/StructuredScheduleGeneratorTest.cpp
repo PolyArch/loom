@@ -274,12 +274,14 @@ module {
   if (oversized)
     fail("schedule decision encoder accepted an oversized vector factor");
   llvm::consumeError(oversized.takeError());
-  const loom::frontend::StructuredScheduleDecision oversizedTile{
-      *loop, loom::frontend::StructuredScheduleDecisionKind::Tile,
+  // A tile size is canonical by its size or by its tile count; an unroll
+  // factor stays within the canonical bound.
+  const loom::frontend::StructuredScheduleDecision oversizedUnroll{
+      *loop, loom::frontend::StructuredScheduleDecisionKind::Unroll,
       loom::frontend::maximumCanonicalStructuredScheduleFactor + 1,
       std::nullopt};
   auto oversizedScalar =
-      loom::frontend::encodeStructuredScheduleDecision(oversizedTile);
+      loom::frontend::encodeStructuredScheduleDecision(oversizedUnroll);
   if (oversizedScalar)
     fail("schedule decision encoder accepted an oversized scalar factor");
   llvm::consumeError(oversizedScalar.takeError());
@@ -741,8 +743,9 @@ module attributes {dlti.dl_spec = #layout} {
   for (const auto &proposal : unrollDomain.proposals) {
     const auto &decision = proposal.decision();
     const bool canonicalTileCount =
-        decision.kind ==
-            loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule &&
+        (decision.kind ==
+             loom::frontend::StructuredScheduleDecisionKind::PolyhedralSchedule ||
+         decision.kind == loom::frontend::StructuredScheduleDecisionKind::Tile) &&
         decision.factor != 0 && 1024 % decision.factor == 0 &&
         1024 / decision.factor <=
             loom::frontend::maximumCanonicalStructuredScheduleFactor;

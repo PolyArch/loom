@@ -3,6 +3,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -197,7 +198,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v21",
+    "loom.compiler.structured_schedule.generator.v22",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -226,6 +227,14 @@ bool isTiledPolyhedralPrefix(
   return decision.kind ==
              frontend::StructuredScheduleDecisionKind::PolyhedralSchedule &&
          decision.factor != 0;
+}
+
+/// Strip-mining stands in as the tiled prefix of a loop the exact SCoP
+/// refused, such as a loop already carrying vector transfers; like a
+/// polyhedral tile, its factor is the iterations one tile performs.
+bool isStripMinedPrefix(const frontend::StructuredScheduleDecision &decision) {
+  return decision.kind == frontend::StructuredScheduleDecisionKind::Tile &&
+         decision.factor > 1;
 }
 
 llvm::Expected<frontend::MaterializedStructuredScheduleCandidate>
@@ -483,6 +492,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     std::vector<frontend::StructuredOperationSourceProvenance> provenance;
     frontend::StructuredScheduleDecisionDomain domain;
     std::array<std::vector<std::size_t>, 2> proposalOrdinals;
+    /// The widest admitted vector coordinate, explored as the head of a
+    /// vector, strip-mine, parallelize chain before the plain prefixes.
+    std::optional<std::size_t> vectorChainOrdinal;
   };
   enum class ScheduleSearchPhase : std::size_t { Direct, TiledPrefix };
   std::vector<ParentSchedule> parents;
@@ -491,6 +503,81 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     return systemRoot.takeError();
   const std::uint64_t accCoreCount =
       std::max<std::size_t>(1, systemRoot->artifact().accCoreOccurrences().size());
+  // The outstanding requests the shared memory service grants one AccCore;
+  // the same platform projection the analytic runtime model reads.
+  std::uint64_t memoryOutstandingRequests = 1;
+  if (auto platform =
+          evaluation::models::projectSystemPlatformModel(*exactFabric)) {
+    memoryOutstandingRequests =
+        std::max<std::uint64_t>(1, platform->accCoreOutstandingRequests);
+  } else {
+    // A Fabric without a shared memory service grants no overlap; the
+    // smallest admitted unroll then stands in.
+    llvm::consumeError(platform.takeError());
+  }
+  // The tiled prefixes of one decision domain: proven polyhedral tiles, and
+  // strip-mining where the exact SCoP admitted no tile for the loop, such as
+  // a loop already carrying vector transfers. A tiled prefix exists to become
+  // one logical thread per AccCore, so the tile counts nearest the AccCore
+  // count come first; among equal distances the coarser tile amortizes more
+  // activation overhead.
+  const auto tiledPrefixOrdinals =
+      [&](const frontend::StructuredProgramCandidate &program,
+          const frontend::StructuredScheduleDecisionDomain &domain) {
+        std::vector<std::size_t> prefixes;
+        for (std::size_t ordinal = 0; ordinal != domain.proposals.size();
+             ++ordinal)
+          if (isTiledPolyhedralPrefix(domain.proposals[ordinal].decision()))
+            prefixes.push_back(ordinal);
+        for (std::size_t ordinal = 0; ordinal != domain.proposals.size();
+             ++ordinal) {
+          const auto &decision = domain.proposals[ordinal].decision();
+          if (!isStripMinedPrefix(decision))
+            continue;
+          const bool polyhedralPrefixExists = llvm::any_of(
+              domain.proposals,
+              [&](const frontend::StructuredScheduleProposal &proposal) {
+                return proposal.decision().loop == decision.loop &&
+                       isTiledPolyhedralPrefix(proposal.decision());
+              });
+          if (!polyhedralPrefixExists)
+            prefixes.push_back(ordinal);
+        }
+        const auto tileDistance = [&](std::size_t ordinal) -> std::uint64_t {
+          const auto &decision = domain.proposals[ordinal].decision();
+          if (decision.factor == 0)
+            return std::numeric_limits<std::uint64_t>::max();
+          auto entity = program.view();
+          if (!entity) {
+            llvm::consumeError(entity.takeError());
+            return std::numeric_limits<std::uint64_t>::max();
+          }
+          auto loop = entity->resolve(decision.loop);
+          if (!loop) {
+            llvm::consumeError(loop.takeError());
+            return std::numeric_limits<std::uint64_t>::max();
+          }
+          const std::optional<std::uint64_t> trip =
+              frontend::structuredLoopStaticTripCount(loop->operation);
+          if (!trip)
+            return std::numeric_limits<std::uint64_t>::max();
+          const std::uint64_t tiles = *trip / decision.factor;
+          return tiles > accCoreCount ? tiles - accCoreCount
+                                      : accCoreCount - tiles;
+        };
+        std::stable_sort(prefixes.begin(), prefixes.end(),
+                         [&](std::size_t left, std::size_t right) {
+                           const std::uint64_t leftDistance =
+                               tileDistance(left);
+                           const std::uint64_t rightDistance =
+                               tileDistance(right);
+                           if (leftDistance != rightDistance)
+                             return leftDistance < rightDistance;
+                           return domain.proposals[left].decision().factor >
+                                  domain.proposals[right].decision().factor;
+                         });
+        return prefixes;
+      };
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     if (stopGeneration)
@@ -583,63 +670,428 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             StructuredScheduleGenerationIntent::RequireLogicalThreadDomain)
           ++ownedLogicalDomainDecisionCount;
       }
-      if (intent ==
-              StructuredScheduleGenerationIntent::RequireLogicalThreadDomain &&
-          isTiledPolyhedralPrefix(decision))
-        schedule
-            .proposalOrdinals[static_cast<std::size_t>(
-                ScheduleSearchPhase::TiledPrefix)]
-            .push_back(ordinal);
     }
-    // A tiled prefix exists to become one logical thread per AccCore, so the
-    // tile counts nearest the AccCore count are explored first; among equal
-    // distances the coarser tile amortizes more activation overhead.
-    auto &prefixes = schedule.proposalOrdinals[static_cast<std::size_t>(
-        ScheduleSearchPhase::TiledPrefix)];
-    const auto tileDistance = [&](std::size_t ordinal) -> std::uint64_t {
-      const auto &decision = schedule.domain.proposals[ordinal].decision();
-      auto entity = schedule.program.view();
-      if (!entity) {
-        llvm::consumeError(entity.takeError());
-        return std::numeric_limits<std::uint64_t>::max();
+    if (config->generationIntent() ==
+        StructuredScheduleGenerationIntent::RequireLogicalThreadDomain) {
+      schedule.proposalOrdinals[static_cast<std::size_t>(
+          ScheduleSearchPhase::TiledPrefix)] =
+          tiledPrefixOrdinals(schedule.program, schedule.domain);
+      for (std::size_t ordinal = 0;
+           ordinal != schedule.domain.proposals.size(); ++ordinal) {
+        if (schedule.domain.proposals[ordinal].decision().kind !=
+            frontend::StructuredScheduleDecisionKind::Vectorize)
+          continue;
+        schedule.vectorChainOrdinal = ordinal;
+        break;
       }
-      auto loop = entity->resolve(decision.loop);
-      if (!loop) {
-        llvm::consumeError(loop.takeError());
-        return std::numeric_limits<std::uint64_t>::max();
-      }
-      const std::optional<std::uint64_t> trip =
-          frontend::structuredLoopStaticTripCount(loop->operation);
-      if (!trip || decision.factor == 0)
-        return std::numeric_limits<std::uint64_t>::max();
-      const std::uint64_t tiles = *trip / decision.factor;
-      return tiles > accCoreCount ? tiles - accCoreCount
-                                  : accCoreCount - tiles;
-    };
-    std::stable_sort(prefixes.begin(), prefixes.end(),
-                     [&](std::size_t left, std::size_t right) {
-                       const std::uint64_t leftDistance = tileDistance(left);
-                       const std::uint64_t rightDistance = tileDistance(right);
-                       if (leftDistance != rightDistance)
-                         return leftDistance < rightDistance;
-                       return schedule.domain.proposals[left].decision().factor >
-                              schedule.domain.proposals[right].decision().factor;
-                     });
+    }
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "structured_schedule_parent";
+          fields["parent"] = formatArtifactIdentityHex(reference.artifact);
+          fields["tracked_spatial_region"] =
+              static_cast<bool>(schedule.spatialRegion);
+          llvm::json::Object kinds;
+          for (const auto &proposal : schedule.domain.proposals) {
+            const llvm::StringRef kind =
+                frontend::structuredScheduleDecisionKindSpelling(
+                    proposal.decision().kind);
+            kinds[kind] = kinds.getInteger(kind).value_or(0) + 1;
+          }
+          fields["proposal_kinds"] = std::move(kinds);
+          fields["refusal_count"] = schedule.domain.refusals.size();
+          fields["direct_proposals"] =
+              schedule
+                  .proposalOrdinals[static_cast<std::size_t>(
+                      ScheduleSearchPhase::Direct)]
+                  .size();
+          fields["tiled_prefixes"] =
+              schedule
+                  .proposalOrdinals[static_cast<std::size_t>(
+                      ScheduleSearchPhase::TiledPrefix)]
+                  .size();
+          fields["vector_chain"] =
+              static_cast<bool>(schedule.vectorChainOrdinal);
+        });
     parents.push_back(std::move(schedule));
   }
 
-  // A logical-domain search first explores coarse proven tiles to amortize
-  // activation overhead. Parents share each round; a prefix and its independent
-  // terminal proof remain one step, with every materialization charged.
+  // Materializes one tiled prefix of `program` and every proven Parallelize
+  // terminal on the transformed roots it introduces. `publishAncestors` runs
+  // once before the prefix is published, so an intermediate stage reaches the
+  // store only when a terminal below it materializes. Returns whether a
+  // terminal was published.
+  const auto exploreTiledPrefix =
+      [&](const ArtifactRootReference &rejectionOwner,
+          const ArtifactRootReference &reference,
+          const frontend::StructuredProgramCandidate &program,
+          const std::optional<frontend::StructuredEntityRef> &spatialRegion,
+          llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+              provenance,
+          const frontend::StructuredScheduleProposal &proposal,
+          llvm::function_ref<llvm::Error()> publishAncestors)
+      -> llvm::Expected<bool> {
+    const frontend::StructuredScheduleDecision &decision = proposal.decision();
+    if (llvm::Error error = accountGeneratedProposal())
+      return std::move(error);
+    if (!consumeMaterializationAttempt())
+      return false;
+    auto materialized = materializeProposal(rejectionOwner, program, proposal,
+                                            spatialRegion, provenance);
+    if (!materialized)
+      return materialized.takeError();
+    if (!*materialized)
+      return false;
+    frontend::MaterializedStructuredScheduleCandidate &prefix = **materialized;
+    if (prefix.transformedScheduleRoots.empty())
+      return invalid("tiled prefix lost its transformed schedule roots");
+    const ArtifactRootReference prefixReference{
+        frontend::structuredProgramArtifactSchema.identity.str(),
+        frontend::structuredProgramArtifactSchema.version,
+        prefix.structuredProgram.identity()};
+    bool prefixPublished = false;
+    bool terminalPublished = false;
+    for (const frontend::StructuredEntityRef &transformedRoot :
+         prefix.transformedScheduleRoots) {
+      if (stopGeneration)
+        break;
+      if (invocationView.stopRequested()) {
+        cancelled = true;
+        stopGeneration = true;
+        break;
+      }
+      auto terminalDomain = frontend::enumerateStructuredScheduleDecisions(
+          prefix.structuredProgram, *exactFabric,
+          config->scopeExpansionLimit(), transformedRoot);
+      if (!terminalDomain)
+        return terminalDomain.takeError();
+      if (llvm::Error error = accountDecisionDomain(*terminalDomain))
+        return std::move(error);
+      const bool terminalAvailable = llvm::any_of(
+          terminalDomain->proposals,
+          [&](const frontend::StructuredScheduleProposal &terminal) {
+            return terminal.decision().kind ==
+                       frontend::StructuredScheduleDecisionKind::Parallelize &&
+                   terminal.decision().loop == transformedRoot;
+          });
+      if (!terminalAvailable)
+        mapping_debug::emit(
+            mapping_debug::Level::Detail,
+            mapping_debug::Stage::DataflowLowering,
+            mapping_debug::Event::DerivedContext,
+            [&](llvm::json::Object &fields) {
+              fields["context_kind"] = "structured_schedule_prefix_terminal";
+              fields["prefix"] =
+                  formatArtifactIdentityHex(prefixReference.artifact);
+              fields["decision_kind"] =
+                  frontend::structuredScheduleDecisionKindSpelling(
+                      decision.kind);
+              fields["factor"] = decision.factor;
+              fields["terminal_proposals"] = terminalDomain->proposals.size();
+              if (auto view = prefix.structuredProgram.view()) {
+                if (auto root = view->resolve(transformedRoot)) {
+                  std::string text;
+                  llvm::raw_string_ostream stream(text);
+                  root->operation->print(stream);
+                  fields["transformed_root"] = std::move(text);
+                } else {
+                  llvm::consumeError(root.takeError());
+                }
+              } else {
+                llvm::consumeError(view.takeError());
+              }
+            });
+      for (const frontend::StructuredScheduleProposal &terminalProposal :
+           terminalDomain->proposals) {
+        if (invocationView.stopRequested()) {
+          cancelled = true;
+          stopGeneration = true;
+          break;
+        }
+        const frontend::StructuredScheduleDecision &terminalDecision =
+            terminalProposal.decision();
+        const bool logical = producesLogicalThreadDomain(terminalDecision);
+        logicalDomainDecisionCount += logical ? 1 : 0;
+        if (terminalDecision.kind !=
+                frontend::StructuredScheduleDecisionKind::Parallelize ||
+            terminalDecision.loop != transformedRoot)
+          continue;
+        ++ownedLogicalDomainDecisionCount;
+        if (llvm::Error error = accountGeneratedProposal())
+          return std::move(error);
+        if (!consumeMaterializationAttempt())
+          break;
+        auto materializedTerminal = materializeProposal(
+            rejectionOwner, prefix.structuredProgram, terminalProposal,
+            prefix.trackedSpatialRegion, prefix.sourceProvenance);
+        if (!materializedTerminal)
+          return materializedTerminal.takeError();
+        if (!*materializedTerminal)
+          continue;
+        const ArtifactRootReference terminalReference{
+            frontend::structuredProgramArtifactSchema.identity.str(),
+            frontend::structuredProgramArtifactSchema.version,
+            (*materializedTerminal)->structuredProgram.identity()};
+        if (seenOutputs.find(terminalReference) != seenOutputs.end())
+          continue;
+        if (!prefixPublished) {
+          if (llvm::Error error = publishAncestors())
+            return std::move(error);
+          auto prefixClone = cloneMaterializedScheduleCandidate(prefix);
+          if (!prefixClone)
+            return prefixClone.takeError();
+          auto publishedPrefix =
+              publishDecision(reference, decision, std::move(*prefixClone));
+          if (!publishedPrefix)
+            return publishedPrefix.takeError();
+          if (*publishedPrefix != prefixReference)
+            return invalid("published tiled prefix changed identity");
+          prefixPublished = true;
+        }
+        mapping_debug::emit(
+            mapping_debug::Level::Detail,
+            mapping_debug::Stage::DataflowLowering,
+            mapping_debug::Event::DerivedContext,
+            [&](llvm::json::Object &fields) {
+              fields["context_kind"] = "structured_schedule_terminal";
+              fields["prefix"] =
+                  formatArtifactIdentityHex(prefixReference.artifact);
+              fields["terminal"] =
+                  formatArtifactIdentityHex(terminalReference.artifact);
+              const auto &terminal = **materializedTerminal;
+              if (auto view = terminal.structuredProgram.view()) {
+                if (terminal.trackedSpatialRegion) {
+                  if (auto region =
+                          view->resolve(*terminal.trackedSpatialRegion)) {
+                    std::string text;
+                    llvm::raw_string_ostream stream(text);
+                    region->operation->print(stream);
+                    fields["spatial_region"] = std::move(text);
+                  } else {
+                    llvm::consumeError(region.takeError());
+                  }
+                }
+              } else {
+                llvm::consumeError(view.takeError());
+              }
+            });
+        auto publishedTerminal =
+            publishDecision(prefixReference, terminalDecision,
+                            std::move(**materializedTerminal));
+        if (!publishedTerminal)
+          return publishedTerminal.takeError();
+        seenOutputs.insert(*publishedTerminal);
+        outputs.push_back(std::move(*publishedTerminal));
+        ++materializedLogicalDomainCount;
+        terminalPublished = true;
+      }
+    }
+    return terminalPublished;
+  };
+
+  // The exact SCoP cannot re-vectorize a symbolic tile, so the vector shape
+  // comes first and the tile is strip-mined below it: the widest admitted
+  // shape moves a tile's elements in the fewest memory transactions. An
+  // optional unroll stage replicates the vector body so more memory actors
+  // keep requests in flight. Every stage is published only when a terminal
+  // below it materializes.
+  struct ChainStage final {
+    ArtifactRootReference reference;
+    frontend::StructuredScheduleDecision decision;
+    const frontend::MaterializedStructuredScheduleCandidate *candidate;
+    bool published = false;
+  };
+  const auto exploreVectorChain =
+      [&](const ParentSchedule &parent,
+          const frontend::StructuredScheduleProposal &vectorProposal,
+          bool unrollStage) -> llvm::Expected<bool> {
+    if (llvm::Error error = accountGeneratedProposal())
+      return std::move(error);
+    if (!consumeMaterializationAttempt())
+      return false;
+    auto materialized =
+        materializeProposal(parent.reference, parent.program, vectorProposal,
+                            parent.spatialRegion, parent.provenance);
+    if (!materialized)
+      return materialized.takeError();
+    if (!*materialized)
+      return false;
+    const auto referenceOf =
+        [](const frontend::MaterializedStructuredScheduleCandidate &stage) {
+          return ArtifactRootReference{
+              frontend::structuredProgramArtifactSchema.identity.str(),
+              frontend::structuredProgramArtifactSchema.version,
+              stage.structuredProgram.identity()};
+        };
+    const auto enumerateStage =
+        [&](const frontend::MaterializedStructuredScheduleCandidate &stage) {
+          return frontend::enumerateStructuredScheduleDecisions(
+              stage.structuredProgram, *exactFabric,
+              config->scopeExpansionLimit(), stage.trackedSpatialRegion);
+        };
+    std::vector<ChainStage> stages;
+    stages.push_back({referenceOf(**materialized), vectorProposal.decision(),
+                      &**materialized});
+    auto stageDomain = enumerateStage(**materialized);
+    if (!stageDomain)
+      return stageDomain.takeError();
+    if (llvm::Error error = accountDecisionDomain(*stageDomain))
+      return std::move(error);
+    std::optional<frontend::MaterializedStructuredScheduleCandidate> unrolled;
+    if (unrollStage) {
+      // A memory actor holds one request in flight, so copies beyond the
+      // service's outstanding slots add actors without overlap. Take the
+      // smallest admitted unroll that fills those slots, or the widest
+      // admitted one when none reaches them.
+      const frontend::StructuredScheduleProposal *widest = nullptr;
+      for (const auto &proposal : stageDomain->proposals) {
+        if (proposal.decision().kind !=
+            frontend::StructuredScheduleDecisionKind::Unroll)
+          continue;
+        auto view = (**materialized).structuredProgram.view();
+        if (!view)
+          return view.takeError();
+        auto loop = view->resolve(proposal.decision().loop);
+        if (!loop)
+          return loop.takeError();
+        std::uint64_t memoryActors = 0;
+        loop->operation->walk([&](mlir::Operation *operation) {
+          auto schema = dataflow::operationSchemaOf(operation);
+          memoryActors += schema && dataflow::actorKind(*schema) ==
+                                        dataflow::CanonicalDataflowActorKind::Memory
+                              ? 1
+                              : 0;
+        });
+        const std::uint64_t neededCopies =
+            memoryActors == 0
+                ? 1
+                : (memoryOutstandingRequests + memoryActors - 1) / memoryActors;
+        const std::uint64_t factor = proposal.decision().factor;
+        const bool fills = factor >= neededCopies;
+        if (!widest) {
+          widest = &proposal;
+          continue;
+        }
+        const std::uint64_t current = widest->decision().factor;
+        const bool currentFills = current >= neededCopies;
+        if ((fills && (!currentFills || factor < current)) ||
+            (!fills && !currentFills && factor > current))
+          widest = &proposal;
+      }
+      if (widest) {
+        if (llvm::Error error = accountGeneratedProposal())
+          return std::move(error);
+        if (!consumeMaterializationAttempt())
+          return false;
+        const auto &vectorStage = **materialized;
+        auto materializedUnroll = materializeProposal(
+            parent.reference, vectorStage.structuredProgram, *widest,
+            vectorStage.trackedSpatialRegion, vectorStage.sourceProvenance);
+        if (!materializedUnroll)
+          return materializedUnroll.takeError();
+        if (*materializedUnroll) {
+          unrolled.emplace(std::move(**materializedUnroll));
+          stages.push_back(
+              {referenceOf(*unrolled), widest->decision(), &*unrolled});
+          stageDomain = enumerateStage(*unrolled);
+          if (!stageDomain)
+            return stageDomain.takeError();
+          if (llvm::Error error = accountDecisionDomain(*stageDomain))
+            return std::move(error);
+        }
+      }
+    }
+    const frontend::MaterializedStructuredScheduleCandidate &leaf =
+        *stages.back().candidate;
+    const ArtifactRootReference leafReference = stages.back().reference;
+    const std::vector<std::size_t> stagePrefixes =
+        tiledPrefixOrdinals(leaf.structuredProgram, *stageDomain);
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "structured_schedule_vector_stage";
+          fields["parent"] = formatArtifactIdentityHex(parent.reference.artifact);
+          fields["stage"] = formatArtifactIdentityHex(leafReference.artifact);
+          fields["stage_count"] = stages.size();
+          llvm::json::Object kinds;
+          for (const auto &proposal : stageDomain->proposals) {
+            const llvm::StringRef kind =
+                frontend::structuredScheduleDecisionKindSpelling(
+                    proposal.decision().kind);
+            kinds[kind] = kinds.getInteger(kind).value_or(0) + 1;
+          }
+          fields["proposal_kinds"] = std::move(kinds);
+          fields["tiled_prefixes"] = stagePrefixes.size();
+          if (auto view = leaf.structuredProgram.view()) {
+            if (leaf.trackedSpatialRegion) {
+              if (auto region = view->resolve(*leaf.trackedSpatialRegion)) {
+                std::string text;
+                llvm::raw_string_ostream stream(text);
+                region->operation->print(stream);
+                fields["spatial_region"] = std::move(text);
+              } else {
+                llvm::consumeError(region.takeError());
+              }
+            }
+          } else {
+            llvm::consumeError(view.takeError());
+          }
+        });
+    const auto publishStages = [&]() -> llvm::Error {
+      ArtifactRootReference lineageParent = parent.reference;
+      for (ChainStage &stage : stages) {
+        if (!stage.published) {
+          auto clone = cloneMaterializedScheduleCandidate(*stage.candidate);
+          if (!clone)
+            return clone.takeError();
+          auto published =
+              publishDecision(lineageParent, stage.decision, std::move(*clone));
+          if (!published)
+            return published.takeError();
+          if (*published != stage.reference)
+            return invalid("published chain stage changed identity");
+          stage.published = true;
+        }
+        lineageParent = stage.reference;
+      }
+      return llvm::Error::success();
+    };
+    for (std::size_t ordinal : stagePrefixes) {
+      if (stopGeneration)
+        break;
+      auto published = exploreTiledPrefix(
+          parent.reference, leafReference, leaf.structuredProgram,
+          leaf.trackedSpatialRegion, leaf.sourceProvenance,
+          stageDomain->proposals[ordinal], publishStages);
+      if (!published)
+        return published.takeError();
+      if (*published)
+        return true;
+    }
+    return false;
+  };
+
+  // A logical-domain search first explores the vector chain, then coarse
+  // proven tiles to amortize activation overhead. Parents share each round; a
+  // prefix and its independent terminal proof remain one step, with every
+  // materialization charged.
   for (ScheduleSearchPhase phase :
        {ScheduleSearchPhase::TiledPrefix, ScheduleSearchPhase::Direct}) {
+    const auto chainCount = [&](const ParentSchedule &parent) -> std::size_t {
+      return phase == ScheduleSearchPhase::TiledPrefix &&
+                     parent.vectorChainOrdinal
+                 ? 1
+                 : 0;
+    };
     std::size_t rounds = 0;
     for (const ParentSchedule &parent : parents)
       rounds = std::max(
           rounds,
-          parent.proposalOrdinals[static_cast<std::size_t>(phase)].size());
+          chainCount(parent) +
+              parent.proposalOrdinals[static_cast<std::size_t>(phase)].size());
     for (std::size_t round = 0; round != rounds && !stopGeneration; ++round) {
-      for (ParentSchedule &parent : parents) {
+      for (auto [parentIndex, parent] : llvm::enumerate(parents)) {
         if (stopGeneration)
           break;
         if (invocationView.stopRequested()) {
@@ -649,11 +1101,31 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         }
         const auto &ordinals =
             parent.proposalOrdinals[static_cast<std::size_t>(phase)];
-        if (round >= ordinals.size())
+        const std::size_t chains = chainCount(parent);
+        if (round >= chains + ordinals.size())
           continue;
+        if (round < chains) {
+          // Alternate the unroll stage across parents so both chain shapes
+          // are explored within one grant.
+          auto published = exploreVectorChain(
+              parent, parent.domain.proposals[*parent.vectorChainOrdinal],
+              parentIndex % 2 == 1);
+          if (!published)
+            return published.takeError();
+          continue;
+        }
         const auto &reference = parent.reference;
-        const auto &proposal = parent.domain.proposals[ordinals[round]];
+        const auto &proposal = parent.domain.proposals[ordinals[round - chains]];
         const auto &decision = proposal.decision();
+        if (phase == ScheduleSearchPhase::TiledPrefix) {
+          auto published = exploreTiledPrefix(
+              reference, reference, parent.program, parent.spatialRegion,
+              parent.provenance, proposal,
+              [] { return llvm::Error::success(); });
+          if (!published)
+            return published.takeError();
+          continue;
+        }
         if (llvm::Error error = accountGeneratedProposal())
           return std::move(error);
         if (!consumeMaterializationAttempt())
@@ -665,104 +1137,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           return materialized.takeError();
         if (!*materialized)
           continue;
-        if (phase == ScheduleSearchPhase::Direct) {
-          const ArtifactRootReference childReference{
-              frontend::structuredProgramArtifactSchema.identity.str(),
-              frontend::structuredProgramArtifactSchema.version,
-              (*materialized)->structuredProgram.identity()};
-          if (seenOutputs.find(childReference) != seenOutputs.end())
-            continue;
-          auto published =
-              publishDecision(reference, decision, std::move(**materialized));
-          if (!published)
-            return published.takeError();
-          seenOutputs.insert(*published);
-          outputs.push_back(std::move(*published));
-          materializedLogicalDomainCount +=
-              producesLogicalThreadDomain(decision) ? 1 : 0;
-          continue;
-        }
-        frontend::MaterializedStructuredScheduleCandidate &prefix =
-            **materialized;
-        if (prefix.transformedScheduleRoots.empty())
-          return invalid("tiled prefix lost its transformed schedule roots");
-        const ArtifactRootReference prefixReference{
+        const ArtifactRootReference childReference{
             frontend::structuredProgramArtifactSchema.identity.str(),
             frontend::structuredProgramArtifactSchema.version,
-            prefix.structuredProgram.identity()};
-        bool prefixPublished = false;
-
-        for (const frontend::StructuredEntityRef &transformedRoot :
-             prefix.transformedScheduleRoots) {
-          if (stopGeneration)
-            break;
-          if (invocationView.stopRequested()) {
-            cancelled = true;
-            stopGeneration = true;
-            break;
-          }
-          auto terminalDomain = frontend::enumerateStructuredScheduleDecisions(
-              prefix.structuredProgram, *exactFabric,
-              config->scopeExpansionLimit(), transformedRoot);
-          if (!terminalDomain)
-            return terminalDomain.takeError();
-          if (llvm::Error error = accountDecisionDomain(*terminalDomain))
-            return std::move(error);
-          for (const frontend::StructuredScheduleProposal &terminalProposal :
-               terminalDomain->proposals) {
-            if (invocationView.stopRequested()) {
-              cancelled = true;
-              stopGeneration = true;
-              break;
-            }
-            const frontend::StructuredScheduleDecision &terminalDecision =
-                terminalProposal.decision();
-            const bool logical = producesLogicalThreadDomain(terminalDecision);
-            logicalDomainDecisionCount += logical ? 1 : 0;
-            if (terminalDecision.kind !=
-                    frontend::StructuredScheduleDecisionKind::Parallelize ||
-                terminalDecision.loop != transformedRoot)
-              continue;
-            ++ownedLogicalDomainDecisionCount;
-            if (llvm::Error error = accountGeneratedProposal())
-              return std::move(error);
-            if (!consumeMaterializationAttempt())
-              break;
-            auto materializedTerminal = materializeProposal(
-                reference, prefix.structuredProgram, terminalProposal,
-                prefix.trackedSpatialRegion, prefix.sourceProvenance);
-            if (!materializedTerminal)
-              return materializedTerminal.takeError();
-            if (!*materializedTerminal)
-              continue;
-            const ArtifactRootReference terminalReference{
-                frontend::structuredProgramArtifactSchema.identity.str(),
-                frontend::structuredProgramArtifactSchema.version,
-                (*materializedTerminal)->structuredProgram.identity()};
-            if (seenOutputs.find(terminalReference) != seenOutputs.end())
-              continue;
-            if (!prefixPublished) {
-              auto prefixClone = cloneMaterializedScheduleCandidate(prefix);
-              if (!prefixClone)
-                return prefixClone.takeError();
-              auto publishedPrefix =
-                  publishDecision(reference, decision, std::move(*prefixClone));
-              if (!publishedPrefix)
-                return publishedPrefix.takeError();
-              if (*publishedPrefix != prefixReference)
-                return invalid("published tiled prefix changed identity");
-              prefixPublished = true;
-            }
-            auto publishedTerminal =
-                publishDecision(prefixReference, terminalDecision,
-                                std::move(**materializedTerminal));
-            if (!publishedTerminal)
-              return publishedTerminal.takeError();
-            seenOutputs.insert(*publishedTerminal);
-            outputs.push_back(std::move(*publishedTerminal));
-            ++materializedLogicalDomainCount;
-          }
-        }
+            (*materialized)->structuredProgram.identity()};
+        if (seenOutputs.find(childReference) != seenOutputs.end())
+          continue;
+        auto published =
+            publishDecision(reference, decision, std::move(**materialized));
+        if (!published)
+          return published.takeError();
+        seenOutputs.insert(*published);
+        outputs.push_back(std::move(*published));
+        materializedLogicalDomainCount +=
+            producesLogicalThreadDomain(decision) ? 1 : 0;
       }
     }
   }

@@ -673,6 +673,7 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
           launch.externalMemoryBytesPerActivation;
       record["memory_transactions_per_activation"] =
           launch.memoryTransactionsPerActivation;
+      record["memory_actors"] = launch.memoryActors;
       record["boundary_payload_bytes_per_activation"] =
           launch.boundaryPayloadBytesPerActivation;
       record["duration_ps"] = duration->picoseconds;

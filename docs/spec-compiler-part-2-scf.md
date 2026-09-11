@@ -743,9 +743,12 @@ view schema is `loom.structured_schedule_generator.config.3.0`.
 Loop scopes are `scf.for` and `affine.for` operations in the parent's canonical
 Structured operation order. The first `scope_expansion_limit` loop scopes form
 the finite Generate domain; later loops are outside that invocation domain.
-Static SCF tile, unroll, and unroll-and-jam factors are the sorted proper
-divisors of the exact static trip count. Factor one is a no-op and the full
-trip count is not emitted by this generator. Dynamic, non-host-representable,
+Static SCF unroll and unroll-and-jam factors are the sorted proper divisors
+of the exact static trip count. A static SCF tile factor is the number of
+iterations one tile performs and follows the polyhedral tile rule: a proper
+divisor whose tile size or whose tile count lies within the canonical range.
+Factor one is a no-op and the full trip count is not emitted by this
+generator. Dynamic, non-host-representable,
 prime, and unit trip counts have no such SCF factor decision in the current
 contract; other generator families or later invocations may still transform
 their enclosing structure.
@@ -1049,9 +1052,10 @@ ordinary unroll. It is one atomic decision implemented by the pinned upstream
 SCF utility; the shared inner control and replicated body are materialized in
 the child IR and no jam flag is persisted. Arbitrary permutations and compound
 non-atomic schedules are composed through immutable lineage rather than
-enumerated factorially. Every vector, tile, unroll, and unroll-and-jam factor
+enumerated factorially. Every vector, unroll, and unroll-and-jam factor
 belongs to the same canonical finite range `2..64`; a static trip count does
-not expand the coordinate domain beyond that bound. Tile, unroll, and
+not expand the coordinate domain beyond that bound, while a tile factor may
+exceed it when its tile count is canonical. Tile, unroll, and
 unroll-and-jam use the pinned upstream SCF utilities; interchange preserves the
 exact loop bounds, comparison convention, attributes, body, and
 induction-variable uses while exchanging dimensions.
@@ -1594,7 +1598,10 @@ materialize an extent-eight logical thread domain whose coordinate `t`
 reconstructs the tile `[t * 128, (t + 1) * 128)`, with the tile-local loop in a
 `loom.spatial_region`. These are logical coordinates, not physical X/Y
 coordinates or AccCore selections. SystemMapping alone owns their physical
-binding.
+binding. A source induction whose static lower bound, upper bound, and step
+prove that every induction value fits the selected signed index width is
+reconstructed in index arithmetic; only a dynamic domain reconstructs it at
+twice the index width before narrowing.
 
 #### Schedule Coordinate Projection
 

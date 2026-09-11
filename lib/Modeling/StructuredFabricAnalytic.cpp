@@ -156,7 +156,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "structured_fabric_low_confidence",
-    "loom.structured_fabric.low_confidence.v6",
+    "loom.structured_fabric.low_confidence.v7",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -199,6 +199,10 @@ struct ScopeDynamicWork final {
 struct SpatialDynamicWork final {
   std::uint64_t dynamicLeafExecutions = 0;
   std::uint64_t loweredLeafCopies = 0;
+  /// The most executed block of the Spatial owner: its activations over the
+  /// owner's own activations are the steady-state iterations one activation
+  /// performs, undiluted by prologue leaves that execute once per activation.
+  std::uint64_t maximumBlockActivations = 0;
   std::uint64_t staticLeafCount = 0;
 };
 
@@ -308,6 +312,8 @@ projectSpatialDynamicWork(const BlockActivityProjection &activity,
     }
     result.dynamicLeafExecutions = *dynamic;
     ++result.staticLeafCount;
+    result.maximumBlockActivations =
+        std::max(result.maximumBlockActivations, activation->second);
 
     std::uint64_t copies = 1;
     for (mlir::Operation *parent = operation->getParentOp();
@@ -357,6 +363,7 @@ projectSpatialDynamicWork(const BlockActivityProjection &activity,
     result.dynamicLeafExecutions = activation->second;
     result.loweredLeafCopies = 1;
     result.staticLeafCount = 1;
+    result.maximumBlockActivations = activation->second;
   }
   return result;
 }
@@ -646,9 +653,9 @@ struct EstimatedMetrics final {
   std::vector<AnalyticLaunchEstimate> launches;
 };
 
-/// One launch site's per-activation work: the source profile counts every
-/// executable leaf firing inside the Spatial owner, so dividing by the owner's
-/// activations and its static leaf count yields the iterations one activation
+/// One launch site's per-activation work: the profile counts the activations
+/// of every block inside the Spatial owner, so the most executed block over
+/// the owner's activations yields the steady-state iterations one activation
 /// performs, which scale the graph's initiation interval and memory bytes.
 llvm::Expected<AnalyticLaunchEstimate>
 projectLaunchEstimate(dataflow::StaticGraphLaunchRef launch,
@@ -656,12 +663,10 @@ projectLaunchEstimate(dataflow::StaticGraphLaunchRef launch,
                       std::uint64_t activations,
                       const SpatialDynamicWork &dynamicWork) {
   AnalyticLaunchEstimate estimate{launch, activations, 0, 0, 0};
-  const std::uint64_t leafFirings = std::max<std::uint64_t>(
-      1, std::max<std::uint64_t>(1, activations) *
-             std::max<std::uint64_t>(1, dynamicWork.staticLeafCount));
+  const std::uint64_t launches = std::max<std::uint64_t>(1, activations);
   const std::uint64_t iterations = std::max<std::uint64_t>(
-      1, dynamicWork.dynamicLeafExecutions / leafFirings +
-             (dynamicWork.dynamicLeafExecutions % leafFirings != 0 ? 1 : 0));
+      1, dynamicWork.maximumBlockActivations / launches +
+             (dynamicWork.maximumBlockActivations % launches != 0 ? 1 : 0));
   const std::uint64_t initiationInterval = std::max<std::uint64_t>(
       1, std::max(graph.schedulingPressure, graph.recurrenceLength));
   auto steady = checkedScaledCount(initiationInterval, iterations,
@@ -685,7 +690,21 @@ projectLaunchEstimate(dataflow::StaticGraphLaunchRef launch,
   if (!transactions)
     return transactions.takeError();
   estimate.memoryTransactionsPerActivation = *transactions;
+  estimate.memoryActors = graph.memoryTransactions;
   estimate.boundaryPayloadBytesPerActivation = graph.boundaryPayloadBytes;
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "structured_launch_work";
+        fields["static_graph_launch"] = launch.entity.value();
+        fields["activations"] = activations;
+        fields["dynamic_leaf_executions"] = dynamicWork.dynamicLeafExecutions;
+        fields["lowered_leaf_copies"] = dynamicWork.loweredLeafCopies;
+        fields["static_leaf_count"] = dynamicWork.staticLeafCount;
+        fields["iterations_per_activation"] = iterations;
+        fields["initiation_interval"] = initiationInterval;
+        fields["graph_memory_transactions"] = graph.memoryTransactions;
+      });
   return estimate;
 }
 

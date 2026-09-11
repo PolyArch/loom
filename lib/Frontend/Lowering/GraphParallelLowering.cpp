@@ -14,6 +14,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Matchers.h"
@@ -201,6 +202,11 @@ struct ParallelMemoryAccess {
   ::mlir::Type llvmAccessType;
   bool writes;
   bool atomic;
+  /// Elements one access covers from its index: one for a scalar access, the
+  /// lane count for a vector transfer. Only the exact iteration-independence
+  /// proof reasons about lane groups; the per-address lane comparison below
+  /// is element-granular and refuses wider accesses.
+  std::uint64_t lanes = 1;
 };
 
 std::optional<ParallelMemoryAccess>
@@ -241,6 +247,32 @@ getParallelMemoryAccess(::mlir::Operation *op) {
         mlir::Type{},
         /*writes=*/true,
         /*atomic=*/false};
+  if (auto read = ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(op)) {
+    auto shape = ::llvm::dyn_cast<::mlir::VectorType>(read.getType());
+    if (!shape || shape.getRank() != 1 || shape.isScalable())
+      return std::nullopt;
+    return ParallelMemoryAccess{
+        op,
+        read.getBase(),
+        {read.getIndices().begin(), read.getIndices().end()},
+        mlir::Type{},
+        /*writes=*/false,
+        /*atomic=*/false,
+        static_cast<std::uint64_t>(shape.getNumElements())};
+  }
+  if (auto write = ::llvm::dyn_cast<::mlir::vector::TransferWriteOp>(op)) {
+    auto shape = ::llvm::dyn_cast<::mlir::VectorType>(write.getVectorType());
+    if (!shape || shape.getRank() != 1 || shape.isScalable())
+      return std::nullopt;
+    return ParallelMemoryAccess{
+        op,
+        write.getBase(),
+        {write.getIndices().begin(), write.getIndices().end()},
+        mlir::Type{},
+        /*writes=*/true,
+        /*atomic=*/false,
+        static_cast<std::uint64_t>(shape.getNumElements())};
+  }
   if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
     return ParallelMemoryAccess{op,
                                 load.getMem(),
@@ -938,6 +970,11 @@ struct ParallelCheckInfo {
     if (::loom::lowering::proveIndependentIterations(forall) ==
         ::loom::lowering::ParallelDependenceResult::ProvenIndependent)
       return ::mlir::success();
+  for (const ParallelMemoryAccess &access : info.accesses)
+    if (access.lanes != 1 && access.writes)
+      return access.op->emitError(
+          "loom-lower-graph-memory: parallel vector transfer has no exact "
+          "iteration-independence proof");
 
   bool anyWrite =
       ::llvm::any_of(info.accesses, [](const ParallelMemoryAccess &access) {

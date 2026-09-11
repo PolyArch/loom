@@ -85,6 +85,10 @@ struct AnalyticLaunchEstimate final {
   /// Memory actor firings one activation submits to the shared memory
   /// service; each is one request that occupies an outstanding slot.
   std::uint64_t memoryTransactionsPerActivation = 0;
+  /// Distinct memory actors of the graph. A memory actor holds one request
+  /// in flight until its response returns, so the actors, not only the
+  /// service's outstanding slots, bound the requests one activation overlaps.
+  std::uint64_t memoryActors = 0;
   /// Bytes one activation's invocation wire carries across the bridge.
   std::uint64_t boundaryPayloadBytesPerActivation = 0;
 
@@ -96,6 +100,7 @@ struct AnalyticLaunchEstimate final {
                rhs.externalMemoryBytesPerActivation &&
            lhs.memoryTransactionsPerActivation ==
                rhs.memoryTransactionsPerActivation &&
+           lhs.memoryActors == rhs.memoryActors &&
            lhs.boundaryPayloadBytesPerActivation ==
                rhs.boundaryPayloadBytesPerActivation;
   }

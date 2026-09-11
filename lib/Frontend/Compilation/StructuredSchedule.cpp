@@ -247,6 +247,10 @@ struct ActorMultiplicity final {
   std::optional<std::uint64_t> resourceUpperBound;
 };
 
+llvm::Expected<std::uint64_t>
+admittingStructuredActorResources(mlir::Operation *operation,
+                                  const FabricCapabilityIndex &fabric);
+
 struct AggregateUnrollActorProjection final {
   CanonicalSemanticBytes key;
   std::optional<std::uint64_t> resourceUpperBound;
@@ -333,10 +337,10 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
                                         entry.second.count);
       continue;
     }
+    // The same admission projection the materialization gate applies, so a
+    // constant or a memory actor counts the resources that really admit it.
     llvm::Expected<std::uint64_t> resources =
-        *kind == dataflow::CanonicalDataflowActorKind::Memory
-            ? fabric.admittingMemoryResourceCount(actor)
-            : fabric.admittingOperationResourceCount(actor);
+        admittingStructuredActorResources(actor, fabric);
     if (!resources)
       return resources.takeError();
     capacity = std::min(capacity, *resources / entry.second.count);
@@ -388,12 +392,32 @@ llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
 llvm::Error applyTile(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (factor <= 1 || !loop.getInitArgs().empty())
     return detail::invalidStructuredSchedule("tile factor or loop shape is not canonical");
+  mlir::Block *block = loop->getBlock();
+  mlir::Operation *predecessor = loop->getPrevNode();
   mlir::OpBuilder builder(loop);
   mlir::Value size = mlir::arith::ConstantOp::create(
       builder, loop.getLoc(),
       builder.getIntegerAttr(loop.getStep().getType(), factor));
   if (mlir::tilePerfectlyNested(loop, {size}).empty())
     return detail::invalidStructuredSchedule("SCF tiling did not materialize an intra-tile loop");
+  // Strip-mining derives the tile step from the static bounds with explicit
+  // arithmetic; fold it so the tile loop carries a literal constant step that
+  // later exact proofs read directly.
+  llvm::SmallVector<mlir::Operation *> derived;
+  for (mlir::Operation *operation =
+           predecessor ? predecessor->getNextNode() : &block->front();
+       operation && operation != loop.getOperation();
+       operation = operation->getNextNode())
+    derived.push_back(operation);
+  mlir::GreedyRewriteConfig foldConfig;
+  foldConfig.setScope(block->getParent())
+      .setStrictness(mlir::GreedyRewriteStrictness::ExistingOps)
+      .setRegionSimplificationLevel(mlir::GreedySimplifyRegionLevel::Disabled);
+  mlir::RewritePatternSet noPatterns(loop.getContext());
+  mlir::FrozenRewritePatternSet frozenNoPatterns(std::move(noPatterns));
+  if (mlir::failed(mlir::applyOpPatternsGreedily(derived, frozenNoPatterns,
+                                                 foldConfig)))
+    return detail::invalidStructuredSchedule("SCF tiling could not fold its tile step");
   return llvm::Error::success();
 }
 
@@ -402,6 +426,23 @@ llvm::Error applyUnroll(mlir::scf::ForOp loop, std::uint64_t factor) {
     return detail::invalidStructuredSchedule("unroll factor or loop shape is not canonical");
   if (mlir::failed(mlir::loopUnrollByFactor(loop, factor)))
     return detail::invalidStructuredSchedule("SCF unroll rejected the selected decision");
+  // Unrolling derives each copy's induction offset with explicit arithmetic
+  // over constants; fold it so the copies read as the induction variable
+  // plus a literal offset that later exact proofs understand.
+  llvm::SmallVector<mlir::Operation *> body;
+  loop.getBody()->walk([&](mlir::Operation *operation) {
+    if (operation != loop.getOperation())
+      body.push_back(operation);
+  });
+  mlir::GreedyRewriteConfig foldConfig;
+  foldConfig.setScope(&loop.getRegion())
+      .setStrictness(mlir::GreedyRewriteStrictness::ExistingOps)
+      .setRegionSimplificationLevel(mlir::GreedySimplifyRegionLevel::Disabled);
+  mlir::RewritePatternSet noPatterns(loop.getContext());
+  mlir::FrozenRewritePatternSet frozenNoPatterns(std::move(noPatterns));
+  if (mlir::failed(mlir::applyOpPatternsGreedily(body, frozenNoPatterns,
+                                                 foldConfig)))
+    return detail::invalidStructuredSchedule("SCF unroll could not fold its induction offsets");
   return llvm::Error::success();
 }
 
@@ -631,6 +672,37 @@ llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (mlir::failed(mlir::loopUnrollJamByFactor(loop, factor)))
     return detail::invalidStructuredSchedule("SCF unroll-and-jam rejected the selected decision");
   return llvm::Error::success();
+}
+
+/// Whether the exact Fabric admits every compute actor of `loop` at `lanes`
+/// vector lanes. Index arithmetic stays scalar under vectorization and is not
+/// consulted; exact admission of the materialized shaped actors remains a
+/// materialization gate.
+llvm::Expected<bool> fabricAdmitsVectorShape(mlir::Operation *loop,
+                                             const FabricCapabilityIndex &fabric,
+                                             std::uint64_t lanes) {
+  for (mlir::Operation &operation :
+       loop->getRegion(0).front().without_terminator()) {
+    const std::optional<dataflow::OperationSchemaId> schema =
+        dataflow::operationSchemaOf(&operation);
+    if (!schema || dataflow::actorKind(*schema) !=
+                       dataflow::CanonicalDataflowActorKind::Compute ||
+        *schema == dataflow::OperationSchemaId::ArithConstant)
+      continue;
+    mlir::Type type;
+    if (operation.getNumResults() != 0)
+      type = operation.getResult(0).getType();
+    else if (operation.getNumOperands() != 0)
+      type = operation.getOperand(0).getType();
+    if (!type || !type.isIntOrFloat() || llvm::isa<mlir::IndexType>(type))
+      continue;
+    auto admitted = fabric.admitsVectorShape(&operation, lanes);
+    if (!admitted)
+      return admitted.takeError();
+    if (!*admitted)
+      return false;
+  }
+  return true;
 }
 
 llvm::Expected<
@@ -1260,10 +1332,23 @@ enumerateStructuredScheduleDecisions(
           return std::move(error);
         bool admitted = false;
         std::vector<StructuredScopRefusalKind> coordinateRefusals;
-        for (std::uint64_t factor = 2; factor <= maximumFactor; ++factor) {
+        // Widest coordinate first: it moves the same elements in the fewest
+        // memory transactions, so a bounded materialization budget reaches
+        // it before the narrower shapes of the same loop.
+        for (std::uint64_t factor = maximumFactor; factor >= 2; --factor) {
           auto coordinate = coordinateFor(scop, factor);
           if (!coordinate)
             return coordinate.takeError();
+          if (std::holds_alternative<StructuredVectorScheduleCoordinate>(
+                  *coordinate)) {
+            auto fabricAdmits = fabricAdmitsVectorShape(
+                entity.operation, capabilityIndex, factor);
+            if (!fabricAdmits)
+              return fabricAdmits.takeError();
+            if (!*fabricAdmits)
+              *coordinate =
+                  StructuredScopRefusalKind::FabricCapabilityUnavailable;
+          }
           if (auto *admittedCoordinate =
                   std::get_if<StructuredVectorScheduleCoordinate>(
                       &*coordinate)) {
@@ -1303,10 +1388,15 @@ enumerateStructuredScheduleDecisions(
 
     std::optional<std::uint64_t> tripCount = staticTripCount(scfLoop);
     if (tripCount && *tripCount > 1 && scfLoop.getInitArgs().empty()) {
+      // Strip-mine tile sizes follow the polyhedral tile rule so a tile can
+      // span a canonical fraction of the trip count.
+      const std::vector<std::uint64_t> tileFactors =
+          canonicalTileFactors(*tripCount);
       std::vector<std::uint64_t> factors = canonicalProperDivisors(*tripCount);
-      if (llvm::Error error = recordCoordinates(factors.size() * 2))
+      if (llvm::Error error =
+              recordCoordinates(tileFactors.size() + factors.size()))
         return std::move(error);
-      for (std::uint64_t factor : factors)
+      for (std::uint64_t factor : tileFactors)
         appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Tile, factor,
                            std::nullopt});
@@ -1480,6 +1570,9 @@ materializeStructuredScheduleImpl(
       return detail::invalidStructuredSchedule("tile decision does not reference scf.for");
     if (llvm::Error error = applyTile(scfLoop, decision.factor))
       return std::move(error);
+    // Strip-mining keeps the source loop as the tile loop; a later decision
+    // composes with exactly that loop.
+    transformedScheduleRoots.push_back(scfLoop);
     break;
   case StructuredScheduleDecisionKind::Unroll:
     if (!scfLoop)

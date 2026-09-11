@@ -404,16 +404,19 @@ for ranking whenever one is admitted.
 Each static graph launch site yields one `AnalyticLaunchEstimate`:
 `activations` (dynamic firings over the complete program, from the exact
 Structured block profile), `compute_cycles_per_activation` (the iterations one
-activation performs times the larger of the resource-bound initiation interval
-and the recurrence length, plus the graph critical path),
+activation performs, the most executed block of the Spatial owner over the
+owner's activations, times the larger of the resource-bound initiation
+interval and the recurrence length, plus the graph critical path),
 `external_memory_bytes_per_activation` (bytes every memory actor moves across
 the SpatialCore service boundary per iteration),
 `memory_transactions_per_activation` (memory actor firings per iteration,
-each one request that occupies an outstanding slot), and
-`boundary_payload_bytes_per_activation` (the invocation wire). The memory
-round trip one outstanding slot waits for is the service's bounded completion
-plus two bridge crossings from the pinned platform policy. The duration of a
-launch site under an allocation of `u` AccCores is:
+each one request that occupies an outstanding slot), `memory_actors` (the
+graph's distinct memory actors; a memory actor holds one request in flight
+until its response returns), and `boundary_payload_bytes_per_activation` (the
+invocation wire). The memory round trip one outstanding slot waits for is the
+service's bounded completion plus two bridge crossings from the pinned
+platform policy. The duration of a launch site under an allocation of `u`
+AccCores is:
 
 ```text
 cores            = max(1, min(u, activations))
@@ -421,7 +424,8 @@ per_core         = ceil(activations / cores)
 compute          = compute_cycles * clock_period
 bandwidth        = max(bytes * service_ps_per_byte,
                        transactions * service_ps_per_operation) * cores
-latency_chain    = ceil(transactions / outstanding) * memory_latency
+in_flight        = max(1, min(outstanding, memory_actors))
+latency_chain    = ceil(transactions / in_flight) * memory_latency
 point            = max(compute, bandwidth, latency_chain)
 wire             = memory_latency + boundary_bytes * service_ps_per_byte
 duration         = activations * launch_dispatch
@@ -1720,18 +1724,30 @@ The Structured schedule generator shares its materialization-attempt grant
 across exact input parents in rounds. Each round tries the next eligible
 proposal from each parent in canonical input order. Typed refusals and no-ops
 consume attempts normally. When a logical thread domain is required, proven
-tiled-prefix terminal searches precede direct parallelization. Larger tile
-factors come first to amortize activation overhead; equal factors retain the
-parent's canonical decision order. A tiled prefix composes only with direct
-parallelization of its transformed outer tile roots, preserving the point
-loops inside each tile. Point-loop and whole-nest parallelization remain in
-the direct search phase. Direct decisions retain their canonical order. Each prefix and its
-independently enumerated terminal proof form one search step, with every
-materialization charged separately. Exhausted grants retain finalized outputs
-and report semantic incompleteness; one parent's rejected alternatives must
-not consume later rounds before the other parents receive their current turn.
-The implementation semantic identity is
-`loom.compiler.structured_schedule.generator.v21`.
+tiled-prefix terminal searches precede direct parallelization. A parent's
+first step is its vector chain: the widest admitted vector coordinate is
+materialized as an unpublished stage, on every other parent the widest
+admitted unroll of that stage follows as a second stage, the leaf stage's loop
+is strip-mined, and the tile loop is parallelized; the stages and the prefix
+reach the store only when that terminal materializes. The exact SCoP cannot
+re-vectorize a symbolic tile, so the vector shape is taken first; the unroll
+stage replicates the memory actors that each hold one request in flight. The remaining steps are the parent's
+own tiled prefixes: proven polyhedral tiles, and strip-mining where the exact
+SCoP admitted no tile for the loop. Tile counts nearest the AccCore count come
+first because a tiled prefix exists to become one logical thread per AccCore;
+among equal distances the coarser tile amortizes more activation overhead.
+Vector coordinates of one loop are proposed widest first, and a shape no
+Fabric operation node admits for the loop's compute actors is refused at
+enumeration rather than charged to the grant. A tiled prefix composes only
+with direct parallelization of its transformed outer tile roots, preserving
+the point loops inside each tile. Point-loop and whole-nest parallelization
+remain in the direct search phase. Direct decisions retain their canonical
+order. Each prefix and its independently enumerated terminal proof form one
+search step, with every materialization charged separately. Exhausted grants
+retain finalized outputs and report semantic incompleteness; one parent's
+rejected alternatives must not consume later rounds before the other parents
+receive their current turn. The implementation semantic identity is
+`loom.compiler.structured_schedule.generator.v22`.
 
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact

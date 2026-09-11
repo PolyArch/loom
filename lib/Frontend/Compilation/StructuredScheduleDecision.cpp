@@ -55,10 +55,13 @@ bool admitsDecisionFactor(StructuredScheduleDecisionKind kind,
   const bool canonicalFactor =
       factor >= 2 && factor <= maximumCanonicalStructuredScheduleFactor;
   switch (kind) {
-  case StructuredScheduleDecisionKind::Tile:
   case StructuredScheduleDecisionKind::Unroll:
   case StructuredScheduleDecisionKind::UnrollAndJam:
     return canonicalFactor;
+  case StructuredScheduleDecisionKind::Tile:
+    // A strip-mine tile size is canonical by its size or by its tile count,
+    // exactly like a polyhedral tile factor.
+    return factor >= 2;
   case StructuredScheduleDecisionKind::Interchange:
   case StructuredScheduleDecisionKind::Parallelize:
   case StructuredScheduleDecisionKind::ParallelizeNest:

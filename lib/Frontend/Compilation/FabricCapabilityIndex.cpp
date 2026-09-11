@@ -5,6 +5,8 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 
+#include "mlir/IR/BuiltinTypes.h"
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -216,6 +218,41 @@ frontend::FabricCapabilityIndex::admittingOperationResources(
     return pointerLayout.takeError();
   return admittingOperationResources(
       *projection, *indexBitWidth, *pointerLayout ? &**pointerLayout : nullptr);
+}
+
+llvm::Expected<bool>
+frontend::FabricCapabilityIndex::admitsVectorShape(mlir::Operation *actor,
+                                                   std::uint64_t lanes) const {
+  if (lanes == 0 || lanes > std::numeric_limits<std::int64_t>::max())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "vector shape probe requires a lane count");
+  auto projection = dataflow::projectRegisteredActorSchemaProjection(actor);
+  if (!projection)
+    return projection.takeError();
+  auto indexBitWidth = loom::getIndexBitWidth(actor);
+  if (!indexBitWidth)
+    return indexBitWidth.takeError();
+  auto pointerLayout = resolveActorPointerLayout(actor, *projection);
+  if (!pointerLayout)
+    return pointerLayout.takeError();
+  const auto widen = [&](mlir::Type type) -> mlir::Type {
+    if (type.isIntOrFloat() && !llvm::isa<mlir::IndexType>(type))
+      return mlir::VectorType::get({static_cast<std::int64_t>(lanes)}, type);
+    return type;
+  };
+  llvm::SmallVector<mlir::Type, 4> inputs;
+  for (mlir::Type type : projection->type.getInputs())
+    inputs.push_back(widen(type));
+  llvm::SmallVector<mlir::Type, 2> results;
+  for (mlir::Type type : projection->type.getResults())
+    results.push_back(widen(type));
+  projection->type =
+      mlir::FunctionType::get(actor->getContext(), inputs, results);
+  auto count = admittingOperationResourceCount(
+      *projection, *indexBitWidth, *pointerLayout ? &**pointerLayout : nullptr);
+  if (!count)
+    return count.takeError();
+  return *count != 0;
 }
 
 llvm::Expected<std::uint64_t>
