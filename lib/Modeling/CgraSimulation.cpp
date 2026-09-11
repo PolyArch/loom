@@ -583,10 +583,26 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
   const auto projectionBegin = beginAttemptInterval(attemptProfile != nullptr);
   if (!outcome)
     return classifyExecutionFailure(outcome.takeError());
-  if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)
+  if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit) {
+    // The grant and the counters at the stop distinguish an under-granted
+    // long execution from a session that spins without retiring actors.
+    emitInvocationDiagnostic(
+        DiagnosticVerbosity::Summary, InvocationDiagnosticStage::SystemPnr,
+        InvocationDiagnosticEvent::MappingFailure, [&] {
+          return llvm::json::Value(llvm::json::Object{
+              {"failure_scope", "cgra_simulation_execution_limit"},
+              {"max_event_frames", limits.maxEventFrames},
+              {"event_frames", outcome->counters.eventFrameCount},
+              {"empty_event_frames", outcome->counters.emptyEventFrameCount},
+              {"actor_retirements", outcome->counters.actorRetirementCount},
+              {"maximum_reference_cycle",
+               outcome->counters.maximumReferenceCycleNumerator},
+          });
+        });
     return EvaluationModelResult{
         {{kExecutionOutputSlot, {}}},
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached}};
+  }
   if (outcome->state != sim::SpatialExecutionSessionState::Retired ||
       !outcome->retired) {
     if (closedWait && outcome->closedWaitSet)
