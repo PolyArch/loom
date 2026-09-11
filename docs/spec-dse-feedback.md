@@ -1764,7 +1764,8 @@ admitted unroll of that stage follows as a second stage, the leaf stage's loop
 is strip-mined, and the tile loop is parallelized; the stages and the prefix
 reach the store only when that terminal materializes. The exact SCoP cannot
 re-vectorize a symbolic tile, so the vector shape is taken first; the unroll
-stage replicates the memory actors that each hold one request in flight. The remaining steps are the parent's
+stage replicates the memory actors, each of which holds up to its Operation
+Engine's issue depth requests in flight. The remaining steps are the parent's
 own tiled prefixes: proven polyhedral tiles, and strip-mining where the exact
 SCoP admitted no tile for the loop. Tile counts nearest the AccCore count come
 first because a tiled prefix exists to become one logical thread per AccCore;
