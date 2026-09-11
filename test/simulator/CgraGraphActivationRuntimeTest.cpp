@@ -17,7 +17,9 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdlib>
 #include <initializer_list>
 #include <optional>
@@ -612,6 +614,7 @@ void graphActivationExecutesSelectedLocalMemory() {
        occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(port),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{port, 0},
+       ::fabric::serializedMemoryOperationIssueDepth,
        operationAction,
        0,
        1,
@@ -771,11 +774,13 @@ void graphActivationExecutesSelectedLocalMemory() {
   if (llvm::Error error = deferredRuntime.start(coordinate(0), deferredIngress))
     fail(llvm::toString(std::move(error)));
   ActivationEvidence deferredEvidence;
+  std::optional<loom::sim::SpatialEventCoordinate> serializedRetirement;
   for (unsigned iteration = 0;
        iteration != 96 && deferredRuntime.hasPendingEvents(); ++iteration) {
     auto frame = take(deferredRuntime.advance());
     if (frame) {
       deferredEvidence.accumulate(*frame);
+      serializedRetirement = frame->coordinate;
       continue;
     }
     require(deferredRuntime.waitingForExternalMemory() &&
@@ -812,6 +817,77 @@ void graphActivationExecutesSelectedLocalMemory() {
               deferredEvidence == immediateEvidence,
           "deferred external memory changed CGRA lifecycle evidence");
   requireExternalOutput(deferredState);
+
+  // The Fabric memory Operation Engine owns how many firings one bound memory
+  // actor may hold outstanding. The run above declares the serialized depth,
+  // so its two load firings never overlap: the second is admitted only after
+  // the first retires, and exactly one request is ever outstanding. Declaring
+  // depth two lets the second firing issue while the first awaits its
+  // response, so both requests are outstanding together and the activation
+  // retires earlier. Every other fact stays identical: the same two requests
+  // in the same order, the same lifecycle events, and the same outputs.
+  const auto deferredRunOutstandingPeak =
+      [&](std::uint64_t issueDepth,
+          std::optional<loom::sim::SpatialEventCoordinate> &retirement)
+      -> std::size_t {
+    plan.memory.actors.back().operationIssueDepth = issueDepth;
+    FixedExternalMemoryProvider memory(
+        FixedExternalMemoryProvider::Completion::Deferred);
+    SimulatorState runState;
+    llvm::SmallVector<GraphIngressEmission, 4> runIngress;
+    seedState(runState, runIngress, 2);
+    auto runtime = take(CgraGraphActivationRuntime::create(
+        plan, view, launch, load->graph, *prepared, externalTransportGraph,
+        runState, /*captureMicroarchitecture=*/false, &memory));
+    if (llvm::Error error = runtime.start(coordinate(0), runIngress))
+      fail(llvm::toString(std::move(error)));
+    std::size_t completed = 0;
+    std::size_t peak = 0;
+    for (unsigned iteration = 0;
+         iteration != 96 && runtime.hasPendingEvents(); ++iteration) {
+      auto frame = take(runtime.advance());
+      if (frame) {
+        retirement = frame->coordinate;
+        peak = std::max(peak, memory.requests.size() - completed);
+        continue;
+      }
+      require(runtime.waitingForExternalMemory() &&
+                  completed != memory.requests.size(),
+              "depth-bounded memory lost its pending request");
+      peak = std::max(peak, memory.requests.size() - completed);
+      // The consistency domain linearizes firings in issue order however the
+      // provider answers, so the oldest outstanding request is completed with
+      // its own response.
+      if (llvm::Error error = runtime.completeExternalMemory(
+              memory.requests[completed],
+              FixedExternalMemoryProvider::response(completed)))
+        fail(llvm::toString(std::move(error)));
+      ++completed;
+    }
+    require(!runtime.hasPendingEvents() && memory.requests.size() == 2 &&
+                completed == 2,
+            "depth-bounded memory did not retire both firings");
+    requireExternalOutput(runState);
+    return peak;
+  };
+  std::optional<loom::sim::SpatialEventCoordinate> pipelinedRetirement;
+  std::optional<loom::sim::SpatialEventCoordinate> reserializedRetirement;
+  require(deferredRunOutstandingPeak(2, pipelinedRetirement) == 2,
+          "issue depth two did not overlap its two memory firings");
+  require(deferredRunOutstandingPeak(
+              ::fabric::serializedMemoryOperationIssueDepth,
+              reserializedRetirement) == 1,
+          "the serialized engine overlapped two memory firings");
+  require(serializedRetirement && pipelinedRetirement &&
+              reserializedRetirement &&
+              loom::sim::compareSpatialEventCoordinates(
+                  *reserializedRetirement, *serializedRetirement) == 0,
+          "re-declaring the serialized depth changed the retirement cycle");
+  require(loom::sim::compareSpatialEventCoordinates(
+              *pipelinedRetirement, *serializedRetirement) < 0,
+          "issue depth two did not retire before the serialized engine");
+  plan.memory.actors.back().operationIssueDepth =
+      ::fabric::serializedMemoryOperationIssueDepth;
 
   plan.memory.rootedUses.front().target = service;
   plan.memory.rootedUses.front().localServicePhysicalUseOrdinal = serviceAction;
@@ -909,6 +985,7 @@ void graphActivationExecutesExactMemoryInternalConnections() {
        occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(loadPort),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{loadPort, 0},
+       ::fabric::serializedMemoryOperationIssueDepth,
        0,
        0,
        1,
@@ -924,6 +1001,7 @@ void graphActivationExecutesExactMemoryInternalConnections() {
        occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(storePort),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{storePort, 0},
+       ::fabric::serializedMemoryOperationIssueDepth,
        2,
        1,
        1,
