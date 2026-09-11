@@ -47,6 +47,7 @@ target_include_directories(LoomApplicationRuntimeManifest PUBLIC
 )
 
 target_link_libraries(LoomApplicationRuntimeManifest PUBLIC
+  LoomApplicationPortfolio
   LoomCommon
   LoomDeployment
   LoomDSE
