@@ -56,6 +56,9 @@ enum class FuReverseSynthesisFailure : std::uint8_t {
   MappingInvalid,
   MappingInternal,
   CoverageNotEstablished,
+  /// A bounded subgraph-mining search reached its retained-candidate bound
+  /// before it finished. The result is abandoned rather than truncated.
+  MiningBoundExhausted,
 };
 
 llvm::StringRef

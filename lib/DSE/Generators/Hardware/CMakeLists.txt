@@ -1,4 +1,6 @@
 add_library(LoomDSEHardwareGenerator
+  CompositeFuMining.cpp
+  CompositeFuSynthesis.cpp
   FabricTemplateCandidateGenerator.cpp
   FuReverseSynthesis.cpp
   FuReverseSynthesisCandidateGenerator.cpp

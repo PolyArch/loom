@@ -1,0 +1,2 @@
+# RUN: %loom-dse-composite-fu-mining-test \
+# RUN:   %S/Inputs/composite_fu_mining.mlir mining
