@@ -7,6 +7,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -485,6 +486,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   };
   enum class ScheduleSearchPhase : std::size_t { Direct, TiledPrefix };
   std::vector<ParentSchedule> parents;
+  auto systemRoot = fabric::requireSystemRoot(exactFabric->view());
+  if (!systemRoot)
+    return systemRoot.takeError();
+  const std::uint64_t accCoreCount =
+      std::max<std::size_t>(1, systemRoot->artifact().accCoreOccurrences().size());
   for (const ArtifactRootReference &reference :
        inputBindings[StructuredProgramsInput].artifacts) {
     if (stopGeneration)
@@ -585,10 +591,37 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
                 ScheduleSearchPhase::TiledPrefix)]
             .push_back(ordinal);
     }
+    // A tiled prefix exists to become one logical thread per AccCore, so the
+    // tile counts nearest the AccCore count are explored first; among equal
+    // distances the coarser tile amortizes more activation overhead.
     auto &prefixes = schedule.proposalOrdinals[static_cast<std::size_t>(
         ScheduleSearchPhase::TiledPrefix)];
+    const auto tileDistance = [&](std::size_t ordinal) -> std::uint64_t {
+      const auto &decision = schedule.domain.proposals[ordinal].decision();
+      auto entity = schedule.program.view();
+      if (!entity) {
+        llvm::consumeError(entity.takeError());
+        return std::numeric_limits<std::uint64_t>::max();
+      }
+      auto loop = entity->resolve(decision.loop);
+      if (!loop) {
+        llvm::consumeError(loop.takeError());
+        return std::numeric_limits<std::uint64_t>::max();
+      }
+      const std::optional<std::uint64_t> trip =
+          frontend::structuredLoopStaticTripCount(loop->operation);
+      if (!trip || decision.factor == 0)
+        return std::numeric_limits<std::uint64_t>::max();
+      const std::uint64_t tiles = *trip / decision.factor;
+      return tiles > accCoreCount ? tiles - accCoreCount
+                                  : accCoreCount - tiles;
+    };
     std::stable_sort(prefixes.begin(), prefixes.end(),
                      [&](std::size_t left, std::size_t right) {
+                       const std::uint64_t leftDistance = tileDistance(left);
+                       const std::uint64_t rightDistance = tileDistance(right);
+                       if (leftDistance != rightDistance)
+                         return leftDistance < rightDistance;
                        return schedule.domain.proposals[left].decision().factor >
                               schedule.domain.proposals[right].decision().factor;
                      });
