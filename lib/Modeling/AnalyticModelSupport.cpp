@@ -4,6 +4,8 @@
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
 #include "Common/MappingDebugLog.h"
+
+#include "llvm/Support/JSON.h"
 #include "Common/VectorWidth.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -648,7 +650,9 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
   auto runtime = estimateHostResidualPicoseconds(platform, instructionLeaves);
   if (!runtime)
     return runtime.takeError();
+  const std::uint64_t hostResidualPicoseconds = *runtime;
   std::uint64_t configuredCores = 0;
+  llvm::json::Array launchRecords;
   for (const AnalyticLaunchEstimate &launch : launches) {
     auto duration =
         estimateLaunchDuration(platform, launch, platform.accCoreCount);
@@ -659,6 +663,39 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
       return std::move(error);
     configuredCores = std::max(
         configuredCores, std::min(platform.accCoreCount, launch.activations));
+    if (mapping_debug::enabled(mapping_debug::Level::Detail)) {
+      llvm::json::Object record;
+      record["static_graph_launch"] = launch.launch.entity.value();
+      record["activations"] = launch.activations;
+      record["compute_cycles_per_activation"] =
+          launch.computeCyclesPerActivation;
+      record["external_memory_bytes_per_activation"] =
+          launch.externalMemoryBytesPerActivation;
+      record["memory_transactions_per_activation"] =
+          launch.memoryTransactionsPerActivation;
+      record["boundary_payload_bytes_per_activation"] =
+          launch.boundaryPayloadBytesPerActivation;
+      record["duration_ps"] = duration->picoseconds;
+      record["compute_ps"] = duration->computePicoseconds;
+      record["bandwidth_ps"] = duration->bandwidthPicoseconds;
+      record["latency_chain_ps"] = duration->latencyChainPicoseconds;
+      record["fixed_ps"] = duration->fixedPicoseconds;
+      record["dispatch_ps"] = duration->dispatchPicoseconds;
+      record["bottleneck"] = [&]() -> llvm::StringRef {
+        switch (duration->bottleneck) {
+        case AnalyticLaunchBottleneck::Launch:
+          return "launch";
+        case AnalyticLaunchBottleneck::Compute:
+          return "compute";
+        case AnalyticLaunchBottleneck::MemoryBandwidth:
+          return "memory_bandwidth";
+        case AnalyticLaunchBottleneck::MemoryLatency:
+          return "memory_latency";
+        }
+        return "unknown";
+      }();
+      launchRecords.push_back(std::move(record));
+    }
   }
   auto configuration =
       estimateConfigurationLoadPicoseconds(platform, configuredCores);
@@ -667,6 +704,21 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
   if (llvm::Error error =
           accumulateScaled(*runtime, *configuration, 1, "configuration load"))
     return std::move(error);
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "analytic_runtime_estimate";
+        fields["instruction_leaves"] = instructionLeaves;
+        fields["host_residual_ps"] = hostResidualPicoseconds;
+        fields["configuration_ps"] = *configuration;
+        fields["runtime_ps"] = *runtime;
+        fields["acc_core_count"] = platform.accCoreCount;
+        fields["memory_latency_ps"] = platform.memoryLatencyPicoseconds;
+        fields["memory_service_ps_per_operation"] =
+            platform.memoryServicePicosecondsPerOperation;
+        fields["outstanding_requests"] = platform.accCoreOutstandingRequests;
+        fields["launches"] = std::move(launchRecords);
+      });
   if (*runtime >
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return llvm::createStringError(

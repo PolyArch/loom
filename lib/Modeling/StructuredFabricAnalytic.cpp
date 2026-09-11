@@ -156,7 +156,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "structured_fabric_low_confidence",
-    "loom.structured_fabric.low_confidence.v5",
+    "loom.structured_fabric.low_confidence.v6",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -680,6 +680,11 @@ projectLaunchEstimate(dataflow::StaticGraphLaunchRef launch,
   if (!bytes)
     return bytes.takeError();
   estimate.externalMemoryBytesPerActivation = *bytes;
+  auto transactions = checkedScaledCount(graph.memoryTransactions, iterations,
+                                         "launch memory transactions");
+  if (!transactions)
+    return transactions.takeError();
+  estimate.memoryTransactionsPerActivation = *transactions;
   estimate.boundaryPayloadBytesPerActivation = graph.boundaryPayloadBytes;
   return estimate;
 }

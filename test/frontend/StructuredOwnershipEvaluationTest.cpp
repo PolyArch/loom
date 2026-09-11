@@ -71,11 +71,13 @@ using loom::test::structured_ownership::SourceSimulationInputs;
 using loom::test::structured_ownership::take;
 using loom::test::structured_ownership::zeroedMemory;
 
-/// The evaluation kernels add two vectors element by element as straight-line
-/// code: enough work that offloading a kernel pays for a physically priced
-/// launch, while `tiny` does not, and no loop so every scope keeps exactly
-/// one ownership decision.
+/// The evaluation kernels combine two vectors element by element as
+/// straight-line code, each element through a dependent chain of multiply-adds
+/// long enough that offloading a kernel pays for a physically priced launch
+/// and its outstanding-bound memory requests, while `tiny` does not, and no
+/// loop so every scope keeps exactly one ownership decision.
 constexpr std::size_t kVectorLength = 64;
+constexpr std::size_t kMultiplyAddChainLength = 12;
 
 std::string vectorAddKernel(llvm::StringRef name) {
   std::string body;
@@ -92,9 +94,15 @@ std::string vectorAddKernel(llvm::StringRef name) {
            << ", align 4\n"
            << "  %rhs" << element << " = load float, ptr %pb" << element
            << ", align 4\n"
-           << "  %sum" << element << " = fadd float %lhs" << element
-           << ", %rhs" << element << "\n"
-           << "  store float %sum" << element << ", ptr %pc" << element
+           << "  %sum" << element << "_0 = fadd float %lhs" << element
+           << ", %rhs" << element << "\n";
+    for (std::size_t step = 0; step < kMultiplyAddChainLength; ++step)
+      stream << "  %prod" << element << "_" << step << " = fmul float %sum"
+             << element << "_" << step << ", %rhs" << element << "\n"
+             << "  %sum" << element << "_" << step + 1 << " = fadd float %prod"
+             << element << "_" << step << ", %lhs" << element << "\n";
+    stream << "  store float %sum" << element << "_"
+           << kMultiplyAddChainLength << ", ptr %pc" << element
            << ", align 4\n";
   }
   stream << "  ret void\n}\n\n";

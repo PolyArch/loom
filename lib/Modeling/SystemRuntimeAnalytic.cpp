@@ -219,6 +219,8 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
     return windowBytes.takeError();
   platform.memoryServicePicosecondsPerByte =
       std::max<std::uint64_t>(1, ceilDiv(*windowPicoseconds, *windowBytes));
+  platform.memoryServicePicosecondsPerOperation = std::max<std::uint64_t>(
+      1, ceilDiv(*windowPicoseconds, rate.operationsPerWindow()));
   // Every SpatialCore reaches the shared memory through its private access
   // cache, so a request is one line fill and the miss-status entries bound
   // the requests in flight; the endpoint's own outstanding limit still caps
@@ -256,6 +258,18 @@ projectSystemPlatformModel(const fabric::FinalizedFabricRoot &fabricRoot) {
   }
 
   const runtime::Gem5BuiltinPlatformPolicy policy;
+  // A SpatialCore request crosses the bridge twice on top of the service's
+  // own completion bound, so the round trip one outstanding slot waits for
+  // includes both crossings.
+  auto crossings = checkedMul(policy.spatialBridgeLatencyTicks, 2,
+                              "memory request bridge crossings");
+  if (!crossings)
+    return crossings.takeError();
+  auto roundTrip = checkedAdd(platform.memoryLatencyPicoseconds, *crossings,
+                              "memory request round trip");
+  if (!roundTrip)
+    return roundTrip.takeError();
+  platform.memoryLatencyPicoseconds = *roundTrip;
   auto leafPicoseconds = checkedMul(platform.hostCyclesPerInstructionLeaf,
                                     *period, "instruction leaf period");
   if (!leafPicoseconds)
@@ -346,23 +360,36 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
                          "wire fetch");
   if (!wire)
     return wire.takeError();
-  auto service = checkedMul(launch.externalMemoryBytesPerActivation,
-                            platform.memoryServicePicosecondsPerByte,
-                            "memory service");
-  if (!service)
-    return service.takeError();
-  auto bandwidth = checkedMul(*service, cores, "shared memory service");
+  // The service accepts bytes at its beat rate and operations at its rate
+  // window; every memory actor firing is one operation, so the slower of the
+  // two bounds the shared service.
+  auto byteService = checkedMul(launch.externalMemoryBytesPerActivation,
+                                platform.memoryServicePicosecondsPerByte,
+                                "memory byte service");
+  if (!byteService)
+    return byteService.takeError();
+  auto operationService =
+      checkedMul(launch.memoryTransactionsPerActivation,
+                 platform.memoryServicePicosecondsPerOperation,
+                 "memory operation service");
+  if (!operationService)
+    return operationService.takeError();
+  auto bandwidth = checkedMul(std::max(*byteService, *operationService), cores,
+                              "shared memory service");
   if (!bandwidth)
     return bandwidth.takeError();
-  const std::uint64_t requests = ceilDiv(
-      launch.externalMemoryBytesPerActivation, platform.accCoreRequestBytes);
-  auto chain = checkedMul(ceilDiv(requests, platform.accCoreOutstandingRequests),
+  // Each transaction holds one outstanding slot for the request round trip.
+  auto chain = checkedMul(ceilDiv(launch.memoryTransactionsPerActivation,
+                                  platform.accCoreOutstandingRequests),
                           platform.memoryLatencyPicoseconds,
                           "memory request chain");
   if (!chain)
     return chain.takeError();
 
   AnalyticLaunchDuration result;
+  result.computePicoseconds = *compute;
+  result.bandwidthPicoseconds = *bandwidth;
+  result.latencyChainPicoseconds = *chain;
   std::uint64_t point = *compute;
   result.bottleneck = AnalyticLaunchBottleneck::Compute;
   if (*bandwidth > point) {
@@ -393,6 +420,8 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
   auto total = checkedAdd(*dispatch, *perCore, "launch duration");
   if (!total)
     return total.takeError();
+  result.fixedPicoseconds = *fixed;
+  result.dispatchPicoseconds = *dispatch;
   result.picoseconds = *total;
   return result;
 }
@@ -425,6 +454,7 @@ void appendAnalyticLaunchEstimates(
     appendU64(launch.activations);
     appendU64(launch.computeCyclesPerActivation);
     appendU64(launch.externalMemoryBytesPerActivation);
+    appendU64(launch.memoryTransactionsPerActivation);
     appendU64(launch.boundaryPayloadBytesPerActivation);
   }
 }
