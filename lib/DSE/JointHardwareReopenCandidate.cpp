@@ -878,7 +878,7 @@ selectMappingHardwareFeedback(const JointDesignExecution &execution,
   return std::optional<MappingHardwareFeedback>();
 }
 
-llvm::Expected<HardwareRecipeGrowth>
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
 deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
                            const MappingHardwareFeedback &feedback,
                            const ArtifactStore &artifacts,
@@ -901,16 +901,18 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
         preferTemporalInstructionStore);
     if (!plan)
       return plan.takeError();
+    if (!*plan)
+      return std::optional<HardwareRecipeGrowth>();
     growth.techModule = techObservation->module;
-    growth.computeContextGrowthDirection = plan->direction;
-    growth.spatialFuContextSupplyBound = plan->spatialFuContextSupplyBound;
-    growth.spatialFuUnclosedDeficit = plan->spatialFuUnclosedDeficit;
-    switch (plan->direction) {
+    growth.computeContextGrowthDirection = (*plan)->direction;
+    growth.spatialFuContextSupplyBound = (*plan)->spatialFuContextSupplyBound;
+    growth.spatialFuUnclosedDeficit = (*plan)->spatialFuUnclosedDeficit;
+    switch ((*plan)->direction) {
     case dse::TechMappingComputeContextGrowthDirection::SpatialFuOccurrence: {
-      if (!plan->spatialFuGrowth)
+      if (!(*plan)->spatialFuGrowth)
         return invalid("Spatial FU growth direction has no typed decision");
       const dse::TechMappingComputeContextSpatialFuGrowth &spatial =
-          *plan->spatialFuGrowth;
+          *(*plan)->spatialFuGrowth;
       growth.moduleDecision = dse::ChangeFuInventoryDomain{
           spatial.decision.target, {spatial.decision.prototypes}};
       growth.addedSpatialFuOccurrences = 1;
@@ -919,7 +921,7 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
     }
     case dse::TechMappingComputeContextGrowthDirection::
         TemporalInstructionStore:
-      for (const dse::ResizeInstructionStore &decision : plan->decisions) {
+      for (const dse::ResizeInstructionStore &decision : (*plan)->decisions) {
         const std::uint64_t currentCapacity =
             module->view().peResidentContextCount(decision.target);
         if (decision.instructionCapacity <= currentCapacity)
@@ -928,8 +930,8 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
             std::max(growth.maximumInstructionStoreCapacity,
                      static_cast<std::uint64_t>(decision.instructionCapacity));
       }
-      growth.instructionStoreResizes = plan->decisions;
-      growth.resizedInstructionStoreCount = plan->decisions.size();
+      growth.instructionStoreResizes = (*plan)->decisions;
+      growth.resizedInstructionStoreCount = (*plan)->decisions.size();
       break;
     }
   } else if (const auto *spatialObservation =
@@ -989,7 +991,7 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
   }
 
   growth.config.dse.planNodes.clear();
-  return growth;
+  return std::optional<HardwareRecipeGrowth>(std::move(growth));
 }
 
 /// A parent without a reusable Tech/Spatial frontier can expose an exact Hall
@@ -998,7 +1000,8 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
 /// seed. Admit one bounded uniform Temporal-PE capacity alternative so the
 /// hardware owner can measure that tradeoff without enumerating a powerset of
 /// PE subsets.
-llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
+deriveUniformTechHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig,
     const TechHardwareFeedbackObservation &observation,
     const ArtifactStore &artifacts) {
@@ -1043,12 +1046,14 @@ llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
         std::max(growth.maximumInstructionStoreCapacity,
                  static_cast<std::uint64_t>(target));
   }
+  // A Module with no Temporal PE offers no uniform context alternative. That
+  // is an ordinary observation the chain retreats from.
   if (growth.instructionStoreResizes.empty())
-    return invalid("uniform Tech growth has no Temporal PE");
+    return std::optional<HardwareRecipeGrowth>();
   growth.resizedInstructionStoreCount = growth.instructionStoreResizes.size();
   growth.uniformContextGrowth = true;
   growth.config.dse.planNodes.clear();
-  return growth;
+  return std::optional<HardwareRecipeGrowth>(std::move(growth));
 }
 
 llvm::Expected<HardwareRecipeMaterializationOutcome>

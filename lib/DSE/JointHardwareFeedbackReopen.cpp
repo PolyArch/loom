@@ -27,9 +27,12 @@
 namespace loom::dse::joint_reopen_detail {
 namespace {
 
-/// A Hall closure probe and the retreat that consumes the child's own feedback
-/// each receive one share of the remaining parent slice.
-constexpr std::uint64_t retreatShareDivisor = 2;
+/// Shares of the remaining parent slice when a chain reserves a retreat. A
+/// Hall deficit only reports that a cover was not admitted, so its closure is
+/// the speculative supply and takes one share. The retreat consumes a
+/// shortfall a Mapping actually reached transport to report, so it is the
+/// evidenced repair and keeps the rest.
+constexpr std::uint64_t hallClosureShareDivisor = 3;
 
 } // namespace
 
@@ -126,6 +129,10 @@ tryHardwareFeedbackReopen(
   // one such probe: repeating it would multiply the invocation's mapping cost.
   bool preferTemporalInstructionStore = true;
   bool spatialFuGrowthProbeConsumed = false;
+  // Exactly one probe of a chain reserves a retreat share. Reserving again on
+  // every later probe would shrink the window geometrically and spend the
+  // parent slice on probes too small to finish.
+  bool retreatShareReserved = false;
   const std::uint64_t candidateLimit =
       request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
               request.boundedQuality
@@ -148,7 +155,7 @@ tryHardwareFeedbackReopen(
     // The growth owner chooses the supply direction from the exact observed
     // relation, so the direction is derived before the funnel decides whether
     // this observation repeats the previous one.
-    llvm::Expected<HardwareRecipeGrowth> growth =
+    llvm::Expected<std::optional<HardwareRecipeGrowth>> growth =
         (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
          parentHasNoMappingFrontier && candidateOrdinal == 0 &&
          techObservation && techObservation->feedback.deficit() > 1)
@@ -158,8 +165,24 @@ tryHardwareFeedbackReopen(
                                          preferTemporalInstructionStore);
     if (!growth)
       return growth.takeError();
+    if (!*growth) {
+      ++accounting.hardwareRepairProbesRejected;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "hardware_repair_funnel";
+            fields["closure_status"] = "unsupported";
+            fields["reason"] = "observed_feedback_admits_no_growth";
+            fields["candidate_ordinal"] = candidateOrdinal;
+            fields["diagnostic"] =
+                "the observed compute-context relation has neither a Temporal "
+                "context supply nor a closing Spatial FU occurrence";
+          });
+      break;
+    }
     const bool spatialFuGrowthProbe =
-        growth->computeContextGrowthDirection ==
+        (*growth)->computeContextGrowthDirection ==
         TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
     if (spatialFuGrowthProbe) {
       spatialFuGrowthProbeConsumed = true;
@@ -171,12 +194,15 @@ tryHardwareFeedbackReopen(
     // parent slice leaves that alternative untried, so it runs under a share
     // of the remaining window and the retreat probe keeps the rest. The
     // invocation deadline is unchanged; only this probe's local slice moves.
-    const bool reserveRetreatShare =
-        techObservation != nullptr && candidateOrdinal + 1 != candidateLimit;
+    const bool reserveRetreatShare = techObservation != nullptr &&
+                                     !retreatShareReserved &&
+                                     candidateOrdinal + 1 != candidateLimit;
+    if (reserveRetreatShare)
+      retreatShareReserved = true;
     auto probeExecutionPolicy =
         reserveRetreatShare
             ? fairRemainingPlanPolicy(effectiveExecutionPolicy,
-                                      retreatShareDivisor, 0)
+                                      hallClosureShareDivisor, 0)
             : llvm::Expected<PlanExecutionPolicy>(effectiveExecutionPolicy);
     if (!probeExecutionPolicy)
       return probeExecutionPolicy.takeError();
@@ -213,7 +239,7 @@ tryHardwareFeedbackReopen(
           techObservation->feedback.deficit(),
           techObservation->feedback.hallDemandCount(),
           techObservation->feedback.hallContextValueCount(),
-          growth->computeContextGrowthDirection};
+          (*growth)->computeContextGrowthDirection};
       // Equal demand and context growth under an unchanged deficit means the
       // previous probe bought nothing. That is only a funnel boundary while
       // the owner keeps offering the same kind of supply: a changed growth
@@ -255,30 +281,32 @@ tryHardwareFeedbackReopen(
     }
     ++accounting.hardwareRepairProbesPlanned;
     ++accounting.hardwareRepairProbesReserved;
-    const bool accCoreOnlyGrowth = growth->addedAccCores != 0 &&
-                                   growth->addedContexts == 0 &&
-                                   growth->addedGateways == 0;
+    const bool accCoreOnlyGrowth = (*growth)->addedAccCores != 0 &&
+                                   (*growth)->addedContexts == 0 &&
+                                   (*growth)->addedGateways == 0;
     const bool typedModuleGrowth = techObservation != nullptr;
     using RefusableMaterialization =
         std::optional<HardwareRecipeMaterializationOutcome>;
     auto materialization = [&]() -> llvm::Expected<RefusableMaterialization> {
       if (!accCoreOnlyGrowth && !typedModuleGrowth) {
-        auto recipe = materializeHardwareRecipeGrowth(
-            std::move(*growth), evidence, request, scheduler, artifacts, blobs);
+        auto recipe =
+            materializeHardwareRecipeGrowth(std::move(**growth), evidence,
+                                            request, scheduler, artifacts,
+                                            blobs);
         if (!recipe)
           return recipe.takeError();
         return RefusableMaterialization(std::move(*recipe));
       }
       if (accCoreOnlyGrowth) {
-        auto core =
-            materializeTypedAccCoreGrowth(std::move(*growth), artifacts, blobs);
+        auto core = materializeTypedAccCoreGrowth(std::move(**growth),
+                                                  artifacts, blobs);
         if (!core)
           return core.takeError();
         return RefusableMaterialization(
             HardwareRecipeMaterializationOutcome{std::move(*core)});
       }
       auto candidate = materializeTypedModuleSystemGrowth(
-          std::move(*growth), currentPlan->frontier.systemFrontier.front(),
+          std::move(**growth), currentPlan->frontier.systemFrontier.front(),
           artifacts, blobs);
       if (!candidate)
         return candidate.takeError();

@@ -211,14 +211,16 @@ selectMappingHardwareFeedback(const JointDesignExecution &execution,
                               const ArtifactStore &artifacts);
 
 /// `preferTemporalInstructionStore` carries the reopen chain's evidence about
-/// compute-context supply. See TechMappingHardwareFeedback.h.
-llvm::Expected<HardwareRecipeGrowth>
+/// compute-context supply. See TechMappingHardwareFeedback.h. An absent result
+/// is the typed refusal that the observed feedback admits no growth at all.
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
 deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
                            const MappingHardwareFeedback &feedback,
                            const ArtifactStore &artifacts,
                            bool preferTemporalInstructionStore = true);
 
-llvm::Expected<HardwareRecipeGrowth> deriveUniformTechHardwareRecipeGrowth(
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
+deriveUniformTechHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig,
     const TechHardwareFeedbackObservation &observation,
     const ArtifactStore &artifacts);

@@ -507,8 +507,13 @@ void computeContextFeedbackReconstructsAlternativeSupply(
                 resize->capacities.back() == current + adopted.deficit(),
             "Hall feedback did not order minimal-to-complete growth");
   }
-  auto joint = take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
-      adopted, module.view()));
+  auto jointPlan =
+      take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
+          adopted, module.view()));
+  require(jointPlan.has_value(),
+          "Hall growth reported no admitted supply for a relation with a "
+          "compatible Temporal PE");
+  const loom::dse::TechMappingComputeContextJointGrowthPlan &joint = *jointPlan;
   // A chain that has not yet seen instruction-store growth fail keeps the
   // structurally local, atomic closure: the Spatial supply reopens every
   // Mapping layer and is offered only once that evidence exists.
@@ -589,9 +594,14 @@ void computeContextFeedbackReconstructsAlternativeSupply(
   // A chain whose instruction-store probe published no Mapping withdraws the
   // preference. The owner then offers the Spatial FU occurrence supply, but
   // only through one decision that closes the complete observed relation.
-  auto retreat =
+  auto retreatPlan =
       take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
           adopted, module.view(), false));
+  require(retreatPlan.has_value(),
+          "a withdrawn preference reported no admitted supply while the "
+          "Temporal closure exists");
+  const loom::dse::TechMappingComputeContextJointGrowthPlan &retreat =
+      *retreatPlan;
   if (retreat.direction ==
       loom::dse::TechMappingComputeContextGrowthDirection::
           SpatialFuOccurrence) {
