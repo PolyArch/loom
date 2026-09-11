@@ -5127,6 +5127,29 @@ policy owner instead applies a cheap-to-expensive funnel:
    inputs may share a derived result; a typed schedule delta may preserve the
    unaffected Mapping cone; neither reuse path skips the owner verifier.
 
+A Mapping slot is scarce: every retained survivor consumes one expensive
+Tech/Spatial/System dispatch and its share of the invocation's Mapping wall
+time. A survivor whose analytic estimate does not beat the host-only baseline
+of the same source, workload, runtime input, and Fabric is a modeled
+regression. It is not analytically profitable under the ownership gate's
+whole-workload objective and must not displace a profitable survivor at the
+promotion boundary, because a regression cannot close the real-application
+optimization gate no matter how it maps. An unsupported estimate is not a
+regression proof and stays admissible. When no survivor is profitable the
+complete set stays admissible, so the invocation still reports its best
+available plan together with its typed incompleteness rather than silently
+retaining nothing. A requested spectrum endpoint selects a labelled
+representative rather than an improvement and keeps the complete set. This
+admission is provenance: it reports the baseline it applied and the number of
+demoted survivors, and it never converts a modeled regression into an exact
+rejection of the candidate.
+
+When no survivor reaches Mapping because the application boundary refused them
+all, the pair decision carries the first refusal's own explanation and not only
+its typed kind. The refusal names the proof that blocks the enclosing scope,
+which is the actionable feedback input for the next ownership decision;
+a generic boundary message leaves the DSE with nothing to act on.
+
 These are three distinct reuse relations. Exact memoization requires byte-exact
 semantic inputs. Schedule-preserving incremental reuse requires a typed delta,
 safe point, parent Mapping/Deployment, and a mechanically derived transitive

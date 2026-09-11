@@ -31,6 +31,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -759,6 +760,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
   std::vector<PreparedApplicationSoftware> preparedSoftware;
   std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
   std::optional<UnsupportedApplicationBuild> firstUnsupported;
+  // The typed kind alone does not say which proof refused the finalist. The
+  // pair decision is the only record a caller reads when no finalist reaches
+  // Mapping, so the first preflight explanation travels with it.
+  std::optional<std::string> firstUnsupportedDiagnostic;
   preparedSoftware.reserve(resourceTimeFunnel->finalists.size());
   mappingAlternatives.reserve(resourceTimeFunnel->finalists.size());
   std::vector<ComponentViewDigest> promotedIdentities;
@@ -867,11 +872,13 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
                               fields["diagnostic"] = diagnostic;
                               fields["candidate_identity"] = identitySpelling;
                             });
-        if (!firstUnsupported)
+        if (!firstUnsupported) {
           firstUnsupported = UnsupportedApplicationBuild{
               ApplicationBuildUnsupportedKind::DynamicInvocationBoundary,
               published->canonicalDataflow,
               pending->projection->regions.front().region};
+          firstUnsupportedDiagnostic = diagnostic;
+        }
         auto &record =
             completed.candidateInventory[pending->planningRecordOrdinal];
         record.disposition =
@@ -966,11 +973,14 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
           dse::resourceTimeFrontierIncompleteReasonSpelling(
               *resourceTimeFunnel->incompleteReason));
     if (firstUnsupported) {
+      std::string detail =
+          "all retained finalists were rejected at the application boundary";
+      if (firstUnsupportedDiagnostic)
+        detail += ": " + *firstUnsupportedDiagnostic;
       auto decision = makePreparationPairDecision(
           completed.sourceProgram, completed.fabric, completed.workload,
           completed.runtimeInput, completed.candidateInventory,
-          ApplicationPairDecisionDisposition::UnsupportedSemantic,
-          "all retained finalists were rejected at the application boundary",
+          ApplicationPairDecisionDisposition::UnsupportedSemantic, detail,
           completed.sourceHostOnlyRuntimePicoseconds,
           *completedInvocationRunKey, false, request.portfolioInput);
       emitApplicationPairDecisionDiagnostics(decision);

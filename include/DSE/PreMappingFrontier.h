@@ -416,11 +416,20 @@ struct PreMappingFrontierSelection final {
 /// exact rejection. The preference order retains objective-best, smallest
 /// ownership, and largest ownership representatives before filling from the
 /// common total order.
+///
+/// `sourceHostOnlyRuntimePicoseconds` is the analytic host-only baseline of
+/// the same source, workload, runtime input, and Fabric. When it is known, a
+/// candidate whose analytic estimate does not beat it is a modeled
+/// regression: it cannot improve the Application, so it is retained only
+/// while no other candidate remains. An unsupported estimate is not a
+/// regression proof and stays admissible.
 llvm::Expected<PreMappingFrontierSelection> selectPreMappingFrontier(
     llvm::ArrayRef<PreMappingFrontierCandidate> candidates,
     std::uint64_t maximumRetained, std::uint64_t diversityCandidateCount,
     PreMappingSpectrumEndpoint endpoint =
-        PreMappingSpectrumEndpoint::Automatic);
+        PreMappingSpectrumEndpoint::Automatic,
+    std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds =
+        std::nullopt);
 
 struct PreMappingRootActivity final {
   frontend::StructuredEntityRef root;
