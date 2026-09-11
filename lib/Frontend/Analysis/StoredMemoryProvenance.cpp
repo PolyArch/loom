@@ -1,8 +1,8 @@
 #include "Frontend/Analysis/StoredMemoryProvenance.h"
-#include "Common/MappingDebugLog.h"
 #include "Common/PointerLayout.h"
 
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Analysis/ByteAddressDomain.h"
 #include "Frontend/Analysis/CountedLoopProjection.h"
 #include "Frontend/Analysis/MemoryAddressProjection.h"
 #include "Frontend/Analysis/MemoryProvenance.h"
@@ -22,16 +22,15 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <set>
-#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -82,6 +81,9 @@ class StoredMemoryProvenance::Impl final {
     int64_t bias = 0;
     uint64_t bytes = 0;
     llvm::SmallVector<loom::frontend::analysis::LinearByteTerm, 4> terms;
+    /// Every index step from the root object to this address is in bounds, so
+    /// a defined access lies inside the root's fixed extent.
+    bool inBoundsOfRoot = false;
   };
 
   struct PointerRoots final {
@@ -166,6 +168,7 @@ public:
       frame->callable->walk([&](mlir::LLVM::StoreOp write) {
         effects_.push_back(writeEffect(write, *frame));
       });
+    writePositions_.resize(effects_.size());
     if (!openWriteDomain_)
       deriveReloadEquivalences(true);
   }
@@ -1079,6 +1082,7 @@ private:
       return refuse(StoredPointerRefusal::UnknownByteAddress);
     Address result{local->root, &frame, local->byteBias, local->accessByteCount,
                    local->terms};
+    result.inBoundsOfRoot = inBoundsIndexing(*local);
     auto argument = llvm::dyn_cast<mlir::BlockArgument>(local->root);
     mlir::Value actual;
     Frame *parent = &frame;
@@ -1105,8 +1109,23 @@ private:
       result.root = outer->root;
       result.rootFrame = outer->rootFrame;
       result.terms.append(outer->terms.begin(), outer->terms.end());
+      result.inBoundsOfRoot &= outer->inBoundsOfRoot;
     }
     return result;
+  }
+
+  /// Every index step of this chain stays inside the object its base points
+  /// into. A defined access through the chain therefore stays inside the root
+  /// object, which bounds a runtime index that has no bound of its own.
+  static bool
+  inBoundsIndexing(const loom::frontend::analysis::ResolvedLinearMemoryAddress
+                       &address) {
+    for (mlir::Operation *step : address.gepsLeafToRoot)
+      if (!mlir::LLVM::bitEnumContainsAny(
+              llvm::cast<mlir::LLVM::GEPOp>(step).getNoWrapFlags(),
+              mlir::LLVM::GEPNoWrapFlags::inboundsFlag))
+        return false;
+    return true;
   }
 
   std::optional<int64_t> constantByteOffset(const Address &location) {
@@ -1163,17 +1182,36 @@ private:
            writeOffset = constantByteOffset(*target);
       if (!readOffset)
         return false;
-      std::optional<std::set<int64_t>> writes;
-      if (writeOffset)
-        writes = std::set<int64_t>{*writeOffset};
-      else if (finiteWrites)
-        writes = addressDomain(*target);
-      if (!writes)
+      int64_t readEnd;
+      if (llvm::AddOverflow(*readOffset, int64_t(read.bytes), readEnd))
         return false;
-      for (int64_t offset : *writes) {
-        int64_t readEnd, writeEnd;
-        if (llvm::AddOverflow(*readOffset, int64_t(read.bytes), readEnd) ||
-            llvm::AddOverflow(offset, int64_t(target->bytes), writeEnd) ||
+      llvm::SmallVector<int64_t> writes;
+      if (writeOffset) {
+        writes.push_back(*writeOffset);
+      } else if (finiteWrites) {
+        auto domain = addressDomain(*target);
+        if (!domain)
+          return false;
+        // A write that no defined execution performs in bounds preserves the
+        // location, and so does one whose whole domain lies beside the read.
+        if (domain->offsets.isEmpty())
+          return true;
+        int64_t domainEnd;
+        if (llvm::AddOverflow(domain->offsets.highest(),
+                              int64_t(target->bytes), domainEnd))
+          return false;
+        if (readEnd <= domain->offsets.lowest() || domainEnd <= *readOffset)
+          return true;
+        auto offsets = domain->offsets.enumerate(maximumStaticValues);
+        if (!offsets)
+          return false;
+        writes = std::move(*offsets);
+      } else {
+        return false;
+      }
+      for (int64_t offset : writes) {
+        int64_t writeEnd;
+        if (llvm::AddOverflow(offset, int64_t(target->bytes), writeEnd) ||
             (readEnd > offset && writeEnd > *readOffset))
           return false;
       }
@@ -1346,107 +1384,19 @@ private:
     }
   }
 
-  struct ExactByteLoop final {
-    mlir::BlockArgument induction;
-    uint64_t byteCount;
-  };
-
-  std::optional<ExactByteLoop> exactByteLoop(mlir::Operation *operation) {
-    if (auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(operation)) {
-      auto lower = evaluate(loop.getLowerBound(), Path()),
-           upper = evaluate(loop.getUpperBound(), Path()),
-           step = evaluate(loop.getStep(), Path());
-      if (!lower || !lower->isZero() || !step || !step->isOne() ||
-          !upper || !upper->isStrictlyPositive() ||
-          !upper->isSignedIntN(64))
-        return std::nullopt;
-      return ExactByteLoop{llvm::cast<mlir::BlockArgument>(loop.getInductionVar()),
-                           upper->getZExtValue()};
-    }
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(operation);
-    auto projection = projectExactPostTestedCountedLoop(loop);
-    if (!projection || loop.getInits().size() != 1 ||
-        !projection->lowerBoundValue ||
-        !projection->lowerBoundValue->isZero() || !projection->stepValue ||
-        !projection->stepValue->isOne() || !projection->upperBoundValue ||
-        !projection->upperBoundValue->isSignedIntN(64))
-      return std::nullopt;
-    return ExactByteLoop{
-        loop.getBeforeBody()->getArgument(projection->inductionLane),
-        projection->upperBoundValue->getZExtValue()};
-  }
-
-  std::optional<Address> removeUnitByteIndex(Address address,
-                                             mlir::Value index) {
-    bool removed = false;
-    llvm::SmallVector<loom::frontend::analysis::LinearByteTerm, 4> retained;
-    for (const auto &term : address.terms) {
-      if (term.index == index) {
-        if (removed || term.byteStride != 1)
-          return std::nullopt;
-        removed = true;
-      } else {
-        retained.push_back(term);
-      }
-    }
-    if (!removed)
-      return std::nullopt;
-    address.terms = std::move(retained);
-    return address;
-  }
-
-  std::optional<std::set<int64_t>> addressDomain(const Address &address) {
-    std::set<int64_t> result{address.bias};
-    for (const auto &term : address.terms) {
-      auto domain = scalarDomain(term.index);
-      if (!domain || domain->empty() ||
-          result.size() * domain->size() > maximumStaticValues) {
-        mapping_debug::emit(
-            mapping_debug::Level::Detail,
-            mapping_debug::Stage::DataflowLowering,
-            mapping_debug::Event::DerivedContext,
-            [&](llvm::json::Object &fields) {
-              const auto valueText = [](mlir::Value value) {
-                std::string text;
-                llvm::raw_string_ostream output(text);
-                if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
-                  value.printAsOperand(output, mlir::OpPrintingFlags());
-                  output << " in ";
-                  argument.getOwner()->getParentOp()->print(
-                      output, mlir::OpPrintingFlags().skipRegions());
-                } else {
-                  value.print(output, mlir::OpPrintingFlags().skipRegions());
-                }
-                return text;
-              };
-              fields["context_kind"] = "stored_pointer_address_domain";
-              fields["root"] = valueText(address.root);
-              fields["index"] = valueText(term.index);
-              fields["byte_bias"] = address.bias;
-              fields["byte_stride"] = term.byteStride;
-              fields["access_bytes"] = address.bytes;
-              fields["partial_offset_count"] = result.size();
-              fields["partial_offset_min"] = *result.begin();
-              fields["partial_offset_max"] = *result.rbegin();
-              fields["index_domain_known"] = domain.has_value();
-              if (domain)
-                fields["index_value_count"] = domain->size();
-              fields["static_value_limit"] = maximumStaticValues;
-            });
-        return std::nullopt;
-      }
-      std::set<int64_t> expanded;
-      for (int64_t base : result)
-        for (int64_t index : *domain) {
-          int64_t delta, offset;
-          if (llvm::MulOverflow(index, term.byteStride, delta) ||
-              llvm::AddOverflow(base, delta, offset))
-            return std::nullopt;
-          expanded.insert(offset);
-        }
-      result = std::move(expanded);
-    }
-    return result;
+  std::optional<AddressByteDomain>
+  addressDomain(const Address &location,
+                llvm::ArrayRef<mlir::Value> completedIndices = {}) {
+    AddressByteDomainRequest request;
+    request.root = location.root;
+    request.terms = location.terms;
+    request.byteBias = location.bias;
+    request.accessByteCount = location.bytes;
+    request.allocationByteCount = allocationExtent(location.root);
+    request.inBoundsOfAllocation = location.inBoundsOfRoot;
+    request.completedIndices = completedIndices;
+    return projectAddressByteDomain(
+        request, [&](mlir::Value index) { return scalarDomain(index); });
   }
 
   enum class WriteKind { Scalar, Zero, Copy };
@@ -1458,7 +1408,47 @@ private:
     Address destination;
     WriteKind kind = WriteKind::Scalar;
     std::optional<Address> source = std::nullopt;
+    /// Induction variables of the statically counted loops that this write
+    /// completes, whose every value it therefore writes.
+    llvm::SmallVector<mlir::Value, 2> completedIndices;
   };
+
+  /// Enumerated write positions of one effect, memoized because a query joins
+  /// every effect at every queried byte offset.
+  struct WritePositions final {
+    llvm::SmallVector<int64_t> starts;
+    bool exhaustive = false;
+    int64_t lowest = 0;
+    int64_t highestEnd = 0;
+    bool projected = false;
+    bool computed = false;
+  };
+
+  const WritePositions *writePositions(std::size_t ordinal,
+                                       const WriteEffect &effect) {
+    if (!writePositions_[ordinal].computed) {
+      WritePositions positions;
+      auto domain = addressDomain(effect.destination, effect.completedIndices);
+      auto offsets = domain ? domain->offsets.enumerate(maximumStaticValues)
+                            : std::nullopt;
+      if (offsets) {
+        positions.starts = std::move(*offsets);
+        positions.exhaustive = domain->exhaustive;
+        positions.projected = true;
+        if (!positions.starts.empty()) {
+          positions.lowest = positions.starts.front();
+          if (llvm::AddOverflow(positions.starts.back(),
+                                int64_t(effect.destination.bytes),
+                                positions.highestEnd))
+            positions.projected = false;
+        }
+      }
+      positions.computed = true;
+      writePositions_[ordinal] = std::move(positions);
+    }
+    const WritePositions &cached = writePositions_[ordinal];
+    return cached.projected ? &cached : nullptr;
+  }
 
   std::optional<WriteEffect> writeEffect(mlir::LLVM::StoreOp write,
                                          Frame &frame) {
@@ -1473,11 +1463,15 @@ private:
       effect.kind = WriteKind::Zero;
     auto read = write.getValue().getDefiningOp<mlir::LLVM::LoadOp>();
     mlir::Operation *loop = write->getParentOp();
-    auto exact = exactByteLoop(loop);
-    if (destination->bytes == 1 && exact &&
+    auto exact = projectUnitStrideCountedLoop(
+        loop, [&](mlir::Value value) { return evaluate(value, Path()); });
+    // A constant fill tiles the range at its own access width; a transfer
+    // remains byte granular because a wider element copy would additionally
+    // have to prove element alignment of both views.
+    if (exact &&
         (effect.kind == WriteKind::Zero ||
-         (read && read->getParentOp() == loop && read->isBeforeInBlock(write) &&
-          !read.getVolatile_() &&
+         (destination->bytes == 1 && read && read->getParentOp() == loop &&
+          read->isBeforeInBlock(write) && !read.getVolatile_() &&
           read.getOrdering() == mlir::LLVM::AtomicOrdering::not_atomic))) {
       bool sole = true;
       loop->walk([&](mlir::Operation *operation) {
@@ -1486,20 +1480,26 @@ private:
             !operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
           sole = false;
       });
-      auto base = removeUnitByteIndex(*destination, exact->induction);
-      if (sole && base) {
+      llvm::SmallVector<loom::frontend::analysis::LinearByteTerm, 4> tiled =
+          destination->terms;
+      int64_t filled = 0;
+      if (sole &&
+          removeContiguousIndex(tiled, exact->induction, destination->bytes) &&
+          !llvm::MulOverflow(int64_t(exact->iterationCount),
+                             int64_t(destination->bytes), filled)) {
         if (read) {
           auto from =
               address(read.getAddr(), read.getResult().getType(), frame);
-          auto source = from ? removeUnitByteIndex(*from, exact->induction)
-                             : std::nullopt;
-          if (!source || !distinctFrameRoots(*source, *base))
+          if (!from ||
+              !removeContiguousIndex(from->terms, exact->induction,
+                                     from->bytes) ||
+              !distinctFrameRoots(*from, *destination))
             return std::nullopt;
-          effect.source = *source;
+          effect.source = *from;
           effect.kind = WriteKind::Copy;
         }
-        effect.destination = *base;
-        effect.destination.bytes = exact->byteCount;
+        effect.destination.terms = std::move(tiled);
+        effect.destination.bytes = uint64_t(filled);
         effect.completion = loop;
       }
     }
@@ -1515,6 +1515,16 @@ private:
           !lower->slt(*upper))
         break;
       effect.completion = loop;
+    }
+    // Every loop between the write and its completion is a statically
+    // non-empty counted loop, so one completed execution of the completion
+    // performs this write at every value of those induction variables.
+    for (mlir::Operation *scope = write.getOperation(); scope;
+         scope = scope->getParentOp()) {
+      if (auto counted = llvm::dyn_cast<mlir::scf::ForOp>(scope))
+        effect.completedIndices.push_back(counted.getInductionVar());
+      if (scope == effect.completion)
+        break;
     }
     return effect;
   }
@@ -1680,9 +1690,13 @@ private:
     auto extent = allocationExtent(query.root);
     if (!extent)
       return refuse(StoredPointerRefusal::UnknownByteAddress);
-    auto offsets = addressDomain(query);
+    auto domain = addressDomain(query);
+    auto offsets = domain ? domain->offsets.enumerate(maximumStaticValues)
+                          : std::nullopt;
     if (!offsets)
       return refuse(StoredPointerRefusal::UnknownIntegerDomain);
+    if (offsets->empty())
+      return refuse(StoredPointerRefusal::OutOfBoundsAccess);
     std::vector<Payload> result;
     for (int64_t offset : *offsets) {
       if (!withinAllocation(query, offset))
@@ -1716,7 +1730,11 @@ private:
                                                   Frame &frame) {
     std::vector<Payload> result;
     bool mustInitialized = false;
-    for (const auto &possible : effects_) {
+    int64_t queryEnd;
+    if (llvm::AddOverflow(offset, int64_t(query.bytes), queryEnd))
+      return refuse(StoredPointerRefusal::UnknownByteAddress);
+    for (std::size_t ordinal = 0; ordinal != effects_.size(); ++ordinal) {
+      const auto &possible = effects_[ordinal];
       if (!possible)
         return refuse(StoredPointerRefusal::UnsupportedMemoryEffect);
       const WriteEffect &effect = *possible;
@@ -1725,15 +1743,18 @@ private:
         continue;
       if (!sameFrameRoot(query, effect.destination))
         return refuse(StoredPointerRefusal::UnknownAlias);
-      auto positions = addressDomain(effect.destination);
+      const WritePositions *positions = writePositions(ordinal, effect);
       if (!positions)
         return refuse(StoredPointerRefusal::UnknownIntegerDomain);
-      for (int64_t begin : *positions) {
+      if (positions->starts.empty())
+        return refuse(StoredPointerRefusal::OutOfBoundsAccess);
+      if (queryEnd <= positions->lowest || positions->highestEnd <= offset)
+        continue;
+      for (int64_t begin : positions->starts) {
         if (!withinAllocation(effect.destination, begin))
           return refuse(StoredPointerRefusal::OutOfBoundsAccess);
-        int64_t end, queryEnd;
-        if (llvm::AddOverflow(begin, int64_t(effect.destination.bytes), end) ||
-            llvm::AddOverflow(offset, int64_t(query.bytes), queryEnd))
+        int64_t end;
+        if (llvm::AddOverflow(begin, int64_t(effect.destination.bytes), end))
           return refuse(StoredPointerRefusal::UnknownByteAddress);
         if (queryEnd <= begin || end <= offset)
           continue;
@@ -1756,7 +1777,11 @@ private:
         } else {
           return refuse(StoredPointerRefusal::PartialPointerWrite);
         }
-        mustInitialized |= initialized(effect, query, point, frame);
+        // A write whose position is chosen at runtime contributes its payload
+        // but covers no byte, because no execution is known to perform it at
+        // this offset.
+        mustInitialized |=
+            positions->exhaustive && initialized(effect, query, point, frame);
       }
     }
     if (!mustInitialized)
@@ -1904,6 +1929,7 @@ private:
   llvm::DenseMap<mlir::Value, std::optional<std::set<int64_t>>> scalarDomains_;
   llvm::DenseSet<mlir::Value> activeScalarDomains_;
   std::vector<std::optional<WriteEffect>> effects_;
+  std::vector<WritePositions> writePositions_;
   llvm::DenseMap<mlir::Value, std::optional<uint64_t>> allocationExtents_;
   llvm::DenseSet<std::tuple<mlir::Value, Frame *, int64_t, uint64_t,
                             mlir::Operation *, Frame *>>

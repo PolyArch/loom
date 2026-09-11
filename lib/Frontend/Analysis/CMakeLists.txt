@@ -1,4 +1,5 @@
 add_mlir_library(LoomFrontendAnalysis
+  ByteAddressDomain.cpp
   CountedLoopProjection.cpp
   DenseParallelMemoryProjection.cpp
   MemoryAddressProjection.cpp

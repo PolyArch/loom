@@ -5,7 +5,9 @@
 #include "mlir/IR/Value.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 
+#include <cstdint>
 #include <optional>
 
 namespace loom::frontend::analysis {
@@ -39,6 +41,24 @@ struct ExactPostTestedCountedLoopProjection final {
 /// after-region, or non-ordinal feedback shapes return no projection.
 std::optional<ExactPostTestedCountedLoopProjection>
 projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop);
+
+/// Folds one integer value to a constant. A caller that owns a stronger
+/// folding than literal matching supplies it here.
+using ConstantIntegerValue =
+    llvm::function_ref<std::optional<llvm::APInt>(mlir::Value)>;
+
+/// One zero-based unit-step counted loop whose body runs exactly
+/// `iterationCount` times with `induction` taking every value in
+/// `[0, iterationCount)`. The structured `scf.for` form and the post-tested
+/// `scf.while` form project to this same shape.
+struct UnitStrideCountedLoop final {
+  mlir::BlockArgument induction;
+  std::uint64_t iterationCount = 0;
+};
+
+std::optional<UnitStrideCountedLoop>
+projectUnitStrideCountedLoop(mlir::Operation *loop,
+                             ConstantIntegerValue constantValue);
 
 } // namespace loom::frontend::analysis
 

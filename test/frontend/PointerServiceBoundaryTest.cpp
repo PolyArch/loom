@@ -475,6 +475,86 @@ module attributes {llvm.data_layout = "e-p:64:64"} {
   }
 }
 
+// A descriptor slot selected by a runtime index still resolves to the origin
+// of the pointers stored into that array: the in-bounds containment window of
+// the fixed allocation bounds both the stored and the selected index. The
+// value-initializing byte fill is what proves the queried bytes initialized,
+// because a store placed at a runtime offset contributes its payload but is
+// not known to cover any particular slot.
+void dynamicSlotPointerProvenance() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                      mlir::scf::SCFDialect>();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {llvm.data_layout = "e-p:64:64"} {
+  llvm.func @descriptors(%bytes: !llvm.ptr, %stored: i32, %picked: i32,
+                         %count: i64) {
+    %one = arith.constant 1 : i64
+    %zero = arith.constant 0 : i64
+    %step = arith.constant 1 : i64
+    %extent = arith.constant 32 : i64
+    %offset = arith.constant 64 : i64
+    %clear = arith.constant 0 : i8
+    %slots = llvm.alloca %one x !llvm.array<32 x i8> : (i64) -> !llvm.ptr
+    scf.for %index = %zero to %extent step %step : i64 {
+      %fill = llvm.getelementptr inbounds %slots[%index] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %clear, %fill : i8, !llvm.ptr
+    }
+    %origin = llvm.getelementptr inbounds %bytes[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %target = arith.extui %stored : i32 to i64
+    %slot = llvm.getelementptr inbounds %slots[%target] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    llvm.store %origin, %slot : !llvm.ptr, !llvm.ptr
+    %selected = arith.extui %picked : i32 to i64
+    %source = llvm.getelementptr inbounds %slots[%selected] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    scf.for %lane = %zero to %count step %step : i64 {
+      %weights = llvm.load %source : !llvm.ptr -> !llvm.ptr
+      %element = llvm.load %weights : !llvm.ptr -> i8
+    }
+    llvm.return
+  }
+}
+)mlir";
+  for (bool valueInitialized : {true, false}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+    if (!module)
+      fail("cannot parse dynamic descriptor slot provenance");
+    auto callable = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("descriptors");
+    if (!callable)
+      fail("dynamic descriptor slot fixture lost its callable");
+    mlir::Block &entry = callable.getBody().front();
+    if (!valueInitialized)
+      for (mlir::Operation &operation : entry)
+        if (auto fill = llvm::dyn_cast<mlir::scf::ForOp>(&operation)) {
+          fill.erase();
+          break;
+        }
+    mlir::LLVM::LoadOp read;
+    callable.walk([&](mlir::LLVM::LoadOp operation) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(
+              operation.getResult().getType()))
+        read = operation;
+    });
+    if (!read)
+      fail("dynamic descriptor slot fixture lost its pointer read");
+    loom::frontend::analysis::StoredMemoryProvenance provenance(callable);
+    auto outcome = provenance.projectPointerTarget(read.getResult());
+    if (valueInitialized) {
+      auto *target =
+          std::get_if<loom::frontend::analysis::StoredPointerTarget>(&outcome);
+      if (!target || target->root != entry.getArgument(0) ||
+          !target->mayBeNull)
+        fail("runtime descriptor slot lost its nullable argument origin");
+    } else {
+      auto *refusal =
+          std::get_if<loom::frontend::analysis::StoredPointerRefusal>(&outcome);
+      if (!refusal || *refusal != loom::frontend::analysis::
+                                      StoredPointerRefusal::
+                                          IncompleteInitialization)
+        fail("a runtime-positioned store alone proved a slot initialized");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -482,6 +562,7 @@ int main() {
       llvm::InitializeNativeTargetAsmPrinter())
     fail("cannot initialize the native target");
   byteFillPointerRepresentation();
+  dynamicSlotPointerProvenance();
   pointerServiceBoundary();
   exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";
