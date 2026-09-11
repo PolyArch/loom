@@ -54,6 +54,9 @@ struct CgraMemoryActorPlan final {
   ::loom::fabric::FabricMemoryOccurrenceRef occurrence;
   ::loom::mapping::SpatialMemoryOperationPlacementView placement;
   ::loom::fabric::FabricMemoryCapabilityAlternativeRef capability;
+  /// Firings this binding may hold outstanding before its oldest retires,
+  /// read from the exact Fabric memory Operation Engine of the occurrence.
+  std::uint64_t operationIssueDepth = 0;
   std::uint64_t operationPhysicalUseOrdinal = 0;
   std::uint64_t rootedUseOffset = 0;
   std::uint32_t rootedUseCount = 0;

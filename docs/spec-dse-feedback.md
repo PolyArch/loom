@@ -3311,19 +3311,20 @@ those semantics requires another exact descriptor reference; central DSE does
 not gain a trainer-algorithm enum.
 
 The current Fabric-template configuration descriptor is
-`loom.fabric_template_generator.config.7.2`. It appends the stable typed
-`BuiltinSpecialMathCapabilityProfile` tag to the complete version 8.1 builtin
+`loom.fabric_template_generator.config.7.3`. It appends the target's memory
+operation issue depth to the 7.2 payload, which already appends the stable
+typed `BuiltinSpecialMathCapabilityProfile` tag to the complete builtin
 scale. `FullCatalog` preserves the version 8.0 elementary-math relation;
 `PortableProviderClosed` selects the target-owned provider-closed relation.
 All current builtin presets select `PortableProviderClosed`. The profile is a
 Fabric authoring fact, not a generator algorithm or an implementation-provider
 selector.
 
-The 7.1 and 7.2 views are not interchangeable. Adoption validates the exact
+No two of the 7.1, 7.2, and 7.3 views are interchangeable. Adoption validates the exact
 descriptor, fixed canonical payload, enum tag, digest, and re-encoding. There
 is no read-time default or compatibility branch. An 8.0 authoring source is
 explicitly re-finalized as template 8.1 with `FullCatalog`, after which the
-7.2 view is re-projected from the new ResolvedConfig. Its generator binding,
+7.3 view is re-projected from the new ResolvedConfig. Its generator binding,
 plan-node configuration identity, and lineage are new. The generated Fabric
 and every dependent Mapping, ConfigurationABI, Deployment,
 HardwareImplementation, and EDA provenance record are regenerated against the

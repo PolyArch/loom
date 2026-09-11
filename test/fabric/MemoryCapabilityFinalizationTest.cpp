@@ -182,8 +182,10 @@ int main() {
   if (llvm::Error error = validateMemoryCapabilityFinalization({}, {}))
     fail("empty occurrence", llvm::toString(std::move(error)));
 
-  MemoryEngineAttr engine = MemoryEngineAttr::get(&context, Schedule::Spatial,
-                                                  MemoryResidentContextsAttr());
+  MemoryEngineAttr engine =
+      MemoryEngineAttr::get(&context, Schedule::Spatial,
+                            MemoryResidentContextsAttr(),
+                            serializedMemoryOperationIssueDepth);
   expectInvalid(
       "incomplete engine",
       validateMemoryCapabilityFinalization(contract(context, engine, {}), {}),

@@ -43,6 +43,9 @@ struct LocalMemoryParameters final {
   MemoryInterfaceParameters interface;
   std::optional<TemporalMemoryParameters> temporal;
   bool managerEndpoint = false;
+  /// Firings one bound memory actor may hold outstanding on this engine.
+  std::uint64_t operationIssueDepth =
+      ::fabric::serializedMemoryOperationIssueDepth;
 };
 
 /// Closed physical Operation Port variants for the local-memory catalog.
@@ -99,6 +102,9 @@ parseLocalMemoryPortVariant(llvm::StringRef spelling) {
 struct ManagerMemoryParameters final {
   MemoryInterfaceParameters interface;
   std::optional<TemporalMemoryParameters> temporal;
+  /// Firings one bound memory actor may hold outstanding on this engine.
+  std::uint64_t operationIssueDepth =
+      ::fabric::serializedMemoryOperationIssueDepth;
 };
 
 /// Exact address range, access domain, and independent beat width of one

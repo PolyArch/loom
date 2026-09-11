@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.7.2";
+    "loom.fabric_template_generator.config.7.3";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -118,6 +118,7 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.privateCaches.hitLatencyCycles);
   appendU32(bytes, scale.privateCaches.inOrderMissStatusEntries);
   appendU32(bytes, scale.privateCaches.outOfOrderMissStatusEntries);
+  appendU32(bytes, scale.memoryOperationIssueDepth);
   return bytes;
 }
 
@@ -197,6 +198,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   scale.privateCaches.hitLatencyCycles = readU32();
   scale.privateCaches.inOrderMissStatusEntries = readU32();
   scale.privateCaches.outOfOrderMissStatusEntries = readU32();
+  scale.memoryOperationIssueDepth = readU32();
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");

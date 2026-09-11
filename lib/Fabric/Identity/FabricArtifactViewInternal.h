@@ -78,6 +78,8 @@ struct FabricEntityViewData {
   std::vector<FabricMemoryOperationPortViewData> memoryOperationPorts;
   std::optional<::fabric::Schedule> memorySchedule;
   std::optional<std::uint64_t> memoryResidentContextCount;
+  /// Present exactly for a memory occurrence that owns an Operation Engine.
+  std::optional<std::uint64_t> memoryOperationIssueDepth;
   std::optional<::fabric::MemoryConnectivityContractRecord> memoryConnectivity;
   std::vector<FabricNestedOwnerViewData> instructionContexts;
   std::vector<FabricNestedOwnerViewData> transferPatterns;

@@ -87,10 +87,21 @@ def Fabric_MemoryConnectivityContractAttr
 def Fabric_MemoryEngineAttr
     : Fabric_Attr<"MemoryEngine", "memory_engine"> {
   let summary = "memory operation engine occurrence contract";
+  let description = [{
+    `operation_issue_depth` is the number of firings one bound memory actor
+    may hold outstanding before the oldest of them retires. Retirement stays
+    in issue order, so depth one is the serialized engine and a larger depth
+    is the engine's own memory-level parallelism, independent of any cache
+    outstanding-miss capacity or service outstanding guarantee. The canonical
+    text elides the depth exactly when it is the serialized depth.
+  }];
   let parameters = (ins
       EnumParameter<Fabric_ScheduleAttr>:$schedule,
       OptionalParameter<"::fabric::MemoryResidentContextsAttr">:
-          $resident_contexts);
+          $resident_contexts,
+      DefaultValuedParameter<
+          "uint64_t", "::fabric::serializedMemoryOperationIssueDepth">:
+          $operation_issue_depth);
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
 }

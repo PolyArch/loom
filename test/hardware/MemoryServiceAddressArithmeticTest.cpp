@@ -307,7 +307,8 @@ makeMemoryModule(llvm::StringRef test, const loom::ArtifactStore &store,
   auto testedSpec = take(
       test, MemorySpec::create(
                 testedInputs, testedOutputs, {0}, {2},
-                MemoryEngineSpec::spatial({loadPortDeclaration(test)}),
+                MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration(test)}),
                 localStorageService(test, contractContext),
                 take(test, MemoryConnectivitySpec::create(
                                std::move(testedConnectivity)))));
@@ -319,7 +320,8 @@ makeMemoryModule(llvm::StringRef test, const loom::ArtifactStore &store,
   auto driverSpec = take(
       test, MemorySpec::create(
                 testedInputs, {data, control}, {0}, {},
-                MemoryEngineSpec::spatial({loadPortDeclaration(test)}),
+                MemoryEngineSpec::spatial(
+                        ::fabric::serializedMemoryOperationIssueDepth, {loadPortDeclaration(test)}),
                 std::nullopt,
                 take(test, MemoryConnectivitySpec::create(
                                std::move(driverConnectivity)))));

@@ -488,7 +488,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
        "special_math_capability_profile",
        "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
        "memory_capacity_bytes", "interconnect_fifo_depth",
-       "interconnect_fifo_queue_discipline", "private_caches"},
+       "interconnect_fifo_queue_discipline", "private_caches",
+       "memory_operation_issue_depth"},
       {"interconnect_fifo_reserved_channels"});
   if (!parametersOrErr)
     return parametersOrErr.takeError();
@@ -549,6 +550,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
   auto privateCaches =
       parseBuiltinPrivateCaches(parametersOrErr->at("private_caches"),
                                 "hardware_target.parameters.private_caches");
+  auto memoryOperationIssueDepth = positiveU32("memory_operation_issue_depth");
   auto fifoDisciplineSpelling = requireScalarString(
       parametersOrErr->at("interconnect_fifo_queue_discipline"),
       "hardware_target.parameters.interconnect_fifo_queue_discipline");
@@ -593,6 +595,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return interconnectFifoDepth.takeError();
   if (!privateCaches)
     return privateCaches.takeError();
+  if (!memoryOperationIssueDepth)
+    return memoryOperationIssueDepth.takeError();
   // Strict order owns no channels, so the reservation defaults to zero and
   // is only meaningful, and then required by scale validation, under the
   // virtual-channel discipline. Zero is a legal spelling of that absence.
@@ -616,7 +620,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
        interconnectFifoReservedChannels, *specialMathProfile,
        *memoryPortVariant,
        *crossScheduleBoundaryLanes, *gateways, *memoryCapacity,
-       *privateCaches}};
+       *privateCaches, *memoryOperationIssueDepth}};
 }
 
 enum class ParsedObjectiveSourceKind {

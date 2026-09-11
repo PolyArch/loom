@@ -841,6 +841,38 @@ SpatialCoreBuilder::resizeMemory(loom::fabric::FabricMemoryOccurrenceRef target,
   return llvm::Error::success();
 }
 
+llvm::Error SpatialCoreBuilder::changeMemoryOperationIssueDepth(
+    loom::fabric::FabricMemoryOccurrenceRef target,
+    std::uint64_t operationIssueDepth) {
+  if (operationIssueDepth == 0)
+    return invalid("memory operation issue depth must be positive");
+  auto state = detail::activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto root = derivedSpatialRoot(*state, rootOrdinal_);
+  if (!root)
+    return root.takeError();
+  auto operation =
+      moduleOccurrence((*root)->operation, *(*root)->derivedParent, target);
+  if (!operation)
+    return operation.takeError();
+  auto memory = mlir::cast<::fabric::MemOp>(*operation);
+  ::fabric::MemoryContractAttr contract = memory.getMemoryContract();
+  ::fabric::MemoryEngineAttr engine = contract.getEngine();
+  if (!engine)
+    return invalid("issue-depth change requires an Operation Engine");
+  if (engine.getOperationIssueDepth() == operationIssueDepth)
+    return invalid("memory operation issue-depth change is a no-op");
+  memory.setMemoryContractAttr(::fabric::MemoryContractAttr::get(
+      &(*state)->context,
+      ::fabric::MemoryEngineAttr::get(&(*state)->context, engine.getSchedule(),
+                                      engine.getResidentContexts(),
+                                      operationIssueDepth),
+      contract.getLocalService(), contract.getConnectivity(),
+      contract.getManagerEndpoints(), contract.getSubordinateEndpoints()));
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialCoreBuilder::replaceMemoryOperationTable(
     loom::fabric::FabricMemoryOccurrenceRef target,
     loom::fabric::FabricMemoryOccurrenceRef prototype) {

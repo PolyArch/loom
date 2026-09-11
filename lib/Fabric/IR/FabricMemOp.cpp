@@ -255,8 +255,9 @@ static void addLegacyMemoryContract(MLIRContext *context,
   result.addAttribute("memory_contract",
                       MemoryContractAttr::get(
                           context,
-                          MemoryEngineAttr::get(context, schedule,
-                                                MemoryResidentContextsAttr()),
+                          MemoryEngineAttr::get(
+                              context, schedule, MemoryResidentContextsAttr(),
+                              serializedMemoryOperationIssueDepth),
                           LocalMemoryServiceAttr(),
                           MemoryConnectivityContractAttr(),
                           DenseI32ArrayAttr::get(context, managers),
@@ -305,6 +306,8 @@ static bool canPrintLegacyEngineShorthand(MemOp op) {
     return false;
   if (contract.getConnectivity() ||
       contract.getEngine().getResidentContexts() ||
+      contract.getEngine().getOperationIssueDepth() !=
+          serializedMemoryOperationIssueDepth ||
       op.getMemoryOperationPortsAttr())
     return false;
 

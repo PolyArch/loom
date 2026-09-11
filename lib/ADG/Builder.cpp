@@ -130,16 +130,17 @@ detail::DesignState::DesignState(const loom::ArtifactStore &store)
 }
 
 MemoryEngineSpec MemoryEngineSpec::spatial(
+    std::uint64_t operationIssueDepth,
     std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts) {
   return MemoryEngineSpec(::fabric::Schedule::Spatial, std::nullopt,
-                          std::move(operationPorts));
+                          operationIssueDepth, std::move(operationPorts));
 }
 
 MemoryEngineSpec MemoryEngineSpec::temporal(
-    std::uint64_t residentContextCount,
+    std::uint64_t residentContextCount, std::uint64_t operationIssueDepth,
     std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts) {
   return MemoryEngineSpec(::fabric::Schedule::Temporal, residentContextCount,
-                          std::move(operationPorts));
+                          operationIssueDepth, std::move(operationPorts));
 }
 
 llvm::Expected<MemoryConnectivitySpec> MemoryConnectivitySpec::create(
@@ -185,6 +186,9 @@ MemorySpec::create(std::vector<PortType> inputTypes,
       (!engine->residentContextCount_ || *engine->residentContextCount_ == 0))
     return invalid(
         "temporal memory Operation Engine requires resident contexts");
+  if (engine && engine->operationIssueDepth_ == 0)
+    return invalid(
+        "memory Operation Engine requires a positive operation issue depth");
   if (!engine && !managerInputOrdinals.empty())
     return invalid("manager endpoint requires a memory Operation Engine");
   if (!engine && !inputTypes.empty())

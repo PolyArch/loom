@@ -1228,9 +1228,11 @@ llvm::Expected<CgraClosedWaitSetDiagnostic> detail::projectCgraClosedWaitSet(
     producerProgressOccurrences[actor] =
         runtime.nextActorOccurrenceOrdinal(actor).value_or(
             detail::invalidCgraTransportOrdinal);
-  // Compute and memory bindings serialize their firings until retirement.
-  // An active firing must progress before a later firing can supply an input,
-  // including when the active transition itself emits nothing on that lane.
+  // A compute binding serializes its firings until retirement, and a memory
+  // binding holds at most its Operation Engine's issue depth outstanding and
+  // retires them in issue order. The oldest outstanding firing must therefore
+  // progress before a later firing can supply an input, including when the
+  // active transition itself emits nothing on that lane.
   for (const auto &firing : result.actorFirings)
     producerProgressOccurrences[firing.semanticActorOrdinal] = std::min(
         producerProgressOccurrences[firing.semanticActorOrdinal],

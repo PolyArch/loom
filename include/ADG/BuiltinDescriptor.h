@@ -139,6 +139,11 @@ struct BuiltinTargetScale final {
   /// Private cache realization declared by every InstructionCore and by every
   /// AccCore SpatialCore memory path.
   BuiltinPrivateCacheScale privateCaches;
+  /// Firings one memory actor bound to any Operation Engine of the target may
+  /// hold outstanding before the oldest retires. It is the engine's own
+  /// memory-level parallelism; the access cache's outstanding-miss capacity
+  /// and the service's outstanding guarantee still bound the line fills.
+  std::uint32_t memoryOperationIssueDepth;
 };
 
 constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
@@ -170,7 +175,8 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
          isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
          scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0 &&
-         isValidBuiltinPrivateCacheScale(scale.privateCaches);
+         isValidBuiltinPrivateCacheScale(scale.privateCaches) &&
+         scale.memoryOperationIssueDepth != 0;
 }
 
 struct BuiltinTargetDescriptor final {
@@ -193,7 +199,8 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
      ::fabric::FifoQueueDiscipline::StrictFifo, 0,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024,
-     builtinDefaultPrivateCacheScale()}};
+     builtinDefaultPrivateCacheScale(),
+     ::fabric::serializedMemoryOperationIssueDepth}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     BuiltinTargetPreset::Coverage,
@@ -206,7 +213,8 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel, 3,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024,
-     builtinDefaultPrivateCacheScale()}};
+     builtinDefaultPrivateCacheScale(),
+     ::fabric::serializedMemoryOperationIssueDepth}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
@@ -219,7 +227,8 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
      ::fabric::FifoQueueDiscipline::PerTagVirtualChannel, 4,
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024,
-     builtinDefaultPrivateCacheScale()}};
+     builtinDefaultPrivateCacheScale(),
+     ::fabric::serializedMemoryOperationIssueDepth}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

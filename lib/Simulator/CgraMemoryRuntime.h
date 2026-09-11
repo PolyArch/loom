@@ -106,8 +106,17 @@ private:
     const CgraMemoryRootedUsePlan *rootedUse = nullptr;
     std::vector<ResultBinding> results;
     std::uint64_t nextOccurrenceOrdinal = 0;
-    bool retirementPending = false;
-    std::uint64_t activeOccurrenceOrdinal = 0;
+    /// Firings this binding may hold outstanding before its oldest retires.
+    /// It is the exact Operation Engine's Fabric-owned issue depth, frozen
+    /// into the plan; the runtime never chooses it.
+    std::uint64_t operationIssueDepth = 0;
+    /// Occurrence ordinals of the outstanding firings, oldest first. The
+    /// engine retires them in issue order.
+    std::deque<std::uint64_t> outstandingOccurrences;
+    /// Admitted firings that have not consumed their issue operands yet. A
+    /// later firing must never read an earlier firing's operand tokens, so a
+    /// binding admits its next firing only after this reaches zero.
+    std::uint64_t pendingIssueCommits = 0;
   };
 
   struct PendingExternalMemory final {
@@ -157,6 +166,11 @@ private:
         physical_(&physical), externalMemoryProvider_(externalMemoryProvider),
         nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
+  /// Whether the binding may admit one more firing now: it is below its
+  /// engine's issue depth and owes no operand consumption to an earlier
+  /// firing.
+  static bool admitsFiring(const ActorBinding &binding);
+
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
   llvm::Expected<std::uint64_t> allocateFiring(std::uint64_t bindingOrdinal,
                                                ReadyMemoryAction ready,
@@ -170,6 +184,8 @@ private:
   llvm::Error commitIssue(std::uint64_t firingSlot,
                           const SpatialEventCoordinate &coordinate,
                           CgraMemoryLifecycleFrame &frame);
+  llvm::Error admitNextFiring(std::uint64_t bindingOrdinal,
+                              const SpatialEventCoordinate &coordinate);
   llvm::Error linearize(std::uint64_t firingSlot,
                         CgraMemoryLifecycleFrame &frame);
   bool usesExternalService(const Firing &firing) const;

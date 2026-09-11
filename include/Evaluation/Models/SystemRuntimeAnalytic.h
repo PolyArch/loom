@@ -36,6 +36,14 @@ struct SystemPlatformModel final {
   /// Bytes one outstanding SpatialCore request transfers: one line of its
   /// access cache.
   std::uint64_t accCoreRequestBytes = 0;
+  /// Firings one bound memory actor may hold outstanding, from the Fabric
+  /// memory Operation Engine of the most constrained SpatialCore. The actors
+  /// of a graph multiply it into the graph's own request concurrency.
+  std::uint64_t memoryOperationIssueDepth = 0;
+  /// Speed-of-light in-flight requests: the memory service's bandwidth-delay
+  /// product over one request. Fewer requests in flight leaves the service
+  /// idle for the rest of the round trip however wide the service is.
+  std::uint64_t requiredInFlightRequests = 0;
   /// Host-side cost of submitting one Spatial activation through Thread
   /// Dispatch; activations of one root serialize on the HostCore.
   std::uint64_t launchDispatchPicoseconds = 0;
@@ -60,6 +68,8 @@ struct SystemPlatformModel final {
                rhs.memoryServicePicosecondsPerOperation &&
            lhs.accCoreOutstandingRequests == rhs.accCoreOutstandingRequests &&
            lhs.accCoreRequestBytes == rhs.accCoreRequestBytes &&
+           lhs.memoryOperationIssueDepth == rhs.memoryOperationIssueDepth &&
+           lhs.requiredInFlightRequests == rhs.requiredInFlightRequests &&
            lhs.launchDispatchPicoseconds == rhs.launchDispatchPicoseconds &&
            lhs.launchFixedPicoseconds == rhs.launchFixedPicoseconds &&
            lhs.configurationBytesPerCore == rhs.configurationBytesPerCore;
@@ -85,9 +95,10 @@ struct AnalyticLaunchEstimate final {
   /// Memory actor firings one activation submits to the shared memory
   /// service; each is one request that occupies an outstanding slot.
   std::uint64_t memoryTransactionsPerActivation = 0;
-  /// Distinct memory actors of the graph. A memory actor holds one request
-  /// in flight until its response returns, so the actors, not only the
-  /// service's outstanding slots, bound the requests one activation overlaps.
+  /// Distinct memory actors of the graph. A memory actor holds up to its
+  /// engine's operation issue depth requests in flight, so the actors and
+  /// that depth, not only the service's outstanding slots, bound the
+  /// requests one activation overlaps.
   std::uint64_t memoryActors = 0;
   /// Bytes one activation's invocation wire carries across the bridge.
   std::uint64_t boundaryPayloadBytesPerActivation = 0;
@@ -129,6 +140,10 @@ struct AnalyticLaunchDuration final {
   std::uint64_t latencyChainPicoseconds = 0;
   std::uint64_t fixedPicoseconds = 0;
   std::uint64_t dispatchPicoseconds = 0;
+  /// Requests this launch site keeps in flight. Compare it with the
+  /// platform's `requiredInFlightRequests` to see whether a latency-bound
+  /// site is short of the memory service's bandwidth-delay product.
+  std::uint64_t inFlightRequests = 0;
 };
 
 /// Roofline duration of every activation of one launch site spread over

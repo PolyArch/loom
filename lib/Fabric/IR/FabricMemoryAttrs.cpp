@@ -112,10 +112,14 @@ LogicalResult MemoryConnectivityContractAttr::verify(
 LogicalResult
 MemoryEngineAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
                          Schedule schedule,
-                         MemoryResidentContextsAttr residentContexts) {
+                         MemoryResidentContextsAttr residentContexts,
+                         uint64_t operationIssueDepth) {
   if (schedule == Schedule::Spatial && residentContexts)
     return emitError()
            << "spatial memory engine cannot carry resident contexts";
+  if (operationIssueDepth == 0)
+    return emitError() << "memory engine operation_issue_depth must be greater "
+                          "than zero";
   return success();
 }
 

@@ -789,21 +789,25 @@ private:
 class MemoryEngineSpec final {
 public:
   static MemoryEngineSpec
-  spatial(std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
+  spatial(std::uint64_t operationIssueDepth,
+          std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
   static MemoryEngineSpec temporal(
-      std::uint64_t residentContextCount,
+      std::uint64_t residentContextCount, std::uint64_t operationIssueDepth,
       std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts);
 
 private:
   MemoryEngineSpec(
       ::fabric::Schedule schedule,
       std::optional<std::uint64_t> residentContextCount,
+      std::uint64_t operationIssueDepth,
       std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts)
       : schedule_(schedule), residentContextCount_(residentContextCount),
+        operationIssueDepth_(operationIssueDepth),
         operationPorts_(std::move(operationPorts)) {}
 
   ::fabric::Schedule schedule_;
   std::optional<std::uint64_t> residentContextCount_;
+  std::uint64_t operationIssueDepth_;
   std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts_;
 
   friend class MemorySpec;
@@ -1214,6 +1218,11 @@ public:
   llvm::Error replaceMemoryOperationTable(
       loom::fabric::FabricMemoryOccurrenceRef target,
       loom::fabric::FabricMemoryOccurrenceRef prototype);
+  /// Re-declares how many firings one memory actor bound to this Operation
+  /// Engine may hold outstanding before the oldest retires.
+  llvm::Error changeMemoryOperationIssueDepth(
+      loom::fabric::FabricMemoryOccurrenceRef target,
+      std::uint64_t operationIssueDepth);
   llvm::Error resizeFifo(loom::fabric::FabricFifoOccurrenceRef target,
                          std::uint32_t depth);
   llvm::Error

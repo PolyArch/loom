@@ -389,7 +389,9 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                      scale.interconnectFifoQueueDiscipline)},
                 {"interconnect_fifo_reserved_channels",
                  scale.interconnectFifoReservedChannels},
-                {"private_caches", privateCaches(scale.privateCaches)}}}}},
+                {"private_caches", privateCaches(scale.privateCaches)},
+                {"memory_operation_issue_depth",
+                 scale.memoryOperationIssueDepth}}}}},
       {"dse",
        llvm::json::Object{
            {"structured_ownership",

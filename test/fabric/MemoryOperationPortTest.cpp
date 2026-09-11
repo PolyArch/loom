@@ -507,8 +507,10 @@ void checkExactFabricCarrier(mlir::MLIRContext &context) {
   auto subordinates = mlir::DenseI32ArrayAttr::get(&context, {0});
   auto contract = fabric::MemoryContractAttr::get(
       &context,
-      fabric::MemoryEngineAttr::get(&context, fabric::Schedule::Spatial,
-                                    fabric::MemoryResidentContextsAttr()),
+      fabric::MemoryEngineAttr::get(
+          &context, fabric::Schedule::Spatial,
+          fabric::MemoryResidentContextsAttr(),
+          fabric::serializedMemoryOperationIssueDepth),
       fabric::LocalMemoryServiceAttr(), managerConnectivity(context), managers,
       subordinates);
   llvm::SmallVector<mlir::Value> inputs = {

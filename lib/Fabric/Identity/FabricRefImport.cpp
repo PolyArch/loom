@@ -712,6 +712,14 @@ std::uint64_t FabricArtifactView::memoryResidentContextCount(
              : 0;
 }
 
+std::uint64_t FabricArtifactView::memoryOperationIssueDepth(
+    FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->memoryOperationIssueDepth
+             ? *record->memoryOperationIssueDepth
+             : 0;
+}
+
 const ::fabric::MemoryConnectivityContractRecord *
 FabricArtifactView::memoryConnectivity(FabricMemoryOccurrenceRef memory) const {
   const detail::FabricEntityViewData *record = storage_->entity(memory);
@@ -1260,6 +1268,9 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         return invalidView(
             "temporal memory engine template has no resident contexts");
       }
+      if (engine.operationIssueDepth == 0)
+        return invalidView(
+            "memory engine template has no operation issue depth");
       if (engine.operationPorts.empty())
         return invalidView("memory engine template has no operation ports");
       for (const ::fabric::MemoryTransportEndpointDescriptor &endpoint :
@@ -1301,8 +1312,8 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
     }
     if (!isMemory &&
         (entity.memorySchedule || entity.memoryResidentContextCount ||
-         entity.memoryConnectivity || !entity.memoryOperationPorts.empty() ||
-         entity.localMemoryService))
+         entity.memoryOperationIssueDepth || entity.memoryConnectivity ||
+         !entity.memoryOperationPorts.empty() || entity.localMemoryService))
       return invalidView("non-memory entity owns memory occurrence state");
     if (isMemory) {
       if (!entity.memoryConnectivity)
@@ -1321,6 +1332,14 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         return invalidView(
             "memory connectivity subordinate endpoints do not match the "
             "view");
+      if (entity.memoryOperationIssueDepth.has_value() !=
+          entity.memorySchedule.has_value())
+        return invalidView(
+            "memory occurrence issue depth and Operation Engine do not "
+            "correspond");
+      if (entity.memoryOperationIssueDepth &&
+          *entity.memoryOperationIssueDepth == 0)
+        return invalidView("memory occurrence has no operation issue depth");
       if (!entity.memorySchedule) {
         if (entity.memoryResidentContextCount ||
             !entity.memoryOperationPorts.empty())

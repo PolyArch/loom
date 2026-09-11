@@ -301,7 +301,8 @@ BuilderSpecMaterializer::memory(mlir::MLIRContext &context,
       residentContexts = ::fabric::MemoryResidentContextsAttr::get(
           &context, *spec.engine_->residentContextCount_);
     engineAttr = ::fabric::MemoryEngineAttr::get(
-        &context, spec.engine_->schedule_, residentContexts);
+        &context, spec.engine_->schedule_, residentContexts,
+        spec.engine_->operationIssueDepth_);
     llvm::SmallVector<mlir::Attribute, 4> encodedPorts;
     encodedPorts.reserve(spec.engine_->operationPorts_.size());
     for (const ::fabric::MemoryOperationPortDeclaration &declaration :

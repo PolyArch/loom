@@ -246,6 +246,44 @@ llvm::Error addEntityCost(PhysicalEstimate &estimate, EntityCost cost,
   return llvm::Error::success();
 }
 
+/// Silicon of one byte of a memory operation issue-queue entry. One entry
+/// holds one pending request record, so an Operation Engine that may hold
+/// `operation_issue_depth` firings outstanding buys that many records; the
+/// serialized engine's single record is already inside the occurrence cost.
+constexpr std::uint64_t kMemoryIssueQueueRecordByteArea = 4;
+constexpr std::uint64_t kLeakageAreaDivisor = 20;
+
+/// Cost of the extra issue-queue entries one memory occurrence declares. The
+/// request record is the engine's input token endpoints: address, data, mask,
+/// and control as the exact engine template declares them.
+llvm::Expected<std::pair<EntityCost, std::uint64_t>>
+memoryIssueQueueCost(const fabric::FabricArtifactView &view,
+                     fabric::FabricMemoryOccurrenceRef memory) {
+  const auto definition = view.memoryEngineTemplateOf(memory);
+  if (!definition)
+    return std::pair<EntityCost, std::uint64_t>{EntityCost{0, 0, 0}, 0};
+  const fabric::FabricMemoryEngineTemplateRecord *engine =
+      view.memoryEngineTemplate(*definition);
+  if (!engine)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: memory occurrence has no engine");
+  const std::uint64_t depth = view.memoryOperationIssueDepth(memory);
+  if (depth <= ::fabric::serializedMemoryOperationIssueDepth)
+    return std::pair<EntityCost, std::uint64_t>{EntityCost{0, 0, 0}, 0};
+  std::uint64_t recordBits = 0;
+  for (const ::fabric::MemoryTransportEndpointDescriptor &endpoint :
+       engine->tokenEndpoints)
+    if (endpoint.direction == fabric::FabricPortDirection::Input)
+      recordBits += endpoint.payloadWidth + endpoint.tagWidth.value_or(0);
+  const std::uint64_t recordBytes = (recordBits + 7) / 8;
+  const std::uint64_t area = recordBytes * kMemoryIssueQueueRecordByteArea;
+  return std::pair<EntityCost, std::uint64_t>{
+      EntityCost{area, std::max<std::uint64_t>(1, area / kLeakageAreaDivisor),
+                 0},
+      depth - ::fabric::serializedMemoryOperationIssueDepth};
+}
+
 llvm::Error summarizeFabricView(const fabric::FabricArtifactView &view,
                                 std::uint64_t occurrenceCount,
                                 PhysicalEstimate &estimate) {
@@ -257,6 +295,21 @@ llvm::Error summarizeFabricView(const fabric::FabricArtifactView &view,
     if (llvm::Error error =
             addEntityCost(estimate, entityCost(*kind), occurrenceCount))
       return error;
+    if (*kind == fabric::FabricEntityKind::FabricMemoryOccurrence) {
+      auto issueQueue =
+          memoryIssueQueueCost(view, fabric::FabricMemoryOccurrenceRef(id));
+      if (!issueQueue)
+        return issueQueue.takeError();
+      const std::optional<std::uint64_t> entries =
+          llvm::checkedMulUnsigned(issueQueue->second, occurrenceCount);
+      if (!entries)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "low_confidence_model_overflow: memory issue queue entries");
+      if (llvm::Error error =
+              addEntityCost(estimate, issueQueue->first, *entries))
+        return error;
+    }
     if (*kind != fabric::FabricEntityKind::FabricFuOccurrence)
       continue;
     const auto definition =
@@ -684,6 +737,7 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
       record["compute_ps"] = duration->computePicoseconds;
       record["bandwidth_ps"] = duration->bandwidthPicoseconds;
       record["latency_chain_ps"] = duration->latencyChainPicoseconds;
+      record["in_flight_requests"] = duration->inFlightRequests;
       record["fixed_ps"] = duration->fixedPicoseconds;
       record["dispatch_ps"] = duration->dispatchPicoseconds;
       record["bottleneck"] = [&]() -> llvm::StringRef {
@@ -730,6 +784,12 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
         fields["memory_service_ps_per_operation"] =
             platform.memoryServicePicosecondsPerOperation;
         fields["outstanding_requests"] = platform.accCoreOutstandingRequests;
+        fields["memory_operation_issue_depth"] =
+            platform.memoryOperationIssueDepth;
+        // The service's bandwidth-delay product over one request: the
+        // in-flight depth a latency-bound window would need to saturate it.
+        fields["required_in_flight_requests"] =
+            platform.requiredInFlightRequests;
         fields["launches"] = std::move(launchRecords);
       });
   if (*runtime >

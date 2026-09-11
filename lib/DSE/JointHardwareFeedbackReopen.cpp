@@ -148,19 +148,25 @@ tryHardwareFeedbackReopen(
     auto feedback = selectMappingHardwareFeedback(*currentFailure, artifacts);
     if (!feedback)
       return feedback.takeError();
-    if (!*feedback)
-      break;
     const auto *techObservation =
-        std::get_if<TechHardwareFeedbackObservation>(&**feedback);
+        *feedback ? std::get_if<TechHardwareFeedbackObservation>(&**feedback)
+                  : nullptr;
     const auto *systemObservation =
-        std::get_if<SystemHardwareFeedbackObservation>(&**feedback);
+        *feedback ? std::get_if<SystemHardwareFeedbackObservation>(&**feedback)
+                  : nullptr;
     // The growth owner chooses the supply direction from the exact observed
     // relation, so the direction is derived before the funnel decides whether
-    // this observation repeats the previous one.
+    // this observation repeats the previous one. With no Mapping deficit left
+    // the window is already correct, and the only remaining hardware lever is
+    // the memory-level parallelism a latency-bound window is short of.
     llvm::Expected<std::optional<HardwareRecipeGrowth>> growth =
-        (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
-         parentHasNoMappingFrontier && candidateOrdinal == 0 &&
-         techObservation && techObservation->feedback.deficit() > 1)
+        !*feedback
+            ? deriveMemoryIssueDepthRecipeGrowth(
+                  currentConfig,
+                  currentPlan->frontier.systemFrontier.front(), artifacts)
+        : (request.spectrumEndpoint != PreMappingSpectrumEndpoint::Automatic &&
+           parentHasNoMappingFrontier && candidateOrdinal == 0 &&
+           techObservation && techObservation->feedback.deficit() > 1)
             ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
                                                     *techObservation, artifacts)
             : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts,
@@ -176,6 +182,7 @@ tryHardwareFeedbackReopen(
             fields["failure_scope"] = "hardware_repair_funnel";
             fields["closure_status"] = "unsupported";
             fields["reason"] = "observed_feedback_admits_no_growth";
+            fields["memory_level_parallelism_bound"] = !*feedback;
             fields["candidate_ordinal"] = candidateOrdinal;
             fields["diagnostic"] =
                 "the observed compute-context relation has neither a Temporal "

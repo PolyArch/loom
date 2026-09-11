@@ -22,6 +22,7 @@
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
@@ -990,6 +991,46 @@ deriveHardwareRecipeGrowth(const ResolvedConfig &baseConfig,
     growth.accCoreTargetModule = systemObservation->feedback.targetModule();
   }
 
+  growth.config.dse.planNodes.clear();
+  return std::optional<HardwareRecipeGrowth>(std::move(growth));
+}
+
+llvm::Expected<std::optional<HardwareRecipeGrowth>>
+deriveMemoryIssueDepthRecipeGrowth(const ResolvedConfig &baseConfig,
+                                   const ArtifactRootReference &parentSystem,
+                                   const ArtifactStore &artifacts) {
+  auto system = fabric::importEntireFabricRoot(parentSystem, artifacts);
+  if (!system)
+    return system.takeError();
+  auto platform = evaluation::models::projectSystemPlatformModel(*system);
+  if (!platform)
+    return platform.takeError();
+  // One memory actor offers its Operation Engine's issue depth; the access
+  // cache and the service endpoint bound what the rest of the path serves.
+  // The window is engine-bound exactly when that offer is the smaller of the
+  // two and still below the service's bandwidth-delay product.
+  const std::uint64_t supply = std::min(platform->accCoreOutstandingRequests,
+                                        platform->memoryOperationIssueDepth);
+  if (supply >= platform->requiredInFlightRequests)
+    return std::optional<HardwareRecipeGrowth>();
+  const std::uint64_t candidate = std::min(
+      platform->requiredInFlightRequests, platform->accCoreOutstandingRequests);
+  const std::uint64_t current =
+      baseConfig.hardwareTarget.parameters.memoryOperationIssueDepth;
+  if (candidate <= current ||
+      candidate > std::numeric_limits<std::uint32_t>::max())
+    return std::optional<HardwareRecipeGrowth>();
+
+  HardwareRecipeGrowth growth;
+  growth.config = baseConfig;
+  growth.resultingContexts =
+      baseConfig.hardwareTarget.parameters.temporalResidentContexts;
+  growth.resultingGateways = baseConfig.hardwareTarget.parameters.gatewayCount;
+  growth.resultingAccCores = baseConfig.hardwareTarget.parameters.accCoreCount;
+  growth.config.hardwareTarget.parameters.memoryOperationIssueDepth =
+      static_cast<std::uint32_t>(candidate);
+  growth.addedMemoryIssueDepth = candidate - current;
+  growth.resultingMemoryIssueDepth = candidate;
   growth.config.dse.planNodes.clear();
   return std::optional<HardwareRecipeGrowth>(std::move(growth));
 }
