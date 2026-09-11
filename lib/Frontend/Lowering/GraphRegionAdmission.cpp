@@ -1,4 +1,6 @@
 #include "GraphRegionAdmission.h"
+
+#include "Frontend/IR/LoomOps.h"
 #include "GraphRegionLowering.h"
 #include "GraphStreamBoundaryLowering.h"
 
@@ -121,6 +123,11 @@ GraphLeafLowering classifyGraphLoweringLeaf(mlir::Operation *operation) {
   if (operation->getNumRegions() == 0 && isEffectFree &&
       (dataflow::isCanonicalDataflowActor(operation) ||
        isGraphMemoryAddressLeaf(operation)))
+    return GraphLeafLowering::Movable;
+  // A pointer view is a pure reinterpretation of a Spatial pointer input. It
+  // moves into the graph frontier unchanged; graph memory lowering resolves it
+  // to that input's memory service.
+  if (llvm::isa<loom::PointerViewOp>(operation))
     return GraphLeafLowering::Movable;
   if (llvm::isa<mlir::memref::AssumeAlignmentOp,
                 mlir::memref::DistinctObjectsOp, mlir::memref::LoadOp,

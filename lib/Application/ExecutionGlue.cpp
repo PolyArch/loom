@@ -1,4 +1,5 @@
 #include "ExecutionGlue.h"
+#include "Frontend/IR/LoomToLLVM.h"
 #include "LoomFreestandingMathBitcode.h"
 #include "LoomFreestandingMemoryBitcode.h"
 
@@ -635,6 +636,7 @@ llvm::Error lowerSelectedHostControlModule(mlir::ModuleOp module) {
   mlir::index::registerConvertIndexToLLVMInterface(registry);
   mlir::registerConvertMathToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
+  loom::registerConvertLoomToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::vector::registerConvertVectorToLLVMInterface(registry);
   mlir::registerBuiltinDialectTranslation(registry);

@@ -1,5 +1,7 @@
 #include "Frontend/IR/LoomOps.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/IR/Builders.h"
@@ -196,6 +198,26 @@ LogicalResult SpatialRegionOp::verify() {
     return emitOpError("must terminate with loom.spatial_yield");
   return success();
 }
+
+LogicalResult PointerViewOp::verify() {
+  if (!llvm::isa<mlir::LLVM::LLVMPointerType>(getSource().getType()))
+    return emitOpError("source must be an LLVM pointer, got ")
+           << getSource().getType();
+  auto memory = llvm::cast<mlir::MemRefType>(getResult().getType());
+  if (!memory.hasStaticShape() || memory.getNumElements() == 0)
+    return emitOpError("result must have a nonempty static shape");
+  if (!memory.getLayout().isIdentity())
+    return emitOpError("result must have the identity layout");
+  if (memory.getMemorySpace())
+    return emitOpError("result must use the default memory space");
+  const std::int64_t alignment = getAlignment();
+  if (alignment <= 0 || (alignment & (alignment - 1)) != 0)
+    return emitOpError("alignment must be a positive power of two, got ")
+           << alignment;
+  return success();
+}
+
+mlir::Value PointerViewOp::getViewSource() { return getSource(); }
 
 LogicalResult SpatialYieldOp::verify() {
   auto parent = (*this)->getParentOfType<SpatialRegionOp>();

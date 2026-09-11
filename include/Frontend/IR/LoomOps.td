@@ -4,6 +4,7 @@
 include "Frontend/IR/LoomDialect.td"
 include "Dataflow/IR/DataflowDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
 
 def Loom_SpatialRegionOp : Loom_Op<"spatial_region", [
     AffineScope,
@@ -72,6 +73,32 @@ def Loom_SpatialRegionOp : Loom_Op<"spatial_region", [
       $_state.addRegion();
     }]>
   ];
+
+  let hasVerifier = 1;
+}
+
+def Loom_PointerViewOp : Loom_Op<"pointer_view", [
+    Pure,
+    DeclareOpInterfaceMethods<ViewLikeOpInterface>
+]> {
+  let summary = "View one LLVM pointer as the statically shaped memref it addresses";
+  let description = [{
+    Reinterprets a pointer that provably addresses one static object as a
+    ranked memref of that object's shape. It moves no data, owns no memory,
+    and adds no offset: element `i` of the result is byte `i * element_bytes`
+    from the pointer. `alignment` is the proven byte alignment of the pointer.
+
+    The view admits a pointer-ABI Spatial input to the memref-native
+    structured analyses inside a `loom.spatial_region`. Lowering resolves the
+    view to the memory service of its pointer root; it is temporary compiler
+    IR and never reaches a native `dataflow.graph`.
+  }];
+
+  let arguments = (ins AnyType:$source, I64Attr:$alignment);
+  let results = (outs AnyStaticShapeMemRef:$result);
+
+  let assemblyFormat =
+      "$source attr-dict `:` type($source) `to` type($result)";
 
   let hasVerifier = 1;
 }

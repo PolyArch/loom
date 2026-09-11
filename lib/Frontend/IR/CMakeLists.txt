@@ -1,6 +1,7 @@
 add_mlir_dialect_library(MLIRLoom
   LoomDialect.cpp
   LoomOps.cpp
+  LoomToLLVM.cpp
   StructuredProgramArtifact.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -26,4 +27,6 @@ mlir_target_link_libraries(MLIRLoom PUBLIC
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRToLLVMIRTranslationRegistration
+  MLIRConvertToLLVMInterface
+  MLIRLLVMCommonConversion
 )

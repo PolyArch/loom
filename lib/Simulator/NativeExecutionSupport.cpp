@@ -1,4 +1,5 @@
 #include "NativeExecutionSupport.h"
+#include "Frontend/IR/LoomToLLVM.h"
 
 #include "DeterministicTranscendental.h"
 
@@ -13,6 +14,8 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -432,6 +435,17 @@ llvm::Error initializeNativeTarget() {
 llvm::Error lowerStructuredModuleToLlvmDialect(mlir::ModuleOp module) {
   if (llvm::Error error = materializeDeterministicMathMlir(module))
     return error;
+  {
+    // Exact vector transfers lower to plain vector loads and stores before
+    // the LLVM conversion, which only knows the load and store forms.
+    mlir::RewritePatternSet transfers(module->getContext());
+    mlir::vector::populateVectorTransferLoweringPatterns(
+        transfers, /*maxTransferRank=*/1);
+    if (mlir::failed(
+            mlir::applyPatternsGreedily(module, std::move(transfers))))
+      return invalid("prepared Structured Program vector transfers cannot "
+                     "lower to vector accesses");
+  }
   mlir::DialectRegistry registry;
   mlir::arith::registerConvertArithToLLVMInterface(registry);
   mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
@@ -439,6 +453,7 @@ llvm::Error lowerStructuredModuleToLlvmDialect(mlir::ModuleOp module) {
   mlir::index::registerConvertIndexToLLVMInterface(registry);
   mlir::registerConvertMathToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
+  loom::registerConvertLoomToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::vector::registerConvertVectorToLLVMInterface(registry);
   mlir::registerBuiltinDialectTranslation(registry);

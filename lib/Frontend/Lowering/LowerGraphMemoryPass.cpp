@@ -6,7 +6,11 @@
 // address root; the enclosing thread materializes that service before launch.
 
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
+#include "Frontend/IR/LoomOps.h"
 #include "Frontend/Lowering/LoopIndependence.h"
+#include "Common/MappingDebugLog.h"
+
+#include "llvm/Support/raw_ostream.h"
 #include "Frontend/Lowering/Passes.h"
 
 #include "GraphMemoryLowering.h"
@@ -1073,6 +1077,30 @@ checkGraphRegionLoweringPreconditionsAfterLoadSinking(::mlir::ModuleOp module) {
 
   (void)sinkBranchSelectedLoads(graph, builder);
 
+  // A pointer view names the memory service of its pointer root at the
+  // element type it declares; its element indices are already root-relative.
+  ::llvm::SmallVector<::loom::PointerViewOp, 4> views;
+  graph.getBody().walk([&](::loom::PointerViewOp view) { views.push_back(view); });
+  for (::loom::PointerViewOp view : views) {
+    ::mlir::Value root = resolvePointerServiceRoot(view.getSource(), ctx.graph,
+                                                   ctx.pointerServices);
+    if (!root) {
+      view.emitError("loom-lower-graph-memory: pointer view source has no "
+                     "graph memory service root");
+      return ::mlir::failure();
+    }
+    ::mlir::Value memory = getImportedMemrefView(
+        ctx.graph, ctx.importedViews, root,
+        view.getResult().getType().getElementType(), view.getLoc());
+    if (!memory) {
+      view.emitError("loom-lower-graph-memory: pointer view root is not a "
+                     "graph pointer input");
+      return ::mlir::failure();
+    }
+    view.getResult().replaceAllUsesWith(memory);
+    view.erase();
+  }
+
   // Collect rewrite targets up front so the walk is independent of
   // mutations performed by tryRewriteOne.
   ::llvm::SmallVector<::mlir::Operation *, 16> targets;
@@ -1213,9 +1241,26 @@ namespace lowering {
   ::llvm::SmallVector<::mlir::Operation *, 8> independentLoops;
   for (::dataflow::GraphOp graph : graphs)
     graph.walk([&](::mlir::scf::ForOp loop) {
-      if (proveIndependentIterations(loop) ==
-          ParallelDependenceResult::ProvenIndependent)
+      const ParallelDependenceResult proof = proveIndependentIterations(loop);
+      if (proof == ParallelDependenceResult::ProvenIndependent)
         independentLoops.push_back(loop.getOperation());
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::DerivedContext,
+          [&](::llvm::json::Object &fields) {
+            fields["context_kind"] = "graph_loop_independence";
+            fields["graph"] = graph.getSymName();
+            fields["proof"] =
+                proof == ParallelDependenceResult::ProvenIndependent
+                    ? "proven_independent"
+                : proof == ParallelDependenceResult::ProvenDependent
+                    ? "proven_dependent"
+                    : "proof_not_established";
+            std::string text;
+            ::llvm::raw_string_ostream stream(text);
+            loop.print(stream);
+            fields["loop"] = std::move(text);
+          });
     });
 
   if (projections)

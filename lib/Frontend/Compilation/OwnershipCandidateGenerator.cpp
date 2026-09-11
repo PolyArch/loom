@@ -4,6 +4,7 @@
 #include "StructuredAddressIndexNarrowing.h"
 #include "StructuredCallSpecialization.h"
 #include "StructuredOwnershipAnalysis.h"
+#include "StructuredPointerMemRefPromotion.h"
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowAttrs.h"
@@ -1280,6 +1281,8 @@ finalizeStructuredOwnershipCandidate(
               prepared.materializedSpatialRegion))
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   *rejection);
+  if (llvm::Error error = promoteStaticPointerLoopsToMemRef(module))
+    return std::move(error);
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
 

@@ -259,6 +259,39 @@ private:
     return true;
   }
 
+public:
+  std::optional<mlir::LLVM::GlobalOp> resolveUniqueStaticGlobal(mlir::Value value) {
+    value = projectMemoryRoot(value);
+    if (auto address = value.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
+      mlir::Operation *symbol =
+          symbols_.lookupNearestSymbolFrom(address, address.getGlobalNameAttr());
+      return llvm::dyn_cast_or_null<mlir::LLVM::GlobalOp>(symbol);
+    }
+    std::optional<FormalRoot> formal = formalRoot(value);
+    if (!formal || llvm::is_contained(activeRoots_, value))
+      return std::nullopt;
+    llvm::ArrayRef<mlir::Operation *> callSites = users_.getUsers(formal->callable);
+    if (callSites.empty())
+      return std::nullopt;
+    activeRoots_.push_back(value);
+    std::optional<mlir::LLVM::GlobalOp> resolved;
+    for (mlir::Operation *callSite : callSites) {
+      auto actuals = exactActuals(formal->callable, callSite);
+      if (!actuals || formal->ordinal >= actuals->size()) {
+        resolved.reset();
+        break;
+      }
+      auto global = resolveUniqueStaticGlobal((*actuals)[formal->ordinal]);
+      if (!global || (resolved && *resolved != *global)) {
+        resolved.reset();
+        break;
+      }
+      resolved = global;
+    }
+    activeRoots_.pop_back();
+    return resolved;
+  }
+private:
   std::optional<llvm::SmallVector<mlir::Value, 8>>
   exactActuals(mlir::Operation *callable, mlir::Operation *callSite) {
     if (auto function = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(callable)) {
@@ -303,6 +336,7 @@ private:
   mlir::SymbolTableCollection symbols_;
   mlir::SymbolUserMap users_;
   llvm::SmallVector<std::pair<mlir::Value, mlir::Value>, 4> active_;
+  llvm::SmallVector<mlir::Value, 4> activeRoots_;
 };
 
 } // namespace
@@ -326,6 +360,22 @@ mlir::Value projectMemoryDerivationRoot(mlir::Value value) {
       value = gep.getBase();
       continue;
     }
+    if (auto view = value.getDefiningOp<loom::PointerViewOp>()) {
+      value = view.getSource();
+      continue;
+    }
+    if (auto aligned = value.getDefiningOp<mlir::memref::AssumeAlignmentOp>()) {
+      value = aligned.getMemref();
+      continue;
+    }
+    // Each distinct_objects result names exactly its operand's object; the
+    // operands' own provenance carries the distinctness proof.
+    if (auto result = llvm::dyn_cast<mlir::OpResult>(value))
+      if (auto distinct = llvm::dyn_cast<mlir::memref::DistinctObjectsOp>(
+              result.getOwner())) {
+        value = distinct.getOperand(result.getResultNumber());
+        continue;
+      }
     if (auto bitcast = value.getDefiningOp<mlir::LLVM::BitcastOp>()) {
       value = bitcast.getOperand();
       continue;
@@ -371,6 +421,18 @@ bool haveProvenDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
   if (!module)
     return false;
   return CompleteCallSiteProvenance(module).proveDistinct(lhs, rhs);
+}
+
+std::optional<mlir::LLVM::GlobalOp>
+resolveUniqueStaticGlobalRoot(mlir::Value value) {
+  mlir::Value root = projectMemoryRoot(value);
+  mlir::Operation *anchor =
+      root.getParentBlock() ? root.getParentBlock()->getParentOp() : nullptr;
+  mlir::ModuleOp module =
+      anchor ? anchor->getParentOfType<mlir::ModuleOp>() : mlir::ModuleOp{};
+  if (!module)
+    return std::nullopt;
+  return CompleteCallSiteProvenance(module).resolveUniqueStaticGlobal(root);
 }
 
 } // namespace loom::frontend::analysis
