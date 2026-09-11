@@ -459,12 +459,18 @@ parseWorkloadInput(const llvm::json::Object &object,
                    const std::string &context) {
   if (llvm::Error error = rejectUnknownFields(
           object, context,
-          {"name", "workload", "runtime_input", "cached_inputs",
-           "compiler_options", "oracle", "profile"}))
+          {"name", "evaluation_tier", "workload", "runtime_input",
+           "cached_inputs", "compiler_options", "oracle", "profile"}))
     return std::move(error);
   auto name = requireString(object, "name", context);
   if (!name)
     return name.takeError();
+  auto tierSpelling = requireString(object, "evaluation_tier", context);
+  if (!tierSpelling)
+    return tierSpelling.takeError();
+  auto tier = parseEvaluationTier(*tierSpelling);
+  if (!tier)
+    return tier.takeError();
   auto workload = requireString(object, "workload", context);
   if (!workload)
     return workload.takeError();
@@ -510,6 +516,7 @@ parseWorkloadInput(const llvm::json::Object &object,
   if (!profile)
     return profile.takeError();
   return WorkloadInputSelection{name->str(),
+                                *tier,
                                 workload->str(),
                                 runtimeInput->str(),
                                 std::move(*cached),
@@ -754,6 +761,24 @@ llvm::StringRef toString(ExecutionSelection selection) {
   llvm_unreachable("unknown ExecutionSelection");
 }
 
+llvm::StringRef toString(EvaluationTier tier) {
+  switch (tier) {
+  case EvaluationTier::Functional:
+    return "functional";
+  case EvaluationTier::Qualified:
+    return "qualified";
+  }
+  llvm_unreachable("unknown EvaluationTier");
+}
+
+llvm::Expected<EvaluationTier> parseEvaluationTier(llvm::StringRef spelling) {
+  if (spelling == "functional")
+    return EvaluationTier::Functional;
+  if (spelling == "qualified")
+    return EvaluationTier::Qualified;
+  return invalid("evaluation tier must be 'functional' or 'qualified'");
+}
+
 llvm::Expected<ExecutionSelection>
 parseExecutionSelection(llvm::StringRef spelling) {
   if (spelling == "smoke")
@@ -856,6 +881,7 @@ projectSelectedApplicationInputJson(const SelectedApplicationInput &selection) {
   return llvm::json::Object{
       {"application_identity", selection.applicationIdentity},
       {"input_name", selection.input.name},
+      {"evaluation_tier", toString(selection.input.evaluationTier)},
       {"source", llvm::json::Object{{"kind", toString(selection.source.kind)},
                                     {"root", selection.source.root}}},
       {"build",
@@ -884,8 +910,8 @@ void writeApplicationManifestInventoryJson(
     llvm::raw_ostream &output, const ApplicationManifest &manifest) {
   llvm::json::OStream json(output, 2);
   json.object([&] {
-    json.attribute("schema", "loom.application_portfolio_inventory");
-    json.attribute("version", "2.0");
+    json.attribute("schema", applicationPortfolioInventorySchema);
+    json.attribute("version", applicationPortfolioInventoryVersion);
     json.attribute("manifest_schema", ApplicationManifest::schemaIdentity);
     json.attribute("manifest_version", ApplicationManifest::schemaVersion);
     json.attributeArray("rows", [&] {

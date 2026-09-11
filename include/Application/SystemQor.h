@@ -42,9 +42,16 @@ inline constexpr std::uint64_t applicationHostBoundWindowDenominator = 10;
 inline constexpr std::uint64_t applicationMaximumLaunchOverheadNumerator = 1;
 inline constexpr std::uint64_t applicationMaximumLaunchOverheadDenominator = 2;
 
+/// The measured outcome under the evaluation tier the runtime manifest
+/// declares. `Qualified` and `NotQualified` answer the saturation target a
+/// `Qualified` tier row carries; `Functional` names a measured `Functional`
+/// tier row, whose target is its oracle-matched execution rather than a
+/// saturation ratio. `Unmeasured` names an absent computation interval, which
+/// no tier can replace.
 enum class ApplicationSystemQorStatus : std::uint8_t {
   Qualified,
   NotQualified,
+  Functional,
   Unmeasured
 };
 
@@ -171,6 +178,7 @@ struct ApplicationSystemWindowMeasurement final {
 class ApplicationSystemQor final {
 public:
   const ArtifactRootReference &runtimeManifest() const { return manifest_; }
+  EvaluationTier evaluationTier() const { return tier_; }
   const ArtifactRootReference &gem5Binding() const { return binding_; }
   const ApplicationSystemRunMeasurement &hostOnly() const { return host_; }
   const ApplicationSystemRunMeasurement &candidate() const { return candidate_; }
@@ -183,16 +191,18 @@ public:
   ApplicationSystemQorStatus status() const;
 
 private:
-  ApplicationSystemQor(ArtifactRootReference manifest,
+  ApplicationSystemQor(ArtifactRootReference manifest, EvaluationTier tier,
                        ArtifactRootReference binding,
                        ApplicationSystemRunMeasurement host,
                        ApplicationSystemRunMeasurement candidate,
                        std::optional<ApplicationSystemWindowMeasurement> window,
                        std::optional<evaluation::ExactRatio> speedup)
-      : manifest_(std::move(manifest)), binding_(std::move(binding)),
-        host_(std::move(host)), candidate_(std::move(candidate)),
-        window_(std::move(window)), speedup_(speedup) {}
+      : manifest_(std::move(manifest)), tier_(tier),
+        binding_(std::move(binding)), host_(std::move(host)),
+        candidate_(std::move(candidate)), window_(std::move(window)),
+        speedup_(speedup) {}
   ArtifactRootReference manifest_;
+  EvaluationTier tier_;
   ArtifactRootReference binding_;
   ApplicationSystemRunMeasurement host_;
   ApplicationSystemRunMeasurement candidate_;

@@ -107,7 +107,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
                             std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "4.0",
+  "version": "5.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -123,6 +123,7 @@ std::string fixtureManifest(llvm::StringRef oracleKind,
     "cached_inputs": [],
     "inputs": [{
       "name": "fixture",
+      "evaluation_tier": "functional",
       "workload": "host-fixture-workload",
       "runtime_input": "host-fixture-input",
       "cached_inputs": [],
@@ -151,7 +152,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
                                   std::uint64_t measuredSamples) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "4.0",
+  "version": "5.0",
   "applications": [{
     "identity": "host-fixture",
     "source": {"kind": "repository", "root": "source"},
@@ -172,6 +173,7 @@ std::string cachedFixtureManifest(llvm::StringRef digestHex,
     }],
     "inputs": [{
       "name": "fixture",
+      "evaluation_tier": "functional",
       "workload": "host-fixture-workload",
       "runtime_input": "host-fixture-input",
       "cached_inputs": ["payload"],

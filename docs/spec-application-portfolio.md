@@ -70,6 +70,7 @@ application:
 * an explicit product entry symbol and measured output extent when the row has
   a product execution ABI;
 * named workload and runtime-input selections;
+* the evaluation tier each input declares;
 * the independent oracle or typed invariant bound to each selection;
 * the bounded warm-up, measured-sample, oracle-coverage, and execution-deadline
   profile bound to each input; and
@@ -77,13 +78,14 @@ application:
   execution policies.
 
 The tracked JSON contract is schema `loom.application_portfolio` version
-`4.0`. Version 4.0 incompatibly requires a product-execution selection and a
-pinned oracle digest and encoding. Its exact structural shape is:
+`5.0`. Version 5.0 incompatibly requires an explicit evaluation tier on every
+input row, above version 4.0's product-execution selection and pinned oracle
+digest and encoding. Its exact structural shape is:
 
 ```text
 {
   "schema": "loom.application_portfolio",
-  "version": "4.0",
+  "version": "5.0",
   "applications": [{
     "identity": <stable logical name>,
     "source": {"kind": "gitlink" | "repository", "root": <repo path>},
@@ -104,6 +106,7 @@ pinned oracle digest and encoding. Its exact structural shape is:
     ],
     "inputs": [{
       "name": <name>,
+      "evaluation_tier": "functional" | "qualified",
       "workload": <logical workload selection>,
       "runtime_input": <logical runtime-input selection>,
       "cached_inputs": [<cached logical name>],
@@ -118,7 +121,8 @@ pinned oracle digest and encoding. Its exact structural shape is:
         "warmup_samples": <unsigned integer>,
         "measured_samples": <positive unsigned integer>,
         "oracle_coverage": "all_measured_samples",
-        "deadline_milliseconds": <positive unsigned integer>
+        "deadline_milliseconds": <positive unsigned integer>,
+        "maximum_simulated_ticks": <optional positive unsigned integer>
       }
     }],
     "selection_inputs": {
@@ -136,8 +140,8 @@ ordered and unique.
 Compiler and link option order remains semantic. The exact selected compiler
 sequence is derived by appending the input-specific options to the build
 options. Host and product consumers use that one derived sequence; the
-inventory additionally retains the input-specific subsequence so a tier's
-compile-time input provenance is inspectable. A consumer either preserves the
+inventory additionally retains the input-specific subsequence so an
+execution selection's compile-time input provenance is inspectable. A consumer either preserves the
 option order or consumes a documented option through an existing semantic
 owner. Operator-protocol symbols are ordered, unique linked entry symbols owned
 by the build selection; their order retains the candidate preference previously
@@ -169,15 +173,39 @@ product runtime owns their implementation. This interpretation preserves the
 manifest as the build dependency owner without inventing an empty target
 library or importing a host library into the product image.
 
+`evaluation_tier` is the single owner of the evaluation target one input row
+carries. `functional` requires a published Mapping, an execution output that
+matches the row's own oracle, and complete diagnostics; its System QoR
+measurements are published exactly as measured and no saturation target
+applies. `qualified` additionally requires the full System QoR target below.
+Every consumer, including the System driver's qualification status and the
+product-execution verifier, reads this field; none of them re-derives a tier
+from an input name, an execution selection, or a measured overhead. The tier
+and the execution selections are independent: `selection_inputs` says when a
+row runs, the tier says what its run must prove.
+
+A `qualified` row must be sized so its target is reachable by construction.
+Each accelerator launch costs the System a fixed host dispatch, launch-image
+transfer, and completion tail, so an input whose measured computation is of the
+same order as that fixed cost can never saturate a resource however well it is
+mapped. Qualified rows therefore select an extent whose host computation
+interval is at least an order of magnitude above the fixed launch cost, while
+staying inside the simulation budget. Smoke rows keep the smallest extent that
+still exercises the whole path and carry the `functional` tier for exactly that
+reason. Input extent is selected through input-specific compiler options and a
+deterministic generator inside the runner, never by tracking large input files.
+
 The current manifest binds all five applications to real bounded `smoke` and
 `validation` rows. `gapbs-pagerank`, `loom-multisensor-attention`, and
 `vecadd-memory` also own exact `scale_eda` rows, covering irregular memory,
-Attention, and regular contiguous memory respectively. Every declared tier
-selects its own actual bounded input row, runtime-input name, and exact oracle.
+Attention, and regular contiguous memory respectively. Every declared
+execution selection selects its own actual bounded input row, runtime-input
+name, and exact oracle.
 For compiled fixtures, input-specific constants make the selected values and
 memory footprint part of the derived source build. `selection_inputs` is the
-only tier-to-row relation; a runner never infers it from an input name. Adding
-a tier requires another real bounded input and oracle under the same contract.
+only execution-selection-to-row relation; a runner never infers it from an
+input name. Adding an execution selection requires another real bounded input
+and oracle under the same contract.
 
 The profile owns no duplicated total or oracle sample count. Its exact input
 budget is derived as `warmup_samples + measured_samples`; the sum must fit in
@@ -534,15 +562,23 @@ serializes its work and is not a goal; the metric explains a mapping, it does
 not score one.
 
 The `loom.application.system_qor_projection` version `5.0` reports exact roots,
-full-program durations and memory activity, each member's optional computation
-interval, measured speedup, the candidate's `accelerated_window` with both phase
-spans, its launch overhead and invocation-phase service utilization, and its
-per-class compute occupancy, placement utilization, and binding class.
-Qualification requires strict computation speedup, strictly more than 90 percent
-shared memory service utilization or compute occupancy over the invocation
-phase, and a launch overhead strictly below one half. Neither the thresholds nor
-the machine capacity changes with the measurement boundary. Missing intervals
-produce null speedup and `unmeasured` status and bottleneck; portfolio
+the evaluation tier the Deployment was built with, full-program durations and
+memory activity, each member's optional computation interval, measured speedup,
+the candidate's `accelerated_window` with both phase spans, its launch overhead
+and invocation-phase service utilization, and its per-class compute occupancy,
+placement utilization, and binding class. The published `target` object
+projects the owner's thresholds and is the same for every run; the tier states
+whether the saturation target gates the run.
+
+A `qualified` row's status is `qualified` when the run shows strict computation
+speedup, strictly more than 90 percent shared memory service utilization or
+compute occupancy over the invocation phase, and a launch overhead strictly
+below one half, and `not_qualified` otherwise. Neither the thresholds nor the
+machine capacity changes with the measurement boundary, with the input extent,
+or with any measured overhead: the target has no exceptions, and an input too
+small to reach it is a `functional` row instead. A `functional` row's status is
+`functional` once the same measurements exist. Missing intervals produce null
+speedup and `unmeasured` status and bottleneck at either tier; portfolio
 qualification rejects them. A boundary present on only one pair member is an
 invalid comparison.
 
@@ -551,6 +587,11 @@ phase must remain the majority of the accelerated window. Above that the window
 measures how long the array took to configure rather than the computation that
 residency serves, so the invocation-phase saturation no longer explains the
 measured speedup.
+
+The evaluation tier reaches the System driver through the
+`loom.application.runtime_manifest`, which records the tier of the Application
+manifest row its Deployment was built from. A Deployment built outside the
+portfolio has no declared qualification target and records `functional`.
 
 Bottleneck classification is explanatory, not a second gate. It selects
 `launch_bound` when configuration residency reaches the launch budget, then
@@ -564,7 +605,8 @@ measured performance benefit.
 
 The System driver always retains valid measured results, including regressions.
 The real-application verifier and portfolio qualification consume this
-post-execution result and enforce its performance target. Ordinary semantic
+post-execution result, cross-check the recorded tier against the manifest row
+they selected, and enforce the performance target that tier declares. Ordinary semantic
 fixtures require a complete valid pair without asserting a useful acceleration
 for an intentionally tiny program. Neither flow asks the pre-execution decision
 to contain future measurements.
@@ -593,9 +635,9 @@ an `ApplicationArtifact`.
 
 One application identity may have several named input selections. Those
 inputs change exact workload or runtime-input identity, not application
-membership. `selection_inputs` is the sole mapping from each scheduling tier
-to exact rows; no runner may substitute every application input or infer a row
-named after the tier. The three execution selections are scheduling and
+membership. `selection_inputs` is the sole mapping from each execution
+selection to exact rows; no runner may substitute every application input or
+infer a row named after the selection. The three execution selections are scheduling and
 conformance policy over the same inventory:
 
 * `smoke` is the bounded, deterministic developer gate;
@@ -611,10 +653,10 @@ different membership inventory or weaken the selected row's oracle.
 ## Bounded Host Runner
 
 The bounded host runner is an operational conformance path for one exact
-application/input selection or one explicit manifest tier. It consumes
+application/input selection or one explicit execution selection. It consumes
 `ApplicationManifest` and `SourceAdmission`; it does not parse a second
-manifest shape, repeat source or cache admission, or infer a source set. A tier
-run resolves exact rows through `selectApplicationInputs` and invokes the same
+manifest shape, repeat source or cache admission, or infer a source set. An
+execution-selection run resolves exact rows through `selectApplicationInputs` and invokes the same
 single-row runner for each member. It selects
 `clang` for C and `clang++` for C++ from `PATH` unless the invocation names an
 explicit compiler executable. Compilation runs with the repository root as
@@ -663,10 +705,10 @@ workload and runtime-input names, cached-input declarations and digests,
 oracle selection, complete profile, source-admission status, selected compiler
 and compile exit status, host exit status and wall nanoseconds, oracle status,
 and the typed outcome.
-An explicit tier run wraps its unchanged member reports in
+An explicit execution-selection run wraps its unchanged member reports in
 `loom.application_host_selection_run` version `1.0` and records the exact
 execution-selection name. The wrapper has no aggregate performance metric and
-cannot turn a failed member into a successful tier.
+cannot turn a failed member into a successful selection.
 Signal and timeout sentinels are not exit statuses. Human compiler and runtime
 diagnostics are preserved on the report across successful and failed stages but
 remain outside that JSON projection.
@@ -732,8 +774,10 @@ contract; a held-out release gate must pass before an updated parameter bundle
 is promoted.
 
 `loom-application-manifest-inspect` emits the deterministic
-`loom.application_portfolio_inventory` version `2.0` projection only after the
-canonical C++ manifest parser accepts the source document. The evidence
+`loom.application_portfolio_inventory` version `3.0` projection only after the
+canonical C++ manifest parser accepts the source document. Version 3.0 carries
+each row's evaluation tier, so a consumer joins the tier through the same
+derived projection it already joins the oracle and profile through. The evidence
 generator consumes that projection and refuses raw manifest JSON, so it cannot
 become a second manifest parser or normalize a document rejected by the
 semantic owner.
@@ -809,8 +853,9 @@ which files happen to exist.
 
 ## Anchor Verification
 
-Stable tests validate manifest schema and uniqueness, exact tier-to-input
-selection, source-root and Gitlink resolution, selected-input cache and oracle
+Stable tests validate manifest schema and uniqueness, exact
+execution-selection-to-input resolution, the declared evaluation tier of every
+row, source-root and Gitlink resolution, selected-input cache and oracle
 admission, bounded profile parsing, native host output for the five admitted
 rows, byte-exact bounded TinyML inference under its declared deadline,
 product-driver argument projection, and rejection of partial, injected,
@@ -824,7 +869,7 @@ bounded TinyML rows also execute their full one-plus-four and two-plus-two
 profiles through the product entry, observe the complete measured-output
 memory, and publish independent oracle Evidence for both System engines. The
 derived evidence manifest verifies each host and pair projection against the
-exact manifest row, reports every tier independently, and retains null
+exact manifest row, reports every execution selection independently, and retains null
 unsupported QoR dimensions as typed residuals. Additional runtime profile
 shapes require
 production Evidence from their existing runtime, Mapping, and Evaluation

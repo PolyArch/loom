@@ -173,7 +173,7 @@ std::string replaceOnce(std::string text, llvm::StringRef from,
 std::string manifestText(llvm::StringRef digest) {
   return R"json({
   "schema": "loom.application_portfolio",
-  "version": "4.0",
+  "version": "5.0",
   "applications": [
     {
       "identity": "repository-app",
@@ -191,6 +191,7 @@ std::string manifestText(llvm::StringRef digest) {
       "inputs": [
         {
           "name": "local-input",
+          "evaluation_tier": "qualified",
           "workload": "local-workload",
           "runtime_input": "local-runtime",
           "cached_inputs": [],
@@ -230,6 +231,7 @@ std::string manifestText(llvm::StringRef digest) {
       "inputs": [
         {
           "name": "cache-free-input",
+          "evaluation_tier": "functional",
           "workload": "cache-free-workload",
           "runtime_input": "cache-free-runtime",
           "cached_inputs": [],
@@ -249,6 +251,7 @@ std::string manifestText(llvm::StringRef digest) {
         },
         {
           "name": "wakeword-input",
+          "evaluation_tier": "functional",
           "workload": "wakeword-workload",
           "runtime_input": "wakeword-runtime",
           "cached_inputs": ["weights"],
@@ -322,6 +325,10 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   ApplicationManifest manifest = take(parseApplicationManifest(text));
   if (manifest.applications().size() != 2 ||
       toString(manifest.applications()[1].build.language) != "c" ||
+      manifest.applications()[0].inputs[0].evaluationTier !=
+          EvaluationTier::Qualified ||
+      manifest.applications()[1].inputs[0].evaluationTier !=
+          EvaluationTier::Functional ||
       manifest.applications()[0].inputs[0].profile.totalSamples() != 5 ||
       toString(manifest.applications()[0].inputs[0].profile.oracleCoverage) !=
           "all_measured_samples")
@@ -435,9 +442,13 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
   requireErrorContains(parseApplicationManifest(copiedRevision),
                        "unknown field 'revision'");
   const std::string oldSchema =
-      replaceOnce(text, "\"version\": \"4.0\"", "\"version\": \"3.0\"");
+      replaceOnce(text, "\"version\": \"5.0\"", "\"version\": \"4.0\"");
   requireErrorContains(parseApplicationManifest(oldSchema),
                        "unsupported schema or version");
+  const std::string unknownTier = replaceOnce(
+      text, "\"evaluation_tier\": \"qualified\"", "\"evaluation_tier\": \"gate\"");
+  requireErrorContains(parseApplicationManifest(unknownTier),
+                       "evaluation tier must be 'functional' or 'qualified'");
   const std::string unknownSelectedInput = replaceOnce(
       text, "\"smoke\": [\"local-input\"]", "\"smoke\": [\"missing-input\"]");
   requireErrorContains(parseApplicationManifest(unknownSelectedInput),
@@ -559,6 +570,20 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
         fail("repository manifest changed a bounded input profile");
     }
   }
+
+  for (const ApplicationDefinition &application : manifest.applications())
+    for (const ExecutionSelectionInputs &binding : application.selectionInputs) {
+      const EvaluationTier expectedTier =
+          binding.selection == ExecutionSelection::Smoke
+              ? EvaluationTier::Functional
+              : EvaluationTier::Qualified;
+      for (const std::string &inputName : binding.inputNames)
+        if (take(selectApplicationInput(manifest, application.identity,
+                                        inputName))
+                .input.evaluationTier != expectedTier)
+          fail("repository manifest changed the evaluation tier one execution "
+               "selection carries");
+    }
 
   const SelectedApplicationInput pageRankValidation =
       take(selectApplicationInput(manifest, "gapbs-pagerank", "validation"));

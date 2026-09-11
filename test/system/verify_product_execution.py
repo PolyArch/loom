@@ -26,7 +26,10 @@ from scripts.loom_evidence_portfolio import (  # noqa: E402
     validate_portfolio_product_execution,
 )
 
-from scripts.loom_evidence_system_qor import validate_system_qor  # noqa: E402
+from scripts.loom_evidence_system_qor import (  # noqa: E402
+    EVALUATION_TIERS,
+    validate_system_qor,
+)
 
 # The Fabric FIFO queue-discipline spellings of the product accelerator
 # profiles. The ADG builders apply the selected discipline only to FIFOs whose
@@ -1190,6 +1193,7 @@ def validate_manifest(
     manifest_path: Path,
     expected_i32: int,
     portfolio_selection: dict[str, Any] | None,
+    declared_evaluation_tier: str | None,
     spatial_invocations: int | None,
     required_dataflow_text: list[str],
     mapping_inspector: str | None,
@@ -1244,9 +1248,7 @@ def validate_manifest(
             "mapped_rtl_deployment" not in manifest,
             "non-RTL execution unexpectedly names a mapped RTL Deployment",
         )
-    qor_errors = validate_system_qor(
-        manifest, require_target=portfolio_selection is not None
-    )
+    qor_errors = validate_system_qor(manifest, declared_evaluation_tier)
     require(not qor_errors, f"post-execution System QoR is incomplete: {qor_errors}")
     expected_result = format(expected_i32 & 0xFFFFFFFF, "X")
     require(
@@ -1688,6 +1690,13 @@ def main() -> None:
     parser.add_argument("--portfolio-application")
     parser.add_argument("--portfolio-input")
     parser.add_argument("--portfolio-inventory", type=Path)
+    parser.add_argument(
+        "--evaluation-tier",
+        choices=EVALUATION_TIERS,
+        help="the evaluation tier the selected Application manifest row is "
+        "expected to declare; the manifest remains its only owner and this "
+        "expectation is validated against it",
+    )
     arguments = parser.parse_args()
     require(
         (arguments.portfolio_application is None)
@@ -1698,6 +1707,11 @@ def main() -> None:
         (arguments.portfolio_application is None)
         == (arguments.portfolio_inventory is None),
         "portfolio selections require the canonical manifest inventory",
+    )
+    require(
+        (arguments.portfolio_application is None)
+        == (arguments.evaluation_tier is None),
+        "a portfolio selection must state the evaluation tier it expects",
     )
     require(
         arguments.spatial_invocations is None or arguments.spatial_invocations > 0,
@@ -1729,6 +1743,7 @@ def main() -> None:
         arguments.portfolio_input,
     )
     portfolio_selection = None
+    declared_evaluation_tier = None
     if arguments.portfolio_inventory is not None:
         inventory, inventory_errors = collect_portfolio_inventory(
             read_json(arguments.portfolio_inventory)
@@ -1745,6 +1760,16 @@ def main() -> None:
                 and row.get("input_name") == arguments.portfolio_input
             ),
             None,
+        )
+        require(
+            isinstance(portfolio_selection, dict),
+            "the canonical inventory has no row for the selected input",
+        )
+        declared_evaluation_tier = portfolio_selection["evaluation_tier"]
+        require(
+            declared_evaluation_tier == arguments.evaluation_tier,
+            "the selected manifest row declares evaluation tier "
+            f"{declared_evaluation_tier}, not {arguments.evaluation_tier}",
         )
         evaluation = validate_portfolio_pair(pair_evidence, portfolio_selection)
         require(
@@ -1770,6 +1795,7 @@ def main() -> None:
         arguments.manifest,
         arguments.expected_i32,
         portfolio_selection,
+        declared_evaluation_tier,
         arguments.spatial_invocations,
         arguments.required_dataflow_text,
         arguments.mapping_inspector,

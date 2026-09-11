@@ -1,6 +1,6 @@
 {
   "schema": "loom.application_portfolio",
-  "version": "4.0",
+  "version": "5.0",
   "applications": [
     {
       "identity": "gapbs-pagerank",
@@ -34,6 +34,7 @@
       "inputs": [
         {
           "name": "smoke",
+          "evaluation_tier": "functional",
           "workload": "gapbs-pagerank-smoke",
           "runtime_input": "gapbs-pagerank-smoke-input",
           "cached_inputs": [],
@@ -53,10 +54,14 @@
         },
         {
           "name": "validation",
+          "evaluation_tier": "qualified",
           "workload": "gapbs-pagerank-validation",
           "runtime_input": "gapbs-pagerank-validation-input",
           "cached_inputs": [],
-          "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=12"],
+          "compiler_options": [
+            "-DLOOM_PAGERANK_ITERATIONS=12",
+            "-DLOOM_PAGERANK_NODE_COUNT=2048"
+          ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-validation.txt",
@@ -72,10 +77,14 @@
         },
         {
           "name": "validation-scale-eda",
+          "evaluation_tier": "qualified",
           "workload": "gapbs-pagerank-scale-eda",
           "runtime_input": "gapbs-pagerank-scale-eda-input",
           "cached_inputs": [],
-          "compiler_options": ["-DLOOM_PAGERANK_ITERATIONS=16"],
+          "compiler_options": [
+            "-DLOOM_PAGERANK_ITERATIONS=16",
+            "-DLOOM_PAGERANK_NODE_COUNT=2048"
+          ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/gapbs-pagerank-expected-scale.txt",
@@ -128,6 +137,7 @@
       "inputs": [
         {
           "name": "smoke",
+          "evaluation_tier": "functional",
           "workload": "llama2c-kernels-smoke",
           "runtime_input": "llama2c-kernels-smoke-input",
           "cached_inputs": [],
@@ -147,10 +157,15 @@
         },
         {
           "name": "validation",
+          "evaluation_tier": "qualified",
           "workload": "llama2c-kernels-validation",
           "runtime_input": "llama2c-kernels-validation-input",
           "cached_inputs": [],
-          "compiler_options": ["-DLOOM_LLAMA_INPUT_VARIANT=1"],
+          "compiler_options": [
+            "-DLOOM_LLAMA_INPUT_VARIANT=1",
+            "-DLOOM_LLAMA_KERNEL_WIDTH=512",
+            "-DLOOM_LLAMA_KERNEL_ROWS=128"
+          ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/llama2c-kernels-expected-validation.txt",
@@ -204,6 +219,7 @@
       "inputs": [
         {
           "name": "smoke",
+          "evaluation_tier": "functional",
           "workload": "loom-multisensor-attention-smoke",
           "runtime_input": "loom-multisensor-attention-smoke-input",
           "cached_inputs": [],
@@ -223,10 +239,14 @@
         },
         {
           "name": "validation",
+          "evaluation_tier": "qualified",
           "workload": "loom-multisensor-attention-validation",
           "runtime_input": "loom-multisensor-attention-validation-input",
           "cached_inputs": [],
-          "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=1"],
+          "compiler_options": [
+            "-DLOOM_ATTENTION_INPUT_VARIANT=1",
+            "-DLOOM_ATTENTION_TOKEN_COUNT=64"
+          ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-validation.txt",
@@ -242,10 +262,14 @@
         },
         {
           "name": "validation-scale-eda",
+          "evaluation_tier": "qualified",
           "workload": "loom-multisensor-attention-scale-eda",
           "runtime_input": "loom-multisensor-attention-scale-eda-input",
           "cached_inputs": [],
-          "compiler_options": ["-DLOOM_ATTENTION_INPUT_VARIANT=2"],
+          "compiler_options": [
+            "-DLOOM_ATTENTION_INPUT_VARIANT=2",
+            "-DLOOM_ATTENTION_TOKEN_COUNT=96"
+          ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-scale.txt",
@@ -308,6 +332,7 @@
       "inputs": [
         {
           "name": "smoke",
+          "evaluation_tier": "functional",
           "workload": "mlperf-tiny-anomaly-smoke",
           "runtime_input": "mlperf-tiny-anomaly-smoke-input",
           "cached_inputs": [
@@ -331,6 +356,7 @@
         },
         {
           "name": "validation",
+          "evaluation_tier": "qualified",
           "workload": "mlperf-tiny-anomaly-validation",
           "runtime_input": "mlperf-tiny-anomaly-validation-input",
           "cached_inputs": [
@@ -383,6 +409,7 @@
       "inputs": [
         {
           "name": "smoke",
+          "evaluation_tier": "functional",
           "workload": "vecadd-memory-smoke",
           "runtime_input": "vecadd-memory-smoke-input",
           "cached_inputs": [],
@@ -402,18 +429,19 @@
         },
         {
           "name": "validation",
+          "evaluation_tier": "qualified",
           "workload": "vecadd-memory-validation",
           "runtime_input": "vecadd-memory-validation-input",
           "cached_inputs": [],
           "compiler_options": [
             "-DLOOM_VECADD_BIAS=1",
             "-DLOOM_VECADD_MULTIPLIER=3",
-            "-DLOOM_VECADD_VECTOR_LENGTH=8192"
+            "-DLOOM_VECADD_VECTOR_LENGTH=65536"
           ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-validation.txt",
-            "sha256": "a9e1094db6a3e2f1384312135dd6b6bdfde9dec7ab2fbd0bbb938b8136961ebc",
+            "sha256": "25607ba17bfc0265f8ccb3c7debaa95caf6bbf3de0cca052f13e9a75c7de8da2",
             "encoding": "utf8"
           },
           "profile": {
@@ -425,18 +453,19 @@
         },
         {
           "name": "validation-scale-eda",
+          "evaluation_tier": "qualified",
           "workload": "vecadd-memory-scale-eda",
           "runtime_input": "vecadd-memory-scale-eda-input",
           "cached_inputs": [],
           "compiler_options": [
             "-DLOOM_VECADD_BIAS=7",
             "-DLOOM_VECADD_MULTIPLIER=5",
-            "-DLOOM_VECADD_VECTOR_LENGTH=16384"
+            "-DLOOM_VECADD_VECTOR_LENGTH=131072"
           ],
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/vecadd-memory/expected-scale.txt",
-            "sha256": "1905fc0439aad5ff87f4cf1752d70e81178de2cad993f0d00cc14cf78cf7a8a4",
+            "sha256": "3ff98ea8850bef7b9f63cd5c8ffd96969e4d2e85fd4a5b93c2af44926a87ed13",
             "encoding": "utf8"
           },
           "profile": {

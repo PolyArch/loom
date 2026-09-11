@@ -20,6 +20,7 @@
 # RUN:   --portfolio-application=loom-multisensor-attention \
 # RUN:   --portfolio-input=validation \
 # RUN:   --portfolio-inventory=%t.inventory.json \
+# RUN:   --evaluation-tier=qualified \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=scf.for \
 # RUN:   --required-dataflow-text=dataflow.carry

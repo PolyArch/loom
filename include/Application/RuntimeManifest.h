@@ -2,6 +2,7 @@
 #define LOOM_APPLICATION_RUNTIMEMANIFEST_H
 
 #include "Application/ActivationInputs.h"
+#include "Application/Manifest.h"
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
 #include "Common/ComponentViewDigest.h"
@@ -30,7 +31,7 @@ namespace loom::application {
 enum class ApplicationPairDecisionDisposition : std::uint8_t;
 
 inline constexpr ArtifactSchemaDescriptor applicationRuntimeManifestSchema{
-    "loom.application.runtime_manifest", SchemaVersion{9, 0}};
+    "loom.application.runtime_manifest", SchemaVersion{10, 0}};
 
 /// The product entry ABI derived from one selected Application row. For N
 /// cached inputs, arguments are N (pointer, byte-count) pairs followed by
@@ -91,6 +92,10 @@ struct ApplicationHostOnlyBaseline final {
 };
 
 struct ApplicationRuntimeManifestDraft final {
+  /// The evaluation target declared by the Application manifest row this
+  /// Deployment was built from. A Deployment built outside the portfolio has
+  /// no declared qualification target and carries `Functional`.
+  EvaluationTier evaluationTier = EvaluationTier::Functional;
   ArtifactRootReference sourceProgram;
   ArtifactRootReference fabric;
   ArtifactRootReference workload;
@@ -124,6 +129,7 @@ public:
   get(ApplicationRuntimeManifestDraft draft, const ArtifactStore &artifacts,
       const BlobStore &blobs);
 
+  EvaluationTier evaluationTier() const { return evaluationTier_; }
   const ArtifactRootReference &sourceProgram() const { return sourceProgram_; }
   const ArtifactRootReference &fabric() const { return fabric_; }
   const ArtifactRootReference &workload() const { return workload_; }
@@ -195,7 +201,8 @@ public:
 private:
   ApplicationRuntimeManifest(ApplicationRuntimeManifestDraft draft,
                              CanonicalSemanticBytes canonicalBytes)
-      : sourceProgram_(std::move(draft.sourceProgram)),
+      : evaluationTier_(draft.evaluationTier),
+        sourceProgram_(std::move(draft.sourceProgram)),
         fabric_(std::move(draft.fabric)), workload_(std::move(draft.workload)),
         runtimeInput_(std::move(draft.runtimeInput)),
         sourceBackedReplayCases_(std::move(draft.sourceBackedReplayCases)),
@@ -225,6 +232,7 @@ private:
         transitionGraph_(std::move(draft.transitionGraph)),
         canonicalBytes_(std::move(canonicalBytes)) {}
 
+  EvaluationTier evaluationTier_;
   ArtifactRootReference sourceProgram_;
   ArtifactRootReference fabric_;
   ArtifactRootReference workload_;

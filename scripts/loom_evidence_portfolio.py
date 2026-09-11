@@ -13,7 +13,7 @@ from scripts.loom_evidence_projection import (
     integer_value as _integer,
     owned_projection_literal,
 )
-from scripts.loom_evidence_system_qor import validate_system_qor
+from scripts.loom_evidence_system_qor import EVALUATION_TIERS, validate_system_qor
 
 
 EXECUTION_SELECTIONS = ("smoke", "validation", "scale_eda")
@@ -100,6 +100,21 @@ RUNTIME_BINDING_SCHEMA = owned_projection_literal(
 )
 RUNTIME_BINDING_VERSION = owned_projection_literal(
     "applicationRuntimeBindingSchemaVersion", _PAIR_DIAGNOSTIC_OWNER
+)
+_PORTFOLIO_MANIFEST_OWNER = (
+    _ROOT / "include/Application/Manifest.h"
+).read_text(encoding="utf-8")
+PORTFOLIO_MANIFEST_SCHEMA = owned_projection_literal(
+    "schemaIdentity", _PORTFOLIO_MANIFEST_OWNER
+)
+PORTFOLIO_MANIFEST_VERSION = owned_projection_literal(
+    "schemaVersion", _PORTFOLIO_MANIFEST_OWNER
+)
+PORTFOLIO_INVENTORY_SCHEMA = owned_projection_literal(
+    "applicationPortfolioInventorySchema", _PORTFOLIO_MANIFEST_OWNER
+)
+PORTFOLIO_INVENTORY_VERSION = owned_projection_literal(
+    "applicationPortfolioInventoryVersion", _PORTFOLIO_MANIFEST_OWNER
 )
 _runtime_manifest_schema = re.search(
     r'\bapplicationRuntimeManifestSchema\s*\{\s*"([^"]+)",\s*'
@@ -434,10 +449,10 @@ def collect_portfolio_inventory(
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     if (
-        report.get("schema") != "loom.application_portfolio_inventory"
-        or report.get("version") != "2.0"
-        or report.get("manifest_schema") != "loom.application_portfolio"
-        or report.get("manifest_version") != "4.0"
+        report.get("schema") != PORTFOLIO_INVENTORY_SCHEMA
+        or report.get("version") != PORTFOLIO_INVENTORY_VERSION
+        or report.get("manifest_schema") != PORTFOLIO_MANIFEST_SCHEMA
+        or report.get("manifest_version") != PORTFOLIO_MANIFEST_VERSION
     ):
         return rows, ["unsupported_manifest_inventory_schema"]
     inventory = report.get("rows")
@@ -447,6 +462,7 @@ def collect_portfolio_inventory(
     expected_fields = {
         "application_identity",
         "input_name",
+        "evaluation_tier",
         "source",
         "build",
         "workload",
@@ -475,6 +491,9 @@ def collect_portfolio_inventory(
         if previous_key is not None and key <= previous_key:
             errors.append(f"{context}:order_or_identity_invalid")
         previous_key = key
+
+        if row.get("evaluation_tier") not in EVALUATION_TIERS:
+            errors.append(f"{context}:evaluation_tier_invalid")
 
         selections = row.get("execution_selections")
         if (
@@ -598,6 +617,7 @@ def _expected_host_selection(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "application_identity": row["application_identity"],
         "input_name": row["input_name"],
+        "evaluation_tier": row["evaluation_tier"],
         "source": row["source"],
         "build": row["build"],
         "workload": row["workload"],
@@ -1415,7 +1435,9 @@ def validate_portfolio_product_execution(
 
     oracle_evidence: list[dict[str, str]] = []
     for workspace in matching_workspaces:
-        reasons.extend(validate_system_qor(workspace, require_target=True))
+        reasons.extend(
+            validate_system_qor(workspace, expected.get("evaluation_tier"))
+        )
         if workspace.get("schema") != "loom.execution_matrix_workspace.3.0":
             reasons.append("product_execution_workspace_schema_invalid")
         if candidate_bindings:
