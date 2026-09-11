@@ -176,8 +176,12 @@ openIndexContribution(const LinearByteTerm &term,
     return ByteAddressDomain::singleOffset(0);
   if (term.byteStride == signedMinimum)
     return std::nullopt;
-  const IndexValueBounds bounds =
-      projectIndexBounds(term.index, finiteIndexValues, 0);
+  IndexValueBounds bounds = projectIndexBounds(term.index, finiteIndexValues, 0);
+  // A no-unsigned-wrap step supplies the lower bound the index expression does
+  // not. A bound the index already proves is at least as precise, and keeping
+  // it preserves the phase that its stride is relative to.
+  if (term.nonNegative && !bounds.first)
+    bounds.first = 0;
   std::optional<std::int64_t> first = bounds.first;
   std::optional<std::int64_t> last = bounds.last;
   if (request.allocationByteCount && request.inBoundsOfAllocation &&

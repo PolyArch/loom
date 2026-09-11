@@ -1627,6 +1627,63 @@ private:
     return refuse(reason);
   }
 
+  /// The payload of the one write proven to be the last writer of a queried
+  /// byte range: it covers the range at a position one completed execution
+  /// always performs, and no effect between it and the read may touch that
+  /// range. Every earlier write of the range is then dead, so a write whose
+  /// position is only bounded cannot make the representation partial.
+  std::optional<std::vector<Payload>> lastWritePayload(const Address &query,
+                                                       int64_t offset,
+                                                       mlir::Operation *point,
+                                                       Frame &frame) {
+    Address slot{query.root, query.rootFrame, offset, query.bytes, {},
+                 query.inBoundsOfRoot};
+    int64_t slotEnd;
+    if (llvm::AddOverflow(offset, int64_t(slot.bytes), slotEnd))
+      return std::nullopt;
+    for (std::size_t ordinal = 0; ordinal != effects_.size(); ++ordinal) {
+      const auto &possible = effects_[ordinal];
+      if (!possible)
+        return std::nullopt;
+      const WriteEffect &effect = *possible;
+      if (effect.kind == WriteKind::Copy ||
+          !sameFrameRoot(slot, effect.destination))
+        continue;
+      const WritePositions *positions = writePositions(ordinal, effect);
+      if (!positions || !positions->exhaustive)
+        continue;
+      const bool covers = llvm::any_of(positions->starts, [&](int64_t begin) {
+        int64_t end = 0;
+        if (llvm::AddOverflow(begin, int64_t(effect.destination.bytes), end))
+          return false;
+        return effect.kind == WriteKind::Zero
+                   ? begin <= offset && end >= slotEnd
+                   : begin == offset &&
+                         effect.destination.bytes == slot.bytes;
+      });
+      if (!covers || !initialized(effect, slot, point, frame))
+        continue;
+      Frame *current = &frame;
+      mlir::Operation *reached = point;
+      bool preserves = true;
+      while (current != effect.frame && current->caller) {
+        preserves &= noInterveningWrite(nullptr, reached, *current, slot, true);
+        reached = current->start;
+        current = current->caller;
+      }
+      if (!preserves || current != effect.frame ||
+          !noInterveningWrite(effect.operation, reached, *current, slot, true))
+        continue;
+      if (effect.kind == WriteKind::Zero)
+        return std::vector<Payload>{
+            {PayloadKind::Zero, {}, effect.frame, effect.operation}};
+      mlir::LLVM::StoreOp lastWrite = effect.operation;
+      return std::vector<Payload>{{PayloadKind::Value, lastWrite.getValue(),
+                                   effect.frame, effect.operation}};
+    }
+    return std::nullopt;
+  }
+
   std::optional<std::vector<Payload>> slotSources(const Address &query,
                                                   int64_t offset,
                                                   mlir::Operation *point,
@@ -1666,9 +1723,12 @@ private:
           return refuse(StoredPointerRefusal::UnknownByteAddress);
         if (queryEnd <= begin || end <= offset)
           continue;
-        if (begin > offset || end < queryEnd)
+        if (begin > offset || end < queryEnd) {
+          if (auto last = lastWritePayload(query, offset, point, frame))
+            return last;
           return refuseSlot(StoredPointerRefusal::PartialPointerWrite, query,
                             offset, &effect, positions, begin);
+        }
         if (effect.kind == WriteKind::Zero) {
           result.push_back({PayloadKind::Zero, {}, effect.frame, write});
         } else if (effect.kind == WriteKind::Copy) {
@@ -1684,6 +1744,8 @@ private:
           result.push_back(
               {PayloadKind::Value, write.getValue(), effect.frame, write});
         } else {
+          if (auto last = lastWritePayload(query, offset, point, frame))
+            return last;
           return refuseSlot(StoredPointerRefusal::PartialPointerWrite, query,
                             offset, &effect, positions, begin);
         }

@@ -646,6 +646,114 @@ module attributes {llvm.data_layout = "e-p:64:64"} {
   }
 }
 
+// A descriptor copied into a table keeps its pointer field even when a narrow
+// field store at a runtime index may land anywhere in the descriptor: the
+// pointer store is the proven last writer of those bytes, so the narrow store
+// is dead there. It stops being dead once it follows the pointer store, and a
+// no-unsigned-wrap index keeps it away from the field altogether.
+void overwrittenNarrowFieldStore() {
+  mlir::MLIRContext context;
+  context.loadDialect<mlir::arith::ArithDialect, mlir::LLVM::LLVMDialect,
+                      mlir::scf::SCFDialect>();
+  constexpr llvm::StringLiteral source = R"mlir(
+module attributes {llvm.data_layout = "e-p:64:64"} {
+  llvm.func @descriptor(%bytes: !llvm.ptr, %index: i64, %count: i64) {
+    %one = arith.constant 1 : i64
+    %zero = arith.constant 0 : i64
+    %step = arith.constant 1 : i64
+    %recordBytes = arith.constant 24 : i64
+    %tableBytes = arith.constant 32 : i64
+    %viewOffset = arith.constant 64 : i64
+    %shift = arith.constant 8 : i64
+    %clear = arith.constant 0 : i8
+    %mark = arith.constant 5 : i32
+    %record = llvm.alloca %one x !llvm.array<24 x i8> : (i64) -> !llvm.ptr
+    %table = llvm.alloca %one x !llvm.array<32 x i8> : (i64) -> !llvm.ptr
+    scf.for %fillByte = %zero to %tableBytes step %step : i64 {
+      %fill = llvm.getelementptr inbounds %table[%fillByte] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %clear, %fill : i8, !llvm.ptr
+    }
+    %shifted = llvm.getelementptr inbounds %record[%shift] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %narrow = llvm.getelementptr inbounds|nuw NARROWBASE[%index] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+    llvm.store %mark, %narrow : i32, !llvm.ptr
+    %origin = llvm.getelementptr inbounds %bytes[%viewOffset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    llvm.store %origin, %record : !llvm.ptr, !llvm.ptr
+    scf.for %copyByte = %zero to %recordBytes step %step : i64 {
+      %from = llvm.getelementptr inbounds %record[%copyByte] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      %value = llvm.load %from : !llvm.ptr -> i8
+      %to = llvm.getelementptr inbounds %table[%copyByte] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+      llvm.store %value, %to : i8, !llvm.ptr
+    }
+    scf.for %lane = %zero to %count step %step : i64 {
+      %stored = llvm.load %table : !llvm.ptr -> !llvm.ptr
+      %element = llvm.load %stored : !llvm.ptr -> i8
+    }
+    llvm.return
+  }
+}
+)mlir";
+  struct Placement final {
+    llvm::StringRef narrowBase;
+    bool narrowFollowsPointer;
+    bool resolves;
+  };
+  for (const Placement &placement :
+       {Placement{"%record", false, true}, Placement{"%record", true, false},
+        Placement{"%shifted", true, true}}) {
+    std::string text = source.str();
+    const std::size_t position = text.find("NARROWBASE");
+    if (position == std::string::npos)
+      fail("overwritten field fixture lost its narrow base");
+    text.replace(position, std::strlen("NARROWBASE"),
+                 placement.narrowBase.str());
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    if (!module)
+      fail("cannot parse overwritten narrow field provenance");
+    auto callable = module->lookupSymbol<mlir::LLVM::LLVMFuncOp>("descriptor");
+    if (!callable)
+      fail("overwritten field fixture lost its callable");
+    mlir::Block &entry = callable.getBody().front();
+    mlir::LLVM::StoreOp narrow;
+    mlir::LLVM::StoreOp pointer;
+    for (mlir::Operation &operation : entry) {
+      auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(&operation);
+      if (!store)
+        continue;
+      if (store.getValue().getType().isInteger(32))
+        narrow = store;
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(store.getValue().getType()))
+        pointer = store;
+    }
+    if (!narrow || !pointer)
+      fail("overwritten field fixture lost its field stores");
+    if (placement.narrowFollowsPointer)
+      narrow->moveAfter(pointer.getOperation());
+    mlir::LLVM::LoadOp read;
+    callable.walk([&](mlir::LLVM::LoadOp operation) {
+      if (llvm::isa<mlir::LLVM::LLVMPointerType>(
+              operation.getResult().getType()))
+        read = operation;
+    });
+    if (!read)
+      fail("overwritten field fixture lost its pointer read");
+    loom::frontend::analysis::StoredMemoryProvenance provenance(callable);
+    auto outcome = provenance.projectPointerTarget(read.getResult());
+    if (placement.resolves) {
+      auto *target =
+          std::get_if<loom::frontend::analysis::StoredPointerTarget>(&outcome);
+      if (!target || target->root != entry.getArgument(0) ||
+          !target->mayBeNull)
+        fail("a dead narrow field store hid the descriptor pointer origin");
+    } else {
+      auto *refusal =
+          std::get_if<loom::frontend::analysis::StoredPointerRefusal>(&outcome);
+      if (!refusal || *refusal != loom::frontend::analysis::
+                                      StoredPointerRefusal::PartialPointerWrite)
+        fail("a live narrow field store admitted a partial representation");
+    }
+  }
+}
+
 } // namespace
 
 int main() {
@@ -655,6 +763,7 @@ int main() {
   byteFillPointerRepresentation();
   dynamicSlotPointerProvenance();
   guardedSlotIndexProvenance();
+  overwrittenNarrowFieldStore();
   pointerServiceBoundary();
   exactPointerAddressingFallback();
   llvm::outs() << "pointer service boundary anchor passed\n";
