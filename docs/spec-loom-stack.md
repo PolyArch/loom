@@ -518,7 +518,7 @@ references that already own the run. A mapped-RTL execution adds the exact
 `mapped_rtl_deployment` reference and one Spatial run with engine `rtl` per
 invocation beside the `dfg` and `cgra` runs; it does not select another
 workspace schema. The required `paired_system_execution` section is the
-Application owner's `loom.application.system_qor_projection` 3.0. It records the
+Application owner's `loom.application.system_qor_projection` 4.0. It records the
 host-only and mapped candidate Request/Evidence/Execution roots, exact runtime
 manifest and gem5 binding, complete program tick durations, native shared memory
 acceptance-service busy ticks, and each image's source-declared computation

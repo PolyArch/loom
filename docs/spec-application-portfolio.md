@@ -485,19 +485,37 @@ service samples at the computation boundaries divided by that same interval.
 There is one service observer. Idle cycles and necessary host work do not
 vanish from the denominator.
 
-Compute occupancy uses the retired Compute-kind actor firings of the standalone
-CGRA replay for each invocation that completed inside the candidate computation
-interval. DFG replays remain correctness oracles. The boundary device refuses
+Compute occupancy is measured against the candidate's speed of light on its
+hardware, by operation class. A class is one operation schema at one element
+width. Its demand is the retired firings of the class's Compute-kind actors in
+the standalone CGRA replay of each invocation that completed inside the
+candidate computation interval, each firing weighted by the actor's vector lane
+count. DFG replays remain correctness oracles. The boundary device refuses
 unfinished accelerator invocations at either marker, so this membership selects
-whole invocations and excludes warmup. The denominator is the distinct mapped
-compute PE count times the distinct launched AccCore count times the interval's
-reference cycles. The SpatialCore clock-domain contract supplies the reference
-period; no frequency is assumed. An interval without accelerator launches has
-zero compute occupancy and cannot qualify as acceleration.
+whole invocations and excludes warmup. Its bound is the element lanes the
+launched Fabrics could have issued for the class across the interval: the sum
+over every FU operation node that admits the class under the TechMapping's own
+admission rule of that node's result lanes, times the distinct launched AccCore
+count, times the interval's reference cycles. Every FU node is counted once per
+class it admits, whether or not any Mapping used it; a Temporal PE's FU issues
+once per cycle however many resident instruction contexts share it. The
+SpatialCore clock-domain contract supplies the reference period; no frequency
+is assumed. The candidate's compute occupancy is the largest class occupancy,
+and that class is reported as the binding class. An interval without
+accelerator launches has zero compute occupancy and cannot qualify as
+acceleration.
 
-The `loom.application.system_qor_projection` version `3.0` reports exact roots,
+Placement utilization is reported beside occupancy and never gated: per class,
+the bound compute realizations over the class's placement slots, where a
+Spatial PE offers one slot per admitting FU node and a Temporal PE offers one
+slot per resident instruction context. A full Temporal instruction table
+serializes its work and is not a goal; the metric explains a mapping, it does
+not score one.
+
+The `loom.application.system_qor_projection` version `4.0` reports exact roots,
 full-program durations and memory activity, each member's optional computation
-interval, measured speedup, and the candidate's compute occupancy. Qualification
+interval, measured speedup, the candidate's per-class compute occupancy and
+placement utilization, and its binding class. Qualification
 requires strict computation speedup and strictly more than 90 percent shared
 memory service utilization or compute occupancy over that computation interval.
 Neither the threshold nor the machine capacity changes with the measurement

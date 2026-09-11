@@ -5,9 +5,11 @@
 #include "Common/ArtifactText.h"
 #include "Simulator/SystemActivity.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
 
 #include <algorithm>
+#include <tuple>
 #include <limits>
 #include <system_error>
 
@@ -30,6 +32,13 @@ int compareToTarget(std::uint64_t numerator, std::uint64_t denominator,
   return measured.ugt(target) ? 1 : (measured.ult(target) ? -1 : 0);
 }
 
+int compareRatios(evaluation::ExactRatio lhs, evaluation::ExactRatio rhs) {
+  return compareToTarget(lhs.numerator(), lhs.denominator(), rhs.numerator(),
+                         rhs.denominator());
+}
+evaluation::ExactRatio zeroRatio() {
+  return llvm::cantFail(evaluation::ExactRatio::get(0, 1));
+}
 /// A resource is saturated only strictly above the shared exclusive target.
 bool isSaturated(evaluation::ExactRatio value) {
   return compareToTarget(value.numerator(), value.denominator(),
@@ -96,26 +105,53 @@ measureCandidateWindow(const sim::CanonicalSimulationExecution &execution,
     return accelerated.takeError();
   const std::uint64_t acceleratedTicks =
       *accelerated ? (*accelerated)->elapsedTicks() : 0;
+  if (compute.launchedAccCores != 0 && compute.referenceCycleTicks == 0)
+    return invalid("measured candidate has no exact reference cycle");
   constexpr unsigned width = 128;
-  const llvm::APInt capacity = llvm::APInt(width, elapsed) *
-                               compute.mappedComputeUnits *
-                               compute.launchedAccCores;
-  const llvm::APInt firings =
-      llvm::APInt(width, compute.retiredComputeFirings) *
-      compute.referenceCycleTicks;
-  if (capacity.getActiveBits() > 64 || firings.getActiveBits() > 64)
-    return invalid("candidate compute occupancy exceeds the exact ratio domain");
-  if (compute.launchedAccCores != 0 &&
-      (compute.referenceCycleTicks == 0 || compute.mappedComputeUnits == 0))
-    return invalid("measured candidate has no exact compute capacity");
-  if (compute.launchedAccCores == 0 && compute.retiredComputeFirings != 0)
-    return invalid("unlaunched computation carries compute firings");
-  auto occupancy = evaluation::ExactRatio::get(
-      firings.getZExtValue(), capacity.isZero() ? 1 : capacity.getZExtValue());
-  if (!occupancy)
-    return occupancy.takeError();
+  ApplicationSystemComputeMeasurement measurement{compute, {}, zeroRatio(),
+                                                  std::nullopt, zeroRatio()};
+  measurement.classes.reserve(compute.classes.size());
+  for (auto indexed : llvm::enumerate(compute.classes)) {
+    const ApplicationSystemComputeClassInputs &cls = indexed.value();
+    if (indexed.index() != 0) {
+      const auto &prior = compute.classes[indexed.index() - 1];
+      if (std::tie(prior.schema, prior.elementBits) >=
+          std::tie(cls.schema, cls.elementBits))
+        return invalid("candidate compute classes are not sorted and distinct");
+    }
+    if (compute.launchedAccCores == 0 && cls.retiredElementFirings != 0)
+      return invalid("unlaunched computation carries compute firings");
+    if (cls.retiredElementFirings != 0 && cls.peakIssueLanesPerCycle == 0)
+      return invalid("retired compute class has no admitting FU on the Fabric");
+    const llvm::APInt capacity = llvm::APInt(width, elapsed) *
+                                 cls.peakIssueLanesPerCycle *
+                                 compute.launchedAccCores;
+    const llvm::APInt firings =
+        llvm::APInt(width, cls.retiredElementFirings) *
+        compute.referenceCycleTicks;
+    const llvm::APInt slots =
+        llvm::APInt(width, cls.placementSlots) * compute.launchedAccCores;
+    if (capacity.getActiveBits() > 64 || firings.getActiveBits() > 64 ||
+        slots.getActiveBits() > 64)
+      return invalid("candidate compute occupancy exceeds the exact ratio domain");
+    auto occupancy = evaluation::ExactRatio::get(
+        firings.getZExtValue(), capacity.isZero() ? 1 : capacity.getZExtValue());
+    if (!occupancy)
+      return occupancy.takeError();
+    auto placement = evaluation::ExactRatio::get(
+        cls.boundRealizations, slots.isZero() ? 1 : slots.getZExtValue());
+    if (!placement)
+      return placement.takeError();
+    if (compareRatios(*occupancy, measurement.occupancy) > 0) {
+      measurement.occupancy = *occupancy;
+      measurement.bindingClass = indexed.index();
+    }
+    if (compareRatios(*placement, measurement.placementUtilization) > 0)
+      measurement.placementUtilization = *placement;
+    measurement.classes.push_back({cls, *occupancy, *placement});
+  }
   return std::optional<ApplicationSystemWindowMeasurement>{
-      {*interval, acceleratedTicks, *memoryUtilization, {compute, *occupancy}}};
+      {*interval, acceleratedTicks, *memoryUtilization, std::move(measurement)}};
 }
 
 void writeRoot(llvm::json::OStream &json, llvm::StringRef name,
@@ -164,12 +200,33 @@ void writeRun(llvm::json::OStream &json,
       return;
     json.attribute("accelerated_ticks", candidate->acceleratedTicks);
     json.attributeObject("compute", [&] {
-      const auto &inputs = candidate->compute.inputs;
-      json.attribute("retired_compute_firings", inputs.retiredComputeFirings);
-      json.attribute("mapped_compute_units", inputs.mappedComputeUnits);
-      json.attribute("launched_acc_cores", inputs.launchedAccCores);
-      json.attribute("reference_cycle_ticks", inputs.referenceCycleTicks);
-      writeRatio(json, "occupancy", candidate->compute.occupancy);
+      const auto &compute = candidate->compute;
+      json.attribute("launched_acc_cores", compute.inputs.launchedAccCores);
+      json.attribute("reference_cycle_ticks", compute.inputs.referenceCycleTicks);
+      json.attributeArray("classes", [&] {
+        for (const ApplicationSystemComputeClassMeasurement &cls : compute.classes)
+          json.object([&] {
+            json.attribute("schema",
+                           ::dataflow::operationSchemaSpelling(cls.inputs.schema));
+            json.attribute("element_bits", cls.inputs.elementBits);
+            json.attribute("retired_element_firings",
+                           cls.inputs.retiredElementFirings);
+            json.attribute("peak_issue_lanes_per_cycle",
+                           cls.inputs.peakIssueLanesPerCycle);
+            json.attribute("placement_slots", cls.inputs.placementSlots);
+            json.attribute("bound_realizations", cls.inputs.boundRealizations);
+            writeRatio(json, "occupancy", cls.occupancy);
+            writeRatio(json, "placement_utilization", cls.placementUtilization);
+          });
+      });
+      writeRatio(json, "occupancy", compute.occupancy);
+      if (compute.bindingClass)
+        json.attribute("binding_class",
+                       ::dataflow::operationSchemaSpelling(
+                           compute.classes[*compute.bindingClass].inputs.schema));
+      else
+        json.attribute("binding_class", nullptr);
+      writeRatio(json, "placement_utilization", compute.placementUtilization);
     });
   });
 }

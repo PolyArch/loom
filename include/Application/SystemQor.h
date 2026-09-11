@@ -2,9 +2,13 @@
 #define LOOM_APPLICATION_SYSTEMQOR_H
 
 #include "Application/RuntimeManifest.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Evaluation/Evidence.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SystemActivity.h"
+
+#include <optional>
+#include <vector>
 
 namespace llvm::json { class OStream; }
 namespace loom { struct ResolvedConfig; }
@@ -13,7 +17,7 @@ namespace loom::application {
 inline constexpr llvm::StringLiteral applicationSystemQorProjectionSchema =
     "loom.application.system_qor_projection";
 inline constexpr llvm::StringLiteral applicationSystemQorProjectionVersion =
-    "3.0";
+    "4.0";
 
 /// Qualification compares the same source-declared computation on both images,
 /// from prepared shared-memory inputs through visible output completion. All
@@ -66,32 +70,64 @@ struct ApplicationSystemRunMeasurement final {
   std::optional<sim::SystemComputationInterval> computationInterval;
 };
 
-/// Compute-occupancy inputs the System driver aggregates for the candidate.
-/// `retiredComputeFirings` sums the retired firings of Compute-kind actors over
-/// every measured candidate Spatial invocation replayed standalone on the CGRA
-/// engine across its LaunchToTerminal window. `mappedComputeUnits` counts the
-/// distinct physical PE occurrences, spatial and temporal, that carry at least
-/// one compute realization or binding in the selected SpatialMapping.
+/// One operation class the candidate's Compute-kind actors realize: an
+/// operation schema at one element width. It is the unit of the compute
+/// speed-of-light bound because a Fabric's ability to issue a class is a fact
+/// of its FU inventory, not of the part of it one Mapping happened to use.
+/// The System driver supplies only these facts; the owner keeps every formula.
+struct ApplicationSystemComputeClassInputs final {
+  ::dataflow::OperationSchemaId schema{};
+  std::uint32_t elementBits = 0;
+  /// Retired firings of this class's actors over every measured candidate
+  /// Spatial invocation replayed standalone on the CGRA engine across its
+  /// LaunchToTerminal window, each firing weighted by the actor's lane count.
+  std::uint64_t retiredElementFirings = 0;
+  /// Element lanes one Fabric can issue for this class in one reference
+  /// cycle: the sum over every FU operation node admitting the class of that
+  /// node's result lanes. A Temporal PE's FU issues once per cycle however
+  /// many resident instruction contexts share it.
+  std::uint64_t peakIssueLanesPerCycle = 0;
+  /// Realization slots one Fabric offers this class: one per admitting FU
+  /// operation node on a Spatial PE and one per resident instruction context
+  /// of a Temporal PE.
+  std::uint64_t placementSlots = 0;
+  /// Compute realizations of this class bound by the selected SpatialMappings.
+  std::uint64_t boundRealizations = 0;
+};
+
+/// `classes` is sorted by (schema, elementBits) with no repeated class.
 /// `launchedAccCores` counts the distinct AccCores that received at least one
-/// invocation. `referenceCycleTicks` is the SpatialCore clock-domain period in
-/// gem5 ticks, taken from the Fabric clock contract rather than assumed.
-/// The owner keeps every formula; the driver supplies only these facts.
+/// invocation; every launched AccCore carries one instance of the same Fabric.
+/// `referenceCycleTicks` is the SpatialCore clock-domain period in gem5 ticks,
+/// taken from the Fabric clock contract rather than assumed.
 struct ApplicationSystemComputeInputs final {
-  std::uint64_t retiredComputeFirings = 0;
-  std::uint64_t mappedComputeUnits = 0;
+  std::vector<ApplicationSystemComputeClassInputs> classes;
   std::uint64_t launchedAccCores = 0;
   std::uint64_t referenceCycleTicks = 0;
 };
 
-/// One retired compute firing occupies its bound compute unit for exactly one
-/// reference cycle. Occupancy is therefore the retired compute firings divided
-/// by the compute-cycle capacity the launched accelerators offered across the
-/// window: mapped compute units * launched AccCores * window reference cycles,
+/// Occupancy is the class's retired element firings divided by the element
+/// lanes the launched Fabrics could have issued for it across the window:
+/// peak issue lanes per cycle * launched AccCores * window reference cycles,
 /// where window reference cycles are the window's gem5 ticks divided by the
-/// SpatialCore clock period.
+/// SpatialCore clock period. Placement utilization is the class's bound
+/// realizations divided by its placement slots across the launched Fabrics.
+struct ApplicationSystemComputeClassMeasurement final {
+  ApplicationSystemComputeClassInputs inputs;
+  evaluation::ExactRatio occupancy;
+  evaluation::ExactRatio placementUtilization;
+};
+
+/// The class nearest its speed of light bounds compute: `occupancy` is the
+/// largest class occupancy and `bindingClass` names it. Placement utilization
+/// is reported and never gated; a full Temporal instruction table serializes
+/// its work and is not a goal.
 struct ApplicationSystemComputeMeasurement final {
   ApplicationSystemComputeInputs inputs;
+  std::vector<ApplicationSystemComputeClassMeasurement> classes;
   evaluation::ExactRatio occupancy;
+  std::optional<std::size_t> bindingClass;
+  evaluation::ExactRatio placementUtilization;
 };
 
 /// The candidate's source-declared computation interval and resource occupancy.

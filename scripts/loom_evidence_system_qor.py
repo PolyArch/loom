@@ -255,36 +255,90 @@ def _validate_system_qor_window(
         return None
     compute = window["compute"]
     if not isinstance(compute, dict) or set(compute) != {
-        "retired_compute_firings",
-        "mapped_compute_units",
         "launched_acc_cores",
         "reference_cycle_ticks",
+        "classes",
         "occupancy",
+        "binding_class",
+        "placement_utilization",
     }:
         errors.append("system_qor_candidate_window_shape_invalid")
         return None
-    firings = _integer(compute["retired_compute_firings"])
-    units = _integer(compute["mapped_compute_units"])
     cores = _integer(compute["launched_acc_cores"])
     period = _integer(compute["reference_cycle_ticks"])
+    classes = compute["classes"]
     if (
-        firings is None
-        or firings < 0
-        or units is None
-        or units < 0
-        or cores is None
+        cores is None
         or cores < 0
         or period is None
         or period < 0
-        or (cores > 0 and (units == 0 or period == 0))
-        or (cores == 0 and firings != 0)
+        or (cores > 0 and period == 0)
+        or not isinstance(classes, list)
     ):
         errors.append("system_qor_candidate_compute_invalid")
         return None
-    # One retired compute firing occupies its bound unit for one reference cycle.
-    compute_branch = (
-        Fraction(firings * period, span * units * cores) if cores else Fraction(0)
-    )
+    # Each class is measured against its own speed of light: the element lanes
+    # every launched Fabric could have issued for it across the window. A
+    # Temporal PE's FU issues once per cycle; its resident contexts are
+    # placement slots, which explain a mapping and never gate it.
+    compute_branch = Fraction(0)
+    placement = Fraction(0)
+    binding = None
+    seen: set[tuple[str, int]] = set()
+    for entry in classes:
+        if not isinstance(entry, dict) or set(entry) != {
+            "schema",
+            "element_bits",
+            "retired_element_firings",
+            "peak_issue_lanes_per_cycle",
+            "placement_slots",
+            "bound_realizations",
+            "occupancy",
+            "placement_utilization",
+        }:
+            errors.append("system_qor_candidate_compute_class_shape_invalid")
+            return None
+        bits = _integer(entry["element_bits"])
+        firings = _integer(entry["retired_element_firings"])
+        peak = _integer(entry["peak_issue_lanes_per_cycle"])
+        slots = _integer(entry["placement_slots"])
+        bound = _integer(entry["bound_realizations"])
+        schema = entry["schema"]
+        if (
+            not isinstance(schema, str)
+            or bits is None
+            or bits <= 0
+            or firings is None
+            or firings < 0
+            or peak is None
+            or peak < 0
+            or slots is None
+            or slots < 0
+            or bound is None
+            or bound < 0
+            or (cores == 0 and firings != 0)
+            or (firings != 0 and peak == 0)
+            or (schema, bits) in seen
+        ):
+            errors.append("system_qor_candidate_compute_class_invalid")
+            return None
+        seen.add((schema, bits))
+        capacity = span * peak * cores
+        occupancy = Fraction(firings * period, capacity) if capacity else Fraction(0)
+        if not _ratio(entry["occupancy"], occupancy):
+            errors.append("system_qor_candidate_compute_occupancy_mismatch")
+        slot_capacity = slots * cores
+        utilization = Fraction(bound, slot_capacity) if slot_capacity else Fraction(0)
+        if not _ratio(entry["placement_utilization"], utilization):
+            errors.append("system_qor_candidate_placement_utilization_mismatch")
+        if occupancy > compute_branch:
+            compute_branch = occupancy
+            binding = schema
+        placement = max(placement, utilization)
     if not _ratio(compute["occupancy"], compute_branch):
         errors.append("system_qor_candidate_compute_occupancy_mismatch")
+    if compute["binding_class"] != binding:
+        errors.append("system_qor_candidate_binding_class_mismatch")
+    if not _ratio(compute["placement_utilization"], placement):
+        errors.append("system_qor_candidate_placement_utilization_mismatch")
     return memory_branch, compute_branch, span
