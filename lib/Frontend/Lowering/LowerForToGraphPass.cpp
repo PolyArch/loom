@@ -12,11 +12,13 @@
 
 #include "Common/BlobDigest.h"
 #include "Common/InvocationDiagnosticLog.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowThreadCompletion.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/LoomOps.h"
 
@@ -55,8 +57,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <memory>
+#include <numeric>
 #include <optional>
 
 namespace {
@@ -65,6 +69,83 @@ using MonotonicClock = std::chrono::steady_clock;
 
 constexpr ::llvm::StringLiteral canonicalizationContextDescriptor =
     "loom.dataflow_lowering.canonicalization_context.1.0";
+
+// The census names no vocabulary of its own. `CanonicalDataflowActorKind` owns
+// the coarse Compute / Control / Memory class, and `OperationSchemaId` owns
+// each actor's identity and readable spelling; both come from the one
+// operation-schema registry.
+constexpr ::llvm::StringLiteral graphActorCensusContextKind =
+    "graph_actor_census";
+
+void emitFinalizedGraphActorCensus(::dataflow::GraphOp graph) {
+  if (!::loom::mapping_debug::enabled(::loom::mapping_debug::Level::Summary))
+    return;
+
+  const std::size_t schemaCount = ::dataflow::operationSchemaCount();
+  ::llvm::SmallVector<std::uint64_t, 128> actorsBySchema(schemaCount, 0);
+  std::uint64_t computeActors = 0;
+  std::uint64_t controlActors = 0;
+  std::uint64_t memoryActors = 0;
+  std::uint64_t unregisteredOperations = 0;
+  graph.getBody().walk([&](::mlir::Operation *op) {
+    if (op->hasTrait<::mlir::OpTrait::IsTerminator>())
+      return;
+    auto schema = ::dataflow::operationSchemaOf(op);
+    if (!schema) {
+      ++unregisteredOperations;
+      return;
+    }
+    ++actorsBySchema[static_cast<std::size_t>(*schema)];
+    switch (::dataflow::actorKind(*schema)) {
+    case ::dataflow::CanonicalDataflowActorKind::Compute:
+      ++computeActors;
+      break;
+    case ::dataflow::CanonicalDataflowActorKind::Control:
+      ++controlActors;
+      break;
+    case ::dataflow::CanonicalDataflowActorKind::Memory:
+      ++memoryActors;
+      break;
+    }
+  });
+
+  // An exact ratio in lowest terms. A graph with no Compute actor keeps its
+  // zero denominator instead of reporting an undefined quotient.
+  const std::uint64_t commonDivisor = std::gcd(controlActors, computeActors);
+  const std::uint64_t ratioScale = commonDivisor == 0 ? 1 : commonDivisor;
+
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::DataflowLowering,
+      ::loom::mapping_debug::Event::DerivedContext,
+      [&](::llvm::json::Object &fields) {
+        fields["context_kind"] = graphActorCensusContextKind;
+        fields["graph"] = graph.getSymName();
+        fields["actors"] = static_cast<std::int64_t>(
+            computeActors + controlActors + memoryActors);
+        fields["compute_actors"] = static_cast<std::int64_t>(computeActors);
+        fields["control_actors"] = static_cast<std::int64_t>(controlActors);
+        fields["memory_actors"] = static_cast<std::int64_t>(memoryActors);
+        fields["unregistered_operations"] =
+            static_cast<std::int64_t>(unregisteredOperations);
+        fields["control_to_compute_numerator"] =
+            static_cast<std::int64_t>(controlActors / ratioScale);
+        fields["control_to_compute_denominator"] =
+            static_cast<std::int64_t>(computeActors / ratioScale);
+        ::llvm::json::Object controlBySchema;
+        for (std::size_t index = 0; index < schemaCount; ++index) {
+          if (actorsBySchema[index] == 0)
+            continue;
+          auto schema = static_cast<::dataflow::OperationSchemaId>(index);
+          if (::dataflow::actorKind(schema) !=
+              ::dataflow::CanonicalDataflowActorKind::Control)
+            continue;
+          controlBySchema[::dataflow::operationSchemaSpelling(schema)] =
+              static_cast<std::int64_t>(actorsBySchema[index]);
+        }
+        fields["control_actors_by_schema"] = std::move(controlBySchema);
+      });
+}
 
 using ::loom::lowering::FixedParallelDomain;
 using ::loom::lowering::forEachParallelPoint;
@@ -1019,6 +1100,9 @@ struct LowerForToGraphPass
 
     module->setAttrs((*scratch)->getAttrs());
     module.getBodyRegion().takeBody(scratch->getBodyRegion());
+    for (auto graph : module.getOps<::dataflow::GraphOp>())
+      if (!graph.isExternal())
+        emitFinalizedGraphActorCensus(graph);
   }
 
   void canonicalize(::mlir::Operation *operation) {

@@ -39,24 +39,22 @@ module {
   // MULTI: %[[LANE_TWO:.*]] = dataflow.constant %arg0 {const_value = 2 : i32} : i32
   // MULTI: %[[LANE_INTEGER:.*]] = arith.select %[[MATCH_FIVE]], %[[LANE_TWO]], %[[AFTER_TWO]] : i32
   // MULTI: %[[LANE:.*]] = arith.index_cast %[[LANE_INTEGER]] : i32 to index
-  // MULTI: %[[EXECUTION:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
-  // MULTI: %[[WRITE:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
-  // MULTI: %[[READ:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
+  // The execution, write, and read frontiers all enter the switch as the
+  // graph start, so one lane projection serves all three and each lane's
+  // control is that projection's own lane.
+  // MULTI: %[[LANES:.*]]:3 = dataflow.demux %[[LANE]], %arg0 : (index, none) -> (none, none, none)
   // MULTI-DAG: %[[INDEX:.*]]:3 = dataflow.demux %[[LANE]], %arg2 : (index, index) -> (index, index, index)
   // MULTI-DAG: %[[DEFAULT_FIRST:.*]]:3 = dataflow.demux %[[LANE]], %arg3 : (index, i32) -> (i32, i32, i32)
   // MULTI-DAG: %[[DEFAULT_SECOND:.*]]:3 = dataflow.demux %[[LANE]], %arg4 : (index, i32) -> (i32, i32, i32)
   // MULTI-DAG: %[[CASE_TWO_VALUE:.*]]:3 = dataflow.demux %[[LANE]], %arg5 : (index, i32) -> (i32, i32, i32)
   // MULTI-DAG: %[[CASE_FIVE_VALUE:.*]]:3 = dataflow.demux %[[LANE]], %arg6 : (index, i32) -> (i32, i32, i32)
-  // MULTI: %[[CASE_TWO_CTRL:.*]]:2 = dataflow.sync %[[EXECUTION]]#1, %[[READ]]#1 : (none, none) -> (none, none)
-  // MULTI: %[[CASE_TWO_DONE:.*]] = dataflow.store %arg7[%[[INDEX]]#1] %[[CASE_TWO_VALUE]]#1 %[[CASE_TWO_CTRL]]#0 : memref<?xi32>
-  // MULTI: %[[CASE_FIVE_CTRL:.*]]:2 = dataflow.sync %[[EXECUTION]]#2, %[[WRITE]]#2 : (none, none) -> (none, none)
-  // MULTI: %[[CASE_FIVE_DATA:.*]], %[[CASE_FIVE_DONE:.*]] = dataflow.load %arg7[%[[INDEX]]#2] %[[CASE_FIVE_CTRL]]#0 : memref<?xi32>
-  // MULTI: %[[CASE_FIVE_READ:.*]]:2 = dataflow.sync %[[READ]]#2, %[[CASE_FIVE_DONE]] : (none, none) -> (none, none)
+  // MULTI: %[[CASE_TWO_DONE:.*]] = dataflow.store %arg7[%[[INDEX]]#1] %[[CASE_TWO_VALUE]]#1 %[[LANES]]#1 : memref<?xi32>
+  // MULTI: %[[CASE_FIVE_DATA:.*]], %[[CASE_FIVE_DONE:.*]] = dataflow.load %arg7[%[[INDEX]]#2] %[[LANES]]#2 : memref<?xi32>
   // MULTI: %[[FIRST:.*]] = dataflow.mux %[[LANE]], %[[DEFAULT_FIRST]]#0, %[[CASE_TWO_VALUE]]#1, %[[CASE_FIVE_DATA]] : (index, i32, i32, i32) -> i32
   // MULTI: %[[SECOND:.*]] = dataflow.mux %[[LANE]], %[[DEFAULT_SECOND]]#0, %[[DEFAULT_SECOND]]#1, %[[CASE_FIVE_VALUE]]#2 : (index, i32, i32, i32) -> i32
-  // MULTI: %[[WRITE_OUT:.*]] = dataflow.mux %[[LANE]], %[[WRITE]]#0, %[[CASE_TWO_DONE]], %[[WRITE]]#2 : (index, none, none, none) -> none
-  // MULTI: %[[READ_OUT:.*]] = dataflow.mux %[[LANE]], %[[READ]]#0, %[[CASE_TWO_DONE]], %[[CASE_FIVE_READ]]#0 : (index, none, none, none) -> none
-  // MULTI: %[[EXECUTION_OUT:.*]] = dataflow.mux %[[LANE]], %[[EXECUTION]]#0, %[[EXECUTION]]#1, %[[EXECUTION]]#2 : (index, none, none, none) -> none
+  // MULTI: %[[WRITE_OUT:.*]] = dataflow.mux %[[LANE]], %[[LANES]]#0, %[[CASE_TWO_DONE]], %[[LANES]]#2 : (index, none, none, none) -> none
+  // MULTI: %[[READ_OUT:.*]] = dataflow.mux %[[LANE]], %[[LANES]]#0, %[[CASE_TWO_DONE]], %[[CASE_FIVE_DONE]] : (index, none, none, none) -> none
+  // MULTI: %[[EXECUTION_OUT:.*]] = dataflow.mux %[[LANE]], %[[LANES]]#0, %[[LANES]]#1, %[[LANES]]#2 : (index, none, none, none) -> none
   // MULTI: %[[AFTER_CTRL:.*]]:2 = dataflow.sync %[[EXECUTION_OUT]], %[[READ_OUT]] : (none, none) -> (none, none)
   // MULTI: %[[AFTER_DONE:.*]] = dataflow.store %arg7[%arg2] %[[FIRST]] %[[AFTER_CTRL]]#0 : memref<?xi32>
   // MULTI: dataflow.sync %[[AFTER_DONE]], %[[FIRST]] : (none, i32) -> (none, i32)

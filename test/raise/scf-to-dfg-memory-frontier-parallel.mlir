@@ -1,12 +1,13 @@
 // RUN: loom-raise-opt --loom-lower-graph-memory %s | FileCheck %s
 
+// Both lanes start from the iteration's write frontier once the body is
+// proven to leave it alone, so each lane's completion already implies that
+// frontier and the group join is over the two completions themselves.
 // CHECK-LABEL: dataflow.graph private @repeat_parallel(
 // CHECK: dataflow.carry
 // CHECK: %[[REPEAT_LOAD0:.*]], %[[REPEAT_DONE0:.*]] = dataflow.load
-// CHECK: %[[REPEAT_READ0:.*]]:2 = dataflow.sync {{.*}}%[[REPEAT_DONE0]]
 // CHECK: %[[REPEAT_LOAD1:.*]], %[[REPEAT_DONE1:.*]] = dataflow.load
-// CHECK: %[[REPEAT_READ1:.*]]:2 = dataflow.sync {{.*}}%[[REPEAT_DONE1]]
-// CHECK: dataflow.sync %[[REPEAT_READ0]]#0, %[[REPEAT_READ1]]#0
+// CHECK: dataflow.sync %[[REPEAT_DONE0]], %[[REPEAT_DONE1]]
 // CHECK-NOT: scf.
 // CHECK: dataflow.graph.return
 dataflow.graph private @repeat_parallel(

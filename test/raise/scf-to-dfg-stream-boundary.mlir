@@ -189,8 +189,8 @@
 // CHECK: dataflow.demux %{{.*}}, %[[BRANCH_INPUT_LEFT]]#0 : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.demux %{{.*}}, %[[BRANCH_INPUT_ROOT]]#1 : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.stream
-// CHECK: dataflow.invariant %{{.*}}, %[[BRANCH_SELECT]] : i1
-// CHECK: dataflow.gate
+// CHECK: %[[BRANCH_SELECT_RAW:[[:alnum:]_]+]] = dataflow.invariant %{{.*}}, %[[BRANCH_SELECT]] : i1
+// CHECK: dataflow.demux %{{.*}}, %[[BRANCH_SELECT_RAW]] : (i1, i1) -> (i1, i1)
 // CHECK: %[[BRANCH_OUTPUT_LEFT_LEFT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
 // CHECK: %[[BRANCH_OUTPUT_LEFT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %[[BRANCH_OUTPUT_LEFT_LEFT]], %{{.*}} : (i1, i32, i32) -> i32
 // CHECK: %[[BRANCH_OUTPUT_RIGHT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
