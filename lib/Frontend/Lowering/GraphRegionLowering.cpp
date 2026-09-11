@@ -1,5 +1,6 @@
 #include "GraphRegionLowering.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
+#include "GraphActorSharing.h"
 #include "GraphIndexLowering.h"
 #include "GraphEventDependencies.h"
 #include "GraphRegionAdmission.h"
@@ -41,7 +42,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -78,7 +78,6 @@ using ::loom::lowering::forEachParallelPoint;
 using ::loom::lowering::getFixedParallelDomain;
 using ::loom::lowering::detail::analyzeStreamBinding;
 using ::loom::lowering::detail::analyzeStreamBoundary;
-using ::loom::lowering::detail::checkStreamBoundaryUses;
 using ::loom::lowering::detail::collectStreamOutput;
 using ::loom::lowering::detail::materializeStreamSchedule;
 using ::loom::lowering::detail::materializeStreamSelectiveRouter;
@@ -174,166 +173,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       to, [&](::mlir::OpOperand &use) { return isUseInside(use, region); });
 }
 
-::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph,
-                                    const StreamBoundaryInfo &boundary,
-                                    unsigned indexBits) {
-  ::mlir::Block &entry = graph.getBody().front();
-  if (entry.getNumArguments() == 0 ||
-      !::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
-    return graph.emitError(
-        "loom-lower-graph-memory: graph entry must start with none");
-  if (::mlir::failed(checkStreamBoundaryUses(graph, boundary, indexBits)))
-    return ::mlir::failure();
-
-  ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
-                                                       -> ::mlir::WalkResult {
-    if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
-      if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
-              load, load.getMemRefType(), load.getIndices(), indexBits)))
-        return ::mlir::WalkResult::interrupt();
-    } else if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
-      if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
-              store, store.getMemRefType(), store.getIndices(), indexBits)))
-        return ::mlir::WalkResult::interrupt();
-    } else if (auto read =
-                   ::llvm::dyn_cast<::mlir::vector::TransferReadOp>(op)) {
-      if (::mlir::failed(
-              ::loom::lowering::detail::checkRankedVectorTransferRead(
-                  read, indexBits)))
-        return ::mlir::WalkResult::interrupt();
-    } else if (auto write =
-                   ::llvm::dyn_cast<::mlir::vector::TransferWriteOp>(op)) {
-      if (::mlir::failed(
-              ::loom::lowering::detail::checkRankedVectorTransferWrite(
-                  write, indexBits)))
-        return ::mlir::WalkResult::interrupt();
-    } else if (auto dealloc = ::llvm::dyn_cast<::mlir::memref::DeallocOp>(op)) {
-      auto allocation =
-          dealloc.getMemref().getDefiningOp<::mlir::memref::AllocOp>();
-      if (!allocation ||
-          allocation->getParentOfType<::dataflow::GraphOp>() != graph) {
-        dealloc.emitOpError(
-            "loom-lower-graph-memory: only graph-local allocations may be "
-            "deallocated inside a graph");
-        return ::mlir::WalkResult::interrupt();
-      }
-    }
-
-    auto findMemoryCapability = [&](::mlir::TypeRange types) {
-      for (::mlir::Type type : types)
-        if (::dataflow::DataflowDialect::isMemoryCapabilityType(type))
-          return type;
-      return ::mlir::Type{};
-    };
-    if (::llvm::isa<::dataflow::CarryOp, ::dataflow::MuxOp, ::dataflow::DemuxOp,
-                    ::dataflow::GateOp, ::dataflow::InvariantOp>(op)) {
-      ::mlir::Type memory = findMemoryCapability(op->getOperandTypes());
-      if (!memory)
-        memory = findMemoryCapability(op->getResultTypes());
-      if (memory) {
-        op->emitError() << "cannot lower memory capability " << memory
-                        << " through " << op->getName().getStringRef();
-        return ::mlir::WalkResult::interrupt();
-      }
-    } else if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-      ::mlir::Type memory = findMemoryCapability(ifOp.getResultTypes());
-      if (memory) {
-        ifOp.emitError() << "cannot lower selected memory capability " << memory
-                         << " through dataflow.mux/demux";
-        return ::mlir::WalkResult::interrupt();
-      }
-    } else if (auto switchOp =
-                   ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(op)) {
-      if (switchOp.getNumCases() == 0) {
-        switchOp.emitError(
-            "loom-lower-graph-memory: zero-case scf.index_switch requires "
-            "upstream normalization before graph-region lowering");
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (indexBits < std::numeric_limits<std::size_t>::digits &&
-          switchOp.getNumCases() >= (std::size_t{1} << indexBits)) {
-        switchOp.emitError(
-            "loom-lower-graph-memory: scf.index_switch lane count exceeds "
-            "the configured index width");
-        return ::mlir::WalkResult::interrupt();
-      }
-      ::mlir::Type memory = findMemoryCapability(switchOp.getResultTypes());
-      if (memory) {
-        switchOp.emitError() << "cannot lower selected memory capability "
-                             << memory << " through dataflow.mux/demux";
-        return ::mlir::WalkResult::interrupt();
-      }
-    } else if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
-      ::mlir::Type memory =
-          findMemoryCapability(forOp.getInitArgs().getTypes());
-      if (memory) {
-        forOp.emitError() << "cannot lower loop-carried memory capability "
-                          << memory << " through dataflow.carry";
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::mlir::failed(::loom::lowering::inferStreamStepKind(forOp))) {
-        forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
-                        "'loom.stream_step_kind'");
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::mlir::failed(::loom::lowering::inferStreamPredicate(forOp))) {
-        forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
-                        "'loom.stream_predicate'");
-        return ::mlir::WalkResult::interrupt();
-      }
-    } else if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
-      ::mlir::Type memory = findMemoryCapability(whileOp.getInits().getTypes());
-      if (memory) {
-        whileOp.emitError() << "cannot lower loop-carried memory capability "
-                            << memory << " through dataflow.carry";
-        return ::mlir::WalkResult::interrupt();
-      }
-    }
-    if (::llvm::isa<::mlir::scf::SCFDialect>(op->getDialect()) &&
-        !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                     ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp,
-                     ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
-                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
-                     ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp>(op)) {
-      op->emitError("loom-lower-graph-memory: unsupported residual SCF "
-                    "must be normalized before graph-region lowering");
-      return ::mlir::WalkResult::interrupt();
-    }
-    bool modeled =
-        ::loom::lowering::detail::isGraphRegionControlOperation(op) ||
-        ::loom::lowering::classifyGraphLoweringLeaf(op) !=
-            ::loom::lowering::GraphLeafLowering::Unsupported;
-    if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
-            op))
-      modeled = boundary.isTransient();
-    // A registered actor that no capability covers is reported for what it is,
-    // so an effectful memory actor is not mistaken for an unregistered one.
-    if (!modeled && ::dataflow::isCanonicalDataflowActor(op)) {
-      op->emitError() << "loom-lower-graph-memory: canonical Dataflow actor '"
-                      << op->getName().getStringRef()
-                      << "' has no graph-region lowering";
-      return ::mlir::WalkResult::interrupt();
-    }
-    if (!modeled && (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)) {
-      op->emitError()
-          << "loom-lower-graph-memory: effectful or unmodeled graph "
-             "operation '"
-          << op->getName().getStringRef() << "' is unsupported";
-      return ::mlir::WalkResult::interrupt();
-    }
-    if (!modeled) {
-      op->emitError()
-          << "loom-lower-graph-memory: operation '"
-          << op->getName().getStringRef()
-          << "' is not a registered canonical Dataflow actor or a supported "
-             "graph-lowering operation";
-      return ::mlir::WalkResult::interrupt();
-    }
-    return ::mlir::WalkResult::advance();
-  });
-  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
-}
-
 class GraphRegionLowerer {
 public:
   GraphRegionLowerer(::dataflow::GraphOp graph,
@@ -386,6 +225,7 @@ public:
     finalizeReturn(returnOp, result);
     if (transientStreamBoundary)
       eraseTransientChannelArguments();
+    ::loom::lowering::shareCanonicalControlActors(entry);
     return ::mlir::success();
   }
 
@@ -949,16 +789,47 @@ private:
     return {gate.getAfterCond(), gate.getAfterValue(), close.getOutputs()[0]};
   }
 
+  // Replay one parent-domain value once per token of `phase`. The replay has
+  // `N + 1` tokens for `N` body tokens; the projection decides how the extra
+  // token becomes the close event.
+  ::mlir::Value replayCapture(::mlir::Value capture, ::mlir::Value phase,
+                              ::mlir::Location loc) {
+    setInsertionPoint(loc);
+    return ::dataflow::InvariantOp::create(builder, loc, capture.getType(),
+                                           phase, capture)
+        .getOutput();
+  }
+
+  // A loop-level phase stream always publishes its closing false token, even
+  // for a zero-trip activation. One demux on that phase therefore does all the
+  // work: it splits the replay's `N + 1` tokens into the `N` body tokens and
+  // the single close token that retires the replay. No separate gate, and no
+  // zero-trip selection, is part of this shape.
   ::llvm::SmallVector<::mlir::Value, 4>
-  projectForCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
-                     ::mlir::Value phase, ::mlir::Location loc) {
+  projectPhaseCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
+                       ::mlir::Value phase, ::mlir::Location loc) {
     ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
     for (::mlir::Value capture : captures) {
-      setInsertionPoint(loc);
-      ::mlir::Value raw = ::dataflow::InvariantOp::create(
-                              builder, loc, capture.getType(), phase, capture)
-                              .getOutput();
-      GatedValue gated = gateTrueLane(phase, raw, loc);
+      auto [close, body] =
+          demux(phase, replayCapture(capture, phase, loc), loc);
+      replaceUsesInside(capture, body, region);
+      closeEvents.push_back(close);
+    }
+    return closeEvents;
+  }
+
+  // A selector that only decides whether a region runs again pairs no token
+  // with an activation that never runs the region. The gate absorbs that case:
+  // it opens on the first true decision, so its close event exists exactly
+  // when the region executed at least once, which is the cardinality the
+  // enclosing selection already carries.
+  ::llvm::SmallVector<::mlir::Value, 4>
+  projectSelectorCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
+                          ::mlir::Value selector, ::mlir::Location loc) {
+    ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
+    for (::mlir::Value capture : captures) {
+      GatedValue gated = gateTrueLane(
+          selector, replayCapture(capture, selector, loc), loc);
       replaceUsesInside(capture, gated.value, region);
       closeEvents.push_back(gated.close);
     }
@@ -1658,7 +1529,7 @@ private:
     }
     replaceUsesInside(forOp.getInductionVar(), bodyIv, forOp.getRegion());
     ::llvm::SmallVector<::mlir::Value, 4> captureCloses =
-        projectForCaptures(forOp.getRegion(), captures, phase, loc);
+        projectPhaseCaptures(forOp.getRegion(), captures, phase, loc);
     if (auto uses = streamRepeatUsers.find(forOp);
         uses != streamRepeatUsers.end()) {
       setInsertionPoint(loc);
@@ -1800,13 +1671,12 @@ private:
     for (unsigned i = 0; i < forOp.getNumResults(); ++i)
       forOp.getResult(i).replaceAllUsesWith(valueExits[i]);
     if (!captureCloses.empty()) {
-      setInsertionPoint(loc);
-      ::mlir::Value nonEmpty =
-          ::mlir::arith::CmpIOp::create(builder, loc, *predicate, lower, upper);
-      auto [emptyExit, activeExit] = demux(nonEmpty, executionExit, loc);
-      captureCloses.insert(captureCloses.begin(), activeExit);
-      executionExit =
-          mux(nonEmpty, emptyExit, joinEvents(captureCloses, loc), loc);
+      // Every capture close carries exactly one token per activation, so the
+      // loop exit joins them unconditionally. A zero-trip activation is not a
+      // separate case here: its phase stream is the single closing false token
+      // that produced those close events.
+      captureCloses.insert(captureCloses.begin(), executionExit);
+      executionExit = joinEvents(captureCloses, loc);
     }
     forOp.erase();
     return {executionExit, std::move(output)};
@@ -1910,7 +1780,8 @@ private:
                         after, whileOp.getAfter());
     }
     ::llvm::SmallVector<::mlir::Value, 4> afterCaptureCloses =
-        projectForCaptures(whileOp.getAfter(), afterCaptures, selector, loc);
+        projectSelectorCaptures(whileOp.getAfter(), afterCaptures, selector,
+                                loc);
     closeEvents.append(afterCaptureCloses);
 
     RegionResult afterResult = lowerBlock(
@@ -1955,36 +1826,6 @@ private:
 
 namespace loom {
 namespace lowering {
-
-::mlir::LogicalResult
-checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
-  ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
-  module.walk([&](::mlir::Operation *op) {
-    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op) &&
-        op->getParentOfType<::dataflow::GraphOp>())
-      parallelOps.push_back(op);
-  });
-  if (::mlir::failed(checkGraphOwnedParallelPreconditions(parallelOps)))
-    return ::mlir::failure();
-
-  ::mlir::WalkResult result =
-      module.walk([&](::dataflow::GraphOp graph) -> ::mlir::WalkResult {
-        if (graph.isExternal())
-          return ::mlir::WalkResult::advance();
-        ::llvm::Expected<unsigned> indexBits = ::loom::getIndexBitWidth(graph);
-        if (!indexBits) {
-          graph.emitError("loom-lower-graph-memory: ")
-              << ::llvm::toString(indexBits.takeError());
-          return ::mlir::WalkResult::interrupt();
-        }
-        auto boundary = analyzeStreamBoundary(graph);
-        if (::mlir::failed(boundary) ||
-            ::mlir::failed(checkOneGraph(graph, *boundary, *indexBits)))
-          return ::mlir::WalkResult::interrupt();
-        return ::mlir::WalkResult::advance();
-      });
-  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
-}
 
 ::mlir::LogicalResult lowerGraphRegions(
     ::dataflow::GraphOp graph, unsigned indexBits,

@@ -1541,6 +1541,21 @@ this property because the loop phase stream independently drives
 `carry`, `gate`, and `demux`; those consumers do not need to fire in
 lockstep.
 
+Token broadcast also means that two structurally identical actors over the
+same operands denote the same token stream. Graph lowering therefore publishes
+one actor per structural identity for `constant`, `sync`, `invariant`,
+`demux`, and `mux`: distinct lowering roles that resolve to the same
+replication, selection, or rendezvous of the same operands share one actor,
+and each role keeps its own use of that actor's results. `stream`, `carry`,
+and `gate` are excluded. Lowering replicates a stream deliberately for a
+proven-independent loop's completion recurrence, and each `carry` or `gate`
+owns one recurrence identity that the retirement proofs key on. In the same
+normalization, a control-only `sync` whose prerequisites are all implied by
+one of its own inputs is that input; this is the frontier-reduction rule the
+templates already apply when they build a join, reapplied once the recurrence
+edges are closed. This normalization is part of lowering, not a rewrite
+decision: it selects nothing and publishes no alternative candidate.
+
 Frontend `memref<...>` values are not stream values in this sense.
 They represent memory-region bindings for `dataflow.load` /
 `dataflow.store`. Lowering must not feed memref bindings through
@@ -1610,10 +1625,23 @@ stateful consumer, but it has no paired IV or body execution.
 
 The stream IV already has body cardinality and enters body arithmetic and
 memory directly. Parent-domain captured values from `invariant` have
-`N + 1` tokens and are projected through `dataflow.gate` before body use.
-Recurrence values that also need a false-lane exit use selector-matched
-`dataflow.demux`; loop results and memory-frontier exits consume that false
-lane. A true body-local condition means the current body execution is not the
+`N + 1` tokens. Recurrence values, captured values, and memory-frontier
+components alike are projected with one selector-matched `dataflow.demux`:
+the true lane carries the `N` body tokens and the false lane carries the
+single exit or close token. Loop results, memory-frontier exits, and capture
+close events all consume that false lane. A counted loop's phase always
+publishes its closing false token, so a capture close event exists for a
+zero-trip activation too and the loop exit joins every close
+unconditionally, rather than selecting between an empty and a non-empty
+exit.
+
+`dataflow.gate` projects a captured value only where the selector may never
+open at all. That is the `scf.while` after region: a condition that is false
+on its first decision pairs no token with the region, so the gate opens on the
+first true decision and its close event exists exactly when the region
+executed at least once. A counted loop never has that case.
+
+A true body-local condition means the current body execution is not the
 last execution; a false body-local condition means it is the last execution.
 
 Different regions of one source loop may therefore have different phase
@@ -2018,12 +2046,20 @@ This translation uses one loop selector from
 `dataflow.stream` and independent `carry -> demux` rings for execution,
 iter_args, and each touched `W_P/R_P` component. True lanes enter the
 recursively lowered body; false lanes are loop exits. Captured non-memref
-values use `invariant` followed by true-lane projection.
+values use `invariant` followed by the same selector-matched `demux`: the
+true lane is the body value and the false lane is the capture close event
+that the loop exit joins.
 
 The body feeds every ring independently. Zero trip produces only the false
 selector token, so init execution, values, and frontier components transfer
-unchanged. Read-only state does not create RAR order; write feedback preserves
-RAW, WAR, and WAW across source-sequential iterations.
+unchanged, and every capture close is that one false-lane token. Read-only
+state does not create RAR order; write feedback preserves RAW, WAR, and WAW
+across source-sequential iterations.
+
+A ring whose body result is only the ring's own true lane carries nothing
+across iterations. It is published as the equivalent `invariant` over the same
+selector and initial value, with the same projection; two rings that reduce to
+the same `invariant` over the same operands are one actor.
 
 ### 6.4 `scf.forall`
 
