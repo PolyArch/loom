@@ -587,11 +587,15 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
 
   const SelectedApplicationInput pageRankValidation =
       take(selectApplicationInput(manifest, "gapbs-pagerank", "validation"));
-  if (pageRankValidation.input.compilerOptions !=
-          std::vector<std::string>{"-DLOOM_PAGERANK_ITERATIONS=12"} ||
-      pageRankValidation.build.compilerOptions.empty() ||
-      pageRankValidation.build.compilerOptions.back() !=
-          "-DLOOM_PAGERANK_ITERATIONS=12")
+  const std::vector<std::string> pageRankValidationOptions{
+      "-DLOOM_PAGERANK_ITERATIONS=12", "-DLOOM_PAGERANK_NODE_COUNT=2048"};
+  if (pageRankValidation.input.compilerOptions != pageRankValidationOptions ||
+      pageRankValidation.build.compilerOptions.size() <
+          pageRankValidationOptions.size() ||
+      !std::equal(pageRankValidationOptions.begin(),
+                  pageRankValidationOptions.end(),
+                  pageRankValidation.build.compilerOptions.end() -
+                      pageRankValidationOptions.size()))
     fail("input-specific compiler options were not derived into the build");
 
   SelectedApplicationInput tinyMl = take(selectApplicationInput(

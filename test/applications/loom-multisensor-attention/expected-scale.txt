@@ -1,6 +1,7 @@
-attention checksum: 46.72024
-projection energy: 21.65625
-attention sum: 7.68096
-attention max: 2.02760
-combined checksum: 187.75932
+attention tokens: 96
+attention checksum: 2483.22046
+projection energy: 385.71185
+attention sum: 13.38612
+attention max: 1.92502
+combined checksum: 3755.23413
 PASSED
