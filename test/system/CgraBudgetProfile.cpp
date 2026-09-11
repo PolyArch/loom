@@ -582,11 +582,28 @@ llvm::json::Object selectQualificationHardware(
     const loom::dse::TechMappingComputeContextJointGrowthPlan &growth =
         *growthPlan;
     // This profile never withdraws the instruction-store preference, so the
-    // Hall growth owner always names the atomic Temporal closure here.
-    require(growth.addedContextCount > 0 && !growth.decisions.empty(),
+    // Hall growth owner names the atomic Temporal closure unless a composite
+    // capability closes the relation. A composite occurrence binds several
+    // actors per realization, which is the one supply the owner prefers over
+    // more Temporal residency even before the chain withdraws.
+    require(growth.addedContextCount > 0,
             "qualification hardware feedback made no progress");
-    const loom::dse::SpatialMicroarchitectureDecisionDomain domain =
+    loom::dse::SpatialMicroarchitectureDecisionDomain domain =
         loom::dse::ResizeInstructionStoresDomain{growth.decisions};
+    if (growth.direction ==
+        loom::dse::TechMappingComputeContextGrowthDirection::
+            SpatialFuOccurrence) {
+      require(growth.spatialFuGrowth &&
+                  growth.spatialFuGrowth->activeOperationCount >= 2,
+              "qualification hardware feedback took a non-composite Spatial "
+              "supply under the instruction-store preference");
+      domain = loom::dse::ChangeFuInventoryDomain{
+          growth.spatialFuGrowth->decision.target,
+          {growth.spatialFuGrowth->decision.prototypes}};
+    } else {
+      require(!growth.decisions.empty(),
+              "qualification hardware feedback made no progress");
+    }
     auto growthConfig = take(
         loom::dse::resolveSpatialMicroarchitectureRewriteConfig({domain}, 1));
     auto growthBinding = take(

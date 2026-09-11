@@ -514,66 +514,79 @@ void computeContextFeedbackReconstructsAlternativeSupply(
           "Hall growth reported no admitted supply for a relation with a "
           "compatible Temporal PE");
   const loom::dse::TechMappingComputeContextJointGrowthPlan &joint = *jointPlan;
-  // A chain that has not yet seen instruction-store growth fail keeps the
-  // structurally local, atomic closure: the Spatial supply reopens every
-  // Mapping layer and is offered only once that evidence exists.
-  require(joint.direction == loom::dse::
-                                 TechMappingComputeContextGrowthDirection::
-                                     TemporalInstructionStore &&
-              !joint.spatialFuGrowth,
-          "the default Hall growth preference is not the atomic "
-          "instruction-store closure");
-  require(!joint.decisions.empty() &&
-              joint.addedContextCount == adopted.deficit(),
-          "Temporal instruction-store growth did not close the exact minimum "
-          "deficit");
-  std::uint64_t jointGrowth = 0;
-  for (const loom::dse::ResizeInstructionStore &decision : joint.decisions) {
-    const std::uint64_t current =
-        module.view().peResidentContextCount(decision.target);
-    require(decision.instructionCapacity > current,
-            "joint Hall growth contains a non-growth decision");
-    jointGrowth += decision.instructionCapacity - current;
-  }
-  require(jointGrowth == adopted.deficit(),
-          "joint Hall growth overprovisioned the observed relation");
-  auto jointConfig =
-      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
-          {loom::dse::SpatialMicroarchitectureDecisionDomain{
-              loom::dse::ResizeInstructionStoresDomain{joint.decisions}}},
-          1));
-  auto jointInputs =
-      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
-          {module.reference()}));
-  auto jointBinding =
-      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
-          jointConfig));
-  auto jointResult = take(loom::dse::invokeCandidateGenerator(
-      jointInputs, jointBinding, fixture.store, fixture.blobs));
-  const auto &jointCompleted = completed(jointResult);
-  require(jointCompleted.outputBindings.front().artifacts.size() == 1 &&
-              jointCompleted.lineageEdges.size() == 1,
-          "joint Hall growth did not publish one typed Module child");
-  auto jointLineage = take(loom::dse::adoptSpatialMicroarchitectureDecision(
-      jointCompleted.lineageEdges.front().ownerPayload));
-  const auto *jointDecision =
-      std::get_if<loom::dse::ResizeInstructionStores>(&jointLineage.decision);
-  require(jointDecision &&
-              jointDecision->stores.size() == joint.decisions.size(),
-          "joint Hall growth lineage lost its atomic resize set");
-  auto jointModule = take(loom::fabric::importEntireFabricRoot(
-      jointCompleted.outputBindings.front().artifacts.front(), fixture.store));
   std::uint64_t parentContexts = 0;
-  std::uint64_t childContexts = 0;
   for (const auto pe : module.view().peOccurrences())
     parentContexts += module.view().peResidentContextCount(pe);
-  for (const auto pe : jointModule.view().peOccurrences())
-    childContexts += jointModule.view().peResidentContextCount(pe);
-  require(childContexts == parentContexts + adopted.deficit(),
-          "joint Hall growth child changed the requested total capacity");
-  require(jointModule.view().fuOccurrences().size() ==
-              module.view().fuOccurrences().size(),
-          "joint Hall growth child changed the requested FU inventory");
+  // A chain that has not yet seen instruction-store growth fail keeps the
+  // structurally local, atomic closure: the Spatial supply reopens every
+  // Mapping layer and is offered only once that evidence exists. One
+  // observation overrides that default, and only one: a composite capability
+  // record binds several actors per realization, while each added Temporal
+  // context only lets the cover admit one more single-actor realization.
+  if (joint.direction ==
+      loom::dse::TechMappingComputeContextGrowthDirection::
+          SpatialFuOccurrence) {
+    require(joint.spatialFuGrowth && joint.decisions.empty() &&
+                joint.spatialFuGrowth->activeOperationCount >= 2,
+            "the default Hall growth preference took a Spatial supply that is "
+            "not a composite capability");
+  } else {
+    require(joint.direction == loom::dse::
+                                   TechMappingComputeContextGrowthDirection::
+                                       TemporalInstructionStore &&
+                !joint.spatialFuGrowth,
+            "the default Hall growth preference is not the atomic "
+            "instruction-store closure");
+    require(!joint.decisions.empty() &&
+                joint.addedContextCount == adopted.deficit(),
+            "Temporal instruction-store growth did not close the exact "
+            "minimum deficit");
+    std::uint64_t jointGrowth = 0;
+    for (const loom::dse::ResizeInstructionStore &decision : joint.decisions) {
+      const std::uint64_t current =
+          module.view().peResidentContextCount(decision.target);
+      require(decision.instructionCapacity > current,
+              "joint Hall growth contains a non-growth decision");
+      jointGrowth += decision.instructionCapacity - current;
+    }
+    require(jointGrowth == adopted.deficit(),
+            "joint Hall growth overprovisioned the observed relation");
+    auto jointConfig =
+        take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
+            {loom::dse::SpatialMicroarchitectureDecisionDomain{
+                loom::dse::ResizeInstructionStoresDomain{joint.decisions}}},
+            1));
+    auto jointInputs =
+        take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+            {module.reference()}));
+    auto jointBinding = take(
+        loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+            jointConfig));
+    auto jointResult = take(loom::dse::invokeCandidateGenerator(
+        jointInputs, jointBinding, fixture.store, fixture.blobs));
+    const auto &jointCompleted = completed(jointResult);
+    require(jointCompleted.outputBindings.front().artifacts.size() == 1 &&
+                jointCompleted.lineageEdges.size() == 1,
+            "joint Hall growth did not publish one typed Module child");
+    auto jointLineage = take(loom::dse::adoptSpatialMicroarchitectureDecision(
+        jointCompleted.lineageEdges.front().ownerPayload));
+    const auto *jointDecision =
+        std::get_if<loom::dse::ResizeInstructionStores>(&jointLineage.decision);
+    require(jointDecision &&
+                jointDecision->stores.size() == joint.decisions.size(),
+            "joint Hall growth lineage lost its atomic resize set");
+    auto jointModule = take(loom::fabric::importEntireFabricRoot(
+        jointCompleted.outputBindings.front().artifacts.front(),
+        fixture.store));
+    std::uint64_t childContexts = 0;
+    for (const auto pe : jointModule.view().peOccurrences())
+      childContexts += jointModule.view().peResidentContextCount(pe);
+    require(childContexts == parentContexts + adopted.deficit(),
+            "joint Hall growth child changed the requested total capacity");
+    require(jointModule.view().fuOccurrences().size() ==
+                module.view().fuOccurrences().size(),
+            "joint Hall growth child changed the requested FU inventory");
+  }
   auto growthConfig =
       take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
           domains, domains.size()));
@@ -591,12 +604,30 @@ void computeContextFeedbackReconstructsAlternativeSupply(
               completed(growth).outputBindings.front().artifacts.size(),
           "Hall feedback growth child lost typed decision lineage");
 
+  // A chain that already spent its one Spatial FU occurrence probe asks for
+  // the Temporal closure alone. That supply rebuilds the Module and reopens
+  // every Mapping layer, so the budget covers the composite supply the default
+  // preference admits as well.
+  auto budgetedPlan =
+      take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
+          adopted, module.view(),
+          loom::dse::TechMappingComputeContextSupplyPreference::
+              TemporalInstructionStoreOnly));
+  require(budgetedPlan.has_value(),
+          "a spent Spatial probe left the Temporal closure unavailable");
+  require(budgetedPlan->direction ==
+                  loom::dse::TechMappingComputeContextGrowthDirection::
+                      TemporalInstructionStore &&
+              !budgetedPlan->spatialFuGrowth,
+          "a spent Spatial probe was offered another Spatial supply");
+
   // A chain whose instruction-store probe published no Mapping withdraws the
   // preference. The owner then offers the Spatial FU occurrence supply, but
   // only through one decision that closes the complete observed relation.
   auto retreatPlan =
       take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
-          adopted, module.view(), false));
+          adopted, module.view(),
+          loom::dse::TechMappingComputeContextSupplyPreference::AnySupply));
   require(retreatPlan.has_value(),
           "a withdrawn preference reported no admitted supply while the "
           "Temporal closure exists");

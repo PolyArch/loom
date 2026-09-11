@@ -3530,6 +3530,27 @@ becomes worth its cost. A Spatial-schedule PE holds one resident instruction
 per context and never rotates, so demand it hosts keeps its loop-carried
 dependences unserialized.
 
+One observation overrides that default without waiting for a withdrawal. A
+capability template is composite when its `FabricFuCapabilityTemplateRecord`
+activates more than one operation resource, so one selected realization binds
+several actors of the demand instead of one. `docs/spec-generalize-subgraphs-to-fu.md`
+owns how such a template is mined from the common subgraph of the compiled
+software and synthesized into the Fabric capability domain. When a composite
+template admits the deficient demand groups and one admissible Spatial PE can
+gain an occurrence of it, the owner takes the `spatial_fu_occurrence` direction
+immediately. The reason is the stagnation rule itself: each added Temporal
+context lets the cover admit one more single-actor realization, so the relation
+reappears with the same deficit, while one composite occurrence removes several
+actors from the demand per realization it covers. The preference is a default
+about cost, and this observation is evidence that the cheaper supply cannot
+close the relation at all. Everything else is unchanged: the decision is the
+same FU-inventory change against the exact parent Module, the same single
+decision must make the complete observed relation admissible, and a relation no
+one Spatial PE can close still retreats to the atomic instruction-store closure
+with its bound. The plan records the selected capability's active operation
+count, which is the one fact that distinguishes a composite supply from a
+single-operation clone.
+
 A withdrawn preference admits one decision that gives one Spatial PE of the
 exact parent Module a clone of an existing FU occurrence of a deficient
 capability class, making that PE's resident contexts compatible with every
@@ -3553,8 +3574,13 @@ and is not proposed here.
 A reopen chain admits at most one `spatial_fu_occurrence` probe. That supply
 rebuilds the Module and reopens every Mapping layer, so repeating it would
 multiply the invocation's mapping cost without the atomic closure the relation
-needs. The chain restores the instruction-store preference as soon as that one
-probe is taken.
+needs. A composite capability the owner takes without a withdrawal spends that
+same probe, so the chain narrows its preference to the Temporal closure alone
+as soon as one probe is taken, rather than restoring the initial preference.
+The compute-context supply preference is therefore a closed three-state
+evidence value, not a flag: the initial state admits the composite supply, the
+narrowed state admits neither Spatial supply, and the withdrawn state admits
+any of them.
 
 A relation whose compatible contexts lie on no Temporal PE admits no
 instruction-store supply at all, because every capability class it names is
