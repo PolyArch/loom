@@ -10,6 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
@@ -196,6 +197,8 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
   if (auto load = ::mlir::dyn_cast<::mlir::memref::LoadOp>(op)) {
     return load.getMemRef();
   }
+  if (auto read = ::mlir::dyn_cast<::mlir::vector::TransferReadOp>(op))
+    return read.getBase();
   return {};
 }
 
@@ -211,7 +214,54 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
   if (auto store = ::mlir::dyn_cast<::mlir::memref::StoreOp>(op)) {
     return store.getMemRef();
   }
+  if (auto write = ::mlir::dyn_cast<::mlir::vector::TransferWriteOp>(op))
+    return write.getBase();
   return {};
+}
+
+/// One memref access of the loop body: its index operands and the number of
+/// contiguous elements it touches from that index. Vector transfers are
+/// admitted only in the exact rank-one minor-identity form that the graph
+/// lowering accepts; a mask can only shrink the touched interval.
+struct MemrefAccessGeometry final {
+  ::mlir::Operation *op = nullptr;
+  ::llvm::SmallVector<::mlir::Value, 4> indices;
+  std::int64_t lanes = 1;
+};
+
+std::optional<MemrefAccessGeometry> memrefAccessGeometry(::mlir::Operation *op) {
+  MemrefAccessGeometry access;
+  access.op = op;
+  if (auto load = ::mlir::dyn_cast<::mlir::memref::LoadOp>(op)) {
+    access.indices.assign(load.getIndices().begin(), load.getIndices().end());
+    return access;
+  }
+  if (auto store = ::mlir::dyn_cast<::mlir::memref::StoreOp>(op)) {
+    access.indices.assign(store.getIndices().begin(),
+                          store.getIndices().end());
+    return access;
+  }
+  ::mlir::VectorType vector;
+  ::mlir::AffineMap permutation;
+  ::mlir::ValueRange indices;
+  if (auto read = ::mlir::dyn_cast<::mlir::vector::TransferReadOp>(op)) {
+    vector = read.getVectorType();
+    permutation = read.getPermutationMap();
+    indices = read.getIndices();
+  } else if (auto write =
+                 ::mlir::dyn_cast<::mlir::vector::TransferWriteOp>(op)) {
+    vector = write.getVectorType();
+    permutation = write.getPermutationMap();
+    indices = write.getIndices();
+  } else {
+    return std::nullopt;
+  }
+  if (vector.getRank() != 1 || vector.isScalable() || indices.size() != 1 ||
+      !permutation.isMinorIdentity())
+    return std::nullopt;
+  access.indices.assign(indices.begin(), indices.end());
+  access.lanes = vector.getDimSize(0);
+  return access;
 }
 
 struct LinearExpr {
@@ -405,55 +455,69 @@ std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
 }
 
 bool sameBaseMemrefReadWriteAccessesAreIterationLocal(
-    ::llvm::ArrayRef<::mlir::memref::LoadOp> loads,
-    ::llvm::ArrayRef<::mlir::memref::StoreOp> stores, ::mlir::scf::ForOp loop) {
+    ::llvm::ArrayRef<MemrefAccessGeometry> loads,
+    ::llvm::ArrayRef<MemrefAccessGeometry> stores, ::mlir::scf::ForOp loop) {
   if (loads.empty() || stores.empty())
     return true;
 
   std::optional<LinearExpr> first;
-  const auto sameElement = [&](::mlir::ValueRange indices) {
-    if (indices.size() != 1)
+  std::optional<std::int64_t> lanes;
+  const auto sameElements = [&](const MemrefAccessGeometry &access) {
+    if (access.indices.size() != 1)
       return false;
-    auto expr = linearExpr(indices.front(), loop.getInductionVar(), loop);
+    auto expr =
+        linearExpr(access.indices.front(), loop.getInductionVar(), loop);
     if (!expr || expr->ivCoeff == 0)
       return false;
-    if (!first)
+    if (!first) {
       first = *expr;
-    return *first == *expr;
+      lanes = access.lanes;
+    }
+    return *first == *expr && *lanes == access.lanes;
   };
-  return ::llvm::all_of(
-             loads,
-             [&](auto load) { return sameElement(load.getIndices()); }) &&
-         ::llvm::all_of(stores, [&](auto store) {
-           return sameElement(store.getIndices());
-         });
+  return ::llvm::all_of(loads, sameElements) &&
+         ::llvm::all_of(stores, sameElements);
 }
 
 bool sameBaseMemrefStoresAreLaneDisjoint(
-    ::llvm::ArrayRef<::mlir::memref::StoreOp> stores, ::mlir::scf::ForOp loop) {
+    ::llvm::ArrayRef<MemrefAccessGeometry> stores, ::mlir::scf::ForOp loop) {
   if (stores.empty())
     return true;
   auto stepConst = getConstantInt(loop.getStep());
   if (!stepConst || *stepConst == 0)
     return false;
   if (stores.size() == 1) {
-    auto store = stores.front();
-    for (::mlir::Value index : store.getIndices()) {
+    const MemrefAccessGeometry &store = stores.front();
+    for (::mlir::Value index : store.indices) {
       auto expr = linearExpr(index, loop.getInductionVar(), loop);
-      if (expr && expr->ivCoeff != 0)
+      if (!expr || expr->ivCoeff == 0)
+        continue;
+      // Consecutive iterations touch [e(i), e(i) + lanes); they are disjoint
+      // exactly when the index advances by at least the lane count.
+      std::int64_t advance = 0;
+      if (__builtin_mul_overflow(expr->ivCoeff, *stepConst, &advance))
+        return false;
+      auto magnitude = abs64(advance);
+      if (magnitude && *magnitude >= store.lanes)
         return true;
     }
     return false;
   }
+  // Several stores to one base are admitted only in the scalar residue-class
+  // form; overlapping vector lane groups keep the loop serial.
+  if (::llvm::any_of(stores, [](const MemrefAccessGeometry &store) {
+        return store.lanes != 1;
+      }))
+    return false;
 
   std::optional<int64_t> expectedCoeff;
   ::llvm::DenseSet<int64_t> residues;
   int64_t stride = 0;
-  for (::mlir::memref::StoreOp store : stores) {
-    if (store.getIndices().size() != 1)
+  for (const MemrefAccessGeometry &store : stores) {
+    if (store.indices.size() != 1)
       return false;
     auto expr =
-        linearExpr(store.getIndices().front(), loop.getInductionVar(), loop);
+        linearExpr(store.indices.front(), loop.getInductionVar(), loop);
     if (!expr || expr->ivCoeff == 0)
       return false;
     if (!expectedCoeff) {
@@ -547,11 +611,9 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   ::mlir::Value iv = loop.getInductionVar();
   ::llvm::DenseSet<::mlir::Value> readBases;
   ::llvm::DenseSet<::mlir::Value> writeBases;
-  ::llvm::DenseMap<::mlir::Value,
-                   ::llvm::SmallVector<::mlir::memref::LoadOp, 4>>
+  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<MemrefAccessGeometry, 4>>
       memrefLoadsByBase;
-  ::llvm::DenseMap<::mlir::Value,
-                   ::llvm::SmallVector<::mlir::memref::StoreOp, 4>>
+  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<MemrefAccessGeometry, 4>>
       memrefStoresByBase;
   ::llvm::SmallVector<::loom::lowering::ExactPointerPointAccess, 8>
       exactPointerAccesses;
@@ -617,8 +679,10 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
               inexactPointerReadBases.insert(base);
             }
           } else {
-            memrefLoadsByBase[base].push_back(
-                ::mlir::cast<::mlir::memref::LoadOp>(op));
+            auto geometry = memrefAccessGeometry(op);
+            if (!geometry)
+              return ::mlir::WalkResult::interrupt();
+            memrefLoadsByBase[base].push_back(std::move(*geometry));
           }
           readBases.insert(base);
           return ::mlir::WalkResult::advance();
@@ -644,8 +708,10 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
               return ::mlir::WalkResult::interrupt();
             exactPointerAccesses.push_back(*access);
           } else {
-            memrefStoresByBase[base].push_back(
-                ::mlir::cast<::mlir::memref::StoreOp>(op));
+            auto geometry = memrefAccessGeometry(op);
+            if (!geometry)
+              return ::mlir::WalkResult::interrupt();
+            memrefStoresByBase[base].push_back(std::move(*geometry));
           }
           writeBases.insert(base);
           return ::mlir::WalkResult::advance();
@@ -707,9 +773,9 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   // LLVM stores already carry the exact point-coordinate proof. Memref
   // stores still need affine-style indices with an induction dependency.
   for (const auto &entry : memrefStoresByBase) {
-    for (::mlir::memref::StoreOp store : entry.second) {
+    for (const MemrefAccessGeometry &store : entry.second) {
       bool sawIvDep = false;
-      for (::mlir::Value index : store.getIndices()) {
+      for (::mlir::Value index : store.indices) {
         if (!isAffineStyle(index, iv, loop))
           return ::mlir::failure();
         sawIvDep |= dependsOnIV(index, iv);
