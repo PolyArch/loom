@@ -256,6 +256,15 @@ range. Coalescing changes no address, byte, active-lane, or retirement fact;
 it only stops the provider boundary from inventing per-lane transactions the
 Fabric use pattern did not declare.
 
+A compute binding serializes its firings until retirement. A memory binding
+instead holds up to the `operation_issue_depth` of its exact Fabric Operation
+Engine firings outstanding and retires them in issue order, so a serialized
+engine of depth one admits its next firing only after its predecessor retires.
+A later firing never consumes an earlier firing's operand tokens: a binding
+admits its next firing only after the active one has consumed the operands of
+its own issue. CGRA-sim reads that depth from the mapped Fabric and never
+chooses one.
+
 The execution submits several requests concurrently, up to the
 outstanding-operation guarantee of the exact service rate contract the
 provider reports. It never chooses that depth itself. The consistency domain

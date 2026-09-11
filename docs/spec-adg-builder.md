@@ -623,7 +623,7 @@ BuiltinTargetPreset = Small | Coverage | Large
 ```
 
 Every preset resolves to the single template identity
-`loom.adg.builtin.general_purpose` at schema version `8.2`. Their prior recipes
+`loom.adg.builtin.general_purpose` at schema version `8.3`. Their prior recipes
 are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
@@ -692,6 +692,16 @@ identity and the System performance model; they are not simulator options and
 an 8.1 descriptor cannot supply them. The SpatialCore cache's outstanding-miss
 capacity is not a scale field: it is `temporalResidentContexts`, the same
 value that owns the System memory service's outstanding-operation capacity.
+
+Version 8.3 adds the required typed `memoryOperationIssueDepth` scale
+parameter. It owns the `operation_issue_depth` every expanded local Memory
+Operation Engine declares: the firings one bound memory actor may hold
+outstanding before the oldest retires. It is an independent hardware fact,
+not a projection of the access cache's outstanding-miss capacity or the
+System service's outstanding guarantee, and it enters Fabric identity and the
+System performance model. All current presets select the serialized depth of
+one, which reproduces the version 8.2 engine exactly; an 8.2 descriptor cannot
+supply the field.
 
 Re-finalization from an 8.0 authoring source is explicit. The owner adds
 `specialMathCapabilityProfile = FullCatalog`, selects template version 8.1,
@@ -864,6 +874,7 @@ The initial scale anchors are:
 | cache hit latency (cycles)       |       1 |         1 |       1 |
 | in-order miss-status entries     |       4 |         4 |       4 |
 | out-of-order miss-status entries |       8 |         8 |       8 |
+| memory operation issue depth     |       1 |         1 |       1 |
 
 These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource

@@ -380,6 +380,12 @@ SystemPlatformModel {
                                       constrained Spatial access cache,
                                       capped by rate maxOutstanding
   acc_core_request_bytes            : smallest Spatial access cache line
+  memory_operation_issue_depth      : operation issue depth of the most
+                                      constrained SpatialCore memory
+                                      Operation Engine
+  required_in_flight_requests       : ceil(memory_latency /
+                                        (service_ps_per_byte
+                                         * request_bytes))
   launch_dispatch_picoseconds       : host Thread Dispatch leaves and PIO
                                       operations per activation
   launch_fixed_picoseconds          : AccCore InstructionCore entry, bridge
@@ -392,7 +398,12 @@ SystemPlatformModel {
 
 Every SpatialCore reaches the shared memory through its Spatial memory access
 cache, so one request is one line fill and the miss-status entries bound the
-line fills in flight. `configuration_bytes_per_core` is the size of the binary
+line fills in flight. `required_in_flight_requests` is the speed-of-light
+depth: the memory service's bandwidth-delay product, its delivered bytes per
+picosecond times the round trip, divided by the bytes one request carries.
+A window that keeps fewer requests in flight leaves the service idle for the
+rest of every round trip however wide the service is, so the model publishes
+this required depth next to the modelled one. `configuration_bytes_per_core` is the size of the binary
 configuration image: per-PE configuration fields, per-Switch routing fields,
 and memory tables, as the packed ConfigurationABI of the exact Fabric packs
 them. A Mapping selects the values those fields carry, never their width, so
@@ -417,9 +428,9 @@ interval and the recurrence length, plus the graph critical path),
 the SpatialCore service boundary per iteration),
 `memory_transactions_per_activation` (memory actor firings per iteration,
 each one request that occupies an outstanding slot), `memory_actors` (the
-graph's distinct memory actors; a memory actor holds one request in flight
-until its response returns), and `boundary_payload_bytes_per_activation` (the
-invocation wire). The memory round trip one outstanding slot waits for is the
+graph's distinct memory actors; a memory actor holds up to its Operation
+Engine's issue depth requests in flight, retiring them in issue order), and
+`boundary_payload_bytes_per_activation` (the invocation wire). The memory round trip one outstanding slot waits for is the
 service's bounded completion plus two bridge crossings from the pinned
 platform policy. The duration of a launch site under an allocation of `u`
 AccCores is:
@@ -430,7 +441,8 @@ per_core         = ceil(activations / cores)
 compute          = compute_cycles * clock_period
 bandwidth        = max(bytes * service_ps_per_byte,
                        transactions * service_ps_per_operation) * cores
-in_flight        = max(1, min(outstanding, memory_actors))
+in_flight        = max(1, min(outstanding,
+                              memory_actors * issue_depth))
 latency_chain    = ceil(transactions / in_flight) * memory_latency
 point            = max(compute, bandwidth, latency_chain)
 wire             = memory_latency + boundary_bytes * service_ps_per_byte
@@ -441,9 +453,15 @@ configuration(u) = max(configuration_bytes * u * service_ps_per_byte,
                             / outstanding) * memory_latency)
 ```
 
-The largest term is the site's typed bottleneck: `Launch` when the fixed cost
+The three independent owners of `in_flight` are the memory service endpoint's
+outstanding guarantee, the Spatial access cache's miss-status entries, and the
+Fabric memory Operation Engine's issue depth times the graph's memory actors;
+the model derives all three and invents none of them. The largest term is the
+site's typed bottleneck: `Launch` when the fixed cost
 reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
-`MemoryLatency`. Whole-case Runtime is the serialized host residual
+`MemoryLatency`. A `MemoryLatency` site whose `in_flight` is below
+`required_in_flight_requests` is short of the service's bandwidth-delay
+product, and the hardware feedback owner reads exactly that comparison. Whole-case Runtime is the serialized host residual
 (executable leaves outside Spatial ownership times the host cycles per leaf
 and the clock period) plus the estimate's two accelerated-window phases. The
 configuration residency term is `configuration(u)` for the widest allocation
@@ -3362,8 +3380,9 @@ one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
 `ChangeFifoBypassCapability`, `ChangeTemporalOperandBufferMode`, and
-`ResizeTemporalOperandBuffer`, `ResizeSwitchRouteTable`, and
-`ChangeFifoQueueDiscipline`. The referenced Fabric owners define every typed
+`ResizeTemporalOperandBuffer`, `ResizeSwitchRouteTable`,
+`ChangeFifoQueueDiscipline`, and
+`ChangeMemoryOperationIssueDepth`. The referenced Fabric owners define every typed
 parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, queue discipline, or bypass meaning outside those
 domains. `ChangeFifoQueueDiscipline` selects StrictFifo or
@@ -3375,6 +3394,14 @@ removes the reservation. A discipline change
 reopens the affected Spatial placement/route/progress cone because global and
 tag-local order are different Mapping semantics; it never reuses the parent's
 progress proof.
+`ChangeMemoryOperationIssueDepth` sets the positive `operation_issue_depth` of
+one exact `fabric.mem` Operation Engine: the firings one bound memory actor
+may hold outstanding before the oldest retires. It is the only decision that
+trades memory-level parallelism, and it is independent of the access cache's
+outstanding-miss capacity and the service endpoint's outstanding guarantee,
+which bound the same requests without being able to create them. Its Mapping
+choices may be rebased and must be independently reverified; it does not
+reopen the Spatial cone because it changes neither placement nor route.
 `ChangeTemporalOperandBufferMode` selects one of the three exact
 `OperandBufferMode` values on one Temporal PE. It changes allocation-unit,
 capacity, service, queue, and progress projection and therefore reopens the
@@ -3626,6 +3653,27 @@ named Module; a heterogeneous recipe that cannot express the requested
 compatible occurrence is rejected rather than silently homogenized. There is no
 mapper-side Fabric mutation, local occurrence exception, or ordinal-based
 attachment rewrite.
+
+No Mapping observation reports memory-level parallelism, because a
+latency-bound window is a correct Mapping with a correct schedule. When the
+controller's feedback selection finds no Hall, Spatial, or System deficit left
+to close, the memory-level parallelism owner reads the analytic platform model
+of the exact parent System instead: one memory actor offers its Operation
+Engine's `memory_operation_issue_depth`, and the access cache and the service
+endpoint bound what the path in front of it serves. The owner proposes a
+deeper engine exactly when that offer is the smaller of the two and still
+below `required_in_flight_requests`, and it proposes the smallest depth the
+cache and the service can actually serve, so the growth never buys issue
+queue entries the rest of the path would stall. An offer that already reaches
+the required depth, or a cache and service that cannot serve more, admits no
+growth and the funnel stops. The proposal is an ordinary uniform recipe
+growth of the builtin `memory_operation_issue_depth` parameter; the
+per-occurrence alternative is the typed `ChangeMemoryOperationIssueDepth`
+decision above. Its cost is ordinary Fabric silicon: every issue-depth entry
+beyond the serialized engine is one pending request record of the engine's
+input token endpoints, priced with the other occurrence costs in the
+low-confidence physical model, so a deeper engine is ranked against its area
+and leakage like any other hardware growth.
 
 Recipe generation remains a bounded DSE invocation. If it ends Incomplete
 without publishing a System, hardware reopening retains that exact invocation

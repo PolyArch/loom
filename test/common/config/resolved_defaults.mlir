@@ -14,7 +14,7 @@
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.general_purpose"
 // JSON-DAG: "schema_major": 8
-// JSON-DAG: "schema_minor": 2
+// JSON-DAG: "schema_minor": 3
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "mesh_dimension": 6
 // JSON-DAG: "spatial_mesh_lanes_per_direction": 2
