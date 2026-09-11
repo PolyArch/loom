@@ -1778,7 +1778,9 @@ A loaded-pointer service may be completed by a source proof of its stored
 representation. The proof owns one complete invocation domain, finite
 allocation extents from the exact DataLayout, every possibly overlapping
 write, and initialization of the queried bytes. Full typed stores and complete
-byte-copy transfers share this reaching-memory relation; unknown aliases,
+byte-copy transfers share this reaching-memory relation. Instruction-free
+inline assembly (an empty template used as a compiler barrier, such as the
+computation-interval markers) has no memory effect in it. Unknown aliases,
 partial representations, uninitialized or out-of-bounds bytes, unsupported
 pointer representations, and distinct non-null origins remain typed refusals.
 A possible null payload is preserved as pointer data. An all-null value does
