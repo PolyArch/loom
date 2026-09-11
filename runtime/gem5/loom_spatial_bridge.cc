@@ -63,7 +63,15 @@ LoomSpatialBridge::PerformanceStatistics::PerformanceStatistics(
       ADD_STAT(clockFailureCount, statistics::units::Count::get(),
                "Host performance clock samples that failed"),
       ADD_STAT(staticLaunchFetchCount, statistics::units::Count::get(),
-               "Immutable Spatial launch images fetched from guest memory") {}
+               "Immutable Spatial launch images fetched from guest memory"),
+      ADD_STAT(launchTick, statistics::units::Tick::get(),
+               "Tick of the most recent launch request"),
+      ADD_STAT(staticLaunchReadyTick, statistics::units::Tick::get(),
+               "Tick at which the immutable Spatial launch image was resident"),
+      ADD_STAT(invocationStartTick, statistics::units::Tick::get(),
+               "Tick at which the most recent invocation started executing"),
+      ADD_STAT(completionTick, statistics::units::Tick::get(),
+               "Tick of the most recent invocation completion") {}
 
 LoomSpatialBridge::MemoryTransaction::MemoryTransaction(
     LoomSpatialBridge &bridge,
@@ -254,6 +262,7 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
 }
 
 void LoomSpatialBridge::fetchStaticLaunch() {
+  performanceStatistics.launchTick = curTick();
   if (activeStaticLaunchSize == 0 ||
       activeStaticLaunchSize > maximumMessageBytes) {
     fail(18, "active static launch descriptor is invalid");
@@ -277,6 +286,7 @@ void LoomSpatialBridge::fetchStaticLaunch() {
 }
 
 void LoomSpatialBridge::fetchInvocation() {
+  performanceStatistics.staticLaunchReadyTick = curTick();
   invocationPayload.assign(activeInvocationSize, 0);
   if (activeInvocationSize == 0) {
     startLaunch();
@@ -329,6 +339,7 @@ void LoomSpatialBridge::finishEngineWait() {
 }
 
 void LoomSpatialBridge::startLaunch() {
+  performanceStatistics.invocationStartTick = curTick();
   memorySnapshotPayload.clear();
   if (!invocationPayload.empty()) {
     loom::runtime::SpatialInvocationWire wire;
@@ -556,6 +567,7 @@ LoomSpatialBridge::ResultPublication LoomSpatialBridge::publishResults() {
 
 void LoomSpatialBridge::completeInvocation() {
   lastCompletionTick = curTick();
+  performanceStatistics.completionTick = curTick();
   const ResultPublication publication = publishResults();
   if (publication != ResultPublication::Published) {
     switch (publication) {
