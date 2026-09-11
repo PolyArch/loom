@@ -77,7 +77,21 @@ ordering can rank this concern where it cannot rank
 structural fact of the selected placements and needs no recurrence timing
 proof. Both builtin search energies include it with the same weight class as
 static schedule pressure, so annealing sees the same gradient the ordering
-ranks. Final Spatial
+ranks.
+
+The local-transfer adoption sweep ranks inside that ordering; it does not sit
+ahead of any level. The sweep adopts a register-FIFO pairing whose candidate
+is not worse under the selected total ordering, so a recurrence-neutral local
+transfer ties at the `RecurrenceTemporalBindingPressure` level and is still
+adopted on the strength of the earlier and later levels. The measure changes
+only when the adoption's coupled endpoint relocation moves a
+recurrence-critical actor onto a Temporal-schedule placement, and rejecting
+that trade is the measure working: a local transfer must not be bought by
+serializing the loop it belongs to. A sweep that adopts nothing therefore
+reports which nets were already paired, had an empty frozen domain, carried
+route constraints, or enumerated no alternative, because none of those reach
+the objective at all and an absent local transfer is then a domain or
+placement fact rather than a ranking decision. Final Spatial
 publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.
