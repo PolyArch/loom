@@ -440,6 +440,10 @@ executeResourceTimeAdjacentMappingRepair(
   auto coldExecution = executeIndependent(coldPlan, coldRequest);
   if (!coldExecution)
     return coldExecution.takeError();
+  // The eligibility ledger is unconditional: the transition record always
+  // reports which generated Mappings realize the exact partition intent, so a
+  // reported selection is always accompanied by the ledger that admits it.
+  // Only verifying and selecting one of them is policy-gated.
   std::optional<ResourceTimeSpectrumFunnelResult> coldSelectionSpectrum;
   std::vector<ArtifactRootReference> coldEligibleMappings;
   std::vector<DsePlanIncompleteReason> coldExecutionIncompleteReasons;
@@ -454,7 +458,26 @@ executeResourceTimeAdjacentMappingRepair(
     coldEligibleMappings = std::move(selected->eligibleMappings);
     coldExecutionIncompleteReasons =
         std::move(selected->executionIncompleteReasons);
+  } else {
+    auto eligibility = projectResourceTimePartitionEligibility(
+        *coldExecution, software.dataflow, system, childPartitions,
+        reopenedRoots, nullptr, artifacts);
+    if (!eligibility)
+      return eligibility.takeError();
+    coldEligibleMappings = std::move(eligibility->eligibleMappings);
   }
+  // A transition reports a selected Mapping only when its own ledger admits
+  // it. The execution summary may name a Mapping the ordinary joint search
+  // chose without the partition intent, and that is not this transition's
+  // selection.
+  const auto eligibleSelection =
+      [](const std::optional<ArtifactRootReference> &selected,
+         llvm::ArrayRef<ArtifactRootReference> eligible)
+      -> std::optional<ArtifactRootReference> {
+    if (selected && llvm::is_contained(eligible, *selected))
+      return selected;
+    return std::nullopt;
+  };
   coldExecution->summary.coldReopenWallTimeNanoseconds =
       coldExecution->summary.executionWallTimeNanoseconds;
 
@@ -490,7 +513,8 @@ executeResourceTimeAdjacentMappingRepair(
         *parentMapping,
         std::nullopt,
         std::move(*childPlan),
-        coldExecution->summary.selectedMapping,
+        eligibleSelection(coldExecution->summary.selectedMapping,
+                          coldEligibleMappings),
         std::nullopt,
         std::move(coldSelectionSpectrum),
         std::nullopt,
@@ -563,6 +587,13 @@ executeResourceTimeAdjacentMappingRepair(
     incrementalEligibleMappings = std::move(selected->eligibleMappings);
     incrementalExecutionIncompleteReasons =
         std::move(selected->executionIncompleteReasons);
+  } else {
+    auto eligibility = projectResourceTimePartitionEligibility(
+        *execution, software.dataflow, system, childPartitions, reopenedRoots,
+        &importedParentMapping->view(), artifacts);
+    if (!eligibility)
+      return eligibility.takeError();
+    incrementalEligibleMappings = std::move(eligibility->eligibleMappings);
   }
   std::vector<JointDesignInvocationManifestReference> lowerInvocations;
   if (llvm::Error error = retainJointDesignExecutionInvocations(
@@ -575,10 +606,11 @@ executeResourceTimeAdjacentMappingRepair(
                                        lowerExecution->summary);
   execution->summary.incrementalReopenWallTimeNanoseconds =
       execution->summary.executionWallTimeNanoseconds;
-  const std::optional<ArtifactRootReference> coldMapping =
-      coldExecution->summary.selectedMapping;
+  const std::optional<ArtifactRootReference> coldMapping = eligibleSelection(
+      coldExecution->summary.selectedMapping, coldEligibleMappings);
   const std::optional<ArtifactRootReference> incrementalMapping =
-      execution->summary.selectedMapping;
+      eligibleSelection(execution->summary.selectedMapping,
+                        incrementalEligibleMappings);
   for (const auto *reference : {&coldMapping, &incrementalMapping}) {
     if (!*reference)
       continue;
