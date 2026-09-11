@@ -1123,6 +1123,9 @@ materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
         fields["gateway_count"] = growth.resultingGateways;
         fields["added_acc_cores"] = growth.addedAccCores;
         fields["acc_core_count"] = growth.resultingAccCores;
+        fields["added_memory_issue_depth"] = growth.addedMemoryIssueDepth;
+        fields["memory_operation_issue_depth"] =
+            growth.config.hardwareTarget.parameters.memoryOperationIssueDepth;
         fields["uniform_context_growth"] = growth.uniformContextGrowth;
       });
 
