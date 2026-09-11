@@ -1,5 +1,8 @@
 #include "DSE/StructuredOwnershipInvocation.h"
 
+#include "Common/ArtifactText.h"
+#include "Common/MappingDebugLog.h"
+
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
@@ -1467,6 +1470,24 @@ detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
                                              parentLaunches, childLaunches);
 }
 
+namespace {
+
+/// A candidate whose native profile cannot be taken has no analytic evidence
+/// and silently loses the ranking; the reason stays visible in diagnostics.
+void reportAnalyticProfileFailure(const ArtifactRootReference &candidate,
+                                  llvm::Error error) {
+  const std::string diagnostic = llvm::toString(std::move(error));
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["operation"] = "analytic_profile_failure";
+        fields["candidate"] = formatArtifactIdentityHex(candidate.artifact);
+        fields["diagnostic"] = diagnostic;
+      });
+}
+
+} // namespace
+
 llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &candidate, const ArtifactStore &store) {
@@ -1494,7 +1515,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
         *impl.runtimeInputReference, state.structuredProgram,
         impl.sourceProgram, impl.workload, impl.runtimeInput);
     if (!profiled) {
-      llvm::consumeError(profiled.takeError());
+      reportAnalyticProfileFailure(candidate, profiled.takeError());
       return llvm::Error::success();
     }
     sharedObservations = std::move(*profiled);
@@ -1504,7 +1525,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
         state.structuredProgram, impl.sourceProgram, impl.workload,
         impl.runtimeInput);
     if (!profiled) {
-      llvm::consumeError(profiled.takeError());
+      reportAnalyticProfileFailure(candidate, profiled.takeError());
       return llvm::Error::success();
     }
     ownedObservations.emplace(std::move(*profiled));

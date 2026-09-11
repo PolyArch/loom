@@ -57,6 +57,9 @@ public:
          CgraExternalMemoryProvider *externalMemoryProvider = nullptr,
          CgraFabricActivityRuntime *activity = nullptr);
 
+  /// Emits the per-actor firing timing collected so far at the Detail level.
+  void emitActorTimingStatistics() const;
+
   llvm::Error start(SpatialEventCoordinate coordinate,
                     llvm::MutableArrayRef<GraphIngressEmission> ingress);
 
@@ -122,19 +125,37 @@ private:
     std::uint32_t completedTransfers = 0;
     bool physicalComplete = false;
     bool causalReleaseSatisfied = false;
+    /// Reference cycle at commit, kept for the per-actor timing diagnostic.
+    double commitCycle = 0;
+  };
+
+  /// Per-actor firing timing: how long one firing occupies its actor from
+  /// commit to retirement and how far apart consecutive commits are. The
+  /// slowest actor bounds the graph's initiation interval, so these numbers
+  /// name the throughput limiter directly.
+  struct ActorTimingStatistics final {
+    std::uint64_t firings = 0;
+    double lifetimeSum = 0;
+    double lifetimeMax = 0;
+    std::uint64_t intervals = 0;
+    double intervalSum = 0;
+    double intervalMax = 0;
+    double lastCommitCycle = 0;
   };
 
   CgraGraphActivationRuntime(
       const CgraFrozenExecutionPlan &plan, SimulatorState &state,
+      const PreparedGraphExecution &execution,
       std::unique_ptr<CgraPhysicalActionRuntime> physical,
       std::unique_ptr<CgraComputeRuntime> compute,
       std::unique_ptr<CgraMemoryRuntime> memory,
       std::unique_ptr<CgraTransportRuntime> transport,
       bool captureMicroarchitecture)
-      : plan_(&plan), state_(&state), physical_(std::move(physical)),
-        compute_(std::move(compute)), memory_(std::move(memory)),
-        transport_(std::move(transport)),
+      : plan_(&plan), state_(&state), execution_(&execution),
+        physical_(std::move(physical)), compute_(std::move(compute)),
+        memory_(std::move(memory)), transport_(std::move(transport)),
         captureMicroarchitecture_(captureMicroarchitecture) {}
+
 
   llvm::Error consumeComputeFrame(CgraComputeLifecycleFrame &&frame,
                                   CgraGraphActivationFrame &result);
@@ -173,6 +194,8 @@ private:
 
   const CgraFrozenExecutionPlan *plan_ = nullptr;
   SimulatorState *state_ = nullptr;
+  const PreparedGraphExecution *execution_ = nullptr;
+  std::vector<ActorTimingStatistics> actorTiming_;
   std::unique_ptr<CgraPhysicalActionRuntime> physical_;
   std::unique_ptr<CgraComputeRuntime> compute_;
   std::unique_ptr<CgraMemoryRuntime> memory_;
