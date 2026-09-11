@@ -2,6 +2,8 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/MappingDebugLog.h"
 #include "Evaluation/NumericValue.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -565,6 +567,25 @@ llvm::Expected<std::vector<ArtifactRootReference>> applyCandidateSelection(
                      *lhs.objective, lhs.candidateKey, *rhs.objective,
                      rhs.candidateKey, topK->totalOrdering)) < 0;
         });
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+          fields["context_kind"] = "promotion_top_k_selection";
+          fields["k"] = topK->k;
+          llvm::json::Array ranked;
+          for (auto indexed : llvm::enumerate(records)) {
+            llvm::json::Object entry;
+            entry["candidate"] =
+                formatArtifactIdentityHex(indexed.value().candidate.artifact);
+            entry["selected"] = indexed.index() < selectedCount;
+            llvm::json::Array codes;
+            for (std::uint64_t code : indexed.value().objective->codes())
+              codes.push_back(code);
+            entry["objective_codes"] = std::move(codes);
+            ranked.push_back(std::move(entry));
+          }
+          fields["ranked"] = std::move(ranked);
+        });
     eligible.clear();
     eligible.reserve(selectedCount);
     for (std::size_t index = 0; index < selectedCount; ++index)
@@ -692,6 +713,24 @@ llvm::Expected<CandidateObjectiveRankingOutcome> rankCandidatesByObjective(
                totalOrdering)) < 0;
   });
 
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "objective_ranking";
+        fields["total_ordering"] = totalOrdering;
+        llvm::json::Array ranked;
+        for (const RankingRecord &record : ranking) {
+          llvm::json::Object entry;
+          entry["candidate"] =
+              formatArtifactIdentityHex(record.candidate.artifact);
+          llvm::json::Array codes;
+          for (std::uint64_t code : record.objective.codes())
+            codes.push_back(code);
+          entry["objective_codes"] = std::move(codes);
+          ranked.push_back(std::move(entry));
+        }
+        fields["ranked"] = std::move(ranked);
+      });
   std::vector<ArtifactRootReference> rankedCandidates;
   rankedCandidates.reserve(ranking.size());
   for (RankingRecord &record : ranking)

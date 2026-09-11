@@ -2,6 +2,9 @@
 
 #include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
+#include "Common/MappingDebugLog.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include "llvm/Support/Error.h"
 
@@ -44,6 +47,16 @@ llvm::Error requireExactFabricCapabilities(
       (*miss)->actorKind == dataflow::CanonicalDataflowActorKind::Memory
           ? "memory resource"
           : "operation resource";
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["operation"] = "exact_fabric_inadmissible_actor";
+        fields["schema"] = dataflow::operationSchemaSpelling((*miss)->schema);
+        std::string text;
+        llvm::raw_string_ostream stream(text);
+        program.module().print(stream);
+        fields["dataflow_ir"] = std::move(text);
+      });
   const std::string contract =
       (*miss)->memoryContract
           ? (" with the " +

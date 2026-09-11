@@ -301,6 +301,7 @@ struct CgraExecutionSession::Impl final {
         capturedRuntimeInput.emplace(std::move(*captured));
         runtimeInput = &*capturedRuntimeInput;
       }
+      runtime->emitActorTimingStatistics();
       lifecycle = SpatialExecutionSessionState::Retired;
       return llvm::Error::success();
     }

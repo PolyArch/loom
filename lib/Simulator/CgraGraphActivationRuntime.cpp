@@ -1,6 +1,9 @@
 #include "CgraGraphActivationRuntime.h"
 
 #include "Simulator/CGRASimulator.h"
+#include "Common/MappingDebugLog.h"
+
+#include "llvm/Support/JSON.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -103,8 +106,52 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
   compute->bindTransport(*transport);
   memory->bindTransport(*transport);
   return CgraGraphActivationRuntime(
-      plan, state, std::move(physical), std::move(compute), std::move(memory),
-      std::move(transport), captureMicroarchitecture);
+      plan, state, execution, std::move(physical), std::move(compute),
+      std::move(memory), std::move(transport), captureMicroarchitecture);
+}
+
+namespace {
+
+double referenceCycleOf(const SpatialEventCoordinate &coordinate) {
+  const std::uint64_t denominator = coordinate.referenceCycle.denominator();
+  return static_cast<double>(coordinate.referenceCycle.numerator()) /
+         static_cast<double>(denominator == 0 ? 1 : denominator);
+}
+
+} // namespace
+
+void CgraGraphActivationRuntime::emitActorTimingStatistics() const {
+  if (!mapping_debug::enabled(mapping_debug::Level::Detail))
+    return;
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "cgra_actor_timing";
+        llvm::json::Array actors;
+        for (auto indexed : llvm::enumerate(actorTiming_)) {
+          const ActorTimingStatistics &timing = indexed.value();
+          if (timing.firings == 0)
+            continue;
+          llvm::json::Object entry;
+          entry["actor"] = indexed.index();
+          if (execution_ && indexed.index() < execution_->actorPlans.size() &&
+              execution_->actorPlans[indexed.index()].operation)
+            entry["operation"] = execution_->actorPlans[indexed.index()]
+                                     .operation->getName()
+                                     .getStringRef();
+          entry["firings"] = timing.firings;
+          entry["mean_lifetime_cycles"] =
+              timing.lifetimeSum / static_cast<double>(timing.firings);
+          entry["max_lifetime_cycles"] = timing.lifetimeMax;
+          if (timing.intervals != 0) {
+            entry["mean_commit_interval_cycles"] =
+                timing.intervalSum / static_cast<double>(timing.intervals);
+            entry["max_commit_interval_cycles"] = timing.intervalMax;
+          }
+          actors.push_back(std::move(entry));
+        }
+        fields["actors"] = std::move(actors);
+      });
 }
 
 llvm::Error CgraGraphActivationRuntime::start(
@@ -274,6 +321,7 @@ llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
     slot = freeFiringSlots_.back();
     freeFiringSlots_.pop_back();
   }
+  const double commitCycle = referenceCycleOf(event.coordinate);
   firings_[slot] = ActorFiring{true,
                                event.semanticActorOrdinal,
                                event.occurrenceOrdinal,
@@ -281,8 +329,19 @@ llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
                                event.expectedTransferCount,
                                0,
                                false,
-                               false};
+                               false,
+                               commitCycle};
   firingByOccurrence_.try_emplace(key, slot);
+  if (event.semanticActorOrdinal >= actorTiming_.size())
+    actorTiming_.resize(event.semanticActorOrdinal + 1);
+  ActorTimingStatistics &timing = actorTiming_[event.semanticActorOrdinal];
+  if (timing.firings != 0) {
+    const double interval = commitCycle - timing.lastCommitCycle;
+    ++timing.intervals;
+    timing.intervalSum += interval;
+    timing.intervalMax = std::max(timing.intervalMax, interval);
+  }
+  timing.lastCommitCycle = commitCycle;
   return slot;
 }
 
@@ -316,6 +375,13 @@ llvm::Error CgraGraphActivationRuntime::maybeRetire(
   }
   if (!firing.physicalComplete)
     return llvm::Error::success();
+  if (firing.semanticActorOrdinal < actorTiming_.size()) {
+    ActorTimingStatistics &timing = actorTiming_[firing.semanticActorOrdinal];
+    const double lifetime = referenceCycleOf(coordinate) - firing.commitCycle;
+    ++timing.firings;
+    timing.lifetimeSum += lifetime;
+    timing.lifetimeMax = std::max(timing.lifetimeMax, lifetime);
+  }
   result.actorEvents.push_back(
       {CgraActorLifecycleKind::Retired, firing.semanticActorOrdinal,
        firing.occurrenceOrdinal, firing.transitionCaseOrdinal, 0, coordinate});
