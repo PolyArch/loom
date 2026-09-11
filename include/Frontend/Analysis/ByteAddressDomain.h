@@ -7,6 +7,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
@@ -18,6 +19,28 @@ namespace loom::frontend::analysis {
 /// One-line diagnostic spelling of an SSA value, shared by the stored-memory
 /// proof and the address domains it derives.
 std::string describeValue(mlir::Value value);
+
+/// One queried byte range of an address domain that a memory proof could not
+/// resolve, and the write that refused it. The write facts are present only
+/// when one write is named, and its position facts only when its domain was
+/// projected. This is the evidence that separates a genuinely partial stored
+/// representation from an over-approximated write position.
+struct ByteRangeRefusal final {
+  llvm::StringRef reason;
+  mlir::Value root;
+  std::int64_t queryByteOffset = 0;
+  std::uint64_t queryByteCount = 0;
+  mlir::Value writeValue;
+  llvm::StringRef writeKind;
+  std::uint64_t writeByteCount = 0;
+  std::optional<std::int64_t> writeByteOffset;
+  std::uint64_t writePositionCount = 0;
+  std::int64_t writePositionLowest = 0;
+  std::int64_t writePositionEnd = 0;
+  bool writeExhaustive = false;
+};
+
+void reportByteRangeRefusal(const ByteRangeRefusal &refusal);
 
 /// One arithmetic progression of byte offsets: `first`, `first + stride`, ...,
 /// up to and including `last`. A single offset has `first == last`.

@@ -573,6 +573,31 @@ deriveAddressByteDomain(const AddressByteDomainRequest &request,
   return result;
 }
 
+void reportByteRangeRefusal(const ByteRangeRefusal &refusal) {
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext,
+      [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "stored_pointer_slot_refusal";
+        fields["refusal"] = refusal.reason;
+        fields["root"] = describeValue(refusal.root);
+        fields["query_byte_offset"] = refusal.queryByteOffset;
+        fields["query_bytes"] = refusal.queryByteCount;
+        if (!refusal.writeValue)
+          return;
+        fields["write_bytes"] = refusal.writeByteCount;
+        fields["write_value"] = describeValue(refusal.writeValue);
+        fields["write_kind"] = refusal.writeKind;
+        if (!refusal.writeByteOffset)
+          return;
+        fields["write_byte_offset"] = *refusal.writeByteOffset;
+        fields["write_position_count"] = refusal.writePositionCount;
+        fields["write_position_lowest"] = refusal.writePositionLowest;
+        fields["write_position_end"] = refusal.writePositionEnd;
+        fields["write_exhaustive"] = refusal.writeExhaustive;
+      });
+}
+
 std::optional<AddressByteDomain>
 projectAddressByteDomain(const AddressByteDomainRequest &request,
                          FiniteIndexValues finiteIndexValues) {
