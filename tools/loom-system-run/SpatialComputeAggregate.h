@@ -6,13 +6,15 @@
 
 namespace loom::system_run {
 
-/// Aggregates the candidate System run's compute-occupancy facts from evidence
-/// that already exists: the retired Compute-kind actor firings of every
-/// standalone CGRA replay, the distinct physical PE occurrences that carry a
-/// compute binding in the SpatialMappings the Deployment selected, the distinct
-/// AccCores that received an invocation, and the SpatialCore clock period in
-/// gem5 ticks. It derives no ratio; the Application QoR owner keeps every
-/// formula. `cgraReplays` runs parallel to `invocations` by invocation ordinal.
+/// Aggregates the candidate System run's compute speed-of-light facts from
+/// evidence that already exists: the retired Compute-kind actor firings of
+/// every standalone CGRA replay by operation class, the realizations of each
+/// class the selected SpatialMappings bound, the Fabric's per-class issue
+/// lanes and placement slots under the TechMapping's own admission rule, the
+/// distinct AccCores that received an invocation, and the SpatialCore clock
+/// period in gem5 ticks. It derives no ratio; the Application QoR owner keeps
+/// every formula. `cgraReplays` runs parallel to `invocations` by invocation
+/// ordinal.
 llvm::Expected<application::ApplicationSystemComputeInputs>
 aggregateSpatialComputeInputs(
     llvm::ArrayRef<SpatialInvocationCase> invocations,
