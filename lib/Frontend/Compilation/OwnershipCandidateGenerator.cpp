@@ -725,12 +725,49 @@ materializeThreadExtent(mlir::OpBuilder &builder, mlir::Location location,
   return narrowed;
 }
 
+/// Whether every source induction value of one forall dimension is provably
+/// representable in the selected signed index width: static bounds and step
+/// whose last induction value fits. Such a domain reconstructs its source
+/// induction in index arithmetic; a dynamic domain widens instead.
+bool sourceInductionFitsIndexWidth(mlir::scf::ForallOp forall,
+                                   unsigned dimension, unsigned indexWidth) {
+  const std::optional<std::int64_t> lower =
+      mlir::getConstantIntValue(forall.getMixedLowerBound()[dimension]);
+  const std::optional<std::int64_t> upper =
+      mlir::getConstantIntValue(forall.getMixedUpperBound()[dimension]);
+  const std::optional<std::int64_t> step =
+      mlir::getConstantIntValue(forall.getMixedStep()[dimension]);
+  if (!lower || !upper || !step || *step <= 0 ||
+      !fitsSignedIndexWidth(*lower, indexWidth) ||
+      !fitsSignedIndexWidth(*upper, indexWidth) ||
+      !fitsSignedIndexWidth(*step, indexWidth))
+    return false;
+  const __int128 distance = static_cast<__int128>(*upper) - *lower;
+  const __int128 extent =
+      distance <= 0 ? 0 : (distance + *step - 1) / *step;
+  if (extent == 0)
+    return true;
+  const __int128 last =
+      static_cast<__int128>(*lower) + (extent - 1) * *step;
+  return fitsSignedIndexWidth(last, indexWidth);
+}
+
 llvm::Expected<mlir::Value> materializeSourceInduction(
     mlir::OpBuilder &builder, mlir::Location location, mlir::Value coordinate,
     std::optional<mlir::Value> lower, std::optional<mlir::Value> step,
-    unsigned indexWidth) {
+    unsigned indexWidth, bool fitsIndexWidth) {
   if (!lower && !step)
     return coordinate;
+  if (fitsIndexWidth) {
+    mlir::Value reconstructed = coordinate;
+    if (step)
+      reconstructed = mlir::arith::MulIOp::create(builder, location,
+                                                  reconstructed, *step);
+    if (lower)
+      reconstructed = mlir::arith::AddIOp::create(builder, location, *lower,
+                                                  reconstructed);
+    return reconstructed;
+  }
   if (indexWidth == 0 || indexWidth > mlir::IntegerType::kMaxWidth / 2)
     return invalid("thread-domain source-IV arithmetic width is invalid");
 
@@ -828,7 +865,8 @@ llvm::Error materializePreparedForallThreadDomain(
       return step.takeError();
     auto sourceInduction = materializeSourceInduction(
         builder, location, boundary->spatialCoordinates[dimension],
-        std::move(*lower), std::move(*step), *indexWidth);
+        std::move(*lower), std::move(*step), *indexWidth,
+        sourceInductionFitsIndexWidth(forall, dimension, *indexWidth));
     if (!sourceInduction)
       return sourceInduction.takeError();
     mapping.map(induction, *sourceInduction);
@@ -1060,9 +1098,9 @@ materializeOwnedSpatialForallThreadDomainImpl(mlir::scf::ForallOp forall) {
         return value.takeError();
       step = *value;
     }
-    auto sourceInduction = materializeSourceInduction(builder, forall.getLoc(),
-                                                      coordinates[dimension],
-                                                      lower, step, *indexWidth);
+    auto sourceInduction = materializeSourceInduction(
+        builder, forall.getLoc(), coordinates[dimension], lower, step,
+        *indexWidth, sourceInductionFitsIndexWidth(forall, dimension, *indexWidth));
     if (!sourceInduction)
       return sourceInduction.takeError();
     mapping.map(induction, *sourceInduction);

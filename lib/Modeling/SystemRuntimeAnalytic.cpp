@@ -378,11 +378,15 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
                               "shared memory service");
   if (!bandwidth)
     return bandwidth.takeError();
-  // Each transaction holds one outstanding slot for the request round trip.
-  auto chain = checkedMul(ceilDiv(launch.memoryTransactionsPerActivation,
-                                  platform.accCoreOutstandingRequests),
-                          platform.memoryLatencyPicoseconds,
-                          "memory request chain");
+  // Each transaction holds one outstanding slot for the request round trip,
+  // and each memory actor holds at most one request in flight, so the
+  // overlap is bounded by the smaller of the two.
+  const std::uint64_t inFlight = std::max<std::uint64_t>(
+      1, std::min(platform.accCoreOutstandingRequests,
+                  std::max<std::uint64_t>(1, launch.memoryActors)));
+  auto chain = checkedMul(
+      ceilDiv(launch.memoryTransactionsPerActivation, inFlight),
+      platform.memoryLatencyPicoseconds, "memory request chain");
   if (!chain)
     return chain.takeError();
 
@@ -455,6 +459,7 @@ void appendAnalyticLaunchEstimates(
     appendU64(launch.computeCyclesPerActivation);
     appendU64(launch.externalMemoryBytesPerActivation);
     appendU64(launch.memoryTransactionsPerActivation);
+    appendU64(launch.memoryActors);
     appendU64(launch.boundaryPayloadBytesPerActivation);
   }
 }

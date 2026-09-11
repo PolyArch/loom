@@ -504,18 +504,15 @@ bool sameBaseMemrefStoresAreLaneDisjoint(
     }
     return false;
   }
-  // Several stores to one base are admitted only in the scalar residue-class
-  // form; overlapping vector lane groups keep the loop serial.
-  if (::llvm::any_of(stores, [](const MemrefAccessGeometry &store) {
-        return store.lanes != 1;
-      }))
-    return false;
-
+  // Several stores to one base advance together by one stride per
+  // iteration; each owns the lane interval at its residue inside that
+  // stride. The intervals must not wrap the stride and must be pairwise
+  // disjoint, so no two stores of any iterations touch one element.
   std::optional<int64_t> expectedCoeff;
-  ::llvm::DenseSet<int64_t> residues;
+  ::llvm::SmallVector<std::pair<std::int64_t, std::int64_t>, 4> intervals;
   int64_t stride = 0;
   for (const MemrefAccessGeometry &store : stores) {
-    if (store.indices.size() != 1)
+    if (store.indices.size() != 1 || store.lanes <= 0)
       return false;
     auto expr =
         linearExpr(store.indices.front(), loop.getInductionVar(), loop);
@@ -536,8 +533,14 @@ bool sameBaseMemrefStoresAreLaneDisjoint(
       return false;
     }
     auto residue = positiveMod(expr->constant, stride);
-    if (!residue || !residues.insert(*residue).second)
+    std::int64_t end = 0;
+    if (!residue || __builtin_add_overflow(*residue, store.lanes, &end) ||
+        end > stride)
       return false;
+    for (const auto &[begin, finish] : intervals)
+      if (*residue < finish && begin < end)
+        return false;
+    intervals.push_back({*residue, end});
   }
   return true;
 }
@@ -993,13 +996,39 @@ void collectGuaranteedUpperBounds(::mlir::Value value, ::mlir::Value induction,
   }
 }
 
+/// The constant element offset of `index` from the point coordinate `iv`:
+/// zero for the coordinate itself, `c` for `iv + c`. Unrolling places the
+/// copies of one access at such offsets inside the point's stride.
+std::optional<std::int64_t> pointCoordinateOffset(::mlir::Value index,
+                                                  ::mlir::Value iv,
+                                                  ::mlir::Operation *anchor) {
+  if (::loom::lowering::isSameSignedMemoryCoordinate(index, iv, anchor))
+    return 0;
+  auto addition = index.getDefiningOp<::mlir::arith::AddIOp>();
+  if (!addition)
+    return std::nullopt;
+  std::optional<std::int64_t> offset = getConstantInt(addition.getRhs());
+  ::mlir::Value base = addition.getLhs();
+  if (!offset) {
+    offset = getConstantInt(addition.getLhs());
+    base = addition.getRhs();
+  }
+  if (!offset || *offset < 0 ||
+      !::loom::lowering::isSameSignedMemoryCoordinate(base, iv, anchor))
+    return std::nullopt;
+  return offset;
+}
+
 bool hasExactPartitionedPointMemoryGeometry(::mlir::Operation *outer,
-                                            ::mlir::scf::ForOp pointLoop) {
+                                            ::mlir::scf::ForOp pointLoop,
+                                            std::int64_t pointStep) {
   ::llvm::SmallVector<::loom::lowering::ExactPointerPointAccess, 8> accesses;
   bool rejected = false;
-  // A rank-one memref access indexed by the point coordinate owns one
-  // element-wide byte partition at that coordinate, exactly like a direct
-  // inbounds GEP; a vector transfer owns the lane-group partition.
+  // A rank-one memref access at a constant offset inside the point's stride
+  // owns that point's stride-wide byte partition, exactly like a direct
+  // inbounds GEP owns one element; a vector transfer's lane group must stay
+  // within the stride so no transfer crosses a tile. Accesses of one root
+  // therefore share one partition per point and stay iteration-local.
   const auto projectMemrefPointAccess =
       [&](::mlir::Operation *operation)
       -> std::optional<::loom::lowering::ExactPointerPointAccess> {
@@ -1014,19 +1043,24 @@ bool hasExactPartitionedPointMemoryGeometry(::mlir::Operation *outer,
     if (!memory || isVolatile)
       return std::nullopt;
     auto type = ::llvm::dyn_cast<::mlir::MemRefType>(memory.getType());
-    if (!type || type.getRank() != 1 || !type.getElementType().isIntOrFloat() ||
-        !::loom::lowering::isSameSignedMemoryCoordinate(
-            geometry->indices.front(), pointLoop.getInductionVar(), outer))
+    if (!type || type.getRank() != 1 || !type.getElementType().isIntOrFloat())
+      return std::nullopt;
+    const std::optional<std::int64_t> offset = pointCoordinateOffset(
+        geometry->indices.front(), pointLoop.getInductionVar(), outer);
+    if (!offset)
       return std::nullopt;
     const std::uint64_t elementBytes =
         ::mlir::DataLayout::closest(operation).getTypeSize(
             type.getElementType());
-    if (elementBytes == 0 || geometry->lanes <= 0)
+    std::int64_t end = 0;
+    if (elementBytes == 0 || geometry->lanes <= 0 ||
+        __builtin_add_overflow(*offset, geometry->lanes, &end) ||
+        end > pointStep)
       return std::nullopt;
     return ::loom::lowering::ExactPointerPointAccess{
         operation, loom::frontend::analysis::projectMemoryRoot(memory),
         ::mlir::LLVM::GEPOp{}, writes,
-        elementBytes * static_cast<std::uint64_t>(geometry->lanes)};
+        elementBytes * static_cast<std::uint64_t>(pointStep)};
   };
   auto walked = loom::frontend::analysis::forEachOwnedOperation(
       pointLoop.getRegion(), [&](::mlir::Operation *operation) {
@@ -1097,10 +1131,14 @@ checkPartitionedNestedBodyParallel(::mlir::Operation *outer,
       return ::mlir::failure();
   }
   if (!pointLoop || !pointLoop.getInitArgs().empty() ||
-      pointLoop.getUnsignedCmp() ||
-      getConstantInt(pointLoop.getStep()) != std::optional<std::int64_t>{1} ||
-      !hasLosslessIndexDomain(pointLoop) ||
-      !hasExactPartitionedPointMemoryGeometry(outer, pointLoop) ||
+      pointLoop.getUnsignedCmp())
+    return ::mlir::failure();
+  // A strip-mined point loop may step by its vector shape; every tile then
+  // spans a whole number of points and every access stays inside its point.
+  const std::optional<std::int64_t> pointStep =
+      getConstantInt(pointLoop.getStep());
+  if (!pointStep || *pointStep <= 0 || !hasLosslessIndexDomain(pointLoop) ||
+      !hasExactPartitionedPointMemoryGeometry(outer, pointLoop, *pointStep) ||
       ::mlir::failed(checkBodyParallel(pointLoop)))
     return ::mlir::failure();
 
@@ -1119,6 +1157,8 @@ checkPartitionedNestedBodyParallel(::mlir::Operation *outer,
       continue;
     const __int128 increment =
         static_cast<__int128>(start.ivCoeff) * domain.step;
+    if (increment % *pointStep != 0)
+      continue;
     const __int128 nextConstant =
         static_cast<__int128>(start.constant) + increment;
     if (nextConstant < std::numeric_limits<std::int64_t>::min() ||

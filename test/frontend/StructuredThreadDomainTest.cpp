@@ -204,19 +204,22 @@ void requireSourceInductionDefUse(
   if (!scale || !offset)
     fail("source induction reconstruction is absent from the graph");
 
-  const auto scaleType = llvm::dyn_cast<mlir::IntegerType>(scale.getType());
-  const auto offsetType = llvm::dyn_cast<mlir::IntegerType>(offset.getType());
-  if (!scaleType || !offsetType || scaleType != offsetType ||
-      scaleType.getWidth() != indexWidth * 2)
-    fail("source induction reconstruction does not use a wide exact domain");
+  // The static [4, 20) step 2 domain proves every source induction value
+  // fits the selected index width, so the reconstruction stays in index
+  // arithmetic directly over the launch inputs.
+  if (!llvm::isa<mlir::IndexType>(scale.getType()) ||
+      !llvm::isa<mlir::IndexType>(offset.getType()))
+    fail("static source induction reconstruction left index arithmetic");
 
+  auto launchBinding = [&](mlir::Value operand) -> mlir::Value {
+    if (auto cast = operand.getDefiningOp<mlir::arith::IndexCastOp>())
+      return graphInputBinding(cast.getIn());
+    return graphInputBinding(operand);
+  };
   llvm::SmallVector<mlir::Value, 2> scaleBindings;
-  for (mlir::Value operand : scale->getOperands()) {
-    auto cast = operand.getDefiningOp<mlir::arith::IndexCastOp>();
-    if (mlir::Value binding =
-            cast ? graphInputBinding(cast.getIn()) : mlir::Value{})
+  for (mlir::Value operand : scale->getOperands())
+    if (mlir::Value binding = launchBinding(operand))
       scaleBindings.push_back(binding);
-  }
   if (!llvm::is_contained(scaleBindings, expectedStep) ||
       !llvm::is_contained(scaleBindings, expectedCoordinate))
     fail("source step and dense coordinate are not graph launch inputs");
@@ -224,21 +227,13 @@ void requireSourceInductionDefUse(
   bool lowerIsLaunchInput = false;
   bool scaleFeedsOffset = false;
   for (mlir::Value operand : offset->getOperands()) {
-    auto cast = operand.getDefiningOp<mlir::arith::IndexCastOp>();
-    lowerIsLaunchInput |=
-        cast && graphInputBinding(cast.getIn()) == expectedLower;
+    lowerIsLaunchInput |= launchBinding(operand) == expectedLower;
     scaleFeedsOffset |= operand == scale.getResult();
   }
   if (!lowerIsLaunchInput || !scaleFeedsOffset)
     fail("source lower bound is not paired with the reconstructed step");
-
-  bool projectedToIndex = false;
-  for (mlir::Operation *user : offset->getUsers()) {
-    auto cast = llvm::dyn_cast<mlir::arith::IndexCastOp>(user);
-    projectedToIndex |= cast && llvm::isa<mlir::IndexType>(cast.getType());
-  }
-  if (!projectedToIndex)
-    fail("wide source induction was not projected to the thread index ABI");
+  if (offset->use_empty())
+    fail("reconstructed source induction is unused by the thread body");
 }
 
 void requireThreadDomainChoice(

@@ -62,6 +62,14 @@ public:
       ::loom::ArtifactReference<::loom::fabric::FabricFuTemplateNodeRef>, 4>>
   admittingOperationResources(::mlir::Operation *actor) const;
 
+  /// Whether some operation node admits `actor` with every integer or float
+  /// data type of its signature widened to `lanes` vector lanes; index and
+  /// pointer types stay scalar, as under super-vectorization. This bounds the
+  /// vector shapes a schedule proposes; exact admission of the materialized
+  /// shaped actors remains the materialization gate.
+  llvm::Expected<bool> admitsVectorShape(::mlir::Operation *actor,
+                                         std::uint64_t lanes) const;
+
   /// Returns every concrete memory capability alternative whose Fabric-owned
   /// actor, service, access, and resource relations admit `actor`. Malformed
   /// actor semantics are errors; an empty result is ordinary resource-level

@@ -47,11 +47,16 @@
 namespace {
 using namespace loom::frontend::schedule_test;
 
+/// The vector decision of `shape`, or the first vector decision when no shape
+/// is requested. Enumeration order is a search heuristic, not a contract.
 std::optional<loom::frontend::StructuredScheduleDecision> firstVectorDecision(
-    const loom::frontend::StructuredScheduleDecisionDomain &domain) {
-  auto decision = llvm::find_if(domain.proposals, [](const auto &candidate) {
+    const loom::frontend::StructuredScheduleDecisionDomain &domain,
+    std::optional<std::vector<std::uint64_t>> shape = std::nullopt) {
+  auto decision = llvm::find_if(domain.proposals, [&](const auto &candidate) {
     return candidate.decision().kind ==
-           loom::frontend::StructuredScheduleDecisionKind::Vectorize;
+               loom::frontend::StructuredScheduleDecisionKind::Vectorize &&
+           (!shape || (candidate.decision().vector &&
+                       candidate.decision().vector->shape == *shape));
   });
   return decision == domain.proposals.end()
              ? std::nullopt
@@ -137,7 +142,7 @@ module attributes {dlti.dl_spec = #layout} {
 
   auto domain = take(
       loom::frontend::enumerateStructuredScheduleDecisions(parent, fabric, 8));
-  auto decision = firstVectorDecision(domain);
+  auto decision = firstVectorDecision(domain, std::vector<std::uint64_t>{2});
   if (!decision || !decision->vector || decision->factor != 0 ||
       decision->vector->shape != std::vector<std::uint64_t>{2} ||
       decision->vector->tailPolicy !=
@@ -510,16 +515,16 @@ module {
   if (!sawTypedRefusal)
     fail("masked-tail lowering rejection lost its typed local refusal");
 
-  loom::adg::BuiltinTargetScale scalarOnlyScale =
+  // Vector compute FUs admit the shaped actors at enumeration, while the
+  // element-only memory ports refuse the vector transfers only once the
+  // proposal materializes: the typed refusal exercised below is a
+  // materialization-time refusal.
+  loom::adg::BuiltinTargetScale elementOnlyMemoryScale =
       loom::adg::builtinSmallTarget.scale;
-  scalarOnlyScale.spatialFuOccurrences.vectorCompute = 0;
-  scalarOnlyScale.spatialFuOccurrences.vectorAdapter = 0;
-  scalarOnlyScale.spatialFuOccurrences.vectorStructural = 0;
-  scalarOnlyScale.temporalFuOccurrences.vectorCompute = 0;
-  scalarOnlyScale.temporalFuOccurrences.vectorAdapter = 0;
-  scalarOnlyScale.temporalFuOccurrences.vectorStructural = 0;
+  elementOnlyMemoryScale.localMemoryPortVariant =
+      loom::adg::LocalMemoryPortVariant::ElementOnly;
   auto attemptDesign =
-      take(loom::adg::buildBuiltinTarget(store, scalarOnlyScale));
+      take(loom::adg::buildBuiltinTarget(store, elementOnlyMemoryScale));
   const loom::fabric::FinalizedFabricRoot &attemptFabric =
       attemptDesign.roots().front();
   auto attemptParent = parseProgram(R"mlir(
@@ -555,7 +560,7 @@ module attributes {dlti.dl_spec = #layout} {
   auto firstAttempt = loom::frontend::materializeStructuredScheduleProposal(
       attemptParent, attemptDomain.proposals.front(), attemptFabric);
   if (firstAttempt)
-    fail("scalar-only Fabric admitted the leading vector proposal");
+    fail("element-only memory Fabric admitted the leading vector proposal");
   bool sawFabricRefusal = false;
   llvm::Error firstAttemptUnhandled = llvm::handleErrors(
       firstAttempt.takeError(),
@@ -565,10 +570,10 @@ module attributes {dlti.dl_spec = #layout} {
                                FabricCapabilityUnavailable;
       });
   if (firstAttemptUnhandled)
-    fail("scalar-only Fabric returned an untyped vector error: " +
+    fail("element-only memory Fabric returned an untyped vector error: " +
          llvm::toString(std::move(firstAttemptUnhandled)));
   if (!sawFabricRefusal)
-    fail("scalar-only Fabric lost its typed vector capability refusal");
+    fail("element-only memory Fabric lost its typed vector capability refusal");
   auto parentReference =
       take(loom::frontend::publishStructuredProgram(attemptParent, store));
   auto inputs = take(loom::dse::bindStructuredScheduleCandidateGeneratorInputs(
