@@ -65,6 +65,8 @@ structuredScopRefusalKindSpelling(StructuredScopRefusalKind kind) {
     return "polyhedral_materialization_unavailable";
   case StructuredScopRefusalKind::PhysicalLayoutProofNotEstablished:
     return "physical_layout_proof_not_established";
+  case StructuredScopRefusalKind::UnsignedIterationDomain:
+    return "unsigned_iteration_domain";
   }
   llvm_unreachable("unknown Structured SCoP refusal kind");
 }
@@ -85,6 +87,7 @@ classifyStructuredScopRefusal(StructuredScopRefusalKind kind) {
   case StructuredScopRefusalKind::NotAffineLoop:
   case StructuredScopRefusalKind::NestedAffineRoot:
   case StructuredScopRefusalKind::NonCanonicalIterationDomain:
+  case StructuredScopRefusalKind::UnsignedIterationDomain:
   case StructuredScopRefusalKind::NestedControl:
   case StructuredScopRefusalKind::UnsupportedEffect:
   case StructuredScopRefusalKind::UnsupportedOperation:

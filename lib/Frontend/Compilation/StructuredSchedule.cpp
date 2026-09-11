@@ -1202,15 +1202,36 @@ enumerateStructuredScheduleDecisions(
     inspectedPolyhedralDependenceQueries = *next;
     return llvm::Error::success();
   };
+  // The exact, polyhedral and schedule-proof paths can reach the same
+  // exclusion for one loop, so a refusal is retained once per loop and kind.
+  const auto recordRefusal = [&](const StructuredEntityRef &loop,
+                                 StructuredScopRefusalKind kind) {
+    if (llvm::none_of(refusals, [&](const StructuredScopRefusal &known) {
+          return known.loop == loop && known.kind == kind;
+        }))
+      refusals.push_back({loop, kind});
+  };
+  const auto withinSchedulingScope = [&](mlir::Operation *operation) {
+    return !scopeOperation || scopeOperation == operation ||
+           scopeOperation->isAncestor(operation);
+  };
   for (const StructuredEntity &entity :
        view->entities(StructuredEntityKind::Operation)) {
     auto scfLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(entity.operation);
     auto affineLoop =
         llvm::dyn_cast_or_null<mlir::affine::AffineForOp>(entity.operation);
-    if (!scfLoop && !affineLoop)
+    if (!scfLoop && !affineLoop) {
+      // A loop that raising did not project to a counted form carries no
+      // schedule decision. It is named here rather than left out of the
+      // decision domain without any record. Naming it consumes no scope
+      // expansion, so it cannot displace a counted loop from the budget.
+      if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation) &&
+          withinSchedulingScope(entity.operation))
+        recordRefusal(entity.reference,
+                      StructuredScopRefusalKind::NotAffineLoop);
       continue;
-    if (scopeOperation && scopeOperation != entity.operation &&
-        !scopeOperation->isAncestor(entity.operation))
+    }
+    if (!withinSchedulingScope(entity.operation))
       continue;
     if (expanded == scopeExpansionLimit)
       break;
@@ -1236,12 +1257,6 @@ enumerateStructuredScheduleDecisions(
         auto frozen = std::make_shared<const StructuredPolyhedralScopView>(
             std::move(*general));
         polyhedralScops.push_back(*frozen);
-        const auto recordRefusal = [&](StructuredScopRefusalKind kind) {
-          if (llvm::none_of(refusals, [&](const StructuredScopRefusal &known) {
-                return known.loop == entity.reference && known.kind == kind;
-              }))
-            refusals.push_back({entity.reference, kind});
-        };
         auto materializationRefusal = classifyPolyhedralScheduleMaterialization(
             entity.operation, *frozen);
         if (!materializationRefusal)
@@ -1260,7 +1275,7 @@ enumerateStructuredScheduleDecisions(
           }
         }
         if (*materializationRefusal)
-          recordRefusal(**materializationRefusal);
+          recordRefusal(entity.reference, **materializationRefusal);
         // Each proven tiled schedule is its own coordinate. The proposal binds
         // a view whose schedule is the tiled relation so the selected
         // materializer replays the exact frozen proof.
@@ -1277,7 +1292,7 @@ enumerateStructuredScheduleDecisions(
           if (!tiledRefusal)
             return tiledRefusal.takeError();
           if (*tiledRefusal) {
-            recordRefusal(**tiledRefusal);
+            recordRefusal(entity.reference, **tiledRefusal);
             continue;
           }
           StructuredScheduleDecision decision{
@@ -1380,6 +1395,14 @@ enumerateStructuredScheduleDecisions(
     }
     if (affineLoop)
       continue;
+
+    // Interchange, parallelization and the raised-pointer polyhedral domain
+    // all read a lossless signed index domain, which an unsigned counted loop
+    // cannot establish. Name that exclusion so the loop is not dropped from
+    // every proposal without a record. Admission itself is unchanged.
+    if (scfLoop.getUnsignedCmp())
+      recordRefusal(entity.reference,
+                    StructuredScopRefusalKind::UnsignedIterationDomain);
 
     const auto appendScfProposal = [&](StructuredScheduleDecision decision) {
       proposals.push_back(StructuredScheduleProposal(decision, nullptr, nullptr,

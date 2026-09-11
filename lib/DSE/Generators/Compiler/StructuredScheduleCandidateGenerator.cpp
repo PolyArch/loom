@@ -700,6 +700,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             kinds[kind] = kinds.getInteger(kind).value_or(0) + 1;
           }
           fields["proposal_kinds"] = std::move(kinds);
+          // An empty proposal set means one of two distinct outcomes: the
+          // scheduling scope held no counted loop to inspect, or the inspected
+          // loops produced refusals instead of proposals.
+          fields["inspected_loop_scopes"] = schedule.domain.inspectedLoopScopes;
           fields["refusal_count"] = schedule.domain.refusals.size();
           fields["direct_proposals"] =
               schedule
