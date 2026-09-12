@@ -361,6 +361,13 @@ generateStructuredOwnershipCandidatesImpl(
         fields["scopes"] = std::move(scopes);
       });
 
+  // A scope is active when the measured computation interval executed work it
+  // covers. Activation counts cannot answer that: the projection counts block
+  // entries inside the interval, so a callable entered before
+  // `loom_computation_begin` reports zero activations while its body performs
+  // the whole interval. Covered leaf executions are the work the frontier
+  // already ranks by, and they are monotone along the structural parent
+  // relation because a parent scope's walk contains its children's leaves.
   std::vector<bool> activeScopes(domain->size(), false);
   std::vector<std::vector<std::size_t>> childScopes(domain->size());
   std::vector<std::size_t> rootScopes;
@@ -368,7 +375,7 @@ generateStructuredOwnershipCandidatesImpl(
     const auto &activity = (*scopeActivity)[ordinal];
     if (activity.scope != scopeReferences[ordinal])
       return invalid("scope activity projection changed canonical order");
-    if (activity.dynamicActivations == 0)
+    if (activity.dynamicLeafExecutions == 0)
       continue;
     activeScopes[ordinal] = true;
   }
