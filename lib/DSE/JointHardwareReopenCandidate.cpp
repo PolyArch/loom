@@ -711,14 +711,12 @@ selectTechHardwareFeedback(const dse::JointDesignExecution &execution,
       }
     if (!moduleReference || !module)
       return invalid("TechMapping feedback has no exact Module input");
-    if (!dataflowReference)
-      return invalid("TechMapping feedback has no exact Dataflow input");
     auto adopted = mapping::adoptTechMappingComputeContextHallFeedback(
         feedback.canonicalPayload, module->view());
     if (!adopted)
       return adopted.takeError();
     TechHardwareFeedbackObservation candidate{
-        *moduleReference, *dataflowReference, std::move(*adopted)};
+        *moduleReference, dataflowReference, std::move(*adopted)};
     mapping_debug::emit(
         mapping_debug::Level::Decision, mapping_debug::Stage::TechMapping,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -942,10 +940,11 @@ deriveHardwareRecipeGrowth(
     // grows with it. It spends the chain's one Spatial probe.
     const auto composeSupply = [&]() -> llvm::Expected<bool> {
       if (preference == dse::TechMappingComputeContextSupplyPreference::
-                            TemporalInstructionStoreOnly)
+                            TemporalInstructionStoreOnly ||
+          !techObservation->dataflow)
         return false;
       auto proposal = dse::proposeMinedCompositeFuSupply(
-          techObservation->dataflow, techObservation->feedback,
+          *techObservation->dataflow, techObservation->feedback,
           baseConfig.hardwareTarget.parameters, artifacts);
       if (!proposal)
         return proposal.takeError();
@@ -955,7 +954,7 @@ deriveHardwareRecipeGrowth(
       growth.computeContextGrowthDirection =
           dse::TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
       growth.minedCompositeFus = (*proposal)->selection;
-      growth.minedDataflow = techObservation->dataflow;
+      growth.minedDataflow = *techObservation->dataflow;
       growth.minedActorsPerRealization = (*proposal)->actorsPerRealization;
       growth.minedSearchBounded = (*proposal)->bounded;
       growth.addedSpatialFuOccurrences = (*proposal)->occurrences;

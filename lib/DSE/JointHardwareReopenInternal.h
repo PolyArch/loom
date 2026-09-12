@@ -35,8 +35,10 @@ struct TechHardwareFeedbackObservation final {
   ArtifactRootReference module;
   /// The canonical Dataflow of the candidates this cover refused. The demand
   /// and the software that produced it are known at the same moment, which is
-  /// what lets a composed supply mine the exact refused graphs.
-  ArtifactRootReference dataflow;
+  /// what lets a composed supply mine the exact refused graphs. An observation
+  /// whose invocation named no Dataflow keeps every other supply; only the
+  /// composed one needs the software in hand.
+  std::optional<ArtifactRootReference> dataflow;
   mapping::TechMappingComputeContextHallDeficit feedback;
 };
 
