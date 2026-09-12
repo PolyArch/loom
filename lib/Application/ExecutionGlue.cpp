@@ -5,6 +5,7 @@
 
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Runtime/ComputationBoundary.h"
 #include "Runtime/Gem5DispatchABI.h"
 #include "Runtime/Gem5SpatialBridgeABI.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -901,12 +902,14 @@ void clearDispatchAttributes(llvm::CallBase &call) {
 llvm::Error
 materializeComputationBoundaries(llvm::Module &module,
                                  llvm::GlobalVariable &dispatchBase) {
-  const std::pair<llvm::StringRef, runtime::Gem5ComputationAction>
-      boundaries[] = {
-          {"loom_computation_begin", runtime::Gem5ComputationAction::Begin},
-          {"loom_computation_end", runtime::Gem5ComputationAction::End}};
-  for (const auto &[name, action] : boundaries) {
-    llvm::Function *function = module.getFunction(name);
+  const std::pair<runtime::ComputationBoundary, runtime::Gem5ComputationAction>
+      boundaries[] = {{runtime::ComputationBoundary::Begin,
+                       runtime::Gem5ComputationAction::Begin},
+                      {runtime::ComputationBoundary::End,
+                       runtime::Gem5ComputationAction::End}};
+  for (const auto &[boundary, action] : boundaries) {
+    llvm::Function *function =
+        module.getFunction(runtime::computationBoundarySymbol(boundary));
     if (!function)
       continue;
     if (function->isVarArg() || !function->arg_empty() ||

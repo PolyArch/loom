@@ -74,6 +74,15 @@ struct NativeExecutionContext final {
   std::vector<bool> sawGlobalAfter;
   std::vector<frontend::StructuredEntityRef> profileBlocks;
   std::vector<std::uint64_t> blockActivationCounts;
+  /// The same counts restricted to the source-declared computation interval.
+  std::vector<std::uint64_t> measuredBlockActivationCounts;
+  /// Nesting depth of the declared interval. The markers are ordinary calls,
+  /// so a source may enter the interval once per measured sample.
+  std::uint64_t computationBoundaryDepth = 0;
+  /// Set when the interval was entered at least once. A source that declares
+  /// no interval, or a workload that never reaches it, keeps the complete
+  /// execution as its measured projection.
+  bool computationIntervalObserved = false;
   std::optional<llvm::Error> error;
 };
 
@@ -116,7 +125,14 @@ struct WorkloadCaptureCallbackNames final {
 
 std::string uniqueMlirSymbolName(mlir::ModuleOp module, llvm::StringRef prefix);
 
-llvm::Expected<std::string>
+/// Callback symbols injected by the block-activation instrumentation. The
+/// boundary symbol is absent when the module defines no computation marker.
+struct BlockActivationCallbackNames final {
+  std::string blockActivation;
+  std::optional<std::string> computationBoundary;
+};
+
+llvm::Expected<BlockActivationCallbackNames>
 instrumentBlockActivations(mlir::ModuleOp module,
                            const ArtifactIdentity &identity,
                            NativeExecutionContext &capture);

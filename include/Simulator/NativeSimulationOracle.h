@@ -104,6 +104,12 @@ using WorkloadBackedSimulationInputVisitor =
 struct NativeStructuredBlockActivation {
   frontend::StructuredEntityRef block;
   std::uint64_t activations = 0;
+  /// Activations that happened inside the source-declared computation
+  /// interval, the same interval System QoR measures. A program that never
+  /// enters a declared interval reports its complete execution here, so this
+  /// projection is total and every dynamic coverage measure can read it
+  /// without a second rule.
+  std::uint64_t measuredActivations = 0;
 };
 
 /// Transient functional observations from executing one exact Structured
