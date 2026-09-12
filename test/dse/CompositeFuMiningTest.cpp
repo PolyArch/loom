@@ -11,6 +11,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -64,7 +65,7 @@ private:
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect>();
+                  mlir::DLTIDialect, mlir::func::FuncDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -80,16 +81,25 @@ dataflow::CanonicalDataflowArtifact loadDataflow(mlir::MLIRContext &context,
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::GraphRef
-graphNamed(const dataflow::CanonicalDataflowProgramView &dataflow,
-           llvm::StringRef name) {
+/// Canonical finalization renames private graph symbols and orders the graphs
+/// by its own walk, so each scene selects its pair by the width of the graphs'
+/// first data operand: the widening pair takes i8 operands and the core pair
+/// takes i64 operands.
+std::vector<dataflow::GraphRef>
+graphsWithOperandWidth(const dataflow::CanonicalDataflowProgramView &dataflow,
+                       unsigned width) {
+  std::vector<dataflow::GraphRef> refs;
   for (const dataflow::CanonicalGraphView &graph : dataflow.graphs()) {
-    auto symbol = graph.op->getAttrOfType<mlir::StringAttr>(
-        mlir::SymbolTable::getSymbolAttrName());
-    if (symbol && symbol.getValue() == name)
-      return graph.ref;
+    mlir::Block &body = graph.op->getRegion(0).front();
+    auto operand =
+        llvm::dyn_cast<mlir::IntegerType>(body.getArgument(1).getType());
+    if (operand && operand.getWidth() == width)
+      refs.push_back(graph.ref);
   }
-  fail("fixture has no graph named " + name.str());
+  if (refs.size() != 2)
+    fail("fixture does not hold exactly two graphs with i" +
+         std::to_string(width) + " operands");
+  return refs;
 }
 
 /// The registered operation schemas of one candidate's nodes, as a multiset
@@ -120,9 +130,7 @@ occurrenceActors(const loom::dse::CompositeFuOccurrence &occurrence) {
 void minesTheSharedMultiplyAccumulateShape(llvm::StringRef fixture) {
   mlir::MLIRContext context = makeContext();
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
-  const std::vector<dataflow::GraphRef> graphs = {
-      graphNamed(program.view(), "dot_int8_shift"),
-      graphNamed(program.view(), "dot_int8_clamp")};
+  const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 8);
 
   auto candidates =
       take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
@@ -178,9 +186,7 @@ void synthesizesTheMinedTemplateBackToItsActors(llvm::StringRef fixture) {
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
-  const std::vector<dataflow::GraphRef> graphs = {
-      graphNamed(program.view(), "dot_shift"),
-      graphNamed(program.view(), "dot_clamp")};
+  const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 64);
 
   auto candidates =
       take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
