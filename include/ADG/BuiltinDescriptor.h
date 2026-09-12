@@ -17,6 +17,12 @@ namespace loom::adg {
 
 enum class BuiltinTargetPreset : std::uint8_t { Small, Coverage, Large };
 
+/// Token ports every builtin PE presents. An FU the recipe places must fit
+/// inside them, so an owner that composes one reads the bound here instead of
+/// rediscovering it from a built Module.
+inline constexpr std::uint32_t builtinPeInputPortCount = 5;
+inline constexpr std::uint32_t builtinPeOutputPortCount = 4;
+
 inline constexpr std::uint64_t builtinSystemClockPeriodFs = 1'000'000;
 inline constexpr std::uint64_t builtinSystemMemoryCompletionCycles = 20;
 /// Acceptance rate of the builtin System memory service: this many operations

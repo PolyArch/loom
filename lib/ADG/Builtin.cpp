@@ -467,8 +467,8 @@ llvm::Expected<BuiltinSpatialCoreExpansion> expandBuiltinSpatialCoreImpl(
   if (!temporalMemory)
     return temporalMemory.takeError();
 
-  constexpr std::uint32_t peInputPortCount = 5;
-  constexpr std::uint32_t peOutputPortCount = 4;
+  constexpr std::uint32_t peInputPortCount = builtinPeInputPortCount;
+  constexpr std::uint32_t peOutputPortCount = builtinPeOutputPortCount;
   const std::uint32_t crossSchedulePortsPerTemporalPe =
       scale.crossScheduleBoundaryLanesPerTemporalPe;
   if (scale.temporalPeCount > std::numeric_limits<std::uint32_t>::max() /

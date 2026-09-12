@@ -434,11 +434,14 @@ llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
-projectResolvedFabricTemplateConfigView(const ResolvedConfig &config) {
-  return resolveFabricTemplateConfig(config.hardwareTarget.templateIdentity,
-                                     config.hardwareTarget.schemaVersion.major,
-                                     config.hardwareTarget.schemaVersion.minor,
-                                     config.hardwareTarget.parameters);
+projectResolvedFabricTemplateConfigView(
+    const ResolvedConfig &config,
+    const std::optional<MinedCompositeFuSelection> &minedCompositeFus) {
+  return resolveFabricTemplateConfig(
+      config.hardwareTarget.templateIdentity,
+      config.hardwareTarget.schemaVersion.major,
+      config.hardwareTarget.schemaVersion.minor,
+      config.hardwareTarget.parameters, minedCompositeFus);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>

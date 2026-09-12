@@ -77,8 +77,14 @@ llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
     llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
     std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale,
     const std::optional<MinedCompositeFuSelection> &minedCompositeFus = {});
+/// Projects the generator's resolved view from an exact ResolvedConfig. The
+/// mined selection is not a ResolvedConfig field: it is an invocation-local
+/// decision an owner makes from the software it just compiled, so the caller
+/// that made it supplies it here.
 llvm::Expected<ResolvedFabricTemplateConfigView>
-projectResolvedFabricTemplateConfigView(const ResolvedConfig &config);
+projectResolvedFabricTemplateConfigView(
+    const ResolvedConfig &config,
+    const std::optional<MinedCompositeFuSelection> &minedCompositeFus = {});
 llvm::Expected<ResolvedFabricTemplateConfigView>
 adoptResolvedFabricTemplateConfigView(
     llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
