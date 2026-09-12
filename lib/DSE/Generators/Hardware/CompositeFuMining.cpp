@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -511,6 +512,25 @@ packedActorCount(llvm::ArrayRef<CompositeFuOccurrence> occurrences) {
   return packed;
 }
 
+/// Least number of distinct actors any one node position binds. Removing a
+/// node from a shape only relaxes the constraint on the positions that remain,
+/// so their image sets can only grow: this measure never increases with node
+/// count, which is what makes the level-wise prune exact inside one graph as
+/// well as across a set.
+std::uint64_t minimumImageSupport(const LevelCandidate &candidate) {
+  if (candidate.orders.empty() || candidate.shape.nodes.empty())
+    return 0;
+  std::uint64_t support = std::numeric_limits<std::uint64_t>::max();
+  for (std::size_t position = 0; position != candidate.shape.nodes.size();
+       ++position) {
+    std::set<std::size_t> image;
+    for (const std::vector<std::size_t> &order : candidate.orders)
+      image.insert(order[position]);
+    support = std::min<std::uint64_t>(support, image.size());
+  }
+  return support;
+}
+
 std::int64_t candidateScore(std::uint64_t coveredActorCount,
                             std::uint64_t graphCount,
                             std::size_t boundaryPortCount) {
@@ -522,14 +542,14 @@ std::int64_t candidateScore(std::uint64_t coveredActorCount,
 
 } // namespace
 
-llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
+llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> graphs,
     const CompositeFuMiningLimits &limits) {
   if (graphs.empty())
     return failure(FuReverseSynthesisFailure::EmptyGraphSet,
                    "composite FU mining requires a non-empty graph set");
-  if (limits.maximumActorCount < 2 || limits.minimumGraphSupport == 0 ||
+  if (limits.maximumActorCount < 2 || limits.minimumSupport == 0 ||
       limits.maximumCandidateCount == 0 || limits.maximumOccurrenceCount == 0)
     return failure(FuReverseSynthesisFailure::MiningBoundExhausted,
                    "composite FU mining limits admit no candidate");
@@ -552,21 +572,28 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
   for (std::size_t actor = 0; actor != actors.size(); ++actor)
     level.insert({actor});
 
-  std::vector<CompositeFuCandidate> results;
+  CompositeFuMiningResult result;
+  std::vector<CompositeFuCandidate> &results = result.candidates;
   for (std::uint32_t size = 1; size <= limits.maximumActorCount; ++size) {
     if (level.empty())
       break;
+    // One level is committed only as a whole. A level that reaches a bound is
+    // abandoned entirely, because keeping the part enumerated before the bound
+    // would make the reported set depend on enumeration order rather than on
+    // the graphs.
     std::map<std::vector<std::uint8_t>, std::size_t> candidateByKey;
     std::vector<LevelCandidate> candidates;
+    bool levelBounded = false;
     for (const std::vector<std::size_t> &set : level) {
       auto described = describeShape(actors, set);
       if (!described)
         return described.takeError();
       auto found = candidateByKey.find(described->key);
       if (found == candidateByKey.end()) {
-        if (candidates.size() >= limits.maximumCandidateCount)
-          return failure(FuReverseSynthesisFailure::MiningBoundExhausted,
-                         "composite FU mining exceeded its candidate bound");
+        if (candidates.size() >= limits.maximumCandidateCount) {
+          levelBounded = true;
+          break;
+        }
         found = candidateByKey.emplace(described->key, candidates.size()).first;
         candidates.push_back(LevelCandidate{*described, {}, {}, {}});
       }
@@ -575,11 +602,15 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
       candidate.orders.push_back(described->order);
       candidate.graphs.insert(actors[set.front()].graph);
     }
+    if (levelBounded) {
+      result.bounded = true;
+      break;
+    }
 
     std::set<std::vector<std::size_t>> next;
     for (const LevelCandidate &candidate : candidates) {
-      if (candidate.graphs.size() <
-          static_cast<std::size_t>(limits.minimumGraphSupport))
+      const std::uint64_t support = minimumImageSupport(candidate);
+      if (support < limits.minimumSupport)
         continue;
       const std::size_t ports =
           candidate.shape.inputs.size() + candidate.shape.outputs.size();
@@ -609,13 +640,19 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
                    });
         reported.coveredActorCount = packedActorCount(reported.occurrences);
         reported.graphCount = candidate.graphs.size();
+        reported.support = support;
         reported.score = candidateScore(reported.coveredActorCount,
                                         reported.graphCount, ports);
         results.push_back(std::move(reported));
       }
-      if (size == limits.maximumActorCount)
+      // An embedding bound stops the growth, not the level: every candidate
+      // of this level is still reported, so the result never depends on where
+      // in the level the bound was reached.
+      if (size == limits.maximumActorCount || levelBounded)
         continue;
-      for (const std::vector<std::size_t> &set : candidate.occurrences)
+      for (const std::vector<std::size_t> &set : candidate.occurrences) {
+        if (levelBounded)
+          break;
         for (std::size_t actor : set)
           for (std::size_t neighbor : actors[actor].neighbors) {
             if (std::binary_search(set.begin(), set.end(), neighbor))
@@ -624,11 +661,17 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
             grown.insert(std::upper_bound(grown.begin(), grown.end(), neighbor),
                          neighbor);
             next.insert(std::move(grown));
-            if (next.size() > limits.maximumOccurrenceCount)
-              return failure(
-                  FuReverseSynthesisFailure::MiningBoundExhausted,
-                  "composite FU mining exceeded its embedding bound");
+            if (next.size() > limits.maximumOccurrenceCount) {
+              levelBounded = true;
+              break;
+            }
           }
+      }
+    }
+    result.exploredActorCount = size;
+    if (levelBounded) {
+      result.bounded = true;
+      break;
     }
     level = std::move(next);
   }
@@ -647,7 +690,7 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
       return leftPorts < rightPorts;
     return left.canonicalKey < right.canonicalKey;
   });
-  return results;
+  return result;
 }
 
 } // namespace loom::dse

@@ -323,16 +323,17 @@ resolveMinedCompositeFus(
   std::vector<::dataflow::GraphRef> graphs;
   for (const ::dataflow::CanonicalGraphView &graph : program->view().graphs())
     graphs.push_back(graph.ref);
-  auto candidates = mineCompositeFuCandidates(program->view(), graphs);
-  if (!candidates)
-    return candidates.takeError();
+  auto mined = mineCompositeFuCandidates(program->view(), graphs,
+                                         productionCompositeFuMiningLimits);
+  if (!mined)
+    return mined.takeError();
   placements.reserve(selection->templates.size());
   for (const MinedCompositeFuSelectionEntry &entry : selection->templates) {
     const auto found = llvm::find_if(
-        *candidates, [&](const CompositeFuCandidate &candidate) {
+        mined->candidates, [&](const CompositeFuCandidate &candidate) {
           return candidate.canonicalKey == entry.shapeKey;
         });
-    if (found == candidates->end())
+    if (found == mined->candidates.end())
       return invalid("a selected mined composite FU shape is not one this "
                      "Dataflow mines");
     auto spec = deriveCompositeFuTemplate(program->view(), *found);

@@ -29,12 +29,16 @@ struct CompositeFuMiningLimits final {
   /// bound is not monotone in the node count, so a candidate above it is still
   /// extended and only withheld from the ranked result.
   std::uint32_t maximumBoundaryPortCount = 12;
-  /// Members of the graph set a candidate must occur in. This is the
-  /// anti-monotone prune that makes level-wise growth exact.
-  std::uint64_t minimumGraphSupport = 2;
-  /// Candidates retained at one node count before the search is abandoned.
+  /// Minimum-image support a candidate must reach. Support is the least
+  /// number of distinct actors any one node position binds across the graph
+  /// set, which is the standard measure that stays anti-monotone inside a
+  /// single graph: a shape that repeats twice in one whole-layer graph is as
+  /// interesting as one shared by two graphs, and counting embeddings instead
+  /// would not be monotone at all.
+  std::uint64_t minimumSupport = 2;
+  /// Candidates retained at one node count before the search stops growing.
   std::uint64_t maximumCandidateCount = 4096;
-  /// Embeddings enumerated at one node count before the search is abandoned.
+  /// Embeddings enumerated at one node count before the search stops growing.
   /// Shapes and embeddings grow independently, so both are bounded.
   std::uint64_t maximumOccurrenceCount = 1u << 16;
 };
@@ -43,6 +47,14 @@ struct CompositeFuMiningLimits final {
 /// PE must present and route, so it is the one structural cost the rank pays
 /// against coverage.
 inline constexpr std::int64_t compositeFuBoundaryPortCost = 1;
+
+/// The one mining request production uses. The owner that selects a template
+/// and the generator that re-derives it from the configuration must mine the
+/// same relation, or a named selection would not reproduce; this is that
+/// single request. Its embedding budget is sized for a whole-layer graph,
+/// where the search is expected to reach its bound and report that it did.
+inline constexpr CompositeFuMiningLimits productionCompositeFuMiningLimits{
+    8, 12, 2, 4096, 1u << 18};
 
 /// One node of a mined shape. Node identity is the registered operation schema
 /// together with the exact ordered operand and result types; exact attribute
@@ -93,7 +105,25 @@ struct CompositeFuCandidate final {
   std::uint64_t coveredActorCount = 0;
   /// Members of the graph set holding at least one occurrence.
   std::uint64_t graphCount = 0;
+  /// Least number of distinct actors any one node position binds. This is the
+  /// measure the search prunes on, so a reported candidate always reaches the
+  /// request's minimum.
+  std::uint64_t support = 0;
   std::int64_t score = 0;
+};
+
+/// What one bounded mining request found. A search that reaches a retained
+/// shape or embedding bound stops growing instead of failing: every candidate
+/// it already reported is exact, and only larger shapes are unexplored. The
+/// result says so explicitly, so a caller never mistakes a bounded search for
+/// a complete one.
+struct CompositeFuMiningResult final {
+  std::vector<CompositeFuCandidate> candidates;
+  /// Largest node count whose level the search completed.
+  std::uint32_t exploredActorCount = 0;
+  /// Whether a retained shape or embedding bound stopped the growth before
+  /// the node bound did.
+  bool bounded = false;
 };
 
 /// Mines the common subgraphs of a canonical graph set and reports them in
@@ -104,7 +134,7 @@ struct CompositeFuCandidate final {
 /// Mining reads only the canonical token-plane relation and the registered
 /// operation-schema projection of each actor. An actor carrying a memory
 /// capability is outside that relation and is not an admitted node.
-llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
+llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> graphs,
     const CompositeFuMiningLimits &limits = {});

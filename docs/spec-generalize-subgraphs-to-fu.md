@@ -252,18 +252,35 @@ truncated result.
 ### Size Bound
 
 A mined candidate has at least two and at most `maximumActorCount` nodes, at
-most `maximumBoundaryPortCount` boundary ports, and occurrences in at least
-`minimumGraphSupport` members of `S`. The bounds are properties of the mining
-request, not of the Fabric relation: they keep enumeration finite and keep a
-template's FU boundary within what a PE can present.
+most `maximumBoundaryPortCount` boundary ports, and at least `minimumSupport`
+support. The bounds are properties of the mining request, not of the Fabric
+relation: they keep enumeration finite and keep a template's FU boundary within
+what a PE can present. Production mines with one named request, because the
+owner that selects a template and the generator that re-derives it from the
+configuration must mine the same relation or a named selection would not
+reproduce.
 
-Graph support is the prune that makes level-wise growth exact. Removing a
-non-cut node from every occurrence of a shape yields a smaller shape present in
-at least the same graphs, so support never increases with size and a shape whose
-support is below the bound can have no admissible extension. The boundary-port
-bound is not monotone, because adding a node can internalize an edge; a
-candidate over that bound is therefore still extended and only withheld from the
-ranked result.
+Support is the prune that makes level-wise growth exact. A candidate's support
+is its minimum image: the least number of distinct actors any one node position
+binds across `S`. Removing a node only relaxes the constraint on the positions
+that remain, so their image sets can only grow, and support therefore never
+increases with node count. This is the measure that stays exact inside a single
+graph as well as across a set, which matters because the whole-layer case mines
+one graph: a shape that repeats twice in one layer is as interesting as one
+shared by two applications, while counting embeddings would not be monotone at
+all. The boundary-port bound is not monotone, because adding a node can
+internalize an edge; a candidate over that bound is therefore still extended and
+only withheld from the ranked result.
+
+The retained shape and embedding bounds are budgets, not legality. A search
+that reaches one stops growing and reports that it did, together with the
+largest node count it completed. Every candidate it already reported is exact,
+because a level is committed only as a whole: a level that reaches the shape
+bound while it is still being grouped is abandoned entirely, and a level that
+reaches the embedding bound is reported completely and simply not extended.
+Neither outcome depends on the order the search enumerated within a level, and
+a caller can therefore tell a bounded search from a complete one instead of
+mistaking a budget for an absence.
 
 ### Rank
 
@@ -284,7 +301,10 @@ remains its own owner and is never derived from it.
 
 `coveredActorCount * graphCount` is the coverage of actors across `S` weighted
 by how many members of `S` the template serves, so a template shared by the
-portfolio outranks one that is hot in a single graph. The boundary-port term
+portfolio outranks one that is hot in a single graph. When `S` is one
+whole-layer graph the weight is one and the packed coverage decides alone,
+which is the right answer there: the template that absorbs the most of that
+layer wins, whatever its node count. The boundary-port term
 prices the FU boundary, which is what a PE must present and route. The order is
 score descending, then covered actors descending, then node count descending,
 then boundary ports ascending, then canonical code ascending; it is total.

@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -137,10 +138,13 @@ void minesTheSharedMultiplyAccumulateShape(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 8);
 
-  auto candidates =
-      take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  const std::vector<loom::dse::CompositeFuCandidate> &candidates =
+      mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
   const loom::dse::CompositeFuCandidate &best = candidates.front();
+  require(!mined.bounded && mined.exploredActorCount >= best.nodes.size(),
+          "a small fixture exhausted a mining bound");
 
   const std::vector<std::uint32_t> expected = {
       static_cast<std::uint32_t>(dataflow::OperationSchemaId::ArithAddI),
@@ -191,8 +195,8 @@ void minesTheSharedMultiplyAccumulateShape(llvm::StringRef fixture) {
       require(node.schema != dataflow::OperationSchemaId::ArithShRSI &&
                   node.schema != dataflow::OperationSchemaId::ArithMaxSI,
               "mining reported a candidate that only one graph contains");
-    require(candidate.graphCount >= 2,
-            "mining reported a candidate below its graph-support bound");
+    require(candidate.support >= 2,
+            "mining reported a candidate below its minimum-image support");
   }
 }
 
@@ -206,9 +210,11 @@ void synthesizesTheMinedTemplateBackToItsActors(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 64);
 
-  auto candidates =
-      take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  const std::vector<loom::dse::CompositeFuCandidate> &candidates =
+      mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
+  require(!mined.bounded, "a small fixture exhausted a mining bound");
   const loom::dse::CompositeFuCandidate &best = candidates.front();
   require(best.nodes.size() == 4 && best.inputs.size() == 5 &&
               best.outputs.size() == 1,
@@ -245,11 +251,11 @@ void synthesizesTheMinedTemplateBackToItsActors(llvm::StringRef fixture) {
     for (const auto &actor : witness.actors)
       covered.insert(actor.actor.entity.value());
   }
-  std::set<std::uint64_t> mined;
+  std::set<std::uint64_t> minedActors;
   for (const loom::dse::CompositeFuOccurrence &occurrence : best.occurrences)
     for (dataflow::ActorRef actor : occurrence.actors)
-      mined.insert(actor.entity.value());
-  require(covered == mined,
+      minedActors.insert(actor.entity.value());
+  require(covered == minedActors,
           "the synthesized FU does not materialize back to the exact mined "
           "actors");
 }
@@ -266,8 +272,9 @@ void placesTheMinedTemplateInABuiltinModule(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs =
       graphsWithOperandWidth(program.view(), 64);
-  auto candidates =
-      take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  const std::vector<loom::dse::CompositeFuCandidate> &candidates =
+      mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
   auto published = take(dataflow::publishCanonicalDataflow(program, store));
 
@@ -308,6 +315,96 @@ void placesTheMinedTemplateInABuiltinModule(llvm::StringRef fixture) {
   llvm::consumeError(rejected.takeError());
 }
 
+/// One whole-layer-sized graph: a chain of multiply-accumulate motifs, which
+/// is the shape and the scale a lowered layer actually presents. The fixture
+/// is generated rather than written out because the case that matters is the
+/// actor count, not the exact arithmetic.
+std::string layerSizedProgram(unsigned motifs) {
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  stream << "module attributes {dlti.dl_spec = #dlti.dl_spec<"
+            "#dlti.dl_entry<index, 64>>} {\n"
+         << "  dataflow.graph private @layer(%start: none, %a: i64, "
+            "%b: i64, %zp: i64, %acc: i64) -> i64\n"
+         << "      attributes {input_segments = array<i32: 4, 0, 0>,\n"
+         << "                  result_segments = array<i32: 1, 0, 0>} {\n";
+  for (unsigned motif = 0; motif != motifs; ++motif) {
+    stream << "    %ca" << motif << " = arith.subi %a, %zp : i64\n"
+           << "    %cb" << motif << " = arith.subi %b, %zp : i64\n"
+           << "    %p" << motif << " = arith.muli %ca" << motif << ", %cb"
+           << motif << " : i64\n"
+           << "    %s" << motif << " = arith.addi %p" << motif << ", ";
+    if (motif == 0)
+      stream << "%acc : i64\n";
+    else
+      stream << "%s" << (motif - 1) << " : i64\n";
+  }
+  stream << "    %result:2 = dataflow.sync %start, %s" << (motifs - 1)
+         << " : (none, i64) -> (none, i64)\n"
+         << "    dataflow.graph.return values(%result#1 : i64) streams() "
+            "memories() complete(%result#0 : none)\n"
+         << "  }\n"
+         << "  dataflow.thread private @layer_worker "
+            "domain(#dataflow.thread_domain<dense>)(\n"
+         << "      %a: i64, %b: i64, %zp: i64, %acc: i64) ctrl (%ctrl: none) "
+            "{\n"
+         << "    %value, %done = dataflow.graph.launch @layer deps(%ctrl)\n"
+         << "        values(%a, %b, %zp, %acc) stream_inputs() memories() "
+            "stream_outputs()\n"
+         << "        : (none, i64, i64, i64, i64) -> (i64, none)\n"
+         << "    dataflow.thread.yield %done : none\n"
+         << "  }\n"
+         << "  func.func @application() {\n"
+         << "    %a = arith.constant 3 : i64\n"
+         << "    %b = arith.constant 5 : i64\n"
+         << "    %zp = arith.constant 1 : i64\n"
+         << "    %acc = arith.constant 7 : i64\n"
+         << "    %thread = dataflow.thread.launch @layer_worker(%a, %b, %zp, "
+            "%acc)\n"
+         << "        : (i64, i64, i64, i64) -> !dataflow.thread_token\n"
+         << "    return\n"
+         << "  }\n"
+         << "}\n";
+  stream.flush();
+  return text;
+}
+
+/// Mining one whole-layer graph with the request production uses. The search
+/// is expected to reach its embedding bound at this size, and what matters is
+/// that it reports the bound and still returns what it completely enumerated,
+/// rather than failing or returning nothing.
+void minesOneLayerSizedGraphUnderItsBound() {
+  mlir::MLIRContext context = makeContext();
+  const std::string source = layerSizedProgram(150);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
+  if (!module)
+    fail("cannot parse the generated layer-sized program");
+  dataflow::CanonicalDataflowArtifact program =
+      take(dataflow::finalizeCanonicalDataflow(*module));
+  std::vector<dataflow::GraphRef> graphs;
+  for (const dataflow::CanonicalGraphView &graph : program.view().graphs())
+    graphs.push_back(graph.ref);
+  require(graphs.size() == 1, "the generated program is not one graph");
+
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
+  require(!mined.candidates.empty(),
+          "a layer-sized graph mined no candidate at all");
+  require(mined.exploredActorCount >= 2,
+          "a layer-sized graph completed no level");
+  // Support is the single-graph measure: one shape repeated through the layer
+  // is what makes a composite worth building, and no reported candidate may
+  // fall below the request's minimum.
+  for (const loom::dse::CompositeFuCandidate &candidate : mined.candidates)
+    require(candidate.support >= 2 &&
+                candidate.nodes.size() <= mined.exploredActorCount,
+            "a reported candidate is below the support bound or above the "
+            "completed level");
+  const loom::dse::CompositeFuCandidate &best = mined.candidates.front();
+  require(best.nodes.size() >= 2 && best.coveredActorCount >= best.nodes.size(),
+          "the ranked candidate covers less than one realization");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -323,6 +420,8 @@ int main(int argc, char **argv) {
     synthesizesTheMinedTemplateBackToItsActors(argv[1]);
   else if (scene == "placement")
     placesTheMinedTemplateInABuiltinModule(argv[1]);
+  else if (scene == "scale")
+    minesOneLayerSizedGraphUnderItsBound();
   else
     fail("unknown scene " + scene.str());
   return EXIT_SUCCESS;
