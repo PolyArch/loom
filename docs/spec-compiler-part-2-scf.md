@@ -1465,11 +1465,15 @@ descendant Structured candidate against that fixed source workload and replays
 its own mechanically derived D0; it does not synthesize a candidate-specific
 source workload or recover lineage from symbol names or operation positions.
 
-The cost of one ownership candidate is evaluated over the complete workload:
-remaining HostCore and InstructionCore work, logical-thread launch and
-synchronization, boundary transfer and memory work, and dynamically activated
-Spatial work under the exact Fabric capability projection. A statically small
-helper therefore receives credit only for the dynamic work it actually covers.
+The cost of one ownership candidate is evaluated over the whole source-declared
+computation interval of the workload: remaining HostCore and InstructionCore
+work, logical-thread launch and synchronization, boundary transfer and memory
+work, and dynamically activated Spatial work under the exact Fabric capability
+projection. Work the source places outside that interval, such as input
+preparation or an independent result oracle, is not part of any candidate's
+cost or coverage, because the measured System never attributes it to the
+Deployment either. A statically small helper therefore receives credit only
+for the dynamic work it actually covers.
 There is no function-name classification, benchmark-specific preference, or
 fixed hot-region percentage. A candidate with zero dynamic activations is
 inapplicable to that workload and cannot satisfy an accelerator promotion gate.

@@ -420,8 +420,9 @@ timing, and a calibrated System Runtime bundle (model kind 16) supersedes them
 for ranking whenever one is admitted.
 
 Each static graph launch site yields one `AnalyticLaunchEstimate`:
-`activations` (dynamic firings over the complete program, from the exact
-Structured block profile), `compute_cycles_per_activation` (the iterations one
+`activations` (dynamic firings inside the source-declared computation
+interval, from the exact Structured block profile),
+`compute_cycles_per_activation` (the iterations one
 activation performs, the most executed block of the Spatial owner over the
 owner's activations, times the larger of the resource-bound initiation
 interval and the recurrence length, plus the graph critical path),
@@ -466,7 +467,17 @@ reaches the point term, otherwise `Compute`, `MemoryBandwidth`, or
 product, and the hardware feedback owner reads exactly that comparison.
 Whole-case Runtime is the serialized host residual
 (executable leaves outside Spatial ownership times the host cycles per leaf
-and the clock period) plus the estimate's two accelerated-window phases. The
+and the clock period) plus the estimate's two accelerated-window phases.
+Every dynamic quantity above is measured over the source-declared computation
+interval, the same interval System QoR measures: the block profile counts an
+activation only while the program is inside it. Initialization, warmup, and an
+independent result oracle are outside the declared interval by contract, so
+counting them would model work no gate ever observes, dilute every coverage
+share by their size, and bound the modelled speedup below the achievable one.
+A source that declares no interval, or a workload that never reaches one, is
+measured whole, so the projection stays total and no consumer needs a second
+rule. The interval is the same source contract the deployment image builder
+turns into System observation events; one owner names its markers. The
 configuration residency term is `configuration(u)` for the widest allocation
 any site uses: every configured AccCore streams its share of the packed
 configuration image concurrently before its first launch. The invocation term

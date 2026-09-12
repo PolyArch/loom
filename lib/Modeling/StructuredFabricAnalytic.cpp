@@ -397,13 +397,17 @@ llvm::Expected<BlockActivityProjection> projectBlockActivity(
           "structured_fabric_model_invalid: block activation order differs "
           "from the exact Structured owner");
     mlir::Block *block = expectedBlocks[ordinal]->block;
-    projection.activations[block] = observed.activations;
+    // The model competes against System QoR, which measures the interval the
+    // source declares. Counting an activation outside it would model work the
+    // gate never sees: initialization and an independent result oracle would
+    // dilute every coverage share and cap the modeled speedup.
+    projection.activations[block] = observed.measuredActivations;
     const std::uint64_t leaves =
         llvm::count_if(*block, [](mlir::Operation &operation) {
           return isModeledHostLeaf(&operation);
         });
     llvm::Expected<std::uint64_t> dynamicLeaves = checkedScaledCount(
-        leaves, observed.activations, "source instruction executions");
+        leaves, observed.measuredActivations, "source instruction executions");
     if (!dynamicLeaves)
       return dynamicLeaves.takeError();
     const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(

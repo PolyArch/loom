@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Runtime/ComputationBoundary.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -172,7 +173,7 @@ std::string uniqueMlirSymbolName(mlir::ModuleOp module,
   return candidate;
 }
 
-llvm::Expected<std::string>
+llvm::Expected<BlockActivationCallbackNames>
 instrumentBlockActivations(mlir::ModuleOp module,
                            const ArtifactIdentity &identity,
                            NativeExecutionContext &capture) {
@@ -200,8 +201,45 @@ instrumentBlockActivations(mlir::ModuleOp module,
   mlir::LLVM::LLVMFuncOp::create(declarations, module.getLoc(), callbackName,
                                  callbackType);
 
+  // The source-declared computation interval is what System QoR measures, so
+  // the same interval gates this projection. The markers are ordinary weak
+  // calls in the module: give each defined marker a callback at its entry and
+  // the counting rule follows the real control flow, including recursion,
+  // repeated samples, and callees the source reaches only inside the
+  // interval. A module that defines no marker keeps its complete execution.
+  std::optional<std::string> boundaryCallbackName;
+  for (loom::runtime::ComputationBoundary boundary :
+       {loom::runtime::ComputationBoundary::Begin,
+        loom::runtime::ComputationBoundary::End}) {
+    auto marker = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
+        mlir::SymbolTable::lookupSymbolIn(
+            module, loom::runtime::computationBoundarySymbol(boundary)));
+    if (!marker || marker.getBody().empty())
+      continue;
+    if (!boundaryCallbackName) {
+      boundaryCallbackName =
+          uniqueMlirSymbolName(module, "__loom_structured_computation_boundary");
+      mlir::OpBuilder boundaryDeclaration(module.getContext());
+      boundaryDeclaration.setInsertionPointToStart(module.getBody());
+      mlir::LLVM::LLVMFuncOp::create(boundaryDeclaration, module.getLoc(),
+                                     *boundaryCallbackName, callbackType);
+    }
+    mlir::Block &entry = marker.getBody().front();
+    mlir::OpBuilder builder(module.getContext());
+    builder.setInsertionPointToStart(&entry);
+    const mlir::Location location =
+        entry.empty() ? marker.getLoc() : entry.front().getLoc();
+    mlir::Value actionValue = mlir::LLVM::ConstantOp::create(
+        builder, location, i64,
+        builder.getI64IntegerAttr(static_cast<std::uint64_t>(boundary)));
+    mlir::LLVM::CallOp::create(builder, location, mlir::TypeRange{},
+                               *boundaryCallbackName,
+                               mlir::ValueRange{actionValue});
+  }
+
   capture.profileBlocks.reserve(sites.size());
   capture.blockActivationCounts.assign(sites.size(), 0);
+  capture.measuredBlockActivationCounts.assign(sites.size(), 0);
   for (auto [ordinal, site] : llvm::enumerate(sites)) {
     capture.profileBlocks.push_back(site.reference);
     mlir::OpBuilder builder(module.getContext());
@@ -221,7 +259,8 @@ instrumentBlockActivations(mlir::ModuleOp module,
     return unsupported(
         "native block activation provider cannot instrument this Structured "
         "control form");
-  return callbackName;
+  return BlockActivationCallbackNames{callbackName,
+                                      std::move(boundaryCallbackName)};
 }
 
 llvm::Expected<NativeStructuredProgramObservations>
@@ -254,13 +293,25 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
     result.memories.push_back(makeMemoryObservation(
         plan.form, baseline, capture.globalAfter[ordinal]));
   }
-  if (capture.profileBlocks.size() != capture.blockActivationCounts.size())
+  if (capture.profileBlocks.size() != capture.blockActivationCounts.size() ||
+      capture.profileBlocks.size() !=
+          capture.measuredBlockActivationCounts.size())
     return executionFailed("block activation projection is inconsistent");
+  if (capture.computationBoundaryDepth != 0)
+    return executionFailed(
+        "the source-declared computation interval was left open");
   result.blockActivations.reserve(capture.profileBlocks.size());
   for (std::size_t ordinal = 0; ordinal < capture.profileBlocks.size();
-       ++ordinal)
-    result.blockActivations.push_back({capture.profileBlocks[ordinal],
-                                       capture.blockActivationCounts[ordinal]});
+       ++ordinal) {
+    const std::uint64_t activations = capture.blockActivationCounts[ordinal];
+    // A source that declares no interval, or a workload that never reaches
+    // one, is measured whole. Every consumer then reads one total projection.
+    result.blockActivations.push_back(
+        {capture.profileBlocks[ordinal], activations,
+         capture.computationIntervalObserved
+             ? capture.measuredBlockActivationCounts[ordinal]
+             : activations});
+  }
   return result;
 }
 

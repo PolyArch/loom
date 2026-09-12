@@ -8,6 +8,7 @@
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Runtime/ComputationBoundary.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -441,16 +442,51 @@ void nativeGlobalAfter(std::uint64_t targetOrdinal, void *base,
 
 void nativeBlockActivation(std::uint64_t ordinal) {
   if (!activeExecution ||
-      ordinal >= activeExecution->blockActivationCounts.size()) {
+      ordinal >= activeExecution->blockActivationCounts.size() ||
+      ordinal >= activeExecution->measuredBlockActivationCounts.size()) {
     recordExecutionError("block activation callback has an invalid ordinal");
     return;
   }
   std::uint64_t &count = activeExecution->blockActivationCounts[ordinal];
+  std::uint64_t &measured =
+      activeExecution->measuredBlockActivationCounts[ordinal];
   if (count == std::numeric_limits<std::uint64_t>::max()) {
     recordExecutionError("block activation count overflowed");
     return;
   }
   ++count;
+  if (activeExecution->computationBoundaryDepth != 0)
+    ++measured;
+}
+
+/// Tracks the source-declared computation interval. The markers are ordinary
+/// calls, so nesting is counted rather than assumed: a source may measure
+/// several samples, and a nested marker keeps the outer interval open.
+void nativeComputationBoundary(std::uint64_t action) {
+  if (!activeExecution) {
+    recordExecutionError("computation boundary callback has no execution");
+    return;
+  }
+  switch (static_cast<loom::runtime::ComputationBoundary>(action)) {
+  case loom::runtime::ComputationBoundary::Begin:
+    if (activeExecution->computationBoundaryDepth ==
+        std::numeric_limits<std::uint64_t>::max()) {
+      recordExecutionError("computation interval nesting overflowed");
+      return;
+    }
+    ++activeExecution->computationBoundaryDepth;
+    activeExecution->computationIntervalObserved = true;
+    return;
+  case loom::runtime::ComputationBoundary::End:
+    if (activeExecution->computationBoundaryDepth == 0) {
+      recordExecutionError(
+          "computation interval ended without a matching begin");
+      return;
+    }
+    --activeExecution->computationBoundaryDepth;
+    return;
+  }
+  recordExecutionError("computation boundary callback has an unknown action");
 }
 
 std::string uniqueName(const llvm::Module &module, llvm::StringRef prefix) {
@@ -706,6 +742,7 @@ struct CallbackNames {
   std::string runtimeObject;
   std::optional<std::string> invalidThreadExtent;
   std::optional<std::string> blockActivation;
+  std::optional<std::string> computationBoundary;
   std::optional<std::string> returnValue;
   std::optional<std::string> globalBefore;
   std::optional<std::string> globalAfter;
@@ -987,6 +1024,10 @@ llvm::Error runInstrumentedExecution(
     callbacks[jit->mangleAndIntern(*names.blockActivation)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeBlockActivation),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.computationBoundary)
+    callbacks[jit->mangleAndIntern(*names.computationBoundary)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeComputationBoundary),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
   if (names.channels) {
     callbacks[jit->mangleAndIntern(names.channels->create)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeLogicalChannelCreate),
@@ -1179,13 +1220,13 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
       return names.takeError();
     workloadCaptureNames.emplace(std::move(*names));
   }
-  std::optional<std::string> blockActivation;
+  std::optional<native_detail::BlockActivationCallbackNames> blockActivation;
   if (profileProgram) {
     auto callback = instrumentBlockActivations(
         *module, profileProgram->identity(), capture);
     if (!callback)
       return callback.takeError();
-    blockActivation = std::move(*callback);
+    blockActivation.emplace(std::move(*callback));
   }
   std::optional<native_detail::SelectedWholeProgramProjection>
       ownershipProjection;
@@ -1230,7 +1271,12 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
               std::move(ownershipProjection->invalidThreadExtent);
           callbackNames.channels = std::move(ownershipProjection->channels);
         }
-        callbackNames.blockActivation = std::move(blockActivation);
+        if (blockActivation) {
+          callbackNames.blockActivation =
+              std::move(blockActivation->blockActivation);
+          callbackNames.computationBoundary =
+              std::move(blockActivation->computationBoundary);
+        }
         if (capturePlan) {
           auto prepared = prepareWorkloadCaptureContext(
               *capturePlan, capture, *input, sourceContext->entryOp,

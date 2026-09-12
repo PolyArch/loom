@@ -122,7 +122,9 @@ bool haveEquivalentSourceObservations(
       [](const sim::NativeStructuredBlockActivation &lhsActivation,
          const sim::NativeStructuredBlockActivation &rhsActivation) {
         return lhsActivation.block == rhsActivation.block &&
-               lhsActivation.activations == rhsActivation.activations;
+               lhsActivation.activations == rhsActivation.activations &&
+               lhsActivation.measuredActivations ==
+                   rhsActivation.measuredActivations;
       });
 }
 
