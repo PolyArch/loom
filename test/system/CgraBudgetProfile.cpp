@@ -556,6 +556,11 @@ llvm::json::Object selectQualificationHardware(
     llvm::json::Object round{{"fabric", referenceJson(module.reference())},
                              {"evaluations", std::move(evaluations)},
                              {"hardware_growth", nullptr}};
+    // A round in which no source maps and none names a closable deficit has no
+    // growth the owner could size, so the verdict is recorded rather than left
+    // to an unexplained `ready` false.
+    if (!ready && !pressure && !control.stopRequested())
+      stopReason = "no_closable_hall_deficit";
     if (ready || !pressure || control.stopRequested()) {
       rounds.push_back(std::move(round));
       break;

@@ -194,6 +194,69 @@ void constructiveForcedClosureRetainsCompleteDemand() {
     fail("a forced cover completed at its expansion ceiling was discarded");
 }
 
+void prunedPrefixNeverPublishesItsOwnDeficit() {
+  // Every actor keeps a fused alternative, so the necessary actor relation is
+  // empty and the constructive search owns the observation. Each cover needs
+  // one context per selected row and the shared bank holds half of them, so
+  // the pruned prefix is always exactly one row past the bank while the whole
+  // gap is the other half of the cover.
+  constexpr std::size_t actorCount = 64;
+  constexpr std::size_t coverRowCount = actorCount / 2;
+  constexpr std::size_t contextCount = coverRowCount / 2;
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  domain.computeContextValueCount = contextCount;
+  std::vector<std::size_t> contexts;
+  for (std::size_t ordinal = 0; ordinal != contextCount; ++ordinal) {
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
+    contexts.push_back(ordinal);
+  }
+  for (std::size_t ordinal = 0; ordinal != actorCount; ++ordinal) {
+    domain.actors.push_back(actor(owner, ordinal));
+    domain.rows.push_back(
+        row(static_cast<std::uint8_t>(ordinal), {ordinal}, contexts));
+  }
+  for (std::size_t ordinal = 0; ordinal + 1 != actorCount; ++ordinal)
+    domain.rows.push_back(row(static_cast<std::uint8_t>(actorCount + ordinal),
+                              {ordinal, ordinal + 1}, contexts));
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 1), accounting);
+  if (!result.covers.empty() ||
+      accounting.constructiveCoverSearchInvocations != 1 ||
+      accounting.constructiveCoverCompletedChecks != 0)
+    fail("the constructive search reached a complete cover");
+  const auto &feedback = result.feedback.computeContextHall;
+  if (!feedback || feedback->coverDemandCount() != coverRowCount ||
+      feedback->coverMaximumMatching() != contextCount ||
+      feedback->hallDemandCount() != coverRowCount ||
+      feedback->hallContextValueCount() != contextCount ||
+      feedback->deficit() != coverRowCount - contextCount)
+    fail("an empty frontier reported the pruned prefix instead of the gap");
+
+  // The published gap is closed under the supply it asks for: the same domain
+  // with that many more contexts admits a cover instead of reporting one more
+  // unit of demand.
+  for (std::size_t ordinal = contextCount; ordinal != coverRowCount;
+       ++ordinal) {
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
+    contexts.push_back(ordinal);
+  }
+  domain.computeContextValueCount = coverRowCount;
+  for (auto &candidate : domain.rows)
+    candidate.computeContextValues = contexts;
+  loom::mapping::TechMappingGenerationAccounting grownAccounting;
+  const auto grown = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 1), grownAccounting);
+  if (grown.covers.size() != 1 ||
+      grown.covers.front().size() != coverRowCount ||
+      grown.feedback.computeContextHall)
+    fail("closing the published gap did not admit a cover");
+}
+
 void sealedCoversFollowFormalRank() {
   const loom::ArtifactIdentity owner = identity();
   loom::mapping::detail::TechMatchDomain domain;
@@ -534,6 +597,7 @@ int main() {
   exactMemoryOccurrenceSupplyShapesFrontier();
   boundedConstructiveFrontierDoesNotFallThrough();
   constructiveForcedClosureRetainsCompleteDemand();
+  prunedPrefixNeverPublishesItsOwnDeficit();
   completedProductSurvivesExpansionLimit();
   sealedCoversFollowFormalRank();
   prospectiveSeedHasOneKeyedOutcome();

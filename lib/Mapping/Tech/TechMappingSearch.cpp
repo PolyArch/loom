@@ -302,8 +302,19 @@ bool unavoidableComputeSupplyAdmissible(
   return false;
 }
 
+/// Whether a supply check runs against a demand set that is closed under its
+/// scope: one that already names every actor the scope is responsible for.
+/// A closed demand set keeps its compute demand when contexts are added, so a
+/// Hall closure computed from it stays closed. An open prefix is the frontier
+/// at which the search pruned; it admits exactly one more row for every
+/// context added, so its Hall witness reports a deficit of one whatever the
+/// real gap is. An open witness prunes correctly but must never become
+/// hardware growth feedback.
+enum class TechCoverDemandClosure : std::uint8_t { Open, Closed };
+
 bool rootSupplyAdmissible(llvm::ArrayRef<const TechMatchRow *> rows,
                           const TechMatchDomain &domain,
+                          TechCoverDemandClosure closure,
                           TechMappingGenerationAccounting &accounting,
                           TechMappingGenerationFeedback &feedback) {
   const std::size_t computeCount = llvm::count_if(rows, [](const auto *row) {
@@ -313,9 +324,10 @@ bool rootSupplyAdmissible(llvm::ArrayRef<const TechMatchRow *> rows,
     SpatialComputeContextSupplyAnalysis analysis =
         analyzeComputeContextSupply(rows, domain, accounting);
     if (!analysis.admissible()) {
-      retainTechMappingComputeContextHallFeedback(
-          feedback.computeContextHall,
-          projectComputeContextHallDeficit(rows, domain, analysis));
+      if (closure == TechCoverDemandClosure::Closed)
+        retainTechMappingComputeContextHallFeedback(
+            feedback.computeContextHall,
+            projectComputeContextHallDeficit(rows, domain, analysis));
       return false;
     }
   }
@@ -326,6 +338,149 @@ bool rootSupplyAdmissible(llvm::ArrayRef<const TechMatchRow *> rows,
          analyzeMemoryOccurrenceSupply(rows, accounting,
                                        MemorySupplyCheckScope::PartialCover)
              .admissible();
+}
+
+/// Why no closed compute demand could be named for an empty frontier.
+enum class TechCoverDemandStabilityLimit : std::uint8_t {
+  /// The structural projection dead-ended, so the row domain admits no cover
+  /// whose compute demand a repair could size.
+  NoStructuralCoverProjected,
+  /// The structural cover's compute-context supply is admissible, so the
+  /// empty frontier has some other cause than a compute-context shortage.
+  StructuralCoverSupplyAdmissible,
+};
+
+llvm::StringRef
+techCoverDemandStabilityLimitSpelling(TechCoverDemandStabilityLimit limit) {
+  switch (limit) {
+  case TechCoverDemandStabilityLimit::NoStructuralCoverProjected:
+    return "no_structural_cover_projected";
+  case TechCoverDemandStabilityLimit::StructuralCoverSupplyAdmissible:
+    return "structural_cover_supply_admissible";
+  }
+  llvm_unreachable("unhandled tech cover demand stability limit");
+}
+
+void emitCoverDemandStabilityLimit(TechCoverDemandStabilityLimit limit,
+                                   const TechMatchDomain &domain,
+                                   std::uint64_t structuralComputeDemand) {
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::TechMapping,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "tech_cover_compute_context_demand_stability";
+        fields["closure_status"] = "no_closed_demand_projected";
+        fields["stability_limit"] = techCoverDemandStabilityLimitSpelling(limit);
+        fields["actor_count"] = domain.actors.size();
+        fields["row_count"] = domain.rows.size();
+        fields["structural_compute_demand_count"] = structuralComputeDemand;
+        fields["compute_context_value_count"] = domain.computeContextValueCount;
+      });
+}
+
+/// Supply-oblivious row rank, ordered descending: a wider realization first,
+/// then a Temporal memory root. The search's option order and the structural
+/// cover projection share this rank and differ only in their own tiebreak.
+std::pair<std::size_t, bool> structuralRowRank(const TechMatchRow &row) {
+  return {row.actorSlots.size(),
+          row.memoryOccurrenceDemand && row.memoryOccurrenceDemand->schedule ==
+                                            ::fabric::Schedule::Temporal};
+}
+
+/// Row preference of the structural projection: the shared rank, then the
+/// canonical key. This is the search's own option order with the
+/// compute-context breadth tiebreak removed, so growing a context bank cannot
+/// move the choice.
+bool structuralRowPreferred(const TechMatchRow &candidate,
+                            const TechMatchRow &incumbent) {
+  const auto candidateRank = structuralRowRank(candidate);
+  const auto incumbentRank = structuralRowRank(incumbent);
+  if (candidateRank != incumbentRank)
+    return candidateRank > incumbentRank;
+  return candidate.key < incumbent.key;
+}
+
+/// One structural cover of every actor, chosen without consulting compute
+/// context supply. The most-constrained actor takes its preferred available
+/// row until every actor is covered. Because neither the choice nor the order
+/// reads a context domain, the projected compute demand is the same before and
+/// after any compute-context growth: a Hall closure sized against it stays
+/// closed. Empty when the projection dead-ends.
+std::vector<const TechMatchRow *>
+projectStructuralCover(const TechMatchDomain &domain,
+                       llvm::ArrayRef<std::vector<std::size_t>> rowsByActor) {
+  std::vector<bool> covered(domain.actors.size(), false);
+  std::vector<const TechMatchRow *> cover;
+  std::size_t coveredCount = 0;
+  while (coveredCount != covered.size()) {
+    std::size_t narrowest = std::numeric_limits<std::size_t>::max();
+    std::optional<std::size_t> selected;
+    for (std::size_t actor = 0; actor != covered.size(); ++actor) {
+      if (covered[actor])
+        continue;
+      std::size_t optionCount = 0;
+      std::optional<std::size_t> preferred;
+      for (const std::size_t candidate : rowsByActor[actor]) {
+        if (llvm::any_of(domain.rows[candidate].actorSlots,
+                         [&](std::size_t slot) { return covered[slot]; }))
+          continue;
+        ++optionCount;
+        if (!preferred || structuralRowPreferred(domain.rows[candidate],
+                                                 domain.rows[*preferred]))
+          preferred = candidate;
+      }
+      if (optionCount == 0)
+        return {};
+      if (optionCount < narrowest) {
+        narrowest = optionCount;
+        selected = preferred;
+      }
+      if (narrowest == 1)
+        break;
+    }
+    const TechMatchRow &row = domain.rows[*selected];
+    for (const std::size_t slot : row.actorSlots) {
+      covered[slot] = true;
+      ++coveredCount;
+    }
+    cover.push_back(&row);
+  }
+  llvm::sort(cover, [](const TechMatchRow *lhs, const TechMatchRow *rhs) {
+    return lhs->key < rhs->key;
+  });
+  return cover;
+}
+
+void retainStructuralCoverComputeContextDeficit(
+    const TechMatchDomain &domain,
+    TechMappingGenerationAccounting &accounting,
+    TechMappingGenerationFeedback &feedback) {
+  std::vector<std::vector<std::size_t>> rowsByActor(domain.actors.size());
+  for (auto [rowIndex, row] : llvm::enumerate(domain.rows))
+    for (const std::size_t actor : row.actorSlots)
+      rowsByActor[actor].push_back(rowIndex);
+  const std::vector<const TechMatchRow *> cover =
+      projectStructuralCover(domain, rowsByActor);
+  if (cover.empty()) {
+    emitCoverDemandStabilityLimit(
+        TechCoverDemandStabilityLimit::NoStructuralCoverProjected, domain, 0);
+    return;
+  }
+  const std::size_t computeCount = llvm::count_if(cover, [](const auto *row) {
+    return std::holds_alternative<TechComputeRealizationView>(row->realization);
+  });
+  if (computeCount > 1) {
+    const SpatialComputeContextSupplyAnalysis analysis =
+        analyzeComputeContextSupply(cover, domain, accounting);
+    if (!analysis.admissible()) {
+      retainTechMappingComputeContextHallFeedback(
+          feedback.computeContextHall,
+          projectComputeContextHallDeficit(cover, domain, analysis));
+      return;
+    }
+  }
+  emitCoverDemandStabilityLimit(
+      TechCoverDemandStabilityLimit::StructuralCoverSupplyAdmissible, domain,
+      computeCount);
 }
 
 std::size_t actorMaskWordCount(std::size_t actorCount) {
@@ -440,16 +595,10 @@ private:
     llvm::sort(options, [&](std::size_t lhs, std::size_t rhs) {
       const TechMatchRow &lhsRow = domain_.rows[lhs];
       const TechMatchRow &rhsRow = domain_.rows[rhs];
-      if (lhsRow.actorSlots.size() != rhsRow.actorSlots.size())
-        return lhsRow.actorSlots.size() > rhsRow.actorSlots.size();
-      const bool lhsTemporalMemory = lhsRow.memoryOccurrenceDemand &&
-                                     lhsRow.memoryOccurrenceDemand->schedule ==
-                                         ::fabric::Schedule::Temporal;
-      const bool rhsTemporalMemory = rhsRow.memoryOccurrenceDemand &&
-                                     rhsRow.memoryOccurrenceDemand->schedule ==
-                                         ::fabric::Schedule::Temporal;
-      if (lhsTemporalMemory != rhsTemporalMemory)
-        return lhsTemporalMemory;
+      const auto lhsRank = structuralRowRank(lhsRow);
+      const auto rhsRank = structuralRowRank(rhsRow);
+      if (lhsRank != rhsRank)
+        return lhsRank > rhsRank;
       const std::uint64_t lhsBreadth = rowSupplyBreadth(lhsRow);
       const std::uint64_t rhsBreadth = rowSupplyBreadth(rhsRow);
       if (lhsBreadth != rhsBreadth)
@@ -483,8 +632,9 @@ private:
     if (coveredCount == covered_.size()) {
       ++completedChecks_;
       ++accounting_.constructiveCoverCompletedChecks;
-      if (!detail::rootSupplyAdmissible(selected_, domain_, accounting_,
-                                        feedback_))
+      if (!detail::rootSupplyAdmissible(selected_, domain_,
+                                        TechCoverDemandClosure::Closed,
+                                        accounting_, feedback_))
         return;
       std::vector<const TechMatchRow *> cover = selected_;
       llvm::sort(cover, [](const TechMatchRow *lhs, const TechMatchRow *rhs) {
@@ -508,12 +658,14 @@ private:
     }
 
     // Every singleton row is mandatory under this prefix. Collect the whole
-    // forced chain before capacity pruning; its Hall witness then describes
-    // the complete mandatory demand. A budget boundary still admits a proof
-    // from the rows already selected without authorizing another expansion.
+    // forced chain before capacity pruning. The prefix is still open, so the
+    // check prunes the branch without publishing its Hall witness. A budget
+    // boundary prunes from the rows already selected without authorizing
+    // another expansion.
     if ((options.size() > 1 ||
          accounting_.partialCoverExpansions >= expansionLimit_) &&
-        !detail::rootSupplyAdmissible(selected_, domain_, accounting_,
+        !detail::rootSupplyAdmissible(selected_, domain_,
+                                      TechCoverDemandClosure::Open, accounting_,
                                       feedback_))
       return;
 
@@ -752,7 +904,12 @@ private:
     rows.reserve(state.selectedRows.size());
     for (const std::size_t row : state.selectedRows)
       rows.push_back(&domain_.rows[row]);
-    return detail::rootSupplyAdmissible(rows, domain_, accounting_, feedback_);
+    return detail::rootSupplyAdmissible(
+        rows, domain_,
+        coversMask(state.covered, componentMask_)
+            ? TechCoverDemandClosure::Closed
+            : TechCoverDemandClosure::Open,
+        accounting_, feedback_);
   }
 
   bool consumeExpansion() {
@@ -1042,19 +1199,7 @@ materializeCover(const std::vector<LazyComponentCovers> &components,
   return cover;
 }
 
-} // namespace
-
-TechCoverSearchResult
-searchTechMatchCovers(const TechMatchDomain &domain,
-                      const ResolvedTechMappingConfigView &config,
-                      TechMappingGenerationAccounting &accounting,
-                      ExecutionControlView executionControl) {
-  return searchTechMatchCovers(domain, config, accounting,
-                               config.candidatePublicationLimit(),
-                               executionControl);
-}
-
-TechCoverSearchResult searchTechMatchCovers(
+TechCoverSearchResult exploreTechMatchCovers(
     const TechMatchDomain &domain, const ResolvedTechMappingConfigView &config,
     TechMappingGenerationAccounting &accounting, std::uint64_t coverLimit,
     ExecutionControlView executionControl) {
@@ -1276,6 +1421,34 @@ TechCoverSearchResult searchTechMatchCovers(
       return result;
     }
   }
+  return result;
+}
+
+} // namespace
+
+TechCoverSearchResult
+searchTechMatchCovers(const TechMatchDomain &domain,
+                      const ResolvedTechMappingConfigView &config,
+                      TechMappingGenerationAccounting &accounting,
+                      ExecutionControlView executionControl) {
+  return searchTechMatchCovers(domain, config, accounting,
+                               config.candidatePublicationLimit(),
+                               executionControl);
+}
+
+TechCoverSearchResult searchTechMatchCovers(
+    const TechMatchDomain &domain, const ResolvedTechMappingConfigView &config,
+    TechMappingGenerationAccounting &accounting, std::uint64_t coverLimit,
+    ExecutionControlView executionControl) {
+  TechCoverSearchResult result = exploreTechMatchCovers(
+      domain, config, accounting, coverLimit, executionControl);
+  // An empty frontier with no closed demand observation has no deficit a
+  // hardware repair can close. Name one against the structural cover, whose
+  // compute demand is fixed under any compute-context growth.
+  if (result.covers.empty() && !result.interrupted &&
+      !result.feedback.computeContextHall)
+    retainStructuralCoverComputeContextDeficit(domain, accounting,
+                                               result.feedback);
   return result;
 }
 
