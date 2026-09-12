@@ -1411,11 +1411,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           jointDesignQualityDisposition(firstQualityIncomplete->reason),
           candidate, !deadlineObserved);
     }
-    if (firstQualityIncomplete || boundedQualitySearchIncomplete ||
-        deadlineObserved) {
+    // Only incomplete evidence withholds a selection. A search the deadline
+    // or a hardware probe cut short still leaves every banked acquisition
+    // complete, and the measurement the invocation already earned decides;
+    // the stopping summary reports the truncated search on its own.
+    if (firstQualityIncomplete) {
       std::optional<ArtifactRootReference> candidate =
-          firstQualityIncomplete ? firstQualityIncomplete->candidate
-                                 : std::nullopt;
+          firstQualityIncomplete->candidate;
       if (!candidate && !candidates.empty())
         candidate = candidates.front();
       if (!candidate)
@@ -1428,9 +1430,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return finish(
           std::move(verifiedAlternatives[*owner].execution), std::nullopt,
           std::nullopt,
-          firstQualityIncomplete
-              ? jointDesignQualityDisposition(firstQualityIncomplete->reason)
-              : JointDesignQualityDisposition::ProofNotEstablished,
+          jointDesignQualityDisposition(firstQualityIncomplete->reason),
           *candidate, false);
     }
     llvm::sort(candidates, artifactRootReferenceLess);
@@ -1463,7 +1463,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (admittedCandidates.empty())
       return finish(std::move(verifiedAlternatives.front().execution),
                     std::nullopt, std::nullopt,
-                    JointDesignQualityDisposition::Complete, std::nullopt, true);
+                    JointDesignQualityDisposition::Complete, std::nullopt,
+                    !boundedQualitySearchIncomplete);
     auto pareto =
         applyCandidateSelection(*candidateSet, admittedCandidates, objectives,
                                 ParetoSelection{quality.paretoDimensions},
@@ -1482,7 +1483,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         verifiedAlternatives[admittedOwners.at(selected->front())];
     return finish(std::move(alternative.execution), alternative.planOrdinal,
                   selected->front(), JointDesignQualityDisposition::Complete,
-                  std::nullopt, true);
+                  std::nullopt, !boundedQualitySearchIncomplete);
   }
   // Parents without actionable feedback, or withheld by the hardware budget,
   // still own a typed outcome even when no hardware attempt ran.
