@@ -433,9 +433,12 @@ endpoint router receives. The router scans a request's cost arrays itself only
 when a revision is absent, stale, or uncertified, so the validation happens
 once per write instead of once per query without weakening it.
 
-A budget failure retains its typed termination reason and may carry the
-current cycle as additional evidence; exact repair retains its existing
-`Unknown` outcome for exhausted route work.
+A budget failure retains its typed termination reason, and exact repair
+retains its existing `Unknown` outcome for exhausted route work. A closure
+whose provisional projection is still cyclic when it gives up reports the
+typed selected-handshake cycle instead, whichever budget it exhausted, so the
+witness the iteration already reconstructed reaches the caller rather than
+being summarized as exhausted route work.
 
 An exact regional probe closes the routing dependencies of its provisional
 selection before rejecting the assignment. Capacity and tag conflicts add

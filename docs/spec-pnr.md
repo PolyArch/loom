@@ -1288,9 +1288,11 @@ projected witness comes from the existing independent reconstruction used to
 check dense scratch, so it cannot quote a previous candidate's graph. Exact
 regional PathFinder closure additionally requests that witness on a negative
 provisional projection and carries its frozen arc ordinals in the typed
-`SelectedCombinationalHandshakeCycle` failure. A negotiation budget failure
-can carry the same evidence while retaining its `NoProgress` or `NonClosure`
-kind. This is a proof of the selected route overlay, not a proof that every
+`SelectedCombinationalHandshakeCycle` failure. A closure that gives up while
+its provisional projection is cyclic reports that typed failure whichever
+budget it exhausted, so no negotiation budget kind carries cycle evidence and
+no consumer has to infer the reason from a `NoProgress` or `NonClosure`
+refusal. This is a proof of the selected route overlay, not a proof that every
 route for its placements is infeasible.
 The same diagnostic encoder can report a bounded copy of this requested proof
 at verbosity one. Boolean projection queries introduce no witness

@@ -656,15 +656,14 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       iterationConsumed = true;
       return llvm::Error::success();
     };
-    const auto iterationLimitFailure =
-        [&](std::vector<PnrIndex> witness) -> llvm::Error {
+    const auto iterationLimitFailure = [&]() -> llvm::Error {
       if (llvm::Error error = consumeIteration())
         return error;
       emitStatistics(loom::mapping_debug::ClosureStatus::IterationLimit);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::NonClosure,
           "Spatial PathFinder exhausted its iteration limit before Mapping "
-          "closure", std::move(witness));
+          "closure");
     };
     const auto completeIterationFailure =
         [&](llvm::Error failure,
@@ -952,6 +951,37 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     if (llvm::Error error = collectHandshakeContributors())
       return completeIterationFailure(std::move(error));
     bool retainedCyclicHandshakeTrial = false;
+    // One encoder for the witnessed cycle, used by every terminal path that
+    // refuses because of it. A closure that gives up while its projection is
+    // cyclic owns that reason whether it ran out of repair freedom, of
+    // no-progress budget, or of iterations; reporting an untyped budget
+    // failure would drop the witness this iteration already reconstructed.
+    // It consumes the witness, so exactly one terminal path may call it.
+    const auto selectedHandshakeCycleFailure = [&]() -> llvm::Error {
+      std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts;
+      std::vector<SpatialHandshakeCycleTagSelection> handshakeCycleTagSelections;
+      if (closureRequirement ==
+              SpatialRoutingClosureRequirement::ExactRegional &&
+          !frozenHandshakeCycle.empty()) {
+        handshakeCycleRouteCuts.reserve(handshakeContributors.size());
+        for (const detail::HandshakeCycleRouteTraversal &contributor :
+             handshakeContributors)
+          handshakeCycleRouteCuts.push_back(
+              {contributor.logicalNet, std::nullopt, contributor.traversal});
+        auto selections = detail::selectedHandshakeCycleTagSelections(
+            candidate, tagSummary, handshakeContributors);
+        if (!selections)
+          return selections.takeError();
+        handshakeCycleTagSelections = std::move(*selections);
+      }
+      if (llvm::Error error = consumeIteration())
+        return error;
+      emitStatistics(loom::mapping_debug::ClosureStatus::SelectedHandshakeCycle);
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          std::move(frozenHandshakeCycle), std::move(handshakeCycleLogicalNets),
+          std::move(handshakeCycleRouteCuts),
+          std::move(handshakeCycleTagSelections));
+    };
     // Close the witnessed repair region before choosing its first omission.
     // Otherwise an initially smaller region would dictate which user group
     // can be retained even though earlier groups belong to the same witness.
@@ -1307,8 +1337,11 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           trendImprovedCount = 0;
           trendIneligibleCount = 0;
           trendRegressedCount = 0;
-          if (completedIterations == limits.iterationLimit)
-            return iterationLimitFailure(std::move(frozenHandshakeCycle));
+          if (completedIterations == limits.iterationLimit) {
+            if (!frozenHandshakeCycle.empty())
+              return selectedHandshakeCycleFailure();
+            return iterationLimitFailure();
+          }
           if (llvm::Error error = costs.advancePathFinderIteration())
             return completeIterationFailure(std::move(error));
           if (llvm::Error error = consumeIteration())
@@ -1519,33 +1552,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         return pathFinderError(
             "provisional RouteTree terminals disagree with the candidate");
       }
-      if (!projection->selectedHandshakeAcyclic) {
-        std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts;
-        std::vector<SpatialHandshakeCycleTagSelection>
-            handshakeCycleTagSelections;
-        if (closureRequirement ==
-                SpatialRoutingClosureRequirement::ExactRegional &&
-            !frozenHandshakeCycle.empty()) {
-          handshakeCycleRouteCuts.reserve(handshakeContributors.size());
-          for (const detail::HandshakeCycleRouteTraversal &contributor :
-               handshakeContributors)
-            handshakeCycleRouteCuts.push_back(
-                {contributor.logicalNet, std::nullopt, contributor.traversal});
-          auto selections = detail::selectedHandshakeCycleTagSelections(
-              candidate, tagSummary, handshakeContributors);
-          if (!selections)
-            return completeIterationFailure(selections.takeError());
-          handshakeCycleTagSelections = std::move(*selections);
-        }
-        if (llvm::Error error = consumeIteration())
-          return std::move(error);
-        emitStatistics(loom::mapping_debug::ClosureStatus::SelectedHandshakeCycle);
-        return llvm::make_error<SpatialPathFinderClosureFailure>(
-            std::move(frozenHandshakeCycle),
-            std::move(handshakeCycleLogicalNets),
-            std::move(handshakeCycleRouteCuts),
-            std::move(handshakeCycleTagSelections));
-      }
+      if (!projection->selectedHandshakeAcyclic)
+        return selectedHandshakeCycleFailure();
       if (llvm::Error error = consumeIteration())
         return std::move(error);
       emitStatistics(loom::mapping_debug::ClosureStatus::MappingNonclosure);
@@ -1586,13 +1594,15 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         emitStatistics(loom::mapping_debug::ClosureStatus::NoProgressTemporary);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
+      if (!frozenHandshakeCycle.empty())
+        return selectedHandshakeCycleFailure();
       if (llvm::Error error = consumeIteration())
         return std::move(error);
       emitStatistics(loom::mapping_debug::ClosureStatus::NoProgress);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::NoProgress,
           "Spatial PathFinder exhausted its closure-rank no-progress limit "
-          "before Mapping closure", std::move(frozenHandshakeCycle));
+          "before Mapping closure");
     }
     if (completedIterations == limits.iterationLimit) {
       if (bestTemporaryObjective) {
@@ -1605,7 +1615,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         emitStatistics(loom::mapping_debug::ClosureStatus::TemporaryCapacity);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
-      return iterationLimitFailure(std::move(frozenHandshakeCycle));
+      if (!frozenHandshakeCycle.empty())
+        return selectedHandshakeCycleFailure();
+      return iterationLimitFailure();
     }
     if (llvm::Error error = costs.advancePathFinderIteration()) {
       ++debugStatistics.arithmeticFailures;

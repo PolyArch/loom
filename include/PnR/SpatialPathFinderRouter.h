@@ -85,16 +85,14 @@ public:
   /// Carries the cycle of the rejected provisional route selection. These
   /// ordinals belong to FrozenSpatialHandshakeIndex::projectionArcs(). An
   /// empty witness preserves a closure that supplied only a boolean result.
+  /// A closure that gives up while its projection is cyclic reports this kind
+  /// whichever budget it exhausted, so no budget kind carries cycle evidence.
   explicit SpatialPathFinderClosureFailure(
       std::vector<PnrIndex> frozenHandshakeCycle,
       std::vector<PnrIndex> handshakeCycleLogicalNets = {},
       std::vector<SpatialTraversalRouteCut> handshakeCycleRouteCuts = {},
       std::vector<SpatialHandshakeCycleTagSelection>
           handshakeCycleTagSelections = {});
-  /// Cycle evidence may accompany a budget failure without changing its kind.
-  SpatialPathFinderClosureFailure(
-      Kind kind, std::string message,
-      std::vector<PnrIndex> frozenHandshakeCycle);
 
   Kind kind() const { return kind_; }
   const SpatialFixedTerminalCutCertificate &certificate() const {

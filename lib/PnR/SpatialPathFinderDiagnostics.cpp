@@ -33,18 +33,11 @@ SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
         handshakeCycleTagSelections)
     : SpatialPathFinderClosureFailure(
           Kind::SelectedCombinationalHandshakeCycle,
-          "Spatial PathFinder selected a combinational handshake cycle",
-          std::move(frozenHandshakeCycle)) {
+          "Spatial PathFinder selected a combinational handshake cycle") {
+  frozenHandshakeCycle_ = std::move(frozenHandshakeCycle);
   handshakeCycleLogicalNets_ = std::move(handshakeCycleLogicalNets);
   handshakeCycleRouteCuts_ = std::move(handshakeCycleRouteCuts);
   handshakeCycleTagSelections_ = std::move(handshakeCycleTagSelections);
-}
-
-SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
-    Kind kind, std::string message,
-    std::vector<PnrIndex> frozenHandshakeCycle)
-    : SpatialPathFinderClosureFailure(kind, std::move(message)) {
-  frozenHandshakeCycle_ = std::move(frozenHandshakeCycle);
 }
 
 void SpatialPathFinderClosureFailure::log(llvm::raw_ostream &stream) const {
