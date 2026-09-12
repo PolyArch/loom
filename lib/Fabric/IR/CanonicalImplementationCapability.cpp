@@ -157,6 +157,102 @@ llvm::Expected<unsigned> derivePayloadWidth(mlir::Type type) {
   return *width;
 }
 
+/// Width of one cast endpoint. Unlike the ordinary integer datapath, a cast
+/// relation admits i1: widening a predicate is an ordinary lowered operation.
+llvm::Expected<fabric::IntegerWidth> deriveCastIntegerWidth(mlir::Type type) {
+  auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
+  if (!integer || !integer.isSignless())
+    return capabilityDerivationFailure(
+        fabric::CanonicalCapabilityDerivationFailure::NoAdmittingFamily,
+        "integer cast capability requires a signless integer endpoint");
+  for (fabric::IntegerWidth width : fabric::integerWidthDomain)
+    if (fabric::getBitWidth(width) == integer.getWidth())
+      return width;
+  return capabilityDerivationFailure(
+      fabric::CanonicalCapabilityDerivationFailure::NoAdmittingFamily,
+      "integer cast width is outside the registered capability domain");
+}
+
+/// The least cast relation that admits an exact actor set. Index endpoints
+/// need the program's resolved index width, which this canonical context does
+/// not carry, so they remain a typed unavailable rather than a guess.
+llvm::Expected<fabric::FamilyCapabilityParams> deriveScalarIntegerCastEnvelope(
+    fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<dataflow::CanonicalActorSchemaProjection> actors) {
+  auto ordered = canonicalActorOrder(actors);
+  if (!ordered)
+    return ordered.takeError();
+  for (const dataflow::CanonicalActorSchemaProjection *actor : *ordered)
+    if (llvm::Error error =
+            fabric::verifyImplementationFamilyActorShape(family, *actor))
+      return capabilityDerivationFailure(
+          fabric::CanonicalCapabilityDerivationFailure::InvalidActorProjection,
+          llvm::toString(std::move(error)));
+  if (llvm::any_of(actors, actorRequiresRepresentationContext))
+    return capabilityDerivationFailure(
+        fabric::CanonicalCapabilityDerivationFailure::
+            UnsupportedAdmissionProvider,
+        "canonical integer cast derivation requires explicit index and "
+        "pointer representation context");
+  fabric::IntegerCastRelation relation;
+  for (const dataflow::CanonicalActorSchemaProjection *actor : *ordered) {
+    auto source = deriveCastIntegerWidth(actor->type.getInput(0));
+    if (!source)
+      return source.takeError();
+    auto destination = deriveCastIntegerWidth(actor->type.getResult(0));
+    if (!destination)
+      return destination.takeError();
+    relation.widthPairs.insert(*source, *destination);
+  }
+  if (!relation.widthPairs.valid() || relation.widthPairs.empty())
+    return capabilityDerivationFailure(
+        fabric::CanonicalCapabilityDerivationFailure::NoAdmittingFamily,
+        "integer cast actor set yields no admissible width relation");
+  fabric::FamilyCapabilityParams parameters =
+      fabric::ScalarIntegerCastParams{relation};
+  for (const dataflow::CanonicalActorSchemaProjection *actor : *ordered) {
+    if (llvm::Error error = fabric::verifyImplementationFamilyAdmission(
+            family, &parameters, *actor))
+      return capabilityDerivationFailure(
+          fabric::CanonicalCapabilityDerivationFailure::InvalidActorProjection,
+          llvm::toString(std::move(error)));
+  }
+  return parameters;
+}
+
+/// The token-plane capability record carries no field: a carry, invariant, or
+/// gate resource is fully described by its shape and its payload lane. The
+/// inverse policy therefore only has to prove that every actor is admissible,
+/// which is exactly what the forward admission checks.
+llvm::Expected<fabric::FamilyCapabilityParams> deriveTokenPlaneEnvelope(
+    fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<dataflow::CanonicalActorSchemaProjection> actors) {
+  auto ordered = canonicalActorOrder(actors);
+  if (!ordered)
+    return ordered.takeError();
+  for (const dataflow::CanonicalActorSchemaProjection *actor : *ordered)
+    if (llvm::Error error =
+            fabric::verifyImplementationFamilyActorShape(family, *actor))
+      return capabilityDerivationFailure(
+          fabric::CanonicalCapabilityDerivationFailure::InvalidActorProjection,
+          llvm::toString(std::move(error)));
+  if (llvm::any_of(actors, actorRequiresRepresentationContext))
+    return capabilityDerivationFailure(
+        fabric::CanonicalCapabilityDerivationFailure::
+            UnsupportedAdmissionProvider,
+        "canonical token-plane derivation requires explicit index and pointer "
+        "representation context");
+  fabric::FamilyCapabilityParams parameters = fabric::TokenPlaneParams{};
+  for (const dataflow::CanonicalActorSchemaProjection *actor : *ordered) {
+    if (llvm::Error error = fabric::verifyImplementationFamilyAdmission(
+            family, &parameters, *actor))
+      return capabilityDerivationFailure(
+          fabric::CanonicalCapabilityDerivationFailure::InvalidActorProjection,
+          llvm::toString(std::move(error)));
+  }
+  return parameters;
+}
+
 llvm::Expected<fabric::FamilyCapabilityParams> deriveTokenSyncEnvelope(
     fabric::ImplementationFamilyId family,
     llvm::ArrayRef<dataflow::CanonicalActorSchemaProjection> actors) {
@@ -224,6 +320,10 @@ llvm::Expected<fabric::FamilyCapabilityParams> deriveCapabilityEnvelope(
     return deriveScalarIntegerEnvelope(family, actors);
   case fabric::TypedAdmissionProviderId::SyncTokenAdmission:
     return deriveTokenSyncEnvelope(family, actors);
+  case fabric::TypedAdmissionProviderId::ScalarIntegerCastAdmission:
+    return deriveScalarIntegerCastEnvelope(family, actors);
+  case fabric::TypedAdmissionProviderId::TokenPlaneAdmission:
+    return deriveTokenPlaneEnvelope(family, actors);
   default:
     return capabilityDerivationFailure(
         fabric::CanonicalCapabilityDerivationFailure::

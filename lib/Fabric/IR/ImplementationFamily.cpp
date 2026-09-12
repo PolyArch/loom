@@ -68,6 +68,10 @@ llvm::Error verifyScalarOrdinaryIntegerActorShape(
     const CanonicalActorSchemaProjection &actor);
 llvm::Error
 verifySyncTokenActorShape(const CanonicalActorSchemaProjection &actor);
+llvm::Error verifyScalarIntegerCastActorShape(
+    const CanonicalActorSchemaProjection &actor);
+llvm::Error
+verifyTokenPlaneActorShape(const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitFloatBehavior(const FloatBehaviorProfile &behavior,
                    ::mlir::arith::FastMathFlags actorFlags,
@@ -255,50 +259,24 @@ admitTokenPlanePayload(::mlir::Type payloadType,
                 "fixed-ranked vector, or none");
 }
 
+/// The one payload lane a token-plane actor routes. Every shape this provider
+/// admits has exactly one, so the shape validator and the admission agree by
+/// construction instead of restating the lane layout.
+::mlir::Type
+tokenPlanePayloadType(const CanonicalActorSchemaProjection &actor) {
+  return actor.schema == OperationSchemaId::DataflowGate
+             ? actor.type.getResult(1)
+             : actor.type.getResult(0);
+}
+
 llvm::Error
 admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
                          const CanonicalActorSchemaProjection &actor,
                          const ::loom::PointerLayout *pointerLayout) {
   (void)std::get<fabric::TokenPlaneParams>(capability);
-  ::mlir::Type payloadType;
-  switch (actor.schema) {
-  case OperationSchemaId::DataflowCarry:
-    if (llvm::Error error = requireArity(actor, 3, 1))
-      return error;
-    payloadType = actor.type.getResult(0);
-    if (actor.type.getInput(1) != payloadType ||
-        actor.type.getInput(2) != payloadType)
-      return reject("carry payload types do not agree");
-    break;
-  case OperationSchemaId::DataflowInvariant:
-    if (llvm::Error error = requireArity(actor, 2, 1))
-      return error;
-    payloadType = actor.type.getResult(0);
-    if (actor.type.getInput(1) != payloadType)
-      return reject("invariant payload types do not agree");
-    break;
-  case OperationSchemaId::DataflowGate:
-    if (llvm::Error error = requireArity(actor, 2, 2))
-      return error;
-    payloadType = actor.type.getResult(1);
-    if (actor.type.getInput(1) != payloadType)
-      return reject("gate payload types do not agree");
-    break;
-  default:
-    return reject("token-plane admission provider received an unsupported "
-                  "schema");
-  }
-  auto condition =
-      ::llvm::dyn_cast<::mlir::IntegerType>(actor.type.getInput(0));
-  if (!condition || !condition.isSignless() || condition.getWidth() != 1)
-    return reject("token-plane condition must be scalar i1");
-  if (actor.schema == OperationSchemaId::DataflowGate) {
-    auto result =
-        ::llvm::dyn_cast<::mlir::IntegerType>(actor.type.getResult(0));
-    if (!result || !result.isSignless() || result.getWidth() != 1)
-      return reject("gate condition result must be scalar i1");
-  }
-  return admitTokenPlanePayload(payloadType, pointerLayout);
+  if (llvm::Error error = verifyTokenPlaneActorShape(actor))
+    return error;
+  return admitTokenPlanePayload(tokenPlanePayloadType(actor), pointerLayout);
 }
 
 llvm::Error
@@ -884,6 +862,10 @@ llvm::Error fabric::verifyImplementationFamilyActorShape(
     return verifyScalarOrdinaryIntegerActorShape(actor);
   case TypedAdmissionProviderId::SyncTokenAdmission:
     return verifySyncTokenActorShape(actor);
+  case TypedAdmissionProviderId::ScalarIntegerCastAdmission:
+    return verifyScalarIntegerCastActorShape(actor);
+  case TypedAdmissionProviderId::TokenPlaneAdmission:
+    return verifyTokenPlaneActorShape(actor);
   default:
     return reject("implementation-family admission provider has no shared "
                   "capability-independent shape validator");
@@ -1527,6 +1509,63 @@ llvm::Error verifyScalarOrdinaryIntegerActorShape(
       (!integer || !integer.isSignless()))
     return reject("integer width admission requires a scalar signless integer "
                   "or index type");
+  return llvm::Error::success();
+}
+
+llvm::Error verifyScalarIntegerCastActorShape(
+    const CanonicalActorSchemaProjection &actor) {
+  if (llvm::Error error = requireArity(actor, 1, 1))
+    return error;
+  for (::mlir::Type type : {actor.type.getInput(0), actor.type.getResult(0)}) {
+    auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type);
+    if (!::llvm::isa<::mlir::IndexType>(type) &&
+        (!integer || !integer.isSignless()))
+      return reject("integer cast endpoints must be scalar signless integer "
+                    "or index types");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+verifyTokenPlaneActorShape(const CanonicalActorSchemaProjection &actor) {
+  ::mlir::Type payloadType;
+  switch (actor.schema) {
+  case OperationSchemaId::DataflowCarry:
+    if (llvm::Error error = requireArity(actor, 3, 1))
+      return error;
+    payloadType = actor.type.getResult(0);
+    if (actor.type.getInput(1) != payloadType ||
+        actor.type.getInput(2) != payloadType)
+      return reject("carry payload types do not agree");
+    break;
+  case OperationSchemaId::DataflowInvariant:
+    if (llvm::Error error = requireArity(actor, 2, 1))
+      return error;
+    payloadType = actor.type.getResult(0);
+    if (actor.type.getInput(1) != payloadType)
+      return reject("invariant payload types do not agree");
+    break;
+  case OperationSchemaId::DataflowGate:
+    if (llvm::Error error = requireArity(actor, 2, 2))
+      return error;
+    payloadType = actor.type.getResult(1);
+    if (actor.type.getInput(1) != payloadType)
+      return reject("gate payload types do not agree");
+    break;
+  default:
+    return reject("token-plane admission provider received an unsupported "
+                  "schema");
+  }
+  auto condition =
+      ::llvm::dyn_cast<::mlir::IntegerType>(actor.type.getInput(0));
+  if (!condition || !condition.isSignless() || condition.getWidth() != 1)
+    return reject("token-plane condition must be scalar i1");
+  if (actor.schema == OperationSchemaId::DataflowGate) {
+    auto result =
+        ::llvm::dyn_cast<::mlir::IntegerType>(actor.type.getResult(0));
+    if (!result || !result.isSignless() || result.getWidth() != 1)
+      return reject("gate condition result must be scalar i1");
+  }
   return llvm::Error::success();
 }
 
