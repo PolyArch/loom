@@ -235,6 +235,12 @@ struct CompletedPreMappingSelection final {
   /// Exact source-only native work observed once by the pre-Mapping owner.
   /// This is a derived baseline measure, not candidate identity or DSE rank.
   std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds;
+  /// Leaf executions of the same source-only observation over the declared
+  /// computation interval. A candidate's covered work is this total minus the
+  /// candidate's own host residual, which is the only measure that states
+  /// what a candidate actually moves off the host; a scope's leaf count is a
+  /// coordinate projection and can exceed it.
+  std::optional<std::uint64_t> sourceHostOnlyLeafExecutions;
 
   bool searchComplete() const {
     return completeness.exactComplete();
