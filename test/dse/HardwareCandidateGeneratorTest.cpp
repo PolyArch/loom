@@ -338,17 +338,21 @@ void specialMathCapabilityProfileRoundTrip() {
               digests.front() != digests.back(),
           "special-math profiles produced the same template config");
 
-  // The private-cache block and the memory operation issue depth are encoded
-  // after the special-math profile tag, so the tag is not the terminal field
-  // of the canonical view.
-  constexpr std::size_t kTrailingScaleBytes =
-      2 * sizeof(std::uint64_t) + 6 * sizeof(std::uint32_t);
+  // The two views differ in the profile alone, so the bytes where they differ
+  // are exactly the profile's wire tag. Locating it this way keeps the probe
+  // independent of which scale fields the codec encodes around it.
   constexpr std::size_t kSpecialMathTagBytes = sizeof(std::uint32_t);
+  require(canonicalViews.front().size() == canonicalViews.back().size(),
+          "the special-math profile changed the template config length");
   std::vector<std::uint8_t> invalidWireTag = canonicalViews.back();
-  require(invalidWireTag.size() >= kTrailingScaleBytes + kSpecialMathTagBytes,
+  const auto difference =
+      std::mismatch(canonicalViews.front().begin(), canonicalViews.front().end(),
+                    canonicalViews.back().begin());
+  const std::size_t tagOffset =
+      static_cast<std::size_t>(difference.first - canonicalViews.front().begin());
+  require(tagOffset + kSpecialMathTagBytes <= invalidWireTag.size(),
           "template config omitted the special-math profile wire tag");
-  const auto tagBegin =
-      invalidWireTag.end() - kTrailingScaleBytes - kSpecialMathTagBytes;
+  const auto tagBegin = invalidWireTag.begin() + tagOffset;
   std::fill(tagBegin, tagBegin + kSpecialMathTagBytes, 0xff);
   const auto invalidDigest = take(loom::computeComponentViewDigest(
       loom::dse::resolvedFabricTemplateConfigSchemaBytes(), invalidWireTag));

@@ -1406,14 +1406,21 @@ addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
              .second)
       return invalid("composite FU boundary binds one node operand twice");
   }
+  // Every FU result leaves the PE through a PE port, so the boundary presents
+  // the PE's own port type however narrow the producing node's result is.
+  auto peBoundary = pe.boundaryPortType();
+  if (!peBoundary)
+    return peBoundary.takeError();
   std::vector<PortType> boundaryOutputTypes;
   boundaryOutputTypes.reserve(spec.outputs.size());
   for (const CompositeFuPortSpec &port : spec.outputs) {
     if (port.node >= spec.nodes.size() ||
         port.portOrdinal >= spec.nodes[port.node].outputTypes.size())
       return invalid("composite FU boundary output names an unknown node port");
-    boundaryOutputTypes.push_back(
-        spec.nodes[port.node].outputTypes[port.portOrdinal]);
+    if (spec.nodes[port.node].outputTypes[port.portOrdinal].width() >
+        peBoundary->width())
+      return invalid("composite FU boundary output exceeds the PE port width");
+    boundaryOutputTypes.push_back(*peBoundary);
   }
 
   std::map<std::pair<std::uint32_t, std::uint64_t>,

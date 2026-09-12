@@ -225,10 +225,9 @@ llvm::Expected<::loom::adg::CompositeFuSpec> deriveCompositeFuTemplate(
     if (!capability)
       return capability.takeError();
     const ::mlir::FunctionType type = candidate.nodes[node].type;
-    ::loom::adg::CompositeFuNodeSpec declaration;
-    declaration.implementationFamily = capability->family;
-    declaration.hardwareParameters = capability->parameters;
-    declaration.enabledOperations = capability->enabledSchemas;
+    ::loom::adg::CompositeFuNodeSpec declaration{
+        capability->family, capability->parameters, capability->enabledSchemas,
+        {},                 {}};
     std::vector<std::uint32_t> inputWidths;
     std::vector<std::uint32_t> resultWidths;
     for (::mlir::Type input : type.getInputs()) {
