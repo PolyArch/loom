@@ -249,28 +249,56 @@ The Python qualification owner is `test/cgra_qualification.py`; the paired
 runner imports its published budget and gate resolution. Profile schema
 identities are derived from the named constants in `CgraBudgetProfile.cpp`.
 
-The shared hardware search that precedes the profiles grows one Module until
-every representative source maps. It runs under the `fast` tier and reserves
-the smallest tier for stopping, writing and exiting, so its own search deadline
-is strictly inside the tier its wrapper kills on; a search that expires reports
-its rounds and `ready` false instead of being terminated without evidence. A
+The shared hardware search that precedes the profiles certifies one Fabric for
+the whole suite. `ready` means every representative source both covers, so
+TechMapping publishes a candidate, and closes, so Spatial PnR publishes a
+Mapping on that same Fabric. A cover alone is not evidence the Fabric can carry
+the source: the stage that binds routing is Spatial PnR, and a readiness rule
+that consumes only TechMapping evidence certifies a Fabric the Spatial side
+cannot back. Because the search now runs both stages for every source in every
+round, it costs the suite rather than one workload and runs under the largest
+tier, reserving the smallest tier for stopping, writing and exiting. A profile
+still measures one workload and keeps the `fast` tier its own wrapper grants. A
 round the deadline cuts short carries no decision and is discarded rather than
 published as a partial source suite.
 
-The search grows compute-context supply from the same typed Hall feedback the
-hardware reopen chain consumes, and it consults the same owner for whether that
-growth is a continuation proof. The closure is atomic: it always closes the
-complete observed deficit. Because Mapping publishes a deficit only against a
-closed demand set, one round normally closes the whole gap. A relation that
-still reappears with the same deficit while its demand and its context supply
-both grew by that amount has spent the new contexts on new demand. The search
-then stops with the typed `hall_repair_stagnation` reason and reports `ready`
-false on the last admitted Fabric, rather than spending the remaining tier on
-rounds whose deficit cannot fall. A round in which no source maps and none
-names a closable deficit stops with the typed `no_closable_hall_deficit`
-reason, which distinguishes a shortage the owner cannot size from one it
-refused to grow. A stopped search is a typed incomplete qualification outcome
-and publishes no gate, exactly like a timeout or an unmapped source.
+A source names its typed hardware deficit only when the stage that failed
+reached a terminal outcome. A Spatial PnR the deadline cancelled names nothing,
+so the search gives each source's closure its own budget and, when that budget
+cancels a source, stops with the typed `spatial_evidence_truncated` reason
+instead of reporting the truncation as an unexplained `ready` false.
+
+Compute supply is a precondition for routing, so a round closes any Hall
+deficit before it believes a Spatial deficit. The search grows compute-context
+supply from the same typed Hall feedback the hardware reopen chain consumes,
+and it consults the same owner for whether that growth is a continuation proof.
+The closure is atomic: it always closes the complete observed deficit. Because
+Mapping publishes a deficit only against a closed demand set, one round
+normally closes the whole gap. A relation that still reappears with the same
+deficit while its demand and its context supply both grew by that amount has
+spent the new contexts on new demand. The search then stops with the typed
+`hall_repair_stagnation` reason and reports `ready` false on the last admitted
+Fabric, rather than spending the remaining tier on rounds whose deficit cannot
+fall.
+
+A Spatial deficit is answered with the same typed feedback the reopen chain
+consumes, and with the recipe value that feedback family names: a reserved
+channel shortage grows the interconnect FIFO reservation, and a graph-boundary
+shortage grows the gateway count. Neither has a Module-local decision, so every
+Fabric the search certifies expands one builtin recipe and a Spatial growth
+restarts the Module chain from the re-expanded core. A round grows either a
+Module decision or the recipe, never both. The restart must not lose supply the
+search already proved necessary, so a Temporal closure also raises the recipe's
+resident-context count: the recipe names that supply uniformly, which is never
+less than the closure asked of any one store. A composite occurrence is
+Module-local supply the recipe cannot name, so a Spatial growth after one stops
+with the typed `spatial_growth_discards_module_supply` reason rather than
+silently regressing the chain. A round in which no source is ready
+and none names a deficit the search can size stops with the typed
+`no_closable_hall_deficit` or `no_closable_spatial_deficit` reason, which
+distinguishes a shortage the owner cannot size from one it refused to grow. A
+stopped search is a typed incomplete qualification outcome and publishes no
+gate, exactly like a timeout or an unmapped source.
 Transport repair records the production CEGAR termination and each local
 transition's parent Mapping, triggering runtime Evidence, accumulated
 constraints, child Mapping and child runtime Evidence. Consecutive transitions

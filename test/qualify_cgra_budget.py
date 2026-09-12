@@ -29,10 +29,16 @@ SOURCE_CANDIDATE_JOBS = 4
 COMPILATION_TIMEOUT_SECONDS = 120.0
 SOURCE_PIPELINE_TIMEOUT_SECONDS = 900.0
 SPATIAL_PNR_TIMEOUT_SECONDS = float(timeout_seconds(Tier.FAST))
+# The shared hardware search certifies one Fabric for the whole suite: it runs
+# TechMapping and Spatial PnR for every representative source in every round,
+# so it costs the suite rather than one workload and takes the largest tier.
+HARDWARE_SEARCH_TIMEOUT_SECONDS = float(timeout_seconds(Tier.NIGHTLY))
 PROFILE_TIMEOUT_SECONDS = float(timeout_seconds(Tier.XLONG))
 PROFILE_TIMEOUT_MARGIN_SECONDS = PROFILE_TIMEOUT_SECONDS - SPATIAL_PNR_TIMEOUT_SECONDS
 if PROFILE_TIMEOUT_MARGIN_SECONDS <= 0:
     raise ValueError("CGRA profile wrapper has no deadline margin")
+if HARDWARE_SEARCH_TIMEOUT_SECONDS <= SPATIAL_PNR_TIMEOUT_SECONDS:
+    raise ValueError("CGRA hardware search wrapper cannot hold one closure")
 
 
 @dataclass(frozen=True)
@@ -303,7 +309,8 @@ def main() -> int:
         request_path.write_text(json.dumps(requests, indent=2) + "\n", encoding="ascii")
         selected = run(
             (str(cgra_profile), "--hardware", str(store), str(request_path)),
-            SPATIAL_PNR_TIMEOUT_SECONDS, environment, qualification_root / "hardware",
+            HARDWARE_SEARCH_TIMEOUT_SECONDS, environment,
+            qualification_root / "hardware",
         )
         hardware = json.loads(selected.stdout)
         hardware_report = qualification_root / "hardware-search.json"

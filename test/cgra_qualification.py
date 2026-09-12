@@ -678,7 +678,9 @@ def validate_cgra_hardware_search(value: object) -> bool:
         raise ValueError("CGRA hardware search has invalid readiness")
     stop_reason = value["stop_reason"]
     if stop_reason is not None and stop_reason not in (
-        "hall_repair_stagnation", "no_closable_hall_deficit"
+        "hall_repair_stagnation", "no_closable_hall_deficit",
+        "no_closable_spatial_deficit", "spatial_evidence_truncated",
+        "spatial_growth_discards_module_supply",
     ):
         raise ValueError("CGRA hardware search has an unknown stop reason")
     if stop_reason is not None and value["ready"]:
@@ -692,7 +694,7 @@ def validate_cgra_hardware_search(value: object) -> bool:
     final_growth_completed = False
     for ordinal, round_ in enumerate(rounds):
         if not isinstance(round_, Mapping) or set(round_) != {
-            "fabric", "evaluations", "hardware_growth"
+            "fabric", "evaluations", "hardware_growth", "recipe_growth"
         }:
             raise ValueError("CGRA hardware round has the wrong shape")
         if round_["fabric"] != expected_fabric:
@@ -702,12 +704,14 @@ def validate_cgra_hardware_search(value: object) -> bool:
             raise ValueError("CGRA hardware search omitted part of the source suite")
         identities: list[dict[str, object]] = []
         feedbacks: list[str] = []
+        spatial_feedbacks: list[str] = []
         all_mapped = True
         for evaluation, operator in zip(evaluations, operators):
             if not isinstance(evaluation, Mapping) or set(evaluation) != {
                 "workload", "operator_id", "protocol_symbol", "canonical_dataflow",
                 "replay_cases", "replay_case_occurrences",
                 "tech_mapping_search", "owner_feedback",
+                "spatial_pnr", "spatial_owner_feedback",
             }:
                 raise ValueError("CGRA hardware evaluation has the wrong shape")
             if (evaluation["workload"], evaluation["operator_id"],
@@ -721,7 +725,8 @@ def validate_cgra_hardware_search(value: object) -> bool:
                 evaluation["replay_cases"], evaluation["replay_case_occurrences"]
             )
             identity = {key: item for key, item in evaluation.items()
-                        if key not in {"tech_mapping_search", "owner_feedback"}}
+                        if key not in {"tech_mapping_search", "owner_feedback",
+                                       "spatial_pnr", "spatial_owner_feedback"}}
             identities.append(identity)
             result = evaluation["tech_mapping_search"]
             outcome = validate_cgra_tech_mapping_result(result, require_completed=False)
@@ -730,7 +735,6 @@ def validate_cgra_hardware_search(value: object) -> bool:
                 outcome == "completed" or (outcome == "incomplete" and
                 result["incomplete_reason"] == "candidate_semantic_limit_reached")
             )
-            all_mapped &= usable
             feedback = evaluation["owner_feedback"]
             if feedback is not None:
                 if not isinstance(feedback, str) or not re.fullmatch(
@@ -738,10 +742,48 @@ def validate_cgra_hardware_search(value: object) -> bool:
                     raise ValueError("CGRA hardware feedback is not canonical bytes")
                 if not result["candidates"]:
                     feedbacks.append(feedback)
+            spatial = evaluation["spatial_pnr"]
+            if spatial is None:
+                if usable:
+                    raise ValueError("CGRA hardware search skipped a covered "
+                                     "source's Spatial closure")
+                closed = False
+            else:
+                _validate_candidate_generator_result(
+                    spatial, _SPATIAL_PNR_WORK_UNITS,
+                    "CGRA hardware Spatial closure",
+                    require_completed=False, candidate_schema=_MAPPING_SCHEMA,
+                )
+                assert isinstance(spatial, Mapping)
+                closed = bool(spatial["candidates"])
+            spatial_feedback = evaluation["spatial_owner_feedback"]
+            if spatial_feedback is not None:
+                if not isinstance(spatial_feedback, str) or not re.fullmatch(
+                        r"(?:[0-9a-f]{2})+", spatial_feedback):
+                    raise ValueError(
+                        "CGRA Spatial hardware feedback is not canonical bytes")
+                if not closed:
+                    spatial_feedbacks.append(spatial_feedback)
+            all_mapped &= usable and closed
         if source_identities is not None and identities != source_identities:
             raise ValueError("CGRA hardware search changed a dynamic source case")
         source_identities = identities
+        recipe = round_["recipe_growth"]
         growth = round_["hardware_growth"]
+        if recipe is not None and growth is not None:
+            raise ValueError("CGRA hardware round grew twice")
+        if recipe is not None:
+            if all_mapped or not isinstance(recipe, Mapping) or "direction" not in recipe:
+                raise ValueError("CGRA hardware recipe growth has an invalid boundary")
+            if recipe.get("owner_feedback") not in spatial_feedbacks:
+                raise ValueError("CGRA recipe growth has no observed Spatial deficit")
+            child = recipe.get("fabric")
+            _validate_artifact_reference(child, "recipe Fabric", _FABRIC_SCHEMA)
+            if child == expected_fabric:
+                raise ValueError("CGRA recipe growth did not change its Fabric")
+            expected_fabric = child
+            final_growth_completed = True
+            continue
         final_growth_completed = False
         if growth is None:
             if ordinal + 1 != len(rounds):

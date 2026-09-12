@@ -8,6 +8,7 @@
 #include "Common/TimeoutBudgets.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/MappingCandidateGenerator.h"
+#include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTransportCegar.h"
@@ -19,7 +20,9 @@
 #include "Evaluation/ProductionRegistry.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/FabricEnums.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefText.h"
+#include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/PnrConfig.h"
@@ -53,7 +56,7 @@
 namespace {
 
 constexpr llvm::StringLiteral kHardwareSearchSchema =
-    "loom.cgra_qualification_hardware_search.3";
+    "loom.cgra_qualification_hardware_search.4";
 
 constexpr llvm::StringLiteral kProfileSchema = "loom.cgra_budget_profile.7";
 constexpr llvm::StringLiteral kProfileOutcomeSchema =
@@ -63,15 +66,29 @@ constexpr std::uint64_t kWarmupRuns = 1;
 constexpr std::uint64_t kMeasurementRuns = 3;
 constexpr std::uint64_t kQualificationLimitNanoseconds = 45'000'000'000ULL;
 constexpr auto kQualificationLimit = std::chrono::seconds(45);
-// The qualification wrapper runs this tool under the Fast tier and kills the
-// process group when that tier expires. A search deadline equal to the tier
-// therefore never stops the tool in time to serialize its report: the wrapper
-// wins the race and the run leaves an empty stdout with no evidence of where
-// the time went. Reserve the smallest tier for stopping, writing and exiting,
-// so an unconverged search reports `ready: false` and its rounds instead.
+// Each qualification stage runs under the tier its wrapper kills on, and a
+// search deadline equal to that tier never stops the tool in time to
+// serialize its report: the wrapper wins the race and the run leaves an empty
+// stdout with no evidence of where the time went. Every stage below therefore
+// reserves the smallest tier for stopping, writing and exiting.
+//
+// One profile measures one workload, so its Spatial PnR keeps the Fast tier
+// its wrapper grants.
 constexpr auto kSpatialPnrQualificationLimit =
     loom::timeout::duration(loom::timeout::Tier::Fast) -
     loom::timeout::duration(loom::timeout::Tier::UltraFast);
+// The shared search proves both stages for every representative source, so it
+// costs the whole suite rather than one workload and runs under the largest
+// tier its wrapper grants.
+constexpr auto kHardwareSearchQualificationLimit =
+    loom::timeout::duration(loom::timeout::Tier::Nightly) -
+    loom::timeout::duration(loom::timeout::Tier::UltraFast);
+// A source names a typed Spatial deficit only when its Spatial PnR reaches a
+// terminal outcome; a cancelled stage names nothing. The per-source budget is
+// therefore the cost of terminating rather than the cost of a profile, and a
+// source the budget cancels is recorded as truncated evidence.
+constexpr auto kSpatialClosureSourceLimit =
+    loom::timeout::duration(loom::timeout::Tier::Long);
 constexpr auto kTransportRepairQualificationLimit =
     loom::timeout::duration(loom::timeout::Tier::Long);
 constexpr std::uint64_t kTransportRepairMaximumIterations = 8;
@@ -455,6 +472,93 @@ llvm::json::Object sourceIdentityJson(const QualificationSource &source) {
       {"replay_cases", sourceReplayCasesJson(source.source)}};
 }
 
+/// One source's Spatial closure evidence on the certified Module. A source
+/// that publishes no Spatial Mapping names its typed hardware deficit only
+/// when the stage reaches a terminal outcome; a cancelled stage names nothing,
+/// so the caller must be able to tell the two apart.
+struct QualificationSpatialClosure final {
+  loom::dse::CandidateGeneratorProviderResult result;
+  bool closed = false;
+  bool cancelled = false;
+};
+
+QualificationSpatialClosure projectQualificationSpatialClosure(
+    llvm::ArrayRef<loom::ArtifactRootReference> techMappings,
+    const loom::fabric::FinalizedFabricRoot &module,
+    const loom::pnr::ResolvedPnrConfigView &spatialPnrConfig,
+    const loom::ExecutionControlView &control, loom::ArtifactStore &artifacts,
+    const loom::BlobStore &blobs) {
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          module.view()));
+  const auto physicalTimingReference = take(
+      loom::fabric::publishFabricPhysicalTimingProfile(physicalTiming,
+                                                       artifacts));
+  auto inputs =
+      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+          techMappings, module.reference(), physicalTimingReference));
+  auto binding =
+      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+          spatialPnrConfig));
+  auto result = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, artifacts, blobs, control));
+  const bool closed = !candidateArtifacts(result).empty();
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &result.outcome);
+  const bool cancelled =
+      incomplete && incomplete->reason ==
+                        loom::dse::CandidateGeneratorIncompleteReason::
+                            CancelledOrTimeout;
+  return {std::move(result), closed, cancelled};
+}
+
+/// Answers a typed Spatial deficit with the builtin recipe parameter the
+/// reopen chain already uses for that feedback family. A reserved-channel
+/// shortage has no Module-local decision, so the supply it names is a recipe
+/// value; the caller re-expands the core from the grown scale. Returns false
+/// when the observation asks for no supply the recipe can add.
+bool growBuiltinScaleFromSpatialFeedback(
+    const loom::mapping::SpatialMappingHardwareFeedback &feedback,
+    loom::adg::BuiltinTargetScale &scale, llvm::json::Object &record) {
+  if (const auto *fifo =
+          std::get_if<loom::mapping::SpatialFifoChannelCapacitySuggestion>(
+              &feedback)) {
+    if (scale.interconnectFifoQueueDiscipline !=
+        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+      return false;
+    if (fifo->proposedChannels() > std::numeric_limits<std::uint32_t>::max())
+      return false;
+    const auto proposed = static_cast<std::uint32_t>(fifo->proposedChannels());
+    if (proposed <= scale.interconnectFifoReservedChannels)
+      return false;
+    scale.interconnectFifoReservedChannels = proposed;
+    scale.interconnectFifoDepth =
+        std::max(scale.interconnectFifoDepth, proposed);
+    scale.temporalResidentContexts =
+        std::max(scale.temporalResidentContexts, proposed);
+    record["direction"] = "interconnect_fifo_reserved_channels";
+    record["fifo_occurrence"] =
+        ::loom::fabric::printFabricRef(fifo->owner());
+    record["selected_channels"] = fifo->selectedChannels();
+    record["reserved_channels"] = scale.interconnectFifoReservedChannels;
+    record["interconnect_fifo_depth"] = scale.interconnectFifoDepth;
+    record["temporal_resident_contexts"] = scale.temporalResidentContexts;
+    return true;
+  }
+  const auto &boundary =
+      std::get<loom::mapping::SpatialGraphBoundaryCapacitySuggestion>(feedback);
+  const std::uint64_t added = boundary.proposedAdditionalBoundaryPairs();
+  if (added == 0 ||
+      added > std::numeric_limits<std::uint32_t>::max() - scale.gatewayCount)
+    return false;
+  scale.gatewayCount += static_cast<std::uint32_t>(added);
+  record["direction"] = "graph_boundary_gateways";
+  record["added_gateways"] = added;
+  record["gateway_count"] = scale.gatewayCount;
+  return true;
+}
+
 llvm::json::Object selectQualificationHardware(
     llvm::StringRef requestPath, const loom::ResolvedConfig &config,
     const loom::ArtifactRootReference &configReference,
@@ -482,24 +586,39 @@ llvm::json::Object selectQualificationHardware(
          readSourceWorkload(*request->getString("source_report"))});
   }
 
-  const MonotonicExecutionDeadline deadline(kSpatialPnrQualificationLimit);
+  const MonotonicExecutionDeadline deadline(kHardwareSearchQualificationLimit);
   const auto control = deadline.control();
   PhaseLedger ledger;
-  loom::adg::DesignBuilder builder(artifacts);
-  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      builder, config.hardwareTarget.parameters));
-  if (auto error = expansion.spatialCore.close(expansion.outputs))
-    fail(llvm::toString(std::move(error)));
-  auto design = take(std::move(builder).finalize());
-  require(design.roots().size() == 1,
-          "qualification hardware did not produce one module");
-  auto module = design.roots().front();
+  // Every Fabric this search certifies expands one builtin recipe. A Hall
+  // deficit names a Module-local instruction store, but a Spatial deficit
+  // names a recipe value with no Module-local decision, so the scale is the
+  // mutable state and the Module chain restarts from a re-expanded core.
+  loom::adg::BuiltinTargetScale scale = config.hardwareTarget.parameters;
+  const auto expandScale = [&](const loom::adg::BuiltinTargetScale &value) {
+    require(loom::adg::isValidBuiltinTargetScale(value),
+            "qualification hardware growth left the builtin recipe");
+    loom::adg::DesignBuilder builder(artifacts);
+    auto expansion = take(loom::adg::expandBuiltinSpatialCore(builder, value));
+    if (auto error = expansion.spatialCore.close(expansion.outputs))
+      fail(llvm::toString(std::move(error)));
+    auto design = take(std::move(builder).finalize());
+    require(design.roots().size() == 1,
+            "qualification hardware did not produce one module");
+    return take(loom::fabric::importEntireFabricRoot(
+        design.roots().front().reference(), artifacts));
+  };
+  auto module = expandScale(scale);
   const auto initialFabric = module.reference();
   const auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(config));
   const auto techBinding =
       take(loom::dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(
           techConfig));
+  const auto spatialPnrConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
+  if (auto error =
+          loom::dse::registerRootCompleteSpatialPnrCandidateGenerator())
+    fail(llvm::toString(std::move(error)));
   if (auto error =
           loom::dse::registerSpatialMicroarchitectureCandidateGenerator())
     fail(llvm::toString(std::move(error)));
@@ -507,12 +626,15 @@ llvm::json::Object selectQualificationHardware(
   bool ready = false;
   std::optional<loom::dse::TechMappingComputeContextHallProgress>
       previousProgress;
+  bool moduleOnlySupplyApplied = false;
   llvm::StringRef stopReason;
   for (;;) {
     llvm::json::Array evaluations;
     std::optional<loom::mapping::TechMappingComputeContextHallDeficit> pressure;
+    std::optional<loom::mapping::SpatialMappingHardwareFeedback> spatialPressure;
     ready = true;
     bool roundComplete = true;
+    bool spatialEvidenceTruncated = false;
     for (const auto &source : sources) {
       // The deadline is observed between sources as well as inside a generator
       // invocation, so a round that expires stops at the next source instead
@@ -530,10 +652,11 @@ llvm::json::Object selectQualificationHardware(
       const auto *incomplete =
           std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
               &result.outcome);
-      ready &= mapped && (!incomplete ||
-                          incomplete->reason ==
-                              loom::dse::CandidateGeneratorIncompleteReason::
-                                  SemanticLimitReached);
+      const bool covered =
+          mapped && (!incomplete ||
+                     incomplete->reason ==
+                         loom::dse::CandidateGeneratorIncompleteReason::
+                             SemanticLimitReached);
       auto evaluation = sourceIdentityJson(source);
       evaluation["tech_mapping_search"] = candidateGeneratorResultJson(
           loom::dse::rootCompleteTechMappingCandidateGeneratorDescriptor(),
@@ -547,6 +670,44 @@ llvm::json::Object selectQualificationHardware(
             pressure,
             take(loom::mapping::adoptTechMappingComputeContextHallFeedback(
                 *result.ownerFeedback, module.view())));
+
+      // A covered source still has to close Spatial PnR before the Fabric is
+      // certified. Its typed deficit exists only when the stage terminates, so
+      // the source budget is clipped by what the shared deadline has left and
+      // a cancelled stage is recorded as truncated evidence rather than as a
+      // closure failure the loop could size.
+      bool closed = false;
+      evaluation["spatial_pnr"] = llvm::json::Value(nullptr);
+      evaluation["spatial_owner_feedback"] = llvm::json::Value(nullptr);
+      if (covered) {
+        const auto remaining = control.remainingTime();
+        const auto sourceLimit =
+            remaining ? std::min<std::chrono::steady_clock::duration>(
+                            kSpatialClosureSourceLimit, *remaining)
+                      : std::chrono::steady_clock::duration(
+                            kSpatialClosureSourceLimit);
+        const MonotonicExecutionDeadline sourceDeadline(sourceLimit);
+        auto closure = projectQualificationSpatialClosure(
+            candidateArtifacts(result), module, spatialPnrConfig,
+            sourceDeadline.control(), artifacts, blobs);
+        closed = closure.closed;
+        spatialEvidenceTruncated |= !closed && closure.cancelled;
+        evaluation["spatial_pnr"] = candidateGeneratorResultJson(
+            loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor(),
+            closure.result);
+        evaluation["spatial_owner_feedback"] =
+            closure.result.ownerFeedback
+                ? llvm::json::Value(
+                      llvm::toHex(*closure.result.ownerFeedback, true))
+                : llvm::json::Value(nullptr);
+        if (!closed && closure.result.ownerFeedback)
+          loom::mapping::retainSpatialMappingHardwareFeedback(
+              spatialPressure,
+              take(loom::mapping::adoptSpatialMappingHardwareFeedback(
+                  *closure.result.ownerFeedback, module.reference(),
+                  candidateArtifacts(result), artifacts)));
+      }
+      ready &= covered && closed;
       evaluations.push_back(std::move(evaluation));
     }
     // A round the deadline cut short carries no decision and would publish a
@@ -555,15 +716,46 @@ llvm::json::Object selectQualificationHardware(
       break;
     llvm::json::Object round{{"fabric", referenceJson(module.reference())},
                              {"evaluations", std::move(evaluations)},
-                             {"hardware_growth", nullptr}};
-    // A round in which no source maps and none names a closable deficit has no
-    // growth the owner could size, so the verdict is recorded rather than left
-    // to an unexplained `ready` false.
-    if (!ready && !pressure && !control.stopRequested())
-      stopReason = "no_closable_hall_deficit";
-    if (ready || !pressure || control.stopRequested()) {
+                             {"hardware_growth", nullptr},
+                             {"recipe_growth", nullptr}};
+    // A deficit the search can size outranks any verdict about the round, so
+    // the search only explains itself once no observation is left to act on.
+    // A Spatial stage the deadline cancelled published no typed deficit, so
+    // the round observed less than it needed; the search says so instead of
+    // reporting the truncation as an unexplained `ready` false.
+    if (!ready && !control.stopRequested() && !pressure && !spatialPressure)
+      stopReason = spatialEvidenceTruncated ? "spatial_evidence_truncated"
+                                            : "no_closable_hall_deficit";
+    if (ready || control.stopRequested() || !stopReason.empty()) {
       rounds.push_back(std::move(round));
       break;
+    }
+    // Compute supply is a precondition for routing, so a Hall deficit is
+    // closed before any Spatial deficit is believed. When only a Spatial
+    // deficit remains, the recipe owns the supply it names: grow the scale and
+    // restart the Module chain from the re-expanded core.
+    if (!pressure) {
+      if (moduleOnlySupplyApplied) {
+        stopReason = "spatial_growth_discards_module_supply";
+        rounds.push_back(std::move(round));
+        break;
+      }
+      llvm::json::Object recipeGrowth;
+      if (!growBuiltinScaleFromSpatialFeedback(*spatialPressure, scale,
+                                               recipeGrowth)) {
+        stopReason = "no_closable_spatial_deficit";
+        rounds.push_back(std::move(round));
+        break;
+      }
+      recipeGrowth["owner_feedback"] = llvm::toHex(
+          loom::mapping::encodeSpatialMappingHardwareFeedback(*spatialPressure),
+          true);
+      module = expandScale(scale);
+      recipeGrowth["fabric"] = referenceJson(module.reference());
+      round["recipe_growth"] = std::move(recipeGrowth);
+      rounds.push_back(std::move(round));
+      previousProgress.reset();
+      continue;
     }
     // Context growth that the cover immediately spends on new demand is not a
     // continuation proof. The Hall feedback owner decides that, and this search
@@ -605,9 +797,19 @@ llvm::json::Object selectQualificationHardware(
       domain = loom::dse::ChangeFuInventoryDomain{
           growth.spatialFuGrowth->decision.target,
           {growth.spatialFuGrowth->decision.prototypes}};
+      // A composite occurrence is Module-local supply the builtin recipe
+      // cannot name, so it cannot survive a re-expansion.
+      moduleOnlySupplyApplied = true;
     } else {
       require(!growth.decisions.empty(),
               "qualification hardware feedback made no progress");
+      // A Spatial deficit restarts the Module chain from the recipe, so the
+      // supply this closure proved necessary has to survive that restart. The
+      // recipe names it uniformly, which is never less than the closure asked
+      // of any one store, so the chain stays monotone.
+      for (const loom::dse::ResizeInstructionStore &store : growth.decisions)
+        scale.temporalResidentContexts = std::max(
+            scale.temporalResidentContexts, store.instructionCapacity);
     }
     auto growthConfig = take(
         loom::dse::resolveSpatialMicroarchitectureRewriteConfig({domain}, 1));
@@ -651,7 +853,7 @@ llvm::json::Object selectQualificationHardware(
                           : llvm::json::Value(stopReason)},
       {"deadline_ns", static_cast<std::uint64_t>(
                           std::chrono::duration_cast<std::chrono::nanoseconds>(
-                              kSpatialPnrQualificationLimit)
+                              kHardwareSearchQualificationLimit)
                               .count())},
       {"deadline_overrun_ns", deadline.overrunNanoseconds()},
       {"rounds", std::move(rounds)},
