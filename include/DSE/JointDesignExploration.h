@@ -55,6 +55,12 @@ struct JointDesignExplorationPlan final {
   BoundedJointFrontier frontier;
   std::vector<JointDesignPlanPair> pairOutputs;
   std::vector<pnr::SystemBindingPartitionIntent> systemBindingPartitions;
+  /// Leaf executions of the source-declared computation interval this plan
+  /// moves off the host, as the promotion owner measured them. It is ranking
+  /// provenance for the bounded wall-time division and never enters plan,
+  /// Mapping, or candidate identity. Zero means the owner supplied no
+  /// measure, and the division stays equal.
+  std::uint64_t coveredDynamicLeafExecutions = 0;
 };
 
 /// Builds one ordinary finite Generate plan. Each explicit application/System

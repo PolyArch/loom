@@ -4044,7 +4044,19 @@ preference order. `FirstVerified` returns the first verified Mapping. While
 untried plans remain, each plan executes under a fair share of the remaining
 wall time, so one difficult finalist cannot consume the invocation before a
 later plan is attempted; a plan that finishes early returns its unused share,
-and the invocation deadline itself is unchanged. Under
+and the invocation deadline itself is unchanged. The share is weighted by
+work, not by plan count alone. A plan that covers almost none of the declared
+computation interval cannot close the real-application gate however long it
+maps, so it must not hold an equal share while the plan that covers the
+computation is cancelled for want of the same time. Terminal QoR acquisition
+is reserved first and keeps its equal shares; of what remains, half is divided
+equally so every plan is still attempted and half follows the covered leaf
+executions each plan moves off the host. Equal covered work reproduces the
+equal division exactly, an absent measure keeps it, and an evidenced hardware
+parent takes only from the equal half because it carries no software
+coverage. The covered measure is promotion provenance: it rides with the plan,
+is reported with each slice, and never enters plan, Mapping, or candidate
+identity. Under
 `BoundedQuality`, the complete bounded parent frontier is visited first; exact
 failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates first prioritize the
