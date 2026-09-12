@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.16
+  loom.spatial_pnr.config.15.15
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.5
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -90,17 +90,14 @@ closed itself. The sweep adopts a register-FIFO pairing whose candidate
 is not worse under the selected total ordering, so a recurrence-neutral local
 transfer ties at the `RecurrenceTemporalBindingPressure` level and is still
 adopted on the strength of the earlier and later levels. The measure changes
-only when the adoption's coupled endpoint relocations move a
+only when the adoption's coupled endpoint relocation moves a
 recurrence-critical actor onto a Temporal-schedule placement, and rejecting
 that trade is the measure working: a local transfer must not be bought by
-serializing the loop it belongs to. That is also why an alternative may move
-both endpoints: a coupled two-endpoint move is one probe under the same
-ordering, and the levels above price the placements it takes. A sweep that
-adopts nothing therefore reports which nets were already paired, had an empty
-frozen domain, carried route constraints, or enumerated no alternative,
-because none of those reach the objective at all and an absent local transfer
-is then a domain or placement fact rather than a ranking decision.
-Final Spatial
+serializing the loop it belongs to. A sweep that adopts nothing therefore
+reports which nets were already paired, had an empty frozen domain, carried
+route constraints, or enumerated no alternative, because none of those reach
+the objective at all and an absent local transfer is then a domain or
+placement fact rather than a ranking decision. Final Spatial
 publication independently rebuilds the Mapping closure and admits only
 `ProvenNoClosedWaitSet`; an ordinary Mapping carrying proof debt remains
 importable but unpublished without identity-bound retirement evidence.

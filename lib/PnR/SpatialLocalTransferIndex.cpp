@@ -400,62 +400,31 @@ llvm::Error loom::pnr::detail::enumerateSpatialLocalTransferAdoptions(
           return samePairing(options[adoption.option], option);
         });
       };
-  const auto resident = [&](PnrIndex realization, PnrIndex placement) {
-    return computeBindings[realization].placement == placement;
-  };
   for (auto [local, option] : llvm::enumerate(domainOptions)) {
     if (admitted(option) && matchesBindings(option, computeBindings))
       adoptions.push_back(
-          {static_cast<PnrIndex>(domain.optionOffset + local), {}});
+          {static_cast<PnrIndex>(domain.optionOffset + local), std::nullopt});
   }
   for (auto [local, option] : llvm::enumerate(domainOptions)) {
     if (!admitted(option))
       continue;
     const bool producerResident =
-        resident(option.producerRealization, option.producerPlacement);
+        computeBindings[option.producerRealization].placement ==
+        option.producerPlacement;
     const bool consumerResident =
-        resident(option.consumerRealization, option.consumerPlacement);
+        computeBindings[option.consumerRealization].placement ==
+        option.consumerPlacement;
     if (producerResident == consumerResident)
       continue;
     const PnrIndex moved = producerResident ? option.consumerRealization
                                             : option.producerRealization;
-    const PnrIndex placement =
-        producerResident ? option.consumerPlacement : option.producerPlacement;
+    const PnrIndex placement = producerResident ? option.consumerPlacement
+                                                : option.producerPlacement;
     auto relocation = relocationOnto(moved, placement);
     if (!relocation)
       continue;
     adoptions.push_back(
-        {static_cast<PnrIndex>(domain.optionOffset + local), {*relocation}});
-  }
-  // An option whose Temporal PE holds neither endpoint is reachable only by
-  // moving both. Without this alternative a closed candidate that placed the
-  // producer and the consumer outside every admitted pairing can never adopt
-  // the net, however wide its frozen domain is. The coupled move is still one
-  // probe under the selected total ordering, so the pairing must still pay for
-  // both relocations.
-  for (auto [local, option] : llvm::enumerate(domainOptions)) {
-    if (!admitted(option))
-      continue;
-    if (resident(option.producerRealization, option.producerPlacement) ||
-        resident(option.consumerRealization, option.consumerPlacement))
-      continue;
-    auto producerRelocation =
-        relocationOnto(option.producerRealization, option.producerPlacement);
-    if (!producerRelocation)
-      continue;
-    // One realization owns one placement decision, so a producer and consumer
-    // in the same realization share the option's single placement.
-    if (option.consumerRealization == option.producerRealization) {
-      adoptions.push_back({static_cast<PnrIndex>(domain.optionOffset + local),
-                           {*producerRelocation}});
-      continue;
-    }
-    auto consumerRelocation =
-        relocationOnto(option.consumerRealization, option.consumerPlacement);
-    if (!consumerRelocation)
-      continue;
-    adoptions.push_back({static_cast<PnrIndex>(domain.optionOffset + local),
-                         {*producerRelocation, *consumerRelocation}});
+        {static_cast<PnrIndex>(domain.optionOffset + local), *relocation});
   }
   return llvm::Error::success();
 }

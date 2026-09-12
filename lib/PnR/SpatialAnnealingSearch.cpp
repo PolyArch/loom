@@ -324,8 +324,8 @@ void emitSpatialActionEvent(
       });
 }
 
-/// One local-transfer adoption probe: the register-FIFO whole-net Action and
-/// the endpoint relocations it is coupled to.
+/// One local-transfer adoption probe: the register-FIFO whole-net Action and,
+/// when the option needs it, the single endpoint relocation it is coupled to.
 void emitLocalTransferAdoptionEvent(
     loom::mapping_debug::Event event, std::uint64_t seedAttemptOrdinal,
     std::uint64_t probeOrdinal, PnrIndex logicalNet,
@@ -347,14 +347,12 @@ void emitLocalTransferAdoptionEvent(
             SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{
                 logicalNet, SpatialWholeNetDispositionKind::RegisterFifo,
                 adoption.option}});
-        llvm::json::Array relocations;
-        for (const SpatialComputeBindingAction &relocation :
-             adoption.relocations)
-          relocations.push_back(llvm::json::Object{
-              {"realization", relocation.realization},
-              {"placement", relocation.placement},
-              {"instruction_context", relocation.instructionContext}});
-        fields["relocations"] = std::move(relocations);
+        if (adoption.relocation) {
+          fields["relocation_realization"] = adoption.relocation->realization;
+          fields["relocation_placement"] = adoption.relocation->placement;
+          fields["relocation_instruction_context"] =
+              adoption.relocation->instructionContext;
+        }
         if (difference &&
             loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
           fields["energy_difference_sign"] = differenceSign(difference->sign);
@@ -484,10 +482,10 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
           interrupted = true;
           break;
         }
-        llvm::SmallVector<SpatialMappingAction, 3> actions;
-        for (const SpatialComputeBindingAction &relocation :
-             adoption.relocations)
-          actions.push_back(SpatialRealizationBindingAction{relocation});
+        llvm::SmallVector<SpatialMappingAction, 2> actions;
+        if (adoption.relocation)
+          actions.push_back(
+              SpatialRealizationBindingAction{*adoption.relocation});
         actions.push_back(
             SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{
                 logicalNet, SpatialWholeNetDispositionKind::RegisterFifo,
@@ -555,7 +553,7 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
         if (llvm::Error error = probe->commit())
           return error;
         ++adopted;
-        relocated += !adoption.relocations.empty();
+        relocated += adoption.relocation.has_value();
         emitLocalTransferAdoptionEvent(
             loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
             probeOrdinal, logicalNet, adoption, SpatialActionOutcome::Accepted,
