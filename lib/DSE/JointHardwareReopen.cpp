@@ -1411,11 +1411,14 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           jointDesignQualityDisposition(firstQualityIncomplete->reason),
           candidate, !deadlineObserved);
     }
-    // Only incomplete evidence withholds a selection. A search the deadline
-    // or a hardware probe cut short still leaves every banked acquisition
-    // complete, and the measurement the invocation already earned decides;
-    // the stopping summary reports the truncated search on its own.
-    if (firstQualityIncomplete) {
+    // Only incomplete evidence withholds a selection, and only for the
+    // candidate it belongs to. A search the deadline or a hardware probe cut
+    // short still leaves every banked acquisition complete, and an
+    // alternative whose own acquisition failed or was cancelled is a typed
+    // observation beside the complete ones, not a reason to discard them:
+    // the measurement the invocation already earned decides, and the
+    // stopping summary and the observations report the rest.
+    if (firstQualityIncomplete && candidates.empty()) {
       std::optional<ArtifactRootReference> candidate =
           firstQualityIncomplete->candidate;
       if (!candidate && !candidates.empty())
