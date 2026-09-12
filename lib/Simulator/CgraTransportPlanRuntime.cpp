@@ -1,8 +1,11 @@
 #include "CgraTransportRuntime.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include <limits>
 #include <system_error>
 #include <utility>
+#include <variant>
 
 namespace loom::sim::detail {
 namespace {
@@ -37,6 +40,23 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     const CgraFrozenExecutionPlan &plan, const CgraTransportGraph &graph,
     SimulatorState &state, CgraPhysicalActionRuntime &physical) {
   CgraTransportRuntime runtime(plan, graph, state, physical);
+  // A memory actor may hold its Operation Engine's issue depth firings
+  // outstanding, so every result binding of that actor must hold as many
+  // occurrences. The frozen memory plan is the only source of that depth; the
+  // transport neither chooses nor stores a second one, and every other
+  // producer keeps the serialized depth.
+  for (const CgraMemoryActorPlan &actor : plan.memory.actors) {
+    if (actor.operationIssueDepth == 0)
+      return invalid("CGRA memory binding declares no Operation Engine issue "
+                     "depth");
+    for (auto [bindingOrdinal, binding] : llvm::enumerate(graph.bindings)) {
+      const auto *result =
+          std::get_if<::dataflow::ActorTokenResultRef>(&binding.producer);
+      if (result && result->actor == actor.actor)
+        runtime.producerStates_[bindingOrdinal].occurrenceCapacity =
+            actor.operationIssueDepth;
+    }
+  }
   for (const auto &binding : graph.storages) {
     const bool fullReplacementAllowed =
         binding.kind != CgraTraversalStorageKind::BufferedFifo &&

@@ -262,8 +262,10 @@ Engine firings outstanding and retires them in issue order, so a serialized
 engine of depth one admits its next firing only after its predecessor retires.
 A later firing never consumes an earlier firing's operand tokens: a binding
 admits its next firing only after the active one has consumed the operands of
-its own issue. CGRA-sim reads that depth from the mapped Fabric and never
-chooses one.
+its own issue. Each of the actor's transport producer bindings admits the same
+number of outstanding result occurrences and releases them in emission order,
+because a firing that cannot publish its result could not have been admitted.
+CGRA-sim reads that one depth from the mapped Fabric and never chooses one.
 
 The execution submits several requests concurrently, up to the
 outstanding-operation guarantee of the exact service rate contract the
