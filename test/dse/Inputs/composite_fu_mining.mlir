@@ -70,4 +70,60 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     dataflow.graph.return values(%result#1 : i64) streams() memories()
         complete(%result#0 : none)
   }
+
+  dataflow.thread private @dot_int8_shift_worker domain(#dataflow.thread_domain<dense>)(
+      %a: i8, %zp_a: i64, %b: i8, %zp_b: i64, %acc: i64, %shift: i64)
+      ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @dot_int8_shift deps(%ctrl)
+        values(%a, %zp_a, %b, %zp_b, %acc, %shift) stream_inputs() memories()
+        stream_outputs() : (none, i8, i64, i8, i64, i64, i64) -> (i64, none)
+    dataflow.thread.yield %done : none
+  }
+
+  dataflow.thread private @dot_int8_clamp_worker domain(#dataflow.thread_domain<dense>)(
+      %a: i8, %zp_a: i64, %b: i8, %zp_b: i64, %acc: i64, %floor: i64)
+      ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @dot_int8_clamp deps(%ctrl)
+        values(%a, %zp_a, %b, %zp_b, %acc, %floor) stream_inputs() memories()
+        stream_outputs() : (none, i8, i64, i8, i64, i64, i64) -> (i64, none)
+    dataflow.thread.yield %done : none
+  }
+
+  dataflow.thread private @dot_shift_worker domain(#dataflow.thread_domain<dense>)(
+      %a: i64, %zp_a: i64, %b: i64, %zp_b: i64, %acc: i64, %shift: i64)
+      ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @dot_shift deps(%ctrl)
+        values(%a, %zp_a, %b, %zp_b, %acc, %shift) stream_inputs() memories()
+        stream_outputs() : (none, i64, i64, i64, i64, i64, i64) -> (i64, none)
+    dataflow.thread.yield %done : none
+  }
+
+  dataflow.thread private @dot_clamp_worker domain(#dataflow.thread_domain<dense>)(
+      %a: i64, %zp_a: i64, %b: i64, %zp_b: i64, %acc: i64, %floor: i64)
+      ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @dot_clamp deps(%ctrl)
+        values(%a, %zp_a, %b, %zp_b, %acc, %floor) stream_inputs() memories()
+        stream_outputs() : (none, i64, i64, i64, i64, i64, i64) -> (i64, none)
+    dataflow.thread.yield %done : none
+  }
+
+  // Every graph is launched once so canonical finalization keeps it.
+  func.func @application() {
+    %a8 = arith.constant 3 : i8
+    %b8 = arith.constant 5 : i8
+    %a = arith.constant 3 : i64
+    %b = arith.constant 5 : i64
+    %zp = arith.constant 1 : i64
+    %acc = arith.constant 7 : i64
+    %tail = arith.constant 2 : i64
+    %dot_int8_shift_thread = dataflow.thread.launch @dot_int8_shift_worker(%a8, %zp, %b8, %zp, %acc, %tail)
+        : (i8, i64, i8, i64, i64, i64) -> !dataflow.thread_token
+    %dot_int8_clamp_thread = dataflow.thread.launch @dot_int8_clamp_worker(%a8, %zp, %b8, %zp, %acc, %tail)
+        : (i8, i64, i8, i64, i64, i64) -> !dataflow.thread_token
+    %dot_shift_thread = dataflow.thread.launch @dot_shift_worker(%a, %zp, %b, %zp, %acc, %tail)
+        : (i64, i64, i64, i64, i64, i64) -> !dataflow.thread_token
+    %dot_clamp_thread = dataflow.thread.launch @dot_clamp_worker(%a, %zp, %b, %zp, %acc, %tail)
+        : (i64, i64, i64, i64, i64, i64) -> !dataflow.thread_token
+    return
+  }
 }

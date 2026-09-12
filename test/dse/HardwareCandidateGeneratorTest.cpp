@@ -338,16 +338,17 @@ void specialMathCapabilityProfileRoundTrip() {
               digests.front() != digests.back(),
           "special-math profiles produced the same template config");
 
-  // The private-cache block is encoded after the special-math profile tag, so
-  // the tag is not the terminal field of the canonical view.
-  constexpr std::size_t kPrivateCacheBytes = 2 * sizeof(std::uint64_t) +
-                                             5 * sizeof(std::uint32_t);
+  // The private-cache block and the memory operation issue depth are encoded
+  // after the special-math profile tag, so the tag is not the terminal field
+  // of the canonical view.
+  constexpr std::size_t kTrailingScaleBytes =
+      2 * sizeof(std::uint64_t) + 6 * sizeof(std::uint32_t);
   constexpr std::size_t kSpecialMathTagBytes = sizeof(std::uint32_t);
   std::vector<std::uint8_t> invalidWireTag = canonicalViews.back();
-  require(invalidWireTag.size() >= kPrivateCacheBytes + kSpecialMathTagBytes,
+  require(invalidWireTag.size() >= kTrailingScaleBytes + kSpecialMathTagBytes,
           "template config omitted the special-math profile wire tag");
   const auto tagBegin =
-      invalidWireTag.end() - kPrivateCacheBytes - kSpecialMathTagBytes;
+      invalidWireTag.end() - kTrailingScaleBytes - kSpecialMathTagBytes;
   std::fill(tagBegin, tagBegin + kSpecialMathTagBytes, 0xff);
   const auto invalidDigest = take(loom::computeComponentViewDigest(
       loom::dse::resolvedFabricTemplateConfigSchemaBytes(), invalidWireTag));

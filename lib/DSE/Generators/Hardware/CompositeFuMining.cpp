@@ -160,8 +160,7 @@ indexMinedActors(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   std::vector<MinedActor> actors;
   actors.reserve(pending.size());
   for (const PendingActor &entry : pending) {
-    MinedActor mined;
-    mined.ref = entry.view.ref;
+    MinedActor mined{entry.view.ref};
     mined.graph = entry.graph;
     mined.schema = entry.projection.schema;
     mined.type = entry.projection.type;
@@ -592,8 +591,8 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
         reported.outputs = candidate.shape.outputs;
         reported.canonicalKey = candidate.shape.key;
         for (const auto &indexed : llvm::enumerate(candidate.occurrences)) {
-          CompositeFuOccurrence occurrence;
-          occurrence.graph = graphs[actors[indexed.value().front()].graph];
+          CompositeFuOccurrence occurrence{
+              graphs[actors[indexed.value().front()].graph], {}};
           for (std::size_t actor : candidate.orders[indexed.index()])
             occurrence.actors.push_back(actors[actor].ref);
           reported.occurrences.push_back(std::move(occurrence));
