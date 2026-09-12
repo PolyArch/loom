@@ -646,8 +646,18 @@ private:
         for (unsigned i = 0; i < partitionCount; ++i)
           membership.push_back(i);
       }
-      partitionsByAccess.try_emplace(access.op, std::move(membership));
+      registerPartitions(access.op, std::move(membership));
     }
+  }
+
+  // Lowering erases every access it replaces, and MLIR reuses the freed
+  // Operation allocation for a later one. An operation address is therefore
+  // only a key for as long as that operation lives: a registration owns the
+  // membership of the operation in front of it and must replace whatever an
+  // erased access left at the same address.
+  void registerPartitions(::mlir::Operation *op,
+                          ::llvm::SmallVector<unsigned, 4> membership) {
+    partitionsByAccess.insert_or_assign(op, std::move(membership));
   }
 
   ::llvm::SmallVector<unsigned, 4> partitionsFor(::mlir::Operation *op) const {
@@ -1066,13 +1076,17 @@ private:
         auto domain = parallelDomains.find(op);
         assert(domain != parallelDomains.end() &&
                "cloned parallel op must have a fixed domain");
-        parallelDomains.try_emplace(clone, domain->second);
+        // The lane domain is copied out before the insert: it lives in the
+        // same map, whose storage the insert may move, and the clone's
+        // address may still carry an erased lane's registration.
+        FixedParallelDomain cloned = domain->second;
+        parallelDomains.insert_or_assign(clone, std::move(cloned));
       }
       if (!isMemoryLeaf(op))
         return ::mlir::WalkResult::advance();
       ::mlir::Operation *clone = mapping.lookupOrNull(op);
       assert(clone && "cloned memory access must be present in IR mapping");
-      partitionsByAccess.try_emplace(clone, partitionsFor(op));
+      registerPartitions(clone, partitionsFor(op));
       return ::mlir::WalkResult::advance();
     });
   }
@@ -1080,13 +1094,17 @@ private:
   RegionResult lowerParallel(::mlir::Operation *parallel, ::mlir::Block &body,
                              ::mlir::ValueRange inductionVars,
                              ::mlir::Value execution, MemoryState memory) {
-    auto domain = parallelDomains.find(parallel);
-    assert(domain != parallelDomains.end() &&
+    auto known = parallelDomains.find(parallel);
+    assert(known != parallelDomains.end() &&
            "parallel preflight must establish a fixed lane domain");
+    // Lane enumeration registers each lane's nested parallels, so the domain
+    // is read out of the map before the first lane rather than through an
+    // iterator the registration may invalidate.
+    const FixedParallelDomain domain = known->second;
     ::mlir::Location loc = parallel->getLoc();
     ::llvm::SmallVector<RegionResult, 4> lanes;
     forEachParallelPoint(
-        domain->second, [&](::llvm::ArrayRef<int64_t> coordinates) {
+        domain, [&](::llvm::ArrayRef<int64_t> coordinates) {
           ::mlir::IRMapping mapping;
           ::llvm::SmallVector<::mlir::Operation *, 16> laneOperations;
           builder.setInsertionPoint(parallel);
@@ -1174,7 +1192,7 @@ private:
     auto lowered = ::dataflow::LoadOp::create(
         builder, load.getLoc(), load.getType(), builder.getNoneType(),
         load.getMemref(), address, ctrl);
-    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    registerPartitions(lowered, std::move(membership));
     load.getResult().replaceAllUsesWith(lowered.getData());
     updateReadFrontiers(lowered, lowered.getDone(), memory);
     load.erase();
@@ -1191,7 +1209,7 @@ private:
     auto lowered = ::dataflow::StoreOp::create(
         builder, store.getLoc(), builder.getNoneType(), store.getMemref(),
         address, store.getValue(), ctrl);
-    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    registerPartitions(lowered, std::move(membership));
     updateWriteFrontiers(lowered, lowered.getDone(), memory);
     store.erase();
   }
@@ -1208,7 +1226,7 @@ private:
     auto lowered = ::dataflow::LoadOp::create(
         builder, read.getLoc(), read.getVectorType(), builder.getNoneType(),
         read.getBase(), address, ctrl, read.getMask(), ::mlir::Attribute{});
-    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    registerPartitions(lowered, std::move(membership));
     read.getResult().replaceAllUsesWith(lowered.getData());
     updateReadFrontiers(lowered, lowered.getDone(), memory);
     ::mlir::Operation *padding = read.getPadding().getDefiningOp();
@@ -1234,7 +1252,7 @@ private:
         builder, write.getLoc(), builder.getNoneType(), write.getBase(),
         address, write.getValueToStore(), ctrl, write.getMask(),
         ::mlir::Attribute{});
-    partitionsByAccess.try_emplace(lowered, std::move(membership));
+    registerPartitions(lowered, std::move(membership));
     updateWriteFrontiers(lowered, lowered.getDone(), memory);
     write.erase();
   }
