@@ -133,15 +133,25 @@ llvm::Expected<CompositeFuTemplate> deriveCompositeFuTemplate(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const CompositeFuCandidate &candidate);
 
+/// The authoring handles of one composite FU, in mined node order. Canonical
+/// finalization reorders FU graph nodes and capability rows, so a caller that
+/// must bind exact actors resolves these handles against the finalized design
+/// instead of assuming its authoring order survived.
+struct CompositeFuAuthoring final {
+  std::vector<::loom::adg::FuNode> nodes;
+  ::loom::adg::FuCapabilityTemplateHandle capability;
+};
+
 /// Authors one mined composite FU inside an open PE and closes it. The PE
 /// values are the FU's ordered boundary inputs. This is the one ADG Builder
 /// materialization of a mined template: a Module that offers the template
 /// places the FU with it, and the ordinary FU-inventory decision then
 /// redistributes that occurrence.
-llvm::Error authorCompositeFu(::loom::adg::PeBuilder &pe,
-                              llvm::ArrayRef<::loom::adg::PeValue> inputs,
-                              const CompositeFuCandidate &candidate,
-                              const CompositeFuTemplate &fu);
+llvm::Expected<CompositeFuAuthoring>
+authorCompositeFu(::loom::adg::PeBuilder &pe,
+                  llvm::ArrayRef<::loom::adg::PeValue> inputs,
+                  const CompositeFuCandidate &candidate,
+                  const CompositeFuTemplate &fu);
 
 /// `F = Synthesize(S)` for one mined candidate: one finalized Module holding
 /// one Spatial PE whose single FU is the mined template, plus one coverage

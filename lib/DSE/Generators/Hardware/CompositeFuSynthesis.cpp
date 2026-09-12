@@ -231,10 +231,11 @@ llvm::Expected<CompositeFuTemplate> deriveCompositeFuTemplate(
   return result;
 }
 
-llvm::Error authorCompositeFu(::loom::adg::PeBuilder &pe,
-                              llvm::ArrayRef<::loom::adg::PeValue> inputs,
-                              const CompositeFuCandidate &candidate,
-                              const CompositeFuTemplate &fu) {
+llvm::Expected<CompositeFuAuthoring>
+authorCompositeFu(::loom::adg::PeBuilder &pe,
+                  llvm::ArrayRef<::loom::adg::PeValue> inputs,
+                  const CompositeFuCandidate &candidate,
+                  const CompositeFuTemplate &fu) {
   using namespace ::loom::adg;
   auto order = topologicalNodeOrder(candidate);
   if (!order)
@@ -312,18 +313,20 @@ llvm::Error authorCompositeFu(::loom::adg::PeBuilder &pe,
     nodes[node] = *authored;
   }
 
-  std::vector<FuNode> active;
-  active.reserve(nodes.size());
+  CompositeFuAuthoring authoring;
+  authoring.nodes.reserve(nodes.size());
   for (const std::optional<FuNode> &node : nodes) {
     if (!node)
       return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
                      "mined template left a node unauthored");
-    active.push_back(*node);
+    authoring.nodes.push_back(*node);
   }
-  if (llvm::Error error =
-          builder->addCapabilityTemplate(FuCapabilityTemplateSpec{active, {}}))
+  auto capability = builder->addCapabilityTemplateWithHandle(
+      FuCapabilityTemplateSpec{authoring.nodes, {}});
+  if (!capability)
     return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
-                   llvm::toString(std::move(error)));
+                   llvm::toString(capability.takeError()));
+  authoring.capability = *capability;
 
   std::vector<FuValue> outputs;
   outputs.reserve(candidate.outputs.size());
@@ -337,7 +340,7 @@ llvm::Error authorCompositeFu(::loom::adg::PeBuilder &pe,
   if (llvm::Error error = builder->close(outputs))
     return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
                    llvm::toString(std::move(error)));
-  return llvm::Error::success();
+  return authoring;
 }
 
 llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
@@ -394,8 +397,9 @@ llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
                      llvm::toString(input.takeError()));
     peInputs.push_back(*input);
   }
-  if (llvm::Error error = authorCompositeFu(*pe, peInputs, candidate, *fu))
-    return std::move(error);
+  auto authoring = authorCompositeFu(*pe, peInputs, candidate, *fu);
+  if (!authoring)
+    return authoring.takeError();
   if (llvm::Error error = pe->close())
     return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
                    llvm::toString(std::move(error)));
@@ -419,29 +423,44 @@ llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
     return failure(FuReverseSynthesisFailure::FabricFinalizationFailed,
                    "composite FU synthesis did not publish exactly one Fabric "
                    "root");
-  ::loom::fabric::FinalizedFabricRoot module = finalized->roots().front();
+  const ::loom::fabric::FinalizedFabricRoot &module = finalized->roots().front();
 
-  const auto templates = module.view().fuTemplates();
-  if (templates.size() != 1 ||
-      module.view().fuCapabilityTemplates(templates.front()).size() != 1)
+  // Canonical finalization relabels FU graph nodes and capability rows, so the
+  // authored order is translated through the design's own correspondence
+  // rather than assumed. Nothing here reconstructs that relation.
+  auto capabilityTarget = finalized->resolve(authoring->capability);
+  if (!capabilityTarget)
     return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
-                   "composite FU Fabric does not contain its unique FU "
-                   "capability template");
-  const ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate{
-      templates.front(), 0};
-  const auto operations =
-      module.view().resolvedFabricOpCapabilities(templates.front());
-  if (operations.size() != candidate.nodes.size())
+                   llvm::toString(capabilityTarget.takeError()));
+  if (capabilityTarget->artifact != module.view().identity())
     return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
-                   "composite FU Fabric does not expose one operation per "
-                   "mined node");
-  for (std::size_t node = 0; node != candidate.nodes.size(); ++node)
-    if (operations[node].implementationFamily !=
+                   "composite FU capability resolved against a foreign Fabric");
+  const ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate =
+      capabilityTarget->entity;
+  std::vector<::loom::fabric::FabricFuTemplateNodeRef> operationNodes;
+  operationNodes.reserve(candidate.nodes.size());
+  for (std::size_t node = 0; node != candidate.nodes.size(); ++node) {
+    auto target = finalized->resolve(authoring->nodes[node]);
+    if (!target)
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     llvm::toString(target.takeError()));
+    if (target->artifact != module.view().identity() ||
+        target->entity.fu != capabilityTemplate.fu)
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     "a composite FU node resolved outside its own FU");
+    const auto *operation =
+        module.view().resolvedFabricOpCapability(target->entity);
+    if (!operation)
+      return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
+                     "a composite FU node is not an operation resource");
+    if (operation->implementationFamily !=
             fu->operations[node].capability.family ||
-        operations[node].enabledOperationSchemas !=
+        operation->enabledOperationSchemas !=
             fu->operations[node].capability.enabledSchemas)
       return failure(FuReverseSynthesisFailure::CoverageNotEstablished,
-                     "composite FU Fabric reordered its operation resources");
+                     "a composite FU node lost its derived capability");
+    operationNodes.push_back(target->entity);
+  }
 
   std::vector<FuSynthesisCoverageWitness> coverage;
   coverage.reserve(candidate.occurrences.size());
@@ -456,7 +475,7 @@ llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
         operandPorts[ordinal] = ordinal;
       for (std::size_t ordinal = 0; ordinal != resultPorts.size(); ++ordinal)
         resultPorts[ordinal] = ordinal;
-      actors.push_back({occurrence.actors[node], operations[node].occurrence,
+      actors.push_back({occurrence.actors[node], operationNodes[node],
                         std::move(operandPorts), std::move(resultPorts)});
     }
     std::vector<::loom::mapping::TechComputeBoundaryView> boundaries;
@@ -466,15 +485,15 @@ llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
           {occurrence.actors[indexed.value().node],
            ::loom::fabric::FabricPortDirection::Input,
            indexed.value().portOrdinal,
-           {templates.front(), ::loom::fabric::FabricPortDirection::Input,
-            indexed.index()}});
+           {capabilityTemplate.fu,
+            ::loom::fabric::FabricPortDirection::Input, indexed.index()}});
     for (const auto &indexed : llvm::enumerate(candidate.outputs))
       boundaries.push_back(
           {occurrence.actors[indexed.value().node],
            ::loom::fabric::FabricPortDirection::Output,
            indexed.value().portOrdinal,
-           {templates.front(), ::loom::fabric::FabricPortDirection::Output,
-            indexed.index()}});
+           {capabilityTemplate.fu,
+            ::loom::fabric::FabricPortDirection::Output, indexed.index()}});
     const ::loom::mapping::TechComputeRealizationView prospective{
         0, capabilityTemplate, actors, boundaries};
     if (llvm::Error error =
@@ -487,7 +506,7 @@ llvm::Expected<CompositeFuTemplateArtifacts> synthesizeCompositeFuTemplate(
                         std::move(boundaries)});
   }
 
-  return CompositeFuTemplateArtifacts{std::move(module), capabilityTemplate,
+  return CompositeFuTemplateArtifacts{module, capabilityTemplate,
                                       std::move(coverage)};
 }
 

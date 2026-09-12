@@ -200,18 +200,26 @@ public:
 
 private:
   FuNode(const std::shared_ptr<detail::DesignState> &state,
+         const std::shared_ptr<detail::DesignIdentity> &identity,
          std::size_t rootOrdinal, std::size_t peOrdinal, std::size_t fuOrdinal,
-         mlir::Operation *operation)
-      : state_(state), rootOrdinal_(rootOrdinal), peOrdinal_(peOrdinal),
-        fuOrdinal_(fuOrdinal), operation_(operation) {}
+         std::size_t nodeOrdinal, mlir::Operation *operation)
+      : state_(state), identity_(identity), rootOrdinal_(rootOrdinal),
+        peOrdinal_(peOrdinal), fuOrdinal_(fuOrdinal),
+        nodeOrdinal_(nodeOrdinal), operation_(operation) {}
 
   std::weak_ptr<detail::DesignState> state_;
+  std::weak_ptr<detail::DesignIdentity> identity_;
   std::size_t rootOrdinal_ = 0;
   std::size_t peOrdinal_ = 0;
   std::size_t fuOrdinal_ = 0;
+  /// Position among the FU's graph nodes in authoring order. Canonical
+  /// relabeling reorders them, so this is the key that survives finalization
+  /// only through FinalizedFabricDesign::resolve.
+  std::size_t nodeOrdinal_ = 0;
   mlir::Operation *operation_ = nullptr;
 
   friend class FuBuilder;
+  friend class FinalizedFabricDesign;
 };
 
 /// A move-only placeholder for one FU-local feedback edge. The placeholder
@@ -1695,6 +1703,13 @@ public:
   llvm::Expected<ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef>>
   resolve(const FuCapabilityTemplateHandle &handle) const;
 
+  /// The canonical FU graph node one authored node became. Canonical
+  /// relabeling reorders FU nodes, so an author that must bind an exact node
+  /// after finalization reads it here instead of assuming its own order
+  /// survived.
+  llvm::Expected<ArtifactReference<loom::fabric::FabricFuTemplateNodeRef>>
+  resolve(const FuNode &node) const;
+
 private:
   struct FuCapabilityResolution final {
     std::size_t rootOrdinal = 0;
@@ -1703,16 +1718,25 @@ private:
     ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef> target;
   };
 
+  struct FuNodeResolution final {
+    std::size_t rootOrdinal = 0;
+    std::size_t fuOrdinal = 0;
+    std::size_t nodeOrdinal = 0;
+    ArtifactReference<loom::fabric::FabricFuTemplateNodeRef> target;
+  };
+
   explicit FinalizedFabricDesign(
       std::shared_ptr<detail::DesignIdentity> identity,
       std::vector<loom::fabric::FinalizedFabricRoot> roots,
-      std::vector<FuCapabilityResolution> capabilities)
+      std::vector<FuCapabilityResolution> capabilities,
+      std::vector<FuNodeResolution> fuNodes)
       : identity_(std::move(identity)), roots_(std::move(roots)),
-        capabilities_(std::move(capabilities)) {}
+        capabilities_(std::move(capabilities)), fuNodes_(std::move(fuNodes)) {}
 
   std::shared_ptr<detail::DesignIdentity> identity_;
   std::vector<loom::fabric::FinalizedFabricRoot> roots_;
   std::vector<FuCapabilityResolution> capabilities_;
+  std::vector<FuNodeResolution> fuNodes_;
 
   friend class DesignBuilder;
 };

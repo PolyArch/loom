@@ -1745,6 +1745,7 @@ struct DerivedFabricModuleCandidate final {
   FabricArtifactView view;
   std::vector<FabricModuleEntityCorrespondence> entities;
   std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  std::vector<FabricFuTemplateNodeCorrespondence> fuNodes;
 };
 
 llvm::Expected<DerivedFabricModuleCandidate> deriveFabricModuleCandidate(
@@ -1776,7 +1777,8 @@ llvm::Expected<DerivedFabricModuleCandidate> deriveFabricModuleCandidate(
   return DerivedFabricModuleCandidate{
       std::move(identity), std::move(*canonical),
       imported->decoded.dependencies, imported->view,
-      std::move(candidate->entities), std::move(candidate->capabilities)};
+      std::move(candidate->entities), std::move(candidate->capabilities),
+      std::move(candidate->fuNodes)};
 }
 
 llvm::Expected<ArtifactRootReference>
@@ -1813,7 +1815,8 @@ llvm::Expected<FinalizedFabricModuleProjection> detail::finalizeFabricModule(
       FinalizedFabricRoot(
           std::move(*reference), std::move(derived->canonicalBytes),
           std::move(derived->directDependencies), std::move(derived->view)),
-      std::move(derived->entities), std::move(derived->capabilities)};
+      std::move(derived->entities), std::move(derived->capabilities),
+      std::move(derived->fuNodes)};
 }
 
 llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
