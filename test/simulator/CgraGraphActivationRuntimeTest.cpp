@@ -819,14 +819,18 @@ void graphActivationExecutesSelectedLocalMemory() {
   // The Fabric memory Operation Engine owns how many firings one bound memory
   // actor may hold outstanding. Under the serialized depth the two load
   // firings never overlap: the second is admitted only after the first
-  // retires, so exactly one request is ever outstanding. Depth two lets the
+  // retires, so exactly one request is ever outstanding and the second reaches
+  // the service only once the first has been answered. Depth two lets the
   // second firing issue while the first awaits its response, so both requests
-  // are outstanding together and the activation retires earlier. The two runs
-  // below differ in nothing else: the same provider, the same two requests in
-  // the same order, and the same outputs.
+  // are outstanding together and the second reaches the service strictly
+  // earlier. This harness answers a deferred request only when the activation
+  // has no other work, so it cannot witness a shorter activation; the
+  // overlap and the earlier second issue are what the depth owns. The two
+  // runs below differ in nothing else: the same provider, the same two
+  // requests in the same order, and the same outputs.
   const auto deferredRunOutstandingPeak =
       [&](std::uint64_t issueDepth,
-          std::optional<loom::sim::SpatialEventCoordinate> &retirement)
+          std::optional<loom::sim::SpatialEventCoordinate> &secondIssue)
       -> std::size_t {
     plan.memory.actors.back().operationIssueDepth = issueDepth;
     FixedExternalMemoryProvider memory(
@@ -845,7 +849,8 @@ void graphActivationExecutesSelectedLocalMemory() {
          iteration != 96 && runtime.hasPendingEvents(); ++iteration) {
       auto frame = take(runtime.advance());
       if (frame) {
-        retirement = frame->coordinate;
+        if (memory.requests.size() == 2 && !secondIssue)
+          secondIssue = frame->coordinate;
         peak = std::max(peak, memory.requests.size() - completed);
         continue;
       }
@@ -868,18 +873,19 @@ void graphActivationExecutesSelectedLocalMemory() {
     requireExternalOutput(runState);
     return peak;
   };
-  std::optional<loom::sim::SpatialEventCoordinate> pipelinedRetirement;
-  std::optional<loom::sim::SpatialEventCoordinate> serializedRetirement;
-  require(deferredRunOutstandingPeak(2, pipelinedRetirement) == 2,
+  std::optional<loom::sim::SpatialEventCoordinate> pipelinedSecondIssue;
+  std::optional<loom::sim::SpatialEventCoordinate> serializedSecondIssue;
+  require(deferredRunOutstandingPeak(2, pipelinedSecondIssue) == 2,
           "issue depth two did not overlap its two memory firings");
   require(deferredRunOutstandingPeak(
               ::fabric::serializedMemoryOperationIssueDepth,
-              serializedRetirement) == 1,
+              serializedSecondIssue) == 1,
           "the serialized engine overlapped two memory firings");
-  require(pipelinedRetirement && serializedRetirement &&
+  require(pipelinedSecondIssue && serializedSecondIssue &&
               loom::sim::compareSpatialEventCoordinates(
-                  *pipelinedRetirement, *serializedRetirement) < 0,
-          "issue depth two did not retire before the serialized engine");
+                  *pipelinedSecondIssue, *serializedSecondIssue) < 0,
+          "issue depth two did not reach the service earlier than the "
+          "serialized engine");
   plan.memory.actors.back().operationIssueDepth =
       ::fabric::serializedMemoryOperationIssueDepth;
 

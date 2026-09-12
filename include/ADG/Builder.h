@@ -1062,6 +1062,11 @@ public:
   llvm::Expected<ModuleDomainMemberHandle>
   instructionContextMember(std::size_t ordinal) const;
 
+  /// The uniform Fabric bits type every port of this PE carries. An FU inside
+  /// the PE presents this type at its own boundary whatever its operations
+  /// compute internally.
+  llvm::Expected<PortType> boundaryPortType() const;
+
   llvm::Expected<FuBuilder> addFu(llvm::ArrayRef<PeValue> inputs,
                                   const FuSpec &spec);
 

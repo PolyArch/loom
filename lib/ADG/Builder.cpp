@@ -748,6 +748,22 @@ PeBuilder::resolveValue(const std::shared_ptr<detail::DesignState> &state,
   return value.value_;
 }
 
+llvm::Expected<PortType> PeBuilder::boundaryPortType() const {
+  auto state = activeState(state_);
+  if (!state)
+    return state.takeError();
+  auto pe = activePe(*state, rootOrdinal_, peOrdinal_);
+  if (!pe)
+    return pe.takeError();
+  mlir::Block &body = (*pe)->operation.getBody().front();
+  if (body.getNumArguments() == 0)
+    return invalid("PE declares no boundary port");
+  auto width = ::fabric::getFabricBitsWidth(body.getArgument(0).getType());
+  if (!width)
+    return invalid("PE boundary port is not Fabric bits");
+  return PortType::bits(*width);
+}
+
 llvm::Expected<PeValue> PeBuilder::input(std::size_t ordinal) const {
   auto state = activeState(state_);
   if (!state)
