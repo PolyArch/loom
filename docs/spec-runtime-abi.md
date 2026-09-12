@@ -927,7 +927,12 @@ Each object address is the canonical backing-allocation base for that dynamic
 call, not the current graph view pointer. The host dispatch projection carries
 that exact base as an ephemeral helper argument and derives every memory-root
 and pointer-target byte offset from the actual boundary pointer minus that base
-whenever the base is rebound per call. A repeated loop call may therefore
+whenever the base is rebound per call. That helper argument is always a live
+pointer value of the selected callable itself: its own allocation, the address
+of a module global, a forwarded entry ABI pointer, or a caller-frame allocation
+that reaches it as a pointer argument. The wire therefore never carries a
+pointer the invoking frame cannot name, and an object allocated by a suspended
+caller is passed by reference like any other. A repeated loop call may therefore
 select a different subview without creating an overlapping object or retaining
 a stale static offset. The base argument and patched wire offsets are transient
 ABI state and never become Mapping or Artifact fields. Every writable logical

@@ -203,19 +203,54 @@ with a relation derived over every activation of one exact selected program,
 source program, workload, and runtime input. The native registry owns each
 address-free source locator. Every activation must agree on each root's source,
 finite extent, and object-sharing relation. This deployment path admits exact
-input ABI objects and fixed-size entry-block stack allocations in the current
-capture frame. Entry blocks must have no predecessors. Different frames,
-repeated allocation instances, ambiguous invocation contexts, or inconsistent
-object relations remain typed `Unsupported`.
+input ABI objects, fixed-extent module globals, and fixed-size entry-block
+stack allocations.
+
+An object is an exact memory root of one dynamic invocation when three facts
+hold together: its lifetime covers the complete invocation, its address is
+constant for that extent, and no other host access interleaves with the
+accelerator's. A module global satisfies all three from its static storage
+duration alone. It has no frame, so nothing has to carry it across one: its
+address is a link-time constant that the invoking callable names directly, and
+the deployment glue materializes that live base there.
+
+For a stack object the entry-block requirement supplies the second fact and
+half of the first: entry blocks must have no predecessors, so one activation of
+the allocating frame creates exactly one instance at a stable frame offset. The
+exact invocation path supplies the rest. The allocating callable must be the
+invoking callable, or a caller on that path; a caller on a finite acyclic
+direct-call path is suspended at its call until the launch retires, so it can
+neither return nor run again while the accelerator holds the object, and the
+invoking callable retires its root before returning. The allocating frame
+therefore need not be the frame that invokes the accelerator. A caller-frame
+root must reach the invoking callable as one of that callable's own pointer
+values, which the invocation wire then rebinds per call like any other live
+base.
+
+The recorded capture frame distance is part of the source locator, so the
+activation agreement above already proves that every activation observed the
+object at the same relative frame. It is a recorded fact, not an admission
+gate; a stack locator with no observed frame at all has no such evidence. A
+runtime allocation has no structural relation between its lifetime and the
+invocation and is not admitted. Repeated allocation instances, an allocating
+frame outside the exact invocation path, an extent that differs from its
+captured source, ambiguous invocation contexts, or inconsistent object
+relations remain typed `Unsupported`. Every such refusal names the object it
+refused.
 
 Canonical lowering and finalization own the live SSA correspondence for these
 host allocations through their existing clone and normalization transactions.
 Construction-local correspondence markers are reserved and removed before
-canonical identity. Exact ABI forwarding and dominance bind the live guest
-base; offsets remain invocation-dependent and the invocation decoder checks
-them against the finite object. This evidence applies only to its exact source
-input domain and does not establish provenance for arbitrary inputs or replace
-the independent source-backed functional replay.
+canonical identity. A global has no such correspondence to establish; the
+invocation plan names its address in the invoking callable of the plan's own
+Dataflow copy, once per global, without changing the Dataflow graph. Exact ABI
+forwarding and dominance bind the live guest base: a root owned by the invoking
+callable must dominate its root launch, and a caller-frame root must dominate
+the call it crosses. Offsets remain
+invocation-dependent and the invocation decoder checks them against the finite
+object. This evidence applies only to its exact source input domain and does
+not establish provenance for arbitrary inputs or replace the independent
+source-backed functional replay.
 
 When a boundary pointer is a visible direct-call result, capture derives its
 origin by projecting every exact callee return operand back through that call's

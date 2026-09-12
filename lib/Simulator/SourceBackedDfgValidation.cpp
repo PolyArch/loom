@@ -1132,25 +1132,31 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
     for (WorkloadBoundMemoryRoot &root : graph.roots) {
       if (std::holds_alternative<NativeInputMemoryObjectSource>(root.source))
         continue;
+      // A module global has static storage: no frame, hence no frame
+      // obligation, a lifetime that contains every invocation, and a link-time
+      // constant address the invoking callable can always name. The invocation
+      // plan materializes that base; there is no host allocation to track.
+      if (std::holds_alternative<NativeGlobalMemoryObjectSource>(root.source))
+        continue;
       if (!std::holds_alternative<NativeStackMemoryObjectSource>(root.source))
         return llvm::createStringError(std::errc::not_supported,
-            "source-bound deployment requires an ABI or fixed stack object");
+            "source-bound deployment requires an ABI, global, or fixed stack "
+            "object: %s",
+            describeNativeMemoryObjectSource(root.source).c_str());
       const auto &stack = std::get<NativeStackMemoryObjectSource>(root.source);
-      // Name the object and the distance. The refusal travels to the DSE as
-      // the proof that blocks this ownership decision, and "a stack object"
-      // is not something a candidate generator or a reader can act on.
-      if (!stack.captureFrameDistance || *stack.captureFrameDistance != 0) {
-        const std::string distance =
-            stack.captureFrameDistance
-                ? std::to_string(*stack.captureFrameDistance)
-                : std::string("unknown");
+      // The frame distance is a recorded fact, not a gate. It is part of the
+      // source locator, so the activation agreement above already proves every
+      // activation observed this object at the same relative frame; the frame
+      // itself is admitted by the invocation plan, which owns the exact path.
+      // An absent distance means no live capture stood behind the locator, so
+      // there is no frame evidence at all. Refusals name the object: they
+      // travel to the DSE as the proof that blocks an ownership decision, and
+      // "a stack object" is not something a generator or a reader can act on.
+      if (!stack.captureFrameDistance)
         return llvm::createStringError(
             std::errc::not_supported,
-            "captured stack object belongs to a different invocation frame: "
-            "allocation %llu of %s at frame distance %s",
-            static_cast<unsigned long long>(stack.allocationOrdinal),
-            stack.callableSymbol.c_str(), distance.c_str());
-      }
+            "captured stack object has no observed invocation frame: %s",
+            describeNativeMemoryObjectSource(root.source).c_str());
       auto source = resolveNativeProgramMemoryObjectSource(
           selectedProgram.module(), root.source);
       if (!source)
@@ -1159,14 +1165,16 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
       auto owner = allocation
                        ? allocation->getParentOfType<mlir::LLVM::LLVMFuncOp>()
                        : mlir::LLVM::LLVMFuncOp{};
+      // One activation of the allocating frame creates exactly one instance at
+      // a stable frame offset. That is what makes the object's address constant
+      // for the whole invocation, in this frame or in a suspended caller's.
       if (!owner || allocation->getBlock() != &owner.getBody().front() ||
           !allocation->getBlock()->hasNoPredecessors())
         return llvm::createStringError(
             std::errc::not_supported,
             "captured stack source is not a once-per-invocation entry "
-            "allocation: allocation %llu of %s",
-            static_cast<unsigned long long>(stack.allocationOrdinal),
-            stack.callableSymbol.c_str());
+            "allocation: %s",
+            describeNativeMemoryObjectSource(root.source).c_str());
       auto found = llvm::find(hostAllocations, allocation.getRes());
       const std::size_t ordinal = std::distance(hostAllocations.begin(), found);
       if (found == hostAllocations.end())

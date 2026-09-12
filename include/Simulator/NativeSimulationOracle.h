@@ -63,6 +63,13 @@ using NativeMemoryObjectSource =
                  NativeGlobalMemoryObjectSource,
                  NativeAllocationMemoryObjectSource>;
 
+/// One canonical spelling of a source locator for typed refusals. A refusal
+/// that cannot prove a memory root must name the object it refused, so every
+/// owner that reports one renders it here instead of inventing a wording.
+/// Diagnostic text only: it is never persisted, parsed, or made identity.
+std::string
+describeNativeMemoryObjectSource(const NativeMemoryObjectSource &source);
+
 llvm::Expected<NativeMemoryObjectSource>
 projectNativeProgramMemoryObjectSource(mlir::Operation *operation);
 llvm::Expected<mlir::Operation *> resolveNativeProgramMemoryObjectSource(

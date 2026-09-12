@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -961,6 +962,23 @@ llvm::Expected<mlir::Operation *> memorySourceOperationAt(
   return result;
 }
 } // namespace
+
+std::string
+describeNativeMemoryObjectSource(const NativeMemoryObjectSource &source) {
+  if (const auto *input = std::get_if<NativeInputMemoryObjectSource>(&source))
+    return "input ABI object " + std::to_string(input->objectOrdinal);
+  if (const auto *global = std::get_if<NativeGlobalMemoryObjectSource>(&source))
+    return "global " + global->symbol;
+  if (const auto *stack = std::get_if<NativeStackMemoryObjectSource>(&source))
+    return "allocation " + std::to_string(stack->allocationOrdinal) + " of " +
+           stack->callableSymbol + " at frame distance " +
+           (stack->captureFrameDistance
+                ? std::to_string(*stack->captureFrameDistance)
+                : std::string("unknown"));
+  const auto &allocation = std::get<NativeAllocationMemoryObjectSource>(source);
+  return "runtime allocation " + std::to_string(allocation.callOrdinal) +
+         " of " + allocation.callableSymbol;
+}
 
 llvm::Expected<NativeMemoryObjectSource>
 projectNativeProgramMemoryObjectSource(mlir::Operation *operation) {

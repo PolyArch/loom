@@ -9,6 +9,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <limits>
@@ -54,10 +55,45 @@ deriveInvocationMemorySources(
   auto entry = module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
   if (!entry)
     return invalid("source-bound invocation has no canonical ABI entry");
+  // A static-storage root has no frame, so nothing has to carry it across one:
+  // its address is a link-time constant that the invoking callable can name
+  // directly. The glue materializes that live base at the top of the selected
+  // callable in the plan's own Dataflow copy, once per global, which is the
+  // role the tracked-allocation correspondence plays for a stack root. The
+  // Dataflow graph is untouched and the address is reused by every path.
+  auto staticStorageBase =
+      [&](const sim::NativeGlobalMemoryObjectSource &locator,
+          std::uint64_t byteCount) -> llvm::Expected<mlir::Value> {
+    auto global = module.lookupSymbol<mlir::LLVM::GlobalOp>(locator.symbol);
+    if (!global)
+      return llvm::createStringError(std::errc::not_supported,
+          "source-bound object has no global in the selected program: %s",
+          locator.symbol.c_str());
+    llvm::TypeSize extent =
+        mlir::DataLayout::closest(global).getTypeSize(global.getGlobalType());
+    if (extent.isScalable() || extent.getFixedValue() != byteCount)
+      return llvm::createStringError(std::errc::not_supported,
+          "source-bound global extent differs from its captured source: %s",
+          locator.symbol.c_str());
+    mlir::Block &body = selected.getBody().front();
+    for (auto address : body.getOps<mlir::LLVM::AddressOfOp>())
+      if (address.getGlobalName() == locator.symbol)
+        return address.getRes();
+    mlir::OpBuilder builder = mlir::OpBuilder::atBlockBegin(&body);
+    return mlir::LLVM::AddressOfOp::create(builder, rootLaunch.getLoc(), global)
+        .getRes();
+  };
   std::vector<sim::OperationMemorySourceBinding> result;
   for (const sim::WorkloadBoundMemoryRoot &root : graph->roots) {
     mlir::Value base = root.programBase;
     std::uint64_t baseByteOffset = 0;
+    if (const auto *global =
+            std::get_if<sim::NativeGlobalMemoryObjectSource>(&root.source)) {
+      auto address = staticStorageBase(*global, root.byteCount);
+      if (!address)
+        return address.takeError();
+      base = *address;
+    }
     if (const auto *input =
             std::get_if<sim::NativeInputMemoryObjectSource>(&root.source)) {
       if (input->objectOrdinal >= source.runtimeInput.memoryObjects.size() ||
@@ -117,10 +153,26 @@ deriveInvocationMemorySources(
     if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(base))
       owner = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(
           argument.getOwner()->getParentOp());
-    mlir::DominanceInfo dominance(selected);
-    if (owner != selected || !dominance.dominates(base, rootLaunch))
+    // The invoking frame owns the base, or a caller on this exact invocation
+    // path does. A caller on the path is suspended at a direct call until the
+    // launch retires, so its entry allocation stays live at a constant address
+    // and no other host access of it can interleave. The capture plan binds
+    // such a base while entering that call and the wire carries the live
+    // pointer; dominance over the crossed edge is proved there.
+    if (owner == selected) {
+      mlir::DominanceInfo dominance(selected);
+      if (!dominance.dominates(base, rootLaunch))
+        return llvm::createStringError(std::errc::not_supported,
+            "source-bound object base does not dominate its root invocation: "
+            "%s", sim::describeNativeMemoryObjectSource(root.source).c_str());
+    } else if (!owner ||
+               llvm::none_of(path, [&](mlir::LLVM::CallOp call) {
+                 return call->getParentOfType<mlir::LLVM::LLVMFuncOp>() == owner;
+               })) {
       return llvm::createStringError(std::errc::not_supported,
-          "source-bound object base does not dominate its root invocation");
+          "source-bound object frame is not on the exact invocation path: %s",
+          sim::describeNativeMemoryObjectSource(root.source).c_str());
+    }
     result.push_back({root.root, base, root.byteCount, baseByteOffset});
   }
   return result;
