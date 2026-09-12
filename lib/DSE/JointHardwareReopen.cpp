@@ -715,32 +715,24 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (!planPointer)
       return invalid("hardware reopen plan pointer is null");
     const JointDesignExplorationPlan &plan = *planPointer;
-    // A verified alternative changes what the remaining window is worth. A
-    // plan whose own estimate cannot beat the verified one cannot win the
-    // quality objective however it maps, and the measurement the invocation
-    // already earned is worth more than another search: admit neither the
-    // plan that cannot win nor a plan that would leave no window for the
-    // measurement of the next alternative to be banked.
+    // A verified alternative's banked measurement is worth more than another
+    // search that would leave no window to bank the next one. Its analytic
+    // estimate decides nothing: the quality objective leads with the measured
+    // System computation, and the model's ranking of plans is not monotone in
+    // that measurement, so a plan the model rates worse is still attempted
+    // whenever its declared work fits the window.
     if (verifiedMappingCount != 0) {
-      // Only a strictly worse estimate predicts a loss. The quality objective
-      // leads with the measured System computation, so two plans the analytic
-      // model cannot tell apart are still separated by the measurement, and
-      // refusing a tie would decide on a prediction the model did not make.
-      const bool cannotBeatVerified =
-          plan.estimatedRuntimePicoseconds && bestVerifiedEstimate &&
-          *plan.estimatedRuntimePicoseconds > *bestVerifiedEstimate;
       const std::uint64_t remainingWindow =
           remainingDispatchNanoseconds(request.executionPolicy);
       const bool reserveExhausted =
           terminalQualityAcquisitionNanoseconds != 0 &&
           remainingWindow < terminalQualityAcquisitionNanoseconds;
-      if (cannotBeatVerified || reserveExhausted) {
+      if (reserveExhausted) {
         // A plan the window cannot fit is a plan the safety net stopped: the
         // frontier still held declared work the host's load kept the run from
         // spending, so the stop is reported as a wall-time stop rather than
         // as an exhausted search.
-        if (reserveExhausted && !cannotBeatVerified)
-          deadlineObserved = true;
+        deadlineObserved = true;
         ++softwarePlansRefusedByQualityAdmission;
         mapping_debug::emit(
             mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
@@ -748,9 +740,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             [&](llvm::json::Object &fields) {
               fields["operation"] = "software_frontier_plan_refused";
               fields["plan_ordinal"] = indexed.index();
-              fields["reason"] = cannotBeatVerified
-                                     ? "not_better_than_verified_alternative"
-                                     : "terminal_quality_acquisition_reserve";
+              fields["reason"] = "terminal_quality_acquisition_reserve";
               if (plan.estimatedRuntimePicoseconds)
                 fields["plan_estimated_runtime_ps"] =
                     *plan.estimatedRuntimePicoseconds;

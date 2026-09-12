@@ -4119,19 +4119,19 @@ still reports what it measured. The reserve withheld from every later slice is
 the cost that banking actually measured, so it scales with the workload
 instead of a fixed share; before one acquisition has been measured there is
 nothing to protect and the reserve is zero. Finally, a further plan is not
-admitted at all once an alternative has verified when its own analytic
-estimate is strictly worse than the verified alternative's estimate, or when
-the
-remaining window no longer covers that measured acquisition: the first plan is
-predicted to lose however it maps, and the second would spend the window that
-the next alternative's measurement needs. Two plans the model cannot tell
-apart are not refused, because the quality objective leads with the measured
-System computation and that measurement is what separates them. Both refusals are
-typed records naming the plan, the two estimates, and the remaining window,
-and the stopping summary counts them, so a row that stops early says why
-rather than reporting an unexplained timeout. This is an admission decision
-over analytic estimates, never a legality claim: a refused plan is not
-infeasible, it is not worth the remaining invocation. Under
+admitted once an alternative has verified when the remaining window no longer
+covers that measured acquisition, because it would spend the window that the
+next alternative's measurement needs. A plan's own analytic estimate never
+refuses it: the quality objective leads with the measured System computation,
+the model's ranking of plans is not monotone in that measurement, and a plan
+the model rates worse than the verified alternative has been measured to win
+against it, so a prediction must not pre-empt a measurement the declared work
+affords. The refusal is a typed record naming the plan, both estimates as
+provenance, and the remaining window, and the stopping summary counts it and
+reports it as a wall-time stop, so a row that stops early says why rather
+than reporting an unexplained timeout. This is an admission decision over the
+window, never a legality claim: a refused plan is not infeasible, it is not
+affordable in the remaining invocation. Under
 `BoundedQuality`, the complete bounded parent frontier is visited first; exact
 failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates first prioritize the
