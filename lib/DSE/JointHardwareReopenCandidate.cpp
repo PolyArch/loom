@@ -92,10 +92,6 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy) {
                  .count()) >= *deadline;
 }
 
-/// Half of the plan window is divided equally so every plan is still tried;
-/// the other half follows covered work.
-constexpr std::uint64_t equalPlanWindowDivisor = 2;
-
 std::uint64_t
 remainingDispatchNanoseconds(const PlanExecutionPolicy &policy) {
   const auto deadline = policy.dispatchNotAfterUnixNanoseconds();
@@ -113,9 +109,7 @@ remainingDispatchNanoseconds(const PlanExecutionPolicy &policy) {
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        std::uint64_t reservedTerminalNanoseconds,
-                        std::uint64_t planCoveredWork,
-                        std::uint64_t remainingCoveredWork) {
+                        std::uint64_t reservedTerminalNanoseconds) {
   if (remainingPlanCount == 0)
     return invalid("remaining-plan time slice has no remaining plan");
   const auto globalDeadline = base.dispatchNotAfterUnixNanoseconds();
@@ -144,28 +138,8 @@ fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
   const std::uint64_t remaining =
       window > reservedTerminalNanoseconds ? window - reservedTerminalNanoseconds
                                            : window;
-  const std::uint64_t divisor = remainingPlanCount;
-  std::uint64_t slice = std::max<std::uint64_t>(1, remaining / divisor);
-  // A plan that covers almost none of the declared computation interval
-  // cannot close the gate however long it maps, so it must not hold an equal
-  // share of the window while the plan that covers the computation is
-  // cancelled for want of the same time. The terminal QoR reservation is
-  // withheld first and keeps its equal shares; of what is left, half stays
-  // equal so every plan is still tried and half follows the covered work.
-  // Equal covered work reproduces the equal division exactly, and an absent
-  // measure keeps it.
-  if (remainingCoveredWork != 0 && planCoveredWork != 0 &&
-      planCoveredWork <= remainingCoveredWork) {
-    const std::uint64_t planWindow = remaining;
-    const std::uint64_t equalWindow = planWindow / equalPlanWindowDivisor;
-    const std::uint64_t weightedWindow = planWindow - equalWindow;
-    const auto weighted =
-        static_cast<unsigned __int128>(weightedWindow) * planCoveredWork /
-        remainingCoveredWork;
-    const std::uint64_t equalPart = equalWindow / remainingPlanCount;
-    slice = std::max<std::uint64_t>(
-        1, equalPart + static_cast<std::uint64_t>(weighted));
-  }
+  const std::uint64_t slice =
+      std::max<std::uint64_t>(1, remaining / remainingPlanCount);
   const std::uint64_t localDeadline =
       slice > *globalDeadline - now ? *globalDeadline : now + slice;
   return PlanExecutionPolicy::get(base.workerCount(), base.inProcessClaim(),

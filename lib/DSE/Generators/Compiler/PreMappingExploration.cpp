@@ -349,7 +349,6 @@ exploreStructuredCompilationToPreMapping(
   PreMappingWorkAccounting frontierAccounting =
       makePreMappingWorkAccounting(options.frontier.budget);
   std::optional<std::uint64_t> sourceHostOnlyRuntimePicoseconds;
-  std::optional<std::uint64_t> sourceHostOnlyLeafExecutions;
   const auto cancelledBeforePlanning = [&]() -> PreMappingExplorationOutcome {
     IncompletePreMappingExploration result;
     result.reason = DsePlanIncompleteReason{
@@ -406,10 +405,8 @@ exploreStructuredCompilationToPreMapping(
         *runtimeInputReference, config, evaluationCache);
     if (!estimate)
       return estimate.takeError();
-    if (*estimate) {
+    if (*estimate)
       sourceHostOnlyRuntimePicoseconds = (**estimate).runtimePicoseconds;
-      sourceHostOnlyLeafExecutions = (**estimate).hostDynamicLeafExecutions;
-    }
     return std::move(*observations);
   }();
   if (!sourceObservations)
@@ -1987,8 +1984,7 @@ exploreStructuredCompilationToPreMapping(
                                    plannerMode,
                                    completeness,
                                    std::move(shadowRecall),
-                                   sourceHostOnlyRuntimePicoseconds,
-                                   sourceHostOnlyLeafExecutions}};
+                                   sourceHostOnlyRuntimePicoseconds}};
 }
 
 } // namespace loom::dse

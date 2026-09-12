@@ -448,7 +448,12 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                [](const auto &lhs, const auto &rhs) {
                  return lhs.planOrdinal < rhs.planOrdinal;
                });
-    summary.declaredWorkExhausted = declaredWorkExhausted;
+    // The invocation deadline is a safety net over a search whose bound is
+    // the declared work of the resolved configuration. A run the net stopped
+    // has not exhausted that work, and saying it had would make a
+    // load-induced stop indistinguishable from a complete search.
+    summary.declaredWorkExhausted = declaredWorkExhausted && !deadlineObserved;
+    summary.wallTimeStopObserved = deadlineObserved;
     summary.attempts = attemptRecords;
     execution.summary = std::move(summary);
     mapping_debug::emit(
@@ -458,6 +463,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           fields["policy"] =
               jointDesignStoppingPolicySpelling(request.stoppingPolicy);
           fields["attempted_software_plans"] = attemptedSoftwarePlans;
+          fields["wall_time_stop"] = deadlineObserved;
           fields["software_plans_refused_after_verification"] =
               softwarePlansRefusedByQualityAdmission;
           fields["terminal_quality_acquisition_ns"] =
@@ -770,50 +776,19 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                 : 0);
       }
     }
-    // Under FirstVerified a difficult finalist may not consume the whole
-    // invocation while untried siblings remain: each remaining plan receives
-    // a fair share of the remaining wall time, and an early finisher returns
-    // its unused share to the next plan. The global deadline is unchanged.
-    std::optional<PlanExecutionPolicy> planExecutionPolicy;
-    if (request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality ||
-        actionableHardwareParents != 0 || plans.size() - indexed.index() > 1) {
-      std::uint64_t remainingPlans = plans.size() - indexed.index();
-      saturatingAdd(remainingPlans, actionableHardwareParents);
-      // Only the untried plans compete for the remaining window, so the
-      // covered work of the plans already executed is not part of the
-      // division.
-      std::uint64_t remainingCoveredWork = 0;
-      for (std::size_t ordinal = indexed.index(); ordinal != plans.size();
-           ++ordinal)
-        if (plans[ordinal])
-          saturatingAdd(remainingCoveredWork,
-                        plans[ordinal]->coveredDynamicLeafExecutions);
-      auto fair = fairRemainingPlanPolicy(
-          request.executionPolicy, remainingPlans,
-          terminalQualityAcquisitionNanoseconds,
-          plan.coveredDynamicLeafExecutions, remainingCoveredWork);
-      if (!fair)
-        return fair.takeError();
-      planExecutionPolicy.emplace(std::move(*fair));
-      mapping_debug::emit(
-          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
-          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-            fields["operation"] = "software_frontier_plan_slice";
-            fields["plan_ordinal"] = indexed.index();
-            fields["remaining_plan_count"] = remainingPlans;
-            fields["actionable_hardware_parent_count"] =
-                actionableHardwareParents;
-            fields["plan_covered_leaf_executions"] =
-                plan.coveredDynamicLeafExecutions;
-            fields["remaining_covered_leaf_executions"] = remainingCoveredWork;
-            if (planExecutionPolicy->dispatchNotAfterUnixNanoseconds())
-              fields["dispatch_not_after_unix_ns"] =
-                  *planExecutionPolicy->dispatchNotAfterUnixNanoseconds();
-          });
-    }
-    auto initial = executeJointPlan(
-        plan, request.evidence, request, *scheduler, artifacts, blobs,
-        planExecutionPolicy ? &*planExecutionPolicy : nullptr);
+    // A plan executes its declared work. The resolved PnR configuration owns
+    // that bound -- the canonical restart count and the per-restart
+    // initializer, routing, annealing, and repair limits of the deterministic
+    // work budget -- and every plan of one invocation shares that
+    // configuration, so the bound is the same declared quantity for each of
+    // them and needs no division. Dividing the remaining wall time instead
+    // made the search a function of how much processor the host happened to
+    // have: the same input and configuration selected different plans on a
+    // loaded and an unloaded machine. The invocation deadline still bounds
+    // the run, but only as a safety net, and a stop it causes is reported as
+    // one rather than returned as a different answer.
+    auto initial = executeJointPlan(plan, request.evidence, request, *scheduler,
+                                    artifacts, blobs, nullptr);
     if (!initial)
       return initial.takeError();
     if (llvm::Error error = retainJointDesignExecutionInvocations(

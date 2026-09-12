@@ -4040,22 +4040,35 @@ corresponding recipe change.
 
 Hardware reopen is ordered after the bounded current-hardware software/System
 frontier. The controller first visits those exact pairs in their declared
-preference order. `FirstVerified` returns the first verified Mapping. While
-untried plans remain, each plan executes under a fair share of the remaining
-wall time, so one difficult finalist cannot consume the invocation before a
-later plan is attempted; a plan that finishes early returns its unused share,
-and the invocation deadline itself is unchanged. The share is weighted by
-work, not by plan count alone. A plan that covers almost none of the declared
-computation interval cannot close the real-application gate however long it
-maps, so it must not hold an equal share while the plan that covers the
-computation is cancelled for want of the same time. Terminal QoR acquisition
-is reserved first; of what remains, half is divided equally so every plan is
-still attempted and half follows the covered leaf executions each plan moves
-off the host. Equal covered work reproduces the equal division exactly, an
-absent measure keeps it, and an evidenced hardware parent takes only from the
-equal half because it carries no software coverage. The covered measure is
-promotion provenance: it rides with the plan, is reported with each slice, and
-never enters plan, Mapping, or candidate identity.
+preference order. `FirstVerified` returns the first verified Mapping.
+
+A software plan executes its declared work. The resolved PnR configuration
+owns that bound as its deterministic work budget: the canonical restart count
+and the per-restart initializer, routing, annealing, and repair limits. Every
+plan of one invocation shares that configuration, so the bound is the same
+declared quantity for each of them; it needs no division, and dividing it
+would be the one thing that makes the units incommensurable, since the same
+restart costs different wall time on different graphs. What a bounded search
+selects and deploys is therefore a function of the input and the configuration
+alone. Dividing the remaining wall time among the untried plans is not an
+equivalent bound and must not be used: it makes the result a function of how
+much processor the host happened to have, and the same input and configuration
+then select different plans on a loaded and an unloaded machine, which is no
+gate at all.
+
+The invocation deadline remains, as a safety net over that bounded search and
+not as its bound. A run it stops has not exhausted its declared work, so the
+two terminal states are reported separately: `declaredWorkExhausted` is true
+only for a search that ran out its configured work, and a wall-time stop is
+its own typed observation naming the invocation that hit the net. A caller can
+then tell a reproducible result from one that reflects the host's load, and a
+net that fires routinely is a statement that the declared work does not fit
+the budget -- to be answered by the configured work or the budget, never by
+silently returning whichever plan the machine had time for.
+
+The hardware families keep a wall-time division, because their own bound is a
+probe count and their probes still share one window; terminal QoR acquisition
+is reserved from it first.
 
 A verified alternative changes what the remaining window is worth, and the
 controller acts on that in three ways. The application QoR acquisition of an

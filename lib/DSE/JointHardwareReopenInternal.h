@@ -146,17 +146,14 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 /// acquisition is what turns a verified Mapping into a measured result;
 /// before one has been measured the reserve is zero and nothing is withheld.
 ///
-/// `planCoveredWork` and `remainingCoveredWork` weight the division by the
-/// covered leaf executions of this plan and of every untried plan. Half of
-/// the plan window stays equal so every plan is still tried; the other half
-/// follows the covered work. Equal weights reproduce the equal division, and
-/// an absent measure keeps it.
+/// The software plan frontier does not use this policy: a plan executes the
+/// declared work of the resolved configuration. It remains the division for
+/// the hardware families, whose own bound is a probe count and whose probes
+/// still have to share one window.
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        std::uint64_t reservedTerminalNanoseconds,
-                        std::uint64_t planCoveredWork = 0,
-                        std::uint64_t remainingCoveredWork = 0);
+                        std::uint64_t reservedTerminalNanoseconds);
 
 /// Wall time left before the policy's absolute dispatch deadline. A policy
 /// without a deadline has an unbounded window.

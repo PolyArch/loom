@@ -55,12 +55,6 @@ struct JointDesignExplorationPlan final {
   BoundedJointFrontier frontier;
   std::vector<JointDesignPlanPair> pairOutputs;
   std::vector<pnr::SystemBindingPartitionIntent> systemBindingPartitions;
-  /// Leaf executions of the source-declared computation interval this plan
-  /// moves off the host, as the promotion owner measured them. It is ranking
-  /// provenance for the bounded wall-time division and never enters plan,
-  /// Mapping, or candidate identity. Zero means the owner supplied no
-  /// measure, and the division stays equal.
-  std::uint64_t coveredDynamicLeafExecutions = 0;
   /// The promotion owner's analytic estimate of the whole case under this
   /// plan. It is the same ranking provenance: it decides whether another plan
   /// is worth the remaining window once an alternative has verified, and it
@@ -368,7 +362,15 @@ struct JointDesignExecutionSummary final {
   std::vector<JointDesignQualityObservation> qualityObservations;
   std::vector<std::string> hardwarePromotionObjectiveDimensionLabels;
   std::vector<JointHardwarePromotionObservation> hardwarePromotionObservations;
+  /// The search ran out the declared work of the resolved configuration.
+  /// It is false whenever the invocation deadline stopped the run instead.
   bool declaredWorkExhausted = false;
+  /// The invocation's wall-time safety net stopped the run. The net bounds a
+  /// search that is otherwise a function of the input and the configuration
+  /// alone, so a caller reading a result has to be able to tell the two
+  /// terminal states apart: an exhausted search is reproducible, a run the
+  /// net stopped reflects the processor the host happened to have.
+  bool wallTimeStopObserved = false;
   std::vector<JointDesignAttemptRecord> attempts;
 };
 
