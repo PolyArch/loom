@@ -665,11 +665,12 @@ def validate_cgra_hardware_search(value: object) -> bool:
     )
     _validate_artifact_reference(value["fabric"], "selected Fabric", _FABRIC_SCHEMA)
     deadline = _nonnegative_integer(value["deadline_ns"], "hardware deadline", positive=True)
-    # The tool runs under the FAST tier and reserves the smallest tier for
-    # stopping, writing and exiting, so its own search deadline is strictly
-    # inside the tier the wrapper kills on.
+    # The search proves cover and Spatial closure for every representative
+    # source in every round, so it costs the suite rather than one workload and
+    # runs under the largest tier, reserving the smallest tier for stopping,
+    # writing and exiting.
     expected_deadline = (
-        timeout_seconds(Tier.FAST) - timeout_seconds(Tier.ULTRAFAST)
+        timeout_seconds(Tier.NIGHTLY) - timeout_seconds(Tier.ULTRAFAST)
     ) * 1_000_000_000
     if deadline != expected_deadline:
         raise ValueError("CGRA hardware search has a foreign deadline")
