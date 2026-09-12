@@ -1487,6 +1487,12 @@ static llvm::Expected<EvaluationModelResult> importGem5SystemInvocationImpl(
   if (!llvm::StringRef(systemResult->cause).contains("m5_exit"))
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
+  // An attempt that ran to the program's own exit measured every window it
+  // opened. An accelerated phase without the computation interval it lies in
+  // would describe a window the measured computation never contains; only an
+  // attempt the simulated-tick budget cut short may publish one.
+  if (systemResult->acceleratedPhases && !systemResult->computationInterval)
+    return invalid("gem5 accelerated phases have no computation interval");
   if (attemptProfile) {
     const bool hasSpatialWork = !facts.spatialLaunches.empty();
     const bool ownsEngineProcess = hasSpatialWork && facts.engine != Gem5SystemEngine::Rtl;

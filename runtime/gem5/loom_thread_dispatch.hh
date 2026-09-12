@@ -27,7 +27,14 @@ public:
 
   Tick read(PacketPtr packet) override;
   Tick write(PacketPtr packet) override;
-  std::vector<std::uint64_t> computationInterval() const;
+  /// The complete measured computation interval, empty when the run observed
+  /// none. `tickBudgetExhausted` is the driver's own fact that the attempt
+  /// stopped at its declared simulated-tick budget rather than at the
+  /// program's own exit; an interval the budget cut short is that attempt's
+  /// typed execution-limit outcome, while one left open by a program that
+  /// finished is a program error.
+  std::vector<std::uint64_t>
+  computationInterval(bool tickBudgetExhausted) const;
   /// Whether the source-declared computation interval is open right now. This
   /// device owns that boundary, so every other observer of the measured
   /// computation asks it rather than keeping a second copy.

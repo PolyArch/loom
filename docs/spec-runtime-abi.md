@@ -798,6 +798,15 @@ service samples; SimulationExecution is their persistent owner. No root control
 callback is sent for a computation observation, and host-only executions remain
 free of accelerator root lifecycle events.
 
+An interval the program itself leaves open when it exits is a program error and
+fails the attempt where it happens. An attempt the declared simulated-tick
+budget cuts short is a supported terminal condition instead: it publishes its
+result with no measured interval and with the exit cause that carries the
+exhausted budget, and the importer turns that cause into the typed
+execution-limit outcome. Only such an attempt may carry accelerated phases
+without the interval they lie in, because the budget stopped the program
+between the two boundaries.
+
 The root Start control event is acknowledged before the first point of that
 root can be submitted. Recording Start after submitting the point inventory
 would lose early execution and allow work before its root was admitted.

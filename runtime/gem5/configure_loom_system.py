@@ -838,6 +838,10 @@ def main() -> None:
             if int(m5.curTick()) >= deadline:
                 event = m5.simulate(0)
                 break
+        # The declared simulated-tick budget is a supported terminal condition,
+        # so an attempt it cut short still publishes its result and carries its
+        # exit cause to the importer's typed execution-limit outcome.
+        tick_budget_exhausted = int(m5.curTick()) >= deadline
         simulation_finished = time.monotonic_ns() if diagnostics else None
         simulation_cpu_after = (
             resource.getrusage(resource.RUSAGE_SELF) if diagnostics else None
@@ -869,7 +873,9 @@ def main() -> None:
             "memory_activity": memory_activity,
             "computation_interval": [
                 int(value)
-                for value in system.loom_thread_dispatch.computationInterval()
+                for value in system.loom_thread_dispatch.computationInterval(
+                    tick_budget_exhausted
+                )
             ],
             "accelerated_phases": accelerated_phases,
             "entry_tick": entry_tick,

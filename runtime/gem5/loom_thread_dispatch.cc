@@ -650,8 +650,14 @@ void LoomThreadDispatch::failSelected(std::uint32_t code) {
   record->state = State::Failed;
 }
 
-std::vector<std::uint64_t> LoomThreadDispatch::computationInterval() const {
-  fatal_if(computationBegin, "program exited inside a computation interval");
+std::vector<std::uint64_t>
+LoomThreadDispatch::computationInterval(bool tickBudgetExhausted) const {
+  fatal_if(computationBegin && !tickBudgetExhausted,
+           "program exited inside a computation interval");
+  // One interval is admitted, so an open boundary has published nothing and
+  // the attempt reports no measured computation. Its exit cause carries the
+  // exhausted simulated-tick budget to the importer, which owns the typed
+  // execution-limit outcome.
   return computationObservations;
 }
 

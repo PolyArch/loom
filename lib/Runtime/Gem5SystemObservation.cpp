@@ -208,8 +208,6 @@ llvm::Expected<Gem5AttemptResult> parseAttemptResult(llvm::StringRef text) {
   auto phases = parseAcceleratedPhases(*phaseRecords);
   if (!phases)
     return phases.takeError();
-  if (*phases && !computation)
-    return invalid("gem5 accelerated phases have no computation interval");
   return Gem5AttemptResult{static_cast<std::uint64_t>(*entry),
                            static_cast<std::uint64_t>(*exit),
                            cause->str(),
