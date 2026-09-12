@@ -716,9 +716,13 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     // plan that cannot win nor a plan that would leave no window for the
     // measurement of the next alternative to be banked.
     if (verifiedMappingCount != 0) {
+      // Only a strictly worse estimate predicts a loss. The quality objective
+      // leads with the measured System computation, so two plans the analytic
+      // model cannot tell apart are still separated by the measurement, and
+      // refusing a tie would decide on a prediction the model did not make.
       const bool cannotBeatVerified =
           plan.estimatedRuntimePicoseconds && bestVerifiedEstimate &&
-          *plan.estimatedRuntimePicoseconds >= *bestVerifiedEstimate;
+          *plan.estimatedRuntimePicoseconds > *bestVerifiedEstimate;
       const std::uint64_t remainingWindow =
           remainingDispatchNanoseconds(request.executionPolicy);
       const bool reserveExhausted =
