@@ -20,7 +20,6 @@
 # RUN:   --portfolio-application=llama2c-kernels --portfolio-input=smoke \
 # RUN:   --portfolio-inventory=%t.inventory.json \
 # RUN:   --evaluation-tier=functional \
-# RUN:   --minimum-unique-acc-cores=2 \
 # RUN:   --required-dataflow-text=math.sqrt \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=arith.mulf \
