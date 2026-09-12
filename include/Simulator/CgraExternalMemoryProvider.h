@@ -100,10 +100,12 @@ public:
   virtual llvm::Expected<CgraExternalMemorySubmission>
   submit(const CgraExternalMemoryRequest &request) = 0;
 
-  /// Concurrent requests the selected external service guarantees. The
-  /// execution submits at most this many requests before consuming the
-  /// response of the earliest one. It is the exact service contract's
-  /// outstanding-operation guarantee, never a simulator-chosen depth.
+  /// Concurrent requests the selected path admits. The execution submits at
+  /// most this many requests before consuming the response of the earliest
+  /// one. A request is one memory actor firing, so this is the requester-side
+  /// bound the exact Fabric memory Operation Engines own -- the sum of their
+  /// issue depths -- never a simulator-chosen depth and never the access
+  /// cache's line fills or the service endpoint's operations.
   virtual std::uint64_t outstandingCapacity() const = 0;
 };
 

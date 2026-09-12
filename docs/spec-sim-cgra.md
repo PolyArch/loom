@@ -267,9 +267,12 @@ number of outstanding result occurrences and releases them in emission order,
 because a firing that cannot publish its result could not have been admitted.
 CGRA-sim reads that one depth from the mapped Fabric and never chooses one.
 
-The execution submits several requests concurrently, up to the
-outstanding-operation guarantee of the exact service rate contract the
-provider reports. It never chooses that depth itself. The consistency domain
+The execution submits several requests concurrently, up to the concurrent
+requests the provider reports. That number is the requester side of the
+selected path: the sum of the issue depths of the SpatialCore's memory
+Operation Engines, because a submitted request is one memory actor firing and
+not a line fill or a service operation. The execution never chooses that
+depth itself. The consistency domain
 still linearizes firings in the order it accepted them, so responses are
 consumed in issue order however the provider answers. A firing whose response
 has not arrived blocks only its own linearization: every other actor,

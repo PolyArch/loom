@@ -592,11 +592,16 @@ memory actor may hold outstanding, retiring in issue order. The AccCore's
 `SpatialMemoryAccessRealization` owns the outstanding-miss capacity of the
 access cache those firings traverse. The bound System service endpoint's
 `CanonicalServiceCapability` owns the outstanding capacity of the provider.
-The requests one graph can have in flight are therefore bounded by its memory
-actors times the engine depth, by the cache's miss-status entries, and by the
-service's outstanding guarantee; the smallest of the three is the binding
-constraint. Execution models, the analytic runtime model, and the gem5
-binding all derive that product and none of them chooses a depth of its own.
+The three are not interchangeable and are not in the same unit: only the
+engine depth counts memory actor firings, while the cache counts line fills
+and the endpoint counts service operations, and the access cache is exactly
+what decouples a firing from a line fill. The firings one graph can hold
+outstanding are therefore bounded by its memory actors times the engine
+depth alone; the cache and the endpoint bound the line fills and the service
+operations those firings induce, wherever they sit on the path, and neither
+may be substituted for the requester bound. Execution models, the analytic
+runtime model, and the gem5 binding all derive these bounds and none of them
+chooses a depth of its own.
 
 The engine depth also bounds the transport in front of the actor. A memory
 actor whose engine holds several firings outstanding publishes several result

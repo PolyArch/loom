@@ -187,33 +187,35 @@ llvm::Expected<std::uint64_t> deriveSelectedMessageOutstandingCapacity(
   return *capacity;
 }
 
+/// Firings one SpatialCore may hold outstanding at the boundary: the sum of
+/// its memory Operation Engines' issue depths. That is the requester side of
+/// the path and the only owner whose unit is a memory actor firing. The
+/// access cache's outstanding-miss capacity and the service endpoint's
+/// outstanding guarantee count line fills and service operations; the access
+/// cache is exactly what decouples a firing from a line fill, so neither of
+/// them bounds the firings the execution may submit, and both still bound the
+/// traffic they own where they sit on the path.
 llvm::Expected<std::uint64_t> deriveSelectedMemoryOutstandingCapacity(
     const fabric::FabricSystemRootView &system,
-    const mapping::SpatialMappingView &mapping,
     fabric::AccCoreOccurrenceRef accCore) {
   const std::optional<fabric::FabricImportedModuleTargetRef> target =
       system.spatialCoreTarget(accCore);
-  if (!target)
+  if (!target ||
+      target->dependencyOrdinal >= system.artifact().importedModules().size())
     return invalid("Spatial launch AccCore has no System Module target");
-  auto endpoints = mapping::projectSystemSpatialManagerMemoryEndpoints(
-      system, mapping, target->dependencyOrdinal, accCore);
-  if (!endpoints)
-    return endpoints.takeError();
-  std::optional<std::uint64_t> capacity;
-  for (const fabric::SystemServiceEndpointRef &endpoint : *endpoints) {
-    const fabric::CanonicalServiceCapabilitySet *capabilities =
-        system.serviceEndpointCapabilities(endpoint);
-    if (!capabilities ||
-        capabilities->plane() != fabric::CanonicalServiceEndpointPlane::Memory)
-      return invalid("bound memory endpoint has no memory capability set");
-    for (const auto &candidate : capabilities->capabilities()) {
-      const std::uint64_t outstanding = candidate.rate().maxOutstanding();
-      capacity = capacity ? std::min(*capacity, outstanding) : outstanding;
-    }
+  const fabric::FabricArtifactView &module =
+      system.artifact().importedModules()[target->dependencyOrdinal];
+  std::uint64_t capacity = 0;
+  for (const fabric::FabricMemoryOccurrenceRef memory :
+       module.memoryOccurrences()) {
+    const std::uint64_t depth = module.memoryOperationIssueDepth(memory);
+    if (depth > std::numeric_limits<std::uint64_t>::max() - capacity)
+      return invalid("SpatialCore memory issue depths exceed u64");
+    capacity += depth;
   }
-  // A launch whose memory never leaves the SpatialCore reaches no external
-  // service; its provider capacity is one logical request.
-  return capacity.value_or(1);
+  // A SpatialCore whose Module declares no memory Operation Engine submits no
+  // external request; one logical request keeps the provider contract total.
+  return capacity == 0 ? 1 : capacity;
 }
 
 std::string bytesToString(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -765,7 +767,7 @@ deriveFactsUncached(const EvaluationRequest &request,
                                {},
                                {}});
       auto memoryCapacity = deriveSelectedMemoryOutstandingCapacity(
-          *system, spatialMapping->view(), selection->context.accCore);
+          *system, selection->context.accCore);
       if (!memoryCapacity)
         return memoryCapacity.takeError();
       pendingLaunches.back().memoryOutstandingCapacity = *memoryCapacity;
