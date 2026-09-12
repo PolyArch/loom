@@ -132,8 +132,13 @@ struct CompositeFuMiningResult final {
 /// total and depends on no actor identity.
 ///
 /// Mining reads only the canonical token-plane relation and the registered
-/// operation-schema projection of each actor. An actor carrying a memory
-/// capability is outside that relation and is not an admitted node.
+/// operation-schema projection of each actor. An admitted node is a token-plane
+/// actor whose registered projection covers every operand and result, whose
+/// operands all resolve to a token producer, and whose results all reach a
+/// consumer. An actor carrying a memory capability, one whose operand no
+/// producer drives, and one whose result no consumer reads are all outside that
+/// relation: every port of an admitted node takes part in the token relation,
+/// which is what makes every reported shape one the FU model can materialize.
 llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> graphs,

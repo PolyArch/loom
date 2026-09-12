@@ -155,6 +155,10 @@ Before returning a candidate, synthesis verifies at least:
 
 * FU topology, SSA coherence, and explicit routing for mutually exclusive
   branches;
+* that every node operand is driven by an internal edge or an FU boundary
+  input and every node result reaches an internal edge or an FU boundary
+  output, because a physical result that reaches nothing derives no capability
+  row and is a typed authoring rejection rather than an invalid artifact;
 * unique implementation-family binding and typed HSG legality for every
   `fabric.op`;
 * agreement among `op_list`, `hw_params`, physical ports, and constraints;
@@ -216,6 +220,13 @@ relation.
   outside keeps its output port, because direct SSA multi-use is real broadcast.
 * An actor carrying a memory-capability operand or result is outside the token
   relation and is not an admitted node.
+* Every port of an admitted node takes part in the token relation: each operand
+  resolves to a token producer and each result reaches at least one consumer.
+  An operand no producer drives has no FU input port, and a result no consumer
+  reads is neither an internal edge nor an FU output port, so its `fabric.op`
+  result would reach nothing and the FU could not be materialized at all. Such
+  an actor stays outside the relation exactly as a memory actor does, and its
+  edges are external to every shape that keeps one of its neighbours.
 * Parameterized closure: a node's `op_list` is the observed schema set at that
   position, which this relation makes a singleton because node identity already
   includes the schema. The miner does not choose implementation families. The

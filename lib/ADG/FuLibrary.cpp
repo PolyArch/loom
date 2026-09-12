@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -1422,6 +1423,24 @@ addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
       return invalid("composite FU boundary output exceeds the PE port width");
     boundaryOutputTypes.push_back(*peBoundary);
   }
+
+  // A node result must reach an internal edge or a boundary output. One that
+  // reaches neither is a dead physical result the FU cannot materialize: the
+  // capability row's activation walk derives no state for a value with no
+  // consumer, so the spec is refused here rather than authored into a Fabric
+  // that would fail validation.
+  std::set<std::pair<std::uint32_t, std::uint64_t>> reachedResults;
+  for (const CompositeFuEdgeSpec &edge : spec.internalEdges)
+    reachedResults.emplace(edge.producerNode, edge.producerResult);
+  for (const CompositeFuPortSpec &port : spec.outputs)
+    reachedResults.emplace(port.node, port.portOrdinal);
+  for (const auto &node : llvm::enumerate(spec.nodes))
+    for (std::uint64_t ordinal = 0;
+         ordinal != node.value().outputTypes.size(); ++ordinal)
+      if (!reachedResults.count(
+              {static_cast<std::uint32_t>(node.index()), ordinal}))
+        return invalid("composite FU node result reaches neither an internal "
+                       "edge nor a boundary output");
 
   std::map<std::pair<std::uint32_t, std::uint64_t>,
            std::pair<std::uint32_t, std::uint64_t>>

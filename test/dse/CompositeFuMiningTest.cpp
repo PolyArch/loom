@@ -471,6 +471,55 @@ void proposesAComposedSupplyForAHallDeficit(llvm::StringRef fixture) {
           "the named shape key is not one the same request reproduces");
 }
 
+/// Every port of a mined node takes part in the token relation, because the FU
+/// physical model has no place for a result that reaches nothing: a
+/// `fabric.op` result with no consumer derives no capability row and the
+/// Fabric authored from it is invalid. This fixture makes the refused shape
+/// the one the rank would otherwise take, since a result no actor consumes
+/// costs no boundary port.
+void minesOnlyShapesTheFuModelCanMaterialize(llvm::StringRef fixture) {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
+  std::vector<dataflow::GraphRef> graphs;
+  for (const dataflow::CanonicalGraphView &graph : program.view().graphs())
+    graphs.push_back(graph.ref);
+  require(graphs.size() == 1, "the fixture does not hold exactly one graph");
+
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
+  require(!mined.candidates.empty(), "mining reported no common subgraph");
+
+  for (const loom::dse::CompositeFuCandidate &candidate : mined.candidates)
+    for (const auto &node : llvm::enumerate(candidate.nodes))
+      for (std::uint64_t result = 0;
+           result != node.value().type.getNumResults(); ++result) {
+        const bool internal = llvm::any_of(
+            candidate.internalEdges,
+            [&](const loom::dse::CompositeFuInternalEdge &edge) {
+              return edge.producerNode == node.index() &&
+                     edge.producerResult == result;
+            });
+        const bool boundary = llvm::any_of(
+            candidate.outputs,
+            [&](const loom::dse::CompositeFuBoundaryPort &port) {
+              return port.node == node.index() && port.portOrdinal == result;
+            });
+        require(internal || boundary,
+                "a mined candidate holds a node result that reaches neither "
+                "an internal edge nor an FU boundary port");
+      }
+
+  // The end-to-end oracle: the ranked candidate authors a Fabric whose FU
+  // capability rows all derive. A dead physical result fails exactly here.
+  const loom::dse::CompositeFuCandidate &best = mined.candidates.front();
+  auto synthesized =
+      take(loom::dse::synthesizeCompositeFuTemplate(program.view(), best, store));
+  require(synthesized.coverage.size() == best.occurrences.size(),
+          "composite FU synthesis lost a coverage witness");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -490,6 +539,8 @@ int main(int argc, char **argv) {
     minesOneLayerSizedGraphUnderItsBound();
   else if (scene == "proposal")
     proposesAComposedSupplyForAHallDeficit(argv[1]);
+  else if (scene == "materialization")
+    minesOnlyShapesTheFuModelCanMaterialize(argv[1]);
   else
     fail("unknown scene " + scene.str());
   return EXIT_SUCCESS;

@@ -128,9 +128,15 @@ struct CompositeFuPlacement final {
 /// Adds one composite FU to an open PE and closes the FU. `inputs` are the PE
 /// values that carry the FU's ordered boundary inputs, one per
 /// `spec.inputs` entry. Every operand of every node must be either an internal
-/// edge destination or a boundary input, and a spec whose internal relation
-/// contains a cycle is rejected: a recurrence needs an explicit FU backedge
-/// and is not authored implicitly.
+/// edge destination or a boundary input, every result of every node must be
+/// either an internal edge source or a boundary output, and a spec whose
+/// internal relation contains a cycle is rejected: a recurrence needs an
+/// explicit FU backedge and is not authored implicitly.
+///
+/// The port conditions are what the FU physical model can materialize. A node
+/// result that reaches nothing is a dead physical result whose capability row
+/// derives no state, so it is a typed rejection here rather than an invalid
+/// Fabric artifact later.
 llvm::Expected<CompositeFuPlacement>
 addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                const CompositeFuSpec &spec);

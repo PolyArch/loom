@@ -103,6 +103,22 @@ resolveOperandProducer(
   return std::move(*producer);
 }
 
+/// Whether one actor result reaches a consumer at all. An unresolvable
+/// producer key counts as reaching one, exactly as the domain walk below
+/// treats it, so admission and boundary classification agree.
+bool resultReachesConsumer(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::ActorRef actor, std::uint64_t ordinal) {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer =
+      ::dataflow::ActorTokenResultRef{actor, ordinal};
+  auto consumers = dataflow.graphConsumers(producer);
+  if (!consumers) {
+    llvm::consumeError(consumers.takeError());
+    return true;
+  }
+  return !consumers->empty();
+}
+
 struct PendingActor final {
   ::dataflow::CanonicalActorView view;
   ::dataflow::CanonicalActorSchemaProjection projection;
@@ -112,9 +128,15 @@ struct PendingActor final {
 
 /// Collects the admitted actors of the requested graphs in canonical order. An
 /// actor is admitted when it is a token-plane actor whose registered
-/// projection covers every operand and result and whose operands all resolve
-/// to a token producer. Everything else, including memory actors, is outside
-/// the mined relation.
+/// projection covers every operand and result, whose operands all resolve to a
+/// token producer, and whose results all reach a consumer. Everything else,
+/// including memory actors, is outside the mined relation.
+///
+/// The port conditions are the two halves of one rule: every port of a node
+/// takes part in the token relation. An operand that no producer drives has no
+/// FU input port, and a result that no consumer reads has neither an internal
+/// edge nor an FU output port, so its `fabric.op` result would reach nothing
+/// and the FU could not be materialized at all.
 std::vector<MinedActor>
 indexMinedActors(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                  llvm::ArrayRef<::dataflow::GraphRef> graphs) {
@@ -151,6 +173,9 @@ indexMinedActors(const ::dataflow::CanonicalDataflowProgramView &dataflow,
       }
       producers.push_back(std::move(*producer));
     }
+    for (std::uint64_t ordinal = 0;
+         admitted && ordinal != projection->type.getNumResults(); ++ordinal)
+      admitted = resultReachesConsumer(dataflow, actor.ref, ordinal);
     if (!admitted)
       continue;
     actorPosition.emplace(actor.ref.entity.value(), pending.size());
