@@ -12,12 +12,15 @@
 # RUN:   --deployment-package=%t.deployment --output=%t.execution \
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
 # RUN:   > %t.run.stdout 2> %t.run.stderr
+# The kernel's one fan-out is a multicast net, which the Fabric contract in
+# docs/spec-fabric-pe-temporal.md excludes from the local-transfer domain: a
+# multicast net remains an external residual net whatever the Dataflow variant.
+# RegFIFO evidence belongs to the single-consumer rows that can supply it.
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --require-spatial-unconditional-handshake \
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-actor-multicast \
-# RUN:   --require-register-fifo \
 # RUN:   --require-packed-switch-row \
 # RUN:   --require-temporal-dispatch \
 # RUN:   --required-dataflow-text=arith.muli \
