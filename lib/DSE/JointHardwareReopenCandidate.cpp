@@ -1166,9 +1166,11 @@ materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
       dse::resolveFabricTemplateCandidateGeneratorBinding(*templateConfig);
   if (!binding)
     return binding.takeError();
+  // The reopen grows the builtin catalog, which mines nothing, so the
+  // generator's Dataflow slot is bound empty.
   growth.config.dse.planNodes = {dse::GeneratePlanNodeDefinition{
       binding->descriptorRef(),
-      {},
+      {dse::ExactPlanArtifacts{}},
       templateConfig->canonicalViewBytes().vec(),
       templateConfig->digest()}};
   auto execution = executeResolvedGeneratePlan(
