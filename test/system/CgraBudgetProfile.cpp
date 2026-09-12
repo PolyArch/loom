@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -472,6 +473,25 @@ llvm::json::Object sourceIdentityJson(const QualificationSource &source) {
       {"replay_cases", sourceReplayCasesJson(source.source)}};
 }
 
+/// The exact identity of one qualification source: its operator, the protocol
+/// entry it publishes, and the exact canonical Dataflow a round would map.
+/// Closure evidence is retained under this and the exact Fabric reference, so
+/// nothing looser can make a later round reuse a proof.
+std::string qualificationSourceKey(const QualificationSource &source) {
+  return source.workload + "|" + source.operatorId + "|" +
+         source.protocolSymbol + "|" +
+         loom::formatArtifactIdentityHex(source.source.dataflow.artifact);
+}
+
+/// One retained closure. The Fabric reference is the other half of the key:
+/// any growth publishes a different Module, which invalidates every pair
+/// proved on the old one.
+struct QualificationClosureEvidence final {
+  loom::ArtifactRootReference fabric;
+  std::uint64_t provedRound = 0;
+  llvm::json::Object evaluation;
+};
+
 /// One source's Spatial closure evidence on the certified Module. A source
 /// that publishes no Spatial Mapping names its typed hardware deficit only
 /// when the stage reaches a terminal outcome; a cancelled stage names nothing,
@@ -628,20 +648,44 @@ llvm::json::Object selectQualificationHardware(
       previousProgress;
   bool moduleOnlySupplyApplied = false;
   llvm::StringRef stopReason;
+  // A source that covered and closed on one exact Fabric has proved a
+  // deterministic fact of that pair, so a later round on the same Fabric
+  // repeats neither stage. The key is the exact Fabric reference and the exact
+  // source identity: every growth publishes a different Module, which
+  // invalidates every pair proved on the old one.
+  std::map<std::string, QualificationClosureEvidence> closureEvidence;
+  std::uint64_t roundOrdinal = 0;
   for (;;) {
-    llvm::json::Array evaluations;
     std::optional<loom::mapping::TechMappingComputeContextHallDeficit> pressure;
     std::optional<loom::mapping::SpatialMappingHardwareFeedback> spatialPressure;
     ready = true;
     bool roundComplete = true;
     bool spatialEvidenceTruncated = false;
-    for (const auto &source : sources) {
+    std::vector<llvm::json::Object> evaluated(sources.size());
+    std::vector<std::optional<loom::dse::CandidateGeneratorProviderResult>>
+        techResults(sources.size());
+    std::vector<char> covered(sources.size(), 0);
+    std::vector<char> holdsClosure(sources.size(), 0);
+    std::vector<char> carried(sources.size(), 0);
+
+    for (std::size_t index = 0; index != sources.size(); ++index) {
       // The deadline is observed between sources as well as inside a generator
       // invocation, so a round that expires stops at the next source instead
       // of dispatching the rest of the suite.
       if (control.stopRequested()) {
         roundComplete = false;
         break;
+      }
+      const QualificationSource &source = sources[index];
+      const auto retained = closureEvidence.find(qualificationSourceKey(source));
+      if (retained != closureEvidence.end() &&
+          retained->second.fabric == module.reference()) {
+        evaluated[index] = retained->second.evaluation;
+        evaluated[index]["closure_origin"] = "carried";
+        covered[index] = 1;
+        holdsClosure[index] = 1;
+        carried[index] = 1;
+        continue;
       }
       auto inputs =
           take(loom::dse::bindRootCompleteTechMappingCandidateGeneratorInputs(
@@ -652,7 +696,7 @@ llvm::json::Object selectQualificationHardware(
       const auto *incomplete =
           std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
               &result.outcome);
-      const bool covered =
+      covered[index] =
           mapped && (!incomplete ||
                      incomplete->reason ==
                          loom::dse::CandidateGeneratorIncompleteReason::
@@ -665,55 +709,79 @@ llvm::json::Object selectQualificationHardware(
           result.ownerFeedback
               ? llvm::json::Value(llvm::toHex(*result.ownerFeedback, true))
               : llvm::json::Value(nullptr);
+      evaluation["spatial_pnr"] = llvm::json::Value(nullptr);
+      evaluation["spatial_owner_feedback"] = llvm::json::Value(nullptr);
+      evaluation["closure_origin"] = llvm::json::Value(nullptr);
+      evaluation["closure_proved_round"] = llvm::json::Value(nullptr);
       if (!mapped && result.ownerFeedback)
         loom::mapping::retainTechMappingComputeContextHallFeedback(
             pressure,
             take(loom::mapping::adoptTechMappingComputeContextHallFeedback(
                 *result.ownerFeedback, module.view())));
+      evaluated[index] = std::move(evaluation);
+      techResults[index] = std::move(result);
+    }
 
-      // A covered source still has to close Spatial PnR before the Fabric is
-      // certified. Its typed deficit exists only when the stage terminates, so
-      // the source budget is clipped by what the shared deadline has left and
-      // a cancelled stage is recorded as truncated evidence rather than as a
-      // closure failure the loop could size.
-      bool closed = false;
-      evaluation["spatial_pnr"] = llvm::json::Value(nullptr);
-      evaluation["spatial_owner_feedback"] = llvm::json::Value(nullptr);
-      if (covered) {
-        const auto remaining = control.remainingTime();
-        const auto sourceLimit =
-            remaining ? std::min<std::chrono::steady_clock::duration>(
-                            kSpatialClosureSourceLimit, *remaining)
-                      : std::chrono::steady_clock::duration(
-                            kSpatialClosureSourceLimit);
-        const MonotonicExecutionDeadline sourceDeadline(sourceLimit);
-        auto closure = projectQualificationSpatialClosure(
-            candidateArtifacts(result), module, spatialPnrConfig,
-            sourceDeadline.control(), artifacts, blobs);
-        closed = closure.closed;
-        spatialEvidenceTruncated |= !closed && closure.cancelled;
-        evaluation["spatial_pnr"] = candidateGeneratorResultJson(
-            loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor(),
-            closure.result);
-        evaluation["spatial_owner_feedback"] =
-            closure.result.ownerFeedback
-                ? llvm::json::Value(
-                      llvm::toHex(*closure.result.ownerFeedback, true))
-                : llvm::json::Value(nullptr);
-        if (!closed && closure.result.ownerFeedback)
-          loom::mapping::retainSpatialMappingHardwareFeedback(
-              spatialPressure,
-              take(loom::mapping::adoptSpatialMappingHardwareFeedback(
-                  *closure.result.ownerFeedback, module.reference(),
-                  candidateArtifacts(result), artifacts)));
+    // Proving closure on a Fabric this round is about to rebuild is redundant
+    // proof: a Hall closure publishes a different Module and invalidates every
+    // pair on this one. The Spatial stage therefore runs only once the Fabric
+    // covers every source. A covered source's typed deficit exists only when
+    // the stage terminates, so its budget is clipped by what the shared
+    // deadline has left and a cancelled stage is recorded as truncated
+    // evidence rather than as a closure failure the loop could size.
+    const bool proveClosure = roundComplete && !pressure;
+    for (std::size_t index = 0; proveClosure && index != sources.size();
+         ++index) {
+      if (carried[index] || !covered[index])
+        continue;
+      if (control.stopRequested()) {
+        roundComplete = false;
+        break;
       }
-      ready &= covered && closed;
-      evaluations.push_back(std::move(evaluation));
+      const auto remaining = control.remainingTime();
+      const auto sourceLimit =
+          remaining ? std::min<std::chrono::steady_clock::duration>(
+                          kSpatialClosureSourceLimit, *remaining)
+                    : std::chrono::steady_clock::duration(
+                          kSpatialClosureSourceLimit);
+      const MonotonicExecutionDeadline sourceDeadline(sourceLimit);
+      auto closure = projectQualificationSpatialClosure(
+          candidateArtifacts(*techResults[index]), module, spatialPnrConfig,
+          sourceDeadline.control(), artifacts, blobs);
+      spatialEvidenceTruncated |= !closure.closed && closure.cancelled;
+      evaluated[index]["spatial_pnr"] = candidateGeneratorResultJson(
+          loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor(),
+          closure.result);
+      evaluated[index]["spatial_owner_feedback"] =
+          closure.result.ownerFeedback
+              ? llvm::json::Value(
+                    llvm::toHex(*closure.result.ownerFeedback, true))
+              : llvm::json::Value(nullptr);
+      if (closure.closed) {
+        holdsClosure[index] = 1;
+        evaluated[index]["closure_origin"] = "proved";
+        evaluated[index]["closure_proved_round"] = roundOrdinal;
+        closureEvidence.insert_or_assign(
+            qualificationSourceKey(sources[index]),
+            QualificationClosureEvidence{module.reference(), roundOrdinal,
+                                         evaluated[index]});
+      } else if (closure.result.ownerFeedback) {
+        loom::mapping::retainSpatialMappingHardwareFeedback(
+            spatialPressure,
+            take(loom::mapping::adoptSpatialMappingHardwareFeedback(
+                *closure.result.ownerFeedback, module.reference(),
+                candidateArtifacts(*techResults[index]), artifacts)));
+      }
     }
     // A round the deadline cut short carries no decision and would publish a
     // partial source suite, so it is discarded rather than recorded.
     if (!roundComplete)
       break;
+    llvm::json::Array evaluations;
+    for (std::size_t index = 0; index != sources.size(); ++index) {
+      ready &= covered[index] && holdsClosure[index];
+      evaluations.push_back(std::move(evaluated[index]));
+    }
     llvm::json::Object round{{"fabric", referenceJson(module.reference())},
                              {"evaluations", std::move(evaluations)},
                              {"hardware_growth", nullptr},
@@ -755,6 +823,7 @@ llvm::json::Object selectQualificationHardware(
       round["recipe_growth"] = std::move(recipeGrowth);
       rounds.push_back(std::move(round));
       previousProgress.reset();
+      ++roundOrdinal;
       continue;
     }
     // Context growth that the cover immediately spends on new demand is not a
@@ -840,6 +909,7 @@ llvm::json::Object selectQualificationHardware(
             "qualification hardware did not publish one atomic child");
     module = take(loom::fabric::importEntireFabricRoot(
         candidateArtifacts(result).front(), artifacts));
+    ++roundOrdinal;
   }
   ledger.record("shared_hardware_search");
   return llvm::json::Object{

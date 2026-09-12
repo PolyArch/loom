@@ -713,6 +713,7 @@ def validate_cgra_hardware_search(value: object) -> bool:
                 "replay_cases", "replay_case_occurrences",
                 "tech_mapping_search", "owner_feedback",
                 "spatial_pnr", "spatial_owner_feedback",
+                "closure_origin", "closure_proved_round",
             }:
                 raise ValueError("CGRA hardware evaluation has the wrong shape")
             if (evaluation["workload"], evaluation["operator_id"],
@@ -727,7 +728,8 @@ def validate_cgra_hardware_search(value: object) -> bool:
             )
             identity = {key: item for key, item in evaluation.items()
                         if key not in {"tech_mapping_search", "owner_feedback",
-                                       "spatial_pnr", "spatial_owner_feedback"}}
+                                       "spatial_pnr", "spatial_owner_feedback",
+                                       "closure_origin", "closure_proved_round"}}
             identities.append(identity)
             result = evaluation["tech_mapping_search"]
             outcome = validate_cgra_tech_mapping_result(result, require_completed=False)
@@ -744,19 +746,36 @@ def validate_cgra_hardware_search(value: object) -> bool:
                 if not result["candidates"]:
                     feedbacks.append(feedback)
             spatial = evaluation["spatial_pnr"]
-            if spatial is None:
-                if usable:
-                    raise ValueError("CGRA hardware search skipped a covered "
-                                     "source's Spatial closure")
-                closed = False
-            else:
+            if spatial is not None:
                 _validate_candidate_generator_result(
                     spatial, _SPATIAL_PNR_WORK_UNITS,
                     "CGRA hardware Spatial closure",
                     require_completed=False, candidate_schema=_MAPPING_SCHEMA,
                 )
                 assert isinstance(spatial, Mapping)
-                closed = bool(spatial["candidates"])
+            # A closure is a fact of one exact pair, so a round either proved it
+            # or carried it from the round that proved it on this same Fabric.
+            origin = evaluation["closure_origin"]
+            proved_round = evaluation["closure_proved_round"]
+            if origin not in (None, "proved", "carried"):
+                raise ValueError("CGRA closure has an unknown origin")
+            closed = origin is not None
+            if not closed:
+                if proved_round is not None:
+                    raise ValueError("CGRA closure names a round it does not hold")
+            else:
+                if spatial is None or not spatial["candidates"]:
+                    raise ValueError("CGRA closure has no published Mapping")
+                proved_round = _nonnegative_integer(
+                    proved_round, "CGRA closure round")
+                if origin == "proved" and proved_round != ordinal:
+                    raise ValueError("CGRA closure was proved in another round")
+                if origin == "carried":
+                    if proved_round >= ordinal:
+                        raise ValueError("CGRA closure carries from a later round")
+                    if rounds[proved_round]["fabric"] != round_["fabric"]:
+                        raise ValueError(
+                            "CGRA closure carries across a changed Fabric")
             spatial_feedback = evaluation["spatial_owner_feedback"]
             if spatial_feedback is not None:
                 if not isinstance(spatial_feedback, str) or not re.fullmatch(

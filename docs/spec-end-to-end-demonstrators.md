@@ -262,6 +262,18 @@ still measures one workload and keeps the `fast` tier its own wrapper grants. A
 round the deadline cuts short carries no decision and is discarded rather than
 published as a partial source suite.
 
+A closure is a deterministic fact of one exact pair, so the search proves it
+once. It retains the closure of every source that closed, keyed on the exact
+Fabric reference and the exact source identity and nothing looser; a later
+round on that same Fabric repeats neither stage and reports the closure as
+carried, naming the round that proved it. Every growth publishes a different
+Module, so it invalidates every pair proved on the old one. For the same
+reason the search does not prove closure on a Fabric the round is about to
+rebuild: a round that still owes a Hall closure proves cover only, and the
+Spatial stage runs once the Fabric covers every source. Readiness is unchanged
+by either rule: every source must hold a closure, carried or proved, on the
+Fabric the search certifies.
+
 A source names its typed hardware deficit only when the stage that failed
 reached a terminal outcome. A Spatial PnR the deadline cancelled names nothing,
 so the search gives each source's closure its own budget and, when that budget
