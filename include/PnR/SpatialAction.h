@@ -6,7 +6,6 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <array>
@@ -45,14 +44,11 @@ struct SpatialWholeNetRoutingAction final {
 
 /// One way an external net can adopt an admitted register-FIFO option: the
 /// option alone when both endpoints already occupy its placements, or the
-/// option coupled with the compute-binding relocations that move the endpoints
-/// the option still needs onto the placements it requires. A net whose closed
-/// candidate placed neither endpoint on the option's Temporal PE is reachable
-/// only by moving both, so the relocation set holds up to one move per
-/// endpoint in canonical producer-then-consumer order.
+/// option coupled with the single compute-binding relocation that moves one
+/// endpoint onto the placement the option requires.
 struct SpatialLocalTransferAdoption final {
   PnrIndex option = 0;
-  llvm::SmallVector<SpatialComputeBindingAction, 2> relocations;
+  std::optional<SpatialComputeBindingAction> relocation;
 };
 
 struct SpatialSingleSinkRoutingAction final {

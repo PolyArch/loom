@@ -42,14 +42,12 @@ findPreferredAvailableSpatialLocalTransfer(
 
 /// Enumerates the adoptions of `logicalNet` in canonical order: options
 /// resident under the current placements first, then options reachable by
-/// relocating one endpoint, then options whose Temporal PE holds neither
-/// endpoint and which therefore need both moved. Every relocation is the first
-/// relation-legal compute choice of `legalComputeChoices` on the required
-/// placement, so an empty `legalComputeChoices` enumerates resident options
-/// only. Options whose register FIFO another selected net owns are excluded,
-/// and one free FIFO stands for every option that pairs the same writer and
-/// reader under the same placements. A net with route constraints, an active
-/// pairing, or an empty domain enumerates nothing.
+/// relocating exactly one endpoint through the first relation-legal compute
+/// choice of `legalComputeChoices` on the required placement. Options whose
+/// register FIFO another selected net owns are excluded, and one free FIFO
+/// stands for every option that pairs the same writer and reader under the
+/// same placements. A net with route constraints, an active pairing, or an
+/// empty domain enumerates nothing.
 llvm::Error enumerateSpatialLocalTransferAdoptions(
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
