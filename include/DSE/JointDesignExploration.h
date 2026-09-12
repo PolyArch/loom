@@ -61,6 +61,11 @@ struct JointDesignExplorationPlan final {
   /// Mapping, or candidate identity. Zero means the owner supplied no
   /// measure, and the division stays equal.
   std::uint64_t coveredDynamicLeafExecutions = 0;
+  /// The promotion owner's analytic estimate of the whole case under this
+  /// plan. It is the same ranking provenance: it decides whether another plan
+  /// is worth the remaining window once an alternative has verified, and it
+  /// never enters plan, Mapping, or candidate identity.
+  std::optional<std::uint64_t> estimatedRuntimePicoseconds;
 };
 
 /// Builds one ordinary finite Generate plan. Each explicit application/System
@@ -275,6 +280,10 @@ struct JointDesignExecutionSummary final {
   bool jointFrontierTruncated = false;
   std::vector<JointPairAnalyticObservation> retainedJointPairAnalytics;
   std::uint64_t attemptedSoftwarePlans = 0;
+  /// Plans the controller refused to attempt because an alternative had
+  /// already verified: the plan could not beat its analytic estimate, or the
+  /// remaining window no longer covered the measured terminal acquisition.
+  std::uint64_t softwarePlansRefusedAfterVerification = 0;
   std::uint64_t hardwareReopenSearches = 0;
   /// Exact invocation-local count of hardware-promotion observations marked
   /// for ordinary child Mapping. Generic hardware-parent search remains owned

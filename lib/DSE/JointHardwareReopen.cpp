@@ -60,6 +60,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   struct VerifiedAlternative final {
     std::uint64_t planOrdinal = 0;
     JointDesignExecution execution;
+    /// Set once the application QoR owner has measured this alternative. The
+    /// measurement is banked as soon as the alternative exists rather than at
+    /// the end of the invocation, so a later deadline cannot erase it.
+    bool qualityBanked = false;
   };
   std::vector<FailedSoftwareAttempt> failedSoftwareAttempts;
   failedSoftwareAttempts.reserve(plans.size());
@@ -76,6 +80,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   std::uint64_t hardwareReopensWithheldWithoutExactFeedback = 0;
   dse::JointDesignExecutionSummary accounting;
   std::uint64_t verifiedMappingCount = 0;
+  /// The best analytic estimate among the alternatives that have verified.
+  /// It is promotion provenance: it decides whether another plan is worth the
+  /// remaining window, never whether a Mapping is legal.
+  std::optional<std::uint64_t> bestVerifiedEstimate;
+  std::uint64_t softwarePlansRefusedByQualityAdmission = 0;
+  std::vector<ArtifactRootReference> qualityCandidates;
+  std::vector<CandidateObjectiveVector> qualityObjectives;
+  std::map<ArtifactRootReference, std::size_t,
+           decltype(&artifactRootReferenceLess)>
+      qualityObjectiveIndices(&artifactRootReferenceLess);
+  std::optional<IncompleteJointDesignQuality> firstQualityIncomplete;
+  std::uint64_t terminalQualityAcquisitionNanoseconds = 0;
   const auto executionStart = std::chrono::steady_clock::now();
   std::optional<std::uint64_t> timeToFirstFeasible;
   bool boundedQualitySearchIncomplete = false;
@@ -332,6 +348,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
              frontier.pairs[index].system, frontier.pairProjections[index]});
     }
     summary.attemptedSoftwarePlans = attemptedSoftwarePlans;
+    summary.softwarePlansRefusedAfterVerification =
+        softwarePlansRefusedByQualityAdmission;
     summary.hardwareReopenSearches = hardwareReopenSearches;
     summary.hardwareParentPromotions = hardwareParentPromotions;
     summary.hardwareReopensDeferredByQuality = hardwareReopensDeferredByQuality;
@@ -440,6 +458,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           fields["policy"] =
               jointDesignStoppingPolicySpelling(request.stoppingPolicy);
           fields["attempted_software_plans"] = attemptedSoftwarePlans;
+          fields["software_plans_refused_after_verification"] =
+              softwarePlansRefusedByQualityAdmission;
+          fields["terminal_quality_acquisition_ns"] =
+              terminalQualityAcquisitionNanoseconds;
           fields["hardware_reopen_searches"] = hardwareReopenSearches;
           fields["hardware_parent_promotions"] = hardwareParentPromotions;
           fields["hardware_reopens_deferred_by_quality"] =
@@ -533,6 +555,145 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         });
     return execution;
   };
+  // The application QoR owner measures one verified alternative. Banking
+  // it here, rather than after every plan and hardware probe has run,
+  // keeps the measurement the invocation already earned: a deadline that
+  // arrives later cancels further search instead of the evidence.
+  const auto bankAlternativeQuality =
+      [&](VerifiedAlternative &alternative) -> llvm::Error {
+    if (alternative.qualityBanked || !request.boundedQuality ||
+        !request.boundedQuality->acquire)
+      return llvm::Error::success();
+    const JointBoundedQualityPolicy &quality = *request.boundedQuality;
+    std::vector<ArtifactRootReference> &candidates = qualityCandidates;
+    std::vector<CandidateObjectiveVector> &objectives = qualityObjectives;
+    auto &objectiveIndices = qualityObjectiveIndices;
+    alternative.qualityBanked = true;
+    const auto acquisitionStart = std::chrono::steady_clock::now();
+
+    std::vector<ArtifactRootReference> alternativeMappings =
+        mappingRoots(alternative.execution);
+    // The application QoR owner evaluates one concrete SystemMapping at a
+    // time.  The temporary selectedMapping field is invocation evidence,
+    // not candidate identity; restoring it after acquisition keeps the
+    // outer stopping summary authoritative.
+    std::vector<CandidateObjectiveVector> acquiredObjectives;
+    acquiredObjectives.reserve(alternativeMappings.size());
+    for (const ArtifactRootReference &mapping : alternativeMappings) {
+      // A deadline is a cooperative cancellation boundary. Preserve an
+      // observation for every already-materialized Mapping without starting
+      // another application replay after the deadline.
+      if (deadlineObserved ||
+          dispatchDeadlineReached(request.executionPolicy)) {
+        deadlineObserved = true;
+        boundedQualitySearchIncomplete = true;
+        JointDesignQualityProvenance provenance;
+        if (quality.provenanceDomain ==
+                JointDesignQualityProvenanceDomain::ApplicationRuntime ||
+            quality.provenanceDomain == JointDesignQualityProvenanceDomain::
+                                            ApplicationSystemRuntime) {
+          auto resourceCoreCost = deriveApplicationRuntimeResourceCoreCost(
+              alternative.execution, mapping, artifacts);
+          if (!resourceCoreCost)
+            return resourceCoreCost.takeError();
+          provenance.resourceCoreCost = *resourceCoreCost;
+        }
+        if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
+                quality, provenance, false))
+          return std::move(error);
+        qualityObservations.push_back(
+            {mapping,
+             {},
+             JointDesignQualityIncompleteReason::CancelledOrTimeout,
+             std::nullopt,
+             provenance});
+        if (!firstQualityIncomplete)
+          firstQualityIncomplete = IncompleteJointDesignQuality{
+              JointDesignQualityIncompleteReason::CancelledOrTimeout, mapping,
+              std::nullopt, std::move(provenance)};
+        continue;
+      }
+      alternative.execution.summary.selectedMapping = mapping;
+      auto acquired =
+          quality.acquire(alternative.execution, alternative.planOrdinal);
+      if (!acquired)
+        return acquired.takeError();
+      if (const auto *incomplete =
+              std::get_if<IncompleteJointDesignQuality>(&*acquired)) {
+        if (incomplete->candidate && incomplete->candidate != mapping)
+          return invalid("bounded-quality incomplete acquisition named a "
+                         "foreign SystemMapping");
+        if (llvm::Error error = validateQualityProvenance(
+                mapping, incomplete->evidence,
+                incomplete->provenance.supportingEvidence,
+                incomplete->provenance.verificationEvidence,
+                incomplete->provenance))
+          return std::move(error);
+        if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
+                quality, incomplete->provenance, false))
+          return std::move(error);
+        qualityObservations.push_back({mapping,
+                                       {},
+                                       incomplete->reason,
+                                       incomplete->evidence,
+                                       incomplete->provenance});
+        if (!firstQualityIncomplete)
+          firstQualityIncomplete = IncompleteJointDesignQuality{
+              incomplete->reason, mapping, incomplete->evidence,
+              incomplete->provenance};
+        alternative.execution.summary.selectedMapping.reset();
+        continue;
+      }
+      std::vector<JointDesignQualityCandidate> one =
+          std::get<std::vector<JointDesignQualityCandidate>>(
+              std::move(*acquired));
+      if (one.size() != 1 || one.front().objective.candidate != mapping)
+        return invalid("bounded-quality acquisition must return exactly one "
+                       "objective for the selected SystemMapping");
+      if (llvm::Error error = validateQualityProvenance(
+              mapping, one.front().evidence,
+              one.front().provenance.supportingEvidence,
+              one.front().provenance.verificationEvidence,
+              one.front().provenance))
+        return std::move(error);
+      if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
+              quality, one.front().provenance, true))
+        return std::move(error);
+      if (llvm::Error error = validateJointDesignQualityObjective(
+              *quality.objectiveProgram, one.front().provenance,
+              one.front().objective.objective.codes()))
+        return std::move(error);
+      qualityObservations.push_back(
+          {mapping,
+           std::vector<std::uint64_t>(
+               one.front().objective.objective.codes().begin(),
+               one.front().objective.objective.codes().end()),
+           std::nullopt, one.front().evidence, one.front().provenance});
+      acquiredObjectives.push_back(std::move(one.front().objective));
+    }
+    alternative.execution.summary.selectedMapping.reset();
+    for (CandidateObjectiveVector &objective : acquiredObjectives) {
+      auto [position, inserted] =
+          objectiveIndices.emplace(objective.candidate, objectives.size());
+      if (!inserted) {
+        if (objectives[position->second].objective.codes() !=
+            objective.objective.codes())
+          return invalid("bounded-quality acquisition assigned conflicting "
+                         "objectives to one SystemMapping");
+        continue;
+      }
+      candidates.push_back(objective.candidate);
+      objectives.push_back(std::move(objective));
+    }
+    const auto acquisitionNanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - acquisitionStart)
+            .count());
+    terminalQualityAcquisitionNanoseconds = std::max(
+        terminalQualityAcquisitionNanoseconds, acquisitionNanoseconds);
+    return llvm::Error::success();
+  };
+
   for (auto indexed : llvm::enumerate(plans)) {
     // The first plan execution owns the typed cancellation checkpoint. Even
     // when the absolute deadline has already elapsed, enter that boundary
@@ -548,6 +709,44 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     if (!planPointer)
       return invalid("hardware reopen plan pointer is null");
     const JointDesignExplorationPlan &plan = *planPointer;
+    // A verified alternative changes what the remaining window is worth. A
+    // plan whose own estimate cannot beat the verified one cannot win the
+    // quality objective however it maps, and the measurement the invocation
+    // already earned is worth more than another search: admit neither the
+    // plan that cannot win nor a plan that would leave no window for the
+    // measurement of the next alternative to be banked.
+    if (verifiedMappingCount != 0) {
+      const bool cannotBeatVerified =
+          plan.estimatedRuntimePicoseconds && bestVerifiedEstimate &&
+          *plan.estimatedRuntimePicoseconds >= *bestVerifiedEstimate;
+      const std::uint64_t remainingWindow =
+          remainingDispatchNanoseconds(request.executionPolicy);
+      const bool reserveExhausted =
+          terminalQualityAcquisitionNanoseconds != 0 &&
+          remainingWindow < terminalQualityAcquisitionNanoseconds;
+      if (cannotBeatVerified || reserveExhausted) {
+        ++softwarePlansRefusedByQualityAdmission;
+        mapping_debug::emit(
+            mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+            mapping_debug::Event::Candidate,
+            [&](llvm::json::Object &fields) {
+              fields["operation"] = "software_frontier_plan_refused";
+              fields["plan_ordinal"] = indexed.index();
+              fields["reason"] = cannotBeatVerified
+                                     ? "not_better_than_verified_alternative"
+                                     : "terminal_quality_acquisition_reserve";
+              if (plan.estimatedRuntimePicoseconds)
+                fields["plan_estimated_runtime_ps"] =
+                    *plan.estimatedRuntimePicoseconds;
+              if (bestVerifiedEstimate)
+                fields["verified_estimated_runtime_ps"] = *bestVerifiedEstimate;
+              fields["remaining_dispatch_ns"] = remainingWindow;
+              fields["terminal_quality_acquisition_ns"] =
+                  terminalQualityAcquisitionNanoseconds;
+            });
+        continue;
+      }
+    }
     ++attemptedSoftwarePlans;
     std::uint64_t actionableHardwareParents = 0;
     if (request.hardwareExplorationScope ==
@@ -586,7 +785,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           saturatingAdd(remainingCoveredWork,
                         plans[ordinal]->coveredDynamicLeafExecutions);
       auto fair = fairRemainingPlanPolicy(
-          request.executionPolicy, remainingPlans, verifiedMappingCount,
+          request.executionPolicy, remainingPlans,
+          terminalQualityAcquisitionNanoseconds,
           plan.coveredDynamicLeafExecutions, remainingCoveredWork);
       if (!fair)
         return fair.takeError();
@@ -724,6 +924,10 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return std::move(error);
     if (mappingCount(*initial) != 0) {
       verifiedMappingCount += mappingCount(*initial);
+      if (plan.estimatedRuntimePicoseconds &&
+          (!bestVerifiedEstimate ||
+           *plan.estimatedRuntimePicoseconds < *bestVerifiedEstimate))
+        bestVerifiedEstimate = plan.estimatedRuntimePicoseconds;
       if (!timeToFirstFeasible)
         timeToFirstFeasible = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -740,6 +944,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         boundedQualitySearchIncomplete |= incomplete->executionStopped();
       verifiedAlternatives.push_back(
           {static_cast<std::uint64_t>(indexed.index()), std::move(*initial)});
+      if (llvm::Error error =
+              bankAlternativeQuality(verifiedAlternatives.back()))
+        return std::move(error);
       if (dispatchDeadlineReached(request.executionPolicy)) {
         deadlineObserved = true;
         boundedQualitySearchIncomplete = true;
@@ -915,7 +1122,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     auto feedbackExecutionPolicy = fairRemainingPlanPolicy(
         request.executionPolicy,
         hardwareFeedbackFrontier.size() - indexedAttempt.index(),
-        verifiedMappingCount);
+        terminalQualityAcquisitionNanoseconds);
     if (!feedbackExecutionPolicy)
       return feedbackExecutionPolicy.takeError();
     std::optional<ArtifactRootReference> promotedParentSystem;
@@ -991,6 +1198,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
       verifiedAlternatives.push_back(
           {attempt.planOrdinal, std::move(**reopened)});
+      if (llvm::Error error =
+              bankAlternativeQuality(verifiedAlternatives.back()))
+        return std::move(error);
       if (dispatchDeadlineReached(request.executionPolicy)) {
         deadlineObserved = true;
         boundedQualitySearchIncomplete = true;
@@ -1100,7 +1310,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
       auto spectrumPolicy = fairRemainingPlanPolicy(
           request.executionPolicy, parentLimit - parentOrdinal,
-          verifiedMappingCount);
+          terminalQualityAcquisitionNanoseconds);
       if (!spectrumPolicy)
         return spectrumPolicy.takeError();
       auto spectrum = exploreFinalizedMappingHardwareSpectrum(
@@ -1153,136 +1363,23 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                       execution.summary.spatialPnrJournalReplayCount);
         saturatingAdd(accounting.systemPnrJournalReplayCount,
                       execution.summary.systemPnrJournalReplayCount);
-        if (executionMappingCount != 0)
+        if (executionMappingCount != 0) {
           verifiedAlternatives.push_back(
               {parentPlanOrdinal, std::move(execution)});
+          if (llvm::Error error =
+                  bankAlternativeQuality(verifiedAlternatives.back()))
+            return std::move(error);
+        }
       }
     }
   }
   if (!verifiedAlternatives.empty()) {
     const JointBoundedQualityPolicy &quality = *request.boundedQuality;
-    std::vector<ArtifactRootReference> candidates;
-    std::vector<CandidateObjectiveVector> objectives;
-    std::map<ArtifactRootReference, std::size_t,
-             decltype(&artifactRootReferenceLess)>
-        objectiveIndices(&artifactRootReferenceLess);
-    std::optional<IncompleteJointDesignQuality> firstQualityIncomplete;
-    for (VerifiedAlternative &alternative : verifiedAlternatives) {
-      std::vector<ArtifactRootReference> alternativeMappings =
-          mappingRoots(alternative.execution);
-      // The application QoR owner evaluates one concrete SystemMapping at a
-      // time.  The temporary selectedMapping field is invocation evidence,
-      // not candidate identity; restoring it after acquisition keeps the
-      // outer stopping summary authoritative.
-      std::vector<CandidateObjectiveVector> acquiredObjectives;
-      acquiredObjectives.reserve(alternativeMappings.size());
-      for (const ArtifactRootReference &mapping : alternativeMappings) {
-        // A deadline is a cooperative cancellation boundary. Preserve an
-        // observation for every already-materialized Mapping without starting
-        // another application replay after the deadline.
-        if (deadlineObserved ||
-            dispatchDeadlineReached(request.executionPolicy)) {
-          deadlineObserved = true;
-          boundedQualitySearchIncomplete = true;
-          JointDesignQualityProvenance provenance;
-          if (quality.provenanceDomain ==
-                  JointDesignQualityProvenanceDomain::ApplicationRuntime ||
-              quality.provenanceDomain == JointDesignQualityProvenanceDomain::
-                                              ApplicationSystemRuntime) {
-            auto resourceCoreCost = deriveApplicationRuntimeResourceCoreCost(
-                alternative.execution, mapping, artifacts);
-            if (!resourceCoreCost)
-              return resourceCoreCost.takeError();
-            provenance.resourceCoreCost = *resourceCoreCost;
-          }
-          if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
-                  quality, provenance, false))
-            return std::move(error);
-          qualityObservations.push_back(
-              {mapping,
-               {},
-               JointDesignQualityIncompleteReason::CancelledOrTimeout,
-               std::nullopt,
-               provenance});
-          if (!firstQualityIncomplete)
-            firstQualityIncomplete = IncompleteJointDesignQuality{
-                JointDesignQualityIncompleteReason::CancelledOrTimeout, mapping,
-                std::nullopt, std::move(provenance)};
-          continue;
-        }
-        alternative.execution.summary.selectedMapping = mapping;
-        auto acquired =
-            quality.acquire(alternative.execution, alternative.planOrdinal);
-        if (!acquired)
-          return acquired.takeError();
-        if (const auto *incomplete =
-                std::get_if<IncompleteJointDesignQuality>(&*acquired)) {
-          if (incomplete->candidate && incomplete->candidate != mapping)
-            return invalid("bounded-quality incomplete acquisition named a "
-                           "foreign SystemMapping");
-          if (llvm::Error error = validateQualityProvenance(
-                  mapping, incomplete->evidence,
-                  incomplete->provenance.supportingEvidence,
-                  incomplete->provenance.verificationEvidence,
-                  incomplete->provenance))
-            return std::move(error);
-          if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
-                  quality, incomplete->provenance, false))
-            return std::move(error);
-          qualityObservations.push_back({mapping,
-                                         {},
-                                         incomplete->reason,
-                                         incomplete->evidence,
-                                         incomplete->provenance});
-          if (!firstQualityIncomplete)
-            firstQualityIncomplete = IncompleteJointDesignQuality{
-                incomplete->reason, mapping, incomplete->evidence,
-                incomplete->provenance};
-          alternative.execution.summary.selectedMapping.reset();
-          continue;
-        }
-        std::vector<JointDesignQualityCandidate> one =
-            std::get<std::vector<JointDesignQualityCandidate>>(
-                std::move(*acquired));
-        if (one.size() != 1 || one.front().objective.candidate != mapping)
-          return invalid("bounded-quality acquisition must return exactly one "
-                         "objective for the selected SystemMapping");
-        if (llvm::Error error = validateQualityProvenance(
-                mapping, one.front().evidence,
-                one.front().provenance.supportingEvidence,
-                one.front().provenance.verificationEvidence,
-                one.front().provenance))
-          return std::move(error);
-        if (llvm::Error error = validateJointDesignQualityProvenanceDomain(
-                quality, one.front().provenance, true))
-          return std::move(error);
-        if (llvm::Error error = validateJointDesignQualityObjective(
-                *quality.objectiveProgram, one.front().provenance,
-                one.front().objective.objective.codes()))
-          return std::move(error);
-        qualityObservations.push_back(
-            {mapping,
-             std::vector<std::uint64_t>(
-                 one.front().objective.objective.codes().begin(),
-                 one.front().objective.objective.codes().end()),
-             std::nullopt, one.front().evidence, one.front().provenance});
-        acquiredObjectives.push_back(std::move(one.front().objective));
-      }
-      alternative.execution.summary.selectedMapping.reset();
-      for (CandidateObjectiveVector &objective : acquiredObjectives) {
-        auto [position, inserted] =
-            objectiveIndices.emplace(objective.candidate, objectives.size());
-        if (!inserted) {
-          if (objectives[position->second].objective.codes() !=
-              objective.objective.codes())
-            return invalid("bounded-quality acquisition assigned conflicting "
-                           "objectives to one SystemMapping");
-          continue;
-        }
-        candidates.push_back(objective.candidate);
-        objectives.push_back(std::move(objective));
-      }
-    }
+    std::vector<ArtifactRootReference> &candidates = qualityCandidates;
+    std::vector<CandidateObjectiveVector> &objectives = qualityObjectives;
+    for (VerifiedAlternative &alternative : verifiedAlternatives)
+      if (llvm::Error error = bankAlternativeQuality(alternative))
+        return std::move(error);
     llvm::sort(qualityObservations,
                [](const JointDesignQualityObservation &lhs,
                   const JointDesignQualityObservation &rhs) {

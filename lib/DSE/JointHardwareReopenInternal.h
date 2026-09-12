@@ -141,10 +141,10 @@ projectJointSoftwareCoverage(const JointDesignExplorationPlan &plan,
 bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 
 /// Slices the remaining dispatch window fairly across the untried plans or
-/// evidenced hardware parents. `reservedTerminalShares` withholds one equal
-/// share per verified Mapping awaiting terminal application QoR acquisition,
-/// because that acquisition measures every verified alternative; before any
-/// Mapping is verified there is nothing to measure and no share is withheld.
+/// evidenced hardware parents. `reservedTerminalNanoseconds` withholds the
+/// measured cost of one terminal application QoR acquisition, because that
+/// acquisition is what turns a verified Mapping into a measured result;
+/// before one has been measured the reserve is zero and nothing is withheld.
 ///
 /// `planCoveredWork` and `remainingCoveredWork` weight the division by the
 /// covered leaf executions of this plan and of every untried plan. Half of
@@ -154,9 +154,13 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        std::uint64_t reservedTerminalShares,
+                        std::uint64_t reservedTerminalNanoseconds,
                         std::uint64_t planCoveredWork = 0,
                         std::uint64_t remainingCoveredWork = 0);
+
+/// Wall time left before the policy's absolute dispatch deadline. A policy
+/// without a deadline has an unbounded window.
+std::uint64_t remainingDispatchNanoseconds(const PlanExecutionPolicy &policy);
 
 std::size_t mappingCount(const JointDesignExecution &execution);
 

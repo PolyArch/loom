@@ -1041,6 +1041,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       mappingPlan->coveredDynamicLeafExecutions =
           *completed.sourceHostOnlyLeafExecutions -
           *promotionRecord.hostDynamicLeafExecutions;
+    mappingPlan->estimatedRuntimePicoseconds =
+        promotionRecord.estimatedRuntimePicoseconds;
     ++resourceTimeFunnel->accounting.mappingPlanCandidates;
     const std::uint64_t rank = mappingAlternatives.size();
     mappingAlternatives.push_back({rank,

@@ -4049,14 +4049,34 @@ work, not by plan count alone. A plan that covers almost none of the declared
 computation interval cannot close the real-application gate however long it
 maps, so it must not hold an equal share while the plan that covers the
 computation is cancelled for want of the same time. Terminal QoR acquisition
-is reserved first and keeps its equal shares; of what remains, half is divided
-equally so every plan is still attempted and half follows the covered leaf
-executions each plan moves off the host. Equal covered work reproduces the
-equal division exactly, an absent measure keeps it, and an evidenced hardware
-parent takes only from the equal half because it carries no software
-coverage. The covered measure is promotion provenance: it rides with the plan,
-is reported with each slice, and never enters plan, Mapping, or candidate
-identity. Under
+is reserved first; of what remains, half is divided equally so every plan is
+still attempted and half follows the covered leaf executions each plan moves
+off the host. Equal covered work reproduces the equal division exactly, an
+absent measure keeps it, and an evidenced hardware parent takes only from the
+equal half because it carries no software coverage. The covered measure is
+promotion provenance: it rides with the plan, is reported with each slice, and
+never enters plan, Mapping, or candidate identity.
+
+A verified alternative changes what the remaining window is worth, and the
+controller acts on that in three ways. The application QoR acquisition of an
+alternative is banked as soon as the alternative exists, not after every
+remaining plan and hardware probe has run, because a measurement the
+invocation has already earned outranks another search: a later deadline then
+cancels search rather than the evidence, and an invocation that stops early
+still reports what it measured. The reserve withheld from every later slice is
+the cost that banking actually measured, so it scales with the workload
+instead of a fixed share; before one acquisition has been measured there is
+nothing to protect and the reserve is zero. Finally, a further plan is not
+admitted at all once an alternative has verified when its own analytic
+estimate cannot beat the verified alternative's estimate, or when the
+remaining window no longer covers that measured acquisition: the first plan
+cannot win the quality objective however it maps, and the second would spend
+the window that the next alternative's measurement needs. Both refusals are
+typed records naming the plan, the two estimates, and the remaining window,
+and the stopping summary counts them, so a row that stops early says why
+rather than reporting an unexplained timeout. This is an admission decision
+over analytic estimates, never a legality claim: a refused plan is not
+infeasible, it is not worth the remaining invocation. Under
 `BoundedQuality`, the complete bounded parent frontier is visited first; exact
 failed-candidate feedback and already verified parents then share one explicit
 hardware-parent budget. Actionable failed candidates first prioritize the

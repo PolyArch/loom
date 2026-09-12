@@ -96,10 +96,24 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy) {
 /// the other half follows covered work.
 constexpr std::uint64_t equalPlanWindowDivisor = 2;
 
+std::uint64_t
+remainingDispatchNanoseconds(const PlanExecutionPolicy &policy) {
+  const auto deadline = policy.dispatchNotAfterUnixNanoseconds();
+  if (!deadline)
+    return std::numeric_limits<std::uint64_t>::max();
+  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+  const auto signedNow =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  if (signedNow <= 0)
+    return 0;
+  const auto now = static_cast<std::uint64_t>(signedNow);
+  return now >= *deadline ? 0 : *deadline - now;
+}
+
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        std::uint64_t reservedTerminalShares,
+                        std::uint64_t reservedTerminalNanoseconds,
                         std::uint64_t planCoveredWork,
                         std::uint64_t remainingCoveredWork) {
   if (remainingPlanCount == 0)
@@ -117,20 +131,20 @@ fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
     return PlanExecutionPolicy::get(
         base.workerCount(), base.inProcessClaim(), base.externalSite(),
         base.resourceBindings(), base.maximumDispatches(), *globalDeadline);
-  const std::uint64_t remaining = *globalDeadline - now;
-  // Reserve one equal share per verified Mapping for terminal application QoR
-  // acquisition, which measures every verified alternative. Each untried
-  // Mapping plan or evidenced hardware parent receives a fair share of the
-  // rest. A difficult software finalist cannot consume the invocation before
-  // an actionable hardware repair. The global deadline is unchanged. Before
-  // any Mapping is verified QoR acquisition has nothing to measure, and
-  // holding shares back would shorten every plan slice for no observable
-  // work.
-  const std::uint64_t divisor =
-      reservedTerminalShares >
-              std::numeric_limits<std::uint64_t>::max() - remainingPlanCount
-          ? std::numeric_limits<std::uint64_t>::max()
-          : remainingPlanCount + reservedTerminalShares;
+  const std::uint64_t window = *globalDeadline - now;
+  // Withhold the measured cost of one terminal application QoR acquisition
+  // before dividing. That acquisition is what turns a verified Mapping into a
+  // measured result, so the window it needs is not free for further search;
+  // the reserve is the cost the owner actually measured in this invocation,
+  // and it is zero until one acquisition has been measured, when there is
+  // nothing yet to protect. Each untried Mapping plan or evidenced hardware
+  // parent then receives a fair share of the rest, so a difficult software
+  // finalist cannot consume the invocation before an actionable hardware
+  // repair. The global deadline is unchanged.
+  const std::uint64_t remaining =
+      window > reservedTerminalNanoseconds ? window - reservedTerminalNanoseconds
+                                           : window;
+  const std::uint64_t divisor = remainingPlanCount;
   std::uint64_t slice = std::max<std::uint64_t>(1, remaining / divisor);
   // A plan that covers almost none of the declared computation interval
   // cannot close the gate however long it maps, so it must not hold an equal
@@ -142,11 +156,7 @@ fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
   // measure keeps it.
   if (remainingCoveredWork != 0 && planCoveredWork != 0 &&
       planCoveredWork <= remainingCoveredWork) {
-    const auto reserved = static_cast<unsigned __int128>(remaining / divisor) *
-                          reservedTerminalShares;
-    const std::uint64_t terminalReserve =
-        reserved >= remaining ? remaining : static_cast<std::uint64_t>(reserved);
-    const std::uint64_t planWindow = remaining - terminalReserve;
+    const std::uint64_t planWindow = remaining;
     const std::uint64_t equalWindow = planWindow / equalPlanWindowDivisor;
     const std::uint64_t weightedWindow = planWindow - equalWindow;
     const auto weighted =
