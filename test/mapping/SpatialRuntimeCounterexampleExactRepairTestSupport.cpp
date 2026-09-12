@@ -1008,11 +1008,10 @@ void exerciseAdmittedRegisterFifoAdoption(
     const auto externalObjective =
         take(problem->objectiveProgram().evaluate(candidate));
     pnr::SpatialAnnealingSearchScratch search;
-    pnr::SpatialAnnealingStatistics statistics;
+    pnr::SpatialLocalTransferAdoptionStatistics statistics;
     requireSuccess(
         search.adoptAdmittedLocalTransfers(candidate, 0, statistics));
-    if (statistics.localTransferAdoptionProbes != 1 ||
-        statistics.adoptedLocalTransfers != 0 ||
+    if (statistics.probes != 1 || statistics.adopted != 0 ||
         candidate.usesRegisterFifo(pairedNet) ||
         candidate.routeTree(pairedNet).isUnrouted())
       fail("adoption sweep adopted a pairing that worsens the selected "
@@ -1042,13 +1041,11 @@ void exerciseAdmittedRegisterFifoAdoption(
     const auto externalObjective =
         take(problem->objectiveProgram().evaluate(candidate));
     pnr::SpatialAnnealingSearchScratch search;
-    pnr::SpatialAnnealingStatistics statistics;
+    pnr::SpatialLocalTransferAdoptionStatistics statistics;
     requireSuccess(
         search.adoptAdmittedLocalTransfers(candidate, 0, statistics));
-    if (statistics.localTransferAdoptionProbes != 1 ||
-        statistics.adoptedLocalTransfers != 1 ||
-        statistics.relocatedLocalTransfers != 0 ||
-        !candidate.usesRegisterFifo(pairedNet) ||
+    if (statistics.probes != 1 || statistics.adopted != 1 ||
+        statistics.relocated != 0 || !candidate.usesRegisterFifo(pairedNet) ||
         candidate.registerFifoTransfer(pairedNet) != pairedOption ||
         !candidate.routeTree(pairedNet).isUnrouted())
       fail("adoption sweep did not restore the admitted resident pairing");

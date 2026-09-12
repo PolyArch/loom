@@ -336,16 +336,6 @@ internal(InternalSpatialPnrGenerationReason reason,
   return internal(reason, accounting, llvm::toString(std::move(error)));
 }
 
-llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
-                                SpatialPnrGenerationAccounting &target) {
-  if (llvm::Error error = checkedAdd(source.acceptedActionCount,
-                                     target.annealingAcceptedActions,
-                                     "annealing accepted Actions"))
-    return error;
-  return checkedAdd(source.adoptedLocalTransfers, target.adoptedLocalTransfers,
-                    "adopted local transfers");
-}
-
 llvm::Expected<std::optional<ResolvedPnrViolationKind>>
 firstFinalViolation(const SpatialCandidateState &candidate) {
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
@@ -453,6 +443,8 @@ llvm::StringRef spelling(InternalSpatialPnrGenerationReason reason) {
     return "exact_repair";
   case InternalSpatialPnrGenerationReason::FinalClosure:
     return "final_closure";
+  case InternalSpatialPnrGenerationReason::LocalTransferAdoption:
+    return "local_transfer_adoption";
   case InternalSpatialPnrGenerationReason::CandidateVerification:
     return "candidate_verification";
   case InternalSpatialPnrGenerationReason::CandidateFinalization:
@@ -578,6 +570,8 @@ public:
           fields["annealing_ns"] = annealingNanoseconds;
           fields["exact_repair_ns"] = exactRepairNanoseconds;
           fields["final_closure_ns"] = finalClosureNanoseconds;
+          fields["local_transfer_adoption_ns"] =
+              localTransferAdoptionNanoseconds;
           fields["verification_ns"] = verificationNanoseconds;
           if (!captured_)
             return;
@@ -699,6 +693,7 @@ public:
   std::uint64_t annealingNanoseconds = 0;
   std::uint64_t exactRepairNanoseconds = 0;
   std::uint64_t finalClosureNanoseconds = 0;
+  std::uint64_t localTransferAdoptionNanoseconds = 0;
   std::uint64_t verificationNanoseconds = 0;
 
 private:
@@ -856,7 +851,9 @@ SpatialRestartResult runSpatialRestartImpl(
   if (!annealed)
     return restartInternal(InternalSpatialPnrGenerationReason::Annealing,
                            std::move(accounting), annealed.takeError());
-  if (llvm::Error error = accumulateAnnealing(*annealed, accounting))
+  if (llvm::Error error = checkedAdd(annealed->acceptedActionCount,
+                                     accounting.annealingAcceptedActions,
+                                     "annealing accepted Actions"))
     return restartInternal(
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
@@ -876,6 +873,7 @@ SpatialRestartResult runSpatialRestartImpl(
   std::uint64_t exactRepairLogicalSolverCalls = 0;
   bool transportRepairRequested = annealed->repairReadyHandoff;
   bool finalClosureRequired = true;
+  bool localTransfersAdopted = false;
 
   while (true) {
     const bool hasAtomicCapacityOveruse =
@@ -889,8 +887,39 @@ SpatialRestartResult runSpatialRestartImpl(
               : SpatialPnrInterruptionStage::FinalClosure,
           std::move(accounting), std::move(seed->candidate));
     if (!hasAtomicCapacityOveruse && !hasTransportViolation &&
-        !finalClosureRequired)
-      break;
+        !finalClosureRequired) {
+      if (localTransfersAdopted)
+        break;
+      // The restart's closed candidate is the only state that can rank a
+      // register-FIFO pairing under the selected total ordering, and the
+      // restart reaches it through annealing, exact repair, and final closure
+      // together: an annealing schedule that ends without a feasible
+      // incumbent still closes here. The sweep therefore belongs to the
+      // restart rather than to one search stage, and it runs exactly once.
+      localTransfersAdopted = true;
+      reporter.restartClock();
+      SpatialLocalTransferAdoptionStatistics adoption;
+      llvm::Error adoptionError = annealing.adoptAdmittedLocalTransfers(
+          *seed->candidate, attempt, adoption, executionControl, workLedger);
+      reporter.phase(reporter.localTransferAdoptionNanoseconds);
+      if (adoptionError)
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::LocalTransferAdoption,
+            std::move(accounting), std::move(adoptionError));
+      if (llvm::Error error =
+              checkedAdd(adoption.adopted, accounting.adoptedLocalTransfers,
+                         "adopted local transfers"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (adoption.adopted == 0)
+        break;
+      // An adoption changes selected dispositions and routes, so the adopted
+      // candidate re-enters the ordinary closure loop: publication always
+      // follows one final global closure over the published selections.
+      finalClosureRequired = true;
+      continue;
+    }
     if (hasAtomicCapacityOveruse && !exactRepairEnabled)
       return {SpatialRestartDisposition::Incomplete,
               std::move(accounting),

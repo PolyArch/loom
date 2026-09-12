@@ -278,7 +278,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.14`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.15`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -287,10 +287,10 @@ passes base verification and exact `K` admission. Mutable candidates, solver
 assignments, route-price history, no-goods, and proof caches are never outputs.
 Every terminal outcome, including success, reports deterministic invocation
 work for seed preparation, placement assignment, endpoint expansion,
-negotiation, annealing, exact repair, final closure, independent verification,
-Artifact finalization, and publication. A zero exact-repair count means the
-candidate closed without invoking repair; it never means repair or final
-verification was disabled.
+negotiation, annealing, exact repair, final closure, local-transfer adoption,
+independent verification, Artifact finalization, and publication. A zero
+exact-repair count means the candidate closed without invoking repair; it
+never means repair or final verification was disabled.
 
 ### System PnR
 
@@ -902,15 +902,20 @@ A selected-handshake witness that passes through register-FIFO pairings is
 repaired one pairing at a time: the lowest net whose pairing lies on the
 witnessed cycle is routed externally, the pending handshake graph is
 re-materialized, and the next witness names its own cut, so nets off every
-witness keep their local disposition. After annealing restores its best
-feasible incumbent, the provider adopts admitted local transfers in canonical
-net and option order: an alternative resident under the current placements, or
-one reached by relocating exactly one endpoint onto its peer's PE, is committed
-when the selected handshake graph stays acyclic and the selected total ordering
-does not worsen; a declined alternative keeps its external route. The register
-FIFOs of one PE bank are interchangeable for that decision, so one free FIFO
-stands for every alternative that pairs the same writer and reader under the
-same placements.
+witness keep their local disposition. Local disposition is a ranking decision
+over a closed candidate, not a property of the search stage that closed it.
+Once a restart holds a candidate with zero Mapping violations, and before that
+candidate enters independent verification, the provider adopts admitted local
+transfers exactly once in canonical net and option order: an alternative
+resident under the current placements, or one reached by relocating exactly
+one endpoint onto its peer's PE, is committed when the selected handshake
+graph stays acyclic and the selected total ordering does not worsen; a
+declined alternative keeps its external route. An adoption changes selected
+dispositions and routes, so an adopting sweep re-enters the provider's final
+global closure and publication still follows one closure over the published
+selections. The register FIFOs of one PE bank are interchangeable for that
+decision, so one free FIFO stands for every alternative that pairs the same
+writer and reader under the same placements.
 
 Co-location, a register-file name, or common ownership is not a local transfer.
 No edge may be absent from both the local and external projections or appear in

@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.14
+  loom.spatial_pnr.config.15.15
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.5
   selected FabricPhysicalTimingProfile descriptor and digest
@@ -80,7 +80,13 @@ static schedule pressure, so annealing sees the same gradient the ordering
 ranks.
 
 The local-transfer adoption sweep ranks inside that ordering; it does not sit
-ahead of any level. The sweep adopts a register-FIFO pairing whose candidate
+ahead of any level. The restart owner runs it exactly once, on the closed
+candidate the restart reaches through annealing, exact repair, and final
+routing closure together, and before independent verification. Annealing is
+not its owner: a restart whose annealing schedule ends without a feasible
+incumbent still reaches a closed candidate through repair and closure, and
+that candidate ranks register-FIFO pairings on the same terms as one annealing
+closed itself. The sweep adopts a register-FIFO pairing whose candidate
 is not worse under the selected total ordering, so a recurrence-neutral local
 transfer ties at the `RecurrenceTemporalBindingPressure` level and is still
 adopted on the strength of the earlier and later levels. The measure changes
@@ -317,7 +323,8 @@ canonical relation initialization
   -> coupled initial route closure
   -> transactional annealing
   -> restore best feasible incumbent when one exists
-  -> bounded repair/global-closure loop
+  -> bounded repair/global-closure loop,
+     with one admitted local-transfer adoption sweep at its first closure
   -> candidate invariant verification
 ```
 
@@ -370,6 +377,17 @@ ordering independently of the current annealing state. It continues the
 configured quality work after first reaching zero violations. At restart end,
 the best feasible incumbent is restored; if no feasible candidate was seen,
 the best current state may enter repair but cannot be published.
+
+Local-transfer adoption is not part of that restore. The restart runs the
+sweep once, inside the repair and final-closure loop, at the first point where
+that loop holds a candidate with zero violations, so a restart whose annealing
+schedule ended with unrouted obligations and no incumbent still ranks its
+register-FIFO pairings. A sweep that adopts nothing leaves the loop
+immediately; a sweep that adopts returns its candidate to the same loop, so
+the published selections always pass through one final global closure. An
+execution stop observed inside the sweep ends it with the pairings already
+committed and leaves that candidate closed, so the sweep itself never turns a
+closed restart into an interrupted one.
 
 ### PathFinder Routing
 
