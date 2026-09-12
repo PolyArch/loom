@@ -759,11 +759,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
   std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
+  // The typed kind alone does not say which proof refused the finalist, and
+  // the pair decision and the product error are the only records a caller
+  // reads when no finalist reaches Mapping. The refusing owner's explanation
+  // therefore travels on the typed outcome itself.
   std::optional<UnsupportedApplicationBuild> firstUnsupported;
-  // The typed kind alone does not say which proof refused the finalist. The
-  // pair decision is the only record a caller reads when no finalist reaches
-  // Mapping, so the first preflight explanation travels with it.
-  std::optional<std::string> firstUnsupportedDiagnostic;
   preparedSoftware.reserve(resourceTimeFunnel->finalists.size());
   mappingAlternatives.reserve(resourceTimeFunnel->finalists.size());
   std::vector<ComponentViewDigest> promotedIdentities;
@@ -949,13 +949,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
                               fields["diagnostic"] = diagnostic;
                               fields["candidate_identity"] = identitySpelling;
                             });
-        if (!firstUnsupported) {
+        if (!firstUnsupported)
           firstUnsupported = UnsupportedApplicationBuild{
               ApplicationBuildUnsupportedKind::DynamicInvocationBoundary,
               published->canonicalDataflow,
-              pending->projection->regions.front().region};
-          firstUnsupportedDiagnostic = diagnostic;
-        }
+              pending->projection->regions.front().region, diagnostic};
         auto &record =
             completed.candidateInventory[pending->planningRecordOrdinal];
         record.disposition =
@@ -1064,8 +1062,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
     if (firstUnsupported) {
       std::string detail =
           "all retained finalists were rejected at the application boundary";
-      if (firstUnsupportedDiagnostic)
-        detail += ": " + *firstUnsupportedDiagnostic;
+      if (!firstUnsupported->refusal.empty())
+        detail += ": " + firstUnsupported->refusal;
       auto decision = makePreparationPairDecision(
           completed.sourceProgram, completed.fabric, completed.workload,
           completed.runtimeInput, completed.candidateInventory,

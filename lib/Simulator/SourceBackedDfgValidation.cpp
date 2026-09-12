@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -1135,9 +1136,21 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
         return llvm::createStringError(std::errc::not_supported,
             "source-bound deployment requires an ABI or fixed stack object");
       const auto &stack = std::get<NativeStackMemoryObjectSource>(root.source);
-      if (!stack.captureFrameDistance || *stack.captureFrameDistance != 0)
-        return llvm::createStringError(std::errc::not_supported,
-            "captured stack object belongs to a different invocation frame");
+      // Name the object and the distance. The refusal travels to the DSE as
+      // the proof that blocks this ownership decision, and "a stack object"
+      // is not something a candidate generator or a reader can act on.
+      if (!stack.captureFrameDistance || *stack.captureFrameDistance != 0) {
+        const std::string distance =
+            stack.captureFrameDistance
+                ? std::to_string(*stack.captureFrameDistance)
+                : std::string("unknown");
+        return llvm::createStringError(
+            std::errc::not_supported,
+            "captured stack object belongs to a different invocation frame: "
+            "allocation %llu of %s at frame distance %s",
+            static_cast<unsigned long long>(stack.allocationOrdinal),
+            stack.callableSymbol.c_str(), distance.c_str());
+      }
       auto source = resolveNativeProgramMemoryObjectSource(
           selectedProgram.module(), root.source);
       if (!source)
@@ -1148,8 +1161,12 @@ llvm::Expected<WorkloadBoundMemoryCapture> deriveWorkloadBoundMemoryCapture(
                        : mlir::LLVM::LLVMFuncOp{};
       if (!owner || allocation->getBlock() != &owner.getBody().front() ||
           !allocation->getBlock()->hasNoPredecessors())
-        return llvm::createStringError(std::errc::not_supported,
-            "captured stack source is not a once-per-invocation entry allocation");
+        return llvm::createStringError(
+            std::errc::not_supported,
+            "captured stack source is not a once-per-invocation entry "
+            "allocation: allocation %llu of %s",
+            static_cast<unsigned long long>(stack.allocationOrdinal),
+            stack.callableSymbol.c_str());
       auto found = llvm::find(hostAllocations, allocation.getRes());
       const std::size_t ordinal = std::distance(hostAllocations.begin(), found);
       if (found == hostAllocations.end())
