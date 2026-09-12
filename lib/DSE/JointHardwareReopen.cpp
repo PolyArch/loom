@@ -576,9 +576,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         actionableHardwareParents != 0 || plans.size() - indexed.index() > 1) {
       std::uint64_t remainingPlans = plans.size() - indexed.index();
       saturatingAdd(remainingPlans, actionableHardwareParents);
-      auto fair = fairRemainingPlanPolicy(request.executionPolicy,
-                                          remainingPlans,
-                                          verifiedMappingCount);
+      // Only the untried plans compete for the remaining window, so the
+      // covered work of the plans already executed is not part of the
+      // division.
+      std::uint64_t remainingCoveredWork = 0;
+      for (std::size_t ordinal = indexed.index(); ordinal != plans.size();
+           ++ordinal)
+        if (plans[ordinal])
+          saturatingAdd(remainingCoveredWork,
+                        plans[ordinal]->coveredDynamicLeafExecutions);
+      auto fair = fairRemainingPlanPolicy(
+          request.executionPolicy, remainingPlans, verifiedMappingCount,
+          plan.coveredDynamicLeafExecutions, remainingCoveredWork);
       if (!fair)
         return fair.takeError();
       planExecutionPolicy.emplace(std::move(*fair));
@@ -590,6 +599,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
             fields["remaining_plan_count"] = remainingPlans;
             fields["actionable_hardware_parent_count"] =
                 actionableHardwareParents;
+            fields["plan_covered_leaf_executions"] =
+                plan.coveredDynamicLeafExecutions;
+            fields["remaining_covered_leaf_executions"] = remainingCoveredWork;
             if (planExecutionPolicy->dispatchNotAfterUnixNanoseconds())
               fields["dispatch_not_after_unix_ns"] =
                   *planExecutionPolicy->dispatchNotAfterUnixNanoseconds();

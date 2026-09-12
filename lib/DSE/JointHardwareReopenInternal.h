@@ -145,10 +145,18 @@ bool dispatchDeadlineReached(const PlanExecutionPolicy &policy);
 /// share per verified Mapping awaiting terminal application QoR acquisition,
 /// because that acquisition measures every verified alternative; before any
 /// Mapping is verified there is nothing to measure and no share is withheld.
+///
+/// `planCoveredWork` and `remainingCoveredWork` weight the division by the
+/// covered leaf executions of this plan and of every untried plan. Half of
+/// the plan window stays equal so every plan is still tried; the other half
+/// follows the covered work. Equal weights reproduce the equal division, and
+/// an absent measure keeps it.
 llvm::Expected<PlanExecutionPolicy>
 fairRemainingPlanPolicy(const PlanExecutionPolicy &base,
                         std::uint64_t remainingPlanCount,
-                        std::uint64_t reservedTerminalShares);
+                        std::uint64_t reservedTerminalShares,
+                        std::uint64_t planCoveredWork = 0,
+                        std::uint64_t remainingCoveredWork = 0);
 
 std::size_t mappingCount(const JointDesignExecution &execution);
 

@@ -1027,6 +1027,15 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         request.resolvedConfig, artifacts, nullptr, **partitions);
     if (!mappingPlan)
       return mappingPlan.takeError();
+    // The Mapping wall time is shared between plans, so the joint controller
+    // needs to know how much of the declared computation interval each plan
+    // moves off the host. The promotion owner measured it while ranking; it
+    // rides with the plan as provenance.
+    const dse::PreMappingCandidatePlanningRecord &promotionRecord =
+        completed.candidateInventory[pending->planningRecordOrdinal];
+    if (promotionRecord.projection)
+      mappingPlan->coveredDynamicLeafExecutions =
+          promotionRecord.projection->ownedDynamicLeafExecutions;
     ++resourceTimeFunnel->accounting.mappingPlanCandidates;
     const std::uint64_t rank = mappingAlternatives.size();
     mappingAlternatives.push_back({rank,
