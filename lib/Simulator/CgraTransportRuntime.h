@@ -458,9 +458,35 @@ private:
 
   struct ProducerState final {
     std::uint64_t nextProducerSequenceOrdinal = 0;
-    bool sourceReserved = false;
-    /// A result is pending until every sink accepts a durable handoff.
-    bool producerPending = false;
+    /// Sequence ordinal of the oldest emitted transfer whose sinks have not
+    /// all accepted its durable handoff. One producer binding completes its
+    /// transfers in emission order, so this and the next sequence ordinal
+    /// bound the emitted occurrences the binding still owes.
+    std::uint64_t completedProducerSequenceOrdinal = 0;
+    /// Occurrences that committed through this binding without emitting their
+    /// token yet.
+    std::uint64_t sourceReservations = 0;
+    /// Occurrences this binding may hold outstanding before its oldest
+    /// transfer completes. It is the Fabric memory Operation Engine's
+    /// operation issue depth for a memory actor's result binding and the
+    /// serialized depth for every other producer; the transport owns no depth
+    /// of its own.
+    std::uint64_t occurrenceCapacity =
+        ::fabric::serializedMemoryOperationIssueDepth;
+
+    /// Emitted occurrences whose sinks have not all accepted their durable
+    /// handoff.
+    std::uint64_t emittedOccurrences() const {
+      return nextProducerSequenceOrdinal - completedProducerSequenceOrdinal;
+    }
+    /// Whether one more occurrence may commit through this binding.
+    bool admitsOccurrence() const {
+      return sourceReservations + emittedOccurrences() < occurrenceCapacity;
+    }
+    /// Whether one more committed occurrence may emit its token now.
+    bool admitsEmission() const {
+      return emittedOccurrences() < occurrenceCapacity;
+    }
   };
 
   struct OperandQueueUnitState final {

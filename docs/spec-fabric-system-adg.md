@@ -598,6 +598,16 @@ service's outstanding guarantee; the smallest of the three is the binding
 constraint. Execution models, the analytic runtime model, and the gem5
 binding all derive that product and none of them chooses a depth of its own.
 
+The engine depth also bounds the transport in front of the actor. A memory
+actor whose engine holds several firings outstanding publishes several result
+occurrences before the oldest of them is durably accepted, so every transport
+producer binding of that actor admits exactly the engine's issue depth
+outstanding occurrences and releases them in emission order. That per-producer
+occurrence capacity is derived from the same `operation_issue_depth`, not a
+second transport authority: a producer binding of any other actor keeps the
+serialized depth of one, and no transport record declares a capacity of its
+own.
+
 SpatialMapping binds graph-local memory operations to a local service or an
 explicit boundary proxy. SystemMapping extends only proxy obligations to a
 system provider. Runtime supplies invocation-specific allocations,

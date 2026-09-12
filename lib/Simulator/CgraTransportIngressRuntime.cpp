@@ -68,11 +68,15 @@ CgraTransportRuntime::traversalState(std::uint64_t slot,
 void CgraTransportRuntime::completeSource(InFlight &transfer) {
   const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
   ProducerState &source = producerStates_[transfer.bindingOrdinal];
-  assert(!transfer.producerCompletionReported && source.producerPending &&
-         !source.sourceReserved &&
-         "CGRA durable handoff must release its pending producer exactly once");
+  // A producer binding completes its outstanding occurrences in emission
+  // order, so the released transfer is always the oldest it still owes.
+  assert(!transfer.producerCompletionReported &&
+         source.emittedOccurrences() != 0 &&
+         transfer.producerSequenceOrdinal ==
+             source.completedProducerSequenceOrdinal &&
+         "CGRA durable handoff must release its oldest producer exactly once");
   transfer.producerCompletionReported = true;
-  source.producerPending = false;
+  ++source.completedProducerSequenceOrdinal;
   if (binding.semanticActorOrdinal &&
       actorSourcesAvailable(*binding.semanticActorOrdinal))
     state_->nextActorCandidates.set(*binding.semanticActorOrdinal);
@@ -82,7 +86,7 @@ std::uint64_t CgraTransportRuntime::allocate(
     std::uint64_t bindingOrdinal, std::uint64_t occurrenceOrdinal,
     std::uint64_t producerSequenceOrdinal, Token token) {
   assert(bindingOrdinal < graph_.bindings.size() &&
-         !producerStates_[bindingOrdinal].producerPending &&
+         producerStates_[bindingOrdinal].admitsEmission() &&
          "CGRA transport allocation requires a validated source");
   assert(activeTransferCount_ != std::numeric_limits<std::uint64_t>::max() &&
          "preflighted active transfer count must fit u64");
@@ -117,8 +121,10 @@ std::uint64_t CgraTransportRuntime::allocate(
       transfer.readyTraversals.push_back(node);
   }
   inFlight_[slot] = std::move(transfer);
-  producerStates_[bindingOrdinal].producerPending = true;
-  producerStates_[bindingOrdinal].sourceReserved = false;
+  // The caller advances the sequence ordinal, which is what makes this
+  // occurrence emitted; the reservation it committed through is consumed here.
+  if (producerStates_[bindingOrdinal].sourceReservations != 0)
+    --producerStates_[bindingOrdinal].sourceReservations;
   ++activeTransferCount_;
   return slot;
 }
@@ -362,7 +368,7 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
         {emission.semanticActorOrdinal, emission.resultOrdinal});
     if (binding == graph_.actorSourceBindings.end())
       return invalid("CGRA actor emission has no selected transfer binding");
-    if (producerStates_[binding->second].producerPending)
+    if (!producerStates_[binding->second].admitsEmission())
       return invalid(llvm::Twine("CGRA actor ") +
                      llvm::Twine(emission.semanticActorOrdinal) +
                      " occurrence " + llvm::Twine(emission.occurrenceOrdinal) +
@@ -391,7 +397,7 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
     auto binding = graph_.ingressSourceBindings.find(emission.argumentOrdinal);
     if (binding == graph_.ingressSourceBindings.end())
       return invalid("CGRA graph ingress has no selected transfer binding");
-    if (producerStates_[binding->second].producerPending ||
+    if (!producerStates_[binding->second].admitsEmission() ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA graph ingress batch reuses a pending source");
     transfers.push_back(
@@ -407,7 +413,7 @@ CgraTransportRuntime::canAcceptGraphIngress(unsigned argumentOrdinal) const {
     return invalid("CGRA graph ingress has no selected transfer binding");
   if (binding->second >= graph_.bindings.size())
     return invalid("CGRA graph ingress binding exceeds the transport plan");
-  return !producerStates_[binding->second].producerPending;
+  return producerStates_[binding->second].admitsEmission();
 }
 
 bool CgraTransportRuntime::actorSourcesAvailable(
@@ -417,8 +423,7 @@ bool CgraTransportRuntime::actorSourcesAvailable(
   for (std::uint64_t binding :
        graph_.actorSourceBindingOrdinals[semanticActorOrdinal])
     if (binding >= graph_.bindings.size() ||
-        producerStates_[binding].sourceReserved ||
-        producerStates_[binding].producerPending)
+        !producerStates_[binding].admitsOccurrence())
       return false;
   return true;
 }

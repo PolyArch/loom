@@ -333,8 +333,7 @@ CgraTransportRuntime::acceptActorCommits(
         continue;
       if (binding->second >= graph_.bindings.size())
         return invalid("CGRA actor commit has an invalid transport source");
-      if (producerStates_[binding->second].sourceReserved ||
-          producerStates_[binding->second].producerPending)
+      if (!producerStates_[binding->second].admitsOccurrence())
         return invalid(llvm::Twine("CGRA actor ") +
                        llvm::Twine(event.semanticActorOrdinal) +
                        " occurrence " + llvm::Twine(event.occurrenceOrdinal) +
@@ -437,7 +436,7 @@ CgraTransportRuntime::acceptActorCommits(
       return error;
   }
   for (std::uint64_t binding : sourceReservations)
-    producerStates_[binding].sourceReserved = true;
+    ++producerStates_[binding].sourceReservations;
   std::vector<CgraTransportCompletion> completions;
   for (const auto &[slot, sinks] : handoffs) {
     if (llvm::Error error = acceptDurableSinks(slot, sinks))
