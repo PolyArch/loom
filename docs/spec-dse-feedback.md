@@ -3730,7 +3730,21 @@ reason for Mapping rather than pretending that selections survived. The
 controller prioritizes the deepest observed Mapping boundary: System feedback
 already has admitted Spatial mappings, and Spatial feedback already has an
 admitted TechMapping. It does not also grow hardware for rejected alternatives
-from earlier stages. System capacity feedback raises the
+from earlier stages.
+
+One boundary is not ordered that way, because it is not a later boundary at
+all. Compute supply is a precondition for routing, so an attempt that holds a
+closed compute-context Hall observation was refused before any route existed. A
+Spatial or System failure of that same candidate is the consequence of mapping
+around the deficit rather than an independent boundary to repair, and it does
+not make the observation stale. The controller therefore consumes a closed Hall
+deficit first, and judges an attempt by its Spatial or System feedback only when
+it holds no Hall deficit. Withholding the reopen remains the record for an
+attempt that offers no exact feedback of any family; the selection names the
+family it consumed and the families it set aside, so a reader can tell an
+attempt that offered several from one that offered none.
+
+System capacity feedback raises the
 AccCore count by exactly one only when every current occurrence targets the
 named Module; a heterogeneous recipe that cannot express the requested
 compatible occurrence is rejected rather than silently homogenized. There is no
