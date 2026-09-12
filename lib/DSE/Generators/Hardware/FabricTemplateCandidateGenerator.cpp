@@ -226,6 +226,8 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");
+  if (bytes.size() < 4)
+    return invalid("truncated mined composite FU selection");
   const std::uint32_t minedCount = readU32();
   std::optional<MinedCompositeFuSelection> mined;
   if (minedCount != 0) {
