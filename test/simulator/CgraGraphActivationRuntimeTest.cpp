@@ -886,6 +886,48 @@ void graphActivationExecutesSelectedLocalMemory() {
                   *pipelinedSecondIssue, *serializedSecondIssue) < 0,
           "issue depth two did not reach the service earlier than the "
           "serialized engine");
+
+  // Overlapped firings also retire together when the service answers both
+  // before the activation advances. The binding then publishes two result
+  // occurrences of one transport producer in a single emission batch, which
+  // its occurrence capacity admits and its emission order keeps. A transport
+  // that allowed a producer only one occurrence per batch would refuse the
+  // deeper engine it was given.
+  {
+    plan.memory.actors.back().operationIssueDepth = 2;
+    FixedExternalMemoryProvider batched(
+        FixedExternalMemoryProvider::Completion::Deferred);
+    SimulatorState batchedState;
+    llvm::SmallVector<GraphIngressEmission, 4> batchedIngress;
+    seedState(batchedState, batchedIngress, 2);
+    auto batchedRuntime = take(CgraGraphActivationRuntime::create(
+        plan, view, launch, load->graph, *prepared, externalTransportGraph,
+        batchedState, /*captureMicroarchitecture=*/false, &batched));
+    if (llvm::Error error = batchedRuntime.start(coordinate(0), batchedIngress))
+      fail(llvm::toString(std::move(error)));
+    for (unsigned iteration = 0;
+         iteration != 96 && batched.requests.size() != 2; ++iteration) {
+      auto frame = take(batchedRuntime.advance());
+      if (!frame)
+        break;
+    }
+    require(batched.requests.size() == 2 &&
+                batchedRuntime.waitingForExternalMemory(),
+            "issue depth two did not hold both firings outstanding");
+    for (std::size_t ordinal = 0; ordinal != batched.requests.size(); ++ordinal)
+      if (llvm::Error error = batchedRuntime.completeExternalMemory(
+              batched.requests[ordinal],
+              FixedExternalMemoryProvider::response(ordinal)))
+        fail(llvm::toString(std::move(error)));
+    for (unsigned iteration = 0;
+         iteration != 96 && batchedRuntime.hasPendingEvents(); ++iteration)
+      if (!take(batchedRuntime.advance()))
+        fail("batched external memory lost its answered requests");
+    require(!batchedRuntime.hasPendingEvents(),
+            "batched external memory did not retire both firings");
+    requireExternalOutput(batchedState);
+  }
+
   plan.memory.actors.back().operationIssueDepth =
       ::fabric::serializedMemoryOperationIssueDepth;
 

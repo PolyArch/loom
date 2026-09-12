@@ -484,8 +484,12 @@ private:
       return sourceReservations + emittedOccurrences() < occurrenceCapacity;
     }
     /// Whether one more committed occurrence may emit its token now.
-    bool admitsEmission() const {
-      return emittedOccurrences() < occurrenceCapacity;
+    /// `pendingInBatch` counts occurrences of this binding already accepted
+    /// earlier in the same emission batch: an engine deeper than the
+    /// serialized depth retires several firings in one frame, and those
+    /// tokens occupy the binding before any of them completes.
+    bool admitsEmission(std::uint64_t pendingInBatch = 0) const {
+      return emittedOccurrences() + pendingInBatch < occurrenceCapacity;
     }
   };
 

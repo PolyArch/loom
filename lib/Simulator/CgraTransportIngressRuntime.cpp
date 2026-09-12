@@ -281,21 +281,29 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
 
   llvm::SmallVector<PendingActionTransfer, 4> producedTransfers;
   producedTransfers.reserve(transfers.size());
+  // Several transfers of one batch may share a binding when its producer holds
+  // more than the serialized occurrence depth. Their producer sequence
+  // ordinals continue from the binding's next ordinal in batch order; the
+  // binding's own counter advances once per accepted transfer below.
+  llvm::SmallDenseMap<std::uint64_t, std::uint64_t, 4> batchSequenceOffsets;
   for (auto [transfer, slot] : llvm::zip(transfers, prospectiveSlots)) {
     if (!transfer.token || transfer.bindingOrdinal >= graph_.bindings.size())
       return invalid("CGRA transport received a malformed source emission");
     const TransferBinding &binding = graph_.bindings[transfer.bindingOrdinal];
     const ProducerState &source = producerStates_[transfer.bindingOrdinal];
-    if (source.nextProducerSequenceOrdinal ==
-        std::numeric_limits<std::uint64_t>::max())
+    std::uint64_t &offset = batchSequenceOffsets[transfer.bindingOrdinal];
+    if (source.nextProducerSequenceOrdinal >
+        std::numeric_limits<std::uint64_t>::max() - offset - 1)
       return llvm::createStringError(
           std::errc::value_too_large,
           "CGRA producer sequence ordinal overflows u64");
+    const std::uint64_t sequence = source.nextProducerSequenceOrdinal + offset;
+    ++offset;
     if (std::holds_alternative<::dataflow::GraphIngressTokenRef>(
             binding.producer) &&
-        transfer.occurrenceOrdinal != source.nextProducerSequenceOrdinal)
+        transfer.occurrenceOrdinal != sequence)
       return invalid("CGRA graph-ingress producer sequence is not dense");
-    producerSequences.push_back(source.nextProducerSequenceOrdinal);
+    producerSequences.push_back(sequence);
     producedTransfers.push_back({slot, transfer.bindingOrdinal});
   }
 
@@ -361,22 +369,27 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
   if (emissions.empty())
     return llvm::Error::success();
   llvm::SmallVector<PendingTransfer, 4> transfers;
-  llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
+  // A memory actor whose Operation Engine is deeper than the serialized depth
+  // retires several firings in one frame, so one binding may carry several
+  // occurrences of the same batch. The binding's occurrence capacity, not a
+  // once-per-batch rule, is what bounds them; they keep emission order.
+  llvm::SmallDenseMap<std::uint64_t, std::uint64_t, 4> batchOccurrences;
   transfers.reserve(emissions.size());
   for (CgraActorEmission &emission : emissions) {
     auto binding = graph_.actorSourceBindings.find(
         {emission.semanticActorOrdinal, emission.resultOrdinal});
     if (binding == graph_.actorSourceBindings.end())
       return invalid("CGRA actor emission has no selected transfer binding");
-    if (!producerStates_[binding->second].admitsEmission())
+    const std::uint64_t pendingInBatch =
+        batchOccurrences.lookup(binding->second);
+    if (!producerStates_[binding->second].admitsEmission(pendingInBatch))
       return invalid(llvm::Twine("CGRA actor ") +
                      llvm::Twine(emission.semanticActorOrdinal) +
                      " occurrence " + llvm::Twine(emission.occurrenceOrdinal) +
                      " result " + llvm::Twine(emission.resultOrdinal) +
                      " reuses a transport source awaiting durable acceptance " +
                      llvm::Twine(binding->second));
-    if (!uniqueBindings.insert(binding->second).second)
-      return invalid("CGRA actor emission batch repeats a source binding");
+    batchOccurrences[binding->second] = pendingInBatch + 1;
     if (emission.semanticActorOrdinal >= state_->execution->actorPlans.size())
       return invalid("CGRA actor emission names an unknown semantic actor");
     transfers.push_back(
