@@ -756,6 +756,12 @@ struct UnsupportedApplicationBuild final {
   ApplicationBuildUnsupportedKind kind;
   ArtifactRootReference canonicalDataflow;
   dataflow::RootThreadLaunchRef root;
+  /// The refusing owner's own proof, when it produced one. The typed kind
+  /// says which boundary refused the candidate; this says what it refused,
+  /// and it is the only actionable feedback a caller receives when no
+  /// candidate reaches Mapping. Every consumer reads it from here rather
+  /// than keeping a second copy.
+  std::string refusal;
 };
 
 struct IncompleteApplicationResourceTimePlanning final {

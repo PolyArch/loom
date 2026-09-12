@@ -999,22 +999,29 @@ llvm::Expected<PreparedApplicationBuild> prepareMappedApplication(
                         "no verified software candidate was selected");
   }
   const auto &unsupported = std::get<UnsupportedApplicationBuild>(*outcome);
+  // The refusing owner's proof is the only actionable part of this outcome:
+  // the typed kind names the boundary, the refusal names what it refused.
+  const std::string refusal =
+      unsupported.refusal.empty() ? std::string()
+                                  : ": " + unsupported.refusal;
   switch (unsupported.kind) {
   case ApplicationBuildUnsupportedKind::RootCoordinates:
     return productError("loom_application_unsupported",
                         "root coordinates are not statically enumerable for "
                         "launch " +
-                            llvm::Twine(unsupported.root.entity.value()));
+                            llvm::Twine(unsupported.root.entity.value()) +
+                            refusal);
   case ApplicationBuildUnsupportedKind::DirectInvocationBoundary:
     return productError("loom_application_unsupported",
                         "root has no replaceable direct invocation boundary "
                         "for launch " +
-                            llvm::Twine(unsupported.root.entity.value()));
+                            llvm::Twine(unsupported.root.entity.value()) +
+                            refusal);
   case ApplicationBuildUnsupportedKind::DynamicInvocationBoundary:
     return productError(
         "loom_application_unsupported",
         "dynamic invocation value capture is not exact for launch " +
-            llvm::Twine(unsupported.root.entity.value()));
+            llvm::Twine(unsupported.root.entity.value()) + refusal);
   }
   llvm_unreachable("closed ApplicationBuildUnsupportedKind");
 }
