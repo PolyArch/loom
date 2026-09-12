@@ -380,7 +380,7 @@ SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
 
 llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
     SpatialCandidateState &candidate, std::uint64_t seedAttemptOrdinal,
-    SpatialAnnealingStatistics &statistics,
+    SpatialLocalTransferAdoptionStatistics &statistics,
     ExecutionControlView executionControl,
     SpatialPnrWorkLedgerView workLedger) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
@@ -491,7 +491,7 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
                 logicalNet, SpatialWholeNetDispositionKind::RegisterFifo,
                 adoption.option}});
         if (llvm::Error error =
-                addCount(statistics.plannedLocalTransferAdoptionProbes, 1,
+                addCount(statistics.plannedProbes, 1,
                          "planned local-transfer adoption probe"))
           return error;
         if (llvm::Error error =
@@ -502,8 +502,8 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
             probes, logicalNet, adoption);
         auto probe = actionExecutor_.probeBatch(
             candidate, actions, SpatialActionExecutionContext::Search);
-        if (llvm::Error error = addCount(statistics.localTransferAdoptionProbes,
-                                         1, "local-transfer adoption probe"))
+        if (llvm::Error error =
+                addCount(statistics.probes, 1, "local-transfer adoption probe"))
           return error;
         if (llvm::Error error = workLedger.consume(
                 SpatialPnrWorkKind::LocalTransferAdoptionProbe))
@@ -569,11 +569,11 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
     return closed.takeError();
   if (!*closed)
     return searchError("local-transfer adoption left a Mapping violation");
-  if (llvm::Error error = addCount(statistics.adoptedLocalTransfers, adopted,
-                                   "adopted local transfer"))
+  if (llvm::Error error =
+          addCount(statistics.adopted, adopted, "adopted local transfer"))
     return error;
-  if (llvm::Error error = addCount(statistics.relocatedLocalTransfers,
-                                   relocated, "relocated local transfer"))
+  if (llvm::Error error =
+          addCount(statistics.relocated, relocated, "relocated local transfer"))
     return error;
   emitSweep(interrupted ? "interrupted" : "completed");
   return llvm::Error::success();
@@ -615,10 +615,6 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_on_entry";
                               });
-    if (llvm::Error error = adoptAdmittedLocalTransfers(
-            candidate, seedAttemptOrdinal, statistics, executionControl,
-            workLedger))
-      return std::move(error);
     statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
     statistics.negotiationIterations =
         actionExecutor_.negotiationIterationCount();
@@ -745,23 +741,6 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["reason"] = "feasible_on_entry";
                               });
   }
-  // The restored incumbent is a fresh candidate object: the sweep re-prepares
-  // the executor on it, so its routing work is added to the annealing totals
-  // captured before the restore.
-  const auto adoptRestoredIncumbentLocalTransfers = [&]() -> llvm::Error {
-    if (llvm::Error error = adoptAdmittedLocalTransfers(
-            *candidateHandle, seedAttemptOrdinal, statistics, executionControl,
-            workLedger))
-      return error;
-    if (llvm::Error error =
-            addCount(statistics.endpointExpansions,
-                     actionExecutor_.endpointExpansionCount(),
-                     "endpoint expansion"))
-      return error;
-    return addCount(statistics.negotiationIterations,
-                    actionExecutor_.negotiationIterationCount(),
-                    "negotiation iteration");
-  };
   const auto finishInterrupted =
       [&]() -> llvm::Expected<SpatialAnnealingStatistics> {
     statistics.interrupted = true;
@@ -808,8 +787,6 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
                               });
-    if (llvm::Error error = adoptRestoredIncumbentLocalTransfers())
-      return std::move(error);
     emitProvisionalHandshakeProjectionStatistics(
         actionExecutor_.handshakeProjectionStatistics(), seedAttemptOrdinal);
     return statistics;
@@ -1355,8 +1332,6 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["incumbent_snapshots"] =
                                     statistics.incumbentSnapshotCount;
                               });
-    if (llvm::Error error = adoptRestoredIncumbentLocalTransfers())
-      return std::move(error);
   } else if (bestSelectedRankIncumbent) {
     if (llvm::Error error = restoreIncumbent(
             *bestSelectedRankIncumbent, bestSelectedRankObjective,

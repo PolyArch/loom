@@ -19,6 +19,16 @@ namespace loom::pnr {
 
 struct SpatialPathFinderSeed;
 
+/// Work and outcome of one local-transfer adoption sweep. The restart owner
+/// runs the sweep on its closed candidate, so these counters are not part of
+/// the annealing schedule's own work.
+struct SpatialLocalTransferAdoptionStatistics final {
+  std::uint64_t plannedProbes = 0;
+  std::uint64_t probes = 0;
+  std::uint64_t adopted = 0;
+  std::uint64_t relocated = 0;
+};
+
 struct SpatialAnnealingStatistics final {
   bool interrupted = false;
   bool exactClosureReached = false;
@@ -46,10 +56,6 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t incumbentSnapshotCount = 0;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
-  std::uint64_t plannedLocalTransferAdoptionProbes = 0;
-  std::uint64_t localTransferAdoptionProbes = 0;
-  std::uint64_t adoptedLocalTransfers = 0;
-  std::uint64_t relocatedLocalTransfers = 0;
   bool bestSelectedRankIncumbentRestored = false;
   bool bestFeasibleIncumbentRestored = false;
 
@@ -89,11 +95,6 @@ struct SpatialAnnealingStatistics final {
            lhs.incumbentSnapshotCount == rhs.incumbentSnapshotCount &&
            lhs.endpointExpansions == rhs.endpointExpansions &&
            lhs.negotiationIterations == rhs.negotiationIterations &&
-           lhs.plannedLocalTransferAdoptionProbes ==
-               rhs.plannedLocalTransferAdoptionProbes &&
-           lhs.localTransferAdoptionProbes == rhs.localTransferAdoptionProbes &&
-           lhs.adoptedLocalTransfers == rhs.adoptedLocalTransfers &&
-           lhs.relocatedLocalTransfers == rhs.relocatedLocalTransfers &&
            lhs.bestSelectedRankIncumbentRestored ==
                rhs.bestSelectedRankIncumbentRestored &&
            lhs.bestFeasibleIncumbentRestored ==
@@ -121,15 +122,17 @@ public:
   /// current placements and then with exactly one endpoint relocated onto its
   /// peer's PE, and the first alternative that keeps the selected handshake
   /// graph acyclic without worsening the selected total ordering is
-  /// committed. Declined alternatives keep their external route. Annealing
-  /// runs this sweep after restoring its best feasible incumbent; a candidate
-  /// with a violation is left unchanged.
-  llvm::Error
-  adoptAdmittedLocalTransfers(SpatialCandidateState &candidate,
-                              std::uint64_t seedAttemptOrdinal,
-                              SpatialAnnealingStatistics &statistics,
-                              ExecutionControlView executionControl = {},
-                              SpatialPnrWorkLedgerView workLedger = {});
+  /// committed. Declined alternatives keep their external route. The restart
+  /// owner runs this sweep once on its closed candidate, whether that closure
+  /// came from annealing, exact repair, or final routing closure, and returns
+  /// an adopting result to its closure loop; a candidate with a violation is
+  /// left unchanged. An observed execution stop ends the sweep with the
+  /// pairings already committed and the candidate still closed.
+  llvm::Error adoptAdmittedLocalTransfers(
+      SpatialCandidateState &candidate, std::uint64_t seedAttemptOrdinal,
+      SpatialLocalTransferAdoptionStatistics &statistics,
+      ExecutionControlView executionControl = {},
+      SpatialPnrWorkLedgerView workLedger = {});
 
   std::size_t retainedStorageBytes() const;
 

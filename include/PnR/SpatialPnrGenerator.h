@@ -231,6 +231,7 @@ enum class InternalSpatialPnrGenerationReason : std::uint8_t {
   Annealing,
   ExactRepair,
   FinalClosure,
+  LocalTransferAdoption,
   CandidateVerification,
   CandidateFinalization,
   AccountingOverflow,
