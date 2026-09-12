@@ -355,6 +355,19 @@ built, exactly as the builtin FU catalog places its own composite units, and the
 ordinary FU-inventory decision then redistributes that occurrence to the PEs a
 Hall deficit names.
 
+The hardware template generator's resolved configuration carries that placement
+as a typed decision domain: one exact canonical Dataflow identity and a
+canonically ordered set of mined shape keys, each with the Spatial PE site count
+that receives an occurrence. The configuration carries no FU structure. The
+generator binds that exact Dataflow, mines it again, selects the candidates
+whose canonical codes the configuration names, and derives each template
+through the owners above; a named shape the Dataflow does not mine is a typed
+rejection. Mining is deterministic, so the same configuration and Dataflow
+produce the same Module, and no second owner of FU structure exists to disagree
+with the miner. Composite occurrences land on Spatial PEs only: a Temporal PE
+rotates its residents, which is the serialization a composite occurrence exists
+to avoid.
+
 ## Mapping And Finalization Boundary
 
 Synthesis creates hardware capability, not a workload configuration.

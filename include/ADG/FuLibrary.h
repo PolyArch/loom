@@ -78,6 +78,63 @@ llvm::Error addTokenControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
 llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                              BuiltinSpecialMathCapabilityProfile profile);
 
+/// One `fabric.op` resource of a composite FU: the implementation family and
+/// typed capability envelope its operation set needs, the operations it
+/// enables, and the Fabric types of its ports.
+struct CompositeFuNodeSpec final {
+  ::fabric::ImplementationFamilyId implementationFamily;
+  ::fabric::FamilyCapabilityParams hardwareParameters;
+  std::vector<::dataflow::OperationSchemaId> enabledOperations;
+  std::vector<PortType> inputTypes;
+  std::vector<PortType> outputTypes;
+};
+
+/// One edge between two operation resources of a composite FU.
+struct CompositeFuEdgeSpec final {
+  std::uint32_t producerNode = 0;
+  std::uint64_t producerResult = 0;
+  std::uint32_t consumerNode = 0;
+  std::uint64_t consumerOperand = 0;
+};
+
+/// One FU boundary port of a composite FU, named by the node port it carries.
+/// The port's Fabric type is that node port's type, so the boundary has no
+/// second type declaration.
+struct CompositeFuPortSpec final {
+  std::uint32_t node = 0;
+  std::uint64_t portOrdinal = 0;
+};
+
+/// One composite FU: a connected graph of operation resources with an explicit
+/// ordered boundary. This is the hardware request. Whatever relation produced
+/// it, a mined common software subgraph or a catalog decision, stays with its
+/// own owner; this structure is the only description the Builder authors from.
+struct CompositeFuSpec final {
+  std::vector<CompositeFuNodeSpec> nodes;
+  std::vector<CompositeFuEdgeSpec> internalEdges;
+  std::vector<CompositeFuPortSpec> inputs;
+  std::vector<CompositeFuPortSpec> outputs;
+};
+
+/// The authoring handles of one placed composite FU, in spec node order.
+/// Canonical finalization relabels FU graph nodes and capability rows, so a
+/// caller that must bind exact software actors resolves these handles through
+/// FinalizedFabricDesign instead of assuming the authoring order survived.
+struct CompositeFuPlacement final {
+  std::vector<FuNode> nodes;
+  FuCapabilityTemplateHandle capability;
+};
+
+/// Adds one composite FU to an open PE and closes the FU. `inputs` are the PE
+/// values that carry the FU's ordered boundary inputs, one per
+/// `spec.inputs` entry. Every operand of every node must be either an internal
+/// edge destination or a boundary input, and a spec whose internal relation
+/// contains a cycle is rejected: a recurrence needs an explicit FU backedge
+/// and is not authored implicitly.
+llvm::Expected<CompositeFuPlacement>
+addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+               const CompositeFuSpec &spec);
+
 } // namespace loom::adg
 
 #endif // LOOM_ADG_FULIBRARY_H
