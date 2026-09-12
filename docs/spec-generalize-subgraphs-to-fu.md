@@ -309,7 +309,12 @@ actors instead of one.
 Mining is family-agnostic, while synthesis is bounded by the canonical
 capability derivation. A candidate whose node family has no inverse policy is
 rejected with the existing typed capability-derivation reason. This keeps one
-owner for admissible hardware and does not weaken the mined relation. A mined
+owner for admissible hardware and does not weaken the mined relation. The
+current policies admit the scalar ordinary-integer, scalar integer-cast,
+token-sync, and token-plane carry, invariant, and gate providers, which is the
+inventory the widening multiply-accumulate and the counted-loop control cluster
+need; a representation-dependent index or pointer endpoint still fails typed
+unavailable, because that context is the program's, not the actor's. A mined
 shape whose internal relation contains a cycle is a loop recurrence; its FU
 needs an explicit backedge, and the current synthesis profile rejects it with
 the existing typed topology reason rather than authoring one implicitly.

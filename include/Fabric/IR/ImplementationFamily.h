@@ -556,9 +556,10 @@ struct RoutedTokenParams {
 llvm::Error verifyRoutedTokenParams(const RoutedTokenParams &params);
 
 /// Verifies capability-independent actor-shape invariants owned by the
-/// implementation family's typed admission provider. The initial shared
-/// shape owners cover scalar ordinary-integer and token-sync providers; other
-/// providers reject this query until their admission is decomposed.
+/// implementation family's typed admission provider. The current shared shape
+/// owners cover the scalar ordinary-integer, scalar integer-cast, token-sync,
+/// and token-plane providers; other providers reject this query until their
+/// admission is decomposed.
 llvm::Error verifyImplementationFamilyActorShape(
     ImplementationFamilyId family,
     const ::dataflow::CanonicalActorSchemaProjection &actor);
@@ -641,8 +642,9 @@ struct CanonicalImplementationCapability final {
 
 /// Derives the least capability envelope for one explicit implementation
 /// family and exact actor set. The family must own every actor schema in the
-/// generated registry. The initial inverse policies cover scalar ordinary
-/// integer and context-free token-sync admissions; every other provider, and
+/// generated registry. The current inverse policies cover scalar ordinary
+/// integer, scalar integer cast, context-free token-sync, and token-plane
+/// carry, invariant, and gate admissions; every other provider, and
 /// representation-dependent index or pointer payload, fails typed unavailable
 /// until its lower-envelope policy has the required canonical context.
 llvm::Expected<CanonicalImplementationCapability>

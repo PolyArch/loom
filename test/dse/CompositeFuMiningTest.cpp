@@ -171,6 +171,19 @@ void minesTheSharedMultiplyAccumulateShape(llvm::StringRef fixture) {
     require(candidate.score <= best.score,
             "mining did not report its candidates in rank order");
 
+  // The widening cast and the ordinary integer datapath both have an inverse
+  // capability policy, so this shape derives a complete hardware request
+  // without any Fabric finalization.
+  auto request = take(loom::dse::deriveCompositeFuTemplate(program.view(), best));
+  require(request.nodes.size() == best.nodes.size() &&
+              request.internalEdges.size() == best.internalEdges.size() &&
+              request.inputs.size() == best.inputs.size() &&
+              request.outputs.size() == best.outputs.size(),
+          "the derived composite FU request lost a node or a boundary port");
+  for (const loom::adg::CompositeFuNodeSpec &node : request.nodes)
+    require(!node.enabledOperations.empty() && !node.outputTypes.empty(),
+            "a derived composite FU node enables no operation");
+
   // The tail operations differ, so no shape that contains one is common: the
   // graph-support prune is what keeps mining from reporting a whole graph.
   for (const loom::dse::CompositeFuCandidate &candidate : candidates) {
