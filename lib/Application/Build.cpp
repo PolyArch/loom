@@ -1027,13 +1027,20 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
       return mappingPlan.takeError();
     // The Mapping wall time is shared between plans, so the joint controller
     // needs to know how much of the declared computation interval each plan
-    // moves off the host. The promotion owner measured it while ranking; it
-    // rides with the plan as provenance.
+    // moves off the host. That is the source-only total minus this
+    // candidate's own analytic host residual. The owned scope's leaf count is
+    // a coordinate projection of the same decision and overstates the move
+    // whenever the lowering leaves part of the scope on the host, so it
+    // cannot serve as the weight.
     const dse::PreMappingCandidatePlanningRecord &promotionRecord =
         completed.candidateInventory[pending->planningRecordOrdinal];
-    if (promotionRecord.projection)
+    if (completed.sourceHostOnlyLeafExecutions &&
+        promotionRecord.hostDynamicLeafExecutions &&
+        *promotionRecord.hostDynamicLeafExecutions <=
+            *completed.sourceHostOnlyLeafExecutions)
       mappingPlan->coveredDynamicLeafExecutions =
-          promotionRecord.projection->ownedDynamicLeafExecutions;
+          *completed.sourceHostOnlyLeafExecutions -
+          *promotionRecord.hostDynamicLeafExecutions;
     ++resourceTimeFunnel->accounting.mappingPlanCandidates;
     const std::uint64_t rank = mappingAlternatives.size();
     mappingAlternatives.push_back({rank,
