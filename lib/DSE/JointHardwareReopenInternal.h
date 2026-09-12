@@ -51,6 +51,21 @@ using MappingHardwareFeedback =
                  mapping::SpatialMappingHardwareFeedback,
                  SystemHardwareFeedbackObservation>;
 
+/// The typed hardware-feedback families one failed attempt can offer. The
+/// reopen consumes exactly one of them and sets the rest aside, and a reader
+/// of the record needs to tell that apart from an attempt that offered none.
+enum class MappingHardwareFeedbackFamily : std::uint8_t {
+  TechComputeContextHall,
+  SpatialRouting,
+  SystemAccCoreCapacity,
+};
+
+llvm::StringRef
+mappingHardwareFeedbackFamilySpelling(MappingHardwareFeedbackFamily family);
+
+MappingHardwareFeedbackFamily
+mappingHardwareFeedbackFamily(const MappingHardwareFeedback &feedback);
+
 struct HardwareRecipeGrowth final {
   ResolvedConfig config;
   std::optional<ArtifactRootReference> accCoreParent;

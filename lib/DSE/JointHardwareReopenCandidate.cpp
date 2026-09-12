@@ -882,27 +882,101 @@ selectSystemHardwareFeedback(const dse::JointDesignExecution &execution,
   return selected;
 }
 
+llvm::StringRef
+mappingHardwareFeedbackFamilySpelling(MappingHardwareFeedbackFamily family) {
+  switch (family) {
+  case MappingHardwareFeedbackFamily::TechComputeContextHall:
+    return "tech_compute_context_hall";
+  case MappingHardwareFeedbackFamily::SpatialRouting:
+    return "spatial_routing";
+  case MappingHardwareFeedbackFamily::SystemAccCoreCapacity:
+    return "system_acc_core_capacity";
+  }
+  llvm_unreachable("unknown mapping hardware feedback family");
+}
+
+MappingHardwareFeedbackFamily
+mappingHardwareFeedbackFamily(const MappingHardwareFeedback &feedback) {
+  if (std::holds_alternative<TechHardwareFeedbackObservation>(feedback))
+    return MappingHardwareFeedbackFamily::TechComputeContextHall;
+  if (std::holds_alternative<SystemHardwareFeedbackObservation>(feedback))
+    return MappingHardwareFeedbackFamily::SystemAccCoreCapacity;
+  return MappingHardwareFeedbackFamily::SpatialRouting;
+}
+
 llvm::Expected<std::optional<MappingHardwareFeedback>>
 selectMappingHardwareFeedback(const JointDesignExecution &execution,
                               const ArtifactStore &artifacts) {
-  // A later boundary already has an admitted earlier frontier. Do not also
-  // grow hardware for rejected alternatives from that earlier stage.
-  auto system = selectSystemHardwareFeedback(execution, artifacts);
-  if (!system)
-    return system.takeError();
-  if (*system)
-    return std::optional<MappingHardwareFeedback>(std::move(**system));
-  auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
-  if (!spatial)
-    return spatial.takeError();
-  if (*spatial)
-    return std::optional<MappingHardwareFeedback>(std::move(**spatial));
+  // Compute supply is a precondition for routing. An attempt that holds a
+  // closed compute-context Hall observation was refused for want of contexts
+  // before any route existed, so a later Spatial or System failure of the same
+  // candidate does not make that observation stale: it is the consequence of
+  // mapping around a deficit, not an independent boundary to repair. The
+  // reopen therefore consumes the Hall deficit first, and only an attempt with
+  // no Hall deficit is judged by its Spatial or System feedback, where the
+  // older rule still holds that a later boundary already has an admitted
+  // earlier frontier.
   auto tech = selectTechHardwareFeedback(execution, artifacts);
   if (!tech)
     return tech.takeError();
-  if (*tech)
-    return std::optional<MappingHardwareFeedback>(std::move(**tech));
-  return std::optional<MappingHardwareFeedback>();
+  std::optional<MappingHardwareFeedback> selected;
+  std::vector<MappingHardwareFeedbackFamily> setAside;
+  if (*tech) {
+    selected = MappingHardwareFeedback(std::move(**tech));
+    // The families this attempt also offered are evidence only, so they are
+    // projected only when a reader asked for the record.
+    if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
+      auto system = selectSystemHardwareFeedback(execution, artifacts);
+      if (!system)
+        return system.takeError();
+      if (*system)
+        setAside.push_back(
+            MappingHardwareFeedbackFamily::SystemAccCoreCapacity);
+      auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
+      if (!spatial)
+        return spatial.takeError();
+      if (*spatial)
+        setAside.push_back(MappingHardwareFeedbackFamily::SpatialRouting);
+    }
+  } else {
+    auto system = selectSystemHardwareFeedback(execution, artifacts);
+    if (!system)
+      return system.takeError();
+    if (*system) {
+      selected = MappingHardwareFeedback(std::move(**system));
+      if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
+        auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
+        if (!spatial)
+          return spatial.takeError();
+        if (*spatial)
+          setAside.push_back(MappingHardwareFeedbackFamily::SpatialRouting);
+      }
+    } else {
+      auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
+      if (!spatial)
+        return spatial.takeError();
+      if (*spatial)
+        selected = MappingHardwareFeedback(std::move(**spatial));
+    }
+  }
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "hardware_feedback_family_selection";
+        if (selected)
+          fields["consumed_family"] = mappingHardwareFeedbackFamilySpelling(
+              mappingHardwareFeedbackFamily(*selected));
+        else
+          fields["consumed_family"] = nullptr;
+        llvm::json::Array families;
+        for (MappingHardwareFeedbackFamily family : setAside)
+          families.push_back(mappingHardwareFeedbackFamilySpelling(family));
+        fields["set_aside_families"] = std::move(families);
+        fields["diagnostic"] =
+            selected ? "the reopen consumes one family and sets the rest aside"
+                     : "this attempt offered no exact hardware feedback at all";
+      });
+  return selected;
 }
 
 llvm::Expected<std::optional<HardwareRecipeGrowth>>
