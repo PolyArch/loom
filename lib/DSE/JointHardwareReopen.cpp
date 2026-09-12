@@ -735,6 +735,12 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           terminalQualityAcquisitionNanoseconds != 0 &&
           remainingWindow < terminalQualityAcquisitionNanoseconds;
       if (cannotBeatVerified || reserveExhausted) {
+        // A plan the window cannot fit is a plan the safety net stopped: the
+        // frontier still held declared work the host's load kept the run from
+        // spending, so the stop is reported as a wall-time stop rather than
+        // as an exhausted search.
+        if (reserveExhausted && !cannotBeatVerified)
+          deadlineObserved = true;
         ++softwarePlansRefusedByQualityAdmission;
         mapping_debug::emit(
             mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,

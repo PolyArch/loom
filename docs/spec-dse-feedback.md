@@ -4060,7 +4060,10 @@ The invocation deadline remains, as a safety net over that bounded search and
 not as its bound. A run it stops has not exhausted its declared work, so the
 two terminal states are reported separately: `declaredWorkExhausted` is true
 only for a search that ran out its configured work, and a wall-time stop is
-its own typed observation naming the invocation that hit the net. A caller can
+its own typed observation naming the invocation that hit the net. A plan the
+controller refuses because the remaining window can no longer cover the
+measured terminal acquisition is a plan the net stopped, not a decision the
+search made, and it is reported the same way. A caller can
 then tell a reproducible result from one that reflects the host's load, and a
 net that fires routinely is a statement that the declared work does not fit
 the budget -- to be answered by the configured work or the budget, never by
