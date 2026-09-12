@@ -32,13 +32,15 @@ inline constexpr std::uint64_t applicationMinimumResourceUtilizationDenominator 
 inline constexpr std::uint64_t applicationHostBoundWindowNumerator = 1;
 inline constexpr std::uint64_t applicationHostBoundWindowDenominator = 10;
 
-/// Configuration residency and invocation are per-AccCore phases aggregated
-/// independently, so on an array whose cores are dispatched one at a time the
-/// residency phase also covers the dispatch of the later cores. The invocation
-/// phase must remain the majority of the accelerated window: above this the
-/// window measures how long the array took to configure rather than the
-/// computation that residency serves, and the invocation-phase saturation no
-/// longer explains the measured speedup.
+/// Configuration residency is the per-AccCore phase aggregated from the first
+/// core's configuration to the last one's, so on an array whose cores are
+/// dispatched one at a time it also covers the dispatch of the later cores.
+/// The invocation phase opens only once every launched AccCore has entered
+/// invocation, which is after that last residency closes. The invocation phase
+/// must remain the majority of the accelerated window: above this the window
+/// measures how long the array took to configure rather than the computation
+/// that residency serves, and the invocation-phase saturation no longer
+/// explains the measured speedup.
 inline constexpr std::uint64_t applicationMaximumLaunchOverheadNumerator = 1;
 inline constexpr std::uint64_t applicationMaximumLaunchOverheadDenominator = 2;
 
@@ -154,9 +156,13 @@ struct ApplicationSystemComputeMeasurement final {
 /// configuration residency moves the binary configuration image, which the
 /// service observer never counts as application data, and charging its ticks
 /// to the saturation denominator would credit a fat configuration image as
-/// memory appetite. `launchOverhead` is the residency phase over the whole
-/// accelerated window, and the accelerated window over the computation
-/// interval explains the host-residual classification.
+/// memory appetite. Excluding the image from the numerator is only coherent
+/// while no configuration transport falls inside the phase, which is why the
+/// phase opens at full launched width rather than at the first core's
+/// invocation. `launchOverhead` is the residency phase over the whole
+/// accelerated window, so the dispatch staircase between the first and the
+/// last core stays charged there in full, and the accelerated window over the
+/// computation interval explains the host-residual classification.
 struct ApplicationSystemWindowMeasurement final {
   sim::SystemComputationInterval window;
   /// Absent when the computation completed no accelerator invocation.

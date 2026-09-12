@@ -111,10 +111,17 @@ parseRootLifecycleResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
 
 namespace {
 
-/// Aggregates the per-AccCore accelerated phases into the window's two phases
-/// by earliest phase start and latest phase end. The service samples rise with
-/// their ticks, so taking the extremes of each independently still pairs each
-/// bound with the sample observed there.
+/// Aggregates the per-AccCore accelerated phases into the window's two phases.
+/// Configuration residency spans every core's configuration, from the earliest
+/// start to the latest end. The invocation phase instead begins at the latest
+/// per-core invocation start, because it is the window in which the array as a
+/// whole is invoking: both saturation branches divide by it while assuming the
+/// full launched width, and an earlier start would charge the phase for ticks
+/// in which later cores were still streaming a configuration image the service
+/// observer excludes from the numerator. That staircase is the array's launch
+/// overhead, which the accelerated window still charges in full. The service
+/// samples rise with their ticks, so taking the extreme of each bound
+/// independently still pairs it with the sample observed there.
 llvm::Expected<std::optional<sim::SystemAcceleratedPhases>>
 parseAcceleratedPhases(const llvm::json::Array &cores) {
   constexpr std::size_t fieldsPerPhase = 4;
@@ -146,12 +153,18 @@ parseAcceleratedPhases(const llvm::json::Array &cores) {
     }
     sim::SystemAcceleratedPhase *aggregate[] = {
         &window->configurationResidency, &window->invocation};
+    const bool phaseBeginsAtFullWidth[] = {false, true};
     for (std::size_t phase = 0; phase != 2; ++phase) {
       aggregate[phase]->beginTick =
-          std::min(aggregate[phase]->beginTick, phases[phase]->beginTick);
+          phaseBeginsAtFullWidth[phase]
+              ? std::max(aggregate[phase]->beginTick, phases[phase]->beginTick)
+              : std::min(aggregate[phase]->beginTick, phases[phase]->beginTick);
       aggregate[phase]->beginMemoryOccupiedTicks =
-          std::min(aggregate[phase]->beginMemoryOccupiedTicks,
-                   phases[phase]->beginMemoryOccupiedTicks);
+          phaseBeginsAtFullWidth[phase]
+              ? std::max(aggregate[phase]->beginMemoryOccupiedTicks,
+                         phases[phase]->beginMemoryOccupiedTicks)
+              : std::min(aggregate[phase]->beginMemoryOccupiedTicks,
+                         phases[phase]->beginMemoryOccupiedTicks);
       aggregate[phase]->endTick =
           std::max(aggregate[phase]->endTick, phases[phase]->endTick);
       aggregate[phase]->endMemoryOccupiedTicks =

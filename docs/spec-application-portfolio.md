@@ -525,11 +525,25 @@ therefore the difference of the service samples at the invocation phase
 boundaries divided by that phase, and an unaccelerated computation saturates
 nothing.
 
+Configuration residency aggregates its per-AccCore spans from the first core's
+configuration to the last one's, so on an array whose cores are dispatched one
+at a time it also covers the dispatch of the later cores. The invocation phase
+opens at the latest per-AccCore invocation start and closes at the latest
+invocation end: it is the window in which the array as a whole is invoking.
+The phase therefore begins after the last residency closes, which both
+saturation branches require and neither can state for itself. Excluding the
+configuration image from the numerator while its transport occupies the
+denominator would measure application appetite against time the service spent
+on configuration; and the compute bound below multiplies the phase by the whole
+launched AccCore count, which is a speed of light only while every launched
+core is invoking throughout it. An invocation phase that opened at the first
+core's invocation would satisfy neither.
+
 Launch overhead is the configuration residency phase divided by the whole
-accelerated window. Because the two phases aggregate their per-AccCore spans
-independently, on an array whose cores are dispatched one at a time the
-residency phase also covers the dispatch of the later cores; that is the launch
-overhead of the array, and the two fractions do not partition the window.
+accelerated window, which spans from the first residency start to the last
+invocation end. The dispatch staircase between the first and the last core is
+therefore charged there in full; that is the launch overhead of the array, and
+the two fractions do not partition the window.
 
 Compute occupancy is measured against the candidate's speed of light on its
 hardware, by operation class. A class is one operation schema at one element

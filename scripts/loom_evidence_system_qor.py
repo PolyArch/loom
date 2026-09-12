@@ -330,8 +330,12 @@ def _validate_system_qor_window(
     accelerated = _integer(accelerated_window["elapsed_ticks"])
     if residency is None or invocation is None or accelerated is None:
         return None
+    # The invocation phase opens only once the last configuration residency
+    # has closed: saturation divides by that phase while the service observer
+    # keeps the configuration image out of its numerator, and the compute bound
+    # multiplies it by the whole launched width.
     if (
-        invocation[0] < residency[0]
+        invocation[0] < residency[1]
         or invocation[1] < residency[1]
         or invocation[1] - residency[0] != accelerated
         or accelerated > span

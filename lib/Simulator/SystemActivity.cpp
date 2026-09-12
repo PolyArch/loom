@@ -67,9 +67,14 @@ llvm::Error validateSystemMemoryActivity(const SystemSimulationExecution &execut
       if (llvm::Error error =
               validateAcceleratedPhase(phases.invocation, interval))
         return error;
-      if (phases.invocation.beginTick < phases.configurationResidency.beginTick ||
+      // Saturation divides by the invocation phase while the service observer
+      // excludes the configuration image from its numerator, and the compute
+      // bound multiplies that phase by the whole launched width. Both hold
+      // only while no launched AccCore is still configuring inside the phase,
+      // so the phase may not open before the last residency closes.
+      if (phases.invocation.beginTick < phases.configurationResidency.endTick ||
           phases.invocation.endTick < phases.configurationResidency.endTick)
-        return invalid("System invocation phase precedes its configuration "
+        return invalid("System invocation phase overlaps its configuration "
                        "residency phase");
     }
   }
