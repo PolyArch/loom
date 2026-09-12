@@ -33,7 +33,7 @@ struct ResolvedPnrConfigViewAccess final {
 namespace {
 
 constexpr llvm::StringLiteral spatialDescriptor =
-    "loom.spatial_pnr.config.15.15";
+    "loom.spatial_pnr.config.15.16";
 constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.8.6";
 
 llvm::Error invalid(const llvm::Twine &detail) {

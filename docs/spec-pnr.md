@@ -278,7 +278,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.15`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.16`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -906,11 +906,16 @@ witness keep their local disposition. Local disposition is a ranking decision
 over a closed candidate, not a property of the search stage that closed it.
 Once a restart holds a candidate with zero Mapping violations, and before that
 candidate enters independent verification, the provider adopts admitted local
-transfers exactly once in canonical net and option order: an alternative
-resident under the current placements, or one reached by relocating exactly
-one endpoint onto its peer's PE, is committed when the selected handshake
-graph stays acyclic and the selected total ordering does not worsen; a
-declined alternative keeps its external route. An adoption changes selected
+transfers exactly once in canonical net and option order. An alternative is
+resident when both endpoints already occupy the placements it names; otherwise
+it is reached by relocating the endpoints it still needs onto the Temporal PE
+that admits the pairing, one relocation per endpoint. Relocating both is not a
+wider search than relocating one: a closed candidate that placed neither
+endpoint on an admitted pairing's PE can reach that pairing no other way, and
+an adoption the provider cannot reach is not a ranking decision. Each
+alternative is committed when the selected handshake graph stays acyclic and
+the selected total ordering does not worsen; a declined alternative keeps its
+external route. An adoption changes selected
 dispositions and routes, so an adopting sweep re-enters the provider's final
 global closure and publication still follows one closure over the published
 selections. The register FIFOs of one PE bank are interchangeable for that

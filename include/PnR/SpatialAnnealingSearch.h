@@ -119,9 +119,10 @@ public:
   /// Adopts admitted register-FIFO pairings on a candidate with zero Mapping
   /// violations: every external net whose local-transfer domain admits an
   /// alternative is probed in canonical net and option order, first with the
-  /// current placements and then with exactly one endpoint relocated onto its
-  /// peer's PE, and the first alternative that keeps the selected handshake
-  /// graph acyclic without worsening the selected total ordering is
+  /// current placements, then with one endpoint relocated onto its peer's PE,
+  /// then with both relocated onto the PE that admits the pairing when neither
+  /// already sits there. The first alternative that keeps the selected
+  /// handshake graph acyclic without worsening the selected total ordering is
   /// committed. Declined alternatives keep their external route. The restart
   /// owner runs this sweep once on its closed candidate, whether that closure
   /// came from annealing, exact repair, or final routing closure, and returns
