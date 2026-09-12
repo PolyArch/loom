@@ -690,8 +690,9 @@ and the shared line size, associativity, hit latency, and per-realization
 outstanding-miss capacities. These are hardware facts that enter Fabric
 identity and the System performance model; they are not simulator options and
 an 8.1 descriptor cannot supply them. The SpatialCore cache's outstanding-miss
-capacity is not a scale field: it is `temporalResidentContexts`, the same
-value that owns the System memory service's outstanding-operation capacity.
+capacity is not a scale field: it is the System memory service's own
+outstanding-operation capacity, derived from that service's rate as described
+under the preset System memory service below.
 
 Version 8.3 adds the required typed `memoryOperationIssueDepth` scale
 parameter. It owns the `operation_issue_depth` every expanded local Memory
@@ -699,9 +700,13 @@ Operation Engine declares: the firings one bound memory actor may hold
 outstanding before the oldest retires. It is an independent hardware fact,
 not a projection of the access cache's outstanding-miss capacity or the
 System service's outstanding guarantee, and it enters Fabric identity and the
-System performance model. All current presets select the serialized depth of
-one, which reproduces the version 8.2 engine exactly; an 8.2 descriptor cannot
-supply the field.
+System performance model. All current presets select the outstanding-operation
+capacity of the preset System memory service, because the engine is the
+requester end of the round trip the cache and the service endpoint in front of
+it already cover: at the serialized depth of one a bound memory actor occupies
+a single slot of that path and the service idles for the rest of every
+completion however deep the cache and the service are. An 8.2 descriptor
+cannot supply the field.
 
 Re-finalization from an 8.0 authoring source is explicit. The owner adds
 `specialMathCapabilityProfile = FullCatalog`, selects template version 8.1,
@@ -908,12 +913,19 @@ Each preset also owns one System memory service at base address zero. Its
 capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
 admits the `makeGeneral64SystemMemory` read/write domain, and it exposes one
 Serve endpoint in the System clock domain. Its service rate is one operation
-per System clock tick, with `temporalResidentContexts` outstanding operations
-and bounded completion within 20 ticks of the builtin System clock. That clock
-has period `1,000,000 fs` and phase zero. The same
-`temporalResidentContexts` value is the outstanding-miss capacity of every
-AccCore SpatialCore memory-path cache, so the cache in front of that service
-cannot request more concurrency than the service admits. These are expanded
+per System clock tick and its completion is bounded within 20 ticks of the
+builtin System clock. That clock has period `1,000,000 fs` and phase zero. Its
+outstanding-operation capacity is that rate's own bandwidth-delay product,
+`ceil(completion cycles * operations per window / window ticks)`: a service
+that accepts one operation per tick and needs twenty ticks to complete one is
+idle for nineteen of every twenty ticks unless twenty operations are
+outstanding, so a smaller guarantee would declare a service that cannot reach
+the rate it declares. The same derived value is the outstanding-miss capacity
+of every AccCore SpatialCore memory-path cache, so the cache in front of that
+service neither requests more concurrency than the service admits nor less
+than it needs. It is not `temporalResidentContexts`: instruction-context
+supply on a Temporal PE is not a memory-concurrency fact, and borrowing it
+placed every preset below its own memory speed of light. These are expanded
 Fabric facts, not additional preset fields or backend defaults.
 
 Every builtin SpatialCore Module declares one Clock slot and one Reset slot

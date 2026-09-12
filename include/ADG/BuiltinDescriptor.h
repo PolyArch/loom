@@ -19,6 +19,38 @@ enum class BuiltinTargetPreset : std::uint8_t { Small, Coverage, Large };
 
 inline constexpr std::uint64_t builtinSystemClockPeriodFs = 1'000'000;
 inline constexpr std::uint64_t builtinSystemMemoryCompletionCycles = 20;
+/// Acceptance rate of the builtin System memory service: this many operations
+/// per this many System clock ticks.
+inline constexpr std::uint64_t builtinSystemMemoryOperationsPerRateWindow = 1;
+inline constexpr std::uint64_t builtinSystemMemoryRateWindowTicks = 1;
+
+/// Outstanding operations the builtin System memory service guarantees: its
+/// own bandwidth-delay product. A service that accepts
+/// `builtinSystemMemoryOperationsPerRateWindow` operations every
+/// `builtinSystemMemoryRateWindowTicks` ticks and bounds completion at
+/// `builtinSystemMemoryCompletionCycles` is idle for the rest of every
+/// completion unless that many operations are outstanding, so a smaller
+/// guarantee would declare a service that cannot reach the rate it declares.
+/// Every AccCore SpatialCore memory-path cache carries the same capacity,
+/// because the cache in front of that service can neither request more
+/// concurrency than the service admits nor usefully request less.
+inline constexpr std::uint32_t builtinSystemMemoryOutstandingOperations =
+    (builtinSystemMemoryCompletionCycles *
+         builtinSystemMemoryOperationsPerRateWindow +
+     builtinSystemMemoryRateWindowTicks - 1) /
+    builtinSystemMemoryRateWindowTicks;
+
+/// Firings one builtin memory Operation Engine holds outstanding. The engine
+/// is the requester end of the same round trip the access cache and the
+/// service endpoint in front of it cover, so a preset offers it the same
+/// request concurrency: at `::fabric::serializedMemoryOperationIssueDepth` a
+/// bound memory actor occupies one slot of that path and leaves the service
+/// idle for the rest of every completion, whatever the cache and the service
+/// admit. The `fabric.mem` `operation_issue_depth` remains an independent
+/// hardware fact; this is only the value the builtin presets select for it,
+/// and DSE may still change it per occurrence.
+inline constexpr std::uint32_t builtinMemoryOperationIssueDepth =
+    builtinSystemMemoryOutstandingOperations;
 
 struct BuiltinFuOccurrenceCounts final {
   std::uint32_t dedicatedScalarAdd;
@@ -69,8 +101,9 @@ isValidBuiltinFuOccurrenceCounts(const BuiltinFuOccurrenceCounts &counts,
 /// the two InstructionCore L1 caches of each HostCore and AccCore, and the
 /// AccCore SpatialCore memory-path cache. Line size and associativity are one
 /// System-wide choice; only capacity and outstanding-miss capacity differ by
-/// role. The SpatialCore cache's outstanding-miss capacity is the System
-/// memory service's `temporalResidentContexts`, which stays its sole owner.
+/// role. The SpatialCore cache's outstanding-miss capacity is not one of these
+/// fields: it is `builtinSystemMemoryOutstandingOperations`, which the System
+/// memory service owns.
 struct BuiltinPrivateCacheScale final {
   std::uint64_t instructionCoreCacheBytes;
   std::uint64_t spatialMemoryCacheBytes;
@@ -200,7 +233,7 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024,
      builtinDefaultPrivateCacheScale(),
-     ::fabric::serializedMemoryOperationIssueDepth}};
+     builtinMemoryOperationIssueDepth}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     BuiltinTargetPreset::Coverage,
@@ -214,7 +247,7 @@ inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024,
      builtinDefaultPrivateCacheScale(),
-     ::fabric::serializedMemoryOperationIssueDepth}};
+     builtinMemoryOperationIssueDepth}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
@@ -228,7 +261,7 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
      BuiltinSpecialMathCapabilityProfile::PortableProviderClosed,
      LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024,
      builtinDefaultPrivateCacheScale(),
-     ::fabric::serializedMemoryOperationIssueDepth}};
+     builtinMemoryOperationIssueDepth}};
 
 inline llvm::Expected<const BuiltinTargetDescriptor *>
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

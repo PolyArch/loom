@@ -858,7 +858,7 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   if (!outOfOrder)
     return outOfOrder.takeError();
   auto spatialMemoryAccess = getBuiltinSpatialMemoryAccessRealization(
-      scale.privateCaches, scale.temporalResidentContexts);
+      scale.privateCaches, builtinSystemMemoryOutstandingOperations);
   if (!spatialMemoryAccess)
     return spatialMemoryAccess.takeError();
   auto host = system->addHostCore(*architecture, *inOrder);
@@ -951,7 +951,9 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   if (!clockContract)
     return clockContract.takeError();
   auto memoryServiceRate = system->createServiceRate(
-      *clock, 1, 1, scale.temporalResidentContexts,
+      *clock, builtinSystemMemoryOperationsPerRateWindow,
+      builtinSystemMemoryRateWindowTicks,
+      builtinSystemMemoryOutstandingOperations,
       loom::fabric::ServiceProgress(
           std::in_place_type<::fabric::BoundedCompletion>,
           ::fabric::BoundedCompletion{
