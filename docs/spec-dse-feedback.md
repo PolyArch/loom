@@ -5240,6 +5240,21 @@ admission is provenance: it reports the baseline it applied and the number of
 demoted survivors, and it never converts a modeled regression into an exact
 rejection of the candidate.
 
+An application-boundary refusal is a property of one Dataflow variant, not of
+the ownership decision behind it. The same Structured program commonly reaches
+promotion through several variants that differ only in their memory
+communication or execution shape, and the refused proof usually belongs to one
+of them. A refusal therefore returns its Mapping slot to the pool: the next
+untried variant of the same Structured program is admitted before any other
+candidate, so one refused variant cannot retire an ownership decision the
+funnel ranked first. The refill is bounded and accounted. Only a schedule hint
+the funnel already found eligible and deferred by its own ranking may be
+admitted, each variant at most once and only in place of a refusal, and the
+promoted slot moves from the deferred count to the finalist count so the
+finalist disposition still closes. The refill record names the refused
+variant, the admitted variant, their shared Structured program, and the
+refusal that released the slot.
+
 When no survivor reaches Mapping because the application boundary refused them
 all, the pair decision carries the first refusal's own explanation and not only
 its typed kind. The refusal names the proof that blocks the enclosing scope,

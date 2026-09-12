@@ -775,8 +775,81 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
        resourceTimeFunnel->finalists)
     ++finalistCountByCandidate[formatComponentViewDigestHex(
         finalist.candidateIdentity)];
-  for (const dse::ResourceTimeMappingFinalist &finalist :
-       resourceTimeFunnel->finalists) {
+  // The funnel's finalists seed one promotion work list. An application
+  // boundary refusal is a property of one Dataflow variant, not of the
+  // ownership decision behind it: the same Structured program usually reached
+  // this point through several variants, and a sibling may not depend on the
+  // refused proof. A refusal therefore returns its slot to the pool and the
+  // next untried sibling of the same Structured program is admitted before
+  // any other candidate. Each sibling is admitted at most once and only in
+  // place of a refusal, and its slot is recorded in the funnel ledger so the
+  // finalist disposition still closes.
+  std::vector<dse::ResourceTimeMappingFinalist> promotionWorkList(
+      resourceTimeFunnel->finalists.begin(),
+      resourceTimeFunnel->finalists.end());
+  std::set<std::string> admittedRefillCandidates;
+  const auto admitDataflowVariantRefill =
+      [&](const PendingResourceTimeCandidate &refused,
+          llvm::StringRef refusal) -> llvm::Error {
+    const ArtifactIdentity &ownership =
+        refused.compilation.compilation.structuredProgram.identity();
+    for (const PendingResourceTimeCandidate &sibling : pendingCandidates) {
+      if (sibling.candidateIdentity == refused.candidateIdentity ||
+          !(sibling.compilation.compilation.structuredProgram.identity() ==
+            ownership))
+        continue;
+      const std::string siblingSpelling =
+          formatComponentViewDigestHex(sibling.candidateIdentity);
+      if (unsupportedCandidates.count(siblingSpelling) != 0 ||
+          admittedRefillCandidates.count(siblingSpelling) != 0 ||
+          finalistCountByCandidate.count(siblingSpelling) != 0)
+        continue;
+      const auto evaluation = llvm::find_if(
+          resourceTimeFunnel->evaluations, [&](const auto &candidate) {
+            return candidate.candidateIdentity == sibling.candidateIdentity;
+          });
+      // The sibling's hint has to be one the funnel already found eligible
+      // for Mapping and deferred by its own ranking. Anything else would be
+      // Mapping work the funnel never admitted, and the deferred ledger it
+      // moves out of would no longer close.
+      if (evaluation == resourceTimeFunnel->evaluations.end() ||
+          evaluation->disposition ==
+              dse::ResourceTimeCandidateFunnelDisposition::SoundGateRejected ||
+          !evaluation->detailedFrontierEvaluated ||
+          evaluation->retainedHints.empty() ||
+          (evaluation->incompleteReason &&
+           *evaluation->incompleteReason ==
+               dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) ||
+          resourceTimeFunnel->accounting.mappingCallsDeferredByModel == 0)
+        continue;
+      auto digest = dse::deriveResourceTimeScheduleHintDigest(
+          evaluation->retainedHints.front());
+      if (!digest)
+        return digest.takeError();
+      promotionWorkList.push_back({sibling.candidateIdentity, *digest});
+      admittedRefillCandidates.insert(siblingSpelling);
+      ++finalistCountByCandidate[siblingSpelling];
+      ++resourceTimeFunnel->accounting.mappingFinalists;
+      --resourceTimeFunnel->accounting.mappingCallsDeferredByModel;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "resource_time_dataflow_variant_refill";
+            fields["refused_candidate_identity"] =
+                formatComponentViewDigestHex(refused.candidateIdentity);
+            fields["admitted_candidate_identity"] = siblingSpelling;
+            fields["structured_program"] = formatArtifactIdentityHex(ownership);
+            fields["refusal"] = refusal.str();
+          });
+      return llvm::Error::success();
+    }
+    return llvm::Error::success();
+  };
+  for (std::size_t workIndex = 0; workIndex < promotionWorkList.size();
+       ++workIndex) {
+    // The work list grows while it is walked, so this entry is held by value.
+    const dse::ResourceTimeMappingFinalist finalist =
+        promotionWorkList[workIndex];
     const ComponentViewDigest &identity = finalist.candidateIdentity;
     const std::string identitySpelling = formatComponentViewDigestHex(identity);
     if (unsupportedCandidates.count(identitySpelling) != 0)
@@ -840,6 +913,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         resourceTimeFunnel->accounting.unsupportedBeforeMappingScheduleHints +=
             finalistCountByCandidate[identitySpelling];
         unsupportedCandidates.insert(identitySpelling);
+        if (llvm::Error error = admitDataflowVariantRefill(
+                *pending, "application workloads are unsupported for this "
+                          "Dataflow variant"))
+          return std::move(error);
         continue;
       }
       auto roots =
@@ -887,6 +964,9 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuildImpl(
         resourceTimeFunnel->accounting.unsupportedBeforeMappingScheduleHints +=
             finalistCountByCandidate[identitySpelling];
         unsupportedCandidates.insert(identitySpelling);
+        if (llvm::Error error =
+                admitDataflowVariantRefill(*pending, diagnostic))
+          return std::move(error);
         continue;
       }
       std::vector<sim::SourceBackedDfgReplayCaseReference> replayCases;
