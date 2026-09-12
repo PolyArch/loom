@@ -15,6 +15,10 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: loom-application-manifest-inspect \
 # RUN:   --manifest=%S/../applications/manifest.json > %t.inventory.json
+# This half carries the functional tier, whose target is a published Mapping,
+# an oracle-matched execution and complete diagnostics. A minimum accelerator
+# core count is neither part of that target nor a stable property: the count
+# follows the mapping search, which is wall-clock bounded.
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --portfolio-application=llama2c-kernels --portfolio-input=smoke \
