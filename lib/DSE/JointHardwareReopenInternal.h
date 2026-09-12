@@ -2,6 +2,7 @@
 #define LOOM_DSE_JOINTHARDWAREREOPENINTERNAL_H
 
 #include "DSE/ExecutionJournal.h"
+#include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/HardwareDecision.h"
 #include "DSE/JointHardwareReopen.h"
 #include "DSE/ResolvedConfigView.h"
@@ -32,6 +33,10 @@ struct JointSoftwareCoverage final {
 
 struct TechHardwareFeedbackObservation final {
   ArtifactRootReference module;
+  /// The canonical Dataflow of the candidates this cover refused. The demand
+  /// and the software that produced it are known at the same moment, which is
+  /// what lets a composed supply mine the exact refused graphs.
+  ArtifactRootReference dataflow;
   mapping::TechMappingComputeContextHallDeficit feedback;
 };
 
@@ -77,6 +82,14 @@ struct HardwareRecipeGrowth final {
   std::uint64_t addedSpatialFuContexts = 0;
   std::uint64_t spatialFuContextSupplyBound = 0;
   std::uint64_t spatialFuUnclosedDeficit = 0;
+  /// The composed supply: a template mined from the refused Dataflow and the
+  /// artifact it was mined from. Present only for the mined direction, and the
+  /// growth is then a recipe rebuild rather than a parent Module decision,
+  /// because no mutation can author an FU the parent does not already offer.
+  std::optional<MinedCompositeFuSelection> minedCompositeFus;
+  std::optional<ArtifactRootReference> minedDataflow;
+  std::uint64_t minedActorsPerRealization = 0;
+  bool minedSearchBounded = false;
   bool uniformContextGrowth = false;
 };
 
@@ -226,12 +239,17 @@ selectMappingHardwareFeedback(const JointDesignExecution &execution,
 /// `preference` carries the reopen chain's evidence about compute-context
 /// supply. See TechMappingHardwareFeedback.h. An absent result is the typed
 /// refusal that the observed feedback admits no growth at all.
+/// `carriedMinedCompositeFus` is the composed supply this chain already owns.
+/// A growth that rebuilds from the recipe keeps offering it, because the
+/// selection is invocation-local evidence rather than a ResolvedConfig field.
 llvm::Expected<std::optional<HardwareRecipeGrowth>>
 deriveHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig, const MappingHardwareFeedback &feedback,
     const ArtifactStore &artifacts,
     TechMappingComputeContextSupplyPreference preference =
-        TechMappingComputeContextSupplyPreference::TemporalInstructionStore);
+        TechMappingComputeContextSupplyPreference::TemporalInstructionStore,
+    const std::optional<MinedCompositeFuSelection> &carriedMinedCompositeFus =
+        {});
 
 /// Proposes a deeper memory Operation Engine for a correct but latency-bound
 /// window. No Mapping observation reports memory-level parallelism, so this

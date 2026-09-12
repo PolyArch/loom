@@ -380,6 +380,14 @@ built, exactly as the builtin FU catalog places its own composite units, and the
 ordinary FU-inventory decision then redistributes that occurrence to the PEs a
 Hall deficit names.
 
+The hardware reopen is the owner that makes that decision on a production path.
+When a compute-context Hall deficit would otherwise be answered by growing
+Temporal instruction stores, the reopen mines the canonical Dataflow of the
+candidates the cover just refused and names the template it selects. That is
+the one moment where the demand and the software subgraphs are both in hand:
+`docs/spec-dse-feedback.md` owns when it fires, how the occurrence count is
+sized, and the probe budget it spends.
+
 The hardware template generator's resolved configuration carries that placement
 as a typed decision domain: one exact canonical Dataflow identity and a
 canonically ordered set of mined shape keys, each with the Spatial PE site count

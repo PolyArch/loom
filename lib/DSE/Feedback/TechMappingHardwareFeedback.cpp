@@ -651,6 +651,8 @@ llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(
     return "spatial_fu_occurrence";
   case TechMappingComputeContextGrowthDirection::TemporalInstructionStore:
     return "temporal_instruction_store";
+  case TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate:
+    return "mined_composite_fu_template";
   }
   llvm_unreachable("unknown compute-context growth direction");
 }

@@ -19,6 +19,7 @@
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
+#include "DSE/TechMappingComposedSupply.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
@@ -697,14 +698,27 @@ selectTechHardwareFeedback(const dse::JointDesignExecution &execution,
         moduleReference = input;
         module = std::move(*imported);
       }
+    std::optional<ArtifactRootReference> dataflowReference;
+    for (const dse::CandidateGeneratorInputBinding &binding :
+         invocation->inputBindings)
+      for (const ArtifactRootReference &input : binding.artifacts) {
+        if (input.schemaIdentity != ::dataflow::canonicalDataflowSchema.identity ||
+            input.schemaVersion != ::dataflow::canonicalDataflowSchema.version)
+          continue;
+        if (dataflowReference)
+          return invalid("TechMapping feedback names multiple Dataflow inputs");
+        dataflowReference = input;
+      }
     if (!moduleReference || !module)
       return invalid("TechMapping feedback has no exact Module input");
+    if (!dataflowReference)
+      return invalid("TechMapping feedback has no exact Dataflow input");
     auto adopted = mapping::adoptTechMappingComputeContextHallFeedback(
         feedback.canonicalPayload, module->view());
     if (!adopted)
       return adopted.takeError();
-    TechHardwareFeedbackObservation candidate{*moduleReference,
-                                              std::move(*adopted)};
+    TechHardwareFeedbackObservation candidate{
+        *moduleReference, *dataflowReference, std::move(*adopted)};
     mapping_debug::emit(
         mapping_debug::Level::Decision, mapping_debug::Stage::TechMapping,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -897,9 +911,16 @@ llvm::Expected<std::optional<HardwareRecipeGrowth>>
 deriveHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig, const MappingHardwareFeedback &feedback,
     const ArtifactStore &artifacts,
-    TechMappingComputeContextSupplyPreference preference) {
+    TechMappingComputeContextSupplyPreference preference,
+    const std::optional<MinedCompositeFuSelection> &carriedMinedCompositeFus) {
   HardwareRecipeGrowth growth;
   growth.config = baseConfig;
+  growth.minedCompositeFus = carriedMinedCompositeFus;
+  if (carriedMinedCompositeFus)
+    growth.minedDataflow = ArtifactRootReference{
+        ::dataflow::canonicalDataflowSchema.identity.str(),
+        ::dataflow::canonicalDataflowSchema.version,
+        carriedMinedCompositeFus->dataflow};
   growth.resultingContexts =
       baseConfig.hardwareTarget.parameters.temporalResidentContexts;
   growth.resultingGateways = baseConfig.hardwareTarget.parameters.gatewayCount;
@@ -915,8 +936,58 @@ deriveHardwareRecipeGrowth(
         techObservation->feedback, module->view(), preference);
     if (!plan)
       return plan.takeError();
-    if (!*plan)
+    // Composing a capability the Module does not offer yet. This is the answer
+    // to a relation that redistribution cannot close: either no supply exists
+    // at all, or the only one left is the Temporal treadmill whose demand
+    // grows with it. It spends the chain's one Spatial probe.
+    const auto composeSupply = [&]() -> llvm::Expected<bool> {
+      if (preference == dse::TechMappingComputeContextSupplyPreference::
+                            TemporalInstructionStoreOnly)
+        return false;
+      auto proposal = dse::proposeMinedCompositeFuSupply(
+          techObservation->dataflow, techObservation->feedback,
+          baseConfig.hardwareTarget.parameters, artifacts);
+      if (!proposal)
+        return proposal.takeError();
+      if (!*proposal)
+        return false;
+      growth.techModule = techObservation->module;
+      growth.computeContextGrowthDirection =
+          dse::TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
+      growth.minedCompositeFus = (*proposal)->selection;
+      growth.minedDataflow = techObservation->dataflow;
+      growth.minedActorsPerRealization = (*proposal)->actorsPerRealization;
+      growth.minedSearchBounded = (*proposal)->bounded;
+      growth.addedSpatialFuOccurrences = (*proposal)->occurrences;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "compute_context_composed_supply";
+            fields["hall_deficit"] = techObservation->feedback.deficit();
+            fields["hall_demand_count"] =
+                techObservation->feedback.hallDemandCount();
+            fields["hall_context_value_count"] =
+                techObservation->feedback.hallContextValueCount();
+            fields["mined_actors_per_realization"] =
+                (*proposal)->actorsPerRealization;
+            fields["mined_support"] = (*proposal)->support;
+            fields["mined_occurrences"] = (*proposal)->occurrences;
+            fields["mined_search_bounded"] = (*proposal)->bounded;
+            fields["mined_search_milliseconds"] =
+                (*proposal)->searchMilliseconds;
+            fields["spatial_fu_unclosed_deficit"] =
+                growth.spatialFuUnclosedDeficit;
+          });
+      return true;
+    };
+    if (!*plan) {
+      auto composed = composeSupply();
+      if (!composed)
+        return composed.takeError();
+      if (*composed)
+        return std::optional<HardwareRecipeGrowth>(std::move(growth));
       return std::optional<HardwareRecipeGrowth>();
+    }
     growth.techModule = techObservation->module;
     growth.computeContextGrowthDirection = (*plan)->direction;
     growth.spatialFuContextSupplyBound = (*plan)->spatialFuContextSupplyBound;
@@ -934,7 +1005,19 @@ deriveHardwareRecipeGrowth(
       break;
     }
     case dse::TechMappingComputeContextGrowthDirection::
-        TemporalInstructionStore:
+        MinedCompositeFuTemplate:
+      return invalid("the Hall growth owner does not compose supply");
+    case dse::TechMappingComputeContextGrowthDirection::
+        TemporalInstructionStore: {
+      // Temporal residency is the supply of last resort, and a relation whose
+      // demand grows with it never closes. Before spending the chain's one
+      // Spatial probe on that treadmill, compose a capability from the common
+      // subgraph of the software this cover refused.
+      auto composed = composeSupply();
+      if (!composed)
+        return composed.takeError();
+      if (*composed)
+        break;
       for (const dse::ResizeInstructionStore &decision : (*plan)->decisions) {
         const std::uint64_t currentCapacity =
             module->view().peResidentContextCount(decision.target);
@@ -947,6 +1030,7 @@ deriveHardwareRecipeGrowth(
       growth.instructionStoreResizes = (*plan)->decisions;
       growth.resizedInstructionStoreCount = (*plan)->decisions.size();
       break;
+    }
     }
   } else if (const auto *spatialObservation =
                  std::get_if<mapping::SpatialMappingHardwareFeedback>(
@@ -1140,21 +1224,35 @@ materializeHardwareRecipeGrowth(HardwareRecipeGrowth growth,
         fields["memory_operation_issue_depth"] =
             growth.config.hardwareTarget.parameters.memoryOperationIssueDepth;
         fields["uniform_context_growth"] = growth.uniformContextGrowth;
+        fields["mined_composite_fu_templates"] =
+            growth.minedCompositeFus
+                ? growth.minedCompositeFus->templates.size()
+                : 0;
+        fields["mined_spatial_fu_occurrences"] =
+            growth.addedSpatialFuOccurrences;
+        fields["mined_actors_per_realization"] =
+            growth.minedActorsPerRealization;
+        fields["mined_search_bounded"] = growth.minedSearchBounded;
       });
 
-  auto templateConfig =
-      dse::projectResolvedFabricTemplateConfigView(growth.config);
+  auto templateConfig = dse::projectResolvedFabricTemplateConfigView(
+      growth.config, growth.minedCompositeFus);
   if (!templateConfig)
     return templateConfig.takeError();
   auto binding =
       dse::resolveFabricTemplateCandidateGeneratorBinding(*templateConfig);
   if (!binding)
     return binding.takeError();
-  // The reopen grows the builtin catalog, which mines nothing, so the
-  // generator's Dataflow slot is bound empty.
+  // A growth that only rescales the builtin catalog mines nothing and binds
+  // the generator's Dataflow slot empty. A composed supply binds the exact
+  // Dataflow its selection names, which is what lets the generator re-mine it
+  // and refuse a shape that does not reproduce.
+  dse::ExactPlanArtifacts dataflowInput;
+  if (growth.minedDataflow)
+    dataflowInput.artifacts.push_back(*growth.minedDataflow);
   growth.config.dse.planNodes = {dse::GeneratePlanNodeDefinition{
       binding->descriptorRef(),
-      {dse::ExactPlanArtifacts{}},
+      {std::move(dataflowInput)},
       templateConfig->canonicalViewBytes().vec(),
       templateConfig->digest()}};
   auto execution = executeResolvedGeneratePlan(

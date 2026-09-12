@@ -64,6 +64,13 @@ bool techMappingComputeContextHallGrowthStagnates(
 enum class TechMappingComputeContextGrowthDirection : std::uint8_t {
   SpatialFuOccurrence,
   TemporalInstructionStore,
+  /// A capability the Module does not offer yet: the common subgraph of the
+  /// refused software, mined and named in the hardware-template configuration
+  /// so the Module is rebuilt offering it. This is the only direction that
+  /// answers a relation whose deficit no existing capability can close, and it
+  /// spends the same one Spatial probe a chain admits, because it rebuilds the
+  /// Module and reopens every Mapping layer.
+  MinedCompositeFuTemplate,
 };
 
 llvm::StringRef techMappingComputeContextGrowthDirectionSpelling(

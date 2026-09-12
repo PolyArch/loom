@@ -73,6 +73,11 @@ tryHardwareFeedbackReopen(
 
   ResolvedConfig currentConfig = plan.resolvedConfig;
   currentConfig.dse.planNodes.clear();
+  // A composed supply is an invocation-local decision rather than a
+  // ResolvedConfig field, so the chain carries it beside the recipe: a later
+  // growth that rebuilds from that recipe must keep offering the capability
+  // this chain already composed.
+  std::optional<MinedCompositeFuSelection> currentMinedCompositeFus;
   const std::uint64_t parentContexts =
       currentConfig.hardwareTarget.parameters.temporalResidentContexts;
   const std::uint64_t parentGateways =
@@ -174,7 +179,8 @@ tryHardwareFeedbackReopen(
             ? deriveUniformTechHardwareRecipeGrowth(currentConfig,
                                                     *techObservation, artifacts)
             : deriveHardwareRecipeGrowth(currentConfig, **feedback, artifacts,
-                                         supplyPreference);
+                                         supplyPreference,
+                                         currentMinedCompositeFus);
     if (!growth)
       return growth.takeError();
     if (!*growth) {
@@ -194,9 +200,13 @@ tryHardwareFeedbackReopen(
           });
       break;
     }
+    // Both supplies that change a Module's capability inventory rebuild or
+    // reopen every Mapping layer, so they share one probe budget.
     const bool spatialFuGrowthProbe =
         (*growth)->computeContextGrowthDirection ==
-        TechMappingComputeContextGrowthDirection::SpatialFuOccurrence;
+            TechMappingComputeContextGrowthDirection::SpatialFuOccurrence ||
+        (*growth)->computeContextGrowthDirection ==
+            TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
     if (spatialFuGrowthProbe) {
       spatialFuGrowthProbeConsumed = true;
       supplyPreference = TechMappingComputeContextSupplyPreference::
@@ -310,7 +320,16 @@ tryHardwareFeedbackReopen(
     const bool accCoreOnlyGrowth = (*growth)->addedAccCores != 0 &&
                                    (*growth)->addedContexts == 0 &&
                                    (*growth)->addedGateways == 0;
-    const bool typedModuleGrowth = techObservation != nullptr;
+    // A composed supply rebuilds the Module from the hardware recipe, because
+    // no parent-scoped mutation can author an FU the parent does not already
+    // offer. Every other Tech growth stays a typed decision on the exact
+    // parent Module.
+    const bool composedSupply =
+        (*growth)->computeContextGrowthDirection ==
+        TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
+    std::optional<MinedCompositeFuSelection> materializedMinedCompositeFus =
+        (*growth)->minedCompositeFus;
+    const bool typedModuleGrowth = techObservation != nullptr && !composedSupply;
     using RefusableMaterialization =
         std::optional<HardwareRecipeMaterializationOutcome>;
     auto materialization = [&]() -> llvm::Expected<RefusableMaterialization> {
@@ -563,6 +582,8 @@ tryHardwareFeedbackReopen(
           continue;
         }
         currentConfig = system->config;
+        if (materializedMinedCompositeFus)
+          currentMinedCompositeFus = materializedMinedCompositeFus;
         latestFailed = std::move(gate->execution);
         latestFailedPlan = std::move(*reopenPlan);
         currentFailure = &*latestFailed;
@@ -597,6 +618,8 @@ tryHardwareFeedbackReopen(
         // typed failure so callers retain its manifest and ancestry instead
         // of silently falling back to the original parent attempt.
         currentConfig = system->config;
+        if (materializedMinedCompositeFus)
+          currentMinedCompositeFus = materializedMinedCompositeFus;
         latestFailed = std::move(gate->execution);
         latestFailedPlan = std::move(*reopenPlan);
         currentFailure = &*latestFailed;
@@ -852,6 +875,8 @@ tryHardwareFeedbackReopen(
     withdrawTemporalInstructionStorePreference();
 
     currentConfig = std::move(system->config);
+    if (materializedMinedCompositeFus)
+      currentMinedCompositeFus = std::move(materializedMinedCompositeFus);
     latestFailed = std::move(*execution);
     latestFailedPlan = std::move(*reopenPlan);
     currentFailure = &*latestFailed;

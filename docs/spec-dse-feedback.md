@@ -3545,10 +3545,46 @@ becomes worth its cost. A Spatial-schedule PE holds one resident instruction
 per context and never rotates, so demand it hosts keeps its loop-carried
 dependences unserialized.
 
-One observation overrides that default without waiting for a withdrawal. A
-capability template is composite when its `FabricFuCapabilityTemplateRecord`
-activates more than one operation resource, so one selected realization binds
-several actors of the demand instead of one. `docs/spec-generalize-subgraphs-to-fu.md`
+A deficient relation has a third answer, and it is the only one that reaches a
+relation no existing capability can close. The two supplies above redistribute
+what a Module already offers; the third composes a capability the Module does
+not offer yet, by mining the common subgraph of the canonical Dataflow whose
+candidates this very cover refused. The demand and the software that produced
+it are known at the same moment, which is why the hardware reopen owns this
+decision: no earlier stage knows the deficit, and no later stage still holds
+the refused graphs.
+
+A composed supply is not a mutation. Every hardware mutation resolves its
+prototype against the exact parent Module, so no decision can author an FU the
+parent does not already offer; the reopen instead names the mined template in
+the hardware-template configuration and rebuilds the Module from that recipe.
+The configuration names only the exact Dataflow identity and the selected
+canonical shape keys, with the Spatial PE sites each one receives. The
+generator binds that Dataflow, mines it again with the same request, and
+refuses a key that does not reproduce, so the miner and the canonical
+capability derivation stay the only owners of FU structure.
+
+The proposal is sized from the relation it answers. One occurrence of a
+template whose realization binds `n` actors answers `n` of the demand per
+realization it covers, so the reopen asks for the sites the deficit needs,
+bounded by the target's Spatial PE count. Selection walks the mined rank and
+takes the first candidate whose boundary fits a PE of the target and whose
+capability the canonical derivation admits. Mining is bounded: a search that
+reaches its retained shape or embedding bound stops growing and says so, and
+the proposal it makes is still exact, because every candidate it reported was
+completely enumerated. A whole-layer graph is expected to reach that bound.
+
+A composed supply spends the same single probe the Spatial FU occurrence
+direction spends, because it too rebuilds the Module and reopens every Mapping
+layer. It is offered while the chain still holds that probe, and never after.
+The selection is invocation-local evidence rather than a ResolvedConfig field,
+so the chain carries it beside the recipe: a later growth that rebuilds from
+that recipe keeps offering the capability the chain already composed.
+
+One further observation overrides the Temporal default without waiting for a
+withdrawal. A capability template is composite when its
+`FabricFuCapabilityTemplateRecord` activates more than one operation resource,
+so one selected realization binds several actors of the demand instead of one. `docs/spec-generalize-subgraphs-to-fu.md`
 owns how such a template is mined from the common subgraph of the compiled
 software and synthesized into the Fabric capability domain. When a composite
 template admits the deficient demand groups and one admissible Spatial PE can
