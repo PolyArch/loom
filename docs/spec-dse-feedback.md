@@ -3498,8 +3498,11 @@ selected realization has one allowed capability; an unavoidable single-actor
 demand may retain several alternatives. The payload alone is not a proof that
 the entire bounded TechMapping domain is infeasible. Its canonical payload
 carries the checked demand and matching counts plus a canonical set of
-allowed-capability-set and demand-multiplicity pairs. Each capability set is
-nonempty, sorted, and unique. Compatible resident contexts are the union of
+allowed-capability-set and demand-multiplicity pairs. Every observation is
+closed under its scope: Mapping names a deficit only against a demand set whose
+size is the same before and after the contexts it asks for, so one closure can
+never be answered by one more unit of demand. Each capability set is nonempty,
+sorted, and unique. Compatible resident contexts are the union of
 the contexts admitted by those capabilities. That union and the Hall gap are
 rebuilt from the exact Fabric through the same physical-demand projection used
 by Tech cover search. A hardware reopen may respond with existing typed FU or

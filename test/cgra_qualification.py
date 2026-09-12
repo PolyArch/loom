@@ -677,7 +677,9 @@ def validate_cgra_hardware_search(value: object) -> bool:
     if type(value["ready"]) is not bool or (value["ready"] and overrun):
         raise ValueError("CGRA hardware search has invalid readiness")
     stop_reason = value["stop_reason"]
-    if stop_reason is not None and stop_reason != "hall_repair_stagnation":
+    if stop_reason is not None and stop_reason not in (
+        "hall_repair_stagnation", "no_closable_hall_deficit"
+    ):
         raise ValueError("CGRA hardware search has an unknown stop reason")
     if stop_reason is not None and value["ready"]:
         raise ValueError("CGRA hardware search is ready under a stop reason")

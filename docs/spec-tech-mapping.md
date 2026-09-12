@@ -309,12 +309,30 @@ than an arbitrarily selected implementation's smaller context bank. This
 projection consumes no row choice or partial-cover expansion.
 
 The constructive search closes each chain of singleton rows before checking
-shared supply. Every row in that chain is mandatory under the selected prefix,
-so a rejected chain reports the complete observed Hall demand to hardware
-repair. Supply is checked before the next branch, at a complete cover, or at
-the expansion boundary. Each forced row still consumes an expansion; the last
-authorized expansion may complete and publish a cover without authorizing
+shared supply. Supply is checked before the next branch, at a complete cover,
+or at the expansion boundary. Each forced row still consumes an expansion; the
+last authorized expansion may complete and publish a cover without authorizing
 another row choice.
+
+A supply check runs against either a closed or an open demand set, and only a
+closed set becomes hardware feedback. A closed set already names every actor
+its scope is responsible for: a complete cover, a component-complete cursor
+state, or the necessary actor relation above. Adding compute contexts cannot
+enlarge a closed set, so a Hall closure sized against it stays closed. An open
+set is the prefix at which the search pruned. It admits exactly one more row
+for every context added, so its Hall witness reports a deficit of one whatever
+the real shortage is, and closing it repeatedly would trade one unit of supply
+for one unit of demand without end. An open witness still prunes its branch.
+
+An empty frontier that observed no closed deficit names one against the
+structural cover. That projection covers every actor by giving the
+most-constrained actor its preferred available row, ranking rows by
+realization width, then by a Temporal memory root, then by the canonical row
+key. It reads no context domain, so its compute demand is identical before and
+after any compute-context growth and its Hall deficit is the whole observed
+gap. When the projection dead-ends, or when its supply is admissible and the
+empty frontier therefore has another cause, the search publishes no
+compute-context deficit and records the typed stability limit instead.
 
 Context matching first takes an available direct assignment before searching
 alternating paths through existing assignments. Every examined edge remains
