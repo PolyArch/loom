@@ -169,6 +169,7 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
 target_link_libraries(loom-dse-composite-fu-mining-test PRIVATE
   LoomADGBuilder
   LoomDSECandidateGenerator
+  LoomDSEFeedback
   LoomDSEHardwareGenerator
   LoomFabricArtifact
   MLIRArithDialect

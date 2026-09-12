@@ -4,6 +4,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/TechMappingComposedSupply.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
@@ -405,6 +406,71 @@ void minesOneLayerSizedGraphUnderItsBound() {
           "the ranked candidate covers less than one realization");
 }
 
+/// The composed supply an exact Hall deficit gets. The relation is the one the
+/// mlperf-tiny anomaly whole-layer candidates observe: a demand no existing
+/// capability can close, whose only other answer is growing Temporal
+/// residency. The proposal must name a template the miner reproduces and size
+/// its occurrences from the deficit it answers.
+void proposesAComposedSupplyForAHallDeficit(llvm::StringRef fixture) {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
+  auto published = take(dataflow::publishCanonicalDataflow(program, store));
+
+  loom::mapping::TechMappingComputeContextHallDemandGroup group;
+  group.capabilities.push_back(
+      {loom::fabric::FabricFuTemplateRef(1), 0});
+  group.demandCount = 290;
+  for (std::uint64_t context = 0; context != 80; ++context)
+    group.compatibleContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(context), 0});
+  auto feedback =
+      take(loom::mapping::TechMappingComputeContextHallDeficit::get(290, 80,
+                                                                   {group}));
+  require(feedback.deficit() == 210,
+          "the fixture relation is not the observed deficit");
+
+  const loom::adg::BuiltinTargetScale &scale =
+      loom::adg::builtinCoverageTarget.scale;
+  auto proposal = take(loom::dse::proposeMinedCompositeFuSupply(
+      published, feedback, scale, store));
+  require(proposal.has_value(),
+          "a deficit over mineable software got no composed supply");
+  require(proposal->selection.dataflow == program.identity() &&
+              proposal->selection.templates.size() == 1,
+          "the composed supply does not name exactly its own Dataflow and "
+          "one template");
+  require(proposal->actorsPerRealization >= 2 && proposal->support >= 2,
+          "the composed supply named a template that is not composite or not "
+          "repeated");
+  const std::uint64_t needed =
+      (feedback.deficit() + proposal->actorsPerRealization - 1) /
+      proposal->actorsPerRealization;
+  require(proposal->occurrences ==
+              std::min<std::uint64_t>(needed, scale.spatialPeCount),
+          "the composed supply is not sized from the deficit it answers");
+  require(proposal->selection.templates.front().occurrences ==
+              proposal->occurrences,
+          "the selection and the proposal disagree on the site count");
+
+  // The configuration carries only this key, so the generator must be able to
+  // find it by mining the same Dataflow with the same request.
+  std::vector<dataflow::GraphRef> graphs;
+  for (const dataflow::CanonicalGraphView &graph : program.view().graphs())
+    graphs.push_back(graph.ref);
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
+  const auto found = llvm::find_if(
+      mined.candidates, [&](const loom::dse::CompositeFuCandidate &candidate) {
+        return candidate.canonicalKey ==
+               proposal->selection.templates.front().shapeKey;
+      });
+  require(found != mined.candidates.end() &&
+              found->nodes.size() == proposal->actorsPerRealization,
+          "the named shape key is not one the same request reproduces");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -422,6 +488,8 @@ int main(int argc, char **argv) {
     placesTheMinedTemplateInABuiltinModule(argv[1]);
   else if (scene == "scale")
     minesOneLayerSizedGraphUnderItsBound();
+  else if (scene == "proposal")
+    proposesAComposedSupplyForAHallDeficit(argv[1]);
   else
     fail("unknown scene " + scene.str());
   return EXIT_SUCCESS;
