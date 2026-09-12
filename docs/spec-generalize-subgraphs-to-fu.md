@@ -320,6 +320,17 @@ actor, operation-port, and FU-boundary correspondence, checked by the same
 realization-closure verifier TechMapping uses. Mining introduces no second cover
 algorithm and publishes no Mapping artifact.
 
+Canonical finalization relabels FU graph nodes, so an authored node ordinal is
+not a canonical one. The finalizer already publishes the authored-to-canonical
+relation for the capability rows an author exposed; it publishes the FU graph
+nodes of those same FUs in the same transaction, and the witness names each
+node's operation resource through that relation. Synthesis never reconstructs
+the relabeling from its own authoring order, and it does not obtain the witness
+by running a Mapping search: the witness is an acceptance result for
+constructing `F`, so deriving it from TechMapping would invert the order the
+Synthesize and Materialize contract fixes and would make Mapping a prerequisite
+of the hardware it is supposed to consume.
+
 ### Composite Supply For A Compute-Context Hall Deficit
 
 A compute-context Hall deficit names demand groups and the capability templates

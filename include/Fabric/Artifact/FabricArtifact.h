@@ -239,6 +239,33 @@ struct FabricFuCapabilityTemplateCorrespondence final {
   }
 };
 
+/// One authoring-order graph node owned by an exact FU occurrence before
+/// canonical relabeling. The ordinal is the node's position among the
+/// `fabric.op`, `fabric.mux`, and `fabric.demux` operations of that
+/// occurrence's body, which is the order the author created them.
+struct FabricFuTemplateNodeSourceRef final {
+  FabricModuleEntityReference fu;
+  FabricOrdinal ordinal = 0;
+
+  friend bool operator==(const FabricFuTemplateNodeSourceRef &lhs,
+                         const FabricFuTemplateNodeSourceRef &rhs) {
+    return lhs.fu == rhs.fu && lhs.ordinal == rhs.ordinal;
+  }
+};
+
+/// Canonical relabeling reorders FU graph nodes, so an author that must bind
+/// an exact node after finalization reads this relation instead of assuming
+/// its own order survived.
+struct FabricFuTemplateNodeCorrespondence final {
+  FabricFuTemplateNodeSourceRef source;
+  FabricFuTemplateNodeRef target;
+
+  friend bool operator==(const FabricFuTemplateNodeCorrespondence &lhs,
+                         const FabricFuTemplateNodeCorrespondence &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+};
+
 /// Finalizer-owned transient correspondence for every Module-local occurrence
 /// entity in one derived root. Source references belong to the authored parent
 /// namespace and targets belong to `root`. The relation is produced by the
@@ -247,6 +274,7 @@ struct FinalizedFabricModuleProjection final {
   FinalizedFabricRoot root;
   std::vector<FabricModuleEntityCorrespondence> entities;
   std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  std::vector<FabricFuTemplateNodeCorrespondence> fuNodes;
 };
 
 /// Read-only canonical identity and occurrence correspondence for one derived
@@ -344,8 +372,8 @@ finalizeFabricModuleWithCorrespondence(
     const ArtifactStore &store);
 
 /// Finalizes one Module and returns only the transient correspondence for
-/// explicitly authored FU capability rows. Expanded child occurrences need no
-/// source correspondence for this projection.
+/// explicitly authored FU capability rows and FU graph nodes. Expanded child
+/// occurrences need no source correspondence for this projection.
 llvm::Expected<FinalizedFabricModuleProjection>
 finalizeFabricModuleWithCapabilityCorrespondence(
     ::fabric::ModuleOp source,

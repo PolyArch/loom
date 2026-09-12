@@ -9,6 +9,7 @@
 #include "FabricModuleCanonicalPayload.h"
 #include "FabricModuleDomainMaterialization.h"
 #include "FabricModuleDomainNormalization.h"
+#include "FabricModuleViewBuilding.h"
 #include "FabricResourceContractFinalization.h"
 
 #include "mlir/IR/Block.h"
@@ -117,8 +118,16 @@ struct AuthoredFuCapabilityRow final {
   std::vector<std::pair<Operation *, FabricOrdinal>> routes;
 };
 
-using AuthoredFuCapabilityRows =
-    std::map<Operation *, std::vector<AuthoredFuCapabilityRow>>;
+/// One authored FU occurrence as its author left it: the graph nodes in
+/// authoring order and the capability rows that select among them. Canonical
+/// relabeling reorders both, so both correspondences are projected from this
+/// one capture.
+struct AuthoredFuCapability final {
+  llvm::SmallVector<Operation *, 16> nodes;
+  std::vector<AuthoredFuCapabilityRow> rows;
+};
+
+using AuthoredFuCapabilityRows = std::map<Operation *, AuthoredFuCapability>;
 
 std::vector<std::uint8_t> unsignedBytes(DenseI8ArrayAttr attribute) {
   std::vector<std::uint8_t> bytes;
@@ -142,6 +151,11 @@ llvm::Expected<AuthoredFuCapabilityRows> captureAuthoredFuCapabilityRows(
         fu.getCapabilityTemplatesAttr();
     if (!attribute)
       return WalkResult::advance();
+    AuthoredFuCapability captured;
+    for (Operation &operation : fu.getBody().front().without_terminator())
+      if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
+        captured.nodes.push_back(&operation);
+    llvm::SmallVector<Operation *, 16> &nodes = captured.nodes;
     auto domain = ::fabric::decodeFuCapabilityDomainRecord(
         unsignedBytes(attribute.getRecord()));
     if (!domain) {
@@ -149,10 +163,6 @@ llvm::Expected<AuthoredFuCapabilityRows> captureAuthoredFuCapabilityRows(
       return WalkResult::interrupt();
     }
 
-    llvm::SmallVector<Operation *, 16> nodes;
-    for (Operation &operation : fu.getBody().front().without_terminator())
-      if (isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(operation))
-        nodes.push_back(&operation);
     std::vector<AuthoredFuCapabilityRow> rows;
     rows.reserve(domain->templates().size());
     for (const ::fabric::FuCapabilityTemplateSelection &selection :
@@ -181,7 +191,8 @@ llvm::Expected<AuthoredFuCapabilityRows> captureAuthoredFuCapabilityRows(
       }
       rows.push_back(std::move(row));
     }
-    result.emplace(fu.getOperation(), std::move(rows));
+    captured.rows = std::move(rows);
+    result.emplace(fu.getOperation(), std::move(captured));
     return WalkResult::advance();
   });
   if (error)
@@ -189,13 +200,23 @@ llvm::Expected<AuthoredFuCapabilityRows> captureAuthoredFuCapabilityRows(
   return result;
 }
 
-llvm::Expected<std::vector<FabricFuCapabilityTemplateCorrespondence>>
-projectFuCapabilityTemplateCorrespondence(
+/// The complete authored-to-canonical relation of one Module's explicitly
+/// authored FUs. Both halves come from the same labeling transaction, so an
+/// author never pairs a canonical capability row with a stale node order.
+struct AuthoredFuCorrespondence final {
+  std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  std::vector<FabricFuTemplateNodeCorrespondence> nodes;
+};
+
+llvm::Expected<AuthoredFuCorrespondence> projectAuthoredFuCorrespondence(
     const std::map<Operation *, FabricModuleEntityReference> &authored,
     const AuthoredFuCapabilityRows &sourceRows,
     const detail::FabricCanonicalLabeling &labeling) {
-  std::vector<FabricFuCapabilityTemplateCorrespondence> result;
-  for (const auto &[operation, rows] : sourceRows) {
+  AuthoredFuCorrespondence correspondence;
+  std::vector<FabricFuCapabilityTemplateCorrespondence> &result =
+      correspondence.capabilities;
+  for (const auto &[operation, captured] : sourceRows) {
+    const std::vector<AuthoredFuCapabilityRow> &rows = captured.rows;
     auto fu = dyn_cast_or_null<::fabric::FuOp>(operation);
     auto sourceEntity = authored.find(operation);
     auto templateId = labeling.fuTemplateIdByOccurrence.find(operation);
@@ -218,6 +239,14 @@ projectFuCapabilityTemplateCorrespondence(
       if (found == labeling.definitionFuNodeOrdinalByOperation.end() ||
           found->second != ordinal)
         return invalid("authored FU capability lost its node correspondence");
+    }
+    for (auto [sourceOrdinal, node] : llvm::enumerate(captured.nodes)) {
+      auto found = labeling.definitionFuNodeOrdinalByOperation.find(node);
+      if (found == labeling.definitionFuNodeOrdinalByOperation.end())
+        return invalid("an authored FU node was not relabeled");
+      correspondence.nodes.push_back(
+          {{sourceEntity->second, sourceOrdinal},
+           {detail::classifyFabricFuNode(node), owner, found->second}});
     }
 
     auto finalRecords =
@@ -268,13 +297,15 @@ projectFuCapabilityTemplateCorrespondence(
           {{sourceEntity->second, sourceOrdinal}, {owner, target->second}});
     }
   }
-  llvm::sort(result, [](const auto &left, const auto &right) {
+  const auto bySource = [](const auto &left, const auto &right) {
     return std::tie(left.source.fu.kind, left.source.fu.id,
                     left.source.fu.occurrenceOrdinal, left.source.ordinal) <
            std::tie(right.source.fu.kind, right.source.fu.id,
                     right.source.fu.occurrenceOrdinal, right.source.ordinal);
-  });
-  return result;
+  };
+  llvm::sort(result, bySource);
+  llvm::sort(correspondence.nodes, bySource);
+  return correspondence;
 }
 
 llvm::Expected<std::vector<FabricModuleEntityCorrespondence>>
@@ -447,6 +478,7 @@ detail::buildCanonicalFabricModuleCandidate(
     return reordered.takeError();
   std::vector<FabricModuleEntityCorrespondence> entities;
   std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  std::vector<FabricFuTemplateNodeCorrespondence> fuNodes;
   if (captureEntityCorrespondence) {
     auto projected =
         projectModuleEntityCorrespondence(authoredEntities, *reordered);
@@ -455,11 +487,12 @@ detail::buildCanonicalFabricModuleCandidate(
     entities = std::move(*projected);
   }
   if (captureCapabilityCorrespondence) {
-    auto projectedCapabilities = projectFuCapabilityTemplateCorrespondence(
+    auto projected = projectAuthoredFuCorrespondence(
         authoredEntities, authoredCapabilities, *reordered);
-    if (!projectedCapabilities)
-      return projectedCapabilities.takeError();
-    capabilities = std::move(*projectedCapabilities);
+    if (!projected)
+      return projected.takeError();
+    capabilities = std::move(projected->capabilities);
+    fuNodes = std::move(projected->nodes);
   }
   if (llvm::Error error = detail::materializeFabricCanonicalIds(*reordered))
     return std::move(error);
@@ -469,7 +502,8 @@ detail::buildCanonicalFabricModuleCandidate(
   if (failed(verify(*scratch)))
     return invalid("canonical Fabric IDs produced invalid IR");
   return detail::CanonicalFabricModuleCandidate{
-      std::move(scratch), std::move(entities), std::move(capabilities)};
+      std::move(scratch), std::move(entities), std::move(capabilities),
+      std::move(fuNodes)};
 }
 
 } // namespace loom::fabric

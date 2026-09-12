@@ -16,6 +16,7 @@ struct CanonicalFabricModuleCandidate final {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<FabricModuleEntityCorrespondence> entities;
   std::vector<FabricFuCapabilityTemplateCorrespondence> capabilities;
+  std::vector<FabricFuTemplateNodeCorrespondence> fuNodes;
 };
 
 llvm::Expected<CanonicalFabricModuleCandidate>

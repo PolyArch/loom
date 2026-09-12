@@ -107,6 +107,18 @@ moduleOccurrenceKind(mlir::Operation *operation) {
   return std::nullopt;
 }
 
+/// Position the next authored graph node will take inside one FU body. The
+/// finalizer reorders these nodes canonically, so the authoring position is
+/// what FinalizedFabricDesign::resolve translates.
+std::size_t nextAuthoredFuNodeOrdinal(::fabric::FuOp fu) {
+  std::size_t ordinal = 0;
+  for (mlir::Operation &operation : fu.getBody().front())
+    if (mlir::isa<::fabric::OpOp, ::fabric::MuxOp, ::fabric::DemuxOp>(
+            operation))
+      ++ordinal;
+  return ordinal;
+}
+
 void assignAuthoringEntityIds(::fabric::ModuleOp root) {
   loom::fabric::FabricEntityId next = 0;
   root->walk([&](mlir::Operation *operation) {
@@ -366,6 +378,8 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  const std::size_t nodeOrdinal =
+      nextAuthoredFuNodeOrdinal((*fu)->operation);
   if (spec.enabledOperations.empty())
     return invalid("fabric.op capability requires an enabled operation");
   if (static_cast<std::uint32_t>(spec.implementationFamily) >=
@@ -437,8 +451,8 @@ FuBuilder::addOperation(llvm::ArrayRef<FuValue> inputs,
                                                    DomainMemberRole::FuNode, 0))
       return std::move(error);
 
-  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
-                operation.getOperation());
+  return FuNode(*state, (*state)->identity, rootOrdinal_, peOrdinal_,
+                fuOrdinal_, nodeOrdinal, operation.getOperation());
 }
 
 llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
@@ -450,6 +464,8 @@ llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  const std::size_t nodeOrdinal =
+      nextAuthoredFuNodeOrdinal((*fu)->operation);
   if (inputs.size() < 2)
     return invalid("fabric.mux requires at least two inputs");
 
@@ -480,8 +496,8 @@ llvm::Expected<FuNode> FuBuilder::addMux(llvm::ArrayRef<FuValue> inputs) {
                 .domainRelation.noteInternalMember(mux.getOperation(),
                                                    DomainMemberRole::FuNode, 0))
       return std::move(error);
-  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
-                mux.getOperation());
+  return FuNode(*state, (*state)->identity, rootOrdinal_, peOrdinal_,
+                fuOrdinal_, nodeOrdinal, mux.getOperation());
 }
 
 llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
@@ -494,6 +510,8 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
     return fu.takeError();
   if ((*fu)->closed)
     return invalid("FU is already closed");
+  const std::size_t nodeOrdinal =
+      nextAuthoredFuNodeOrdinal((*fu)->operation);
   if (outputCount < 2)
     return invalid("fabric.demux requires at least two outputs");
   auto resolved = resolveValue(*state, input);
@@ -519,8 +537,8 @@ llvm::Expected<FuNode> FuBuilder::addDemux(FuValue input,
                                                    DomainMemberRole::FuNode, 0))
       return std::move(error);
 
-  return FuNode(*state, rootOrdinal_, peOrdinal_, fuOrdinal_,
-                demux.getOperation());
+  return FuNode(*state, (*state)->identity, rootOrdinal_, peOrdinal_,
+                fuOrdinal_, nodeOrdinal, demux.getOperation());
 }
 
 llvm::Error
@@ -1520,6 +1538,7 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
   std::vector<loom::fabric::FinalizedFabricRoot> finalized;
   std::vector<FinalizedFabricDesign::FuCapabilityResolution>
       capabilityResolutions;
+  std::vector<FinalizedFabricDesign::FuNodeResolution> nodeResolutions;
   finalized.reserve(state_->spatialRoots.size() + state_->systemRoots.size());
   for (auto [rootOrdinal, root] : llvm::enumerate(state_->spatialRoots)) {
     bool captureCapabilities = false;
@@ -1549,6 +1568,17 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
           ::fabric::kEntityIdAttrName);
       if (!sourceId)
         return invalid("FU authoring correspondence has no source identity");
+      for (const auto &node : result->fuNodes) {
+        if (node.source.fu.kind !=
+                loom::fabric::FabricEntityKind::FabricFuOccurrence ||
+            node.source.fu.id != sourceId.getId())
+          continue;
+        nodeResolutions.push_back(
+            {rootOrdinal,
+             fuOrdinal,
+             node.source.ordinal,
+             {result->root.reference().artifact, node.target}});
+      }
       for (auto [draftOrdinal, draft] :
            llvm::enumerate(fu.capabilityTemplates)) {
         if (!draft.handleExposed)
@@ -1590,7 +1620,8 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
     finalized.push_back(std::move(*result));
   }
   return FinalizedFabricDesign(state_->identity, std::move(finalized),
-                               std::move(capabilityResolutions));
+                               std::move(capabilityResolutions),
+                               std::move(nodeResolutions));
 }
 
 llvm::Expected<ArtifactReference<loom::fabric::FabricFuCapabilityTemplateRef>>
@@ -1610,6 +1641,26 @@ FinalizedFabricDesign::resolve(const FuCapabilityTemplateHandle &handle) const {
   }
   if (!match)
     return invalid("FU capability handle has no finalized target");
+  return match->target;
+}
+
+llvm::Expected<ArtifactReference<loom::fabric::FabricFuTemplateNodeRef>>
+FinalizedFabricDesign::resolve(const FuNode &node) const {
+  std::shared_ptr<detail::DesignIdentity> identity = node.identity_.lock();
+  if (!identity || identity.get() != identity_.get())
+    return invalid("FU node handle belongs to a foreign design");
+  const FuNodeResolution *match = nullptr;
+  for (const FuNodeResolution &candidate : fuNodes_) {
+    if (candidate.rootOrdinal != node.rootOrdinal_ ||
+        candidate.fuOrdinal != node.fuOrdinal_ ||
+        candidate.nodeOrdinal != node.nodeOrdinal_)
+      continue;
+    if (match)
+      return invalid("FU node handle has multiple finalized targets");
+    match = &candidate;
+  }
+  if (!match)
+    return invalid("FU node handle has no finalized target");
   return match->target;
 }
 
