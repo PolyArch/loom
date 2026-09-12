@@ -278,7 +278,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.15.15`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.17`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -908,9 +908,14 @@ Once a restart holds a candidate with zero Mapping violations, and before that
 candidate enters independent verification, the provider adopts admitted local
 transfers exactly once in canonical net and option order: an alternative
 resident under the current placements, or one reached by relocating exactly
-one endpoint onto its peer's PE, is committed when the selected handshake
+one endpoint onto its peer's PE and onto a resident context no other
+realization holds, is committed when the selected handshake
 graph stays acyclic and the selected total ordering does not worsen; a
-declined alternative keeps its external route. An adoption changes selected
+declined alternative keeps its external route. The resident-context condition
+is not a second legality owner: it is the one hard relation the relocation
+itself decides, and an alternative that violates it is refused before it can
+be ranked, so offering it would spend a probe on a decided outcome. An
+adoption changes selected
 dispositions and routes, so an adopting sweep re-enters the provider's final
 global closure and publication still follows one closure over the published
 selections. The register FIFOs of one PE bank are interchangeable for that

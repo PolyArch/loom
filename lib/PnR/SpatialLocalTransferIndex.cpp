@@ -362,16 +362,41 @@ llvm::Error loom::pnr::detail::enumerateSpatialLocalTransferAdoptions(
     occupied.emplace(selected.pe.id(), selected.registerFifo);
   }
 
+  // Resident contexts are disjoint over every compute realization, so a
+  // relocation onto a context another realization already holds is refused by
+  // the transaction before the pairing ever reaches the objective. The moved
+  // endpoint vacates its own context; every other realization holds one
+  // against it. The search domain cannot filter this: the resident-context
+  // relation is structural, not a constraint, so it does not prune a compute
+  // choice.
+  const auto contexts = problem.realizations().computeInstructionContexts();
+  const auto contextHeldByOther = [&](PnrIndex instructionContext,
+                                      PnrIndex moved) {
+    if (instructionContext >= contexts.size())
+      return true;
+    for (auto [realization, binding] : llvm::enumerate(computeBindings)) {
+      if (realization == moved || binding.instructionContext >= contexts.size())
+        continue;
+      if (contexts[binding.instructionContext] == contexts[instructionContext])
+        return true;
+    }
+    return false;
+  };
+
   // The first relation-legal compute choice that lands `realization` on
-  // `placement`; the relocation keeps the option's other endpoint fixed.
+  // `placement` with a free resident context; the relocation keeps the
+  // option's other endpoint fixed.
   const auto relocationOnto =
       [&](PnrIndex realization,
           PnrIndex placement) -> std::optional<SpatialComputeBindingAction> {
     for (const SpatialRealizationBindingAction &choice : legalComputeChoices) {
       const auto *compute = std::get_if<SpatialComputeBindingAction>(&choice);
-      if (compute && compute->realization == realization &&
-          compute->placement == placement)
-        return *compute;
+      if (!compute || compute->realization != realization ||
+          compute->placement != placement)
+        continue;
+      if (contextHeldByOther(compute->instructionContext, realization))
+        continue;
+      return *compute;
     }
     return std::nullopt;
   };

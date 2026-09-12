@@ -13,11 +13,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace loom::pnr {
 
 struct SpatialPathFinderSeed;
+
+/// One consumed Action transition failure: its typed classification and the
+/// refusing owner's message.
+struct SpatialActionTransitionFailureReport final {
+  SpatialActionTransitionFailureKind kind =
+      SpatialActionTransitionFailureKind::IntrinsicInvalid;
+  std::string diagnostic;
+};
 
 /// Work and outcome of one local-transfer adoption sweep. The restart owner
 /// runs the sweep on its closed candidate, so these counters are not part of
@@ -120,7 +129,8 @@ public:
   /// violations: every external net whose local-transfer domain admits an
   /// alternative is probed in canonical net and option order, first with the
   /// current placements and then with exactly one endpoint relocated onto its
-  /// peer's PE, and the first alternative that keeps the selected handshake
+  /// peer's PE and onto a free resident context, and the first alternative
+  /// that keeps the selected handshake
   /// graph acyclic without worsening the selected total ordering is
   /// committed. Declined alternatives keep their external route. The restart
   /// owner runs this sweep once on its closed candidate, whether that closure
@@ -137,10 +147,12 @@ public:
   std::size_t retainedStorageBytes() const;
 
 private:
-  /// Classifies one Action probe failure. A missing kind means the failure
+  /// Classifies one Action probe failure. A missing report means the failure
   /// was not a transition failure; an Interrupted kind ends the search as an
-  /// interrupted result rather than a transition failure.
-  llvm::Expected<std::optional<SpatialActionTransitionFailureKind>>
+  /// interrupted result rather than a transition failure. The owner's message
+  /// travels with the kind because a refused probe has no other place to name
+  /// the constraint that refused it.
+  llvm::Expected<std::optional<SpatialActionTransitionFailureReport>>
   consumeTransitionFailure(llvm::Error failure);
 
   SpatialActionDomainScratch actionDomain_;

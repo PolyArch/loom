@@ -43,7 +43,8 @@ findPreferredAvailableSpatialLocalTransfer(
 /// Enumerates the adoptions of `logicalNet` in canonical order: options
 /// resident under the current placements first, then options reachable by
 /// relocating exactly one endpoint through the first relation-legal compute
-/// choice of `legalComputeChoices` on the required placement. Options whose
+/// choice of `legalComputeChoices` on the required placement whose resident
+/// context no other realization holds. Options whose
 /// register FIFO another selected net owns are excluded, and one free FIFO
 /// stands for every option that pairs the same writer and reader under the
 /// same placements. A net with route constraints, an active pairing, or an

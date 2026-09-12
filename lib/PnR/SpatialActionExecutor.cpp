@@ -30,6 +30,18 @@ using namespace loom::pnr;
 
 char SpatialActionTransitionFailure::ID;
 
+llvm::StringRef loom::pnr::spelling(SpatialActionTransitionFailureKind kind) {
+  switch (kind) {
+  case SpatialActionTransitionFailureKind::IntrinsicInvalid:
+    return "intrinsic_invalid";
+  case SpatialActionTransitionFailureKind::WorkLimit:
+    return "work_limit";
+  case SpatialActionTransitionFailureKind::Interrupted:
+    return "interrupted";
+  }
+  llvm_unreachable("invalid Spatial Action transition failure kind");
+}
+
 void SpatialActionTransitionFailure::log(llvm::raw_ostream &stream) const {
   stream << message_;
 }

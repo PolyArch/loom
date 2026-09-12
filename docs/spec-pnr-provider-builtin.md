@@ -11,7 +11,7 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.15.15
+  loom.spatial_pnr.config.15.17
   loom.spatial_pnr.freeze.2.26
   loom.mapping.pnr.objective 3.5
   selected FabricPhysicalTimingProfile descriptor and digest

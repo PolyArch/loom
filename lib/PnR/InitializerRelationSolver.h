@@ -7,6 +7,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -24,6 +25,8 @@ enum class InitializerRelationKind : std::uint8_t {
   Disjoint,
   Capacity,
 };
+
+llvm::StringRef initializerRelationKindSpelling(InitializerRelationKind kind);
 
 struct InitializerRelationMemberInput final {
   PnrIndex decision = 0;

@@ -11,9 +11,11 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -331,7 +333,8 @@ void emitLocalTransferAdoptionEvent(
     std::uint64_t probeOrdinal, PnrIndex logicalNet,
     const SpatialLocalTransferAdoption &adoption,
     std::optional<SpatialActionOutcome> outcome = std::nullopt,
-    std::optional<dse::ObjectiveSignedDifference> difference = std::nullopt) {
+    std::optional<dse::ObjectiveSignedDifference> difference = std::nullopt,
+    const SpatialActionTransitionFailureReport *failure = nullptr) {
   loom::mapping_debug::emit(
       loom::mapping_debug::Level::Decision,
       loom::mapping_debug::Stage::SpatialPnr, event,
@@ -353,6 +356,13 @@ void emitLocalTransferAdoptionEvent(
           fields["relocation_instruction_context"] =
               adoption.relocation->instructionContext;
         }
+        // A refused probe has no energy difference, so the refusing owner's
+        // typed kind and message are the only evidence of which constraint
+        // declined the pairing.
+        if (failure) {
+          fields["transition_failure"] = spelling(failure->kind);
+          fields["diagnostic"] = failure->diagnostic;
+        }
         if (difference &&
             loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail)) {
           fields["energy_difference_sign"] = differenceSign(difference->sign);
@@ -364,13 +374,17 @@ void emitLocalTransferAdoptionEvent(
 
 } // namespace
 
-llvm::Expected<std::optional<SpatialActionTransitionFailureKind>>
+llvm::Expected<std::optional<SpatialActionTransitionFailureReport>>
 SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
-  std::optional<SpatialActionTransitionFailureKind> consumed;
+  std::optional<SpatialActionTransitionFailureReport> consumed;
   llvm::Error unhandled = llvm::handleErrors(
       std::move(failure),
       [&](const SpatialActionTransitionFailure &transition) -> llvm::Error {
-        consumed = transition.kind();
+        std::string diagnostic;
+        llvm::raw_string_ostream stream(diagnostic);
+        transition.log(stream);
+        consumed = SpatialActionTransitionFailureReport{transition.kind(),
+                                                        std::move(diagnostic)};
         return llvm::Error::success();
       });
   if (unhandled)
@@ -516,14 +530,16 @@ llvm::Error SpatialAnnealingSearchScratch::adoptAdmittedLocalTransfers(
           if (!*consumed)
             return searchError(
                 "adoption failure had no failure classification");
-          if (**consumed == SpatialActionTransitionFailureKind::Interrupted) {
+          if ((*consumed)->kind ==
+              SpatialActionTransitionFailureKind::Interrupted) {
             interrupted = true;
             break;
           }
           emitLocalTransferAdoptionEvent(
               loom::mapping_debug::Event::ActionOutcome, seedAttemptOrdinal,
               probeOrdinal, logicalNet, adoption,
-              SpatialActionOutcome::TransitionFailure);
+              SpatialActionOutcome::TransitionFailure, std::nullopt,
+              &**consumed);
           continue;
         }
         const dse::ObjectiveSignedDifference difference =
@@ -882,7 +898,7 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         return consumed.takeError();
       if (!*consumed)
         return searchError("Action failure had no failure classification");
-      if (**consumed == SpatialActionTransitionFailureKind::Interrupted)
+      if ((*consumed)->kind == SpatialActionTransitionFailureKind::Interrupted)
         return finishInterrupted();
       rememberInactiveAction(actionKey);
       if (llvm::Error error =
@@ -1094,7 +1110,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           return consumed.takeError();
         if (!*consumed)
           return searchError("Action failure had no failure classification");
-        if (**consumed == SpatialActionTransitionFailureKind::Interrupted)
+        if ((*consumed)->kind ==
+            SpatialActionTransitionFailureKind::Interrupted)
           return finishInterrupted();
         rememberInactiveAction(actionKey);
         if (llvm::Error error =

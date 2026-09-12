@@ -9,6 +9,7 @@
 
 #include "DSE/Objective.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -34,6 +35,8 @@ enum class SpatialActionTransitionFailureKind : std::uint8_t {
   WorkLimit,
   Interrupted,
 };
+
+llvm::StringRef spelling(SpatialActionTransitionFailureKind kind);
 
 enum class SpatialActionExecutionContext : std::uint8_t {
   Search,

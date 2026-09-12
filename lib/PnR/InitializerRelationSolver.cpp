@@ -15,6 +15,19 @@
 using namespace loom::pnr;
 using namespace loom::pnr::detail;
 
+llvm::StringRef loom::pnr::detail::initializerRelationKindSpelling(
+    InitializerRelationKind kind) {
+  switch (kind) {
+  case InitializerRelationKind::Equal:
+    return "equal";
+  case InitializerRelationKind::Disjoint:
+    return "disjoint";
+  case InitializerRelationKind::Capacity:
+    return "capacity";
+  }
+  llvm_unreachable("unknown initializer relation kind");
+}
+
 char InitializerRelationSolveFailure::ID;
 
 void InitializerRelationSolveFailure::log(llvm::raw_ostream &stream) const {
@@ -1556,9 +1569,15 @@ InitializerRelationSolver::solveCanonicalWithReleasedChoices(
           return releasedMarks[member.decision] != 0;
         });
     if (!hasReleasedMember) {
+      // Name the refusing relation. A caller that fixed a root combination
+      // cannot tell which hard relation refused it from the outcome alone.
       if (!model_->relationSatisfied(relationOrdinal, modelFixedChoices))
         return fixedInfeasible(
-            "retained initializer choices violate a hard relation");
+            "retained initializer choices violate hard relation " +
+            llvm::Twine(relationOrdinal) + " (" +
+            initializerRelationKindSpelling(record.kind) + ", " +
+            llvm::Twine(static_cast<std::uint64_t>(members.size())) +
+            " members)");
       continue;
     }
 
