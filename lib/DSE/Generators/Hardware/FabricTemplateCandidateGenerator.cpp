@@ -3,10 +3,15 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CompositeFuMining.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "HardwareTopologyQuality.h"
+
+#include "llvm/ADT/STLExtras.h"
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -14,7 +19,14 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.7.3";
+    "loom.fabric_template_generator.config.7.4";
+
+// The Dataflow a mined composite FU selection names. A template built from
+// the catalog alone binds nothing here, so the slot admits zero or one.
+constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
+    {CandidateGeneratorInputSlotRef(0), "dataflow", PlanValueRole::CandidateSet,
+     &::dataflow::canonicalDataflowSchema, PlanValueCardinality::ZeroOrOne},
+}};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -71,7 +83,8 @@ specialMathCapabilityProfileFromWireTag(std::uint32_t tag) {
 }
 
 std::vector<std::uint8_t>
-encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
+encodeConfig(const loom::adg::BuiltinTargetScale &scale,
+             const std::optional<MinedCompositeFuSelection> &mined) {
   const loom::adg::BuiltinTargetDescriptor &descriptor =
       loom::adg::builtinCoverageTarget;
   std::vector<std::uint8_t> bytes;
@@ -119,11 +132,22 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.privateCaches.inOrderMissStatusEntries);
   appendU32(bytes, scale.privateCaches.outOfOrderMissStatusEntries);
   appendU32(bytes, scale.memoryOperationIssueDepth);
+  appendU32(bytes, mined ? mined->templates.size() : 0);
+  if (mined) {
+    bytes.insert(bytes.end(), mined->dataflow.bytes().begin(),
+                 mined->dataflow.bytes().end());
+    for (const MinedCompositeFuSelectionEntry &entry : mined->templates) {
+      appendU32(bytes, entry.shapeKey.size());
+      bytes.insert(bytes.end(), entry.shapeKey.begin(), entry.shapeKey.end());
+      appendU32(bytes, entry.occurrences);
+    }
+  }
   return bytes;
 }
 
 struct DecodedConfig final {
   loom::adg::BuiltinTargetScale scale;
+  std::optional<MinedCompositeFuSelection> mined;
 };
 
 llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -202,12 +226,46 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");
+  const std::uint32_t minedCount = readU32();
+  std::optional<MinedCompositeFuSelection> mined;
+  if (minedCount != 0) {
+    if (bytes.size() < ArtifactIdentity::byteSize)
+      return invalid("truncated mined composite FU Dataflow identity");
+    auto dataflow =
+        ArtifactIdentity::fromBytes(bytes.take_front(ArtifactIdentity::byteSize));
+    if (!dataflow)
+      return dataflow.takeError();
+    bytes = bytes.drop_front(ArtifactIdentity::byteSize);
+    MinedCompositeFuSelection selection{*dataflow, {}};
+    selection.templates.reserve(minedCount);
+    for (std::uint32_t entry = 0; entry != minedCount; ++entry) {
+      if (bytes.size() < 4)
+        return invalid("truncated mined composite FU shape key");
+      const std::uint32_t keySize = readU32();
+      if (keySize == 0 || keySize > bytes.size())
+        return invalid("mined composite FU shape key is empty or truncated");
+      std::vector<std::uint8_t> key(bytes.take_front(keySize).begin(),
+                                    bytes.take_front(keySize).end());
+      bytes = bytes.drop_front(keySize);
+      if (bytes.size() < 4)
+        return invalid("truncated mined composite FU occurrence count");
+      const std::uint32_t occurrences = readU32();
+      if (occurrences == 0 || occurrences > scale.spatialPeCount)
+        return invalid("a mined composite FU occurrence count is zero or "
+                       "exceeds the Spatial PE count");
+      if (!selection.templates.empty() &&
+          !(selection.templates.back().shapeKey < key))
+        return invalid("mined composite FU shape keys are not canonical");
+      selection.templates.push_back({std::move(key), occurrences});
+    }
+    mined = std::move(selection);
+  }
   if (!bytes.empty())
     return invalid("template descriptor and scale are not canonical");
   const auto *descriptor =
       loom::adg::findBuiltinTargetDescriptor(identity, major, minor);
   if (descriptor)
-    return DecodedConfig{scale};
+    return DecodedConfig{scale, std::move(mined)};
   return invalid(
       "template descriptor is not a registered public Builder template");
 }
@@ -225,7 +283,7 @@ const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
     "loom.fabric_template.generator.v7",
-    {},
+    inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
     CandidateGeneratorDeterminism::Deterministic,
@@ -234,19 +292,73 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
 };
 
+/// Re-derives the FU structure of every selected mined template from the exact
+/// Dataflow the selection names. The config carries only the selection, so the
+/// miner and the canonical capability derivation remain the sole owners of
+/// that structure and a config can never describe an FU they would not.
+llvm::Expected<std::vector<loom::adg::BuiltinCompositeFuPlacement>>
+resolveMinedCompositeFus(
+    const std::optional<MinedCompositeFuSelection> &selection,
+    const CandidateGeneratorInputBinding &dataflowBinding,
+    const ArtifactStore &store) {
+  std::vector<loom::adg::BuiltinCompositeFuPlacement> placements;
+  if (!selection) {
+    if (!dataflowBinding.artifacts.empty())
+      return invalid("fabric template generator bound a Dataflow without a "
+                     "mined composite FU selection");
+    return placements;
+  }
+  if (dataflowBinding.artifacts.size() != 1)
+    return invalid("a mined composite FU selection requires its exact "
+                   "Dataflow input");
+  if (dataflowBinding.artifacts.front().artifact != selection->dataflow)
+    return invalid("the bound Dataflow is not the one the mined composite FU "
+                   "selection names");
+  auto program = ::dataflow::importCanonicalDataflow(
+      dataflowBinding.artifacts.front(), store);
+  if (!program)
+    return program.takeError();
+  std::vector<::dataflow::GraphRef> graphs;
+  for (const ::dataflow::CanonicalGraphView &graph : program->view().graphs())
+    graphs.push_back(graph.ref);
+  auto candidates = mineCompositeFuCandidates(program->view(), graphs);
+  if (!candidates)
+    return candidates.takeError();
+  placements.reserve(selection->templates.size());
+  for (const MinedCompositeFuSelectionEntry &entry : selection->templates) {
+    const auto found = llvm::find_if(
+        *candidates, [&](const CompositeFuCandidate &candidate) {
+          return candidate.canonicalKey == entry.shapeKey;
+        });
+    if (found == candidates->end())
+      return invalid("a selected mined composite FU shape is not one this "
+                     "Dataflow mines");
+    auto spec = deriveCompositeFuTemplate(program->view(), *found);
+    if (!spec)
+      return spec.takeError();
+    placements.push_back({std::move(*spec), entry.occurrences});
+  }
+  return placements;
+}
+
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &,
                const CandidateGeneratorInvocationView &) {
-  if (!inputBindings.empty())
-    return invalid("fabric template generator received an input binding");
+  if (inputBindings.size() != 1)
+    return invalid("fabric template generator input bindings are not dense");
   auto config = adoptResolvedFabricTemplateConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
   if (!config)
     return config.takeError();
-  auto result = loom::adg::buildBuiltinTarget(store, config->scale());
+  auto placements = resolveMinedCompositeFus(config->minedCompositeFus(),
+                                             inputBindings.front(), store);
+  if (!placements)
+    return placements.takeError();
+  auto result =
+      loom::adg::buildBuiltinTarget(store, config->scale(), *placements);
   if (!result)
     return result.takeError();
   std::vector<ArtifactRootReference> outputs;
@@ -283,7 +395,8 @@ llvm::ArrayRef<std::uint8_t> resolvedFabricTemplateConfigSchemaBytes() {
 
 llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
     llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
-    std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale) {
+    std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale,
+    const std::optional<MinedCompositeFuSelection> &minedCompositeFus) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("template base scale is invalid or an FU occurrence count "
                    "exceeds its schedule-local PE count");
@@ -292,11 +405,29 @@ llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
   if (!descriptor)
     return invalid(
         "template descriptor is not a registered public Builder template");
-  std::vector<std::uint8_t> bytes = encodeConfig(scale);
+  if (minedCompositeFus) {
+    if (minedCompositeFus->templates.empty())
+      return invalid("a mined composite FU selection names no template");
+    for (const auto &indexed :
+         llvm::enumerate(minedCompositeFus->templates)) {
+      const MinedCompositeFuSelectionEntry &entry = indexed.value();
+      if (entry.shapeKey.empty())
+        return invalid("a mined composite FU selection has no shape key");
+      if (entry.occurrences == 0 || entry.occurrences > scale.spatialPeCount)
+        return invalid("a mined composite FU occurrence count is zero or "
+                       "exceeds the Spatial PE count");
+      if (indexed.index() != 0 &&
+          !(minedCompositeFus->templates[indexed.index() - 1].shapeKey <
+            entry.shapeKey))
+        return invalid("mined composite FU shape keys are not canonical");
+    }
+  }
+  std::vector<std::uint8_t> bytes = encodeConfig(scale, minedCompositeFus);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedFabricTemplateConfigView(scale, std::move(bytes), *digest);
+  return ResolvedFabricTemplateConfigView(scale, minedCompositeFus,
+                                          std::move(bytes), *digest);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
@@ -320,11 +451,13 @@ adoptResolvedFabricTemplateConfigView(
   auto decoded = decodeConfig(canonicalViewBytes);
   if (!decoded)
     return decoded.takeError();
-  std::vector<std::uint8_t> reencoded = encodeConfig(decoded->scale);
+  std::vector<std::uint8_t> reencoded =
+      encodeConfig(decoded->scale, decoded->mined);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("template config does not re-encode to the source bytes");
-  return ResolvedFabricTemplateConfigView(decoded->scale, std::move(reencoded),
-                                          digest);
+  return ResolvedFabricTemplateConfigView(decoded->scale,
+                                          std::move(decoded->mined),
+                                          std::move(reencoded), digest);
 }
 
 const CandidateGeneratorDescriptor &
@@ -339,10 +472,17 @@ llvm::Error registerFabricTemplateCandidateGenerator() {
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindFabricTemplateCandidateGeneratorInputs() {
+bindFabricTemplateCandidateGeneratorInputs(
+    const std::optional<ArtifactRootReference> &dataflow) {
   if (llvm::Error error = registerFabricTemplateCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings;
+  std::vector<ArtifactRootReference> artifacts;
+  if (dataflow)
+    artifacts.push_back(*dataflow);
+  bindings.push_back(
+      CandidateGeneratorInputBinding{CandidateGeneratorInputSlotRef(0),
+                                     std::move(artifacts)});
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))
     return std::move(error);

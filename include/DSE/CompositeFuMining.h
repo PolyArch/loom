@@ -1,7 +1,7 @@
 #ifndef LOOM_DSE_COMPOSITEFUMINING_H
 #define LOOM_DSE_COMPOSITEFUMINING_H
 
-#include "ADG/Builder.h"
+#include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "DSE/FuReverseSynthesis.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
@@ -109,49 +109,18 @@ llvm::Expected<std::vector<CompositeFuCandidate>> mineCompositeFuCandidates(
     llvm::ArrayRef<::dataflow::GraphRef> graphs,
     const CompositeFuMiningLimits &limits = {});
 
-/// One `fabric.op` resource derived for one node of a mined candidate.
-struct CompositeFuOperation final {
-  ::fabric::CanonicalImplementationCapability capability;
-  std::vector<::loom::adg::PortType> outputTypes;
-};
-
-/// The Fabric capability of one mined candidate, in candidate node and
-/// boundary order. This is the hardware side of `F = Synthesize(S)`; it owns no
-/// exact software parameter value.
-struct CompositeFuTemplate final {
-  std::vector<CompositeFuOperation> operations;
-  std::vector<::loom::adg::PortType> inputTypes;
-  std::vector<::loom::adg::PortType> outputTypes;
-};
-
-/// Derives the Fabric capability of one mined candidate from the exact actors
+/// Derives the hardware request of one mined candidate from the exact actors
 /// of its occurrences. Each node's family is the least registered family that
 /// owns the node schema and whose canonical capability derivation admits every
 /// occurrence's actor at that node. A node whose family has no inverse policy
 /// is a typed `CapabilityDerivationRejected`.
-llvm::Expected<CompositeFuTemplate> deriveCompositeFuTemplate(
+///
+/// The result is the ADG Builder's own composite FU vocabulary, which is the
+/// single owner of FU structure: no caller re-describes the topology, and the
+/// mined candidate remains the software evidence that produced it.
+llvm::Expected<::loom::adg::CompositeFuSpec> deriveCompositeFuTemplate(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const CompositeFuCandidate &candidate);
-
-/// The authoring handles of one composite FU, in mined node order. Canonical
-/// finalization reorders FU graph nodes and capability rows, so a caller that
-/// must bind exact actors resolves these handles against the finalized design
-/// instead of assuming its authoring order survived.
-struct CompositeFuAuthoring final {
-  std::vector<::loom::adg::FuNode> nodes;
-  ::loom::adg::FuCapabilityTemplateHandle capability;
-};
-
-/// Authors one mined composite FU inside an open PE and closes it. The PE
-/// values are the FU's ordered boundary inputs. This is the one ADG Builder
-/// materialization of a mined template: a Module that offers the template
-/// places the FU with it, and the ordinary FU-inventory decision then
-/// redistributes that occurrence.
-llvm::Expected<CompositeFuAuthoring>
-authorCompositeFu(::loom::adg::PeBuilder &pe,
-                  llvm::ArrayRef<::loom::adg::PeValue> inputs,
-                  const CompositeFuCandidate &candidate,
-                  const CompositeFuTemplate &fu);
 
 /// `F = Synthesize(S)` for one mined candidate: one finalized Module holding
 /// one Spatial PE whose single FU is the mined template, plus one coverage

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -1345,6 +1346,157 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   }
   return addSelectableFu(pe, inputs, {*bits64, *bits64}, *bits64, *bits128,
                          resources);
+}
+
+llvm::Expected<CompositeFuPlacement>
+addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+               const CompositeFuSpec &spec) {
+  if (spec.nodes.empty())
+    return invalid("composite FU has no operation resource");
+  if (spec.outputs.empty())
+    return invalid("composite FU publishes no result");
+  if (inputs.size() != spec.inputs.size())
+    return invalid("composite FU input count does not match its boundary");
+
+  // Authoring order must follow the internal relation, and a cycle is a
+  // recurrence the caller must express with an explicit backedge.
+  std::vector<std::size_t> pending(spec.nodes.size(), 0);
+  std::vector<std::vector<std::size_t>> successors(spec.nodes.size());
+  for (const CompositeFuEdgeSpec &edge : spec.internalEdges) {
+    if (edge.producerNode >= spec.nodes.size() ||
+        edge.consumerNode >= spec.nodes.size())
+      return invalid("composite FU edge names an unknown node");
+    if (edge.producerResult >=
+            spec.nodes[edge.producerNode].outputTypes.size() ||
+        edge.consumerOperand >= spec.nodes[edge.consumerNode].inputTypes.size())
+      return invalid("composite FU edge names an unknown node port");
+    ++pending[edge.consumerNode];
+    successors[edge.producerNode].push_back(edge.consumerNode);
+  }
+  std::vector<std::size_t> ready;
+  for (std::size_t node = 0; node != pending.size(); ++node)
+    if (pending[node] == 0)
+      ready.push_back(node);
+  std::vector<std::size_t> order;
+  while (!ready.empty()) {
+    const std::size_t node = ready.front();
+    ready.erase(ready.begin());
+    order.push_back(node);
+    for (std::size_t successor : successors[node])
+      if (--pending[successor] == 0)
+        ready.push_back(successor);
+  }
+  if (order.size() != spec.nodes.size())
+    return invalid("composite FU contains a recurrence and needs an explicit "
+                   "FU backedge");
+
+  std::vector<PortType> boundaryInputTypes;
+  boundaryInputTypes.reserve(spec.inputs.size());
+  std::map<std::pair<std::uint32_t, std::uint64_t>, std::size_t> boundaryInput;
+  for (const auto &indexed : llvm::enumerate(spec.inputs)) {
+    const CompositeFuPortSpec &port = indexed.value();
+    if (port.node >= spec.nodes.size() ||
+        port.portOrdinal >= spec.nodes[port.node].inputTypes.size())
+      return invalid("composite FU boundary input names an unknown node port");
+    boundaryInputTypes.push_back(
+        spec.nodes[port.node].inputTypes[port.portOrdinal]);
+    if (!boundaryInput
+             .emplace(std::make_pair(port.node, port.portOrdinal),
+                      indexed.index())
+             .second)
+      return invalid("composite FU boundary binds one node operand twice");
+  }
+  std::vector<PortType> boundaryOutputTypes;
+  boundaryOutputTypes.reserve(spec.outputs.size());
+  for (const CompositeFuPortSpec &port : spec.outputs) {
+    if (port.node >= spec.nodes.size() ||
+        port.portOrdinal >= spec.nodes[port.node].outputTypes.size())
+      return invalid("composite FU boundary output names an unknown node port");
+    boundaryOutputTypes.push_back(
+        spec.nodes[port.node].outputTypes[port.portOrdinal]);
+  }
+
+  std::map<std::pair<std::uint32_t, std::uint64_t>,
+           std::pair<std::uint32_t, std::uint64_t>>
+      internalSource;
+  for (const CompositeFuEdgeSpec &edge : spec.internalEdges)
+    if (!internalSource
+             .emplace(std::make_pair(edge.consumerNode, edge.consumerOperand),
+                      std::make_pair(edge.producerNode, edge.producerResult))
+             .second)
+      return invalid("composite FU operand has more than one internal source");
+
+  auto fu = pe.addFu(inputs, FuSpec{boundaryInputTypes, boundaryOutputTypes});
+  if (!fu)
+    return fu.takeError();
+  std::vector<FuValue> boundary;
+  boundary.reserve(boundaryInputTypes.size());
+  for (std::size_t ordinal = 0; ordinal != boundaryInputTypes.size();
+       ++ordinal) {
+    auto value = fu->input(ordinal);
+    if (!value)
+      return value.takeError();
+    boundary.push_back(*value);
+  }
+
+  std::vector<std::optional<FuNode>> nodes(spec.nodes.size());
+  for (std::size_t node : order) {
+    const CompositeFuNodeSpec &declaration = spec.nodes[node];
+    std::vector<FuValue> operands;
+    operands.reserve(declaration.inputTypes.size());
+    for (std::uint64_t ordinal = 0;
+         ordinal != declaration.inputTypes.size(); ++ordinal) {
+      const auto key =
+          std::make_pair(static_cast<std::uint32_t>(node), ordinal);
+      const auto source = internalSource.find(key);
+      if (source != internalSource.end()) {
+        auto value = nodes[source->second.first]->output(source->second.second);
+        if (!value)
+          return value.takeError();
+        operands.push_back(*value);
+        continue;
+      }
+      const auto port = boundaryInput.find(key);
+      if (port == boundaryInput.end())
+        return invalid("composite FU operand has neither an internal source "
+                       "nor a boundary port");
+      operands.push_back(boundary[port->second]);
+    }
+    auto authored = fu->addOperation(
+        operands,
+        OperationCapabilitySpec{
+            declaration.implementationFamily, declaration.hardwareParameters,
+            declaration.enabledOperations, declaration.outputTypes,
+            ::fabric::oneCycleElasticOperationResourceContract()});
+    if (!authored)
+      return authored.takeError();
+    nodes[node] = *authored;
+  }
+
+  CompositeFuPlacement placement;
+  placement.nodes.reserve(nodes.size());
+  for (const std::optional<FuNode> &node : nodes) {
+    if (!node)
+      return invalid("composite FU left a node unauthored");
+    placement.nodes.push_back(*node);
+  }
+  auto capability = fu->addCapabilityTemplateWithHandle(
+      FuCapabilityTemplateSpec{placement.nodes, {}});
+  if (!capability)
+    return capability.takeError();
+  placement.capability = *capability;
+
+  std::vector<FuValue> outputs;
+  outputs.reserve(spec.outputs.size());
+  for (const CompositeFuPortSpec &port : spec.outputs) {
+    auto value = nodes[port.node]->output(port.portOrdinal);
+    if (!value)
+      return value.takeError();
+    outputs.push_back(*value);
+  }
+  if (llvm::Error error = fu->close(outputs))
+    return std::move(error);
+  return placement;
 }
 
 } // namespace loom::adg

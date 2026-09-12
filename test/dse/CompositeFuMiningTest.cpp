@@ -1,6 +1,9 @@
 #include "DSE/CompositeFuMining.h"
 
+#include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "DSE/FabricTemplateCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
@@ -15,6 +18,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -23,6 +27,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -236,6 +241,60 @@ void synthesizesTheMinedTemplateBackToItsActors(llvm::StringRef fixture) {
           "actors");
 }
 
+/// The mined template reaches a Module by being placed while it is built. The
+/// generator config carries only the selection, so this also exercises that the
+/// generator re-mines the exact named Dataflow and refuses a shape it does not
+/// mine.
+void placesTheMinedTemplateInABuiltinModule(llvm::StringRef fixture) {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  loom::BlobStore blobs((llvm::Twine(directory.path()) + "/blobs").str());
+  mlir::MLIRContext context = makeContext();
+  dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
+  const std::vector<dataflow::GraphRef> graphs =
+      graphsWithOperandWidth(program.view(), 64);
+  auto candidates =
+      take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  require(!candidates.empty(), "mining reported no common subgraph");
+  auto published = take(dataflow::publishCanonicalDataflow(program, store));
+
+  const loom::adg::BuiltinTargetDescriptor &descriptor =
+      loom::adg::builtinSmallTarget;
+  loom::dse::MinedCompositeFuSelection selection{program.identity(), {}};
+  selection.templates.push_back({candidates.front().canonicalKey, 1});
+  auto config = take(loom::dse::resolveFabricTemplateConfig(
+      descriptor.templateIdentity, descriptor.schemaMajor,
+      descriptor.schemaMinor, descriptor.scale, selection));
+  require(config.minedCompositeFus().has_value(),
+          "the resolved template config lost its mined selection");
+  auto inputs =
+      take(loom::dse::bindFabricTemplateCandidateGeneratorInputs(published));
+  auto binding =
+      take(loom::dse::resolveFabricTemplateCandidateGeneratorBinding(config));
+  auto result = take(
+      loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &result.outcome);
+  require(completed && completed->outputBindings.front().artifacts.size() == 1,
+          "a template offering a mined composite FU published no System");
+
+  // A shape the named Dataflow does not mine is a typed rejection, not a
+  // silently catalog-only Module.
+  loom::dse::MinedCompositeFuSelection foreign{program.identity(), {}};
+  foreign.templates.push_back({{0, 1, 2, 3}, 1});
+  auto foreignConfig = take(loom::dse::resolveFabricTemplateConfig(
+      descriptor.templateIdentity, descriptor.schemaMajor,
+      descriptor.schemaMinor, descriptor.scale, foreign));
+  auto foreignBinding = take(
+      loom::dse::resolveFabricTemplateCandidateGeneratorBinding(foreignConfig));
+  auto rejected = loom::dse::invokeCandidateGenerator(inputs, foreignBinding,
+                                                      store, blobs);
+  if (rejected)
+    fail("a foreign mined shape key produced a Module");
+  llvm::consumeError(rejected.takeError());
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -249,6 +308,8 @@ int main(int argc, char **argv) {
     minesTheSharedMultiplyAccumulateShape(argv[1]);
   else if (scene == "synthesis")
     synthesizesTheMinedTemplateBackToItsActors(argv[1]);
+  else if (scene == "placement")
+    placesTheMinedTemplateInABuiltinModule(argv[1]);
   else
     fail("unknown scene " + scene.str());
   return EXIT_SUCCESS;

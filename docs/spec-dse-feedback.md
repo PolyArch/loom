@@ -3336,8 +3336,9 @@ those semantics requires another exact descriptor reference; central DSE does
 not gain a trainer-algorithm enum.
 
 The current Fabric-template configuration descriptor is
-`loom.fabric_template_generator.config.7.3`. It appends the target's memory
-operation issue depth to the 7.2 payload, which already appends the stable
+`loom.fabric_template_generator.config.7.4`. It appends the mined composite FU
+selection to the 7.3 payload, which already appends the target's memory
+operation issue depth to the 7.2 payload, which in turn appends the stable
 typed `BuiltinSpecialMathCapabilityProfile` tag to the complete builtin
 scale. `FullCatalog` preserves the version 8.0 elementary-math relation;
 `PortableProviderClosed` selects the target-owned provider-closed relation.

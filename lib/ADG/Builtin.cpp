@@ -307,7 +307,9 @@ llvm::Expected<MemoryInterfaceParameters> builtinMemoryInterface() {
 llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
                          const FuDistribution &distribution,
                          BuiltinSpecialMathCapabilityProfile
-                             specialMathCapabilityProfile) {
+                             specialMathCapabilityProfile,
+                         llvm::ArrayRef<BuiltinCompositeFuPlacement>
+                             compositeFus) {
   std::vector<PeValue> inputs;
   inputs.reserve(5);
   for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
@@ -366,6 +368,20 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
     if (llvm::Error error = addSpecialMathFu(
             pe, {inputs[0], inputs[1]}, specialMathCapabilityProfile))
       return error;
+  // A composite FU the caller supplied occupies the first sites of the
+  // Spatial schedule, so one Module offers it wherever a cover needs it while
+  // the catalog distribution above is unchanged.
+  for (const BuiltinCompositeFuPlacement &placement : compositeFus) {
+    if (site >= placement.occurrences)
+      continue;
+    if (placement.fu.inputs.size() > inputs.size())
+      return invalid("a composite FU boundary exceeds the PE input inventory");
+    std::vector<PeValue> boundary(inputs.begin(),
+                                  inputs.begin() + placement.fu.inputs.size());
+    auto placed = addCompositeFu(pe, boundary, placement.fu);
+    if (!placed)
+      return placed.takeError();
+  }
   return pe.close();
 }
 
@@ -380,12 +396,17 @@ struct MemoryMeshAttachments final {
   std::size_t firstOutputCount;
 };
 
-llvm::Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCoreImpl(DesignBuilder &design,
-                             const BuiltinTargetScale &scale) {
+llvm::Expected<BuiltinSpatialCoreExpansion> expandBuiltinSpatialCoreImpl(
+    DesignBuilder &design, const BuiltinTargetScale &scale,
+    llvm::ArrayRef<BuiltinCompositeFuPlacement> compositeFus) {
   if (!isValidBuiltinTargetScale(scale))
     return invalid("builtin target base scale is invalid or an FU occurrence "
                    "count exceeds its PE count");
+  for (const BuiltinCompositeFuPlacement &placement : compositeFus)
+    if (placement.occurrences == 0 ||
+        placement.occurrences > scale.spatialPeCount)
+      return invalid("a composite FU occurrence count is zero or exceeds the "
+                     "Spatial PE count");
   const std::uint32_t temporalTagWidth =
       builtinTemporalTagWidth(scale.temporalResidentContexts);
   // The queue discipline applies only to tag-carrying interconnect FIFOs;
@@ -617,7 +638,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       return pe.takeError();
     if (llvm::Error error =
             addFuCatalog(*pe, site, spatialDistribution,
-                         scale.specialMathCapabilityProfile))
+                         scale.specialMathCapabilityProfile, compositeFus))
       return std::move(error);
     std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != peOutputPortCount; ++output) {
@@ -685,9 +706,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                                         temporalParameters));
     if (!pe)
       return pe.takeError();
+    // Composite FUs are a Spatial supply: a Temporal PE rotates its residents,
+    // which is exactly the serialization the composite occurrence avoids.
     if (llvm::Error error =
             addFuCatalog(*pe, site, temporalDistribution,
-                         scale.specialMathCapabilityProfile))
+                         scale.specialMathCapabilityProfile, {}))
       return std::move(error);
     std::vector<SpatialValue> outputs;
     for (std::size_t output = 0; output != peOutputPortCount; ++output) {
@@ -1179,13 +1202,13 @@ expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
   auto descriptor = getBuiltinTargetDescriptor(preset);
   if (!descriptor)
     return descriptor.takeError();
-  return expandBuiltinSpatialCoreImpl(design, (*descriptor)->scale);
+  return expandBuiltinSpatialCoreImpl(design, (*descriptor)->scale, {});
 }
 
-llvm::Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCore(DesignBuilder &design,
-                         const BuiltinTargetScale &scale) {
-  return expandBuiltinSpatialCoreImpl(design, scale);
+llvm::Expected<BuiltinSpatialCoreExpansion> expandBuiltinSpatialCore(
+    DesignBuilder &design, const BuiltinTargetScale &scale,
+    llvm::ArrayRef<BuiltinCompositeFuPlacement> compositeFus) {
+  return expandBuiltinSpatialCoreImpl(design, scale, compositeFus);
 }
 
 llvm::Expected<SystemBuilder>
@@ -1214,9 +1237,11 @@ buildBuiltinTarget(const loom::ArtifactStore &store,
 
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
-                   const BuiltinTargetScale &scale) {
+                   const BuiltinTargetScale &scale,
+                   llvm::ArrayRef<BuiltinCompositeFuPlacement> compositeFus) {
   DesignBuilder moduleDesign(store);
-  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, scale);
+  auto moduleExpansion =
+      expandBuiltinSpatialCore(moduleDesign, scale, compositeFus);
   if (!moduleExpansion)
     return moduleExpansion.takeError();
   if (llvm::Error error =

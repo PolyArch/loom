@@ -999,6 +999,17 @@ implementation family proves otherwise.
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
 
+The library also authors one composite FU from an explicit typed request: a
+connected graph of operation resources with an ordered boundary, where each
+boundary port carries the type of the node port it names. That request is the
+library's only description of such an FU, so a caller that derives one, for
+example from a mined common software subgraph, never restates the topology in a
+second structure. The request admits no implicit recurrence: an internal cycle
+needs an explicit FU backedge and is rejected here. The builtin recipe accepts
+such requests beside its own catalog and places their occurrences on Spatial PE
+sites, which is where a composite datapath keeps loop-carried work
+unserialized.
+
 When a helper installs the one-cycle elastic operation contract, its result
 slot covers the complete active result tuple. The exact registered
 `ActorHandshakeCase::activeResults` inventory derives the nonempty canonical

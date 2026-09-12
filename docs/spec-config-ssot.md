@@ -118,11 +118,22 @@ resolved identity. `FullCatalog` remains the explicit relation that preserves
 the version 8.0 elementary-math capabilities.
 
 The hardware template projection uses
-`loom.fabric_template_generator.config.7.3`. Its canonical view includes the
+`loom.fabric_template_generator.config.7.4`. Its canonical view includes the
 exact template descriptor and complete `BuiltinTargetScale`, including the
-special-math profile and the memory operation issue depth. A 7.3 adopter
-rejects a 7.2 view; regeneration projects the current view from the exact
-ResolvedConfig rather than inserting a compatibility value into old bytes.
+special-math profile and the memory operation issue depth, followed by the
+mined composite FU selection. A 7.4 adopter rejects a 7.3 view; regeneration
+projects the current view from the exact ResolvedConfig rather than inserting a
+compatibility value into old bytes.
+
+The mined composite FU selection is the typed decision domain that lets a
+builtin template offer FUs derived from the software it will run. It names one
+exact canonical Dataflow identity and a canonically ordered set of mined shape
+keys, each with the number of Spatial PE sites that receive an occurrence. It
+carries no FU structure: the generator binds that exact Dataflow, re-mines it,
+and re-derives every selected template through the owners in
+`docs/spec-generalize-subgraphs-to-fu.md`, so a configuration can never
+describe an FU those owners would not produce. An empty selection is the
+ordinary catalog-only template and binds no Dataflow.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
 an explicitly selected builtin target. Import and Fabric finalization produce

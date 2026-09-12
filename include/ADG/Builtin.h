@@ -3,6 +3,7 @@
 
 #include "ADG/Builder.h"
 #include "ADG/BuiltinDescriptor.h"
+#include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -41,11 +42,21 @@ getBuiltinSpatialMemoryAccessRealization(const BuiltinPrivateCacheScale &caches,
 
 llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 
+/// One composite FU the caller asks the builtin recipe to place beside its own
+/// catalog, and the number of Spatial PE sites that receive an occurrence of
+/// it. The recipe owns where the occurrences land; the caller owns the FU
+/// structure and how it was derived.
+struct BuiltinCompositeFuPlacement final {
+  CompositeFuSpec fu;
+  std::uint32_t occurrences = 0;
+};
+
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset);
 llvm::Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCore(DesignBuilder &design,
-                         const BuiltinTargetScale &scale);
+expandBuiltinSpatialCore(
+    DesignBuilder &design, const BuiltinTargetScale &scale,
+    llvm::ArrayRef<BuiltinCompositeFuPlacement> compositeFus = {});
 
 /// Expands the System recipe around an independently finalized SpatialCore.
 /// The builtin hardware domain is complete, while the returned System remains
@@ -65,8 +76,9 @@ llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset);
 llvm::Expected<FinalizedFabricDesign>
-buildBuiltinTarget(const loom::ArtifactStore &store,
-                   const BuiltinTargetScale &scale);
+buildBuiltinTarget(
+    const loom::ArtifactStore &store, const BuiltinTargetScale &scale,
+    llvm::ArrayRef<BuiltinCompositeFuPlacement> compositeFus = {});
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
