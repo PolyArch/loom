@@ -455,23 +455,34 @@ def validate_mapping_work(
                 "hardware reopen published a child Mapping on the parent System",
             )
         if not published_children:
-            stopping = [
+            # The ledger is published in the invocation summary of the
+            # invocation that ran the chain. A build may contain several joint
+            # design invocations - exploration and finalization - and only the
+            # ones that searched carry reopen work, so every searching summary
+            # must show the typed terminal state rather than the last summary
+            # of the build, which may belong to an invocation that never
+            # reopened.
+            searched = [
                 payload
                 for payload in matching_payloads(
                     events, stage="system_pnr", event="derived_context"
                 )
                 if payload.get("context_kind") == "joint_design_stopping"
+                and payload.get("hardware_reopen_searches", 0) > 0
             ]
             require(
-                stopping
-                and stopping[-1].get("declared_work_exhausted") is True
-                and isinstance(stopping[-1].get("verified_alternatives"), int)
-                and stopping[-1]["verified_alternatives"] >= 1
-                and stopping[-1].get("selected_mapping") is not None
-                and isinstance(
-                    stopping[-1].get("hardware_repair_probes_consumed"), int
-                )
-                and stopping[-1]["hardware_repair_probes_consumed"] >= 1,
+                searched
+                and all(
+                    summary.get("declared_work_exhausted") is True
+                    and isinstance(summary.get("verified_alternatives"), int)
+                    and summary["verified_alternatives"] >= 1
+                    and summary.get("selected_mapping") is not None
+                    and isinstance(
+                        summary.get("hardware_repair_probes_consumed"), int
+                    )
+                    and summary["hardware_repair_probes_consumed"] >= 1
+                    for summary in searched
+                ),
                 "hardware reopen published no child Mapping and did not end in a "
                 "typed exhausted state with a verified selected Mapping",
             )
