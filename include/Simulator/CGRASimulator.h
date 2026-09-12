@@ -234,6 +234,11 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint32_t blockingStorageCapacity = 0;
     std::optional<StorageHead> blockingStorageHead;
     bool blockingTraversalWaitingForStorage = false;
+    /// Whether the blocking storage admits this token's channel now. A queue
+    /// below capacity is not necessarily admitting: `docs/spec-fabric-fifo.md`
+    /// keeps one slot back for every absent guaranteed channel. The queue owns
+    /// this verdict; no consumer may re-derive it from occupancy.
+    bool blockingStorageAdmitsChannel = false;
     std::uint32_t blockingDownstreamStorageCount = 0;
     std::uint32_t blockingUnbufferedSinkCount = 0;
     std::uint64_t blockingDownstreamStorageOrdinal = 0;
@@ -241,6 +246,8 @@ struct CgraClosedWaitSetDiagnostic final {
     std::uint32_t blockingDownstreamStorageReservations = 0;
     std::uint32_t blockingDownstreamStorageCapacity = 0;
     bool blockingDownstreamStorageReserved = false;
+    /// The same admission verdict for the first downstream storage.
+    bool blockingDownstreamStorageAdmitsChannel = false;
     std::optional<StorageHead> blockingDownstreamStorageHead;
     std::uint64_t blockingActorOrdinal = 0;
     std::uint64_t blockingReadyTokenCount = 0;

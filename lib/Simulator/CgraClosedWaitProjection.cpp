@@ -246,6 +246,21 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
         return &entry;
     return nullptr;
   };
+  // The queue classes resident in one storage, in queue order of first
+  // appearance. An enqueue the storage refuses is waiting for the shared pool
+  // `docs/spec-fabric-fifo.md` defines, and exactly these classes hold it:
+  // under `StrictFifo` that is the single global class, and under
+  // `PerTagVirtualChannel` the arriving channel may itself be absent, so its
+  // own class owns nothing and cannot be the wait's target.
+  const auto residentClasses = [&](const StorageResidency &storage) {
+    llvm::SmallVector<QueueClass, 4> classes;
+    for (const ResidencyEntry &entry : storage.entries) {
+      const QueueClass queueClass = queueClassOf(storage, entry.tagValue, true);
+      if (!llvm::is_contained(classes, queueClass))
+        classes.push_back(queueClass);
+    }
+    return classes;
+  };
   const auto classPositionOf =
       [&](const StorageResidency &storage, const QueueClass &queueClass,
           std::uint64_t bindingOrdinal,
@@ -449,30 +464,29 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
     const OwnerKey producer =
         actorNode(transfer.producerActorOrdinal, transfer.occurrenceOrdinal);
     // Output backpressure: the transfer has not been durably accepted by the
-    // storage it waits to enter.
+    // storage it waits to enter. The storage releases the capacity its
+    // admission needs only when its resident classes advance, so each of them
+    // is a waited-on owner; the arriving token's own class may hold nothing.
     if (transfer.blockingTraversalWaitingForStorage &&
-        transfer.blockingStorageOrdinal != absent) {
-      const auto discipline =
-          transfer.blockingStorageOrdinal < storageCount
-              ? residencies[transfer.blockingStorageOrdinal].discipline
-              : ::fabric::FifoQueueDiscipline::StrictFifo;
-      Diagnostic::WaitEdge edge;
-      edge.from = producer;
-      edge.to = storageNode(
-          transfer.blockingStorageOrdinal,
-          discipline == ::fabric::FifoQueueDiscipline::PerTagVirtualChannel &&
-                  tagged
-              ? QueueClass::tag(transfer.physicalTagValue)
-              : QueueClass::global());
-      edge.kind = EdgeKind::ActorOutputBackpressure;
-      edge.bindingOrdinal = transfer.bindingOrdinal;
-      edge.occurrenceOrdinal = transfer.occurrenceOrdinal;
-      edge.storageOrdinal = transfer.blockingStorageOrdinal;
-      edge.fifoOccurrence = transfer.blockingFifoOccurrence;
-      edge.storageCapacity = transfer.blockingStorageCapacity;
-      edge.storageOccupancy = transfer.blockingStorageOccupancy;
-      appendEdge(std::move(edge));
-    }
+        transfer.blockingStorageOrdinal < storageCount)
+      for (const QueueClass &queueClass :
+           residentClasses(residencies[transfer.blockingStorageOrdinal])) {
+        Diagnostic::WaitEdge edge;
+        edge.from = producer;
+        edge.to = storageNode(transfer.blockingStorageOrdinal, queueClass);
+        edge.kind = EdgeKind::ActorOutputBackpressure;
+        edge.bindingOrdinal = transfer.bindingOrdinal;
+        edge.occurrenceOrdinal = transfer.occurrenceOrdinal;
+        edge.storageOrdinal = transfer.blockingStorageOrdinal;
+        edge.fifoOccurrence = transfer.blockingFifoOccurrence;
+        edge.storageCapacity = transfer.blockingStorageCapacity;
+        edge.storageOccupancy = transfer.blockingStorageOccupancy;
+        if (tagged)
+          edge.awaitedTagValue = transfer.physicalTagValue;
+        if (queueClass.tagLocal)
+          edge.headTagValue = queueClass.tagValue;
+        appendEdge(std::move(edge));
+      }
     // The transfer cannot publish into a channel the consumer has not
     // drained; the consumer's next firing must take the outstanding token.
     if (transfer.blockingActorOrdinal != absent) {
@@ -556,13 +570,7 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
   for (std::uint64_t storageOrdinal = 0; storageOrdinal != storageCount;
        ++storageOrdinal) {
     const StorageResidency &storage = residencies[storageOrdinal];
-    llvm::SmallVector<QueueClass, 4> classes;
-    for (const ResidencyEntry &entry : storage.entries) {
-      const QueueClass queueClass = queueClassOf(storage, entry.tagValue, true);
-      if (!llvm::is_contained(classes, queueClass))
-        classes.push_back(queueClass);
-    }
-    for (const QueueClass &queueClass : classes) {
+    for (const QueueClass &queueClass : residentClasses(storage)) {
       const ResidencyEntry *head = classHead(storage, queueClass);
       if (!head || head->bindingOrdinal == absent)
         continue;
@@ -571,31 +579,34 @@ void buildWaitCertificate(const detail::CgraGraphActivationRuntime &runtime,
       if (!transfer)
         return fail(Diagnostic::WaitProofFailure::IndeterminateDynamicOwner);
       const OwnerKey from = storageNode(storageOrdinal, queueClass);
-      // The head continues into a downstream storage.
-      if (transfer->blockingDownstreamStorageOrdinal != absent &&
-          transfer->blockingDownstreamStorageOrdinal < storageCount &&
-          transfer->blockingDownstreamStorageOccupancy +
-                  transfer->blockingDownstreamStorageReservations >=
-              transfer->blockingDownstreamStorageCapacity) {
+      // The head continues into a downstream storage that refuses it. The
+      // queue owns that verdict: `docs/spec-fabric-fifo.md` keeps one slot
+      // back for every absent guaranteed channel, so a downstream far below
+      // capacity still refuses an arriving channel. Its resident classes are
+      // the owners whose advance releases what the head needs.
+      if (transfer->blockingDownstreamStorageOrdinal < storageCount &&
+          !transfer->blockingDownstreamStorageAdmitsChannel) {
         const std::uint64_t downstream =
             transfer->blockingDownstreamStorageOrdinal;
-        Diagnostic::WaitEdge edge;
-        edge.from = from;
-        edge.to = storageNode(
-            downstream,
-            queueClassOf(residencies[downstream], transfer->physicalTagValue,
-                         transfer->physicalTagOrdinal != absent));
-        edge.kind = EdgeKind::StorageDownstream;
-        edge.bindingOrdinal = transfer->bindingOrdinal;
-        edge.occurrenceOrdinal = transfer->occurrenceOrdinal;
-        edge.storageOrdinal = downstream;
-        edge.storageCapacity = transfer->blockingDownstreamStorageCapacity;
-        edge.storageOccupancy = transfer->blockingDownstreamStorageOccupancy;
-        if (head->tagged)
-          edge.headTagValue = head->tagValue;
-        edge.headBindingOrdinal = head->bindingOrdinal;
-        edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
-        appendEdge(std::move(edge));
+        for (const QueueClass &downstreamClass :
+             residentClasses(residencies[downstream])) {
+          Diagnostic::WaitEdge edge;
+          edge.from = from;
+          edge.to = storageNode(downstream, downstreamClass);
+          edge.kind = EdgeKind::StorageDownstream;
+          edge.bindingOrdinal = transfer->bindingOrdinal;
+          edge.occurrenceOrdinal = transfer->occurrenceOrdinal;
+          edge.storageOrdinal = downstream;
+          edge.storageCapacity = transfer->blockingDownstreamStorageCapacity;
+          edge.storageOccupancy = transfer->blockingDownstreamStorageOccupancy;
+          if (transfer->physicalTagOrdinal != absent)
+            edge.awaitedTagValue = transfer->physicalTagValue;
+          if (downstreamClass.tagLocal)
+            edge.headTagValue = downstreamClass.tagValue;
+          edge.headBindingOrdinal = head->bindingOrdinal;
+          edge.headOccurrenceOrdinal = head->occurrenceOrdinal;
+          appendEdge(std::move(edge));
+        }
         continue;
       }
       // The head reached its route terminal and waits on its consumers. A
@@ -1202,6 +1213,7 @@ llvm::Expected<CgraClosedWaitSetDiagnostic> detail::projectCgraClosedWaitSet(
          transfer.blockingStorageCapacity,
          projectStorageHead(transfer.blockingStorageHead),
          transfer.blockingTraversalWaitingForStorage,
+         transfer.blockingStorageAdmitsChannel,
          transfer.blockingDownstreamStorageCount,
          transfer.blockingUnbufferedSinkCount,
          transfer.blockingDownstreamStorageOrdinal,
@@ -1209,6 +1221,7 @@ llvm::Expected<CgraClosedWaitSetDiagnostic> detail::projectCgraClosedWaitSet(
          transfer.blockingDownstreamStorageReservations,
          transfer.blockingDownstreamStorageCapacity,
          transfer.blockingDownstreamStorageReserved,
+         transfer.blockingDownstreamStorageAdmitsChannel,
          projectStorageHead(transfer.blockingDownstreamStorageHead),
          transfer.blockingActorOrdinal,
          transfer.blockingReadyTokenCount,

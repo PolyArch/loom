@@ -162,6 +162,9 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
         diagnostic.blockingStorageHead = storageHead(traversal.storageOrdinal);
         diagnostic.blockingTraversalWaitingForStorage =
             state == TraversalNodeState::WaitingStorage;
+        diagnostic.blockingStorageAdmitsChannel =
+            traversalState(slot, node).storageReserved ||
+            storage.queue.claimableCapacity(storageChannel(storage, node)) != 0;
         diagnostic.blockingDownstreamStorageCount =
             static_cast<std::uint32_t>(traversal.downstreamStorageNodes.size());
         diagnostic.blockingUnbufferedSinkCount = static_cast<std::uint32_t>(
@@ -186,6 +189,10 @@ CgraTransportRuntime::pendingTransferDiagnostics() const {
                 downstreamStorage.queue.capacity();
             diagnostic.blockingDownstreamStorageReserved =
                 traversalState(slot, downstream).storageReserved;
+            diagnostic.blockingDownstreamStorageAdmitsChannel =
+                diagnostic.blockingDownstreamStorageReserved ||
+                downstreamStorage.queue.claimableCapacity(
+                    storageChannel(downstreamStorage, downstream)) != 0;
             diagnostic.blockingDownstreamStorageHead =
                 storageHead(boundary.storageOrdinal);
           }
