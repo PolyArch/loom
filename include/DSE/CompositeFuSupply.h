@@ -7,9 +7,11 @@
 #include "DSE/FabricTemplateCandidateGenerator.h"
 
 #include "llvm/Support/Error.h"
+#include "llvm/Support/JSON.h"
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace loom::dse {
 
@@ -41,14 +43,33 @@ struct MinedCompositeFuProposal final {
   std::uint64_t actorsPerRealization = 0;
   /// Least number of distinct actors any node position of the shape binds.
   std::uint64_t support = 0;
+};
+
+/// What the one selection path did. An absent proposal has three different
+/// owners and a caller cannot act on, or report, the difference without them:
+/// software that mines no shape at all, shapes every one of which presents a
+/// wider boundary than a PE, and shapes whose operation families no inverse
+/// capability policy admits. The last one names a missing Fabric policy rather
+/// than a missing opportunity, so it is recorded with its exact reason.
+struct MinedCompositeFuSupplyOutcome final {
+  std::optional<MinedCompositeFuProposal> proposal;
+  /// Shapes the miner reported for this software.
+  std::uint64_t minedCandidateCount = 0;
+  /// Reported shapes whose FU boundary exceeds what a PE of the target
+  /// presents.
+  std::uint64_t boundaryRefusedCount = 0;
+  /// Reported shapes the canonical capability derivation refused.
+  std::uint64_t capabilityRefusedCount = 0;
+  /// The first such refusal's exact typed reason, which names the operation
+  /// family whose inverse policy is missing.
+  std::string firstCapabilityRefusal;
   /// Whether the bounded search stopped growing before its node bound. A
   /// bounded search still proposes what it found; the flag is the evidence
   /// that a wider template might exist.
   bool bounded = false;
   /// Largest node count whose level the search enumerated completely. A
   /// bounded search over a whole-layer graph reports a small number here, and
-  /// that number rather than the node bound is what the proposal actually
-  /// searched.
+  /// that number rather than the node bound is what the search covered.
   std::uint32_t exploredActorCount = 0;
   /// Wall time the bounded search spent. Mining runs inside a compile budget
   /// that the rest of the invocation also spends, so what it costs is part of
@@ -77,7 +98,7 @@ censusCanonicalDataflowActors(const ArtifactRootReference &dataflow,
                               const ArtifactStore &store);
 
 /// Proposes the composite FU template that answers one observed actor demand,
-/// or reports that the software offers none.
+/// or reports that the software offers none and why.
 ///
 /// `actorDemand` is how many actors the caller needs the supply to stop
 /// spending one realization each on. One composite occurrence answers
@@ -85,13 +106,19 @@ censusCanonicalDataflowActors(const ArtifactRootReference &dataflow,
 /// asks for the sites that demand needs, bounded by the target's Spatial PE
 /// count. Selection walks the mined rank and takes the first candidate whose
 /// boundary fits a PE of the target and whose capability the canonical
-/// derivation admits; an absent result means no mined shape does, which is an
-/// ordinary observation the caller retreats from.
-llvm::Expected<std::optional<MinedCompositeFuProposal>>
+/// derivation admits; an absent proposal is an ordinary observation the caller
+/// retreats from.
+llvm::Expected<MinedCompositeFuSupplyOutcome>
 proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
                               std::uint64_t actorDemand,
                               const loom::adg::BuiltinTargetScale &scale,
                               const ArtifactStore &store);
+
+/// Records one selection walk into a diagnostic record. Both observations that
+/// raise a demand report the same fields, so the field names stay with the
+/// outcome that defines them.
+void describeMinedCompositeFuSupply(llvm::json::Object &fields,
+                                    const MinedCompositeFuSupplyOutcome &supply);
 
 } // namespace loom::dse
 

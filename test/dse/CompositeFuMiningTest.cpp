@@ -423,10 +423,12 @@ void proposesAComposedSupplyForAnActorDemand(llvm::StringRef fixture) {
   constexpr std::uint64_t actorDemand = 210;
   const loom::adg::BuiltinTargetScale &scale =
       loom::adg::builtinCoverageTarget.scale;
-  auto proposal = take(loom::dse::proposeMinedCompositeFuSupply(
+  auto supply = take(loom::dse::proposeMinedCompositeFuSupply(
       published, actorDemand, scale, store));
-  require(proposal.has_value(),
+  require(supply.proposal.has_value(),
           "a demand over mineable software got no composed supply");
+  const std::optional<loom::dse::MinedCompositeFuProposal> &proposal =
+      supply.proposal;
   require(proposal->selection.dataflow == program.identity() &&
               proposal->selection.templates.size() == 1,
           "the composed supply does not name exactly its own Dataflow and "

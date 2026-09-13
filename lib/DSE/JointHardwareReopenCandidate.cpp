@@ -1017,21 +1017,23 @@ deriveHardwareRecipeGrowth(
                             TemporalInstructionStoreOnly ||
           !techObservation->dataflow)
         return false;
-      auto proposal = dse::proposeMinedCompositeFuSupply(
+      auto supply = dse::proposeMinedCompositeFuSupply(
           *techObservation->dataflow, techObservation->feedback.deficit(),
           baseConfig.hardwareTarget.parameters, artifacts);
-      if (!proposal)
-        return proposal.takeError();
-      if (!*proposal)
-        return false;
-      growth.techModule = techObservation->module;
-      growth.computeContextGrowthDirection =
-          dse::TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
-      growth.minedCompositeFus = (*proposal)->selection;
-      growth.minedDataflow = *techObservation->dataflow;
-      growth.minedActorsPerRealization = (*proposal)->actorsPerRealization;
-      growth.minedSearchBounded = (*proposal)->bounded;
-      growth.addedSpatialFuOccurrences = (*proposal)->occurrences;
+      if (!supply)
+        return supply.takeError();
+      const std::optional<dse::MinedCompositeFuProposal> &proposal =
+          supply->proposal;
+      if (proposal) {
+        growth.techModule = techObservation->module;
+        growth.computeContextGrowthDirection = dse::
+            TechMappingComputeContextGrowthDirection::MinedCompositeFuTemplate;
+        growth.minedCompositeFus = proposal->selection;
+        growth.minedDataflow = *techObservation->dataflow;
+        growth.minedActorsPerRealization = proposal->actorsPerRealization;
+        growth.minedSearchBounded = supply->bounded;
+        growth.addedSpatialFuOccurrences = proposal->occurrences;
+      }
       mapping_debug::emit(
           mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
           mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
@@ -1041,19 +1043,11 @@ deriveHardwareRecipeGrowth(
                 techObservation->feedback.hallDemandCount();
             fields["hall_context_value_count"] =
                 techObservation->feedback.hallContextValueCount();
-            fields["mined_actors_per_realization"] =
-                (*proposal)->actorsPerRealization;
-            fields["mined_support"] = (*proposal)->support;
-            fields["mined_occurrences"] = (*proposal)->occurrences;
-            fields["mined_search_bounded"] = (*proposal)->bounded;
-            fields["mined_search_explored_actor_count"] =
-                (*proposal)->exploredActorCount;
-            fields["mined_search_milliseconds"] =
-                (*proposal)->searchMilliseconds;
+            dse::describeMinedCompositeFuSupply(fields, *supply);
             fields["spatial_fu_unclosed_deficit"] =
                 growth.spatialFuUnclosedDeficit;
           });
-      return true;
+      return proposal.has_value();
     };
     if (!*plan) {
       auto composed = composeSupply();

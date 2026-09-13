@@ -4167,6 +4167,43 @@ Cancellation or expiration of the invocation deadline still stops execution.
 An expired per-parent slice remains typed incomplete but may retain actionable
 owner feedback while the invocation still has time for another candidate.
 
+A promoted verified parent raises no Mapping deficit, so every axis of its
+hardware spectrum answers a measurement. Two axes read it. The accelerator
+core count spends the same Module on more of the program. The composed
+capability spends fewer realizations on the same actors, and it is the answer
+to a candidate whose whole interval is the routed latency of one loop
+iteration in flight, an interval that scales with the actors that iteration
+holds rather than with the work they compute.
+
+The composed axis fires on one observation with two halves, and neither half
+alone is evidence. The measured half compares the parent's own mapped replay
+against the dataflow oracle replay of the very same graphs. Both are the
+application QoR owner's existing runtime measures, read from the observation
+it already banked for that parent, so this adds no second authority over how
+fast a candidate is; a parent with no completed observation has measured
+nothing, which is not the same as a window that is fast enough. The mapped
+replay must trail its oracle by at least the declared factor, because a
+replay that keeps up is already close to what the graph allows. The structural
+half is the census of the deployed canonical Dataflow by registered actor
+kind, whose control actors must be at least the declared share of its actors.
+A composite FU binds token-plane actors only, so a memory-dominated or
+compute-dominated deployment is short of something else and has its own owner.
+The demand the axis raises is that control actor count, and the same supply
+owner sizes the occurrences from it exactly as it sizes them from a Hall
+deficit.
+
+The axis runs at most once per parent and before the core axis, because a
+Module whose FU inventory is about to change makes every child built from the
+old inventory a child of a different parent. A changed FU inventory also
+invalidates every realization the parent holds, so the composed child is
+mapped cold and neither the Spatial frontier nor the System migration seed
+crosses it; children after it inherit the composed Module's own target
+Modules. It spends one of the parent's system-frontier children and shares the
+same per-parent slice. The record names both halves of the observation, the
+census, and the mined proposal, including the largest node count the bounded
+search enumerated completely, so a reader can tell a refusal to fire from a
+search that found nothing.
+
 Inside one promoted parent, a compute-context Hall closure probe reserves a
 retreat share of the remaining parent slice. A closure child can cover every
 required graph at Tech level and still exhaust route closure, and it then

@@ -22,6 +22,7 @@
 #include "PnR/System/SystemMappingMigration.h"
 
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -115,41 +116,47 @@ exploreFinalizedMappingHardwareSpectrum(
   // deployed; the miner and the canonical capability derivation stay the only
   // owners of what the template is.
   if (remaining != 0 && !dispatchDeadlineReached(effectiveExecutionPolicy)) {
-    auto census = censusCanonicalDataflowActors(software.dataflow, artifacts);
-    if (!census)
-      return census.takeError();
+    // The measured half is free and the structural half costs one Dataflow
+    // import, so a parent whose replay keeps up with its oracle never pays for
+    // the census.
     const bool shortfall = latency && observesLatencyShortfall(*latency);
-    const bool controlDense = observesControlDensity(*census);
-    std::optional<MinedCompositeFuProposal> proposal;
-    if (shortfall && controlDense) {
+    std::optional<CanonicalDataflowActorCensus> census;
+    if (shortfall) {
+      auto counted = censusCanonicalDataflowActors(software.dataflow, artifacts);
+      if (!counted)
+        return counted.takeError();
+      census = *counted;
+    }
+    const bool controlDense = census && observesControlDensity(*census);
+    MinedCompositeFuSupplyOutcome supply;
+    if (controlDense) {
       auto proposed = proposeMinedCompositeFuSupply(
           software.dataflow, census->controlActors,
           currentConfig.hardwareTarget.parameters, artifacts);
       if (!proposed)
         return proposed.takeError();
-      proposal = std::move(*proposed);
+      supply = std::move(*proposed);
     }
+    const std::optional<MinedCompositeFuProposal> &proposal = supply.proposal;
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "measured_latency_composed_supply";
           fields["dataflow_cycles"] = latency ? latency->dataflowCycles : 0;
           fields["mapped_cycles"] = latency ? latency->mappedCycles : 0;
-          fields["compute_actors"] = census->computeActors;
-          fields["control_actors"] = census->controlActors;
-          fields["memory_actors"] = census->memoryActors;
+          fields["compute_actors"] =
+              census ? llvm::json::Value(census->computeActors)
+                     : llvm::json::Value(nullptr);
+          fields["control_actors"] =
+              census ? llvm::json::Value(census->controlActors)
+                     : llvm::json::Value(nullptr);
+          fields["memory_actors"] =
+              census ? llvm::json::Value(census->memoryActors)
+                     : llvm::json::Value(nullptr);
           fields["latency_shortfall_observed"] = shortfall;
           fields["control_density_observed"] = controlDense;
-          if (proposal) {
-            fields["mined_actors_per_realization"] =
-                proposal->actorsPerRealization;
-            fields["mined_support"] = proposal->support;
-            fields["mined_occurrences"] = proposal->occurrences;
-            fields["mined_search_bounded"] = proposal->bounded;
-            fields["mined_search_explored_actor_count"] =
-                proposal->exploredActorCount;
-            fields["mined_search_milliseconds"] = proposal->searchMilliseconds;
-          }
+          if (controlDense)
+            describeMinedCompositeFuSupply(fields, supply);
           fields["diagnostic"] =
               !latency ? "this parent has no measured window to read"
               : !shortfall
@@ -171,7 +178,7 @@ exploreFinalizedMappingHardwareSpectrum(
       growth.minedCompositeFus = proposal->selection;
       growth.minedDataflow = software.dataflow;
       growth.minedActorsPerRealization = proposal->actorsPerRealization;
-      growth.minedSearchBounded = proposal->bounded;
+      growth.minedSearchBounded = supply.bounded;
       growth.addedSpatialFuOccurrences = proposal->occurrences;
       growth.resultingContexts =
           currentConfig.hardwareTarget.parameters.temporalResidentContexts;
@@ -242,11 +249,11 @@ exploreFinalizedMappingHardwareSpectrum(
           currentConfig = child.config;
           spatialFrontierRetained = false;
           parentMapping = firstMapping(*execution);
-        } else {
-          parentMapping.reset();
-          if (std::holds_alternative<IncompleteDsePlanExecution>(
-                  execution->planExecution))
-            result.incomplete = true;
+        } else if (std::holds_alternative<IncompleteDsePlanExecution>(
+                       execution->planExecution)) {
+          // The composed child published nothing, so the chain continues from
+          // the parent it never left and keeps the parent's own seed.
+          result.incomplete = true;
         }
         result.attempts.push_back({child.reference, std::move(*execution)});
       }
