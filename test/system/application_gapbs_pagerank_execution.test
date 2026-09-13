@@ -15,6 +15,10 @@
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: loom-application-manifest-inspect \
 # RUN:   --manifest=%S/../applications/manifest.json > %t.inventory.json
+# This row carries the functional tier. Whether its deployed Mapping adopts a
+# RegFIFO local transfer follows the candidate the funnel ranks first, which
+# the schedule layer now widens; the qualified pagerank rows and the llama2c
+# smoke row keep the RegFIFO requirement where the shape is stable.
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --portfolio-application=gapbs-pagerank --portfolio-input=smoke \
@@ -27,5 +31,5 @@
 # RUN:   --mapping-inspector=loom-product-mapping-inspection-test \
 # RUN:   --require-actor-multicast \
 # RUN:   --require-operand-queue-atomic-fanout \
-# RUN:   --require-memory-engine --require-register-fifo \
+# RUN:   --require-memory-engine \
 # RUN:   --require-packed-switch-row --require-temporal-dispatch
