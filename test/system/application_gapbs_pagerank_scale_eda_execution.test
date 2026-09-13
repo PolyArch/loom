@@ -1,4 +1,5 @@
 # REQUIRES: gem5-25.1.0.1
+# REQUIRES: loom-qualified-rows
 # RUN: rm -rf %t.deployment %t.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
 # RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \

@@ -1,29 +1,30 @@
 # REQUIRES: gem5-25.1.0.1
-# RUN: rm -rf %t.deployment %t.execution
+# REQUIRES: loom-qualified-rows
+# RUN: loom-application-manifest-inspect \
+# RUN:   --manifest=%S/../applications/manifest.json > %t.inventory.json
+# RUN: rm -rf %t.validation.deployment %t.validation.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
 # RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \
 # RUN:   --loom-portfolio-repository-root=%S/../.. \
 # RUN:   --loom-portfolio-application=llama2c-kernels \
-# RUN:   --loom-portfolio-input=smoke \
+# RUN:   --loom-portfolio-input=validation \
 # RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-long-ms \
-# RUN:   --loom-deploy-output=%t.deployment \
-# RUN:   > %t.build.stdout 2> %t.build.stderr
+# RUN:   --loom-deploy-output=%t.validation.deployment \
+# RUN:   > %t.validation.build.stdout 2> %t.validation.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
-# RUN:   --deployment-package=%t.deployment --output=%t.execution \
+# RUN:   --deployment-package=%t.validation.deployment \
+# RUN:   --output=%t.validation.execution \
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
-# RUN:   > %t.run.stdout 2> %t.run.stderr
-# RUN: loom-application-manifest-inspect \
-# RUN:   --manifest=%S/../applications/manifest.json > %t.inventory.json
-# This half carries the functional tier, whose target is a published Mapping,
-# an oracle-matched execution and complete diagnostics. A minimum accelerator
-# core count is neither part of that target nor a stable property: the count
-# follows the mapping search, which is wall-clock bounded.
+# RUN:   > %t.validation.run.stdout 2> %t.validation.run.stderr
 # RUN: %python %S/verify_product_execution.py \
-# RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
-# RUN:   --portfolio-application=llama2c-kernels --portfolio-input=smoke \
+# RUN:   --diagnostics=%t.validation.build.stderr \
+# RUN:   --manifest=%t.validation.execution/manifest.json \
+# RUN:   --portfolio-application=llama2c-kernels \
+# RUN:   --portfolio-input=validation \
 # RUN:   --portfolio-inventory=%t.inventory.json \
-# RUN:   --evaluation-tier=functional \
+# RUN:   --evaluation-tier=qualified \
+# RUN:   --minimum-unique-acc-cores=2 \
 # RUN:   --required-dataflow-text=math.sqrt \
 # RUN:   --required-dataflow-text=math.exp \
 # RUN:   --required-dataflow-text=arith.mulf \

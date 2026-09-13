@@ -1,4 +1,5 @@
 # REQUIRES: gem5-25.1.0.1
+# REQUIRES: loom-qualified-rows
 # RUN: rm -rf %t.deployment %t.execution
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile \
 # RUN:   --loom-portfolio-manifest=%S/../applications/manifest.json \

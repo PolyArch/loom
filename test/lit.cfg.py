@@ -158,6 +158,12 @@ config.substitutions.append(
 # every representative workload.
 if lit_config.params.get("loom_cgra_budget_qualification", ""):
     config.available_features.add("loom-cgra-budget-qualification")
+# The qualified portfolio rows run their full System QoR search under the
+# long mapping budget; they form an opt-in tier outside the default suite,
+# which the research contract bounds at twenty-five minutes on nproc - 4
+# workers.
+if lit_config.params.get("loom_qualified_rows", ""):
+    config.available_features.add("loom-qualified-rows")
 # %loom_include is the tracked include root, so a generator anchor can name
 # the one canonical registry source without a relative path walk.
 config.substitutions.append(

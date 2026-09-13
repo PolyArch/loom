@@ -178,6 +178,10 @@ carries. `functional` requires a published Mapping, an execution output that
 matches the row's own oracle, and complete diagnostics; its System QoR
 measurements are published exactly as measured and no saturation target
 applies. `qualified` additionally requires the full System QoR target below.
+A `qualified` row runs its whole System QoR search under the long mapping
+budget, so the qualified rows form an opt-in tier of the test suite, enabled
+by the `loom_qualified_rows` lit parameter, and the default suite carries the
+`functional` rows alone.
 Every consumer, including the System driver's qualification status and the
 product-execution verifier, reads this field; none of them re-derives a tier
 from an input name, an execution selection, or a measured overhead. The tier
