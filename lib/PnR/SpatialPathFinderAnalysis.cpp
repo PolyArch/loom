@@ -909,8 +909,8 @@ loom::pnr::detail::selectedHandshakeCycleRouteTraversals(
       // The activation owner builds contention tree edges from selected
       // crosspoints. These active relations therefore prove one exact
       // traversal; component membership and unselected relations do not.
-      if (relation.relation == Kind::ReadyTreeInputParent ||
-          relation.relation == Kind::ReadyTreeOutputParent ||
+      if (relation.relation == Kind::RoundRobinTreeInputParent ||
+          relation.relation == Kind::RoundRobinTreeOutputParent ||
           relation.relation == Kind::FixedSelectedCrosspoint)
         selectedTraversal =
             ::loom::fabric::FabricPhysicalTraversalRef::switchTraversal(

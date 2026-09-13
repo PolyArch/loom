@@ -50,15 +50,6 @@ template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-void requireRejected(llvm::StringRef test, llvm::Error error,
-                     llvm::StringRef expected) {
-  if (!error)
-    fail(test, "invalid handshake selection was accepted");
-  const std::string message = llvm::toString(std::move(error));
-  if (!llvm::StringRef(message).contains(expected))
-    fail(test, "unexpected rejection: " + message);
-}
-
 class TemporaryDirectory final {
 public:
   explicit TemporaryDirectory(llvm::StringRef test) : test_(test.str()) {
@@ -301,10 +292,11 @@ void fixedPriorityContentionPreservesGrantDirection() {
           !reaches(terminals[0], terminals[7]) &&
               !reaches(terminals[4], terminals[6]),
           "a lower-priority requester reached an unrelated output");
-  require(test,
-          reaches(terminals[4], terminals[1]) &&
-              reaches(terminals[0], terminals[5]),
-          "idle presentation lost all-input readiness dependence");
+  for (std::size_t from : {0U, 2U, 4U})
+    for (std::size_t to : {1U, 3U, 5U})
+      require(test, !reaches(terminals[from], terminals[to]),
+              "a registered grant still let an input Valid reach an input "
+              "Ready");
 }
 
 void unusedCrosspointsDoNotMergeConfiguredContention() {
@@ -322,11 +314,13 @@ void unusedCrosspointsDoNotMergeConfiguredContention() {
       {{sw.occurrence, 1, 1}, {sw.crosspoint(test, 1, 0)}},
       {{sw.occurrence, 2, 2}, {sw.crosspoint(test, 2, 1)}},
       {{sw.occurrence, 3, 3}, {sw.crosspoint(test, 3, 1)}}};
-  const std::array<HandshakeSignalRef, 8> terminals = {
+  const std::array<HandshakeSignalRef, 10> terminals = {
       HandshakeSignalRef{sw.inputs.at(0), HandshakeSignalKind::Valid},
+      HandshakeSignalRef{sw.inputs.at(1), HandshakeSignalKind::Valid},
+      HandshakeSignalRef{sw.inputs.at(2), HandshakeSignalKind::Valid},
+      HandshakeSignalRef{sw.inputs.at(3), HandshakeSignalKind::Valid},
       HandshakeSignalRef{sw.inputs.at(0), HandshakeSignalKind::Ready},
       HandshakeSignalRef{sw.inputs.at(1), HandshakeSignalKind::Ready},
-      HandshakeSignalRef{sw.inputs.at(2), HandshakeSignalKind::Valid},
       HandshakeSignalRef{sw.inputs.at(2), HandshakeSignalKind::Ready},
       HandshakeSignalRef{sw.inputs.at(3), HandshakeSignalKind::Ready},
       HandshakeSignalRef{sw.outputs.at(0), HandshakeSignalKind::Valid},
@@ -340,11 +334,16 @@ void unusedCrosspointsDoNotMergeConfiguredContention() {
         loom::fabric::HandshakeDependencyArc{terminals[from], terminals[to]});
   };
   require(test,
-          reaches(0, 2) && reaches(3, 5) && reaches(0, 6) && reaches(3, 7),
+          reaches(0, 8) && reaches(1, 8) && reaches(2, 9) && reaches(3, 9),
           "configured contention groups lost their local dependencies");
   require(test,
-          !reaches(0, 4) && !reaches(3, 1) && !reaches(0, 7) && !reaches(3, 6),
+          !reaches(0, 9) && !reaches(1, 9) && !reaches(2, 8) && !reaches(3, 8),
           "unused crosspoints merged configured contention groups");
+  for (std::size_t from = 0; from != 4; ++from)
+    for (std::size_t to = 4; to != 8; ++to)
+      require(test, !reaches(from, to),
+              "a registered grant still let an input Valid reach an input "
+              "Ready");
 }
 
 void temporalContentionOwnsConfiguredDependencies() {
@@ -391,17 +390,14 @@ void temporalContentionOwnsConfiguredDependencies() {
     contended.switchActivations.push_back(
         {{sink->occurrence, 1, 1}, {sink->crosspoint(test, 1, 0)}});
   }
-  requireRejected(test,
-                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-                      finalized.view(), contended, context),
-                  "SelectedCombinationalHandshakeCycle");
-
-  FabricHandshakeSelection oneContender = contended;
-  oneContender.switchActivations.pop_back();
+  // One multicast whose siblings feed two contending sinks is the shape that
+  // used to close a combinational cycle through interconnect alone: the
+  // sibling-ready term crossed Ready to Valid and idle presentation crossed
+  // Valid back to Ready. A registered grant removes the second crossing.
   if (llvm::Error error =
           loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-              finalized.view(), oneContender, context))
-    fail(test, "one contending sink closed a cycle: " +
+              finalized.view(), contended, context))
+    fail(test, "a Temporal switch closed a cycle through interconnect alone: " +
                    llvm::toString(std::move(error)));
 
   const auto transitiveSink = llvm::find_if(sinks, [](const auto *candidate) {
@@ -472,17 +468,19 @@ void temporalContentionOwnsConfiguredDependencies() {
       {{sink.occurrence, 1, 1}, {sink.crosspoint(test, 1, 0)}}};
   const auto sharedReachability = project(shared);
   require(test,
-          reaches(sharedReachability, input0Valid, input0Ready) &&
-              reaches(sharedReachability, input1Valid, input0Ready) &&
-              reaches(sharedReachability, input0Valid, input1Ready) &&
-              reaches(sharedReachability, input1Valid, input1Ready) &&
-              reaches(sharedReachability, input1Valid, output0Valid) &&
+          reaches(sharedReachability, input1Valid, output0Valid) &&
               reaches(sharedReachability, input0Valid, output0Valid),
-          "configured contention lost grant or presentation reachability");
+          "configured contention lost grant reachability");
   require(test,
           !reaches(sharedReachability, input0Valid, output1Valid) &&
               !reaches(sharedReachability, output0Ready, output0Valid),
           "configured contention reached outside its selected component");
+  require(test,
+          !reaches(sharedReachability, input0Valid, input0Ready) &&
+              !reaches(sharedReachability, input1Valid, input0Ready) &&
+              !reaches(sharedReachability, input0Valid, input1Ready) &&
+              !reaches(sharedReachability, input1Valid, input1Ready),
+          "a contended component still let a Valid reach a Ready");
 
   FabricHandshakeSelection transitive;
   transitive.switchActivations = {
@@ -492,12 +490,17 @@ void temporalContentionOwnsConfiguredDependencies() {
       {{sink.occurrence, 2, 2},
        {sink.crosspoint(test, 2, 1), sink.crosspoint(test, 2, 2)}}};
   const auto transitiveReachability = project(transitive);
+  // Input 0 selects output 0 alone and input 2 selects output 0 in no resident
+  // row, so these two arcs come from the component relation rather than from a
+  // row arc: the grant pointer ranges over the whole component.
   require(test,
-          reaches(transitiveReachability, input0Valid, input2Ready) &&
-              reaches(transitiveReachability, input0Valid, output2Valid) &&
-              reaches(transitiveReachability, input2Valid, input0Ready) &&
+          reaches(transitiveReachability, input0Valid, output2Valid) &&
               reaches(transitiveReachability, input2Valid, output0Valid),
           "sparse transitive contention lost component reachability");
+  require(test,
+          !reaches(transitiveReachability, input0Valid, input2Ready) &&
+              !reaches(transitiveReachability, input2Valid, input0Ready),
+          "sparse transitive contention still let a Valid reach a Ready");
 }
 
 } // namespace

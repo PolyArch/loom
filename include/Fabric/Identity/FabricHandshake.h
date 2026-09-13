@@ -142,15 +142,17 @@ struct FabricSwitchHandshakeActivationKey final {
 };
 
 /// Compact, Fabric-owned dependencies for configured Temporal-switch
-/// contention. Relations select private readiness-forest or policy-directed
-/// output-valid junctions, so exact boundary reachability remains linear in
-/// the physical crosspoints rather than enumerating every boundary pair.
+/// contention. A Temporal switch grants from registered state, so every
+/// relation here is Valid-directed and none has a Ready signal as its sink.
+/// Relations select the private round-robin component forest or the
+/// policy-directed output-valid junctions, so exact boundary reachability
+/// remains linear in the physical crosspoints rather than enumerating every
+/// boundary pair.
 enum class FabricSwitchHandshakeContentionRelationKind : std::uint8_t {
-  ReadyInputValid,
-  ReadyTreeInputParent,
-  ReadyTreeOutputParent,
-  ReadyRootBridge,
-  InputReady,
+  RoundRobinInputValid,
+  RoundRobinTreeInputParent,
+  RoundRobinTreeOutputParent,
+  RoundRobinRootBridge,
   RoundRobinOutputValid,
   FixedInputValid,
   FixedSelectedCrosspoint,
@@ -160,7 +162,7 @@ enum class FabricSwitchHandshakeContentionRelationKind : std::uint8_t {
 struct FabricSwitchHandshakeContentionRelation final {
   FabricSwitchOccurrenceRef occurrence;
   FabricSwitchHandshakeContentionRelationKind relation =
-      FabricSwitchHandshakeContentionRelationKind::ReadyRootBridge;
+      FabricSwitchHandshakeContentionRelationKind::RoundRobinRootBridge;
   FabricOrdinal input = 0;
   FabricOrdinal output = 0;
 

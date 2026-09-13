@@ -408,18 +408,17 @@ bool FabricSwitchSelectedContention::activates(
     return false;
   using Kind = FabricSwitchHandshakeContentionRelationKind;
   switch (relation.relation) {
-  case Kind::ReadyInputValid:
-  case Kind::InputReady:
+  case Kind::RoundRobinInputValid:
   case Kind::FixedInputValid:
     return contended(relation.input);
-  case Kind::ReadyTreeInputParent:
-  case Kind::ReadyTreeOutputParent: {
+  case Kind::RoundRobinTreeInputParent:
+  case Kind::RoundRobinTreeOutputParent: {
     const TreeEdge key{relation.input, relation.output,
-                       relation.relation == Kind::ReadyTreeInputParent};
+                       relation.relation == Kind::RoundRobinTreeInputParent};
     return std::binary_search(treeEdges_.begin(), treeEdges_.end(), key) &&
            contended(relation.input);
   }
-  case Kind::ReadyRootBridge: {
+  case Kind::RoundRobinRootBridge: {
     const Component *component = componentOf(relation.input);
     return component && component->inputCount > 1 &&
            component->root == relation.input;
@@ -443,11 +442,10 @@ bool FabricSwitchSelectedContention::selectedCrosspointInRelationComponent(
     return false;
   using Kind = FabricSwitchHandshakeContentionRelationKind;
   switch (relation.relation) {
-  case Kind::ReadyInputValid:
-  case Kind::ReadyTreeInputParent:
-  case Kind::ReadyTreeOutputParent:
-  case Kind::ReadyRootBridge:
-  case Kind::InputReady:
+  case Kind::RoundRobinInputValid:
+  case Kind::RoundRobinTreeInputParent:
+  case Kind::RoundRobinTreeOutputParent:
+  case Kind::RoundRobinRootBridge:
   case Kind::FixedInputValid:
   case Kind::FixedSelectedCrosspoint:
     return componentOf(relation.input) == componentOf(crosspoint.input);
@@ -624,42 +622,43 @@ llvm::Expected<HandshakeOwnerModel> detail::compileSwitchHandshakeModel(
 
       HandshakeOwnerModelBuilder builder(
           FabricHandshakeOwner::switchResource(owner));
-      std::map<FabricOrdinal, std::uint32_t> upInputs;
-      std::map<FabricOrdinal, std::uint32_t> downInputs;
-      std::map<FabricOrdinal, std::uint32_t> upOutputs;
-      std::map<FabricOrdinal, std::uint32_t> downOutputs;
-      for (const auto &entry : inputEndpoints) {
-        const FabricOrdinal input = entry.first;
-        upInputs.emplace(input,
-                         builder.junction(handshakeJunctionKey(0, input, 0)));
-        downInputs.emplace(input,
-                           builder.junction(handshakeJunctionKey(1, input, 0)));
-      }
-      for (const auto &entry : outputEndpoints) {
-        const FabricOrdinal output = entry.first;
-        upOutputs.emplace(output,
-                          builder.junction(handshakeJunctionKey(2, output, 0)));
-        downOutputs.emplace(
-            output, builder.junction(handshakeJunctionKey(3, output, 0)));
-      }
-
-      for (const auto &entry : inputEndpoints) {
-        const FabricOrdinal input = entry.first;
-        const FabricTransportEndpointRef endpoint = entry.second;
-        builder.addFragment(
-            switchContentionSelector(
-                {owner, Relation::ReadyInputValid, input, 0}),
-            {{builder.boundarySignal({endpoint, HandshakeSignalKind::Valid}),
-              upInputs.at(input)}});
-        builder.addFragment(switchContentionSelector(
-                                {owner, Relation::ReadyRootBridge, input, 0}),
-                            {{upInputs.at(input), downInputs.at(input)}});
-        builder.addFragment(
-            switchContentionSelector({owner, Relation::InputReady, input, 0}),
-            {{downInputs.at(input),
-              builder.boundarySignal({endpoint, HandshakeSignalKind::Ready})}});
-      }
-      if (roundRobin)
+      if (roundRobin) {
+        // Every component input's validity can reach every configured
+        // component output's validity, because the grant pointer ranges over
+        // the component. Two directed junction layers joined by the configured
+        // spanning forest carry that reach in linear space. Nothing here sinks
+        // into a Ready signal: the grant is a function of registered state.
+        std::map<FabricOrdinal, std::uint32_t> upInputs;
+        std::map<FabricOrdinal, std::uint32_t> downInputs;
+        std::map<FabricOrdinal, std::uint32_t> upOutputs;
+        std::map<FabricOrdinal, std::uint32_t> downOutputs;
+        for (const auto &entry : inputEndpoints) {
+          const FabricOrdinal input = entry.first;
+          upInputs.emplace(input,
+                           builder.junction(handshakeJunctionKey(0, input, 0)));
+          downInputs.emplace(
+              input, builder.junction(handshakeJunctionKey(1, input, 0)));
+        }
+        for (const auto &entry : outputEndpoints) {
+          const FabricOrdinal output = entry.first;
+          upOutputs.emplace(
+              output, builder.junction(handshakeJunctionKey(2, output, 0)));
+          downOutputs.emplace(
+              output, builder.junction(handshakeJunctionKey(3, output, 0)));
+        }
+        for (const auto &entry : inputEndpoints) {
+          const FabricOrdinal input = entry.first;
+          builder.addFragment(
+              switchContentionSelector(
+                  {owner, Relation::RoundRobinInputValid, input, 0}),
+              {{builder.boundarySignal(
+                    {entry.second, HandshakeSignalKind::Valid}),
+                upInputs.at(input)}});
+          builder.addFragment(
+              switchContentionSelector(
+                  {owner, Relation::RoundRobinRootBridge, input, 0}),
+              {{upInputs.at(input), downInputs.at(input)}});
+        }
         for (const auto &entry : outputEndpoints) {
           const FabricOrdinal output = entry.first;
           builder.addFragment(
@@ -669,23 +668,24 @@ llvm::Expected<HandshakeOwnerModel> detail::compileSwitchHandshakeModel(
                 builder.boundarySignal(
                     {entry.second, HandshakeSignalKind::Valid})}});
         }
-      for (const auto &entry : byInput) {
-        const FabricOrdinal input = entry.first;
-        for (const Row &row : entry.second) {
-          builder.addFragment(
-              switchContentionSelector(
-                  {owner, Relation::ReadyTreeInputParent, input, row.output}),
-              {{upOutputs.at(row.output), upInputs.at(input)},
-               {downInputs.at(input), downOutputs.at(row.output)}});
-          builder.addFragment(
-              switchContentionSelector(
-                  {owner, Relation::ReadyTreeOutputParent, input, row.output}),
-              {{upInputs.at(input), upOutputs.at(row.output)},
-               {downOutputs.at(row.output), downInputs.at(input)}});
+        for (const auto &entry : byInput) {
+          const FabricOrdinal input = entry.first;
+          for (const Row &row : entry.second) {
+            builder.addFragment(
+                switchContentionSelector({owner,
+                                          Relation::RoundRobinTreeInputParent,
+                                          input, row.output}),
+                {{upOutputs.at(row.output), upInputs.at(input)},
+                 {downInputs.at(input), downOutputs.at(row.output)}});
+            builder.addFragment(
+                switchContentionSelector({owner,
+                                          Relation::RoundRobinTreeOutputParent,
+                                          input, row.output}),
+                {{upInputs.at(input), upOutputs.at(row.output)},
+                 {downOutputs.at(row.output), downInputs.at(input)}});
+          }
         }
-      }
-
-      if (!roundRobin) {
+      } else {
         if (priorityRank.size() != inputEndpoints.size())
           return invalid("FixedPriority omits a switch requester");
 
