@@ -1,6 +1,7 @@
 add_mlir_library(LoomPnRGenerator
   FabricTopologyQualityDiagnostic.cpp
   SpatialPnrGenerator.cpp
+  SpatialPnrWorkAccounting.cpp
   SpatialPnrExecution.cpp
   SystemPnrGenerator.cpp
 
