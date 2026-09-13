@@ -445,6 +445,15 @@ void proposesAComposedSupplyForAnActorDemand(llvm::StringRef fixture) {
   require(proposal->selection.templates.front().occurrences ==
               proposal->occurrences,
           "the selection and the proposal disagree on the site count");
+  // The search facts are the only account a caller that gets no proposal can
+  // report, so a walk that did produce one must still describe itself: every
+  // reported shape is either refused or the one taken, and the search covered
+  // at least the shape it took.
+  require(supply.minedCandidateCount >= supply.boundaryRefusedCount +
+                                            supply.capabilityRefusedCount + 1,
+          "the selection walk did not account for the shapes it saw");
+  require(supply.exploredActorCount >= proposal->actorsPerRealization,
+          "the selection took a shape wider than the search it reports");
 
   // The configuration carries only this key, so the generator must be able to
   // find it by mining the same Dataflow with the same request.
