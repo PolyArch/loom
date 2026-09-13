@@ -1265,8 +1265,9 @@ does not infer that pairing. For each Temporal switch match domain, the frozen
 index also retains the Fabric-owned typed fragments of the compact contention
 projection. The candidate supplies crosspoints from its provisional
 in-capacity resident-row prefix to the Fabric-owned derivation, which returns
-the deterministic readiness-forest and policy-directed output-valid fragments
-to activate. Overflow rows remain visible to the capacity owner but have no
+the deterministic round-robin forest and policy-directed output-valid fragments
+to activate. Those fragments are Valid-directed only; a Temporal switch grants
+from registered state and contributes no Valid-to-Ready arc. Overflow rows remain visible to the capacity owner but have no
 physical activation. Worker-local dense scratch is reusable and carries no
 semantic state; PnR does not construct a second contention table or enumerate
 component boundary pairs. Candidate transactions update those fragments and

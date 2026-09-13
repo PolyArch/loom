@@ -432,7 +432,17 @@ the SpatialCore service boundary per iteration),
 each one request that occupies an outstanding slot), `memory_actors` (the
 graph's distinct memory actors; a memory actor holds up to its Operation
 Engine's issue depth requests in flight, retiring them in issue order), and
-`boundary_payload_bytes_per_activation` (the invocation wire). The memory
+`boundary_payload_bytes_per_activation` (the invocation wire). The recurrence
+length and the graph critical path are chains of dataflow steps, and one step
+crosses one interconnect hop; the resource-bound initiation interval is a
+capacity term rather than a chain. On a Fabric whose Temporal switches
+arbitrate, one hop also pays the worst-case arbitration wait
+`docs/spec-fabric-switch.md` bounds: the input count of the largest multi-input
+physical contention component of any Temporal switch, and zero when no
+component of any Temporal switch contends. The model multiplies both chain
+lengths, and neither the initiation interval nor any memory term, by one plus
+that wait, and reads it from the one switch arbitration-component derivation
+Fabric owns rather than keeping a constant of its own. The memory
 round trip one outstanding slot waits for is the
 service's bounded completion plus two bridge crossings from the pinned
 platform policy. The duration of a launch site under an allocation of `u`

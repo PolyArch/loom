@@ -345,9 +345,18 @@ state and event ordering come from the selected Fabric use pattern, its timing
 contract, and the exact Mapping release condition, not a simulator-private
 scheduler.
 
-Every successful round-robin acquisition advances the cursor to the successor
-of its requester, including a batch containing only one request. A blocked
-request leaves the cursor unchanged.
+Arbitration follows the registered-cursor rule of
+`docs/spec-fabric-resource-contract.md`. At one coordinate the cursor names the
+only requester of its arbitration component that may acquire, so a component
+grants at most one requester per coordinate. The cursor entering the next
+coordinate is chosen from this coordinate's requests: a successful acquisition,
+and a cursor naming a requester that did not request, both move the cursor to
+the first requester strictly after it in the exact cycle that did request,
+holding where it is when no other requester did, while a requester that
+requested and was blocked keeps its turn. A lone continuous requester therefore
+acquires at every coordinate. A fixed-priority cursor becomes the component's
+highest-priority requester of this coordinate's requests. A component with one
+requester is not contended and acquires at the coordinate of its request.
 
 At one coordinate CGRA-sim commits due publication, retires effective releases,
 and frees their complete claim envelopes before testing replacement

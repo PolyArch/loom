@@ -309,11 +309,21 @@ GrantPolicy =
     }
 ```
 
-Each policy operation is one selection step. `FixedPriority` selects the first
-eligible requester in the exact permutation. `RoundRobin` scans the exact
-cycle from the current cursor and advances only after a successful selection;
-reset establishes `reset_cursor`. The concrete resource owns any composition
-of selection steps with its declared capacity.
+Each policy operation is one selection step named by one registered cursor, so
+the requester that may succeed is a function of state alone and never of a
+request presented in the same cycle. The cursor's next state may read this
+cycle's requests freely: that read ends at a register input and emerges one
+cycle later, so it adds no dependency from a request to a grant of the same
+cycle. `RoundRobin` advances work-conservingly: on a successful selection, and
+on a cycle whose cursor names a requester that did not request, the cursor
+moves to the first requester strictly after it in the exact cycle that did
+request, holding where it is when no other requester did; a requester that
+requested and did not succeed keeps its turn. A lone continuous requester
+therefore succeeds every cycle. `FixedPriority` sets its cursor to the
+highest-priority requester of this cycle's requests. Reset establishes
+`reset_cursor`. One resource grants at most one requester per arbitration
+component per cycle; a concrete resource composes selection steps only across
+independent components.
 
 The policy may be absent only when the verifier proves that no two distinct
 requesters can be simultaneously eligible for the same capacity. Multiple

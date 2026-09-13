@@ -485,34 +485,30 @@ rule, or treat one mapped selection as the reusable hardware topology.
 Every consumer readiness in the lowered transport network is observable
 before the token's valid arrives, because the atomic fanout equations of
 `docs/spec-fabric-switch.md` assert valid on one selected output only after
-every peer output is ready. A Temporal switch therefore presents a candidate
-input's tag on each output it routes to whenever no valid requester holds that
-output: valid requesters are presented by the exact GrantPolicy; among idle
-candidates whose selected outputs overlap, a free-running rotation presents
-one at a time, and idle candidates whose selected outputs no other candidate
-claims are presented together. Only another input's grant excludes an idle
-candidate. An input is ready only while it is presented on every output its
-resident row selects. A row that contends with no other resident row is always
-presented, so its readiness reflects only its outputs' readiness and never the
-port's own valid. Physically admitted crosspoints that no resident row selects
-create no configured combinational dependency or grant exclusion. Rows of
-different inputs that select a common output are presented one at a time and
-granted by the exact `GrantPolicy`; within the resulting configured component,
-every input readiness observes every component
-input validity. Round-robin output validity observes the complete component;
-fixed-priority output validity follows only the exact directed requester-prefix
-relation. These are the configured grant and readiness-presentation
-dependencies owned by `docs/spec-fabric-switch.md` and checked by the selected
-closure in `docs/spec-mapping-verification.md`. RTL implements idle
-presentation with one switch-local cursor over the full typed policy order:
-FixedPriority starts at position zero, RoundRobin starts at its typed reset
-requester, and every non-reset edge advances once modulo the order. From that
-position, it greedily presents configured candidates with disjoint selected
-outputs. The RTL implementation identity covers this mechanism, including its
-order, reset, advance, and greedy selection. Clock and Reset ports follow the
-nonempty ResourceState rule in `docs/spec-fabric-module.md`, independently of
-whether a cursor exists. The presentation cursor never reorders grants among
-valid requesters.
+every peer output is ready. A Temporal switch reaches that property through the
+registered grant of `docs/spec-fabric-switch.md` rather than through an idle
+presentation. Each multi-input physical arbitration component carries exactly
+the one register that specification names, the grant pointer, and the lowerer
+emits no other arbitration state. An input's ready is the conjunction of the
+pointer naming it, the readiness of every output its resident row selects, and
+capacity, so no ready of the switch is a function of any valid and at most one
+component input transfers per cycle. The pointer advances only as that
+specification's next-state function states. That function does read the current
+cycle's valid vector, which is harmless because the read reaches only the
+pointer register's next-state input; what the lowerer may not build is a free-
+running rotation, a greedy presentation of output-disjoint candidates, or any
+path by which a valid reaches a ready. An input that
+contends with no other resident row is in a one-input component, so its pointer
+term is constant and its readiness still reflects only its outputs' readiness.
+Physically admitted crosspoints that no resident row selects create no
+configured combinational dependency or grant exclusion. Round-robin output
+validity observes the complete configured component; fixed-priority output
+validity follows only the exact directed requester-prefix relation. These are
+the configured grant dependencies owned by `docs/spec-fabric-switch.md` and
+checked by the selected closure in `docs/spec-mapping-verification.md`. Clock
+and Reset ports follow the nonempty ResourceState rule in
+`docs/spec-fabric-module.md`, independently of whether a component is
+contended.
 
 A Temporal PE presents the context its context-evaluation service grants to
 one FU as that FU's single dispatch context for the clock cycle. The FU and

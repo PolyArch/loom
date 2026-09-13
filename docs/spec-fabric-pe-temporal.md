@@ -469,6 +469,19 @@ replacement path from FU readiness to ingress readiness. No match
 backpressures the input and is an invalid configured routing situation, not an
 implicit discard.
 
+A shared allocation unit's one enqueue service is granted by the registered
+grant of `docs/spec-fabric-resource-contract.md`: the unit's grant cursor is a
+register, it names the one ingress port that may enqueue this cycle, and its
+next state is chosen from this cycle's arrivals. A port's `queue_ready`
+therefore observes the cursor, the unit's cycle-start capacity, and its own
+match, and it observes no other port's Valid of the same cycle. **The PE
+ingress contributes no cross-port Valid-to-Ready dependency**, which is exactly
+what the selected-handshake closure of `docs/spec-mapping-verification.md`
+already assumes when the PE derives no such arc. An implementation may not grant the shared unit
+combinationally from the other ports' arrivals of the same cycle; the cost of
+the register is one cycle of cursor latency at a contended unit, and a port
+streaming alone into a unit keeps the cursor and enqueues every cycle.
+
 The temporal-PE schema uniquely owns the typed `ResourceState` values for
 resident contexts, logical operand queues, register FIFOs, and shared dispatch
 capacity; their canonical initial states; capacity dimensions;
