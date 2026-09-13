@@ -86,7 +86,12 @@ struct MinedActor final {
   std::vector<std::optional<EdgeTarget>> operandProducers;
   std::vector<std::vector<EdgeTarget>> resultConsumers;
   std::vector<bool> resultLeavesDomain;
-  std::vector<std::size_t> neighbors;
+  /// Token neighbours every edge to which carries a recurring labeled
+  /// pattern. Growth walks exactly these.
+  std::vector<std::size_t> recurringNeighbors;
+  /// Token neighbours at least one non-recurring edge reaches. A shape holding
+  /// both ends holds that edge, so it can never reach the requested support.
+  std::vector<std::size_t> refusedNeighbors;
 };
 
 std::optional<::dataflow::CanonicalGraphProducerEndpointRef>
@@ -191,17 +196,14 @@ indexMinedActors(const ::dataflow::CanonicalDataflowProgramView &dataflow,
     mined.schema = entry.projection.schema;
     mined.type = entry.projection.type;
     mined.signature = nodeSignature(mined.schema, mined.type);
-    std::set<std::size_t> neighbors;
     for (const ::dataflow::CanonicalGraphProducerEndpointRef &producer :
          entry.producers) {
       std::optional<EdgeTarget> target;
       if (const auto *result =
               std::get_if<::dataflow::ActorTokenResultRef>(&producer)) {
         const auto found = actorPosition.find(result->actor.entity.value());
-        if (found != actorPosition.end()) {
+        if (found != actorPosition.end())
           target = EdgeTarget{found->second, result->ordinal};
-          neighbors.insert(found->second);
-        }
       }
       mined.operandProducers.push_back(target);
     }
@@ -230,16 +232,90 @@ indexMinedActors(const ::dataflow::CanonicalDataflowProgramView &dataflow,
             continue;
           }
           consumers.push_back(EdgeTarget{found->second, operand->ordinal});
-          neighbors.insert(found->second);
         }
       }
       mined.resultConsumers.push_back(std::move(consumers));
       mined.resultLeavesDomain.push_back(leaves);
     }
-    mined.neighbors.assign(neighbors.begin(), neighbors.end());
     actors.push_back(std::move(mined));
   }
   return actors;
+}
+
+/// One labeled token edge pattern: the producer's node identity and result
+/// ordinal together with the consumer's node identity and operand ordinal. Two
+/// edges share a pattern exactly when one shape can bind either of them at the
+/// same pair of node positions.
+std::vector<std::uint8_t> edgePattern(const MinedActor &producer,
+                                      std::uint64_t producerResult,
+                                      const MinedActor &consumer,
+                                      std::uint64_t consumerOperand) {
+  std::vector<std::uint8_t> pattern = producer.signature;
+  appendU64(pattern, producerResult);
+  pattern.insert(pattern.end(), consumer.signature.begin(),
+                 consumer.signature.end());
+  appendU64(pattern, consumerOperand);
+  return pattern;
+}
+
+/// Splits every actor's token neighbourhood into the relations growth may walk
+/// and the relations it may not.
+///
+/// A reported candidate binds at least `minimumSupport` distinct actors at
+/// every node position, and an internal edge confines its two positions to the
+/// producers and the consumers of its own labeled pattern. A pattern whose
+/// minimum image falls below that support therefore admits no reportable
+/// shape; and because an induced relation keeps every edge between the actors
+/// it holds, no shape grown out of one is reportable either. Growing through
+/// such an edge is work the search can only discard, so it does not spend its
+/// budget on it. Two actors several edges join are walkable only when every
+/// one of those edges recurs, because a shape holding both ends holds them all.
+void admitRecurringNeighbors(std::vector<MinedActor> &actors,
+                             std::uint64_t minimumSupport) {
+  struct PatternImage final {
+    std::set<std::size_t> producers;
+    std::set<std::size_t> consumers;
+  };
+  std::map<std::vector<std::uint8_t>, PatternImage> images;
+  std::map<std::pair<std::size_t, std::size_t>, std::vector<const PatternImage *>>
+      joined;
+  for (const auto &indexed : llvm::enumerate(actors)) {
+    const MinedActor &consumer = indexed.value();
+    const std::size_t consumerPosition = indexed.index();
+    for (const auto &operand : llvm::enumerate(consumer.operandProducers)) {
+      const std::optional<EdgeTarget> &producer = operand.value();
+      if (!producer)
+        continue;
+      const auto image =
+          images
+              .emplace(edgePattern(actors[producer->actor], producer->ordinal,
+                                   consumer, operand.index()),
+                       PatternImage{})
+              .first;
+      image->second.producers.insert(producer->actor);
+      image->second.consumers.insert(consumerPosition);
+      joined[{std::min(producer->actor, consumerPosition),
+              std::max(producer->actor, consumerPosition)}]
+          .push_back(&image->second);
+    }
+  }
+  for (const auto &entry : joined) {
+    const bool recurs =
+        llvm::all_of(entry.second, [&](const PatternImage *image) {
+          return std::min(image->producers.size(), image->consumers.size()) >=
+                 minimumSupport;
+        });
+    MinedActor &left = actors[entry.first.first];
+    MinedActor &right = actors[entry.first.second];
+    (recurs ? left.recurringNeighbors : left.refusedNeighbors)
+        .push_back(entry.first.second);
+    (recurs ? right.recurringNeighbors : right.refusedNeighbors)
+        .push_back(entry.first.first);
+  }
+  for (MinedActor &actor : actors) {
+    llvm::sort(actor.recurringNeighbors);
+    llvm::sort(actor.refusedNeighbors);
+  }
 }
 
 /// One internal token edge of a shape, in shape-local node positions.
@@ -592,10 +668,15 @@ llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
                      llvm::toString(resolved.takeError()));
   }
 
-  const std::vector<MinedActor> actors = indexMinedActors(dataflow, graphs);
+  std::vector<MinedActor> actors = indexMinedActors(dataflow, graphs);
+  admitRecurringNeighbors(actors, limits.minimumSupport);
+  // A reported shape is connected and has at least two nodes, so every one of
+  // its actors carries an internal edge. An actor no recurring edge reaches
+  // can therefore seed nothing.
   std::set<std::vector<std::size_t>> level;
   for (std::size_t actor = 0; actor != actors.size(); ++actor)
-    level.insert({actor});
+    if (!actors[actor].recurringNeighbors.empty())
+      level.insert({actor});
 
   CompositeFuMiningResult result;
   std::vector<CompositeFuCandidate> &results = result.candidates;
@@ -686,8 +767,17 @@ llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
         if (levelBounded)
           break;
         for (std::size_t actor : set)
-          for (std::size_t neighbor : actors[actor].neighbors) {
+          for (std::size_t neighbor : actors[actor].recurringNeighbors) {
             if (std::binary_search(set.begin(), set.end(), neighbor))
+              continue;
+            // The grown set induces every edge between the new actor and the
+            // ones already held, so one refused edge to any of them makes the
+            // shape and all of its supersets unreportable.
+            if (llvm::any_of(actors[neighbor].refusedNeighbors,
+                             [&](std::size_t held) {
+                               return std::binary_search(set.begin(), set.end(),
+                                                         held);
+                             }))
               continue;
             std::vector<std::size_t> grown = set;
             grown.insert(std::upper_bound(grown.begin(), grown.end(), neighbor),

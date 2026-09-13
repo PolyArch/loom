@@ -288,6 +288,22 @@ all. Neither boundary-port bound is monotone, because adding a node can
 internalize an edge; a candidate over one is therefore still extended and only
 withheld from the ranked result.
 
+Growth walks recurring edges only. An internal edge confines its two node
+positions to the producers and the consumers of its own labeled pattern, which
+is the producer's node type with its result ordinal and the consumer's node
+type with its operand ordinal. A shape holding an edge whose pattern binds
+fewer than `minimumSupport` distinct producers, or fewer than `minimumSupport`
+distinct consumers, therefore has support below the request; and because an
+induced relation keeps every edge between the actors it holds, no shape grown
+out of that one reaches the request either. The search consequently seeds only
+the actors a recurring edge reaches, and extends an occurrence only by a
+neighbour every one of whose edges into that occurrence carries a recurring
+pattern. This removes no reportable candidate, because what it refuses could
+never have been reported. It is what a whole-layer graph needs: level-wise
+growth over one lowered layer otherwise spends its embedding budget on the
+patterns that occur once and stops several levels below the recurring wide
+shapes that motivate a composite FU at all.
+
 The retained shape and embedding bounds are budgets, not legality. A search
 that reaches one stops growing and reports that it did, together with the
 largest node count it completed. Every candidate it already reported is exact,

@@ -394,8 +394,8 @@ void minesOneLayerSizedGraphUnderItsBound() {
       program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
   require(!mined.candidates.empty(),
           "a layer-sized graph mined no candidate at all");
-  require(mined.exploredActorCount >= 2,
-          "a layer-sized graph completed no level");
+  require(mined.exploredActorCount >= 4,
+          "a layer-sized graph did not reach the width of its repeated motif");
   // Support is the single-graph measure: one shape repeated through the layer
   // is what makes a composite worth building, and no reported candidate may
   // fall below the request's minimum.

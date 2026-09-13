@@ -153,6 +153,14 @@ struct CompositeFuMiningResult final {
 /// producer drives, and one whose result no consumer reads are all outside that
 /// relation: every port of an admitted node takes part in the token relation,
 /// which is what makes every reported shape one the FU model can materialize.
+///
+/// Growth walks recurring edges only. An internal edge confines its two node
+/// positions to the producers and the consumers of its own labeled pattern, so
+/// a shape holding an edge whose pattern binds fewer than `minimumSupport`
+/// distinct producers or consumers cannot reach the request's support, and
+/// neither can any shape grown out of it. Refusing those extensions removes no
+/// reportable candidate and is what lets a whole-layer graph reach the wide
+/// recurring shapes inside its budget.
 llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> graphs,
