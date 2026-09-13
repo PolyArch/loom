@@ -524,8 +524,8 @@ void exerciseTinyMl(llvm::StringRef manifestPath,
   require(report.selection.cachedInputs.size() == 2 &&
               report.selection.cachedInputs[0].logicalName == "model" &&
               report.selection.cachedInputs[1].logicalName == "smoke-dataset" &&
-              report.selection.input.profile.warmupSamples == 1 &&
-              report.selection.input.profile.measuredSamples == 4 &&
+              report.selection.input.profile.warmupSamples == 0 &&
+              report.selection.input.profile.measuredSamples == 1 &&
               report.selection.input.profile.deadlineMilliseconds == 10000,
           "real TinyML host ABI selection changed");
 
@@ -549,8 +549,8 @@ void exerciseTinyMl(llvm::StringRef manifestPath,
               selection->getString("application_identity") ==
                   "mlperf-tiny-anomaly-detection" &&
               selection->getString("input_name") == "smoke" && profile &&
-              profile->getInteger("warmup_samples") == 1 &&
-              profile->getInteger("measured_samples") == 4 &&
+              profile->getInteger("warmup_samples") == 0 &&
+              profile->getInteger("measured_samples") == 1 &&
               profile->getInteger("deadline_milliseconds") == 10000 &&
               execution && execution->getString("status") == "succeeded" &&
               execution->getInteger("exit_status") == 0 &&

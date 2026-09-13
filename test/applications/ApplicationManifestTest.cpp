@@ -558,10 +558,8 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
       const bool isTinyMl =
           application.identity == "mlperf-tiny-anomaly-detection";
       const bool isTinyValidation = isTinyMl && input.name == "validation";
-      const std::uint64_t expectedWarmup =
-          isTinyValidation ? 2u : (isTinyMl ? 1u : 0u);
-      const std::uint64_t expectedMeasured =
-          isTinyValidation ? 2u : (isTinyMl ? 4u : 1u);
+      const std::uint64_t expectedWarmup = isTinyValidation ? 2u : 0u;
+      const std::uint64_t expectedMeasured = isTinyValidation ? 2u : 1u;
       const WorkloadExecutionProfile &profile = input.profile;
       if (profile.warmupSamples != expectedWarmup ||
           profile.measuredSamples != expectedMeasured ||
@@ -633,7 +631,7 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
           "test/applications/mlperf-tiny-anomaly/expected-smoke.txt" ||
       tinyMl.input.oracle.encoding != OracleEncoding::HexSampleLines ||
       formatBlobDigestHex(tinyMl.input.oracle.digest) !=
-          "dd3c1741afc700b2a42ce8902dd8a18ec43fbadfee39f9c06bf64122b467cc8f" ||
+          "212195d59044c9d88ebd46de3eb445ed10e3be98311b5449ea240837d8e10897" ||
       formatBlobDigestHex(tinyMl.cachedInputs[0].digest) !=
           "87cf24194ef93d1d9b11a591d805526b98008e351655d29883c825c9c106ba24" ||
       formatBlobDigestHex(tinyMl.cachedInputs[1].digest) !=
