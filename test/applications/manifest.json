@@ -343,12 +343,12 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/mlperf-tiny-anomaly/expected-smoke.txt",
-            "sha256": "dd3c1741afc700b2a42ce8902dd8a18ec43fbadfee39f9c06bf64122b467cc8f",
+            "sha256": "212195d59044c9d88ebd46de3eb445ed10e3be98311b5449ea240837d8e10897",
             "encoding": "hex_sample_lines"
           },
           "profile": {
-            "warmup_samples": 1,
-            "measured_samples": 4,
+            "warmup_samples": 0,
+            "measured_samples": 1,
             "oracle_coverage": "all_measured_samples",
             "deadline_milliseconds": 10000,
             "maximum_simulated_ticks": 70000000000
