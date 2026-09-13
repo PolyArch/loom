@@ -316,6 +316,25 @@ publication admission count is unchanged. Worker allocation and host-process
 observations cannot change restart streams or candidate identity; scheduling
 and speculative cancellation affect actual work, which is recorded in full.
 
+Declared work bounds every restart. A restart that did not close carries the
+Spatial supply deficit its routing closures established, whichever stage
+stopped it and including the invocation deadline. Each of the restart's three
+closure owners, annealing, exact repair, and global closure, retains its own
+met cycle witnesses for the life of its prepared freeze and classifies a
+recurring core as the Mapping owner defines; the restart reduces their results
+in that stage order. A closed candidate is the answer and publishes no deficit.
+
+A deficit is evidence about the Module, not a proof that a later seed attempt
+will meet the same core, so it neither ends a restart early nor closes the
+canonical result prefix. Both proposals reduce across the result prefix through
+one strongest-demand rule, so a witnessed shared-pool shortfall and an
+established supply deficit cannot become two competing authorities. The
+invocation deadline keeps its typed wall-time interruption as its only effect;
+it never publishes a deficit, and a deficit never suppresses the interruption
+of a restart the deadline actually stopped. An interrupted invocation carries
+the deficit in its typed interruption snapshot, so a closure the deadline cut
+still delivers the supply fact its witnesses established.
+
 Each slot executes:
 
 ```text

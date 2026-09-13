@@ -38,6 +38,7 @@ add_mlir_library(LoomPnR
   SpatialCandidateState.cpp
   SpatialRuntimeCounterexample.cpp
   SpatialGlobalRoutingClosure.cpp
+  SpatialHandshakeSupplyDeficit.cpp
   SpatialLocalTransferIndex.cpp
   SpatialMappingMaterializer.cpp
   SpatialMappingSelectionProjection.cpp

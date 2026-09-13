@@ -11,6 +11,7 @@
 #include "PnR/SpatialCanonicalSeed.h"
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
+#include "PnR/SpatialHandshakeSupplyDeficit.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 #include "SpatialBindingRelationModel.h"
@@ -25,6 +26,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -387,12 +389,26 @@ struct SpatialRestartResult final {
       SpatialPnrInterruptionStage::SeedConstruction;
   std::uint64_t workerScratchRetainedBytes = 0;
   std::optional<SpatialFinalizedRestart> finalized;
+  /// The typed Spatial supply deficit this restart's closures established.
+  std::optional<SpatialFifoCapacitySuggestion> handshakeSupplyDeficit;
+  /// What this restart's closures witnessed about selected handshake cycles.
+  std::uint64_t metCycles = 0;
+  std::uint64_t distinctCycleWitnesses = 0;
+  std::uint64_t cycleCoreRecurrences = 0;
 };
 
 struct SpatialRestartScratch final {
   SpatialAnnealingSearchScratch annealing;
   SpatialExactRepairScratch repair;
   SpatialGlobalRoutingClosureScratch finalClosure;
+
+  /// What this restart's closure owners witnessed, in its own stage order.
+  SpatialHandshakeCycleCoreSummary handshakeCycleCoreSummary() const {
+    const std::array<const SpatialHandshakeCycleCore *, 3> cores = {
+        &annealing.handshakeCycleCore(), &repair.handshakeCycleCore(),
+        &finalClosure.handshakeCycleCore()};
+    return summarizeSpatialHandshakeCycleCores(cores);
+  }
 
   std::uint64_t retainedStorageBytes() const {
     std::uint64_t total = 0;
@@ -471,6 +487,13 @@ void emitRestartFailure(std::uint32_t ordinal,
                 ? spatialPnrInterruptionStageSpelling(restart.interruptionStage)
                 : spelling(restart.internalReason);
         fields["semantic_limit_reached"] = restart.semanticLimitReached;
+        fields["met_handshake_cycles"] = restart.metCycles;
+        fields["distinct_cycle_witnesses"] = restart.distinctCycleWitnesses;
+        fields["cycle_core_recurrences"] = restart.cycleCoreRecurrences;
+        // The reserved-channel proposal itself is reported once, by the
+        // candidate generator that publishes it.
+        fields["handshake_supply_deficit"] =
+            restart.handshakeSupplyDeficit.has_value();
         fields["diagnostic"] = restart.diagnostic;
         fields["prepared_seeds"] = restart.accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
@@ -503,18 +526,25 @@ void preferPreparedRestart(const SpatialRestartResult &candidate,
     selected = &candidate;
 }
 
+/// The invocation's strongest reserved-channel proposal. A witnessed capacity
+/// shortfall and an established handshake supply deficit both raise the same
+/// guarantee, so they reduce through one strongest-demand rule.
 llvm::Expected<std::optional<SpatialFifoCapacitySuggestion>>
 projectFifoCapacityShortfall(llvm::ArrayRef<SpatialRestartResult> restarts) {
   std::optional<SpatialFifoCapacitySuggestion> strongest;
+  const auto retain = [&](std::optional<SpatialFifoCapacitySuggestion> value) {
+    if (value && (!strongest ||
+                  value->sufficientCapacity > strongest->sufficientCapacity))
+      strongest = std::move(*value);
+  };
   for (const SpatialRestartResult &restart : restarts) {
+    retain(restart.handshakeSupplyDeficit);
     if (!restart.candidate)
       continue;
     auto projected = projectSpatialFifoCapacitySuggestion(*restart.candidate);
     if (!projected)
       return projected.takeError();
-    if (*projected && (!strongest || (*projected)->sufficientCapacity >
-                                        strongest->sufficientCapacity))
-      strongest = std::move(**projected);
+    retain(std::move(*projected));
   }
   return strongest;
 }
@@ -1106,6 +1136,25 @@ SpatialRestartResult runSpatialRestart(
       runSpatialRestartImpl(problem, attempt, executionControl, scratch,
                             std::move(preparedSeedHandoff));
   result.workerScratchRetainedBytes = scratch.retainedStorageBytes();
+  const SpatialHandshakeCycleCoreSummary cycles =
+      scratch.handshakeCycleCoreSummary();
+  result.metCycles = cycles.metCycles;
+  result.distinctCycleWitnesses = cycles.distinctWitnesses;
+  result.cycleCoreRecurrences = cycles.coreRecurrences;
+  // A restart that did not close publishes whatever supply deficit its
+  // closures established, whichever stage stopped it, including a deadline.
+  // A closed candidate is the answer, so it publishes none.
+  if (cycles.established && result.candidate &&
+      (result.disposition == SpatialRestartDisposition::Incomplete ||
+       result.disposition == SpatialRestartDisposition::Interrupted)) {
+    auto deficit = projectSpatialHandshakeSupplyDeficit(*result.candidate,
+                                                        *cycles.established);
+    if (!deficit)
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::CandidateVerification,
+          std::move(result.accounting), deficit.takeError());
+    result.handshakeSupplyDeficit = std::move(*deficit);
+  }
   return result;
 }
 

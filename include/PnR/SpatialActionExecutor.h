@@ -188,6 +188,9 @@ public:
   llvm::ArrayRef<PnrIndex> regionalLogicalNets() const {
     return router_.regionalLogicalNets();
   }
+  const SpatialHandshakeCycleCore &handshakeCycleCore() const {
+    return router_.handshakeCycleCore();
+  }
   /// The decision and touched-net change sets of the most recently committed
   /// probe, for incremental Action-domain maintenance.
   bool hasCommittedChanges() const { return committedChangesValid_; }

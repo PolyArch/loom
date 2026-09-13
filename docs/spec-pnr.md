@@ -1484,6 +1484,49 @@ invalidated. Exhausting that work before a reopened binding closes is
 `ProofNotEstablished`, not an internal error and not proof that every upstream
 SpatialMapping combination is infeasible.
 
+### Spatial Handshake Supply Deficit
+
+A closure *meets* a selected-handshake cycle whenever it keeps a selection
+whose provisional projection is still cyclic: it retained a joint route trial
+that did not open the cycle, or it gave up while the projection was cyclic.
+Either way it names the frozen projection arcs of the witness it could not
+remove, and the restart retains them.
+
+A closure that is still learning meets a cycle it has not seen before. A
+closure on a treadmill orbits among cycles it already knows: it leaves one
+witness, meets others it has already met, discovers nothing new, and arrives
+back at the first. That closed orbit is the recurrence this rule recognises,
+and it is a property of the witness set alone: a return to a witness with no
+witness discovered since that witness was last met. A first meeting, a repeated
+meeting of the witness already in hand, and a return that follows a discovery
+all fail it. No count, share, ratio, or elapsed time takes part in the
+judgement.
+
+A recurring core is classified once against the Fabric's isolation points. Only
+two of them exist, and both are complete in each direction: buffered FIFO mode,
+which contributes neither an input-valid to output-valid nor an output-ready to
+input-ready arc, and the Temporal PE ingress, which contributes neither a
+forward-valid nor a backward-ready arc to a traversal leaving the PE. Neither
+can appear on a cycle at all, so the only isolation a different selection could
+still reach on a witnessed core is a FIFO occurrence that a bypass traversal
+placed there, whose buffered alternative cuts it. A core that no
+FIFO-occurrence fragment contributes therefore has every remaining
+ready-to-valid crossing inside one FU operation case or one switch input row
+set, and no placement, route, tag, or local-transfer selection on this Fabric
+can open it.
+
+Such a core is an established Spatial supply deficit: the Module supplies too
+few reserved interconnect channels for the router to move any crossing of the
+core onto a buffered link. The closure owns that conclusion and publishes it
+through the same reserved-channel proposal family a witnessed FIFO capacity
+shortfall uses, naming the isolation the core lacks: the finite-buffer
+occurrence whose tag-selective guarantee binds the interconnect, that
+guarantee, one channel more than it, the core's contributing logical nets, and
+that occurrence's traversals. The proposal is a supply fact about the Module,
+never an infeasibility proof for the Mapping, and it excludes no software
+alternative. A closure whose retained witnesses do not close an orbit, or whose
+recurring core still carries a FIFO occurrence, establishes nothing.
+
 An imported-capacity witness may request hardware reconsideration only after
 the complete bounded execution-binding relation has been exhausted. The
 witness names the exact System, complete SpatialMapping input frontier, target

@@ -59,6 +59,10 @@ public:
   HandshakeProjectionStatistics handshakeProjectionStatistics() const {
     return actionExecutor_.handshakeProjectionStatistics();
   }
+  /// The cycle core this scratch's closures kept meeting during the restart.
+  const SpatialHandshakeCycleCore &handshakeCycleCore() const {
+    return actionExecutor_.handshakeCycleCore();
+  }
 
   std::size_t retainedStorageBytes() const;
 

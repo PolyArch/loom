@@ -159,6 +159,12 @@ SpatialPathFinderRouterScratch::prepare(const FrozenSpatialPnrProblem &problem,
   cutClaimSelectionCounts_.assign(routeClaimCount, 0);
   cutClaimTraversalRefcounts_.assign(routeClaimCount, 0);
   rankTrendTransitions_.clear();
+  // Frozen projection arc ordinals only compare inside one frozen problem, and
+  // the met witnesses are a fact of the restart rather than of one prepared
+  // closure region, so they survive every re-preparation against the same
+  // freeze.
+  if (preparedProblem_ != &problem)
+    handshakeCycleCore_.reset();
   projectionEpoch_ = 0;
   negotiationIterationCount_ = 0;
   workLedger_ = workLedger;
@@ -977,6 +983,12 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (llvm::Error error = consumeIteration())
         return error;
       emitStatistics(loom::mapping_debug::ClosureStatus::SelectedHandshakeCycle);
+      // Every refusal that carries a witness passes through here, so this is
+      // where a closure that gave up while cyclic meets its witness.
+      if (llvm::Error error = handshakeCycleCore_.meet(
+              candidate.problem().handshake(), frozenHandshakeCycle,
+              handshakeCycleLogicalNets))
+        return error;
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           std::move(frozenHandshakeCycle), std::move(handshakeCycleLogicalNets),
           std::move(handshakeCycleRouteCuts),
@@ -1244,6 +1256,14 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         if (llvm::Error error = collectHandshakeContributors())
           return completeIterationFailure(std::move(error));
         retainedCyclicHandshakeTrial = !projection->selectedHandshakeAcyclic;
+        // A retained trial that leaves the projection cyclic is a cycle this
+        // closure kept and could not open. Together with the cyclic refusals,
+        // these are the witnesses the restart owner reduces.
+        if (retainedCyclicHandshakeTrial)
+          if (llvm::Error error = handshakeCycleCore_.meet(
+                  candidate.problem().handshake(), frozenHandshakeCycle,
+                  handshakeCycleLogicalNets))
+            return completeIterationFailure(std::move(error));
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Summary,
             loom::mapping_debug::Stage::SpatialPnr,
@@ -1718,5 +1738,6 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(cutClaimSelectionCounts_) +
          retainedBytes(cutClaimTraversalRefcounts_) +
          retainedBytes(timingRouteNodeArrivals_) +
-         retainedBytes(timingRouteNodeWorklist_);
+         retainedBytes(timingRouteNodeWorklist_) +
+         handshakeCycleCore_.retainedStorageBytes();
 }

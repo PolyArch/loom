@@ -2,6 +2,7 @@
 #define LOOM_PNR_SPATIALPATHFINDERROUTER_H
 
 #include "Common/ExecutionControl.h"
+#include "PnR/SpatialHandshakeSupplyDeficit.h"
 #include "PnR/SpatialNetRouter.h"
 
 #include "llvm/ADT/APInt.h"
@@ -256,6 +257,10 @@ public:
   llvm::ArrayRef<PnrIndex> regionalLogicalNets() const {
     return routingRegionNets_;
   }
+  /// The cycle core this scratch's closures keep meeting since `prepare`.
+  const SpatialHandshakeCycleCore &handshakeCycleCore() const {
+    return handshakeCycleCore_;
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -372,6 +377,7 @@ private:
   std::vector<std::uint64_t> cutClaimTraversalRefcounts_;
   std::vector<std::uint64_t> timingRouteNodeArrivals_;
   std::vector<std::pair<PnrIndex, std::uint64_t>> timingRouteNodeWorklist_;
+  SpatialHandshakeCycleCore handshakeCycleCore_;
   std::uint64_t projectionEpoch_ = 0;
   std::uint64_t negotiationIterationCount_ = 0;
   SpatialPnrWorkLedgerView workLedger_;
