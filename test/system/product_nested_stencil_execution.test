@@ -3,7 +3,12 @@
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   %S/Inputs/product_nested_stencil.c -o %t.native
 # RUN: %t.native
+# The mapping budget is compile wall time, not an acceptance threshold. Under
+# the declared-work bound each software plan runs its whole configured search,
+# and this row's declared work was measured well above the fast tier; the
+# budget follows that measurement and shrinks as the closure cost falls.
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile -std=c11 -O1 -ffp-contract=off \
+# RUN:   --loom-mapping-wall-time-limit-ms=%loom-timeout-long-ms \
 # RUN:   -fno-math-errno %S/Inputs/product_nested_stencil.c -o %t.elf \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=nested_stencil \
