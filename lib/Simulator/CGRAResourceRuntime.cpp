@@ -408,12 +408,6 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
           plan_->claims[use.claimOffset + offset];
       occupancy_[claim.dimensionOrdinal] += claim.amount;
     }
-    if (request.domain != noCgraResourceDomain) {
-      const CgraResourceDomainPlan &domain = plan_->domains[request.domain];
-      if (domain.policy == CgraGrantPolicyKind::RoundRobin)
-        domainCursors_[request.domain] =
-            (request.requesterPosition + 1) % domain.requesterCount;
-    }
 
     std::uint32_t slot = 0;
     if (!freeEnvelopes_.empty()) {
@@ -435,13 +429,6 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
   };
 
   grants.reserve(requests.size());
-  if (pending.size() == 1) {
-    const PendingRequest &request = pending.front();
-    if (request.domain == noCgraResourceDomain ||
-        feasible(request.request.selectedUseOrdinal))
-      grants.push_back(acquire(request));
-    return llvm::Error::success();
-  }
   std::size_t first = 0;
   while (first != pending.size()) {
     const std::uint64_t domainOrdinal = pending[first].domain;
@@ -464,68 +451,86 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
         begins[requester] = ordinal;
       ends[requester] = ordinal + 1;
     }
-    llvm::SmallVector<std::size_t, 8> current = begins;
 
-    if (domain.policy == CgraGrantPolicyKind::None &&
-        domain.requesterCount > 1) {
-      llvm::SmallVector<std::uint64_t, 8> added(plan_->dimensions.size(), 0);
-      llvm::SmallVector<std::uint64_t, 8> touched;
-      for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
-        const CgraResourceUsePlan &use =
-            plan_->selectedUses[pending[ordinal].request.selectedUseOrdinal];
-        for (std::uint32_t offset = 0; offset != use.claimCount; ++offset) {
-          const CgraResourceClaimPlan &claim =
-              plan_->claims[use.claimOffset + offset];
-          if (added[claim.dimensionOrdinal] == 0)
-            touched.push_back(claim.dimensionOrdinal);
-          if (claim.amount > std::numeric_limits<std::uint64_t>::max() -
-                                 added[claim.dimensionOrdinal])
-            return invalid("CGRA aggregate resource request overflows u64");
-          added[claim.dimensionOrdinal] += claim.amount;
+    if (domain.policy == CgraGrantPolicyKind::None) {
+      if (domain.requesterCount > 1) {
+        llvm::SmallVector<std::uint64_t, 8> added(plan_->dimensions.size(), 0);
+        llvm::SmallVector<std::uint64_t, 8> touched;
+        for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
+          const CgraResourceUsePlan &use =
+              plan_->selectedUses[pending[ordinal].request.selectedUseOrdinal];
+          for (std::uint32_t offset = 0; offset != use.claimCount; ++offset) {
+            const CgraResourceClaimPlan &claim =
+                plan_->claims[use.claimOffset + offset];
+            if (added[claim.dimensionOrdinal] == 0)
+              touched.push_back(claim.dimensionOrdinal);
+            if (claim.amount > std::numeric_limits<std::uint64_t>::max() -
+                                   added[claim.dimensionOrdinal])
+              return invalid("CGRA aggregate resource request overflows u64");
+            added[claim.dimensionOrdinal] += claim.amount;
+          }
         }
-      }
-      for (std::uint64_t dimensionOrdinal : touched) {
-        const auto &dimension = plan_->dimensions[dimensionOrdinal];
-        if (added[dimensionOrdinal] >
-            dimension.capacity - occupancy_[dimensionOrdinal])
-          return invalid("CGRA reached contention without a GrantPolicy");
-      }
-      for (std::size_t ordinal = first; ordinal != last; ++ordinal)
-        grants.push_back(acquire(pending[ordinal]));
-    } else if (domain.policy != CgraGrantPolicyKind::RoundRobin) {
-      for (std::uint32_t requester = 0; requester != domain.requesterCount;
-           ++requester)
-        while (current[requester] != ends[requester]) {
-          const PendingRequest &request = pending[current[requester]];
+        for (std::uint64_t dimensionOrdinal : touched) {
+          const auto &dimension = plan_->dimensions[dimensionOrdinal];
+          if (added[dimensionOrdinal] >
+              dimension.capacity - occupancy_[dimensionOrdinal])
+            return invalid("CGRA reached contention without a GrantPolicy");
+        }
+        for (std::size_t ordinal = first; ordinal != last; ++ordinal)
+          grants.push_back(acquire(pending[ordinal]));
+      } else {
+        for (std::size_t ordinal = first; ordinal != last; ++ordinal) {
+          const PendingRequest &request = pending[ordinal];
           if (!feasible(request.request.selectedUseOrdinal))
             break;
           grants.push_back(acquire(request));
-          ++current[requester];
         }
-    } else {
-      std::uint32_t &cursor = domainCursors_[domainOrdinal];
-      llvm::SmallVector<bool, 8> blocked(domain.requesterCount, false);
-      while (true) {
-        bool granted = false;
-        for (std::uint32_t scanned = 0; scanned != domain.requesterCount;
-             ++scanned) {
-          const std::uint32_t requester =
-              (cursor + scanned) % domain.requesterCount;
-          if (blocked[requester] || current[requester] == ends[requester])
-            continue;
-          const PendingRequest &request = pending[current[requester]];
-          if (!feasible(request.request.selectedUseOrdinal)) {
-            blocked[requester] = true;
-            continue;
-          }
-          grants.push_back(acquire(request));
-          ++current[requester];
-          granted = true;
-          break;
-        }
-        if (!granted)
-          break;
       }
+      first = last;
+      continue;
+    }
+
+    // A grant is a function of registered state: the cursor entering this
+    // coordinate names the only requester of this component that may acquire,
+    // so the component grants at most one requester per coordinate. The
+    // cursor's next state does read this coordinate's requests, which is the
+    // one place arbitration observes them; it emerges as state at the next
+    // coordinate and never reaches this coordinate's grant.
+    const auto requested = [&](std::uint32_t position) {
+      return begins[position] != ends[position];
+    };
+    std::uint32_t &cursor = domainCursors_[domainOrdinal];
+    const std::uint32_t pointed = cursor;
+    // The first requester strictly after the cursor that requested here, and
+    // the cursor itself when no other did. Holding rather than drifting is
+    // what keeps a lone requester granted at every coordinate.
+    const auto scan = [&]() {
+      for (std::uint32_t offset = 1; offset != domain.requesterCount;
+           ++offset) {
+        const std::uint32_t position =
+            (pointed + offset) % domain.requesterCount;
+        if (requested(position))
+          return position;
+      }
+      return pointed;
+    };
+    bool fired = false;
+    if (requested(pointed)) {
+      const PendingRequest &request = pending[begins[pointed]];
+      if (feasible(request.request.selectedUseOrdinal)) {
+        grants.push_back(acquire(request));
+        fired = true;
+      }
+    }
+    if (domain.policy == CgraGrantPolicyKind::FixedPriority) {
+      for (std::uint32_t position = 0; position != domain.requesterCount;
+           ++position)
+        if (requested(position)) {
+          cursor = position;
+          break;
+        }
+    } else if (fired || !requested(pointed)) {
+      cursor = scan();
     }
     first = last;
   }

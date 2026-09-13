@@ -242,7 +242,6 @@ CgraPhysicalActionRuntime::advance() {
 
   llvm::SmallVector<CgraResourceRequest, 8> requests;
   llvm::SmallVector<std::uint64_t, 8> requestSlots;
-  bool releasedCapacity = false;
   for (const Due &event : due) {
     Action &action = actions_[event.slot];
     const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
@@ -266,7 +265,6 @@ CgraPhysicalActionRuntime::advance() {
         if (llvm::Error error = activity_->observeReleased(
                 action.actionOrdinal, resources_, coordinate))
           return std::move(error);
-      releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
       activeActions_.erase(
@@ -293,7 +291,6 @@ CgraPhysicalActionRuntime::advance() {
         if (llvm::Error error = activity_->observeReleased(
                 action.actionOrdinal, resources_, coordinate))
           return std::move(error);
-      releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
       activeActions_.erase(
@@ -313,17 +310,18 @@ CgraPhysicalActionRuntime::advance() {
     }
   }
 
-  if (releasedCapacity) {
-    for (std::uint64_t slot : parkedAcquisitions_) {
-      Action &action = actions_[slot];
-      assert(action.state == ActionState::Parked);
-      action.state = ActionState::Requested;
-      const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
-      requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
-      requestSlots.push_back(slot);
-    }
-    parkedAcquisitions_.clear();
+  // A parked acquisition keeps requesting, so it is presented again at every
+  // coordinate: a grant is a function of registered arbitration state, and the
+  // cursor that names the requester moves whether or not capacity changed.
+  for (std::uint64_t slot : parkedAcquisitions_) {
+    Action &action = actions_[slot];
+    assert(action.state == ActionState::Parked);
+    action.state = ActionState::Requested;
+    const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
+    requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
+    requestSlots.push_back(slot);
   }
+  parkedAcquisitions_.clear();
 
   if (!requests.empty()) {
     llvm::SmallVector<CgraResourceGrant, 8> grants;
@@ -386,6 +384,24 @@ CgraPhysicalActionRuntime::advance() {
           return std::move(error);
       }
     }
+  }
+
+  // With an empty calendar nothing would present the parked requests again, so
+  // the cursor could never move off them. Put their acquisition back on the
+  // calendar at the next coordinate, which is the cycle the advance rule names.
+  if (!parkedAcquisitions_.empty() && !events_.nextCoordinate()) {
+    auto retry = addCycles(coordinate, 1);
+    if (!retry)
+      return retry.takeError();
+    for (std::uint64_t slot : parkedAcquisitions_) {
+      Action &action = actions_[slot];
+      action.state = ActionState::Requested;
+      if (llvm::Error error =
+              schedule(slot, InternalKind::Acquire, *retry,
+                       uses_[action.actionOrdinal].acquireEventOrdinal))
+        return std::move(error);
+    }
+    parkedAcquisitions_.clear();
   }
 
   llvm::sort(frameEvents_, [](const CgraPhysicalLifecycleEvent &lhs,

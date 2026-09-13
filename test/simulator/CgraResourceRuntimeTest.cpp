@@ -7,7 +7,9 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -138,12 +140,77 @@ void atomicClaimsAndRoundRobinAreExecutedExactly() {
   if (llvm::Error error = runtime.release(second.front().claimEnvelope))
     fail(llvm::toString(std::move(error)));
 
+  // The previous coordinate had one requester, and a work-conserving cursor
+  // stays with it rather than stepping onto an idle successor.
   const loom::sim::detail::CgraResourceRequest nextRequests[] = {{0, 1},
                                                                  {1, 1}};
   if (llvm::Error error = runtime.grant(nextRequests, grants))
     fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 0)
+    fail("a lone grant moved the round-robin cursor off its requester");
+  if (llvm::Error error = runtime.release(grants.front().claimEnvelope))
+    fail(llvm::toString(std::move(error)));
+
+  const loom::sim::detail::CgraResourceRequest pairedRequests[] = {{0, 2},
+                                                                   {1, 2}};
+  if (llvm::Error error = runtime.grant(pairedRequests, grants))
+    fail(llvm::toString(std::move(error)));
   if (grants.size() != 1 || grants.front().selectedUseOrdinal != 1)
-    fail("a singleton grant did not advance the round-robin cursor");
+    fail("round-robin did not alternate once a second requester appeared");
+}
+
+/// Three requesters of one merge component, so the cursor's advance rule is
+/// what decides throughput. Every Temporal PE input port sits behind such a
+/// component, and a cursor that stepped onto an idle successor after each
+/// grant would halve a lone stream.
+void roundRobinArbitrationIsWorkConserving() {
+  using namespace fabric;
+  using namespace loom::sim::detail;
+  const SwitchResourceContract switchContract =
+      take(SwitchResourceContract::create(
+          {Schedule::Temporal,
+           3,
+           1,
+           {{0, 1, 2}},
+           TemporalSwitchGrantPolicy(TemporalSwitchRoundRobin{{0, 1, 2}, 0})}));
+  const ResourceContract *contracts[] = {&switchContract.resourceContract()};
+  const CgraResourcePatternSelection selections[] = {
+      {0, take(switchContract.traversalPattern(0, 0))},
+      {0, take(switchContract.traversalPattern(1, 0))},
+      {0, take(switchContract.traversalPattern(2, 0))}};
+  const auto plan = take(freezeCgraResourceRuntimePlan(contracts, selections));
+
+  llvm::SmallVector<CgraResourceGrant, 4> grants;
+  const auto oneCoordinate = [&](CgraResourceRuntime &runtime,
+                                 llvm::ArrayRef<CgraResourceRequest> requests) {
+    if (llvm::Error error = runtime.grant(requests, grants))
+      fail(llvm::toString(std::move(error)));
+    if (grants.size() > 1)
+      fail("an arbitration component granted more than one requester");
+    if (grants.empty())
+      return std::numeric_limits<std::uint64_t>::max();
+    const std::uint64_t granted = grants.front().selectedUseOrdinal;
+    if (llvm::Error error = runtime.release(grants.front().claimEnvelope))
+      fail(llvm::toString(std::move(error)));
+    return granted;
+  };
+
+  // A lone requester that requests at every coordinate is granted at every
+  // coordinate, after the one coordinate the cursor needs to reach it.
+  auto lone = take(CgraResourceRuntime::create(plan));
+  const CgraResourceRequest onlyLast[] = {{2, 0}};
+  if (oneCoordinate(lone, onlyLast) != std::numeric_limits<std::uint64_t>::max())
+    fail("the cursor reached a fresh requester without its one coordinate");
+  for (std::uint64_t coordinate = 0; coordinate != 4; ++coordinate)
+    if (oneCoordinate(lone, onlyLast) != 2)
+      fail("a lone continuous requester was not granted every coordinate");
+
+  // Two continuous requesters alternate from the first grant.
+  auto paired = take(CgraResourceRuntime::create(plan));
+  const CgraResourceRequest firstTwo[] = {{0, 0}, {1, 0}};
+  for (std::uint64_t coordinate = 0; coordinate != 6; ++coordinate)
+    if (oneCoordinate(paired, firstTwo) != coordinate % 2)
+      fail("two continuous requesters did not alternate");
 }
 
 void derivedActivationAcquiresSharedClaimsOnce() {
@@ -173,7 +240,7 @@ void derivedActivationAcquiresSharedClaimsOnce() {
     fail("derived activation did not release one whole envelope");
 }
 
-void fixedPriorityAcceptsOutputDisjointRequests() {
+void fixedPriorityDecidesOverRegisteredRequests() {
   using namespace fabric;
   using namespace loom::sim::detail;
   const SwitchResourceContract switchContract =
@@ -190,19 +257,32 @@ void fixedPriorityAcceptsOutputDisjointRequests() {
   const auto plan = take(freezeCgraResourceRuntimePlan(contracts, selections));
   auto runtime = take(CgraResourceRuntime::create(plan));
 
+  // One pointer names one requester, so output-disjoint requesters no longer
+  // share a coordinate even when both claim envelopes are available.
   llvm::SmallVector<CgraResourceGrant, 2> grants;
   const CgraResourceRequest disjoint[] = {{0, 0}, {1, 0}};
   if (llvm::Error error = runtime.grant(disjoint, grants))
     fail(llvm::toString(std::move(error)));
-  if (grants.size() != 2 ||
-      !((grants[0].selectedUseOrdinal == 0 &&
-         grants[1].selectedUseOrdinal == 1) ||
-        (grants[0].selectedUseOrdinal == 1 &&
-         grants[1].selectedUseOrdinal == 0)))
-    fail("fixed priority did not accept both output-disjoint requesters");
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 1)
+    fail("fixed priority granted more than its highest-priority requester");
+  if (llvm::Error error = runtime.release(grants.front().claimEnvelope))
+    fail(llvm::toString(std::move(error)));
+
+  // The pointer entering a coordinate was chosen from the previous
+  // coordinate's requests, so the lower-priority requester is reached one
+  // coordinate after the higher-priority one falls silent.
+  const CgraResourceRequest lower[] = {{0, 0}};
+  if (llvm::Error error = runtime.grant(lower, grants))
+    fail(llvm::toString(std::move(error)));
+  if (!grants.empty())
+    fail("fixed priority decided over the current coordinate's requests");
+  if (llvm::Error error = runtime.grant(lower, grants))
+    fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 0)
+    fail("fixed priority never reached its lower-priority requester");
 }
 
-void roundRobinCursorFollowsTheLastDisjointGrant() {
+void roundRobinAdvancesToTheNextRequesterAfterEveryGrant() {
   using namespace fabric;
   using namespace loom::sim::detail;
   const SwitchResourceContract switchContract =
@@ -225,18 +305,23 @@ void roundRobinCursorFollowsTheLastDisjointGrant() {
   const CgraResourceRequest disjoint[] = {{0, 0}, {1, 0}};
   if (llvm::Error error = runtime.grant(disjoint, grants))
     fail(llvm::toString(std::move(error)));
-  if (grants.size() != 2 || grants[0].selectedUseOrdinal != 0 ||
-      grants[1].selectedUseOrdinal != 1)
-    fail("round-robin did not accept both output-disjoint requesters");
-  for (const CgraResourceGrant &grant : grants)
-    if (llvm::Error error = runtime.release(grant.claimEnvelope))
-      fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 0)
+    fail("round-robin granted more than the requester its cursor named");
+  if (llvm::Error error = runtime.release(grants.front().claimEnvelope))
+    fail(llvm::toString(std::move(error)));
 
   const CgraResourceRequest contended[] = {{2, 0}, {3, 0}};
   if (llvm::Error error = runtime.grant(contended, grants))
     fail(llvm::toString(std::move(error)));
+  if (grants.size() != 1 || grants.front().selectedUseOrdinal != 2)
+    fail("round-robin cursor did not advance to its next requester");
+  if (llvm::Error error = runtime.release(grants.front().claimEnvelope))
+    fail(llvm::toString(std::move(error)));
+
+  if (llvm::Error error = runtime.grant(contended, grants))
+    fail(llvm::toString(std::move(error)));
   if (grants.size() != 1 || grants.front().selectedUseOrdinal != 3)
-    fail("round-robin cursor did not follow the last disjoint grant");
+    fail("round-robin cursor did not reach its last component requester");
 }
 
 } // namespace
@@ -244,7 +329,8 @@ void roundRobinCursorFollowsTheLastDisjointGrant() {
 int main() {
   atomicClaimsAndRoundRobinAreExecutedExactly();
   derivedActivationAcquiresSharedClaimsOnce();
-  fixedPriorityAcceptsOutputDisjointRequests();
-  roundRobinCursorFollowsTheLastDisjointGrant();
+  fixedPriorityDecidesOverRegisteredRequests();
+  roundRobinAdvancesToTheNextRequesterAfterEveryGrant();
+  roundRobinArbitrationIsWorkConserving();
   return EXIT_SUCCESS;
 }
