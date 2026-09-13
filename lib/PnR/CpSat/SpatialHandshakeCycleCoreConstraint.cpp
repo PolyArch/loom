@@ -3,6 +3,8 @@
 #include "Common/MappingDebugLog.h"
 #include "PnR/SpatialPnrProblem.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 #include "llvm/Support/Error.h"
 
 #include <array>
@@ -36,6 +38,7 @@ llvm::Expected<SpatialHandshakeCycleCoreConstraintResult> addEscapeConstraint(
 
   std::vector<BoolVar> escaped;
   escaped.reserve(coPlacement.computeDecisions.size());
+  std::vector<::loom::fabric::FabricPeOccurrenceRef> escapeTargets;
   for (PnrIndex decision : coPlacement.computeDecisions) {
     if (decision >= decisionVariables.size())
       return coreConstraintError("class decision is out of range");
@@ -66,14 +69,18 @@ llvm::Expected<SpatialHandshakeCycleCoreConstraintResult> addEscapeConstraint(
         return coreConstraintError("class placement is out of range");
       const bool choiceEscapes = spatialHandshakeCoreCoPlacementEscapes(
           coPlacement, placements[placement]);
-      if (choiceEscapes)
+      if (choiceEscapes) {
         ++result.escapingChoiceCount;
+        if (!llvm::is_contained(escapeTargets, placements[placement].parentPe))
+          escapeTargets.push_back(placements[placement].parentPe);
+      }
       const std::array<std::int64_t, 2> tuple{choice, choiceEscapes ? 1 : 0};
       table.AddTuple(tuple);
     }
     escaped.push_back(decisionEscaped);
     ++result.classDecisionCount;
   }
+  result.escapeTargetPeCount = static_cast<std::uint64_t>(escapeTargets.size());
   // With no escaping choice the clause would refuse the whole legal domain.
   // That is not a search fact but a Fabric fact, and its owner reports it.
   if (result.escapingChoiceCount == 0)
@@ -115,6 +122,7 @@ loom::pnr::detail::stateSpatialHandshakeCycleCoreClass(
         fields["outside_region"] = encoded->outsideRegion;
         fields["class_decision_count"] = encoded->classDecisionCount;
         fields["escaping_choice_count"] = encoded->escapingChoiceCount;
+        fields["escape_target_pe_count"] = encoded->escapeTargetPeCount;
         fields["neighbourhood_pe_count"] =
             static_cast<std::uint64_t>(coPlacement->neighbourhood.size());
         fields["core_fu_occurrence_count"] = coPlacement->coreFuOccurrenceCount;

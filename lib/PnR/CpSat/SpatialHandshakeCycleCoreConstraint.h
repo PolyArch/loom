@@ -25,6 +25,9 @@ struct SpatialHandshakeCycleCoreConstraintResult final {
   /// Legal choices of those decisions that reach a Temporal PE ingress or a
   /// neighbourhood a buffered mesh FIFO separates from the core.
   std::uint64_t escapingChoiceCount = 0;
+  /// Distinct PE occurrences the escaping legal choices land on. One target
+  /// shared by every escape is a different supply question from many.
+  std::uint64_t escapeTargetPeCount = 0;
   /// Whether some decision of the class lies outside the bounded region, so
   /// the class cannot be stated here.
   bool outsideRegion = false;

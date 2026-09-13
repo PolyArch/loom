@@ -1868,6 +1868,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           fields["regional_limit"] = regionalLimit;
           fields["region_decisions"] = rejectedRegionDecisionCount;
           fields["route_work_unknown"] = routeWorkUnknown;
+          fields["handshake_core_class_encoded"] = handshakeCoreClassEncoded;
           fields["handshake_cycle_region_expansion"] =
               handshakeCycleRequiresRegionExpansion;
           fields["objective_only_rejection"] = objectiveOnlyRejection;
