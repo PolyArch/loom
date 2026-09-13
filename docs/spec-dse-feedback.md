@@ -1795,7 +1795,7 @@ search step, with every materialization charged separately. Exhausted grants
 retain finalized outputs and report semantic incompleteness; one parent's
 rejected alternatives must not consume later rounds before the other parents
 receive their current turn. The implementation semantic identity is
-`loom.compiler.structured_schedule.generator.v23`.
+`loom.compiler.structured_schedule.generator.v24`.
 
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact

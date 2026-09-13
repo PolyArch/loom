@@ -250,6 +250,61 @@ applyParallelizeNest(mlir::scf::ForOp root) {
   return parallel;
 }
 
+/// Removable address support: an address computation that the Graph memory
+/// owner folds into the access positions it feeds, so the Fabric never
+/// realizes it as an actor. The rule is transitive, because that owner
+/// resolves a complete address chain back to its root: an address whose only
+/// consumers are other removable address computations is removable with them.
+/// It is also exact. An address that reaches any consumer other than another
+/// address computation's base or a selected root-relative access's address
+/// operand -- a non-access use, an escape through any other operand, or a
+/// store that writes the address itself -- is arithmetic the Fabric must
+/// realize, and so is an address whose accesses were not selected
+/// root-relative. This one predicate answers both the enumeration capacity
+/// projection and the materialization admission gate, which is what keeps
+/// those two from disagreeing about the same address.
+bool isRemovableAddressSupport(mlir::Operation *operation) {
+  auto address = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
+  if (!address)
+    return false;
+  llvm::SmallVector<mlir::LLVM::GEPOp, 4> pending{address};
+  llvm::SmallPtrSet<mlir::Operation *, 4> visited;
+  while (!pending.empty()) {
+    mlir::LLVM::GEPOp current = pending.pop_back_val();
+    if (!visited.insert(current.getOperation()).second)
+      continue;
+    if (current->use_empty())
+      return false;
+    for (mlir::Operation *user : current->getUsers()) {
+      if (auto chained = llvm::dyn_cast<mlir::LLVM::GEPOp>(user)) {
+        if (chained.getBase() != current.getResult())
+          return false;
+        pending.push_back(chained);
+        continue;
+      }
+      if (!llvm::isa_and_nonnull<mlir::UnitAttr>(
+              user->getAttr(loom::rootRelativeAddressAttrName)))
+        return false;
+      if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(user)) {
+        if (load.getVolatile_() ||
+            load.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic ||
+            load.getAddr() != current.getResult())
+          return false;
+        continue;
+      }
+      if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(user)) {
+        if (store.getVolatile_() ||
+            store.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic ||
+            store.getAddr() != current.getResult())
+          return false;
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 struct ActorMultiplicity final {
   mlir::Operation *representative = nullptr;
   std::uint64_t count = 0;
@@ -316,6 +371,11 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
   llvm::Error projectionError = llvm::Error::success();
   loop.getRegion().walk([&](mlir::Operation *operation) {
     if (projectionError || !dataflow::operationSchemaOf(operation))
+      return mlir::WalkResult::advance();
+    // Removable address support is not replicated capacity: the replicated
+    // body folds it into the accesses it serves, exactly as the
+    // materialization gate does.
+    if (isRemovableAddressSupport(operation))
       return mlir::WalkResult::advance();
     auto projection = projectAggregateUnrollActor(operation, fabric);
     if (!projection) {
@@ -1116,30 +1176,6 @@ admittingStructuredActorResources(mlir::Operation *operation,
   return fabric.admittingOperationResourceCount(*projection, *indexBits);
 }
 
-bool isSelectedRootRelativeAddressSupport(mlir::Operation *operation) {
-  auto address = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
-  if (!address || address->use_empty())
-    return false;
-  return llvm::all_of(address->getUsers(), [&](mlir::Operation *user) {
-    if (!llvm::isa_and_nonnull<mlir::UnitAttr>(
-            user->getAttr(loom::rootRelativeAddressAttrName)))
-      return false;
-    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(user)) {
-      if (load.getVolatile_() ||
-          load.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
-        return false;
-      return load.getAddr() == address.getResult();
-    }
-    if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(user)) {
-      if (store.getVolatile_() ||
-          store.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic)
-        return false;
-      return store.getAddr() == address.getResult();
-    }
-    return false;
-  });
-}
-
 llvm::Expected<bool>
 fabricAdmitsVectorizedClosure(mlir::Operation *root,
                               const FabricCapabilityIndex &fabric) {
@@ -1449,30 +1485,39 @@ enumerateStructuredScheduleDecisions(
       auto bound = aggregateUnrollCapacity(scfLoop, capabilityIndex);
       if (!bound)
         return bound.takeError();
-      if (factors.empty() || factors.front() > bound->factor) {
-        recordRefusal(entity.reference,
-                      StructuredScopRefusalKind::FabricCapabilityUnavailable);
-        mapping_debug::emit(
-            mapping_debug::Level::Detail,
-            mapping_debug::Stage::DataflowLowering,
-            mapping_debug::Event::DerivedContext,
-            [&](llvm::json::Object &fields) {
-              fields["context_kind"] = "structured_schedule_replication_bound";
-              fields["loop_ordinal"] = entity.reference.ordinal;
-              fields["decision_kind"] =
-                  structuredScheduleDecisionKindSpelling(kind);
-              fields["admitted_factor"] = bound->factor;
-              fields["binding_actor"] = bound->bindingActor;
-              fields["binding_body_multiplicity"] = bound->bindingMultiplicity;
-              fields["binding_fabric_resources"] = bound->bindingResources;
-            });
-        return llvm::Error::success();
-      }
+      llvm::SmallVector<std::uint64_t, 8> admitted;
       for (std::uint64_t factor : factors) {
         if (factor > bound->factor)
           break;
-        appendScfProposal({entity.reference, kind, factor, std::nullopt});
+        admitted.push_back(factor);
       }
+      // One record for the capacity this family met, whether it survived or
+      // not: a reader of an absent family needs the resource that removed it,
+      // and a reader of a present one needs the factors it may still choose.
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::DerivedContext,
+          [&](llvm::json::Object &fields) {
+            fields["context_kind"] = "structured_schedule_replication_bound";
+            fields["loop_ordinal"] = entity.reference.ordinal;
+            fields["decision_kind"] =
+                structuredScheduleDecisionKindSpelling(kind);
+            fields["admitted_factor"] = bound->factor;
+            fields["binding_actor"] = bound->bindingActor;
+            fields["binding_body_multiplicity"] = bound->bindingMultiplicity;
+            fields["binding_fabric_resources"] = bound->bindingResources;
+            llvm::json::Array admittedFactors;
+            for (std::uint64_t factor : admitted)
+              admittedFactors.push_back(factor);
+            fields["admitted_factors"] = std::move(admittedFactors);
+          });
+      if (admitted.empty()) {
+        recordRefusal(entity.reference,
+                      StructuredScopRefusalKind::FabricCapabilityUnavailable);
+        return llvm::Error::success();
+      }
+      for (std::uint64_t factor : admitted)
+        appendScfProposal({entity.reference, kind, factor, std::nullopt});
       return llvm::Error::success();
     };
 
@@ -1816,7 +1861,7 @@ materializeStructuredScheduleImpl(
         for (mlir::Operation *operation : materializedOperations) {
           if (!dataflow::operationSchemaOf(operation))
             continue;
-          if (isSelectedRootRelativeAddressSupport(operation))
+          if (isRemovableAddressSupport(operation))
             continue;
           auto resourceCount =
               admittingStructuredActorResources(operation, *fabric);

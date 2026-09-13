@@ -953,6 +953,96 @@ module attributes {dlti.dl_spec = #layout} {
   llvm::sys::fs::remove_directories(directory);
 }
 
+/// A pointer-addressed body whose address chain ends in selected
+/// root-relative accesses, optionally with one link of that chain also read by
+/// a non-access consumer.
+std::string pointerAddressedRow(bool escapes) {
+  std::string escape =
+      escapes ? "      %escaped = llvm.ptrtoint %element : !llvm.ptr to i64\n"
+                "      llvm.store %escaped, %sink "
+                "{loom.root_relative_address} : i64, !llvm.ptr\n"
+              : "";
+  return R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%weights: !llvm.ptr, %out: !llvm.ptr, %sink: !llvm.ptr) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c8 step %c1 {
+      %index = arith.index_cast %i : index to i64
+      %row = llvm.getelementptr inbounds %weights[%index] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+      %lane0 = llvm.getelementptr inbounds %row[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %lane1 = llvm.getelementptr inbounds %lane0[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %lane2 = llvm.getelementptr inbounds %lane1[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %lane3 = llvm.getelementptr inbounds %lane2[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %lane4 = llvm.getelementptr inbounds %lane3[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %lane5 = llvm.getelementptr inbounds %lane4[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %element = llvm.getelementptr inbounds %lane5[1] : (!llvm.ptr) -> !llvm.ptr, f32
+      %value = llvm.load %element {loom.root_relative_address} : !llvm.ptr -> f32
+      %target = llvm.getelementptr inbounds %out[%index] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+)mlir" + escape +
+         R"mlir(      llvm.store %value, %target {loom.root_relative_address} : f32, !llvm.ptr
+    }
+    return
+  }
+}
+)mlir";
+}
+
+/// One owner decides removable address support for the enumeration capacity
+/// projection and for the materialization admission gate. The rule is
+/// transitive: a chain of address computations that ends in selected
+/// root-relative accesses is folded into those accesses by Graph memory
+/// lowering, so no link of it is replicated capacity and the replication
+/// family survives. It is exact: one link read by a non-access consumer is
+/// arithmetic the Fabric must realize, and the whole prefix it feeds counts
+/// again. The second half also calibrates the first - were the exact Fabric
+/// to admit this many address actors, neither half would be bound and the
+/// first half would prove nothing.
+void removableAddressSupportIsTransitiveAndExact() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-address", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+
+  const auto replicationFamily = [&](bool escapes) {
+    const loom::frontend::StructuredProgramCandidate program =
+        parseProgram(pointerAddressedRow(escapes));
+    auto domain = take(loom::frontend::enumerateStructuredScheduleDecisions(
+        program, fabric, 8));
+    std::vector<std::uint64_t> factors;
+    for (const loom::frontend::StructuredScheduleProposal &proposal :
+         domain.proposals)
+      if (proposal.decision().kind ==
+          loom::frontend::StructuredScheduleDecisionKind::Unroll)
+        factors.push_back(proposal.decision().factor);
+    const bool capacityRefused = llvm::any_of(
+        domain.refusals, [](const loom::frontend::StructuredScopRefusal &
+                                refusal) {
+          return refusal.kind == loom::frontend::StructuredScopRefusalKind::
+                                     FabricCapabilityUnavailable;
+        });
+    return std::make_pair(std::move(factors), capacityRefused);
+  };
+
+  const auto [removable, removableRefused] = replicationFamily(false);
+  if (removable.empty() || removableRefused)
+    fail("a transitive root-relative address chain was counted as replicated "
+         "capacity");
+  const auto [escaped, escapedRefused] = replicationFamily(true);
+  if (!escaped.empty() || !escapedRefused)
+    fail("an address chain read by a non-access consumer was removed from the "
+         "replication capacity");
+
+  llvm::sys::fs::remove_directories(directory);
+}
+
 } // namespace
 
 int main() {
@@ -963,5 +1053,6 @@ int main() {
   lineageRejectsAValidForeignChild();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
   strictSerialDimensionKeepsEnclosingDecisions();
+  removableAddressSupportIsTransitiveAndExact();
   return EXIT_SUCCESS;
 }

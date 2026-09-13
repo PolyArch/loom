@@ -836,10 +836,26 @@ index width. The materializer proves that every emitted coordinate fits the
 target index width, then reconstructs it as the source `i64` before cloning its
 statements. When the enclosing ownership decision selected `RootRelative`,
 each admitted load/store retains that owner's `loom.root_relative_address`
-marker; only then is its direct GEP removable address support rather than an
-independent Fabric compute actor. A `PointerAddressed` candidate retains the
-ordinary GEP Fabric gate. This spelling does not admit general pointer SCoPs,
-loop-carried reductions, or broader polyhedral parallelism.
+marker; only then is the address computation feeding it removable address
+support rather than an independent Fabric compute actor. A `PointerAddressed`
+candidate retains the ordinary GEP Fabric gate. This spelling does not admit
+general pointer SCoPs, loop-carried reductions, or broader polyhedral
+parallelism.
+
+Removable address support is transitive, because Graph memory lowering
+resolves a complete address chain back to its root and folds the whole chain
+into the access it serves: an address computation whose consumers are all
+themselves removable address computations is removable with them, so a row
+address that feeds an element address which feeds a marked access disappears
+with the chain it belongs to and is never a replicated or admitted actor.
+Removability is decided exactly. An address that reaches any consumer other
+than another address computation's base or a selected root-relative,
+nonvolatile, nonatomic access's address operand is not removable; neither is
+one that escapes the nest through any other operand, one that is itself the
+value a store writes, nor one whose accesses were not selected root-relative.
+One owner decides this predicate for both the aggregate replication-capacity
+projection at enumeration and the actor admission gate at materialization, so
+those two gates cannot classify the same address differently.
 
 Polly/ISL consumes only the frozen MLIR-owned domains and dependence relations
 and returns exact typed schedule maps. No provider object, textual ISL
@@ -999,14 +1015,19 @@ Presburger relations and vectorization strategy never become a persistent
 Schedule representation.
 
 Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
-replicated body impossible. Actor instances are grouped by the canonical
+replicated body impossible. Removable address support is excluded from the
+projection by the owner above, because replicating the body replicates the
+accesses that fold it away and not the address arithmetic itself. The
+remaining actor instances are grouped by the canonical
 typed OperationSchema projection. For each group, the generator divides the
 number of admitted concrete Fabric occurrences by the group's body
-multiplicity; the minimum quotient bounds the unroll factor. A bound that
-admits no canonical factor retires that loop's complete replication family,
-unroll and unroll-and-jam alike, and records `FabricCapabilityUnavailable`, so
-an absent replication family always names the capacity that removed it rather
-than leaving a silent gap. This projection
+multiplicity; the minimum quotient bounds the unroll factor. Every replication
+family records that bound with the actor group that produced it and the
+canonical factors the bound admits. A bound that admits no canonical factor
+additionally retires that loop's complete replication family, unroll and
+unroll-and-jam alike, and records `FabricCapabilityUnavailable`, so an absent
+replication family always names the capacity that removed it rather than
+leaving a silent gap. This projection
 does not prove placement, routing, contention freedom, or performance.
 
 An unresolved selected-Spatial special-math operation is intentionally not yet
@@ -1155,7 +1176,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v23`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v24`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator
