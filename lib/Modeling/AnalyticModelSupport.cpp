@@ -17,6 +17,7 @@
 #include "Evaluation/OwnerValue.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/SwitchResourceContract.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -354,6 +355,80 @@ llvm::Error summarizeFabricView(const fabric::FabricArtifactView &view,
           addEntityCost(estimate, EntityCost{2, 1, 100}, *connectionCount))
     return error;
   return llvm::Error::success();
+}
+
+/// Worst-case cycles one Temporal switch hop waits for its grant, as
+/// `docs/spec-fabric-switch.md` bounds it: the input count of the largest
+/// multi-input physical contention component of any Temporal switch, and zero
+/// when no component of any Temporal switch contends. The switch arbitration
+/// components Fabric derives are the one source; this model keeps no constant
+/// of its own.
+llvm::Expected<std::uint64_t>
+viewTemporalSwitchArbitrationWait(const fabric::FabricArtifactView &view) {
+  std::map<fabric::FabricEntityId,
+           std::map<fabric::FabricOrdinal, std::vector<std::uint32_t>>>
+      admitted;
+  for (const fabric::FabricPhysicalTraversalRef &traversal :
+       view.admittedTraversals()) {
+    const auto *crosspoint =
+        std::get_if<fabric::FabricSwitchTraversalPayload>(&traversal.payload);
+    if (!crosspoint)
+      continue;
+    admitted[crosspoint->owner.id()][crosspoint->output].push_back(
+        static_cast<std::uint32_t>(crosspoint->input));
+  }
+
+  std::uint64_t wait = 0;
+  for (auto &[entity, sources] : admitted) {
+    const fabric::FabricSwitchOccurrenceRef occurrence(entity);
+    if (view.switchSchedule(occurrence) != ::fabric::Schedule::Temporal)
+      continue;
+    const auto owner = fabric::FabricInventoryOwnerRef::of(occurrence);
+    const ::fabric::ResourceContract *contract = view.resourceContract(owner);
+    if (!contract)
+      continue;
+    const std::uint64_t inputCount =
+        view.inventorySize(owner, fabric::FabricInventoryKind::SwitchInput);
+    const std::uint64_t outputCount =
+        view.inventorySize(owner, fabric::FabricInventoryKind::SwitchOutput);
+    if (inputCount > std::numeric_limits<std::uint32_t>::max() ||
+        outputCount > std::numeric_limits<std::uint32_t>::max() ||
+        sources.rbegin()->first >= outputCount)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "low_confidence_model_invalid: switch traversal domain");
+    std::vector<std::vector<std::uint32_t>> sourcesByOutput(outputCount);
+    for (auto &[output, inputs] : sources) {
+      llvm::sort(inputs);
+      inputs.erase(std::unique(inputs.begin(), inputs.end()), inputs.end());
+      sourcesByOutput[output] = std::move(inputs);
+    }
+    auto components = ::fabric::deriveSwitchArbitrationComponents(
+        ::fabric::Schedule::Temporal,
+        static_cast<std::uint32_t>(inputCount),
+        static_cast<std::uint32_t>(outputCount), sourcesByOutput, *contract);
+    if (!components)
+      return components.takeError();
+    for (const ::fabric::SwitchArbitrationComponent &component : *components)
+      if (component.inputs.size() > 1)
+        wait = std::max<std::uint64_t>(wait, component.inputs.size());
+  }
+  return wait;
+}
+
+llvm::Expected<std::uint64_t>
+temporalSwitchArbitrationWait(const fabric::FinalizedFabricRoot &root) {
+  auto wait = viewTemporalSwitchArbitrationWait(root.view());
+  if (!wait)
+    return wait.takeError();
+  for (const fabric::FabricArtifactView &module :
+       root.view().importedModules()) {
+    auto moduleWait = viewTemporalSwitchArbitrationWait(module);
+    if (!moduleWait)
+      return moduleWait.takeError();
+    *wait = std::max(*wait, *moduleWait);
+  }
+  return *wait;
 }
 
 llvm::Expected<PhysicalEstimate>
@@ -993,6 +1068,43 @@ projectCanonicalDataflowWorkloadImpl(
     if (llvm::is_contained(coveredGraphs, actor.graph))
       workload.recurrenceLength =
           std::max(workload.recurrenceLength, actor.recurrenceCriticalLength);
+
+  // The critical path and the recurrence are chains of dataflow steps that
+  // cross the interconnect, so on a Fabric whose Temporal switches arbitrate
+  // each chain waits for at least one grant. The model charges the
+  // Fabric-owned worst-case wait of one hop once per chain; it does not know
+  // how many of a chain's steps leave their PE, and one worst case per step
+  // would assume every component input contends at every step. The
+  // resource-bound initiation interval is a capacity term, not a chain.
+  auto arbitrationWait = temporalSwitchArbitrationWait(fabricRoot);
+  if (!arbitrationWait)
+    return arbitrationWait.takeError();
+  if (*arbitrationWait != 0) {
+    mapping_debug::emit(mapping_debug::Level::Detail,
+                        mapping_debug::Stage::DataflowLowering,
+                        mapping_debug::Event::DerivedContext,
+                        [&](llvm::json::Object &fields) {
+                          fields["context_kind"] =
+                              "temporal_switch_arbitration_wait";
+                          fields["arbitration_wait_cycles"] = *arbitrationWait;
+                          fields["critical_path_steps"] =
+                              workload.criticalPathLength;
+                          fields["recurrence_steps"] =
+                              workload.recurrenceLength;
+                        });
+    for (std::uint64_t *chain :
+         {&workload.criticalPathLength, &workload.recurrenceLength}) {
+      if (*chain == 0)
+        continue;
+      const std::optional<std::uint64_t> waited =
+          llvm::checkedAddUnsigned(*chain, *arbitrationWait);
+      if (!waited)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "low_confidence_model_overflow: switch arbitration wait");
+      *chain = *waited;
+    }
+  }
 
   workload.graphActivations =
       selectedGraph ? 1 : program.staticGraphLaunches().size();
