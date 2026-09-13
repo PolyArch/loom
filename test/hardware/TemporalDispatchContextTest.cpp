@@ -13,7 +13,10 @@
 //    boundary output shared by several held results retires exactly one
 //    result per handoff instead of dropping the other.
 // The emitted testbenches send the heads one at a time and expect exactly the
-// schema-owned publications.
+// schema-owned publications. Each first sweeps the complete input valid vector
+// inside one cycle and requires every input ready to be unchanged, which is
+// the registered-grant invariant that a port's admission observes no valid of
+// the same cycle.
 
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -728,6 +731,8 @@ void writeArtifacts(const std::filesystem::path &root,
   testbench << loom::hardware::test::portableCycleWatchdog();
   testbench << R"sv(
 
+  int unsigned idle_ready;
+
   initial begin
     clock = 0;
     reset = 1;
@@ -754,6 +759,30 @@ void writeArtifacts(const std::filesystem::path &root,
 )sv";
   testbench << take(test, loom::hardware::test::portableAxiLiteProgramAndVerify(
                               artifact.target, artifact.image));
+  // A configured PE's boundary readiness is a function of configuration,
+  // cycle-start operand state, and the registered enqueue grant alone.
+  // Sweeping the complete input valid vector inside a cycle therefore moves
+  // no input ready, which is the invariant that no port's admission observes
+  // another port's, or its own, valid of the same cycle.
+  testbench << R"sv(    for (int combination = 1; combination < 4; combination++) begin
+      @(negedge clock);
+      input_0_valid = 0;
+      input_1_valid = 0;
+      input_0_tag = 2'd1;
+      input_1_tag = 2'd1;
+      #1;
+      idle_ready = {input_1_ready, input_0_ready};
+      input_0_valid = combination[0];
+      input_1_valid = combination[1];
+      #1;
+      check({input_1_ready, input_0_ready} == idle_ready,
+            $sformatf("Input readiness observed valid vector %0d",
+                      combination));
+      input_0_valid = 0;
+      input_1_valid = 0;
+    end
+
+)sv";
   if (gate)
     testbench << R"sv(    send_input_1(2'd1, 8'd9);
     expect_silence("Gate published without its phase head");
