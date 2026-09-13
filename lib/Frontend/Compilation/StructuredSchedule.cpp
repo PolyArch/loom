@@ -2,6 +2,7 @@
 #include "Frontend/Lowering/LoopIndependence.h"
 
 #include "StructuredPolyhedralMaterializer.h"
+#include "StructuredScheduleCapacity.h"
 #include "StructuredScheduleInternal.h"
 
 #include "Common/IndexWidth.h"
@@ -248,188 +249,6 @@ applyParallelizeNest(mlir::scf::ForOp root) {
   cloneBody(cloneBody, 0);
   root.erase();
   return parallel;
-}
-
-/// Removable address support: an address computation that the Graph memory
-/// owner folds into the access positions it feeds, so the Fabric never
-/// realizes it as an actor. The rule is transitive, because that owner
-/// resolves a complete address chain back to its root: an address whose only
-/// consumers are other removable address computations is removable with them.
-/// It is also exact. An address that reaches any consumer other than another
-/// address computation's base or a selected root-relative access's address
-/// operand -- a non-access use, an escape through any other operand, or a
-/// store that writes the address itself -- is arithmetic the Fabric must
-/// realize, and so is an address whose accesses were not selected
-/// root-relative. This one predicate answers both the enumeration capacity
-/// projection and the materialization admission gate, which is what keeps
-/// those two from disagreeing about the same address.
-bool isRemovableAddressSupport(mlir::Operation *operation) {
-  auto address = llvm::dyn_cast<mlir::LLVM::GEPOp>(operation);
-  if (!address)
-    return false;
-  llvm::SmallVector<mlir::LLVM::GEPOp, 4> pending{address};
-  llvm::SmallPtrSet<mlir::Operation *, 4> visited;
-  while (!pending.empty()) {
-    mlir::LLVM::GEPOp current = pending.pop_back_val();
-    if (!visited.insert(current.getOperation()).second)
-      continue;
-    if (current->use_empty())
-      return false;
-    for (mlir::Operation *user : current->getUsers()) {
-      if (auto chained = llvm::dyn_cast<mlir::LLVM::GEPOp>(user)) {
-        if (chained.getBase() != current.getResult())
-          return false;
-        pending.push_back(chained);
-        continue;
-      }
-      if (!llvm::isa_and_nonnull<mlir::UnitAttr>(
-              user->getAttr(loom::rootRelativeAddressAttrName)))
-        return false;
-      if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(user)) {
-        if (load.getVolatile_() ||
-            load.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic ||
-            load.getAddr() != current.getResult())
-          return false;
-        continue;
-      }
-      if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(user)) {
-        if (store.getVolatile_() ||
-            store.getOrdering() != mlir::LLVM::AtomicOrdering::not_atomic ||
-            store.getAddr() != current.getResult())
-          return false;
-        continue;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
-struct ActorMultiplicity final {
-  mlir::Operation *representative = nullptr;
-  std::uint64_t count = 0;
-  std::optional<std::uint64_t> resourceUpperBound;
-};
-
-llvm::Expected<std::uint64_t>
-admittingStructuredActorResources(mlir::Operation *operation,
-                                  const FabricCapabilityIndex &fabric);
-
-struct AggregateUnrollActorProjection final {
-  CanonicalSemanticBytes key;
-  std::optional<std::uint64_t> resourceUpperBound;
-};
-
-llvm::Expected<AggregateUnrollActorProjection>
-projectAggregateUnrollActor(mlir::Operation *operation,
-                            const FabricCapabilityIndex &fabric) {
-  if (!hasUnresolvedStructuredSpecialMathAccuracy(operation)) {
-    auto key = dataflow::projectRegisteredActorSchemaProjectionBytes(operation);
-    if (!key)
-      return key.takeError();
-    return AggregateUnrollActorProjection{std::move(*key), std::nullopt};
-  }
-
-  auto projections = projectStructuredSpecialMathAccuracyDomain(operation);
-  if (!projections)
-    return projections.takeError();
-  if (projections->empty())
-    return detail::invalidStructuredSchedule("unresolved special-math domain is empty");
-  auto key =
-      dataflow::encodeCanonicalActorSchemaProjection(projections->front());
-  if (!key)
-    return key.takeError();
-  auto indexBitWidth = getIndexBitWidth(operation);
-  if (!indexBitWidth)
-    return indexBitWidth.takeError();
-  std::uint64_t resourceUpperBound = 0;
-  for (const dataflow::CanonicalActorSchemaProjection &projection :
-       *projections) {
-    auto count =
-        fabric.admittingOperationResourceCount(projection, *indexBitWidth);
-    if (!count)
-      return count.takeError();
-    resourceUpperBound = std::max(resourceUpperBound, *count);
-  }
-  return AggregateUnrollActorProjection{std::move(*key), resourceUpperBound};
-}
-
-/// The replication bound and the one actor group that produced it. The group
-/// is what a reader needs to know when a whole factor family is retired: the
-/// bound alone does not say which resource ran out.
-struct AggregateReplicationBound final {
-  std::uint64_t factor = 0;
-  llvm::StringRef bindingActor;
-  std::uint64_t bindingMultiplicity = 0;
-  std::uint64_t bindingResources = 0;
-};
-
-llvm::Expected<AggregateReplicationBound>
-aggregateUnrollCapacity(mlir::scf::ForOp loop,
-                        const FabricCapabilityIndex &fabric) {
-  std::map<std::vector<std::uint8_t>, ActorMultiplicity> actors;
-  llvm::Error projectionError = llvm::Error::success();
-  loop.getRegion().walk([&](mlir::Operation *operation) {
-    if (projectionError || !dataflow::operationSchemaOf(operation))
-      return mlir::WalkResult::advance();
-    // Removable address support is not replicated capacity: the replicated
-    // body folds it into the accesses it serves, exactly as the
-    // materialization gate does.
-    if (isRemovableAddressSupport(operation))
-      return mlir::WalkResult::advance();
-    auto projection = projectAggregateUnrollActor(operation, fabric);
-    if (!projection) {
-      projectionError = projection.takeError();
-      return mlir::WalkResult::interrupt();
-    }
-    ActorMultiplicity &multiplicity = actors[projection->key.bytes().vec()];
-    if (!multiplicity.representative) {
-      multiplicity.representative = operation;
-      multiplicity.resourceUpperBound = projection->resourceUpperBound;
-    } else if (multiplicity.resourceUpperBound !=
-               projection->resourceUpperBound) {
-      projectionError = detail::invalidStructuredSchedule("actor-equivalent capacity bounds disagree");
-      return mlir::WalkResult::interrupt();
-    }
-    const std::optional<std::uint64_t> next =
-        llvm::checkedAddUnsigned(multiplicity.count, std::uint64_t{1});
-    if (!next) {
-      projectionError = detail::invalidStructuredSchedule("actor multiplicity overflow");
-      return mlir::WalkResult::interrupt();
-    }
-    multiplicity.count = *next;
-    return mlir::WalkResult::advance();
-  });
-  if (projectionError)
-    return std::move(projectionError);
-  if (actors.empty())
-    return AggregateReplicationBound{};
-
-  AggregateReplicationBound bound;
-  bound.factor = std::numeric_limits<std::uint64_t>::max();
-  for (const auto &entry : actors) {
-    mlir::Operation *actor = entry.second.representative;
-    auto kind = dataflow::classifyCanonicalDataflowActor(actor);
-    if (!kind)
-      return detail::invalidStructuredSchedule("registered actor lost its canonical kind");
-    std::uint64_t resources = 0;
-    if (entry.second.resourceUpperBound) {
-      resources = *entry.second.resourceUpperBound;
-    } else {
-      // The same admission projection the materialization gate applies, so a
-      // constant or a memory actor counts the resources that really admit it.
-      llvm::Expected<std::uint64_t> admitted =
-          admittingStructuredActorResources(actor, fabric);
-      if (!admitted)
-        return admitted.takeError();
-      resources = *admitted;
-    }
-    const std::uint64_t factor = resources / entry.second.count;
-    if (factor < bound.factor)
-      bound = {factor, actor->getName().getStringRef(), entry.second.count,
-               resources};
-  }
-  return bound;
 }
 
 llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
@@ -1151,31 +970,6 @@ admittingVectorMemoryResources(mlir::vector::TransferWriteOp write,
   return fabric.admittingMemoryResourceCount(projected);
 }
 
-llvm::Expected<std::uint64_t>
-admittingStructuredActorResources(mlir::Operation *operation,
-                                  const FabricCapabilityIndex &fabric) {
-  const std::optional<dataflow::OperationSchemaId> schema =
-      dataflow::operationSchemaOf(operation);
-  if (!schema)
-    return detail::invalidStructuredSchedule("structured actor has no operation schema");
-  if (dataflow::actorKind(*schema) ==
-      dataflow::CanonicalDataflowActorKind::Memory)
-    return fabric.admittingMemoryResourceCount(operation);
-  auto projection = dataflow::projectRegisteredActorSchemaProjection(operation);
-  if (!projection)
-    return projection.takeError();
-  if (*schema == dataflow::OperationSchemaId::ArithConstant) {
-    projection->schema = dataflow::OperationSchemaId::DataflowConstant;
-    projection->type = mlir::FunctionType::get(
-        operation->getContext(), {mlir::NoneType::get(operation->getContext())},
-        operation->getResultTypes());
-  }
-  auto indexBits = getIndexBitWidth(operation);
-  if (!indexBits)
-    return indexBits.takeError();
-  return fabric.admittingOperationResourceCount(*projection, *indexBits);
-}
-
 llvm::Expected<bool>
 fabricAdmitsVectorizedClosure(mlir::Operation *root,
                               const FabricCapabilityIndex &fabric) {
@@ -1212,7 +1006,8 @@ fabricAdmitsVectorizedClosure(mlir::Operation *root,
     if (dataflow::actorKind(*schema) !=
         dataflow::CanonicalDataflowActorKind::Compute)
       continue;
-    auto resources = admittingStructuredActorResources(operation, fabric);
+    auto resources =
+        detail::admittingStructuredActorResources(operation, fabric);
     if (!resources) {
       queryError = resources.takeError();
       break;
@@ -1482,7 +1277,8 @@ enumerateStructuredScheduleDecisions(
     const auto appendReplicatedScfProposals =
         [&](StructuredScheduleDecisionKind kind,
             llvm::ArrayRef<std::uint64_t> factors) -> llvm::Error {
-      auto bound = aggregateUnrollCapacity(scfLoop, capabilityIndex);
+      auto bound =
+          detail::aggregateUnrollCapacity(scfLoop, capabilityIndex);
       if (!bound)
         return bound.takeError();
       llvm::SmallVector<std::uint64_t, 8> admitted;
@@ -1861,10 +1657,10 @@ materializeStructuredScheduleImpl(
         for (mlir::Operation *operation : materializedOperations) {
           if (!dataflow::operationSchemaOf(operation))
             continue;
-          if (isRemovableAddressSupport(operation))
+          if (detail::isRemovableAddressSupport(operation))
             continue;
           auto resourceCount =
-              admittingStructuredActorResources(operation, *fabric);
+              detail::admittingStructuredActorResources(operation, *fabric);
           if (!resourceCount)
             return resourceCount.takeError();
           if (*resourceCount == 0) {

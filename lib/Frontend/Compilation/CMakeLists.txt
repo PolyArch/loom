@@ -17,6 +17,7 @@ add_library(LoomFrontendCompilation
   StructuredPolyhedralMaterializer.cpp
   StructuredPolyhedralProvider.cpp
   StructuredSchedule.cpp
+  StructuredScheduleCapacity.cpp
   StructuredScheduleDecision.cpp
   StructuredScop.cpp
   StructuredScopDomain.cpp
