@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALHANDSHAKESUPPLYDEFICIT_H
 #define LOOM_PNR_SPATIALHANDSHAKESUPPLYDEFICIT_H
 
+#include "Fabric/Identity/FabricRefs.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialProgressState.h"
 
@@ -13,6 +14,7 @@
 
 namespace loom::pnr {
 
+struct FrozenSpatialComputePlacement;
 class FrozenSpatialHandshakeIndex;
 class SpatialCandidateState;
 
@@ -77,6 +79,44 @@ private:
   std::uint64_t coreRecurrences_ = 0;
   bool established_ = false;
 };
+
+/// The co-placement class a recurring core names.
+///
+/// Every arc of the core is contributed by a fragment of an FU, PE, or switch
+/// occurrence. The compute placements whose fragments contribute those arcs
+/// are the core's actors, and the PE occurrences those placements sit on are
+/// its *neighbourhood*: a region the interconnect leaves FIFO-free, so a route
+/// between two of its members crosses no buffered mesh link. The crossings the
+/// core closes are the multi-result gating of one FU operation case and the
+/// multicast gating of one switch input row set, and both are properties of
+/// that neighbourhood rather than of one occurrence in it.
+///
+/// A choice *escapes* the class when it binds the actor outside that
+/// neighbourhood. Leaving is the only placement change that reaches an
+/// isolation point: a Temporal PE ingress isolates a value leaving its own PE,
+/// and a buffered mesh FIFO isolates a route leaving the tile, while every
+/// placement inside the neighbourhood keeps both crossings combinational. A
+/// class with no escaping choice is one the Fabric cannot open at all.
+struct SpatialHandshakeCoreCoPlacement final {
+  /// Compute decision ordinals, canonically ordered. Empty when no compute
+  /// placement contributes an arc, which makes the class vacuous.
+  std::vector<PnrIndex> computeDecisions;
+  /// The Spatial PE occurrences the core's actors currently share.
+  std::vector<::loom::fabric::FabricPeOccurrenceRef> neighbourhood;
+  /// FU occurrences whose fragments contribute an arc of the core.
+  std::uint64_t coreFuOccurrenceCount = 0;
+  /// Whether some decision of the class still has an escaping choice.
+  bool escapable = false;
+};
+
+llvm::Expected<SpatialHandshakeCoreCoPlacement>
+projectSpatialHandshakeCoreCoPlacement(const SpatialCandidateState &candidate,
+                                       llvm::ArrayRef<PnrIndex> coreArcs);
+
+/// Whether one compute placement escapes the class.
+bool spatialHandshakeCoreCoPlacementEscapes(
+    const SpatialHandshakeCoreCoPlacement &coPlacement,
+    const FrozenSpatialComputePlacement &placement);
 
 /// What one restart's closure owners witnessed about selected handshake
 /// cycles, and the first of them that established a supply deficit.

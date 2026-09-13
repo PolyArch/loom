@@ -316,6 +316,12 @@ publication admission count is unchanged. Worker allocation and host-process
 observations cannot change restart streams or candidate identity; scheduling
 and speculative cancellation affect actual work, which is recorded in full.
 
+Exact repair states a recurring cycle core as the co-placement class the
+Mapping owner defines, once per distinct core of the region it is repairing,
+alongside the tuple exclusion that keeps its canonical enumeration advancing.
+The class is expressed over the same binding decision variables the region
+already owns, so it consumes no extra region decision and no extra solver call.
+
 Declared work bounds every restart. A restart that did not close carries the
 Spatial supply deficit its routing closures established, whichever stage
 stopped it and including the invocation deadline. Each of the restart's three

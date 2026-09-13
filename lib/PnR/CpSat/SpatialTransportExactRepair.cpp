@@ -8,6 +8,7 @@
 #include "SpatialExactRepairInternal.h"
 #include "SpatialExactRepairModel.h"
 #include "SpatialFixedTerminalCutConstraint.h"
+#include "SpatialHandshakeCycleCoreConstraint.h"
 #include "SpatialLocalDispositionModel.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialRuntimeCounterexampleRepairModel.h"
@@ -850,6 +851,21 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     }
   }
 
+  // A cycle core the closure keeps returning to is a statement about a
+  // co-placement class, not about one tuple. The region states it once, before
+  // its own enumeration begins, so an expanded region carries it too.
+  // A cycle core the closure keeps returning to is a statement about a
+  // co-placement class, not about one tuple. The region states it once, before
+  // its own enumeration begins, so an expanded region carries it too.
+  auto statedClass = detail::stateSpatialHandshakeCycleCoreClass(
+      model, candidate, bindings, variables, decisionVariables_,
+      legalValueOffsets_, legalValues_, actionExecutor_.handshakeCycleCore());
+  if (!statedClass)
+    return repairResult(SpatialExactRepairResultKind::InternalError,
+                        canonicalRegionDecisionCount, 0, 0,
+                        llvm::toString(statedClass.takeError()));
+  const bool handshakeCoreClassEncoded = statedClass->encoded;
+
   std::vector<detail::CpSatCanonicalVariable> canonicalVariables;
   canonicalVariables.reserve(decisions_.size() + affectedNets_.size());
   for (std::size_t local = 0; local < decisions_.size(); ++local)
@@ -1008,8 +1024,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       canonicalRegionDecisionCount;
   bool sawUnknownAssignment = false;
   bool sawRoutingIncomplete = false;
+  // The current assignment is the witness the class comes from, so it is
+  // exactly what the class excludes. Proving it would contradict the model.
   bool proveCurrentAssignment =
-      currentAssignmentSatisfiesCertificates &&
+      !handshakeCoreClassEncoded && currentAssignmentSatisfiesCertificates &&
       primaryWitnessKind !=
           ResolvedPnrViolationKind::RuntimeCounterexampleViolation;
   std::vector<std::int64_t> currentAssignment;

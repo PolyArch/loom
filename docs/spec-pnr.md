@@ -1515,17 +1515,46 @@ ready-to-valid crossing inside one FU operation case or one switch input row
 set, and no placement, route, tag, or local-transfer selection on this Fabric
 can open it.
 
-Such a core is an established Spatial supply deficit: the Module supplies too
-few reserved interconnect channels for the router to move any crossing of the
-core onto a buffered link. The closure owns that conclusion and publishes it
-through the same reserved-channel proposal family a witnessed FIFO capacity
-shortfall uses, naming the isolation the core lacks: the finite-buffer
-occurrence whose tag-selective guarantee binds the interconnect, that
-guarantee, one channel more than it, the core's contributing logical nets, and
-that occurrence's traversals. The proposal is a supply fact about the Module,
-never an infeasibility proof for the Mapping, and it excludes no software
-alternative. A closure whose retained witnesses do not close an orbit, or whose
-recurring core still carries a FIFO occurrence, establishes nothing.
+Such a core names a **co-placement class**. Every arc it carries is
+contributed by a fragment of an FU, PE, or switch occurrence; the compute
+placements whose fragments contribute them are the core's actors, and the PE
+occurrences those placements sit on are its *neighbourhood*, a region the
+interconnect leaves FIFO-free. The crossings the core closes are the
+multi-result gating of one FU operation case and the multicast gating of one
+switch input row set, and both are properties of that neighbourhood rather
+than of one occurrence inside it, so the class is exactly: the compute
+realizations of the core's actors all bound to FU occurrences of that
+neighbourhood.
+
+A choice **escapes** the class when it binds an actor outside the
+neighbourhood. Leaving is the only placement change that reaches an isolation
+point: a Temporal PE ingress isolates a value leaving its own PE and a buffered
+mesh FIFO isolates a route leaving the tile, while every placement inside the
+neighbourhood keeps both crossings combinational. An escaping choice is
+therefore exactly a placement that could still open the cycle. Exact
+repair therefore states the class rather than the assignment: at least one
+decision of the class must take an escaping choice. The clause is derived from
+the frozen witness alone, names the core it comes from, leaves every escaping
+placement admissible, and lives in the invocation's model like every other
+repair exclusion. A class that reaches a decision the bounded region pins is
+not stated there.
+
+A class with **no** escaping choice is the Spatial supply deficit: the Module
+offers this core no second neighbourhood to reach, so neither a Temporal PE
+ingress nor a buffered mesh FIFO is available to it, and
+no placement, route, tag, or local-transfer selection can open it. So is a core
+that names no compute actor at all, whose crossings are a switch input row set
+the placement domain cannot move. Those two cases publish the reserved-channel
+proposal family a witnessed FIFO capacity shortfall already uses, naming the
+finite-buffer occurrence whose tag-selective guarantee binds the interconnect,
+that guarantee, one channel more than it, the core's contributing logical nets,
+and that occurrence's traversals, and they report the isolation the Module
+lacks by name. Raising a reserved-channel guarantee is the only monotone growth
+the recipe owns; it is not itself the isolation such a core lacks, and the
+report says which one is missing. The proposal remains a supply fact about the
+Module, never an infeasibility proof for the Mapping, and it excludes no
+software alternative. A closure whose retained witnesses do not close an orbit,
+or whose recurring core still carries a FIFO occurrence, establishes nothing.
 
 An imported-capacity witness may request hardware reconsideration only after
 the complete bounded execution-binding relation has been exhausted. The

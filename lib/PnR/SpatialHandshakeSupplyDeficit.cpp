@@ -19,6 +19,7 @@
 #include <limits>
 #include <system_error>
 #include <utility>
+#include <variant>
 
 using namespace loom::pnr;
 
@@ -172,6 +173,97 @@ std::size_t SpatialHandshakeCycleCore::retainedStorageBytes() const {
                      sizeof(PnrIndex);
 }
 
+bool loom::pnr::spatialHandshakeCoreCoPlacementEscapes(
+    const SpatialHandshakeCoreCoPlacement &coPlacement,
+    const FrozenSpatialComputePlacement &placement) {
+  return !llvm::is_contained(coPlacement.neighbourhood, placement.parentPe);
+}
+
+llvm::Expected<SpatialHandshakeCoreCoPlacement>
+loom::pnr::projectSpatialHandshakeCoreCoPlacement(
+    const SpatialCandidateState &candidate, llvm::ArrayRef<PnrIndex> coreArcs) {
+  SpatialHandshakeCoreCoPlacement coPlacement;
+  if (coreArcs.empty())
+    return coPlacement;
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const FrozenSpatialHandshakeIndex &index = problem.handshake();
+  const auto arcs = index.projectionArcs();
+  std::vector<std::uint64_t> coreMarks((arcs.size() + 63) / 64, 0);
+  for (PnrIndex arc : coreArcs) {
+    if (arc >= arcs.size())
+      return invalid("cycle core names a foreign projection arc");
+    coreMarks[arc / 64] |= std::uint64_t{1} << (arc % 64);
+  }
+  const auto onCore = [&](PnrIndex arc) {
+    return arc < arcs.size() &&
+           (coreMarks[arc / 64] & (std::uint64_t{1} << (arc % 64))) != 0;
+  };
+  // The FU occurrences whose fragments contribute an arc of the core are the
+  // Fabric side of the class; the placement domain supplies its PnR side.
+  const auto fragments = index.fragments();
+  const auto models = index.ownerModels();
+  const auto fragmentOffsets = index.projectionFragmentArcOffsets();
+  const auto fragmentArcs = index.projectionFragmentArcs();
+  if (fragmentOffsets.size() != fragments.size() + 1)
+    return invalid("fragment arc offsets disagree with the fragment domain");
+  std::vector<::loom::fabric::FabricFuOccurrenceRef> coreFus;
+  for (PnrIndex fragment = 0; fragment != fragments.size(); ++fragment) {
+    const PnrIndex owner = fragments[fragment].owner;
+    if (owner >= models.size())
+      return invalid("handshake fragment names a foreign owner");
+    if (models[owner].owner().kind() !=
+        ::loom::fabric::FabricHandshakeOwnerKind::FuOccurrence)
+      continue;
+    const auto fu =
+        std::get<::loom::fabric::FabricFuOccurrenceRef>(models[owner].owner().payload());
+    if (llvm::is_contained(coreFus, fu))
+      continue;
+    for (PnrIndex arc :
+         fragmentArcs.slice(fragmentOffsets[fragment],
+                            fragmentOffsets[fragment + 1] -
+                                fragmentOffsets[fragment]))
+      if (onCore(arc)) {
+        coreFus.push_back(fu);
+        break;
+      }
+  }
+  coPlacement.coreFuOccurrenceCount =
+      static_cast<std::uint64_t>(coreFus.size());
+  const auto placements = problem.realizations().computePlacements();
+  for (PnrIndex placement = 0; placement != placements.size(); ++placement) {
+    const FrozenSpatialComputePlacement &record = placements[placement];
+    if (!llvm::is_contained(coreFus, record.fu))
+      continue;
+    if (candidate.computeBinding(record.realization).placement != placement)
+      continue;
+    if (!llvm::is_contained(coPlacement.computeDecisions, record.realization))
+      coPlacement.computeDecisions.push_back(record.realization);
+    if (!llvm::is_contained(coPlacement.neighbourhood, record.parentPe))
+      coPlacement.neighbourhood.push_back(record.parentPe);
+  }
+  llvm::sort(coPlacement.computeDecisions);
+  const auto realizations = problem.realizations().computeRealizations();
+  for (PnrIndex decision : coPlacement.computeDecisions) {
+    if (decision >= realizations.size())
+      return invalid("cycle core names a foreign compute realization");
+    const FrozenSpatialComputeRealization &realization = realizations[decision];
+    for (PnrIndex option = realization.placementOffset;
+         option != realization.placementOffset + realization.placementCount;
+         ++option) {
+      if (option >= placements.size())
+        return invalid("compute realization placement is out of range");
+      if (spatialHandshakeCoreCoPlacementEscapes(coPlacement,
+                                                 placements[option])) {
+        coPlacement.escapable = true;
+        break;
+      }
+    }
+    if (coPlacement.escapable)
+      break;
+  }
+  return coPlacement;
+}
+
 SpatialHandshakeCycleCoreSummary loom::pnr::summarizeSpatialHandshakeCycleCores(
     llvm::ArrayRef<const SpatialHandshakeCycleCore *> cores) {
   SpatialHandshakeCycleCoreSummary summary;
@@ -190,6 +282,36 @@ loom::pnr::projectSpatialHandshakeSupplyDeficit(
     const SpatialCandidateState &candidate,
     const SpatialHandshakeCycleCore &core) {
   if (!core.established())
+    return std::optional<SpatialFifoCapacitySuggestion>();
+  // A core whose co-placement class the exact repair can still state and
+  // break is a search fact, not a supply fact: the Fabric already offers the
+  // Temporal ingress or the second neighbourhood that opens it, and growing
+  // reserved channels would not be the isolation it lacks.
+  auto coPlacement =
+      projectSpatialHandshakeCoreCoPlacement(candidate, core.arcs());
+  if (!coPlacement)
+    return coPlacement.takeError();
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::SpatialPnr,
+      ::loom::mapping_debug::Event::MappingFailure,
+      [&](llvm::json::Object &fields) {
+        fields["operation"] = "handshake_cycle_core_isolation";
+        fields["class_decision_count"] =
+            static_cast<std::uint64_t>(coPlacement->computeDecisions.size());
+        fields["neighbourhood_pe_count"] =
+            static_cast<std::uint64_t>(coPlacement->neighbourhood.size());
+        fields["core_fu_occurrence_count"] =
+            coPlacement->coreFuOccurrenceCount;
+        fields["class_escapable"] = coPlacement->escapable;
+        fields["lacking_isolation"] =
+            !coPlacement->computeDecisions.empty() && !coPlacement->escapable
+                ? "temporal_pe_ingress_or_second_neighbourhood"
+                : coPlacement->computeDecisions.empty()
+                      ? "switch_row_set_has_no_compute_class"
+                      : "none";
+      });
+  if (!coPlacement->computeDecisions.empty() && coPlacement->escapable)
     return std::optional<SpatialFifoCapacitySuggestion>();
 
   // The recipe owns one reserved-channel guarantee for the interconnect, so
