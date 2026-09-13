@@ -699,6 +699,44 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         terminalQualityAcquisitionNanoseconds, acquisitionNanoseconds);
     return llvm::Error::success();
   };
+  // What one verified alternative measured, read from the observation the
+  // application QoR owner already banked for it. The first two runtime
+  // measures of the ApplicationRuntime domain are the dataflow oracle replay
+  // and the mapped CGRA replay of the very same graphs; the domain validator
+  // owns that order. An alternative with no completed observation has nothing
+  // measured, which the spectrum treats as no evidence rather than as a
+  // window that is fast enough.
+  const auto measuredLatency =
+      [&](const VerifiedAlternative &alternative)
+      -> std::optional<FinalizedMappingLatencyObservation> {
+    if (!request.boundedQuality ||
+        !isApplicationRuntimeQualityDomain(
+            request.boundedQuality->provenanceDomain))
+      return std::nullopt;
+    const std::vector<ArtifactRootReference> mappings =
+        mappingRoots(alternative.execution);
+    for (const JointDesignQualityObservation &observation :
+         qualityObservations) {
+      if (observation.incompleteReason ||
+          observation.provenance.runtimeCompletion !=
+              JointDesignQualityRuntimeCompletion::Completed ||
+          observation.provenance.rawMeasures.size() <
+              applicationSpatialRuntimeMeasureCount ||
+          !llvm::is_contained(mappings, observation.candidate))
+        continue;
+      const auto *dataflowCycles = std::get_if<ResolvedObjectiveInteger>(
+          &observation.provenance.rawMeasures[0]);
+      const auto *mappedCycles = std::get_if<ResolvedObjectiveInteger>(
+          &observation.provenance.rawMeasures[1]);
+      if (!dataflowCycles || dataflowCycles->negative || !mappedCycles ||
+          mappedCycles->negative)
+        continue;
+      return FinalizedMappingLatencyObservation{observation.candidate,
+                                                dataflowCycles->magnitude,
+                                                mappedCycles->magnitude};
+    }
+    return std::nullopt;
+  };
 
   for (auto indexed : llvm::enumerate(plans)) {
     // The first plan execution owns the typed cancellation checkpoint. Even
@@ -1289,8 +1327,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       if (!spectrumPolicy)
         return spectrumPolicy.takeError();
       auto spectrum = exploreFinalizedMappingHardwareSpectrum(
-          policy, *plans[parentPlanOrdinal], parent.execution, request.evidence,
-          request, *scheduler, artifacts, blobs, &*spectrumPolicy);
+          policy, *plans[parentPlanOrdinal], parent.execution,
+          measuredLatency(parent), request.evidence, request, *scheduler,
+          artifacts, blobs, &*spectrumPolicy);
       if (!spectrum)
         return spectrum.takeError();
       for (const JointDesignInvocationManifestReference &invocation :

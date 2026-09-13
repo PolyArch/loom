@@ -367,7 +367,13 @@ constructing `F`, so deriving it from TechMapping would invert the order the
 Synthesize and Materialize contract fixes and would make Mapping a prerequisite
 of the hardware it is supposed to consume.
 
-### Composite Supply For A Compute-Context Hall Deficit
+### Composite Supply For An Observed Actor Demand
+
+Two observations ask for the same thing, that one realization bind several
+actors instead of one, and both spend the one selection path below. Their only
+difference is which side raised the demand.
+
+#### The Cover Side
 
 A compute-context Hall deficit names demand groups and the capability templates
 that admit them. When the templates admitting the deficient groups include a
@@ -398,6 +404,44 @@ candidates the cover just refused and names the template it selects. That is
 the one moment where the demand and the software subgraphs are both in hand:
 `docs/spec-dse-feedback.md` owns when it fires, how the occurrence count is
 sized, and the probe budget it spends.
+
+#### The Measured Side
+
+A candidate whose Mapping verified raises no deficit at all. Its cover closed,
+its routes closed, and the only evidence left about it is what it measured. A
+deployment can nevertheless spend its whole interval on the routed latency of
+one loop iteration in flight, an interval that scales with the actors that
+iteration holds rather than with the work they compute. That is the same fact
+a Hall deficit states, fewer actors per realization, reached from the measured
+side.
+
+The observation that names it has two halves, and neither alone is evidence.
+The measured half is the candidate's own mapped replay against the dataflow
+oracle replay of the very same graphs: both are the application QoR owner's
+existing measures, so the observation introduces no second authority over how
+fast a candidate is. A mapped replay that keeps up with its oracle is already
+close to what the graph allows and has nothing to gain here. The structural
+half is the census of the deployed canonical Dataflow by registered actor
+kind. A composite FU binds token-plane actors only, so a deployment whose
+actors are mostly memory or mostly compute is short of something else and has
+its own owner; a deployment that spends most of its actors on control is
+spending them on exactly what one composed capability removes.
+
+The hardware spectrum explored for a verified parent is the owner of that
+decision, because it is the only growth owner a verified parent reaches and it
+already owns growing such a parent's hardware. The composed capability is one
+more axis there, beside the accelerator core count, and it runs at most once
+per parent and before the core axis: a Module whose FU inventory is about to
+change makes every child built from the old inventory a child of a different
+parent. A changed FU inventory also invalidates every realization the parent
+holds, so this child is mapped cold. `docs/spec-dse-feedback.md` owns the
+observation's thresholds, its diagnostics, and its share of the parent budget.
+
+The demand the measured side raises is the deployed Dataflow's control actor
+count, and the occurrence count follows from it exactly as it follows from a
+Hall deficit. Selection, admission, sizing, and the typed rejection below are
+one owner for both sides; neither side has a second miner, a second rank, or a
+second way to reach a Module.
 
 The hardware template generator's resolved configuration carries that placement
 as a typed decision domain: one exact canonical Dataflow identity and a

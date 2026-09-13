@@ -4,7 +4,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
-#include "DSE/TechMappingComposedSupply.h"
+#include "DSE/CompositeFuSupply.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
@@ -406,37 +406,27 @@ void minesOneLayerSizedGraphUnderItsBound() {
           "the ranked candidate covers less than one realization");
 }
 
-/// The composed supply an exact Hall deficit gets. The relation is the one the
-/// mlperf-tiny anomaly whole-layer candidates observe: a demand no existing
-/// capability can close, whose only other answer is growing Temporal
-/// residency. The proposal must name a template the miner reproduces and size
-/// its occurrences from the deficit it answers.
-void proposesAComposedSupplyForAHallDeficit(llvm::StringRef fixture) {
+/// The composed supply an exact actor demand gets. The demand is the one the
+/// mlperf-tiny anomaly whole-layer candidates raise, whether it arrives as a
+/// Hall deficit no existing capability can close or as the control actors a
+/// measured latency-bound deployment spends per iteration. Both sides reach
+/// this one selection path, so the scene states the demand as the number it
+/// is. The proposal must name a template the miner reproduces and size its
+/// occurrences from the demand it answers.
+void proposesAComposedSupplyForAnActorDemand(llvm::StringRef fixture) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   auto published = take(dataflow::publishCanonicalDataflow(program, store));
 
-  loom::mapping::TechMappingComputeContextHallDemandGroup group;
-  group.capabilities.push_back(
-      {loom::fabric::FabricFuTemplateRef(1), 0});
-  group.demandCount = 290;
-  for (std::uint64_t context = 0; context != 80; ++context)
-    group.compatibleContexts.push_back(
-        {loom::fabric::FabricPeOccurrenceRef(context), 0});
-  auto feedback =
-      take(loom::mapping::TechMappingComputeContextHallDeficit::get(290, 80,
-                                                                   {group}));
-  require(feedback.deficit() == 210,
-          "the fixture relation is not the observed deficit");
-
+  constexpr std::uint64_t actorDemand = 210;
   const loom::adg::BuiltinTargetScale &scale =
       loom::adg::builtinCoverageTarget.scale;
   auto proposal = take(loom::dse::proposeMinedCompositeFuSupply(
-      published, feedback, scale, store));
+      published, actorDemand, scale, store));
   require(proposal.has_value(),
-          "a deficit over mineable software got no composed supply");
+          "a demand over mineable software got no composed supply");
   require(proposal->selection.dataflow == program.identity() &&
               proposal->selection.templates.size() == 1,
           "the composed supply does not name exactly its own Dataflow and "
@@ -445,11 +435,11 @@ void proposesAComposedSupplyForAHallDeficit(llvm::StringRef fixture) {
           "the composed supply named a template that is not composite or not "
           "repeated");
   const std::uint64_t needed =
-      (feedback.deficit() + proposal->actorsPerRealization - 1) /
+      (actorDemand + proposal->actorsPerRealization - 1) /
       proposal->actorsPerRealization;
   require(proposal->occurrences ==
               std::min<std::uint64_t>(needed, scale.spatialPeCount),
-          "the composed supply is not sized from the deficit it answers");
+          "the composed supply is not sized from the demand it answers");
   require(proposal->selection.templates.front().occurrences ==
               proposal->occurrences,
           "the selection and the proposal disagree on the site count");
@@ -538,7 +528,7 @@ int main(int argc, char **argv) {
   else if (scene == "scale")
     minesOneLayerSizedGraphUnderItsBound();
   else if (scene == "proposal")
-    proposesAComposedSupplyForAHallDeficit(argv[1]);
+    proposesAComposedSupplyForAnActorDemand(argv[1]);
   else if (scene == "materialization")
     minesOnlyShapesTheFuModelCanMaterialize(argv[1]);
   else

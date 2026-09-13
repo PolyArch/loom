@@ -15,7 +15,7 @@ add_library(LoomDSEFeedback
   SpatialTransportRuntimeRepair.cpp
   SpatialTransportCegar.cpp
   SpatialMappingFeedbackCandidateGenerator.cpp
-  TechMappingComposedSupply.cpp
+  CompositeFuSupply.cpp
   TechMappingHardwareFeedback.cpp
 )
 

@@ -154,6 +154,34 @@ struct FinalizedMappingHardwareAttempt final {
   JointDesignExecution execution;
 };
 
+/// What a verified parent measured: the mapped CGRA replay of one selected
+/// SystemMapping against the dataflow oracle replay of the very same graphs.
+/// Both are the application QoR owner's own measures, so this observation adds
+/// no second authority over how fast a candidate is; it only names the pair the
+/// spectrum reads. A parent whose mapped replay trails its oracle by a wide
+/// factor spent its interval on something the graph does not require, which is
+/// the measured half of the composite-FU trigger.
+struct FinalizedMappingLatencyObservation final {
+  ArtifactRootReference mapping;
+  std::uint64_t dataflowCycles = 0;
+  std::uint64_t mappedCycles = 0;
+};
+
+/// The measured mapped replay must trail the dataflow oracle by at least this
+/// factor before the spectrum spends a child on composing a capability. Below
+/// it the deployed schedule is already close to what the graph allows, and
+/// binding more actors per realization cannot be what the interval is short of.
+inline constexpr std::uint64_t compositeFuLatencyShortfallNumerator = 4;
+inline constexpr std::uint64_t compositeFuLatencyShortfallDenominator = 1;
+
+/// Control actors must be at least this share of the deployed Dataflow's
+/// actors. A composite occurrence removes actors from the interval, so the
+/// deployment has to be spending its actors on the token plane for that to be
+/// the lever; a memory-dominated or compute-dominated deployment is short of
+/// something else and has its own owner.
+inline constexpr std::uint64_t compositeFuControlShareNumerator = 1;
+inline constexpr std::uint64_t compositeFuControlShareDenominator = 2;
+
 struct FinalizedMappingHardwareSpectrum final {
   /// Every child System that entered ordinary Mapping. Failed and incomplete
   /// attempts remain necessary promotion provenance even though only a
@@ -309,10 +337,16 @@ materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
                               const ArtifactStore &artifacts,
                               const BlobStore &blobs);
 
+/// Grows the hardware of a parent whose Mapping already verified. The parent
+/// raised no Mapping deficit, so every growth here answers a measured result
+/// rather than a refused relation. `latency` is what the application QoR owner
+/// measured for this parent; an absent observation leaves only the accelerator
+/// core axis, because nothing else in the spectrum may be decided without one.
 llvm::Expected<FinalizedMappingHardwareSpectrum>
 exploreFinalizedMappingHardwareSpectrum(
     const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
     const JointDesignExecution &parentExecution,
+    const std::optional<FinalizedMappingLatencyObservation> &latency,
     llvm::ArrayRef<ArtifactRootReference> evidence,
     const JointHardwareReopenRequest &request, SiteScheduler &scheduler,
     const ArtifactStore &artifacts, const BlobStore &blobs,

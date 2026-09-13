@@ -19,7 +19,7 @@
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
-#include "DSE/TechMappingComposedSupply.h"
+#include "DSE/CompositeFuSupply.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Evidence.h"
@@ -1018,7 +1018,7 @@ deriveHardwareRecipeGrowth(
           !techObservation->dataflow)
         return false;
       auto proposal = dse::proposeMinedCompositeFuSupply(
-          *techObservation->dataflow, techObservation->feedback,
+          *techObservation->dataflow, techObservation->feedback.deficit(),
           baseConfig.hardwareTarget.parameters, artifacts);
       if (!proposal)
         return proposal.takeError();
@@ -1046,6 +1046,8 @@ deriveHardwareRecipeGrowth(
             fields["mined_support"] = (*proposal)->support;
             fields["mined_occurrences"] = (*proposal)->occurrences;
             fields["mined_search_bounded"] = (*proposal)->bounded;
+            fields["mined_search_explored_actor_count"] =
+                (*proposal)->exploredActorCount;
             fields["mined_search_milliseconds"] =
                 (*proposal)->searchMilliseconds;
             fields["spatial_fu_unclosed_deficit"] =
