@@ -50,6 +50,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -541,42 +542,71 @@ QualificationSpatialClosure projectQualificationSpatialClosure(
 bool growBuiltinScaleFromSpatialFeedback(
     const loom::mapping::SpatialMappingHardwareFeedback &feedback,
     loom::adg::BuiltinTargetScale &scale, llvm::json::Object &record) {
-  if (const auto *fifo =
-          std::get_if<loom::mapping::SpatialFifoChannelCapacitySuggestion>(
-              &feedback)) {
-    if (scale.interconnectFifoQueueDiscipline !=
-        ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
-      return false;
-    if (fifo->proposedChannels() > std::numeric_limits<std::uint32_t>::max())
-      return false;
-    const auto proposed = static_cast<std::uint32_t>(fifo->proposedChannels());
-    if (proposed <= scale.interconnectFifoReservedChannels)
-      return false;
-    scale.interconnectFifoReservedChannels = proposed;
-    scale.interconnectFifoDepth =
-        std::max(scale.interconnectFifoDepth, proposed);
-    scale.temporalResidentContexts =
-        std::max(scale.temporalResidentContexts, proposed);
-    record["direction"] = "interconnect_fifo_reserved_channels";
-    record["fifo_occurrence"] =
-        ::loom::fabric::printFabricRef(fifo->owner());
-    record["selected_channels"] = fifo->selectedChannels();
-    record["reserved_channels"] = scale.interconnectFifoReservedChannels;
-    record["interconnect_fifo_depth"] = scale.interconnectFifoDepth;
-    record["temporal_resident_contexts"] = scale.temporalResidentContexts;
-    return true;
-  }
-  const auto &boundary =
-      std::get<loom::mapping::SpatialGraphBoundaryCapacitySuggestion>(feedback);
-  const std::uint64_t added = boundary.proposedAdditionalBoundaryPairs();
-  if (added == 0 ||
-      added > std::numeric_limits<std::uint32_t>::max() - scale.gatewayCount)
-    return false;
-  scale.gatewayCount += static_cast<std::uint32_t>(added);
-  record["direction"] = "graph_boundary_gateways";
-  record["added_gateways"] = added;
-  record["gateway_count"] = scale.gatewayCount;
-  return true;
+  // Every alternative is answered explicitly, so a new Spatial feedback family
+  // is a compile error here rather than a growth the search silently drops.
+  return std::visit(
+      [&](const auto &value) -> bool {
+        using Value = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<
+                          Value,
+                          loom::mapping::SpatialFifoChannelCapacitySuggestion>) {
+          if (scale.interconnectFifoQueueDiscipline !=
+              ::fabric::FifoQueueDiscipline::PerTagVirtualChannel)
+            return false;
+          if (value.proposedChannels() >
+              std::numeric_limits<std::uint32_t>::max())
+            return false;
+          const auto proposed =
+              static_cast<std::uint32_t>(value.proposedChannels());
+          if (proposed <= scale.interconnectFifoReservedChannels)
+            return false;
+          scale.interconnectFifoReservedChannels = proposed;
+          scale.interconnectFifoDepth =
+              std::max(scale.interconnectFifoDepth, proposed);
+          scale.temporalResidentContexts =
+              std::max(scale.temporalResidentContexts, proposed);
+          record["direction"] = "interconnect_fifo_reserved_channels";
+          record["fifo_occurrence"] =
+              ::loom::fabric::printFabricRef(value.owner());
+          record["selected_channels"] = value.selectedChannels();
+          record["reserved_channels"] = scale.interconnectFifoReservedChannels;
+          record["interconnect_fifo_depth"] = scale.interconnectFifoDepth;
+          record["temporal_resident_contexts"] =
+              scale.temporalResidentContexts;
+          return true;
+        } else if constexpr (std::is_same_v<
+                                 Value,
+                                 loom::mapping::
+                                     SpatialComputeContextResidencySuggestion>) {
+          // The same resident-context supply the Hall closure grows, asked for
+          // from the Spatial side: one free context per neighbourhood a stated
+          // co-placement class could not leave.
+          const std::uint64_t requested = value.requestedFreeContexts();
+          if (requested == 0 ||
+              requested > std::numeric_limits<std::uint32_t>::max() -
+                              scale.temporalResidentContexts)
+            return false;
+          scale.temporalResidentContexts +=
+              static_cast<std::uint32_t>(requested);
+          record["direction"] = "compute_context_residency";
+          record["neighbourhood_count"] = value.neighbourhoods().size();
+          record["requested_free_contexts"] = requested;
+          record["temporal_resident_contexts"] =
+              scale.temporalResidentContexts;
+          return true;
+        } else {
+          const std::uint64_t added = value.proposedAdditionalBoundaryPairs();
+          if (added == 0 || added > std::numeric_limits<std::uint32_t>::max() -
+                                        scale.gatewayCount)
+            return false;
+          scale.gatewayCount += static_cast<std::uint32_t>(added);
+          record["direction"] = "graph_boundary_gateways";
+          record["added_gateways"] = added;
+          record["gateway_count"] = scale.gatewayCount;
+          return true;
+        }
+      },
+      feedback);
 }
 
 llvm::json::Object selectQualificationHardware(

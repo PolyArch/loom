@@ -295,8 +295,11 @@ fall.
 
 A Spatial deficit is answered with the same typed feedback the reopen chain
 consumes, and with the recipe value that feedback family names: a reserved
-channel shortage grows the interconnect FIFO reservation, and a graph-boundary
-shortage grows the gateway count. Neither has a Module-local decision, so every
+channel shortage grows the interconnect FIFO reservation, a graph-boundary
+shortage grows the gateway count, and a compute-context residency shortfall
+grows the resident-context count by the free context each named neighbourhood
+asks for. Every family is answered explicitly, so a new one is a build failure
+here rather than a growth the search silently drops. Neither has a Module-local decision, so every
 Fabric the search certifies expands one builtin recipe and a Spatial growth
 restarts the Module chain from the re-expanded core. A round grows either a
 Module decision or the recipe, never both. The restart must not lose supply the
