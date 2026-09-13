@@ -122,7 +122,8 @@ exploreFinalizedMappingHardwareSpectrum(
     const bool shortfall = latency && observesLatencyShortfall(*latency);
     std::optional<CanonicalDataflowActorCensus> census;
     if (shortfall) {
-      auto counted = censusCanonicalDataflowActors(software.dataflow, artifacts);
+      auto counted =
+          censusCanonicalDataflowActors(software.dataflow, artifacts);
       if (!counted)
         return counted.takeError();
       census = *counted;

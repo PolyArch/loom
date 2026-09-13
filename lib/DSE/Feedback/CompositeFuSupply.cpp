@@ -153,7 +153,8 @@ void describeMinedCompositeFuSupply(
     fields["mined_occurrences"] = nullptr;
     return;
   }
-  fields["mined_actors_per_realization"] = supply.proposal->actorsPerRealization;
+  fields["mined_actors_per_realization"] =
+      supply.proposal->actorsPerRealization;
   fields["mined_support"] = supply.proposal->support;
   fields["mined_occurrences"] = supply.proposal->occurrences;
 }

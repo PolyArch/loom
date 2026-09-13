@@ -117,8 +117,8 @@ proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
 /// Records one selection walk into a diagnostic record. Both observations that
 /// raise a demand report the same fields, so the field names stay with the
 /// outcome that defines them.
-void describeMinedCompositeFuSupply(llvm::json::Object &fields,
-                                    const MinedCompositeFuSupplyOutcome &supply);
+void describeMinedCompositeFuSupply(
+    llvm::json::Object &fields, const MinedCompositeFuSupplyOutcome &supply);
 
 } // namespace loom::dse
 
