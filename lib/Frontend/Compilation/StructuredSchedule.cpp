@@ -139,6 +139,15 @@ bool isPerfectAdjacentNest(mlir::scf::ForOp outer, mlir::scf::ForOp &inner) {
          isDefinedOutside(inner.getStep(), outer);
 }
 
+/// Whether `loop` encloses another structured loop. Jamming a loop that
+/// encloses none replicates exactly the ordinary unroll body, which the same
+/// decision domain already carries as its own coordinate.
+bool enclosesStructuredLoop(mlir::scf::ForOp loop) {
+  return loop.getBody()
+      ->walk([](mlir::scf::ForOp) { return mlir::WalkResult::interrupt(); })
+      .wasInterrupted();
+}
+
 bool hasInvariantNestedLoopBounds(mlir::scf::ForOp outer) {
   mlir::WalkResult result = outer.walk([&](mlir::scf::ForOp nested) {
     if (nested == outer)
@@ -290,7 +299,17 @@ projectAggregateUnrollActor(mlir::Operation *operation,
   return AggregateUnrollActorProjection{std::move(*key), resourceUpperBound};
 }
 
-llvm::Expected<std::uint64_t>
+/// The replication bound and the one actor group that produced it. The group
+/// is what a reader needs to know when a whole factor family is retired: the
+/// bound alone does not say which resource ran out.
+struct AggregateReplicationBound final {
+  std::uint64_t factor = 0;
+  llvm::StringRef bindingActor;
+  std::uint64_t bindingMultiplicity = 0;
+  std::uint64_t bindingResources = 0;
+};
+
+llvm::Expected<AggregateReplicationBound>
 aggregateUnrollCapacity(mlir::scf::ForOp loop,
                         const FabricCapabilityIndex &fabric) {
   std::map<std::vector<std::uint8_t>, ActorMultiplicity> actors;
@@ -324,28 +343,33 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
   if (projectionError)
     return std::move(projectionError);
   if (actors.empty())
-    return std::uint64_t{0};
+    return AggregateReplicationBound{};
 
-  std::uint64_t capacity = std::numeric_limits<std::uint64_t>::max();
+  AggregateReplicationBound bound;
+  bound.factor = std::numeric_limits<std::uint64_t>::max();
   for (const auto &entry : actors) {
     mlir::Operation *actor = entry.second.representative;
     auto kind = dataflow::classifyCanonicalDataflowActor(actor);
     if (!kind)
       return detail::invalidStructuredSchedule("registered actor lost its canonical kind");
+    std::uint64_t resources = 0;
     if (entry.second.resourceUpperBound) {
-      capacity = std::min(capacity, *entry.second.resourceUpperBound /
-                                        entry.second.count);
-      continue;
+      resources = *entry.second.resourceUpperBound;
+    } else {
+      // The same admission projection the materialization gate applies, so a
+      // constant or a memory actor counts the resources that really admit it.
+      llvm::Expected<std::uint64_t> admitted =
+          admittingStructuredActorResources(actor, fabric);
+      if (!admitted)
+        return admitted.takeError();
+      resources = *admitted;
     }
-    // The same admission projection the materialization gate applies, so a
-    // constant or a memory actor counts the resources that really admit it.
-    llvm::Expected<std::uint64_t> resources =
-        admittingStructuredActorResources(actor, fabric);
-    if (!resources)
-      return resources.takeError();
-    capacity = std::min(capacity, *resources / entry.second.count);
+    const std::uint64_t factor = resources / entry.second.count;
+    if (factor < bound.factor)
+      bound = {factor, actor->getName().getStringRef(), entry.second.count,
+               resources};
   }
-  return capacity;
+  return bound;
 }
 
 llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
@@ -667,8 +691,14 @@ llvm::Error applyPolyhedralSchedule(mlir::Operation *root,
 }
 
 llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
-  if (factor <= 1 || !loop.getInitArgs().empty())
+  if (factor <= 1 || !loop.getInitArgs().empty() ||
+      !enclosesStructuredLoop(loop) || !hasInvariantNestedLoopBounds(loop))
     return detail::invalidStructuredSchedule("unroll-and-jam factor or loop shape is not canonical");
+  // Jamming interleaves the selected dimension's iterations, so the same
+  // independence proof the decision domain used gates the transform itself.
+  if (lowering::proveIndependentIterations(loop) !=
+      lowering::ParallelDependenceResult::ProvenIndependent)
+    return detail::invalidStructuredSchedule("unroll-and-jam preconditions are not satisfied");
   if (mlir::failed(mlir::loopUnrollJamByFactor(loop, factor)))
     return detail::invalidStructuredSchedule("SCF unroll-and-jam rejected the selected decision");
   return llvm::Error::success();
@@ -1409,6 +1439,43 @@ enumerateStructuredScheduleDecisions(
                                                      fabric.reference()));
     };
 
+    // The replication factors the exact aggregate Fabric capacity admits. A
+    // capacity that admits none of them is the reason a whole factor family is
+    // absent, so it is recorded as this loop's typed capability refusal rather
+    // than left as a silent gap in the decision domain.
+    const auto appendReplicatedScfProposals =
+        [&](StructuredScheduleDecisionKind kind,
+            llvm::ArrayRef<std::uint64_t> factors) -> llvm::Error {
+      auto bound = aggregateUnrollCapacity(scfLoop, capabilityIndex);
+      if (!bound)
+        return bound.takeError();
+      if (factors.empty() || factors.front() > bound->factor) {
+        recordRefusal(entity.reference,
+                      StructuredScopRefusalKind::FabricCapabilityUnavailable);
+        mapping_debug::emit(
+            mapping_debug::Level::Detail,
+            mapping_debug::Stage::DataflowLowering,
+            mapping_debug::Event::DerivedContext,
+            [&](llvm::json::Object &fields) {
+              fields["context_kind"] = "structured_schedule_replication_bound";
+              fields["loop_ordinal"] = entity.reference.ordinal;
+              fields["decision_kind"] =
+                  structuredScheduleDecisionKindSpelling(kind);
+              fields["admitted_factor"] = bound->factor;
+              fields["binding_actor"] = bound->bindingActor;
+              fields["binding_body_multiplicity"] = bound->bindingMultiplicity;
+              fields["binding_fabric_resources"] = bound->bindingResources;
+            });
+        return llvm::Error::success();
+      }
+      for (std::uint64_t factor : factors) {
+        if (factor > bound->factor)
+          break;
+        appendScfProposal({entity.reference, kind, factor, std::nullopt});
+      }
+      return llvm::Error::success();
+    };
+
     std::optional<std::uint64_t> tripCount = staticTripCount(scfLoop);
     if (tripCount && *tripCount > 1 && scfLoop.getInitArgs().empty()) {
       // Strip-mine tile sizes follow the polyhedral tile rule so a tile can
@@ -1424,49 +1491,39 @@ enumerateStructuredScheduleDecisions(
                            StructuredScheduleDecisionKind::Tile, factor,
                            std::nullopt});
 
-      auto capacity = aggregateUnrollCapacity(scfLoop, capabilityIndex);
-      if (!capacity)
-        return capacity.takeError();
-      for (std::uint64_t factor : factors) {
-        if (factor > *capacity)
-          break;
-        appendScfProposal({entity.reference,
-                           StructuredScheduleDecisionKind::Unroll, factor,
-                           std::nullopt});
-      }
+      if (llvm::Error error = appendReplicatedScfProposals(
+              StructuredScheduleDecisionKind::Unroll, factors))
+        return std::move(error);
     }
 
     mlir::scf::ForOp inner;
-    const bool perfectAdjacentNest = isPerfectAdjacentNest(scfLoop, inner);
-    if (perfectAdjacentNest) {
+    if (isPerfectAdjacentNest(scfLoop, inner)) {
       if (llvm::Error error = recordCoordinates(1))
         return std::move(error);
-      const bool independentNest =
-          lowering::proveIndependentIterations(scfLoop) ==
+      if (lowering::proveIndependentIterations(scfLoop) ==
               lowering::ParallelDependenceResult::ProvenIndependent &&
           lowering::proveIndependentIterations(inner) ==
-              lowering::ParallelDependenceResult::ProvenIndependent;
-      if (independentNest)
+              lowering::ParallelDependenceResult::ProvenIndependent)
         appendScfProposal({entity.reference,
                            StructuredScheduleDecisionKind::Interchange, 0,
                            std::nullopt});
-      if (tripCount && *tripCount > 1) {
-        std::vector<std::uint64_t> factors =
-            canonicalProperDivisors(*tripCount);
-        if (llvm::Error error = recordCoordinates(factors.size()))
+    }
+    // Unroll-and-jam replicates the carried values of every enclosed loop, so
+    // each replica runs a strict serial dimension innermost and in source
+    // order. The decision therefore proves only the selected dimension's own
+    // independence; an enclosed serial dimension neither needs nor admits an
+    // independence proof of its own.
+    if (tripCount && *tripCount > 1 && scfLoop.getInitArgs().empty() &&
+        enclosesStructuredLoop(scfLoop)) {
+      std::vector<std::uint64_t> factors = canonicalProperDivisors(*tripCount);
+      if (llvm::Error error = recordCoordinates(factors.size()))
+        return std::move(error);
+      if (hasInvariantNestedLoopBounds(scfLoop) &&
+          lowering::proveIndependentIterations(scfLoop) ==
+              lowering::ParallelDependenceResult::ProvenIndependent) {
+        if (llvm::Error error = appendReplicatedScfProposals(
+                StructuredScheduleDecisionKind::UnrollAndJam, factors))
           return std::move(error);
-        if (independentNest && hasInvariantNestedLoopBounds(scfLoop)) {
-          auto capacity = aggregateUnrollCapacity(scfLoop, capabilityIndex);
-          if (!capacity)
-            return capacity.takeError();
-          for (std::uint64_t factor : factors) {
-            if (factor > *capacity)
-              break;
-            appendScfProposal({entity.reference,
-                               StructuredScheduleDecisionKind::UnrollAndJam,
-                               factor, std::nullopt});
-          }
-        }
       }
     }
     if (scfLoop.getInitArgs().empty()) {

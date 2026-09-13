@@ -772,7 +772,32 @@ operation quota bound the analysis. The production decision domain exposes
 the resulting removable typed view when the narrower vector domain cannot
 supply a finite coordinate for the same root.
 
-Loop-carried values and reductions, nested conditionals, non-unit steps,
+A loop whose iterations carry a value is a strict serial dimension of the
+nest, not an excluded form. The collection admits the enclosing nest and marks
+that dimension; every dimension enclosing it remains an ordinary counted
+dimension of the same nest with its own exact domain, accesses, and
+dependences, so a nest is never discarded because something inside it
+accumulates. A carried value is an SSA edge between iterations rather than a
+memory access, so no frozen dependence relation represents it and the general
+materializer, which reconstructs statements and not carried values, cannot
+replay a reordered one. A SCoP that contains a strict serial dimension
+therefore has no provider schedule and records `StrictSerialDimension`: source
+order is the only order that dimension has.
+
+What a strict serial dimension admits is the decisions taken on the
+independent dimensions enclosing it. Unroll-and-jam replicates the carried
+value of every enclosed loop once per replica, and tiling or unrolling an
+enclosing dimension leaves the enclosed loops untouched; in each case the
+serial dimension stays innermost and runs its own iterations in source order
+against its own carried value. What it forbids is every decision that would
+reassociate or vectorize across it, and every schedule that would exchange,
+distribute, fuse, skew, or reverse it. The exact vector domain below keeps its
+`StrictFloatingReduction` refusal unchanged, so a strict floating reduction
+under an admitted unroll-and-jam performs exactly the additions the source
+performs in exactly the source order and an exact oracle comparison stays
+bit-exact.
+
+Nested conditionals, non-unit steps,
 unresolved aliases, unknown effects, access or dependence relations with
 Presburger local variables, and provider failures remain typed local
 refusals. The exact logical access relation is the footprint authority only
@@ -977,7 +1002,11 @@ Unroll is hard-pruned only when exact aggregate Fabric capacity proves the
 replicated body impossible. Actor instances are grouped by the canonical
 typed OperationSchema projection. For each group, the generator divides the
 number of admitted concrete Fabric occurrences by the group's body
-multiplicity; the minimum quotient bounds the unroll factor. This projection
+multiplicity; the minimum quotient bounds the unroll factor. A bound that
+admits no canonical factor retires that loop's complete replication family,
+unroll and unroll-and-jam alike, and records `FabricCapabilityUnavailable`, so
+an absent replication family always names the capacity that removed it rather
+than leaving a silent gap. This projection
 does not prove placement, routing, contention freedom, or performance.
 
 An unresolved selected-Spatial special-math operation is intentionally not yet
@@ -1049,10 +1078,15 @@ bounds from its body operands, the thread and Spatial ABIs acquire the rank-N
 coordinate suffix, and no graph-owned forall remains. An unprojectable bound
 rejects only that candidate. The transformation never weakens the fixed-domain
 requirement for a retained graph-owned parallel form.
-Unroll-and-jam uses the same perfect-nest and independence proof, additionally
-requires every nested loop bound and step to be invariant to the selected
-outer loop, and obeys the same exact aggregate Fabric-capacity bound as
-ordinary unroll. It is one atomic decision implemented by the pinned upstream
+Unroll-and-jam proves the selected dimension's own iteration independence with
+that same common owner. It additionally requires the selected loop to carry no
+results, to enclose at least one structured loop, and every nested loop bound
+and step to be invariant to it, and obeys the same exact aggregate
+Fabric-capacity bound as ordinary unroll. It requires neither a perfect nest
+nor an independent enclosed dimension: jamming interleaves only the selected
+dimension's iterations, and each replica keeps the enclosed loops' carried
+values, so an enclosed strict serial dimension stays innermost and in source
+order. It is one atomic decision implemented by the pinned upstream
 SCF utility; the shared inner control and replicated body are materialized in
 the child IR and no jam flag is persisted. Arbitrary permutations and compound
 non-atomic schedules are composed through immutable lineage rather than
@@ -1121,7 +1155,7 @@ or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v14`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v23`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

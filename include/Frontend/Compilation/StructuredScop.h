@@ -50,6 +50,7 @@ enum class StructuredScopRefusalKind : std::uint32_t {
   PolyhedralMaterializationUnavailable = 27,
   PhysicalLayoutProofNotEstablished = 28,
   UnsignedIterationDomain = 29,
+  StrictSerialDimension = 30,
 };
 
 /// Whether a local refusal closes one explicitly excluded source form or

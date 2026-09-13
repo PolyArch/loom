@@ -829,6 +829,130 @@ module attributes {dlti.dl_spec = #layout} {
   llvm::sys::fs::remove_directories(directory);
 }
 
+/// One replica of the jammed body per accumulator, the serial dimension still
+/// innermost, and every combiner still strict: the shape an enclosed strict
+/// serial dimension must survive unroll-and-jam with.
+bool hasJammedSerialReductionShape(
+    const loom::frontend::StructuredProgramCandidate &candidate,
+    llvm::StringRef functionName, std::uint64_t replicas) {
+  mlir::func::FuncOp function =
+      candidate.module().lookupSymbol<mlir::func::FuncOp>(functionName);
+  if (!function)
+    fail("candidate lost function " + functionName.str());
+  mlir::scf::ForOp outer;
+  function.walk([&](mlir::scf::ForOp loop) {
+    if (!outer && !loop->getParentOfType<mlir::scf::ForOp>())
+      outer = loop;
+  });
+  if (!outer || optionalTripCount(outer) != 4 / replicas)
+    return false;
+
+  llvm::SmallVector<mlir::scf::ForOp> serial;
+  std::size_t stores = 0;
+  for (mlir::Operation &operation : outer.getBody()->without_terminator()) {
+    if (auto inner = llvm::dyn_cast<mlir::scf::ForOp>(&operation))
+      serial.push_back(inner);
+    if (llvm::isa<mlir::memref::StoreOp>(operation))
+      ++stores;
+  }
+  if (serial.size() != 1 || stores != replicas ||
+      serial.front().getInitArgs().size() != replicas ||
+      optionalTripCount(serial.front()) != 8)
+    return false;
+
+  std::size_t combiners = 0;
+  bool reassociated = false;
+  serial.front().getRegion().walk([&](mlir::arith::AddFOp combiner) {
+    ++combiners;
+    reassociated |= mlir::arith::bitEnumContainsAny(
+        combiner.getFastmathAttr().getValue(),
+        mlir::arith::FastMathFlags::reassoc);
+  });
+  return combiners == replicas && !reassociated;
+}
+
+/// A nest whose inner dimension is a strict floating reduction keeps its
+/// enclosing independent dimension's decisions. The reduction dimension is a
+/// strict serial dimension: the polyhedral collection names it instead of
+/// discarding the nest, and unroll-and-jam gives each replica its own
+/// accumulator without reassociating any of them.
+void strictSerialDimensionKeepsEnclosingDecisions() {
+  llvm::SmallString<128> directory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "loom-schedule-serial", directory);
+  if (error)
+    fail("cannot create ArtifactStore directory: " + error.message());
+  loom::ArtifactStore store(directory);
+  llvm::SmallString<128> blobPath(directory);
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  auto design = take(loom::adg::buildBuiltinTarget(
+      store, loom::adg::BuiltinTargetPreset::Small));
+  const loom::fabric::FinalizedFabricRoot &fabric = design.roots().front();
+
+  auto nest = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%out: memref<4xf32>) {
+    %zero = arith.constant 0.0 : f32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %weights = memref.alloca() : memref<4x8xf32>
+    %values = memref.alloca() : memref<8xf32>
+    scf.for %i = %c0 to %c4 step %c1 {
+      %row = scf.for %j = %c0 to %c8 step %c1
+          iter_args(%accumulator = %zero) -> f32 {
+        %weight = memref.load %weights[%i, %j] : memref<4x8xf32>
+        %value = memref.load %values[%j] : memref<8xf32>
+        %product = arith.mulf %weight, %value : f32
+        %next = arith.addf %accumulator, %product : f32
+        scf.yield %next : f32
+      }
+      memref.store %row, %out[%i] : memref<4xf32>
+    }
+    return
+  }
+}
+)mlir");
+
+  const loom::frontend::StructuredEntityRef root =
+      structuredLoopReference(nest, "kernel");
+  auto scop = take(loom::frontend::analyzeStructuredPolyhedralScop(nest, root));
+  const auto *refusal =
+      std::get_if<loom::frontend::StructuredScopRefusal>(&scop);
+  if (!refusal || refusal->kind !=
+                      loom::frontend::StructuredScopRefusalKind::
+                          StrictSerialDimension)
+    fail("enclosed reduction did not name its strict serial dimension");
+
+  auto domain =
+      take(loom::frontend::enumerateStructuredScheduleDecisions(nest, fabric, 8));
+  if (llvm::none_of(domain.proposals, [&](const auto &proposal) {
+        return proposal.decision().loop == root &&
+               proposal.decision().kind ==
+                   loom::frontend::StructuredScheduleDecisionKind::
+                       UnrollAndJam &&
+               proposal.decision().factor == 2;
+      }))
+    fail("strict serial dimension suppressed the enclosing unroll-and-jam");
+
+  bool sawJammedReduction = false;
+  for (const loom::ArtifactRootReference &reference :
+       generated(nest, fabric, store, blobs)) {
+    auto candidate =
+        take(loom::frontend::importStructuredProgram(reference, store));
+    sawJammedReduction |= hasJammedSerialReductionShape(candidate, "kernel", 2);
+  }
+  if (!sawJammedReduction)
+    fail("unroll-and-jam lost the serial dimension's per-replica accumulator");
+
+  llvm::sys::fs::remove_directories(directory);
+}
+
 } // namespace
 
 int main() {
@@ -838,5 +962,6 @@ int main() {
   lineageCodecRejectsAnOutOfRangeLoop();
   lineageRejectsAValidForeignChild();
   transformationsAreTypedCapacityBoundAndDependenceChecked();
+  strictSerialDimensionKeepsEnclosingDecisions();
   return EXIT_SUCCESS;
 }

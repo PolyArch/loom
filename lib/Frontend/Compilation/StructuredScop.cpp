@@ -789,6 +789,9 @@ struct PolyhedralLoopRecord final {
   mlir::Operation *operation = nullptr;
   mlir::Value inductionVariable;
   std::optional<std::size_t> parent;
+  /// A dimension whose iterations carry a value. Its execution order is part
+  /// of the program's meaning and no dependence relation represents it.
+  bool strictSerial = false;
 };
 
 struct PolyhedralStatementRecord final {
@@ -801,6 +804,12 @@ struct PolyhedralStructure final {
   std::vector<PolyhedralStatementRecord> statements;
   std::uint64_t maximumLoopDepth = 0;
   bool imperfectNest = false;
+
+  bool hasStrictSerialDimension() const {
+    return llvm::any_of(loops, [](const PolyhedralLoopRecord &loop) {
+      return loop.strictSerial;
+    });
+  }
 };
 
 bool isAccessOperation(mlir::Operation *operation) {
@@ -829,16 +838,19 @@ mlir::Block *loopBody(mlir::Operation *operation) {
 std::optional<StructuredScopRefusalKind>
 collectPolyhedralLoop(mlir::Operation *loop, std::optional<std::size_t> parent,
                       PolyhedralStructure &structure) {
+  // A dimension that carries a value is collected as a strict serial
+  // dimension, not refused: the dimensions enclosing it stay ordinary counted
+  // dimensions of the same nest, and the decisions that keep the serial
+  // dimension innermost and in source order remain available to them.
+  bool strictSerial = false;
   if (auto scf = llvm::dyn_cast<mlir::scf::ForOp>(loop)) {
-    if (!scf.getInitArgs().empty())
-      return StructuredScopRefusalKind::UnsupportedReduction;
+    strictSerial = !scf.getInitArgs().empty();
     const std::optional<std::int64_t> step =
         mlir::getConstantIntValue(scf.getStep());
     if (!step || *step != 1)
       return StructuredScopRefusalKind::ProviderDomainNotAdmitted;
   } else if (auto affine = llvm::dyn_cast<mlir::affine::AffineForOp>(loop)) {
-    if (!affine.getInits().empty())
-      return StructuredScopRefusalKind::UnsupportedReduction;
+    strictSerial = !affine.getInits().empty();
     if (affine.getStepAsInt() != 1)
       return StructuredScopRefusalKind::ProviderDomainNotAdmitted;
   } else {
@@ -846,7 +858,8 @@ collectPolyhedralLoop(mlir::Operation *loop, std::optional<std::size_t> parent,
   }
 
   const std::size_t ordinal = structure.loops.size();
-  structure.loops.push_back({loop, loopInductionVariable(loop), parent});
+  structure.loops.push_back(
+      {loop, loopInductionVariable(loop), parent, strictSerial});
   std::uint64_t depth = 1;
   for (std::optional<std::size_t> cursor = parent; cursor;
        cursor = structure.loops[*cursor].parent)
@@ -1224,7 +1237,7 @@ analyzeRaisedPointerScop(
     return refusePolyhedral(loopReference,
                             StructuredScopRefusalKind::UnsignedIterationDomain);
   if (structure.loops.size() != 1 || structure.maximumLoopDepth != 1 ||
-      structure.imperfectNest || !loop.getInitArgs().empty())
+      structure.imperfectNest)
     return refusePolyhedral(
         loopReference, StructuredScopRefusalKind::NonCanonicalIterationDomain);
   auto inductionType =
@@ -1483,6 +1496,14 @@ analyzeStructuredPolyhedralScop(const StructuredProgramCandidate &parent,
   if (auto refusal =
           collectPolyhedralLoop(sourceLoop, std::nullopt, sourceStructure))
     return refusePolyhedral(loopReference, *refusal);
+  // The frozen dependence view represents memory and same-iteration scalar
+  // precedence only, and the general materializer rebuilds statements, not
+  // carried values. A nest with a strict serial dimension therefore has no
+  // provider schedule here; its serial dimension keeps the source order and
+  // the enclosing independent dimensions keep their own SCF decisions.
+  if (sourceStructure.hasStrictSerialDimension())
+    return refusePolyhedral(loopReference,
+                            StructuredScopRefusalKind::StrictSerialDimension);
   if (sourceStructure.statements.empty() ||
       sourceStructure.statements.size() >
           detail::maximumPinnedIslStatementCount)
