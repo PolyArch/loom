@@ -1091,7 +1091,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           chainCount(parent) +
               parent.proposalOrdinals[static_cast<std::size_t>(phase)].size());
     for (std::size_t round = 0; round != rounds && !stopGeneration; ++round) {
-      for (const ParentSchedule &parent : parents) {
+      for (std::size_t parentIndex = 0; parentIndex != parents.size();
+           ++parentIndex) {
+        const ParentSchedule &parent = parents[parentIndex];
         if (stopGeneration)
           break;
         if (invocationView.stopRequested()) {
@@ -1111,8 +1113,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
             return published.takeError();
           continue;
         }
+        // The parents of one invocation are alternatives of the same program,
+        // so they repeat each other's coordinate domain. Rounds alone would
+        // spend a truncated grant on the same leading coordinate of every
+        // parent; starting each parent a proportional distance into its own
+        // domain spends the same grant on as many distinct coordinates as it
+        // has attempts. An untruncated grant still visits every coordinate of
+        // every parent exactly once.
+        const std::size_t step = round - chains;
+        const std::size_t offset =
+            parentIndex * ordinals.size() / parents.size();
         const auto &reference = parent.reference;
-        const auto &proposal = parent.domain.proposals[ordinals[round - chains]];
+        const auto &proposal =
+            parent.domain.proposals[ordinals[(offset + step) %
+                                             ordinals.size()]];
         const auto &decision = proposal.decision();
         if (phase == ScheduleSearchPhase::TiledPrefix) {
           auto published = exploreTiledPrefix(

@@ -1178,7 +1178,14 @@ attempt without publishing a self edge or occupying another output slot.
 The output demand bounds the children this generator publishes. Passing an
 input through republishes a frontier the consuming join already bounds, so it
 occupies no output slot; a demand met by the input set before the first attempt
-would report a truncated search that measured nothing.
+would report a truncated search that measured nothing. The attempt grant is
+spread across the parents of one invocation, which are alternatives of the same
+program and therefore repeat each other's coordinate domain: each parent enters
+its own eligible order at a distance proportional to its position in the parent
+frontier, so a truncated grant spends its attempts on as many distinct
+coordinates as it has attempts instead of the same leading coordinate of every
+parent. A grant that is not truncated still visits every eligible coordinate of
+every parent exactly once, so the published set does not depend on this order.
 
 The provider for this behavior has implementation semantic identity
 `loom.compiler.structured_schedule.generator.v25`. Results from an earlier

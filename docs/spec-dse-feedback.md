@@ -1807,7 +1807,10 @@ order. Each prefix and its independently enumerated terminal proof form one
 search step, with every materialization charged separately. Exhausted grants
 retain finalized outputs and report semantic incompleteness; one parent's
 rejected alternatives must not consume later rounds before the other parents
-receive their current turn. The implementation semantic identity is
+receive their current turn, and each parent enters its own eligible order at a
+distance proportional to its position in the parent frontier so that a
+truncated grant measures distinct coordinates rather than the same leading
+coordinate of every parent. The implementation semantic identity is
 `loom.compiler.structured_schedule.generator.v25`.
 
 The Dataflow rewrite generator uses the positive
