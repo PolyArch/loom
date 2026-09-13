@@ -1539,9 +1539,21 @@ placement admissible, and lives in the invocation's model like every other
 repair exclusion. A class that reaches a decision the bounded region pins is
 not stated there.
 
-A class with **no** escaping choice is the Spatial supply deficit: the Module
-offers this core no second neighbourhood to reach, so neither a Temporal PE
-ingress nor a buffered mesh FIFO is available to it, and
+A stated class with **no** escaping choice in the region's legal placement
+domain, whose placement domain in the Module still holds one, is a
+**compute-context residency deficit**: the neighbourhood has somewhere to go
+and no free context to go to. It publishes the residency proposal, one free
+resident context per such neighbourhood, which is the smallest supply that
+gives one actor of each class somewhere to leave for. That proposal grows the
+same resident-context supply the compute-context closure grows, so the Spatial
+side states demand and never owns context supply a second time; it never
+repoints or removes the reservation or boundary proposals, which answer other
+supplies.
+
+A class with **no** escaping choice anywhere, not even in the Module, is the
+Spatial supply deficit: the Module offers this core no second neighbourhood to
+reach, so neither a Temporal PE ingress nor a buffered mesh FIFO is available
+to it, and
 no placement, route, tag, or local-transfer selection can open it. So is a core
 that names no compute actor at all, whose crossings are a switch input row set
 the placement domain cannot move. Those two cases publish the reserved-channel

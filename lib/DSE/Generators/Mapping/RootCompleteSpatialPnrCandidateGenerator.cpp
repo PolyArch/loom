@@ -114,7 +114,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v33",
+    "loom.mapping.root_complete_spatial_pnr.generator.v34",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -719,6 +719,35 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           fields["proposed_channels"] = value->sufficientCapacity;
           fields["logical_net_count"] = value->logicalNets.size();
           fields["route_anchor_count"] = value->routeAnchors.size();
+        });
+    ::loom::mapping::retainSpatialMappingHardwareFeedback(hardwareFeedback,
+                                                          std::move(*feedback));
+    return llvm::Error::success();
+  };
+  const auto retainResidencyFeedback =
+      [&](llvm::ArrayRef<::loom::fabric::FabricPeOccurrenceRef> neighbourhoods,
+          const ArtifactRootReference &techReference) -> llvm::Error {
+    if (neighbourhoods.empty())
+      return llvm::Error::success();
+    auto feedback =
+        ::loom::mapping::SpatialComputeContextResidencySuggestion::get(
+            inputBindings[FabricInput].artifacts.front(), techReference,
+            {neighbourhoods.begin(), neighbourhoods.end()});
+    if (!feedback)
+      return feedback.takeError();
+    ::loom::mapping_debug::emit(
+        ::loom::mapping_debug::Level::Summary,
+        ::loom::mapping_debug::Stage::SpatialPnr,
+        ::loom::mapping_debug::Event::Candidate,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "compute_context_residency_proposal";
+          fields["tech_mapping"] =
+              formatArtifactIdentityHex(techReference.artifact);
+          fields["requested_free_contexts"] = feedback->requestedFreeContexts();
+          llvm::json::Array named;
+          for (const auto &neighbourhood : feedback->neighbourhoods())
+            named.push_back(::loom::fabric::printFabricRef(neighbourhood));
+          fields["neighbourhoods"] = std::move(named);
         });
     ::loom::mapping::retainSpatialMappingHardwareFeedback(hardwareFeedback,
                                                           std::move(*feedback));
@@ -1442,6 +1471,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       if (auto error =
               retainFifoFeedback(partial->fifoCapacityShortfall, techReference))
         return std::move(error);
+      if (auto error = retainResidencyFeedback(
+              partial->computeContextResidencyNeighbourhoods, techReference))
+        return std::move(error);
       const CandidateGeneratorIncompleteReason reason =
           partial->reason == ::loom::pnr::IncompleteSpatialPnrGenerationReason::
                                  SemanticLimitReached
@@ -1483,6 +1515,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                 &outcome)) {
       if (auto error = retainFifoFeedback(
               interrupted->snapshot.fifoCapacityShortfall, techReference))
+        return std::move(error);
+      if (auto error = retainResidencyFeedback(
+              interrupted->snapshot.computeContextResidencyNeighbourhoods,
+              techReference))
         return std::move(error);
       outputs.insert(outputs.end(),
                      std::make_move_iterator(interrupted->candidates.begin()),

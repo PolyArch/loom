@@ -820,6 +820,10 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                         canonicalRegionDecisionCount, 0, 0,
                         llvm::toString(statedClass.takeError()));
   const bool handshakeCoreClassEncoded = statedClass->encoded;
+  if (!statedClass->coPlacement.computeDecisions.empty()) {
+    statedCoreClass_ = statedClass->coPlacement;
+    statedCoreClassWithoutEscape_ = statedClass->escapingChoiceCount == 0;
+  }
 
   std::vector<detail::CpSatCanonicalVariable> canonicalVariables;
   canonicalVariables.reserve(decisions_.size() + affectedNets_.size());

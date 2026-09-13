@@ -391,6 +391,9 @@ struct SpatialRestartResult final {
   std::optional<SpatialFinalizedRestart> finalized;
   /// The typed Spatial supply deficit this restart's closures established.
   std::optional<SpatialFifoCapacitySuggestion> handshakeSupplyDeficit;
+  /// Neighbourhoods whose stated class the legal placement domain could not
+  /// leave, one free resident context each.
+  std::vector<::loom::fabric::FabricPeOccurrenceRef> residencyNeighbourhoods;
   /// What this restart's closures witnessed about selected handshake cycles.
   std::uint64_t metCycles = 0;
   std::uint64_t distinctCycleWitnesses = 0;
@@ -494,6 +497,8 @@ void emitRestartFailure(std::uint32_t ordinal,
         // candidate generator that publishes it.
         fields["handshake_supply_deficit"] =
             restart.handshakeSupplyDeficit.has_value();
+        fields["compute_context_residency_neighbourhoods"] =
+            static_cast<std::uint64_t>(restart.residencyNeighbourhoods.size());
         fields["diagnostic"] = restart.diagnostic;
         fields["prepared_seeds"] = restart.accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
@@ -524,6 +529,19 @@ void preferPreparedRestart(const SpatialRestartResult &candidate,
   if (!selected || (selected->accounting.preparedSeeds == 0 &&
                     candidate.accounting.preparedSeeds != 0))
     selected = &candidate;
+}
+
+/// The neighbourhoods of the invocation whose stated classes the legal
+/// placement domain could not leave, one free resident context each.
+std::vector<::loom::fabric::FabricPeOccurrenceRef>
+projectComputeContextResidencyNeighbourhoods(
+    llvm::ArrayRef<SpatialRestartResult> restarts) {
+  std::vector<::loom::fabric::FabricPeOccurrenceRef> neighbourhoods;
+  for (const SpatialRestartResult &restart : restarts)
+    for (const auto &neighbourhood : restart.residencyNeighbourhoods)
+      if (!llvm::is_contained(neighbourhoods, neighbourhood))
+        neighbourhoods.push_back(neighbourhood);
+  return neighbourhoods;
 }
 
 /// The invocation's strongest reserved-channel proposal. A witnessed capacity
@@ -1147,13 +1165,22 @@ SpatialRestartResult runSpatialRestart(
   if (cycles.established && result.candidate &&
       (result.disposition == SpatialRestartDisposition::Incomplete ||
        result.disposition == SpatialRestartDisposition::Interrupted)) {
-    auto deficit = projectSpatialHandshakeSupplyDeficit(*result.candidate,
-                                                        *cycles.established);
-    if (!deficit)
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::CandidateVerification,
-          std::move(result.accounting), deficit.takeError());
-    result.handshakeSupplyDeficit = std::move(*deficit);
+    // A class the Fabric can still open but the region's legal placement
+    // domain cannot is a resident-context supply fact. Every other established
+    // core keeps the reservation proposal.
+    if (scratch.repair.statedCoreClassWithoutEscape() &&
+        scratch.repair.statedCoreClass().escapable) {
+      result.residencyNeighbourhoods =
+          scratch.repair.statedCoreClass().neighbourhood;
+    } else {
+      auto deficit = projectSpatialHandshakeSupplyDeficit(
+          *result.candidate, *cycles.established);
+      if (!deficit)
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::CandidateVerification,
+            std::move(result.accounting), deficit.takeError());
+      result.handshakeSupplyDeficit = std::move(*deficit);
+    }
   }
   return result;
 }
@@ -1306,6 +1333,8 @@ projectInterruptionSnapshot(SpatialPnrInterruptionStage stage,
   if (!capacity)
     return capacity.takeError();
   snapshot.fifoCapacityShortfall = std::move(*capacity);
+  snapshot.computeContextResidencyNeighbourhoods =
+      projectComputeContextResidencyNeighbourhoods(restarts);
   return snapshot;
 }
 
@@ -1980,7 +2009,8 @@ generateSpatialMappingsImpl(const SpatialPnrGenerationInputs &inputs,
       : !representative
           ? "no fixed restart reached independent final verification"
           : representative->diagnostic,
-      std::move(*fifoCapacityShortfall)};
+      std::move(*fifoCapacityShortfall),
+      projectComputeContextResidencyNeighbourhoods(resultRestarts)};
 }
 
 } // namespace

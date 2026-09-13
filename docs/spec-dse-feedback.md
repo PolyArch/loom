@@ -3660,9 +3660,14 @@ unclosed deficit. The withdrawal, the refusal, and both retreats are their own
 typed records.
 
 The root-complete Spatial provider may return
-`loom.mapping.spatial_hardware_feedback.2.0`. Its closed alternatives are a
-graph-boundary capacity proposal and a FIFO channel-reservation proposal. Both
-name the exact Module and TechMapping input. After bounded Spatial search
+`loom.mapping.spatial_hardware_feedback.3.0`. Its closed alternatives are a
+graph-boundary capacity proposal, a FIFO channel-reservation proposal, and a
+compute-context residency proposal. All three name the exact Module and
+TechMapping input, and each describes a different supply: gateway endpoints,
+guaranteed interconnect channels, and resident contexts. A residency proposal
+never repoints or removes the other two, and neither of them ever stands in for
+it; the reservation proposal remains the answer to a witnessed FIFO shared-pool
+shortfall alone. After bounded Spatial search
 fails, boundary feedback compares directional residual-net demand with the
 Module's distinct transport attachment endpoints. An ingress producer counts
 once; one residual producer with graph egress sinks counts once even when it
@@ -3683,16 +3688,33 @@ and restart order. Adoption checks the selected reservation against the Module a
 logical nets and traversal anchors against the exact input closure. It is a
 search proposal, not an infeasibility proof.
 
+A residency proposal answers a stated co-placement class the region's legal
+placement domain left no way out of while the Module still offers one. It
+retains the PE occurrences of the neighbourhoods those classes could not leave
+and asks for one free resident context per neighbourhood, which is the smallest
+supply that gives one actor of each class somewhere to go. Adoption resolves
+every named occurrence against the exact Module. The reopen answers it through
+the same `TemporalInstructionStore` compute-context growth direction the
+compute-context closure uses, as uniform resident-context growth of the recipe,
+so the Spatial side states demand in the units that owner already grows and
+never becomes a second owner of context supply. It is reported under the
+Spatial routing family, because that is the provider it came from, and it
+remains a search proposal, not an infeasibility proof.
+
 The wire contains the two canonical root references, a u64be alternative
-discriminant (boundary = 0, FIFO = 1), then the alternative's fields. Boundary stores
-the four directional counts as u64be. FIFO stores a length-framed canonical
-FIFO reference, selected and proposed counts, then count-prefixed logical-net
-and traversal-anchor tables whose canonical local references are length-framed.
-Counts and lengths use u64be. Both tables are sorted and unique. Unknown kinds,
-foreign references, stale selected reservations, noncanonical tables, and
-trailing bytes are rejected. Retention prefers a proposal from admitted routes
-to a boundary-capacity proposal, then larger requested capacity and witness
-cardinality within that family, followed by canonical bytes.
+discriminant (boundary = 0, FIFO = 1, residency = 2), then the alternative's
+fields. Boundary stores the four directional counts as u64be. FIFO stores a
+length-framed canonical FIFO reference, selected and proposed counts, then
+count-prefixed logical-net and traversal-anchor tables whose canonical local
+references are length-framed. Residency stores a count-prefixed table of
+length-framed canonical PE occurrence references. Counts and lengths use u64be.
+Every table is sorted and unique. Unknown kinds, foreign references, stale
+selected reservations, empty residency tables, noncanonical tables, and
+trailing bytes are rejected. Retention prefers a residency proposal to a
+proposal from admitted routes and either to a boundary-capacity proposal,
+because compute supply precedes the routes that consume it, then larger
+requested capacity and witness cardinality within that family, followed by
+canonical bytes.
 
 The root-complete System provider may return
 `loom.mapping.system_acc_core_capacity_pressure.3.0` only after its exact

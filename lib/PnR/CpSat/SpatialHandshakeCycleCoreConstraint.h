@@ -16,6 +16,8 @@
 namespace loom::pnr::detail {
 
 struct SpatialHandshakeCycleCoreConstraintResult final {
+  /// The class the core named, empty when it named none.
+  SpatialHandshakeCoreCoPlacement coPlacement;
   /// Whether the escape clause entered the model.
   bool encoded = false;
   /// The decisions of the co-placement class that the region can still move.

@@ -121,5 +121,6 @@ loom::pnr::detail::stateSpatialHandshakeCycleCoreClass(
         fields["core_arc_count"] =
             static_cast<std::uint64_t>(core.arcs().size());
       });
+  encoded->coPlacement = std::move(*coPlacement);
   return *encoded;
 }

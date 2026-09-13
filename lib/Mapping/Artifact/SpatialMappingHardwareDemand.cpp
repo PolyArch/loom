@@ -23,7 +23,7 @@ namespace loom::mapping {
 namespace {
 
 constexpr llvm::StringLiteral feedbackSchema =
-    "loom.mapping.spatial_hardware_feedback.2.0";
+    "loom.mapping.spatial_hardware_feedback.3.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -197,6 +197,22 @@ SpatialFifoChannelCapacitySuggestion::get(
       proposedChannels, std::move(logicalNets), std::move(routeAnchors));
 }
 
+llvm::Expected<SpatialComputeContextResidencySuggestion>
+SpatialComputeContextResidencySuggestion::get(
+    ArtifactRootReference module, ArtifactRootReference techMapping,
+    std::vector<fabric::FabricPeOccurrenceRef> neighbourhoods) {
+  if (neighbourhoods.empty())
+    return invalid("residency proposal names no neighbourhood");
+  llvm::sort(neighbourhoods, [](const fabric::FabricPeOccurrenceRef &lhs,
+                                const fabric::FabricPeOccurrenceRef &rhs) {
+    return fabric::canonicalFabricBytes(lhs) < fabric::canonicalFabricBytes(rhs);
+  });
+  neighbourhoods.erase(std::unique(neighbourhoods.begin(), neighbourhoods.end()),
+                       neighbourhoods.end());
+  return SpatialComputeContextResidencySuggestion(
+      std::move(module), std::move(techMapping), std::move(neighbourhoods));
+}
+
 llvm::ArrayRef<std::uint8_t> spatialMappingHardwareFeedbackSchemaBytes() {
   return {reinterpret_cast<const std::uint8_t *>(feedbackSchema.data()),
           feedbackSchema.size()};
@@ -218,6 +234,12 @@ std::vector<std::uint8_t> encodeSpatialMappingHardwareFeedback(
           appendU64(bytes, value.inputEndpointCount());
           appendU64(bytes, value.outputDemandCount());
           appendU64(bytes, value.outputEndpointCount());
+        } else if constexpr (std::is_same_v<
+                                 Value,
+                                 SpatialComputeContextResidencySuggestion>) {
+          appendU64(bytes, value.neighbourhoods().size());
+          for (const auto &neighbourhood : value.neighbourhoods())
+            appendBytes(bytes, fabric::canonicalFabricBytes(neighbourhood));
         } else {
           appendBytes(bytes, fabric::canonicalFabricBytes(value.owner()));
           appendU64(bytes, value.selectedChannels());
@@ -351,6 +373,36 @@ adoptSpatialMappingHardwareFeedback(
     if (!fifo)
       return fifo.takeError();
     feedback.emplace(std::move(*fifo));
+  } else if (*kind == 2) {
+    auto neighbourhoodCount = readU64(bytes, offset);
+    if (!neighbourhoodCount)
+      return neighbourhoodCount.takeError();
+    if (*neighbourhoodCount == 0 ||
+        *neighbourhoodCount > (bytes.size() - offset) / 8)
+      return invalid("residency neighbourhood table is malformed");
+    auto hardware = fabric::importEntireFabricRoot(module, store);
+    if (!hardware)
+      return hardware.takeError();
+    std::vector<fabric::FabricPeOccurrenceRef> neighbourhoods;
+    for (std::uint64_t ordinal = 0; ordinal != *neighbourhoodCount; ++ordinal) {
+      auto localBytes = readBytes(bytes, offset);
+      if (!localBytes)
+        return localBytes.takeError();
+      auto neighbourhood =
+          fabric::decodeFabricRef<fabric::FabricPeOccurrenceRef>(*localBytes);
+      if (!neighbourhood)
+        return neighbourhood.takeError();
+      if (auto error =
+              fabric::validateFabricRef(hardware->view(), *neighbourhood))
+        return std::move(error);
+      neighbourhoods.push_back(std::move(*neighbourhood));
+    }
+    auto residency = SpatialComputeContextResidencySuggestion::get(
+        std::move(*encodedModule), std::move(*techMapping),
+        std::move(neighbourhoods));
+    if (!residency)
+      return residency.takeError();
+    feedback.emplace(std::move(*residency));
   } else {
     return invalid("hardware feedback kind is outside its closed domain");
   }
@@ -375,6 +427,12 @@ void retainSpatialMappingHardwareFeedback(
             return std::make_tuple(feedback.index(),
                                    value.proposedAdditionalBoundaryPairs(),
                                    value.demandCount());
+          else if constexpr (std::is_same_v<
+                                 Value,
+                                 SpatialComputeContextResidencySuggestion>)
+            return std::make_tuple(
+                feedback.index(), value.requestedFreeContexts(),
+                static_cast<std::uint64_t>(value.neighbourhoods().size()));
           else
             return std::make_tuple(
                 feedback.index(), value.proposedChannels(),

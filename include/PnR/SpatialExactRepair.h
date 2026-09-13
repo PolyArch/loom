@@ -3,6 +3,7 @@
 
 #include "Common/ExecutionControl.h"
 #include "PnR/SpatialActionExecutor.h"
+#include "PnR/SpatialHandshakeSupplyDeficit.h"
 #include "PnR/SpatialPnrWorkLedger.h"
 
 #include "llvm/Support/Error.h"
@@ -80,6 +81,16 @@ public:
   const SpatialHandshakeCycleCore &handshakeCycleCore() const {
     return actionExecutor_.handshakeCycleCore();
   }
+  /// The co-placement class this repair last stated, and whether the region's
+  /// legal domain left it no escaping choice. A class the Fabric can still
+  /// open but the legal placement domain cannot is a resident-context supply
+  /// fact, so the restart owner needs both answers.
+  const SpatialHandshakeCoreCoPlacement &statedCoreClass() const {
+    return statedCoreClass_;
+  }
+  bool statedCoreClassWithoutEscape() const {
+    return statedCoreClassWithoutEscape_;
+  }
 
   std::size_t retainedStorageBytes() const;
 
@@ -105,6 +116,8 @@ private:
           nullptr);
 
   SpatialActionExecutorScratch actionExecutor_;
+  SpatialHandshakeCoreCoPlacement statedCoreClass_;
+  bool statedCoreClassWithoutEscape_ = false;
   std::vector<std::uint8_t> decisionIncluded_;
   std::vector<std::uint8_t> relationIncluded_;
   std::vector<std::uint8_t> netIncluded_;

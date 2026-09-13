@@ -148,6 +148,12 @@ struct IncompleteSpatialPnrGeneration final {
   /// infeasible.
   std::optional<SpatialFifoCapacitySuggestion> fifoCapacityShortfall =
       std::nullopt;
+  /// PE occurrences whose stated co-placement class the region's legal
+  /// placement domain left no way out of, one free resident context each. A
+  /// residency shortfall is its own supply; it never repoints or removes the
+  /// reservation or boundary proposals.
+  std::vector<::loom::fabric::FabricPeOccurrenceRef>
+      computeContextResidencyNeighbourhoods;
 };
 
 enum class SpatialPnrInterruptionStage : std::uint8_t {
@@ -196,6 +202,8 @@ struct SpatialPnrInterruptionSnapshot final {
   SpatialPnrClosureResidual closureResidual;
   ExecutionResourceStatistics resources;
   std::optional<SpatialFifoCapacitySuggestion> fifoCapacityShortfall;
+  std::vector<::loom::fabric::FabricPeOccurrenceRef>
+      computeContextResidencyNeighbourhoods;
 };
 
 struct InterruptedSpatialPnrGeneration final {

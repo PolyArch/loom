@@ -112,6 +112,43 @@ private:
   std::vector<fabric::FabricPhysicalTraversalRef> routeAnchors_;
 };
 
+/// A compute-context residency proposal after a bounded Spatial closure kept
+/// meeting cycle cores whose co-placement class the Fabric could not open.
+///
+/// Each named neighbourhood is one PE occurrence a core's actors share and
+/// could not leave, because no alternative instruction context admitted them.
+/// The proposal asks for one free context per neighbourhood. It grows the same
+/// resident-context supply the compute-context closure grows; it is not an
+/// infeasibility proof, and it never repoints or removes the reserved-channel
+/// or boundary-gateway proposals, which describe other supplies entirely.
+class SpatialComputeContextResidencySuggestion final {
+public:
+  static llvm::Expected<SpatialComputeContextResidencySuggestion>
+  get(ArtifactRootReference module, ArtifactRootReference techMapping,
+      std::vector<fabric::FabricPeOccurrenceRef> neighbourhoods);
+
+  const ArtifactRootReference &module() const { return module_; }
+  const ArtifactRootReference &techMapping() const { return techMapping_; }
+  llvm::ArrayRef<fabric::FabricPeOccurrenceRef> neighbourhoods() const {
+    return neighbourhoods_;
+  }
+  /// One free context per neighbourhood the class could not leave.
+  std::uint64_t requestedFreeContexts() const {
+    return neighbourhoods_.size();
+  }
+
+private:
+  SpatialComputeContextResidencySuggestion(
+      ArtifactRootReference module, ArtifactRootReference techMapping,
+      std::vector<fabric::FabricPeOccurrenceRef> neighbourhoods)
+      : module_(std::move(module)), techMapping_(std::move(techMapping)),
+        neighbourhoods_(std::move(neighbourhoods)) {}
+
+  ArtifactRootReference module_;
+  ArtifactRootReference techMapping_;
+  std::vector<fabric::FabricPeOccurrenceRef> neighbourhoods_;
+};
+
 class TechMappingView;
 
 llvm::Expected<std::optional<SpatialGraphBoundaryCapacitySuggestion>>
@@ -122,7 +159,8 @@ deriveSpatialGraphBoundaryCapacitySuggestion(
 
 using SpatialMappingHardwareFeedback =
     std::variant<SpatialGraphBoundaryCapacitySuggestion,
-                 SpatialFifoChannelCapacitySuggestion>;
+                 SpatialFifoChannelCapacitySuggestion,
+                 SpatialComputeContextResidencySuggestion>;
 
 llvm::ArrayRef<std::uint8_t> spatialMappingHardwareFeedbackSchemaBytes();
 
@@ -135,9 +173,10 @@ adoptSpatialMappingHardwareFeedback(
     llvm::ArrayRef<ArtifactRootReference> techMappings,
     const ArtifactStore &store);
 
-/// Prefer a reservation proposal from admitted routes to a boundary-capacity
-/// proposal. Within a family retain the largest requested capacity, then the
-/// larger witness and canonical bytes.
+/// Prefer a residency proposal to a reservation proposal from admitted routes,
+/// and either to a boundary-capacity proposal: compute supply precedes the
+/// routes that consume it. Within a family retain the largest requested
+/// capacity, then the larger witness and canonical bytes.
 void retainSpatialMappingHardwareFeedback(
     std::optional<SpatialMappingHardwareFeedback> &retained,
     SpatialMappingHardwareFeedback candidate);

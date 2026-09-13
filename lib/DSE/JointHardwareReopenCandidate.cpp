@@ -1125,6 +1125,28 @@ deriveHardwareRecipeGrowth(
       growth.addedContexts =
           parameters.temporalResidentContexts - growth.resultingContexts;
       growth.resultingContexts = parameters.temporalResidentContexts;
+    } else if (const auto *residency =
+                   std::get_if<
+                       mapping::SpatialComputeContextResidencySuggestion>(
+                       &*spatialObservation)) {
+      // The same resident-context supply the compute-context closure grows,
+      // asked for from the Spatial side: one free context per neighbourhood a
+      // stated co-placement class could not leave. The reservation and
+      // boundary proposals describe other supplies and are untouched.
+      auto &parameters = growth.config.hardwareTarget.parameters;
+      const std::uint64_t requested = residency->requestedFreeContexts();
+      if (requested == 0 ||
+          requested > std::numeric_limits<std::uint32_t>::max() -
+                          parameters.temporalResidentContexts)
+        return invalid("residency proposal exceeds the builtin recipe");
+      growth.computeContextGrowthDirection =
+          dse::TechMappingComputeContextGrowthDirection::
+              TemporalInstructionStore;
+      parameters.temporalResidentContexts += static_cast<std::uint32_t>(requested);
+      growth.addedContexts =
+          parameters.temporalResidentContexts - growth.resultingContexts;
+      growth.resultingContexts = parameters.temporalResidentContexts;
+      growth.uniformContextGrowth = true;
     } else {
       const auto &boundary =
           std::get<mapping::SpatialGraphBoundaryCapacitySuggestion>(
