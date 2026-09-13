@@ -639,7 +639,14 @@ llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
         continue;
       const std::size_t ports =
           candidate.shape.inputs.size() + candidate.shape.outputs.size();
-      if (size >= 2 && ports <= limits.maximumBoundaryPortCount) {
+      const bool boundaryFits =
+          candidate.shape.inputs.size() <= limits.maximumInputPortCount &&
+          candidate.shape.outputs.size() <= limits.maximumOutputPortCount;
+      // A one-node set is an intermediate rather than a candidate, so only a
+      // composite shape the boundary refuses is recurrence no PE can hold.
+      if (size >= 2 && !boundaryFits)
+        ++result.boundaryWithheldCount;
+      if (size >= 2 && boundaryFits) {
         CompositeFuCandidate reported;
         reported.nodes = candidate.shape.nodes;
         reported.internalEdges = candidate.shape.internalEdges;

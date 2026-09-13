@@ -257,19 +257,24 @@ Graphs are visited in canonical entity order, a candidate's occurrences are
 reported in graph and actor order with each occurrence's actors in node order,
 and candidates are reported in rank order with the canonical code as the final
 tie-break. Enumeration is bounded in both the shapes and the embeddings it
-retains; exhausting either bound is a typed mining failure and never a silently
-truncated result.
+retains, and the result names the bound it reached, so a truncated search is
+never a silent one.
 
 ### Size Bound
 
 A mined candidate has at least two and at most `maximumActorCount` nodes, at
-most `maximumBoundaryPortCount` boundary ports, and at least `minimumSupport`
-support. The bounds are properties of the mining request, not of the Fabric
-relation: they keep enumeration finite and keep a template's FU boundary within
-what a PE can present. Production mines with one named request, because the
-owner that selects a template and the generator that re-derives it from the
-configuration must mine the same relation or a named selection would not
-reproduce.
+most `maximumInputPortCount` FU input ports and `maximumOutputPortCount` FU
+output ports, and at least `minimumSupport` support. The bounds are properties
+of the mining request, not of the Fabric relation: they keep enumeration finite
+and keep a template's FU boundary within what a PE can present. The boundary is
+bounded on each side because that is how a PE presents it, and the one
+production request takes both widths from the Spatial PE a mined occurrence
+enters, whose boundary `ADG` owns. A shape wider than that boundary on either
+side is one no PE can hold, so withholding it is what keeps the rank from
+offering a caller work it must discard. Production mines with one named
+request, because the owner that selects a template and the generator that
+re-derives it from the configuration must mine the same relation or a named
+selection would not reproduce.
 
 Support is the prune that makes level-wise growth exact. A candidate's support
 is its minimum image: the least number of distinct actors any one node position
@@ -279,9 +284,9 @@ increases with node count. This is the measure that stays exact inside a single
 graph as well as across a set, which matters because the whole-layer case mines
 one graph: a shape that repeats twice in one layer is as interesting as one
 shared by two applications, while counting embeddings would not be monotone at
-all. The boundary-port bound is not monotone, because adding a node can
-internalize an edge; a candidate over that bound is therefore still extended and
-only withheld from the ranked result.
+all. Neither boundary-port bound is monotone, because adding a node can
+internalize an edge; a candidate over one is therefore still extended and only
+withheld from the ranked result.
 
 The retained shape and embedding bounds are budgets, not legality. A search
 that reaches one stops growing and reports that it did, together with the
@@ -316,7 +321,10 @@ portfolio outranks one that is hot in a single graph. When `S` is one
 whole-layer graph the weight is one and the packed coverage decides alone,
 which is the right answer there: the template that absorbs the most of that
 layer wins, whatever its node count. The boundary-port term
-prices the FU boundary, which is what a PE must present and route. The order is
+prices the FU boundary, which is what a PE must present and route. Whether a
+shape fits that boundary at all is not a price but the request's port bounds
+above, so the rank orders only shapes a PE can already hold and never needs a
+second term for the same fact. The order is
 score descending, then covered actors descending, then node count descending,
 then boundary ports ascending, then canonical code ascending; it is total.
 

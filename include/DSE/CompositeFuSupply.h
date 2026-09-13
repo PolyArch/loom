@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace loom::dse {
 
@@ -55,10 +56,14 @@ struct MinedCompositeFuProposal final {
 /// with its exact reason.
 struct MinedCompositeFuSupplyOutcome final {
   std::optional<MinedCompositeFuProposal> proposal;
-  /// Shapes the miner reported for this software.
-  std::uint64_t minedCandidateCount = 0;
-  /// Reported shapes whose FU boundary exceeds what a PE of the target
-  /// presents.
+  /// Shapes the miner reported for this software, by node count. The level a
+  /// shape was reported at is what says whether the search reached the wide
+  /// recurring shapes or only the narrow ones, so the account is kept per
+  /// level and the total is derived from it.
+  std::vector<std::uint64_t> minedCandidatesByActorCount;
+  /// Shapes the miner withheld because their FU boundary exceeds what a PE
+  /// presents. The mining request carries that width, so these never reach the
+  /// rank; the count is what the software recurs on but no PE can hold.
   std::uint64_t boundaryRefusedCount = 0;
   /// Reported shapes the canonical capability derivation refused.
   std::uint64_t capabilityRefusedCount = 0;
@@ -82,6 +87,13 @@ struct MinedCompositeFuSupplyOutcome final {
   /// that the rest of the invocation also spends, so what it costs is part of
   /// the observation rather than an afterthought.
   std::uint64_t searchMilliseconds = 0;
+
+  std::uint64_t minedCandidateCount() const {
+    std::uint64_t total = 0;
+    for (std::uint64_t reported : minedCandidatesByActorCount)
+      total += reported;
+    return total;
+  }
 };
 
 /// Actors of one canonical Dataflow by registered kind. A composite FU can
@@ -111,10 +123,10 @@ censusCanonicalDataflowActors(const ArtifactRootReference &dataflow,
 /// spending one realization each on. One composite occurrence answers
 /// `actorsPerRealization` of it per realization it covers, so the proposal
 /// asks for the sites that demand needs, bounded by the target's Spatial PE
-/// count. Selection walks the mined rank and takes the first candidate whose
-/// boundary fits a PE of the target and whose capability the canonical
-/// derivation admits; an absent proposal is an ordinary observation the caller
-/// retreats from.
+/// count. Every ranked candidate already fits the boundary a PE presents,
+/// because the mining request carries it, so selection walks the rank and takes
+/// the first candidate whose capability the canonical derivation admits; an
+/// absent proposal is an ordinary observation the caller retreats from.
 llvm::Expected<MinedCompositeFuSupplyOutcome>
 proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
                               std::uint64_t actorDemand,

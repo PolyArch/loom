@@ -1,6 +1,7 @@
 #ifndef LOOM_DSE_COMPOSITEFUMINING_H
 #define LOOM_DSE_COMPOSITEFUMINING_H
 
+#include "ADG/BuiltinDescriptor.h"
 #include "ADG/FuLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "DSE/FuReverseSynthesis.h"
@@ -24,23 +25,26 @@ namespace loom::dse {
 /// capability a synthesized template may declare.
 struct CompositeFuMiningLimits final {
   /// Largest admitted node count of one candidate.
-  std::uint32_t maximumActorCount = 8;
-  /// Largest admitted FU boundary port count of one reported candidate. The
-  /// bound is not monotone in the node count, so a candidate above it is still
-  /// extended and only withheld from the ranked result.
-  std::uint32_t maximumBoundaryPortCount = 12;
+  std::uint32_t maximumActorCount;
+  /// Largest admitted FU input port count of one reported candidate.
+  std::uint32_t maximumInputPortCount;
+  /// Largest admitted FU output port count of one reported candidate. The
+  /// boundary is bounded on each side because that is how a PE presents it,
+  /// and neither bound is monotone in the node count, so a candidate above one
+  /// is still extended and only withheld from the ranked result.
+  std::uint32_t maximumOutputPortCount;
   /// Minimum-image support a candidate must reach. Support is the least
   /// number of distinct actors any one node position binds across the graph
   /// set, which is the standard measure that stays anti-monotone inside a
   /// single graph: a shape that repeats twice in one whole-layer graph is as
   /// interesting as one shared by two graphs, and counting embeddings instead
   /// would not be monotone at all.
-  std::uint64_t minimumSupport = 2;
+  std::uint64_t minimumSupport;
   /// Candidates retained at one node count before the search stops growing.
-  std::uint64_t maximumCandidateCount = 4096;
+  std::uint64_t maximumCandidateCount;
   /// Embeddings enumerated at one node count before the search stops growing.
   /// Shapes and embeddings grow independently, so both are bounded.
-  std::uint64_t maximumOccurrenceCount = 1u << 16;
+  std::uint64_t maximumOccurrenceCount;
 };
 
 /// Price of one FU boundary port in the mining rank. A boundary port is what a
@@ -48,13 +52,19 @@ struct CompositeFuMiningLimits final {
 /// against coverage.
 inline constexpr std::int64_t compositeFuBoundaryPortCost = 1;
 
-/// The one mining request production uses. The owner that selects a template
-/// and the generator that re-derives it from the configuration must mine the
-/// same relation, or a named selection would not reproduce; this is that
-/// single request. Its embedding budget is sized for a whole-layer graph,
-/// where the search is expected to reach its bound and report that it did.
+/// The one mining request. The owner that selects a template and the generator
+/// that re-derives it from the configuration must mine the same relation, or a
+/// named selection would not reproduce; this is that single request. Its port
+/// bounds are the widths of the Spatial PE a mined occurrence enters, which
+/// `ADG` owns, so the rank never offers a caller a shape no PE can present.
+/// Its embedding budget is sized for a whole-layer graph.
 inline constexpr CompositeFuMiningLimits productionCompositeFuMiningLimits{
-    8, 12, 2, 4096, 1u << 18};
+    8,
+    ::loom::adg::builtinPeInputPortCount,
+    ::loom::adg::builtinPeOutputPortCount,
+    2,
+    4096,
+    1u << 18};
 
 /// One node of a mined shape. Node identity is the registered operation schema
 /// together with the exact ordered operand and result types; exact attribute
@@ -119,6 +129,10 @@ struct CompositeFuCandidate final {
 /// a complete one.
 struct CompositeFuMiningResult final {
   std::vector<CompositeFuCandidate> candidates;
+  /// Shapes that reached the request's support but whose FU boundary one of
+  /// its port bounds refused. They are recurrence a PE of that width cannot
+  /// present, which is a different fact from finding no recurrence at all.
+  std::uint64_t boundaryWithheldCount = 0;
   /// Largest node count whose level the search completed.
   std::uint32_t exploredActorCount = 0;
   /// Whether a retained shape or embedding bound stopped the growth before
@@ -142,7 +156,7 @@ struct CompositeFuMiningResult final {
 llvm::Expected<CompositeFuMiningResult> mineCompositeFuCandidates(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> graphs,
-    const CompositeFuMiningLimits &limits = {});
+    const CompositeFuMiningLimits &limits);
 
 /// Derives the hardware request of one mined candidate from the exact actors
 /// of its occurrences. Each node's family is the least registered family that

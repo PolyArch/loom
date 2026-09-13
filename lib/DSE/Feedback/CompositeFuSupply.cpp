@@ -96,16 +96,16 @@ proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started)
           .count());
-  outcome.minedCandidateCount = mined->candidates.size();
+  for (const CompositeFuCandidate &candidate : mined->candidates) {
+    if (outcome.minedCandidatesByActorCount.size() <= candidate.nodes.size())
+      outcome.minedCandidatesByActorCount.resize(candidate.nodes.size() + 1);
+    ++outcome.minedCandidatesByActorCount[candidate.nodes.size()];
+  }
+  outcome.boundaryRefusedCount = mined->boundaryWithheldCount;
   outcome.bounded = mined->bounded;
   outcome.exploredActorCount = mined->exploredActorCount;
 
   for (const CompositeFuCandidate &candidate : mined->candidates) {
-    if (candidate.inputs.size() > loom::adg::builtinPeInputPortCount ||
-        candidate.outputs.size() > loom::adg::builtinPeOutputPortCount) {
-      ++outcome.boundaryRefusedCount;
-      continue;
-    }
     // The hardware request derivation is the admission owner: the canonical
     // capability derivation for each node, and the FU model for the shape. A
     // candidate it rejects is one the generator could not rebuild either, so
@@ -146,7 +146,11 @@ proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
 
 void describeMinedCompositeFuSupply(
     llvm::json::Object &fields, const MinedCompositeFuSupplyOutcome &supply) {
-  fields["mined_candidate_count"] = supply.minedCandidateCount;
+  fields["mined_candidate_count"] = supply.minedCandidateCount();
+  llvm::json::Array byActorCount;
+  for (std::uint64_t reported : supply.minedCandidatesByActorCount)
+    byActorCount.push_back(reported);
+  fields["mined_candidates_by_actor_count"] = std::move(byActorCount);
   fields["mined_boundary_refused_count"] = supply.boundaryRefusedCount;
   fields["mined_capability_refused_count"] = supply.capabilityRefusedCount;
   fields["mined_recurrence_refused_count"] = supply.recurrenceRefusedCount;

@@ -139,7 +139,8 @@ void minesTheSharedMultiplyAccumulateShape(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 8);
 
-  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
   const std::vector<loom::dse::CompositeFuCandidate> &candidates =
       mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
@@ -211,7 +212,8 @@ void synthesizesTheMinedTemplateBackToItsActors(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs = graphsWithOperandWidth(program.view(), 64);
 
-  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
   const std::vector<loom::dse::CompositeFuCandidate> &candidates =
       mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
@@ -273,7 +275,8 @@ void placesTheMinedTemplateInABuiltinModule(llvm::StringRef fixture) {
   dataflow::CanonicalDataflowArtifact program = loadDataflow(context, fixture);
   const std::vector<dataflow::GraphRef> graphs =
       graphsWithOperandWidth(program.view(), 64);
-  auto mined = take(loom::dse::mineCompositeFuCandidates(program.view(), graphs));
+  auto mined = take(loom::dse::mineCompositeFuCandidates(
+      program.view(), graphs, loom::dse::productionCompositeFuMiningLimits));
   const std::vector<loom::dse::CompositeFuCandidate> &candidates =
       mined.candidates;
   require(!candidates.empty(), "mining reported no common subgraph");
@@ -447,11 +450,10 @@ void proposesAComposedSupplyForAnActorDemand(llvm::StringRef fixture) {
           "the selection and the proposal disagree on the site count");
   // The search facts are the only account a caller that gets no proposal can
   // report, so a walk that did produce one must still describe itself: every
-  // reported shape is either refused or the one taken, and the search covered
-  // at least the shape it took.
-  require(supply.minedCandidateCount >=
-              supply.boundaryRefusedCount + supply.capabilityRefusedCount +
-                  supply.recurrenceRefusedCount + 1,
+  // ranked shape is either refused by the capability owner or the one taken,
+  // and the search covered at least the shape it took.
+  require(supply.minedCandidateCount() >= supply.capabilityRefusedCount +
+                                              supply.recurrenceRefusedCount + 1,
           "the selection walk did not account for the shapes it saw");
   require(supply.exploredActorCount >= proposal->actorsPerRealization,
           "the selection took a shape wider than the search it reports");
