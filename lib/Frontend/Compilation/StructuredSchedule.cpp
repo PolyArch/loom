@@ -569,9 +569,20 @@ llvm::Error applyPolyhedralSchedule(mlir::Operation *root,
   return llvm::Error::success();
 }
 
+/// Whether the pinned SCF unroll-and-jam can rebuild this loop's induction
+/// variable. It derives the jammed step and every replica's induction offset
+/// from `index` constants, so a loop whose induction variable is a sized
+/// integer -- the admitted raised-pointer spelling -- is outside what the
+/// pinned transform builds. Plain SCF unrolling derives the same values in the
+/// loop's own integer type and keeps that coordinate available.
+bool pinnedJamRebuildsInductionType(mlir::scf::ForOp loop) {
+  return llvm::isa<mlir::IndexType>(loop.getInductionVar().getType());
+}
+
 llvm::Error applyUnrollAndJam(mlir::scf::ForOp loop, std::uint64_t factor) {
   if (factor <= 1 || !loop.getInitArgs().empty() ||
-      !enclosesStructuredLoop(loop) || !hasInvariantNestedLoopBounds(loop))
+      !enclosesStructuredLoop(loop) || !hasInvariantNestedLoopBounds(loop) ||
+      !pinnedJamRebuildsInductionType(loop))
     return detail::invalidStructuredSchedule("unroll-and-jam factor or loop shape is not canonical");
   // Jamming interleaves the selected dimension's iterations, so the same
   // independence proof the decision domain used gates the transform itself.
@@ -1359,9 +1370,15 @@ enumerateStructuredScheduleDecisions(
       std::vector<std::uint64_t> factors = canonicalProperDivisors(*tripCount);
       if (llvm::Error error = recordCoordinates(factors.size()))
         return std::move(error);
-      if (hasInvariantNestedLoopBounds(scfLoop) &&
-          lowering::proveIndependentIterations(scfLoop) ==
-              lowering::ParallelDependenceResult::ProvenIndependent) {
+      if (!pinnedJamRebuildsInductionType(scfLoop)) {
+        // The coordinate is legal on this nest but the pinned transform cannot
+        // rebuild its induction variable, so it is named rather than left as a
+        // silent gap beside the plain unroll factors of the same loop.
+        recordRefusal(entity.reference,
+                      StructuredScopRefusalKind::ProviderMaterializationRejected);
+      } else if (hasInvariantNestedLoopBounds(scfLoop) &&
+                 lowering::proveIndependentIterations(scfLoop) ==
+                     lowering::ParallelDependenceResult::ProvenIndependent) {
         if (llvm::Error error = appendReplicatedScfProposals(
                 StructuredScheduleDecisionKind::UnrollAndJam, factors))
           return std::move(error);

@@ -789,7 +789,13 @@ independent dimensions enclosing it. Unroll-and-jam replicates the carried
 value of every enclosed loop once per replica, and tiling or unrolling an
 enclosing dimension leaves the enclosed loops untouched; in each case the
 serial dimension stays innermost and runs its own iterations in source order
-against its own carried value. What it forbids is every decision that would
+against its own carried value. The pinned SCF unroll-and-jam derives the jammed
+step and every replica's induction offset from `index` constants, so it rebuilds
+only an `index` induction variable; a nest whose selected dimension carries a
+sized integer induction variable, which is the admitted raised-pointer
+spelling, records `ProviderMaterializationRejected` for that coordinate and
+keeps the plain unroll factors of the same loop, which the pinned SCF unroll
+derives in the loop's own integer type. What it forbids is every decision that would
 reassociate or vectorize across it, and every schedule that would exchange,
 distribute, fuse, skew, or reverse it. The exact vector domain below keeps its
 `StrictFloatingReduction` refusal unchanged, so a strict floating reduction
