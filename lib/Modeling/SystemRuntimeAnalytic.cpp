@@ -379,17 +379,17 @@ estimateLaunchDuration(const SystemPlatformModel &platform,
                               "shared memory service");
   if (!bandwidth)
     return bandwidth.takeError();
-  // Each transaction holds one outstanding slot for the request round trip;
-  // the graph offers at most one request per memory actor per engine issue
-  // depth, so the overlap is bounded by the smaller of the two.
-  auto actorRequests =
-      checkedMul(std::max<std::uint64_t>(1, launch.memoryActors),
-                 std::max<std::uint64_t>(1, platform.memoryOperationIssueDepth),
-                 "memory actor request concurrency");
-  if (!actorRequests)
-    return actorRequests.takeError();
+  // Each transaction holds one outstanding slot for the request round trip.
+  // One memory actor issues one request per iteration, so the requests a
+  // graph overlaps by construction are its memory actors. An Operation
+  // Engine's issue depth only permits consecutive iterations of the same
+  // actor to overlap; whether they do is a property of the loop's own
+  // recurrence, which this model does not carry, so it is not concurrency the
+  // graph offers. Crediting it here would make every graph reach the path's
+  // outstanding capacity with a single memory actor and hide the one schedule
+  // decision that raises memory-level parallelism.
   const std::uint64_t inFlight = std::max<std::uint64_t>(
-      1, std::min(platform.accCoreOutstandingRequests, *actorRequests));
+      1, std::min(platform.accCoreOutstandingRequests, launch.memoryActors));
   auto chain = checkedMul(
       ceilDiv(launch.memoryTransactionsPerActivation, inFlight),
       platform.memoryLatencyPicoseconds, "memory request chain");
