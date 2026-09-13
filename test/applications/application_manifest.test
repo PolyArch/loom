@@ -29,7 +29,7 @@
 # RUN: timeout 10s %t.tinyml \
 # RUN:   %loom_external/mlperf-tiny/benchmark/training/anomaly_detection/trained_models/ad01_int8.tflite \
 # RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/datasets/dcase01/normal_id_01_00000000_hist_librosa.bin \
-# RUN:   1 4 > %t.tinyml.out
+# RUN:   0 1 > %t.tinyml.out
 # RUN: diff -u %S/mlperf-tiny-anomaly/expected-smoke.txt %t.tinyml.out
 # RUN: %loom-application-build --driver-arguments-output=%t.portfolio.args \
 # RUN:   --deployment-output=%t.portfolio-deployment \
