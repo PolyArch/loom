@@ -1,10 +1,13 @@
 #include "SpatialFixedTerminalCutConstraint.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 using namespace loom::pnr;
@@ -12,6 +15,26 @@ using namespace loom::pnr::detail;
 using namespace operations_research::sat;
 
 namespace {
+
+bool cutNetLess(const SpatialFixedTerminalCutNet &left,
+                const SpatialFixedTerminalCutNet &right) {
+  return std::tie(left.logicalNet, left.unreachableSink) <
+         std::tie(right.logicalNet, right.unreachableSink);
+}
+
+bool cutCertificateLess(const SpatialFixedTerminalCutCertificate &left,
+                        const SpatialFixedTerminalCutCertificate &right) {
+  if (left.capacity != right.capacity)
+    return left.capacity < right.capacity;
+  return std::lexicographical_compare(
+      left.forcedNetCuts.begin(), left.forcedNetCuts.end(),
+      right.forcedNetCuts.begin(), right.forcedNetCuts.end(), cutNetLess);
+}
+
+bool cutCertificateEqual(const SpatialFixedTerminalCutCertificate &left,
+                         const SpatialFixedTerminalCutCertificate &right) {
+  return !cutCertificateLess(left, right) && !cutCertificateLess(right, left);
+}
 
 llvm::Error cutConstraintError(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -21,6 +44,26 @@ llvm::Error cutConstraintError(const llvm::Twine &detail) {
 }
 
 } // namespace
+
+bool loom::pnr::detail::insertSpatialFixedTerminalCutCertificate(
+    std::vector<SpatialFixedTerminalCutCertificate> &certificates,
+    SpatialFixedTerminalCutCertificate certificate) {
+  llvm::sort(certificate.forcedNetCuts, cutNetLess);
+  certificate.forcedNetCuts.erase(
+      std::unique(certificate.forcedNetCuts.begin(),
+                  certificate.forcedNetCuts.end(),
+                  [](const SpatialFixedTerminalCutNet &left,
+                     const SpatialFixedTerminalCutNet &right) {
+                    return !cutNetLess(left, right) && !cutNetLess(right, left);
+                  }),
+      certificate.forcedNetCuts.end());
+  const auto found =
+      llvm::lower_bound(certificates, certificate, cutCertificateLess);
+  if (found != certificates.end() && cutCertificateEqual(*found, certificate))
+    return false;
+  certificates.insert(found, std::move(certificate));
+  return true;
+}
 
 llvm::Expected<SpatialFixedTerminalCutConstraintResult>
 loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(

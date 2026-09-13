@@ -44,51 +44,6 @@ using loom::pnr::detail::SpatialTransportWitness;
 using loom::pnr::detail::firstSpatialTransportWitness;
 using loom::pnr::detail::spatialTransportWitnessIsLive;
 
-namespace {
-
-bool cutNetLess(const SpatialFixedTerminalCutNet &left,
-                const SpatialFixedTerminalCutNet &right) {
-  return std::tie(left.logicalNet, left.unreachableSink) <
-         std::tie(right.logicalNet, right.unreachableSink);
-}
-
-bool cutCertificateLess(const SpatialFixedTerminalCutCertificate &left,
-                        const SpatialFixedTerminalCutCertificate &right) {
-  if (left.capacity != right.capacity)
-    return left.capacity < right.capacity;
-  return std::lexicographical_compare(
-      left.forcedNetCuts.begin(), left.forcedNetCuts.end(),
-      right.forcedNetCuts.begin(), right.forcedNetCuts.end(), cutNetLess);
-}
-
-bool cutCertificateEqual(const SpatialFixedTerminalCutCertificate &left,
-                         const SpatialFixedTerminalCutCertificate &right) {
-  return !cutCertificateLess(left, right) && !cutCertificateLess(right, left);
-}
-
-bool insertCutCertificate(
-    std::vector<SpatialFixedTerminalCutCertificate> &certificates,
-    SpatialFixedTerminalCutCertificate certificate) {
-  llvm::sort(certificate.forcedNetCuts, cutNetLess);
-  certificate.forcedNetCuts.erase(
-      std::unique(certificate.forcedNetCuts.begin(),
-                  certificate.forcedNetCuts.end(),
-                  [](const SpatialFixedTerminalCutNet &left,
-                     const SpatialFixedTerminalCutNet &right) {
-                    return !cutNetLess(left, right) && !cutNetLess(right, left);
-                  }),
-      certificate.forcedNetCuts.end());
-  const auto found =
-      llvm::lower_bound(certificates, certificate, cutCertificateLess);
-  if (found != certificates.end() && cutCertificateEqual(*found, certificate))
-    return false;
-  certificates.insert(found, std::move(certificate));
-  return true;
-}
-
-
-} // namespace
-
 llvm::Expected<SpatialExactRepairResult>
 SpatialExactRepairScratch::repairTransportClosure(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
@@ -1944,7 +1899,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           "committed the best legal route-repair fallback before fixed "
           "terminal-region expansion");
     if (fixedTerminalCut) {
-      if (!insertCutCertificate(learnedCutCertificates_, routeCutCertificate_))
+      if (!detail::insertSpatialFixedTerminalCutCertificate(
+              learnedCutCertificates_, routeCutCertificate_))
         return executedResult(
             SpatialExactRepairResultKind::InternalError,
             "negotiated routing repeated an active fixed-terminal cut");
