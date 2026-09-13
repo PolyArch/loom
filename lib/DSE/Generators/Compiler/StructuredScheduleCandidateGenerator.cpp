@@ -3,7 +3,6 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
-#include "Evaluation/Models/SystemRuntimeAnalytic.h"
 #include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -14,6 +13,8 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/Support/Error.h"
 
@@ -212,6 +213,32 @@ const ArtifactRootReference &
 singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
             InputSlot slot) {
   return bindings[slot].artifacts.front();
+}
+
+/// Memory accesses one Structured loop body performs. A Structured program
+/// still carries its accesses as MemRef effects; the canonical Dataflow memory
+/// actors they become exist only after lowering, so the effect is what this
+/// stage can read.
+std::uint64_t structuredMemoryAccessCount(mlir::Operation *loop) {
+  std::uint64_t accesses = 0;
+  loop->walk([&](mlir::Operation *operation) {
+    auto effects = llvm::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+    if (!effects)
+      return;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
+    effects.getEffects(instances);
+    for (const mlir::MemoryEffects::EffectInstance &instance : instances) {
+      if (!llvm::isa<mlir::MemoryEffects::Read, mlir::MemoryEffects::Write>(
+              instance.getEffect()))
+        continue;
+      const mlir::Value value = instance.getValue();
+      if (!value || !llvm::isa<mlir::MemRefType>(value.getType()))
+        continue;
+      ++accesses;
+      return;
+    }
+  });
+  return accesses;
 }
 
 bool producesLogicalThreadDomain(
@@ -503,24 +530,6 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     return systemRoot.takeError();
   const std::uint64_t accCoreCount =
       std::max<std::size_t>(1, systemRoot->artifact().accCoreOccurrences().size());
-  // The outstanding requests the shared memory service grants one AccCore and
-  // the firings one memory actor's Operation Engine may hold outstanding; the
-  // same platform projection the analytic runtime model reads. One actor
-  // already offers its engine's depth, so replication only has to cover the
-  // requests that depth leaves unfilled.
-  std::uint64_t memoryOutstandingRequests = 1;
-  std::uint64_t memoryOperationIssueDepth = 1;
-  if (auto platform =
-          evaluation::models::projectSystemPlatformModel(*exactFabric)) {
-    memoryOutstandingRequests =
-        std::max<std::uint64_t>(1, platform->accCoreOutstandingRequests);
-    memoryOperationIssueDepth =
-        std::max<std::uint64_t>(1, platform->memoryOperationIssueDepth);
-  } else {
-    // A Fabric without a shared memory service grants no overlap; the
-    // smallest admitted unroll then stands in.
-    llvm::consumeError(platform.takeError());
-  }
   // The tiled prefixes of one decision domain: proven polyhedral tiles, and
   // strip-mining where the exact SCoP admitted no tile for the loop, such as
   // a loop already carrying vector transfers. A tiled prefix exists to become
@@ -914,8 +923,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
   };
   const auto exploreVectorChain =
       [&](const ParentSchedule &parent,
-          const frontend::StructuredScheduleProposal &vectorProposal,
-          bool unrollStage) -> llvm::Expected<bool> {
+          const frontend::StructuredScheduleProposal &vectorProposal)
+      -> llvm::Expected<bool> {
     if (llvm::Error error = accountGeneratedProposal())
       return std::move(error);
     if (!consumeMaterializationAttempt())
@@ -949,12 +958,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     if (llvm::Error error = accountDecisionDomain(*stageDomain))
       return std::move(error);
     std::optional<frontend::MaterializedStructuredScheduleCandidate> unrolled;
-    if (unrollStage) {
-      // A memory actor holds one request in flight, so copies beyond the
-      // service's outstanding slots add actors without overlap. Take the
-      // smallest admitted unroll that fills those slots, or the widest
-      // admitted one when none reaches them.
-      const frontend::StructuredScheduleProposal *widest = nullptr;
+    {
+      // One copy of a memory-touching body is one more set of memory actors
+      // holding requests in flight, which is the only schedule decision that
+      // raises this graph's memory-level parallelism. How far the loop then
+      // actually runs ahead is a property of its own recurrence, so the stage
+      // offers the smallest admitted replication and the analytic ranking and
+      // the measured System interval price whether it pays. A body that
+      // touches no memory gains nothing and carries no unroll stage.
+      const frontend::StructuredScheduleProposal *replication = nullptr;
       for (const auto &proposal : stageDomain->proposals) {
         if (proposal.decision().kind !=
             frontend::StructuredScheduleDecisionKind::Unroll)
@@ -965,48 +977,27 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         auto loop = view->resolve(proposal.decision().loop);
         if (!loop)
           return loop.takeError();
-        std::uint64_t memoryActors = 0;
-        loop->operation->walk([&](mlir::Operation *operation) {
-          auto schema = dataflow::operationSchemaOf(operation);
-          memoryActors += schema && dataflow::actorKind(*schema) ==
-                                        dataflow::CanonicalDataflowActorKind::Memory
-                              ? 1
-                              : 0;
-        });
-        const std::uint64_t actorRequests =
-            memoryActors * memoryOperationIssueDepth;
-        const std::uint64_t neededCopies =
-            actorRequests == 0
-                ? 1
-                : (memoryOutstandingRequests + actorRequests - 1) /
-                      actorRequests;
-        const std::uint64_t factor = proposal.decision().factor;
-        const bool fills = factor >= neededCopies;
-        if (!widest) {
-          widest = &proposal;
+        if (structuredMemoryAccessCount(loop->operation) == 0)
           continue;
-        }
-        const std::uint64_t current = widest->decision().factor;
-        const bool currentFills = current >= neededCopies;
-        if ((fills && (!currentFills || factor < current)) ||
-            (!fills && !currentFills && factor > current))
-          widest = &proposal;
+        if (!replication ||
+            proposal.decision().factor < replication->decision().factor)
+          replication = &proposal;
       }
-      if (widest) {
+      if (replication) {
         if (llvm::Error error = accountGeneratedProposal())
           return std::move(error);
         if (!consumeMaterializationAttempt())
           return false;
         const auto &vectorStage = **materialized;
         auto materializedUnroll = materializeProposal(
-            parent.reference, vectorStage.structuredProgram, *widest,
+            parent.reference, vectorStage.structuredProgram, *replication,
             vectorStage.trackedSpatialRegion, vectorStage.sourceProvenance);
         if (!materializedUnroll)
           return materializedUnroll.takeError();
         if (*materializedUnroll) {
           unrolled.emplace(std::move(**materializedUnroll));
           stages.push_back(
-              {referenceOf(*unrolled), widest->decision(), &*unrolled});
+              {referenceOf(*unrolled), replication->decision(), &*unrolled});
           stageDomain = enumerateStage(*unrolled);
           if (!stageDomain)
             return stageDomain.takeError();
@@ -1104,7 +1095,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           chainCount(parent) +
               parent.proposalOrdinals[static_cast<std::size_t>(phase)].size());
     for (std::size_t round = 0; round != rounds && !stopGeneration; ++round) {
-      for (auto [parentIndex, parent] : llvm::enumerate(parents)) {
+      for (const ParentSchedule &parent : parents) {
         if (stopGeneration)
           break;
         if (invocationView.stopRequested()) {
@@ -1118,11 +1109,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
         if (round >= chains + ordinals.size())
           continue;
         if (round < chains) {
-          // Alternate the unroll stage across parents so both chain shapes
-          // are explored within one grant.
           auto published = exploreVectorChain(
-              parent, parent.domain.proposals[*parent.vectorChainOrdinal],
-              parentIndex % 2 == 1);
+              parent, parent.domain.proposals[*parent.vectorChainOrdinal]);
           if (!published)
             return published.takeError();
           continue;
