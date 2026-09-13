@@ -45,12 +45,14 @@ struct MinedCompositeFuProposal final {
   std::uint64_t support = 0;
 };
 
-/// What the one selection path did. An absent proposal has three different
+/// What the one selection path did. An absent proposal has four different
 /// owners and a caller cannot act on, or report, the difference without them:
 /// software that mines no shape at all, shapes every one of which presents a
-/// wider boundary than a PE, and shapes whose operation families no inverse
-/// capability policy admits. The last one names a missing Fabric policy rather
-/// than a missing opportunity, so it is recorded with its exact reason.
+/// wider boundary than a PE, shapes whose operation families no inverse
+/// capability policy admits, and shapes the FU model cannot hold because their
+/// internal relation closes a loop recurrence. The capability refusal names a
+/// missing Fabric policy rather than a missing opportunity, so it is recorded
+/// with its exact reason.
 struct MinedCompositeFuSupplyOutcome final {
   std::optional<MinedCompositeFuProposal> proposal;
   /// Shapes the miner reported for this software.
@@ -63,6 +65,11 @@ struct MinedCompositeFuSupplyOutcome final {
   /// The first such refusal's exact typed reason, which names the operation
   /// family whose inverse policy is missing.
   std::string firstCapabilityRefusal;
+  /// Reported shapes no FU can hold in this profile. Mining is a relation over
+  /// software, so a shape that closes a loop recurrence is an ordinary thing
+  /// to find and a different observation from a family the Fabric cannot yet
+  /// express.
+  std::uint64_t recurrenceRefusedCount = 0;
   /// Whether the bounded search stopped growing before its node bound. A
   /// bounded search still proposes what it found; the flag is the evidence
   /// that a wider template might exist.

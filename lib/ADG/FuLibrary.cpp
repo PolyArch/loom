@@ -1349,28 +1349,14 @@ llvm::Error addSpecialMathFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                          resources);
 }
 
-llvm::Expected<CompositeFuPlacement>
-addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
-               const CompositeFuSpec &spec) {
-  if (spec.nodes.empty())
-    return invalid("composite FU has no operation resource");
-  if (spec.outputs.empty())
-    return invalid("composite FU publishes no result");
-  if (inputs.size() != spec.inputs.size())
-    return invalid("composite FU input count does not match its boundary");
-
-  // Authoring order must follow the internal relation, and a cycle is a
-  // recurrence the caller must express with an explicit backedge.
+std::optional<std::vector<std::size_t>>
+compositeFuAuthoringOrder(const CompositeFuSpec &spec) {
   std::vector<std::size_t> pending(spec.nodes.size(), 0);
   std::vector<std::vector<std::size_t>> successors(spec.nodes.size());
   for (const CompositeFuEdgeSpec &edge : spec.internalEdges) {
     if (edge.producerNode >= spec.nodes.size() ||
         edge.consumerNode >= spec.nodes.size())
-      return invalid("composite FU edge names an unknown node");
-    if (edge.producerResult >=
-            spec.nodes[edge.producerNode].outputTypes.size() ||
-        edge.consumerOperand >= spec.nodes[edge.consumerNode].inputTypes.size())
-      return invalid("composite FU edge names an unknown node port");
+      return std::nullopt;
     ++pending[edge.consumerNode];
     successors[edge.producerNode].push_back(edge.consumerNode);
   }
@@ -1388,8 +1374,37 @@ addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
         ready.push_back(successor);
   }
   if (order.size() != spec.nodes.size())
+    return std::nullopt;
+  return order;
+}
+
+llvm::Expected<CompositeFuPlacement>
+addCompositeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
+               const CompositeFuSpec &spec) {
+  if (spec.nodes.empty())
+    return invalid("composite FU has no operation resource");
+  if (spec.outputs.empty())
+    return invalid("composite FU publishes no result");
+  if (inputs.size() != spec.inputs.size())
+    return invalid("composite FU input count does not match its boundary");
+
+  for (const CompositeFuEdgeSpec &edge : spec.internalEdges) {
+    if (edge.producerNode >= spec.nodes.size() ||
+        edge.consumerNode >= spec.nodes.size())
+      return invalid("composite FU edge names an unknown node");
+    if (edge.producerResult >=
+            spec.nodes[edge.producerNode].outputTypes.size() ||
+        edge.consumerOperand >= spec.nodes[edge.consumerNode].inputTypes.size())
+      return invalid("composite FU edge names an unknown node port");
+  }
+  // Authoring order must follow the internal relation, and a cycle is a
+  // recurrence the caller must express with an explicit backedge.
+  std::optional<std::vector<std::size_t>> authoringOrder =
+      compositeFuAuthoringOrder(spec);
+  if (!authoringOrder)
     return invalid("composite FU contains a recurrence and needs an explicit "
                    "FU backedge");
+  const std::vector<std::size_t> &order = *authoringOrder;
 
   std::vector<PortType> boundaryInputTypes;
   boundaryInputTypes.reserve(spec.inputs.size());

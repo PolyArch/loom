@@ -106,17 +106,26 @@ proposeMinedCompositeFuSupply(const ArtifactRootReference &dataflow,
       ++outcome.boundaryRefusedCount;
       continue;
     }
-    // The canonical capability derivation is the admission owner. A candidate
-    // it rejects is one the generator could not rebuild either, so the
-    // selection skips it here instead of naming a shape that would fail. Its
-    // reason names the operation family whose inverse policy is missing, which
-    // is a Fabric owner's gap rather than a missing opportunity.
+    // The hardware request derivation is the admission owner: the canonical
+    // capability derivation for each node, and the FU model for the shape. A
+    // candidate it rejects is one the generator could not rebuild either, so
+    // the selection skips it here instead of naming a shape that would fail.
+    // A capability refusal names the operation family whose inverse policy is
+    // missing, which is a Fabric owner's gap rather than a missing
+    // opportunity; a recurrence is just a shape no FU holds.
     auto request = deriveCompositeFuTemplate(program->view(), candidate);
     if (!request) {
-      ++outcome.capabilityRefusedCount;
-      const std::string reason = llvm::toString(request.takeError());
-      if (outcome.firstCapabilityRefusal.empty())
-        outcome.firstCapabilityRefusal = reason;
+      llvm::handleAllErrors(
+          request.takeError(), [&](const FuReverseSynthesisError &error) {
+            if (error.failure() !=
+                FuReverseSynthesisFailure::CapabilityDerivationRejected) {
+              ++outcome.recurrenceRefusedCount;
+              return;
+            }
+            ++outcome.capabilityRefusedCount;
+            if (outcome.firstCapabilityRefusal.empty())
+              outcome.firstCapabilityRefusal = error.diagnostic().str();
+          });
       continue;
     }
     const std::uint32_t occurrences = sizeOccurrences(
@@ -140,6 +149,7 @@ void describeMinedCompositeFuSupply(
   fields["mined_candidate_count"] = supply.minedCandidateCount;
   fields["mined_boundary_refused_count"] = supply.boundaryRefusedCount;
   fields["mined_capability_refused_count"] = supply.capabilityRefusedCount;
+  fields["mined_recurrence_refused_count"] = supply.recurrenceRefusedCount;
   fields["mined_first_capability_refusal"] =
       supply.firstCapabilityRefusal.empty()
           ? llvm::json::Value(nullptr)

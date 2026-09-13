@@ -449,8 +449,9 @@ void proposesAComposedSupplyForAnActorDemand(llvm::StringRef fixture) {
   // report, so a walk that did produce one must still describe itself: every
   // reported shape is either refused or the one taken, and the search covered
   // at least the shape it took.
-  require(supply.minedCandidateCount >= supply.boundaryRefusedCount +
-                                            supply.capabilityRefusedCount + 1,
+  require(supply.minedCandidateCount >=
+              supply.boundaryRefusedCount + supply.capabilityRefusedCount +
+                  supply.recurrenceRefusedCount + 1,
           "the selection walk did not account for the shapes it saw");
   require(supply.exploredActorCount >= proposal->actorsPerRealization,
           "the selection took a shape wider than the search it reports");

@@ -8,7 +8,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 namespace loom::adg {
 
@@ -124,6 +127,15 @@ struct CompositeFuPlacement final {
   std::vector<FuNode> nodes;
   FuCapabilityTemplateHandle capability;
 };
+
+/// The order one composite FU's nodes are authored in: the topological order
+/// its internal relation induces, or none when that relation contains a
+/// recurrence or names a node outside the spec. A recurrence needs an explicit
+/// FU backedge, so this is also the one test of whether the FU model can hold
+/// a shape at all; a caller that selects shapes shares it instead of learning
+/// the answer from a failed authoring.
+std::optional<std::vector<std::size_t>>
+compositeFuAuthoringOrder(const CompositeFuSpec &spec);
 
 /// Adds one composite FU to an open PE and closes the FU. `inputs` are the PE
 /// values that carry the FU's ordered boundary inputs, one per

@@ -289,6 +289,14 @@ llvm::Expected<::loom::adg::CompositeFuSpec> deriveCompositeFuTemplate(
   if (spec.outputs.empty())
     return failure(FuReverseSynthesisFailure::UnsupportedGraphTopology,
                    "mined template publishes no FU result");
+  // A mined shape whose internal relation closes a cycle is a loop recurrence.
+  // The FU model holds one only through an explicit backedge, which this
+  // profile does not author, so the request is refused here rather than at the
+  // Builder that would otherwise be the first to notice.
+  if (!::loom::adg::compositeFuAuthoringOrder(spec))
+    return failure(FuReverseSynthesisFailure::UnsupportedGraphTopology,
+                   "mined template contains a recurrence and needs an "
+                   "explicit FU backedge");
   return spec;
 }
 
