@@ -1069,11 +1069,28 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
             return outcome.retainedOutputBindings;
         },
         result->outcome);
-    for (std::size_t index = 0; index != outputDemands.size(); ++index)
-      if (outputDemands[index].maximumArtifacts &&
-          outputs[index].artifacts.size() >
-              *outputDemands[index].maximumArtifacts)
+    // The demand bounds the children this invocation publishes. Republishing
+    // an input passes along a frontier the consumer's join already bounds, so
+    // it is not a candidate this invocation produced and cannot consume a
+    // publication slot; otherwise a full input set meets the demand before the
+    // provider attempts anything.
+    std::vector<ArtifactRootReference> invocationInputs;
+    for (const CandidateGeneratorInputBinding &binding : inputBindings)
+      invocationInputs.insert(invocationInputs.end(), binding.artifacts.begin(),
+                              binding.artifacts.end());
+    llvm::sort(invocationInputs, artifactRootReferenceLess);
+    invocationInputs.erase(
+        std::unique(invocationInputs.begin(), invocationInputs.end()),
+        invocationInputs.end());
+    for (std::size_t index = 0; index != outputDemands.size(); ++index) {
+      if (!outputDemands[index].maximumArtifacts)
+        continue;
+      std::uint64_t children = 0;
+      for (const ArtifactRootReference &artifact : outputs[index].artifacts)
+        children += containsReference(invocationInputs, artifact) ? 0 : 1;
+      if (children > *outputDemands[index].maximumArtifacts)
         return invalid("provider exceeded its plan-derived output demand");
+    }
   }
   // The provider boundary was actually entered and validated. Keep this
   // transient observation out of recovery bytes and candidate identity.

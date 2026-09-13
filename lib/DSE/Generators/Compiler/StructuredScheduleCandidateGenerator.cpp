@@ -199,7 +199,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v24",
+    "loom.compiler.structured_schedule.generator.v25",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -312,11 +312,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       invocationView.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
   bool truncated = false;
   bool cancelled = false;
-  if (maximumOutputs && outputs.size() > *maximumOutputs) {
-    outputs.erase(outputs.begin() + static_cast<std::size_t>(*maximumOutputs),
-                  outputs.end());
-    truncated = true;
-  }
+  // The plan's output demand bounds the children this invocation publishes.
+  // Passing an input through republishes the frontier the consumer's join
+  // already bounds, so it consumes no publication slot; charging it would meet
+  // the demand with the input set and leave no slot for any decision.
+  std::uint64_t publishedChildren = 0;
   std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
       seenOutputs(outputs.begin(), outputs.end(), &artifactRootReferenceLess);
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -380,7 +380,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     return llvm::Error::success();
   };
   const auto consumeMaterializationAttempt = [&]() {
-    if ((maximumOutputs && outputs.size() == *maximumOutputs) ||
+    if ((maximumOutputs && publishedChildren == *maximumOutputs) ||
         (config->maximumMaterializationAttempts() &&
          materializationAttempts ==
              *config->maximumMaterializationAttempts())) {
@@ -616,15 +616,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       if (!hasLogicalDomain)
         return hasLogicalDomain.takeError();
       if (*hasLogicalDomain) {
-        if (maximumOutputs && outputs.size() == *maximumOutputs) {
-          truncated = true;
-          stopGeneration = true;
-        } else {
-          if (seenOutputs.insert(reference).second)
-            outputs.push_back(reference);
-          ++ownedLogicalDomainDecisionCount;
-          ++materializedLogicalDomainCount;
-        }
+        if (seenOutputs.insert(reference).second)
+          outputs.push_back(reference);
+        ++ownedLogicalDomainDecisionCount;
+        ++materializedLogicalDomainCount;
         continue;
       }
     }
@@ -902,6 +897,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           return publishedTerminal.takeError();
         seenOutputs.insert(*publishedTerminal);
         outputs.push_back(std::move(*publishedTerminal));
+        ++publishedChildren;
         ++materializedLogicalDomainCount;
         terminalPublished = true;
       }
@@ -1150,6 +1146,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           return published.takeError();
         seenOutputs.insert(*published);
         outputs.push_back(std::move(*published));
+        ++publishedChildren;
         materializedLogicalDomainCount +=
             producesLogicalThreadDomain(decision) ? 1 : 0;
       }
@@ -1160,6 +1157,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "structured_schedule_generation";
         fields["materialization_attempts"] = materializationAttempts;
+        fields["published_children"] = publishedChildren;
         fields["truncated"] = truncated;
         fields["input_count"] =
             inputBindings[StructuredProgramsInput].artifacts.size();

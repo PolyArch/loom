@@ -674,6 +674,11 @@ planNodeInputs(const ResolvedDsePlanNode &node) {
   return std::get<ResolvedPromotePlanNode>(node).inputBindings();
 }
 
+/// The child publication bound of one producer node. It is the widest producer
+/// bound any consumer's join grants, which is a different fact from the width
+/// that join retains: the retained width bounds the frontier the consumer
+/// inspects, while this bound counts only the candidates the producer adds to
+/// it.
 std::vector<CandidateGeneratorOutputDemand>
 deriveOutputDemands(const ResolvedDsePlan &plan,
                     std::size_t producerNodeOrdinal,

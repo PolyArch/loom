@@ -555,10 +555,14 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
       specialMathMaterializationAttemptLimit == 0 || expansionLimit == 0 ||
       options.selection.k == 0 || options.selection.k > expansionLimit)
     return invalid("ownership beam and expansion bounds are inconsistent");
-  // Keep the producer frontier bounded by the admitted expansion, while the
-  // Promote node's TopK remains the smaller survivor width in semantic mode.
-  // This is what makes analytic ranking a real pre-Mapping funnel instead of
-  // replaying every generated candidate.
+  // Every transform layer's join carries two distinct facts. `layerWidth` is
+  // the frontier the next layer inspects, which keeps analytic ranking a real
+  // pre-Mapping funnel instead of a replay of every generated candidate;
+  // `expansionLimit` is the producer bound, which is how many children that
+  // layer may add to the frontier it passes along and matches the
+  // materialization grant the enclosing frontier reserved for the layer. The
+  // admitted expansion sets both, so a layer that transforms nothing keeps the
+  // frontier exactly as wide as it received it.
   const std::uint64_t layerWidth = expansionLimit;
   auto invocation = std::make_unique<StructuredOwnershipInvocation>(
       generationParent.structuredProgram, sourceProgram, workload, runtimeInput,

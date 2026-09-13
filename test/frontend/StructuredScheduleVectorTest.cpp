@@ -620,14 +620,18 @@ module attributes {dlti.dl_spec = #layout} {
   const auto *refillIncomplete =
       std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
           &refill.outcome);
+  // A wider attempt grant refills the slot the leading typed refusal did not
+  // take: the demand of two publishes two children beside the pass-through
+  // parent, and the attempts exceed the children by the refusals among them.
   if (!refillIncomplete ||
       refillIncomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       refillIncomplete->retainedOutputBindings.size() != 1 ||
-      refillIncomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
-      refillIncomplete->lineageEdges.size() != 1 ||
+      refillIncomplete->retainedOutputBindings.front().artifacts.size() != 3 ||
+      refillIncomplete->lineageEdges.size() != 2 ||
       refill.workSummary.size() != 5 || refill.workSummary[1].planned <= 1 ||
       refill.workSummary[1].planned != refill.workSummary[1].consumed ||
+      refill.workSummary[1].consumed <= refillIncomplete->lineageEdges.size() ||
       refill.workSummary[3].planned <= refill.workSummary[3].consumed ||
       refill.workSummary[3].consumed != refill.workSummary[1].consumed)
     fail("typed schedule refusal consumed the distinct publication slot");

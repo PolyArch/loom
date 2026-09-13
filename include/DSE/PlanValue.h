@@ -102,6 +102,9 @@ struct ExactPlanArtifacts final {
 /// canonicalizes and deduplicates the union before retaining its first
 /// `maximumArtifacts` roots. A distinct producer bound permits bounded
 /// expansion before that contraction; zero preserves the retained bound.
+/// The two bounds are two facts: `maximumArtifacts` is the frontier width this
+/// consumer inspects, while the producer bound is how many children each
+/// producer may add to the frontier it passes along.
 struct BoundedPlanOutputJoin final {
   BoundedPlanOutputJoin() = default;
   BoundedPlanOutputJoin(

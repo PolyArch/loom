@@ -27,6 +27,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -780,8 +781,13 @@ module attributes {dlti.dl_spec = #layout} {
   auto boundedBinding =
       take(loom::dse::resolveStructuredScheduleCandidateGeneratorBinding(
           boundedConfig));
+  // The demand bounds the children, not the pass-through input set: a demand
+  // of two publishes the parent plus two distinct children and charges one
+  // attempt for each of them. Charging the pass-through would meet the demand
+  // before the first attempt and report a search that measured nothing.
+  const std::uint64_t boundedChildDemand = 2;
   const std::array<loom::dse::CandidateGeneratorOutputDemand, 1> demands = {{
-      {loom::dse::CandidateGeneratorOutputSlotRef(0), 2},
+      {loom::dse::CandidateGeneratorOutputSlotRef(0), boundedChildDemand},
   }};
   const loom::dse::CandidateGeneratorInvocationView boundedInvocation(
       loom::ExecutionControlView{}, demands);
@@ -794,16 +800,19 @@ module attributes {dlti.dl_spec = #layout} {
       incomplete->reason !=
           loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       incomplete->retainedOutputBindings.size() != 1 ||
-      incomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
-      incomplete->lineageEdges.size() != 1 || bounded.workSummary.size() != 5 ||
-      bounded.workSummary[0].planned != 1 ||
+      incomplete->retainedOutputBindings.front().artifacts.size() !=
+          1 + boundedChildDemand ||
+      !llvm::is_contained(incomplete->retainedOutputBindings.front().artifacts,
+                          unrollReference) ||
+      incomplete->lineageEdges.size() != boundedChildDemand ||
+      bounded.workSummary.size() != 5 || bounded.workSummary[0].planned != 1 ||
       bounded.workSummary[0].consumed != 1 ||
-      bounded.workSummary[1].planned != 1 ||
-      bounded.workSummary[1].consumed != 1 ||
+      bounded.workSummary[1].planned != boundedChildDemand ||
+      bounded.workSummary[1].consumed != boundedChildDemand ||
       bounded.workSummary[2].planned == 0 ||
       bounded.workSummary[2].consumed != bounded.workSummary[2].planned ||
       bounded.workSummary[3].planned <= bounded.workSummary[3].consumed ||
-      bounded.workSummary[3].consumed != 1)
+      bounded.workSummary[3].consumed != boundedChildDemand)
     fail("bounded schedule generation lost exact work accounting");
 
   auto unresolvedSpecialMath = parseProgram(R"mlir(

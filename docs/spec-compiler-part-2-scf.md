@@ -1175,8 +1175,13 @@ that slot until the attempt grant is exhausted. A materialized identity no-op
 or a child identity already present in the output set likewise consumes its
 attempt without publishing a self edge or occupying another output slot.
 
+The output demand bounds the children this generator publishes. Passing an
+input through republishes a frontier the consuming join already bounds, so it
+occupies no output slot; a demand met by the input set before the first attempt
+would report a truncated search that measured nothing.
+
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v24`. Results from an earlier
+`loom.compiler.structured_schedule.generator.v25`. Results from an earlier
 semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator

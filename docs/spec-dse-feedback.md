@@ -827,6 +827,19 @@ therefore consumes an attempt but not a publication slot. A publication or
 attempt truncation remains `SemanticLimitReached`; neither one proves the
 unseen domain infeasible.
 
+Every Generate node's plan-derived output demand counts children by the same
+rule. A transform layer emits the frontier it received plus the children one
+decision produced; republishing an input passes along a frontier the consuming
+join already bounds and occupies no publication slot, so only the children are
+charged. The consuming `BoundedPlanOutputJoin` therefore states two facts: the
+width it retains is the frontier the next layer inspects, and the producer
+bound it grants is how many children each producer may add to that frontier.
+The pre-Mapping plan sets both from the admitted expansion, so a layer that
+transforms nothing passes the frontier along exactly as wide as it arrived,
+while a layer that transforms something may offer one child per reserved
+materialization. A demand met by the pass-through input set would report a
+truncated layer that never attempted a decision.
+
 The ownership provider uses one deterministic admission protocol for both
 materialization attempts and distinct published children. Eligible decisions
 retain their existing scope-frontier order and canonical order within each
@@ -1795,7 +1808,7 @@ search step, with every materialization charged separately. Exhausted grants
 retain finalized outputs and report semantic incompleteness; one parent's
 rejected alternatives must not consume later rounds before the other parents
 receive their current turn. The implementation semantic identity is
-`loom.compiler.structured_schedule.generator.v24`.
+`loom.compiler.structured_schedule.generator.v25`.
 
 The Dataflow rewrite generator uses the positive
 `dse.dataflow_rewrite.scope_expansion_limit`. For each exact frontier Artifact

@@ -118,8 +118,12 @@ struct CandidateGeneratorInputBinding final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
-/// One plan-derived bound for an output slot. A missing maximum means that
-/// every provider-owned candidate remains observable by at least one consumer.
+/// One plan-derived bound for an output slot. The maximum bounds the children
+/// the invocation publishes on that slot: an output the same invocation also
+/// received as an input is the pass-through of a frontier its consumer's join
+/// already bounds, so it consumes no publication slot. A missing maximum means
+/// that every provider-owned candidate remains observable by at least one
+/// consumer.
 struct CandidateGeneratorOutputDemand final {
   CandidateGeneratorOutputSlotRef slot;
   std::optional<std::uint64_t> maximumArtifacts;
