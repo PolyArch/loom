@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -639,6 +640,76 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
                                                std::move(retainedEvidence)}};
 }
 
+/// Appends one producer's output in the order that producer ranked it.
+///
+/// A node publishes a canonical artifact set, so the set alone cannot say
+/// which candidate the producer preferred, and contracting it directly would
+/// keep whichever members happened to sort first by artifact digest. What the
+/// producer does record is its lineage: an output with no lineage edge is a
+/// root, which for a transform layer is the frontier it passed through, and
+/// every other output descends from the candidate it transforms. Walking the
+/// roots in canonical order with each root's descendants immediately behind it
+/// keeps a truncated join's retained set a prefix of that structure, so a
+/// child can only take the place of a later root and never of an unrelated
+/// one. A Promote node instead publishes the objective order it already
+/// resolved, which is its own ranking.
+void appendProducerOrder(const CompletedDsePlanExecution &completed,
+                         PlanOutputRef output,
+                         std::vector<ArtifactRootReference> &ordered) {
+  llvm::ArrayRef<ArtifactRootReference> produced = completed.resolve(output);
+  llvm::ArrayRef<ArtifactRootReference> preference =
+      completed.resolvePreferenceOrder(output);
+  if (!preference.empty()) {
+    ordered.insert(ordered.end(), preference.begin(), preference.end());
+    ordered.insert(ordered.end(), produced.begin(), produced.end());
+    return;
+  }
+  std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
+           decltype(&artifactRootReferenceLess)>
+      childrenByParent(&artifactRootReferenceLess);
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> derived(
+      &artifactRootReferenceLess);
+  const auto isProduced = [&](const ArtifactRootReference &reference) {
+    return llvm::is_contained(produced, reference);
+  };
+  for (const CandidateGeneratorLineageEdge &edge :
+       completed.resolveLineage(output)) {
+    if (edge.outputSlot.ordinal() != output.outputSlotOrdinal ||
+        !isProduced(edge.output))
+      continue;
+    for (const ArtifactRootReference &parent : edge.parents)
+      if (isProduced(parent) && parent != edge.output) {
+        childrenByParent[parent].push_back(edge.output);
+        derived.insert(edge.output);
+        break;
+      }
+  }
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> emitted(
+      &artifactRootReferenceLess);
+  const auto emit = [&](const ArtifactRootReference &root) {
+    std::vector<ArtifactRootReference> pending = {root};
+    while (!pending.empty()) {
+      const ArtifactRootReference reference = pending.front();
+      pending.erase(pending.begin());
+      if (!emitted.insert(reference).second)
+        continue;
+      ordered.push_back(reference);
+      auto children = childrenByParent.find(reference);
+      if (children == childrenByParent.end())
+        continue;
+      pending.insert(pending.begin(), children->second.begin(),
+                     children->second.end());
+    }
+  };
+  for (const ArtifactRootReference &reference : produced)
+    if (derived.find(reference) == derived.end())
+      emit(reference);
+  // A cycle or a derivation whose parent this node did not publish leaves
+  // members unreached; they keep their canonical order behind the forest.
+  for (const ArtifactRootReference &reference : produced)
+    emit(reference);
+}
+
 llvm::Expected<std::vector<ArtifactRootReference>>
 resolveRuntimeInput(const PlanInputBinding &input,
                     const CompletedDsePlanExecution &completed) {
@@ -650,20 +721,24 @@ resolveRuntimeInput(const PlanInputBinding &input,
     return completed.resolve(*output).vec();
   }
   const auto &join = std::get<BoundedPlanOutputJoin>(input);
-  std::vector<ArtifactRootReference> artifacts = join.exactArtifacts;
+  std::vector<ArtifactRootReference> ordered = join.exactArtifacts;
   for (PlanOutputRef output : join.outputs) {
     if (!completed.hasOutput(output))
       return invalid("bounded output join references an unavailable output");
-    llvm::ArrayRef<ArtifactRootReference> source = completed.resolve(output);
-    artifacts.insert(artifacts.end(), source.begin(), source.end());
+    appendProducerOrder(completed, output, ordered);
   }
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> retained(
+      &artifactRootReferenceLess);
+  std::vector<ArtifactRootReference> artifacts;
+  for (const ArtifactRootReference &artifact : ordered) {
+    if (artifacts.size() == join.maximumArtifacts)
+      break;
+    if (retained.insert(artifact).second)
+      artifacts.push_back(artifact);
+  }
+  // The consumer's binding remains the canonical set; only which members the
+  // contraction kept follows the producer's order.
   llvm::sort(artifacts, artifactRootReferenceLess);
-  artifacts.erase(std::unique(artifacts.begin(), artifacts.end()),
-                  artifacts.end());
-  if (artifacts.size() > join.maximumArtifacts)
-    artifacts.erase(artifacts.begin() +
-                        static_cast<std::size_t>(join.maximumArtifacts),
-                    artifacts.end());
   return artifacts;
 }
 
@@ -1028,6 +1103,18 @@ CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
         .artifacts;
   return std::get<PromoteNodeOutputs>(node)
       .outputBindings[output.outputSlotOrdinal];
+}
+
+llvm::ArrayRef<CandidateGeneratorLineageEdge>
+CompletedDsePlanExecution::resolveLineage(PlanOutputRef output) const {
+  if (!hasOutput(output))
+    return {};
+  const NodeOutputs &node = nodeOutputs_[output.producerNodeOrdinal];
+  const auto *generate = std::get_if<GenerateNodeOutputs>(&node);
+  return generate ? llvm::ArrayRef<CandidateGeneratorLineageEdge>(
+                        generateInvocations_[generate->invocationOrdinal]
+                            .lineageEdges)
+                  : llvm::ArrayRef<CandidateGeneratorLineageEdge>();
 }
 
 llvm::ArrayRef<ArtifactRootReference>

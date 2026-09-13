@@ -840,6 +840,18 @@ while a layer that transforms something may offer one child per reserved
 materialization. A demand met by the pass-through input set would report a
 truncated layer that never attempted a decision.
 
+A producer that publishes more candidates than its consumer's join retains is
+contracted in the producer's own recorded order, never by artifact digest. A
+Promote node publishes the objective order it resolved. A Generate node
+publishes a canonical set and a lineage, and that lineage states which of its
+candidates it derived from which: an output with no lineage edge is a root,
+which for a transform layer is the frontier it passed through, and every other
+output descends from the candidate it transforms. The join walks the roots in
+canonical order with each root's descendants immediately behind it and retains
+the leading members of that walk, so a child can take the place only of a later
+root and never of an unrelated one, and the retained set still reaches the
+consumer as the canonical artifact set.
+
 The ownership provider uses one deterministic admission protocol for both
 materialization attempts and distinct published children. Eligible decisions
 retain their existing scope-frontier order and canonical order within each

@@ -98,10 +98,11 @@ struct ExactPlanArtifacts final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
-/// Explicit finite union of prior plan outputs. Runtime resolution
-/// canonicalizes and deduplicates the union before retaining its first
-/// `maximumArtifacts` roots. A distinct producer bound permits bounded
-/// expansion before that contraction; zero preserves the retained bound.
+/// Explicit finite union of prior plan outputs. Runtime resolution orders the
+/// union by each producer's own recorded ranking, deduplicates it, retains its
+/// first `maximumArtifacts` members, and hands that set to the consumer in
+/// canonical order. A distinct producer bound permits bounded expansion before
+/// that contraction; zero preserves the retained bound.
 /// The two bounds are two facts: `maximumArtifacts` is the frontier width this
 /// consumer inspects, while the producer bound is how many children each
 /// producer may add to the frontier it passes along.

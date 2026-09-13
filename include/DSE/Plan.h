@@ -204,6 +204,11 @@ public:
   /// representation consumed by plan use-def edges.
   llvm::ArrayRef<ArtifactRootReference>
   resolvePreferenceOrder(PlanOutputRef output) const;
+  /// Returns the lineage a Generate node recorded for an output, which states
+  /// which of its candidates it derived from which. A Promote output has no
+  /// lineage of its own and returns an empty set.
+  llvm::ArrayRef<CandidateGeneratorLineageEdge>
+  resolveLineage(PlanOutputRef output) const;
   const ComponentViewDigest &resolvedDseConfigViewDigest() const {
     return resolvedDseConfigViewDigest_;
   }
