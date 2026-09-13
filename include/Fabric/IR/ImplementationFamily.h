@@ -172,6 +172,10 @@ using IntegerWidthSet =
 enum class FloatFormat : std::uint8_t { F16, BF16, F32, F64 };
 
 unsigned getBitWidth(FloatFormat format);
+/// The registered format of one scalar floating type, or none when the type is
+/// not floating or its format is outside the closed domain. Bit width does not
+/// identify a format, so this is the one owner of the correspondence.
+std::optional<FloatFormat> symbolizeFloatFormat(::mlir::Type type);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F16) == 0);
 static_assert(static_cast<std::uint8_t>(FloatFormat::BF16) == 1);
 static_assert(static_cast<std::uint8_t>(FloatFormat::F32) == 2);
@@ -555,11 +559,21 @@ struct RoutedTokenParams {
 /// owner instead of restating the lower bounds.
 llvm::Error verifyRoutedTokenParams(const RoutedTokenParams &params);
 
+/// Lanes one actor routes under its family's routed-token provider: a sync
+/// routes one lane per ordered port, a mux one per choice operand, and a demux
+/// one per choice result. A selector operand is not a lane. The result is none
+/// when the family is not routed-token or the actor arity is not the shape the
+/// provider routes, so admission, port correspondence, and capability
+/// derivation share one owner of the lane count instead of restating it.
+std::optional<std::uint32_t>
+routedTokenLaneCount(ImplementationFamilyId family,
+                     const ::dataflow::CanonicalActorSchemaProjection &actor);
+
 /// Verifies capability-independent actor-shape invariants owned by the
-/// implementation family's typed admission provider. The current shared shape
-/// owners cover the scalar ordinary-integer, scalar integer-cast, token-sync,
-/// and token-plane providers; other providers reject this query until their
-/// admission is decomposed.
+/// implementation family's typed admission provider. The shared shape owners
+/// cover every provider whose admission the canonical capability derivation
+/// inverts; other providers reject this query until their admission is
+/// decomposed.
 llvm::Error verifyImplementationFamilyActorShape(
     ImplementationFamilyId family,
     const ::dataflow::CanonicalActorSchemaProjection &actor);

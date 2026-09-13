@@ -340,15 +340,32 @@ actors instead of one.
 Mining is family-agnostic, while synthesis is bounded by the canonical
 capability derivation. A candidate whose node family has no inverse policy is
 rejected with the existing typed capability-derivation reason. This keeps one
-owner for admissible hardware and does not weaken the mined relation. The
-current policies admit the scalar ordinary-integer, scalar integer-cast,
-token-sync, and token-plane carry, invariant, and gate providers, which is the
-inventory the widening multiply-accumulate and the counted-loop control cluster
-need; a representation-dependent index or pointer endpoint still fails typed
-unavailable, because that context is the program's, not the actor's. A mined
-shape whose internal relation contains a cycle is a loop recurrence; its FU
-needs an explicit backedge, and the current synthesis profile rejects it with
-the existing typed topology reason rather than authoring one implicitly.
+owner for admissible hardware and does not weaken the mined relation.
+
+Each inverse policy is the same frame around one envelope: the exact actor set
+in canonical order, the provider's capability-independent actor shape, the
+refusal of an endpoint whose resolved width belongs to the program, the least
+envelope the policy derives, and a proof that the forward admission accepts
+every actor under that envelope. The policies cover the compute datapaths, the
+scalar ordinary-integer and integer-cast providers and the uniform scalar and
+fixed-vector floating providers, and the complete token plane: the loop stream,
+the carry, invariant, and gate resources, the constant, and the routed sync,
+mux, and demux. That is the inventory the widening multiply-accumulate, the
+floating layer body, and the counted-loop control cluster need.
+
+Three kinds of refusal remain, and each names what it cannot represent. A
+representation-dependent index or pointer endpoint, including the index
+selector of a route wider than two ways, fails typed unavailable, because that
+context is the program's and not the actor's. A width, format, or predicate
+outside a closed registered domain has no capability to name, so it is refused
+rather than widened to a nearest admissible value. A field that is one fixed
+implementation parameter rather than a domain, of which the stream's step kind
+is the only one, cannot cover two occurrences that disagree: such a set is two
+resources and the derivation says so, instead of choosing one occurrence's
+value. A mined shape whose internal relation contains a cycle is a loop
+recurrence; its FU needs an explicit backedge, and the current synthesis
+profile rejects it with the existing typed topology reason rather than
+authoring one implicitly.
 
 Coverage uses the existing witness owner without change: one witness per
 occurrence, carrying the selected capability template and the exact ordered

@@ -41,6 +41,7 @@ add_mlir_library(LoomFabricImplementationFamily
   CanonicalImplementationCapability.cpp
   FamilyCapabilityParams.cpp
   ImplementationFamily.cpp
+  ImplementationFamilyActorShape.cpp
   ImplementationFamilyBehaviorKey.cpp
   ImplementationFamilyBehaviorRelation.cpp
   ImplementationFamilyControlBehavior.cpp
