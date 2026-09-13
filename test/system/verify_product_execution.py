@@ -503,7 +503,18 @@ def validate_mapping_work(
         "product gate did not exercise multiple TechMapping candidates",
     )
 
-    context_count = None if hardware_reopen else 1
+    # A derived context is per hardware, so a fixed count is an expectation
+    # about how many hardware designs one invocation compiled. Two owners grow
+    # hardware: the reopen chain repairs a Mapping that failed, and the bounded
+    # quality spectrum grows a verified parent. Either one makes the count the
+    # search's, not the row's.
+    hardware_growth = hardware_reopen or any(
+        payload.get("operation") == "bounded_quality_hardware_spectrum"
+        for payload in matching_payloads(
+            events, stage="system_pnr", event="candidate"
+        )
+    )
+    context_count = None if hardware_growth else 1
     validate_context(events, "spatial_pnr", "fabric_static", context_count)
     validate_context(events, "spatial_pnr", "fabric_timing", context_count)
     validate_context(events, "system_pnr", "system_static", context_count)
@@ -511,7 +522,7 @@ def validate_mapping_work(
         events,
         "system_pnr",
         "system_active",
-        None if hardware_reopen else expected_system_active_contexts,
+        None if hardware_growth else expected_system_active_contexts,
     )
 
     spatial = search_invocations(events, "spatial_pnr", "spatial_pnr_invocation")
